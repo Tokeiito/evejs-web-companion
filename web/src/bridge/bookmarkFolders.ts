@@ -27,7 +27,6 @@
 // folders again rather than trust the ask.
 
 import type { Ask } from "./ask.ts";
-import { decodeFolderList, type BookmarkFolder } from "./bookmarks.ts";
 import { moveBookmarks as moveBookmarksInto } from "./bookmarkWrites.ts";
 
 /** appConst.MAX_ACTIVE_SHARED_BOOKMARK_FOLDERS. */
@@ -39,18 +38,9 @@ export const MAX_KNOWN_FOLDERS = 30;
 
 const anID = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
 
-/** The pilot's personal folders and the shared folders it administers. Fails as the call fails. */
-export async function readFoldersWithAdminAccess(ask: Ask): Promise<BookmarkFolder[]> {
-  return decodeFolderList(await ask("accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", []));
-}
-
-/** Takes up the shared folder `folderID`, active or not. Fails as the call fails. */
-export async function addToKnownFolders(act: Ask, folderID: number, isActive: boolean): Promise<void> {
-  if (!anID(folderID)) {
-    throw new Error("That is no bookmark folder.");
-  }
-  await act("accessGroupBookmarkMgr", "AddToKnownFolders", [folderID, isActive]);
-}
+/** The pilot's personal folders and the shared folders it administers, and a shared folder taken up: the Locations window's own read and write. */
+export { readFoldersWithAdminAccess } from "./bookmarkReads.ts";
+export { addToKnownFolders } from "./bookmarkWrites.ts";
 
 /**
  * Moves the bookmarks `bookmarkIDs`, all in the folder `fromFolderID`, into the folder `toFolderID` (no subfolder):

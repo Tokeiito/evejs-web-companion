@@ -39,8 +39,12 @@
   // Create Subfolder (_create_sub_folder, 149 to 157), which asks CreateBookmarkFolderAsNoneValid where no folder takes
   // one, its Yes the folder window. The subfolder window is SubfolderWindow.svelte.
   //
-  // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, a structure's Add Location, the rest of a bookmark's menu (a gate's jumps, the fleet's warps and
+  // The shared section ends with Shared Folders With Admin Access (GetAdminFoldersScrollList): the folders the pilot
+  // may administer (SearchFoldersWithAdminAccess), each with its state, Folder Information and Disconnect from Folder
+  // for one it knows, Connect for another (Folder Information's connecting: AddToKnownFolders).
+  //
+  // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), a structure's Add Location, the
+  // rest of a bookmark's menu (a gate's jumps, the fleet's warps and
   // broadcast, the map's and the camera's entries, avoiding a place), things from other windows dropped here (an
   // item's place saved), and a shared bookmark shown dim before its delay has passed. Show Info shows a thing the page
   // has read in space as that thing, and any other place by its type (the info window has no station or system of its
@@ -143,6 +147,15 @@
     editFolder: "UI/AclBookmarks/EditBookmarkFolder",
     folderInformation: "UI/AclBookmarks/FolderInformation",
     forgetFolder: "UI/AclBookmarks/ForgetBookmarkFolder",
+    adminFolders: "UI/AclBookmarks/FolderWithAdminAccess",
+    adminFoldersHint: "UI/AclBookmarks/AdminFolderHint",
+    subscribedActive: "UI/AclBookmarks/SubscribedActive",
+    subscribedInactive: "UI/AclBookmarks/SubscribedInactive",
+    notSubscribed: "UI/AclBookmarks/NotSubscribed",
+    noAdminFolder: "UI/AclBookmarks/NoAdminFolderFound",
+    connect: "UI/AclBookmarks/AddFolder",
+    addedOffline: "UI/AclBookmarks/FolderAddedAsInactiveFolder",
+    tooManyKnown: "dialog:TooManyKnownFolders/body",
     editSubfolder: "UI/AclBookmarks/EditSubfolder",
     deleteSubfolder: "UI/AclBookmarks/DeleteSubfolder",
     tooManyOnline: "dialog:TooManyActiveFolders/body",
@@ -170,6 +183,8 @@
   const ACCESS_ADMIN = 5;
   const MAX_ONLINE_PERSONAL = 5;
   const MAX_ONLINE_SHARED = 3;
+  /** appConst.MAX_KNOWN_BOOKMARK_FOLDERS: the most folders the pilot may know. */
+  const MAX_KNOWN_FOLDERS = 30;
   /** invConst.ownerSystem: a subfolder the system made. */
   const OWNER_SYSTEM = 1;
 
@@ -204,7 +219,8 @@
   $effect(() => {
     try {
       const kept: unknown = JSON.parse(globalThis.localStorage?.getItem(openKey(pilotID)) ?? "[]");
-      open = Array.isArray(kept) ? kept.filter((each): each is string => typeof each === "string") : [];
+      // The admin folders' group is closed whenever the window opens (bookmarksPanel.py ApplyAttributes).
+      open = Array.isArray(kept) ? kept.filter((each): each is string => typeof each === "string" && each !== "adminFolders") : [];
     } catch {
       open = [];
     }
@@ -219,6 +235,8 @@
     } catch {
       // Not kept: the groups hold for this window's life.
     }
+    // The admin folders are read as their group opens (GetSubContent: GetAdminFolders).
+    if (id === "adminFolders" && isOpen(id)) readAdminFolders();
   }
 
   const sections = $derived<readonly LocationsSection[]>(active === null ? [] : [locationsSection(active, true, label), locationsSection(active, false, label)]);
@@ -631,18 +649,83 @@
   }
 
   /** Folder Information (ShowBookmarkFolderInfo, 424 to 426), open on a folder the pilot knows. */
-  let folderInfo = $state<BookmarkFolder | null>(null);
+  let folderInfo = $state<{ readonly folder: BookmarkFolder; readonly known: boolean } | null>(null);
 
   function showFolderInfo(folder: BookmarkFolder): void {
     folderMenuFor = null;
-    folderInfo = folder;
+    adminMenuFor = null;
+    folderInfo = { folder, known: true };
   }
 
   /** Its Online Folder and Offline Folder (linkedBookmarkFolderWindow.py 177 to 185), which close it. */
   function folderInfoOnline(isActive: boolean): void {
     const shown = folderInfo;
     folderInfo = null;
-    if (shown !== null) setFolderOnline(shown, isActive);
+    if (shown !== null) setFolderOnline(shown.folder, isActive);
+  }
+
+  /**
+   * Shared Folders With Admin Access (bookmarksPanel.py GetAdminFoldersScrollList and GetAdminFolders, 587 to 634): the
+   * folders the pilot may administer, read as the group opens and kept two minutes (the search's Memoize(2)); closed
+   * whenever the window opens (ApplyAttributes: SetListGroupOpenState(adminFolderId, 0)).
+   */
+  const ADMIN_FOLDERS = "adminFolders";
+  const ADMIN_KEPT_MS = 2 * 60 * 1000;
+  let adminFolders = $state<{ readonly at: number; readonly folders: readonly BookmarkFolder[] } | null>(null);
+  let adminMenuFor = $state<number | null>(null);
+
+  function readAdminFolders(): void {
+    if (adminFolders !== null && Date.now() - adminFolders.at < ADMIN_KEPT_MS) return;
+    void flow.readFoldersWithAdminAccess().then((folders) => {
+      adminFolders = { at: Date.now(), folders };
+    }).catch((cause) => {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : panelErrorWords(cause);
+    });
+  }
+
+  /** An entry's words (GetAdminFolders, 612 to 620): Connected - Online or Offline, or Disconnected. */
+  function adminState(folder: BookmarkFolder): string {
+    const known = active?.folders.find((each) => each.folderID === folder.folderID);
+    if (known === undefined) return word(WORDS.notSubscribed, "Not joined");
+    return known.isActive ? word(WORDS.subscribedActive, "Joined, online") : word(WORDS.subscribedInactive, "Joined, offline");
+  }
+
+  /** ShowBookmarkFolderInfo for a folder the pilot does not know (546 to 562): read of the server, then the window to connect. */
+  function connectInfo(folderID: number): void {
+    adminMenuFor = null;
+    notice = "";
+    void runAct(async () => {
+      const read = await flow.readFolderInfo(folderID);
+      folderInfo = { folder: read, known: false };
+    });
+  }
+
+  /** An entry's double click (OnDblClickAdminFolder, 641 to 647): a known folder's Edit Folder, another's connecting. */
+  function adminDoubleClick(folder: BookmarkFolder): void {
+    const known = active?.folders.find((each) => each.folderID === folder.folderID);
+    if (known !== undefined) editFolder(known);
+    else connectInfo(folder.folderID);
+  }
+
+  /**
+   * Connect (LinkedBookmarkFolderWindow.AddFolder; bookmarkSvc.AddToKnownFolders, 350 to 370): nothing for a folder
+   * known already; TooManyKnownFolders past the most the pilot may know; then the folder added, online or offline, and
+   * FolderAddedAsInactiveFolder where it was asked online and came offline.
+   */
+  function connectFolder(isActive: boolean): void {
+    const shown = folderInfo;
+    folderInfo = null;
+    if (shown === null || active === null) return;
+    if (active.folders.some((each) => each.folderID === shown.folder.folderID)) return;
+    if (active.folders.length >= MAX_KNOWN_FOLDERS) {
+      error = filled(WORDS.tooManyKnown, "You know as many folders as you may ({[numeric]maxKnownFolders}).", { maxKnownFolders: MAX_KNOWN_FOLDERS });
+      return;
+    }
+    void runAct(async () => {
+      const added = await flow.addToKnownFolders(shown.folder.folderID, isActive);
+      await load();
+      if (isActive && added !== null && !added.isActive) notice = word(WORDS.addedOffline, "It was joined offline: you have as many folders online as you may.");
+    });
   }
 
   /** Disconnect from Folder (ForgetFolder, 444 to 447): ConfirmForgetFolder, then the folder no longer known and the list read again. */
@@ -1027,8 +1110,8 @@
     <FolderWindow {store} {flow} {active} folder={folderWindow.folder} onDone={folderDone} />
   {/if}
   {#if folderInfo !== null && active !== null}
-    {#key folderInfo.folderID}
-      <FolderInfoWindow {store} {flow} {active} folder={folderInfo} onSetOnline={folderInfoOnline} onClose={() => (folderInfo = null)} />
+    {#key `${folderInfo.folder.folderID}:${folderInfo.known}`}
+      <FolderInfoWindow {store} {flow} {active} folder={folderInfo.folder} known={folderInfo.known} onSetOnline={folderInfoOnline} onConnect={connectFolder} onClose={() => (folderInfo = null)} />
     {/key}
   {/if}
   {#if notice}
@@ -1101,6 +1184,40 @@
                     {@render folderMenu(folder, 0)}
                   </li>
                 {/each}
+              </ul>
+            {/if}
+          {/if}
+          {#if !section.isPersonal}
+            <!-- Shared Folders With Admin Access (GetAdminFoldersScrollList): each folder by name and its state; a
+                 known one's Folder Information and Disconnect from Folder, another's Connect (ShowMenuAdminFolders). -->
+            {@render groupHead(ADMIN_FOLDERS, word(WORDS.adminFolders, "Shared folders you run"), null, 1, word(WORDS.adminFoldersHint, ""))}
+            {#if isOpen(ADMIN_FOLDERS)}
+              <ul class="locations-inactive" style="padding-left: 2.5rem">
+                {#if adminFolders === null}
+                  <li class="note">…</li>
+                {:else if adminFolders.folders.length === 0}
+                  <li>{word(WORDS.noAdminFolder, "None found")}</li>
+                {:else}
+                  {#each adminFolders.folders as folder (folder.folderID)}
+                    {@const known = active?.folders.find((each) => each.folderID === folder.folderID)}
+                    {@const state = adminState(folder)}
+                    <li title={state} ondblclick={() => adminDoubleClick(folder)}>
+                      {folder.folderName} <span class="note">[{state}]</span>
+                      <button type="button" class="minor" aria-label="Folder menu" aria-expanded={adminMenuFor === folder.folderID}
+                        onclick={() => { adminMenuFor = adminMenuFor === folder.folderID ? null : folder.folderID; folderMenuFor = null; }}>⋯</button>
+                      {#if adminMenuFor === folder.folderID}
+                        <p class="controls locations-submenu">
+                          {#if known !== undefined}
+                            <button type="button" class="minor" onclick={() => showFolderInfo(known)}>{word(WORDS.folderInformation, "About it")}</button>
+                            <button type="button" class="minor" disabled={busy} onclick={() => { adminMenuFor = null; askForgetFolder(known); }}>{word(WORDS.forgetFolder, "Let it go")}</button>
+                          {:else}
+                            <button type="button" class="minor" disabled={busy} onclick={() => connectInfo(folder.folderID)}>{word(WORDS.connect, "Join")}</button>
+                          {/if}
+                        </p>
+                      {/if}
+                    </li>
+                  {/each}
+                {/if}
               </ul>
             {/if}
           {/if}

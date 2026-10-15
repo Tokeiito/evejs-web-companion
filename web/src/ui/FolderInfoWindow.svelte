@@ -13,8 +13,13 @@
   // pilot's lists as GetMyGroups answers them, any other asked of the server by its number (GetGroupInfoFromID with
   // fetchToServer: ownerGroupManager.GetGroup).
   //
-  // Not here: a folder the pilot does not know (the window's Add Folder from a folder's link: AddToKnownFolders), the
-  // access list's own window its link opens, and the folder's icon dragged to make a link.
+  // For a folder the pilot does not know (Connect, from the Locations window's Shared Folders With Admin Access; the
+  // folder as the server answers GetFolderInfo) it is "Connect to Folder": no counts, "Connect as" Online or Offline
+  // Location Folder (online first), and Connect, which adds it to those the pilot knows (AddFolder:
+  // bookmarkSvc.AddToKnownFolders), and Cancel.
+  //
+  // Not here: a folder's link to open it from, the access list's own window its link opens, and the folder's icon
+  // dragged to make a link.
   import { onMount } from "svelte";
   import { plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
@@ -24,12 +29,16 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow, active, folder, onSetOnline, onClose }: {
+  let { store, flow, active, folder, known = true, onSetOnline, onConnect = () => {}, onClose }: {
     store: ClientStore;
     flow: AppFlow;
     active: ActiveBookmarks;
     folder: BookmarkFolder;
+    /** Whether the pilot knows the folder (alreadyKnown); one it does not is offered to be connected to. */
+    known?: boolean;
     onSetOnline: (isActive: boolean) => void;
+    /** Connect (AddFolder), online or offline as chosen. */
+    onConnect?: (isActive: boolean) => void;
     onClose: () => void;
   } = $props();
 
@@ -62,7 +71,15 @@
     onlineFolder: "UI/AclBookmarks/MarkFolderActive",
     offlineFolder: "UI/AclBookmarks/MarkFolderAsInactive",
     close: "UI/Common/Close",
+    connectTitle: "UI/AclBookmarks/AddFolderToLists",
+    connectAs: "UI/AclBookmarks/AddFolderAs",
+    onlineChoice: "UI/AclBookmarks/ActiveFolderCb",
+    offlineChoice: "UI/AclBookmarks/InactiveFolderCb",
+    connect: "UI/AclBookmarks/AddFolder",
+    cancel: "UI/Common/Cancel",
   } as const;
+  /** The online choice of a folder to connect to (isActive, True at first). */
+  let connectOnline = $state(true);
   /** appConst's access levels. */
   const ACCESS_LEVEL_WORDS: Readonly<Record<number, readonly [string, string]>> = {
     5: [WORDS.admin, "Runs it"],
@@ -113,14 +130,17 @@
     });
   });
 
+  /** The window's caption (38 to 41): Folder Information for a folder the pilot knows, else Connect to Folder. */
+  const heading = $derived(known ? word(WORDS.title, "About the folder") : word(WORDS.connectTitle, "Join the folder"));
+
   const accessLine = $derived.by(() => {
     const level = ACCESS_LEVEL_WORDS[folder.accessLevel];
     return level === undefined ? word(WORDS.unknown, "Not known") : word(level[0], level[1]);
   });
 </script>
 
-<section class="folder-info" aria-label={word(WORDS.title, "About the folder")}>
-  <h3>{word(WORDS.title, "About the folder")}</h3>
+<section class="folder-info" aria-label={heading}>
+  <h3>{heading}</h3>
   <p>{word(WORDS.nameHeader, "Name:")} <strong>{folder.folderName}</strong></p>
   <dl class="folder-info-rows">
     <dt>{word(WORDS.type, "Kind")}</dt>
@@ -136,7 +156,7 @@
         {/if}
       </dd>
     {/if}
-    {#if folder.isActive}
+    {#if known && folder.isActive}
       <dt>{word(WORDS.locations, "Places")}</dt>
       <dd>{placeCount}</dd>
       <dt>{word(WORDS.subfolders, "Subfolders")}</dt>
@@ -154,20 +174,35 @@
       <dt>{word(WORDS.view, "Sees it")}</dt>
       <dd>{listLine(folder.viewGroupID)}</dd>
     {/if}
-    <dt>{word(WORDS.status, "State")}</dt>
-    <dd>{folder.isActive ? word(WORDS.online, "Online") : word(WORDS.offline, "Offline")}</dd>
+    {#if known}
+      <dt>{word(WORDS.status, "State")}</dt>
+      <dd>{folder.isActive ? word(WORDS.online, "Online") : word(WORDS.offline, "Offline")}</dd>
+    {:else}
+      <!-- "Connect as" (119 to 136): online or offline, online at first. -->
+      <dt>{word(WORDS.connectAs, "Join it as")}</dt>
+      <dd>
+        <label><input type="radio" name="folder-connect" checked={connectOnline} onchange={() => (connectOnline = true)} /> {word(WORDS.onlineChoice, "Online")}</label>
+        <label><input type="radio" name="folder-connect" checked={!connectOnline} onchange={() => (connectOnline = false)} /> {word(WORDS.offlineChoice, "Offline")}</label>
+      </dd>
+    {/if}
   </dl>
   <label class="folder-info-notes">
     {word(WORDS.notes, "Notes")}
     <textarea rows="3" readonly value={folder.description}></textarea>
   </label>
+  <!-- The buttons (52 to 61): a known or personal folder's online state and Close; another's Connect and Cancel. -->
   <p class="controls">
-    {#if folder.isActive}
-      <button type="button" class="primary" onclick={() => onSetOnline(false)}>{word(WORDS.offlineFolder, "Take it offline")}</button>
+    {#if known || folder.isPersonal}
+      {#if folder.isActive}
+        <button type="button" class="primary" onclick={() => onSetOnline(false)}>{word(WORDS.offlineFolder, "Take it offline")}</button>
+      {:else}
+        <button type="button" class="primary" onclick={() => onSetOnline(true)}>{word(WORDS.onlineFolder, "Bring it online")}</button>
+      {/if}
+      <button type="button" class="minor" onclick={onClose}>{word(WORDS.close, "Close")}</button>
     {:else}
-      <button type="button" class="primary" onclick={() => onSetOnline(true)}>{word(WORDS.onlineFolder, "Bring it online")}</button>
+      <button type="button" class="primary" onclick={() => onConnect(connectOnline)}>{word(WORDS.connect, "Join")}</button>
+      <button type="button" class="minor" onclick={onClose}>{word(WORDS.cancel, "Cancel")}</button>
     {/if}
-    <button type="button" class="minor" onclick={onClose}>{word(WORDS.close, "Close")}</button>
   </p>
 </section>
 

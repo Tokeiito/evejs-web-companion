@@ -51,7 +51,7 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import type { Ask } from "./ask.ts";
-import { decodeAccessGroup, decodeAccessGroups, decodeActiveBookmarks, decodeFolderInfo, type AccessGroup, type ActiveBookmarks, type BookmarkFolder } from "./bookmarks.ts";
+import { decodeAccessGroup, decodeAccessGroups, decodeActiveBookmarks, decodeFolderInfo, decodeFolderList, type AccessGroup, type ActiveBookmarks, type BookmarkFolder } from "./bookmarks.ts";
 
 /**
  * The folders the pilot knows, active or not, and the bookmarks and subfolders of the active ones, as the server
@@ -77,6 +77,15 @@ export async function readFolderInfo(ask: Ask, folderID: number): Promise<Bookma
     throw new Error("That folder could not be read.");
   }
   return folder;
+}
+
+/**
+ * The folders the pilot may administer, known to it or not (bookmarkSvc.SearchFoldersWithAdminAccess, 714 to 717:
+ * accessGroupBookmarkMgr.SearchFoldersWithAdminAccess(), by name and with nothing), for the Locations window's Folders
+ * with Admin Access (bookmarksPanel.py GetAdminFolders, 606 to 637). Fails as the call fails.
+ */
+export async function readFoldersWithAdminAccess(ask: Ask): Promise<readonly BookmarkFolder[]> {
+  return decodeFolderList(await ask("accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", []));
 }
 
 /**

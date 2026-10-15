@@ -114,12 +114,10 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // park's CmdDock and the ship's Undock are asked in their place.
   structureDocking: ["Dock", "Undock"],
   // A bookmark folder's subfolders made, renamed and deleted, a folder put online or offline for the pilot, a
-  // shared folder disconnected from, and bookmarks copied into a folder, by the client's bookmark service
-  // (bookmarkSvc.py 565, 572, 589, 483, 460 and 701). The game port carries them; the web gateway's list has none of
-  // the six.
-  accessGroupBookmarkMgr: ["CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder", "UpdateKnownFolderState", "RemoveFromKnownFolders", "CopyBookmarksToFolderAndSubfolder",
-    // And a shared bookmark folder taken up (bookmarkSvc.py 357), as the companion's salvager takes up its folders.
-    "AddToKnownFolders"],
+  // shared folder disconnected from, bookmarks copied into a folder, and a folder added to those the pilot knows, by
+  // the client's bookmark service (bookmarkSvc.py 565, 572, 589, 483, 460, 701 and 357). The game port carries them;
+  // the web gateway's list has none of the seven.
+  accessGroupBookmarkMgr: ["CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder", "UpdateKnownFolderState", "RemoveFromKnownFolders", "CopyBookmarksToFolderAndSubfolder", "AddToKnownFolders"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -671,14 +669,13 @@ function isBridgeWritePair(service, method) {
  *                                number and a message or None.
  *                                Both for the session's character, from a folder it may read into one it may use.
  *
- * And the companion's site salvager, which takes up its shared folders (and files a finished site's
- * bookmark by the move above):
+ * And a folder the pilot does not know added to those it knows, since 2026-10-15: Add Folder in the Locations
+ * window's Folders with Admin Access (bookmarksPanel.py ShowMenuAdminFolders, then LinkedBookmarkFolderWindow's Add
+ * Folder):
  *
- *   accessGroupBookmarkMgr.AddToKnownFolders  bookmarkSvc.AddToKnownFolders (357): a shared bookmark folder taken
- *                                up. No route ever asked it. It acts on the session's own character's list of
- *                                folders, takes a folder it has access to and no other (FolderAccessDenied), and
- *                                takes no one's name; it takes the folder, not on, and says nothing. Carried on
- *                                the game port alone.
+ *   accessGroupBookmarkMgr.AddToKnownFolders   bookmarkSvc.AddToKnownFolders (357): AddToKnownFolders(folderID,
+ *                                isActive), online or offline; answered the folder, its bookmarks and its subfolders,
+ *                                for the session's character and a folder it may see.
  */
 const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll", "mailMgr.MarkAsRead", "mailMgr.MarkAsUnread", "mailMgr.MoveToTrash", "mailMgr.MoveFromTrash", "mailMgr.DeleteMail", "mailMgr.MarkAllAsRead", "mailMgr.MarkAsReadByLabel", "mailMgr.MoveAllToTrash", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash", "mailMgr.EmptyTrash", "mailMgr.CreateLabel", "mailMgr.EditLabel", "mailMgr.DeleteLabel", "mailMgr.AssignLabels", "mailMgr.RemoveLabels", "mailingListsMgr.Create", "mailingListsMgr.Join", "mailingListsMgr.Leave", "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete", "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers", "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail", "charMgr.AddContact", "charMgr.EditContact", "charMgr.DeleteContacts", "charMgr.BlockOwners", "charMgr.UnblockOwners", "charMgr.EditContactsRelationshipID", "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels", "notificationMgr.DeleteNotifications", "notificationMgr.MarkAsProcessed", "notificationMgr.MarkGroupAsProcessed", "notificationMgr.MarkAllAsProcessed", "notificationMgr.DeleteGroupNotifications", "notificationMgr.DeleteAllNotifications", "account.GiveCash", "accessGroupBookmarkMgr.BookmarkStaticLocation", "accessGroupBookmarkMgr.UpdateBookmark", "accessGroupBookmarkMgr.DeleteBookmarks", "beyonce.CmdGotoBookmark", "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.DeleteFolder", "accessGroupBookmarkMgr.AddFolder", "accessGroupBookmarkMgr.UpdateFolder", "accessGroupBookmarkMgr.RemoveFromKnownFolders", "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.AddToKnownFolders"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);

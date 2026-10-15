@@ -287,6 +287,20 @@ export async function copyBookmarks(act: Ask, oldFolderID: number, folderID: num
 }
 
 /**
+ * Adds the folder `folderID` to those the pilot knows, online or offline, as Folder Information's Add Folder does
+ * (bookmarkSvc.AddToKnownFolders, 350 to 370): accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive). Answers
+ * the folder as the server answers it (its online state may not be the one asked for), or null where the answer is
+ * none. Fails as the call fails.
+ */
+export async function addToKnownFolders(act: Ask, folderID: number, isActive: boolean): Promise<BookmarkFolder | null> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  const answer = await act("accessGroupBookmarkMgr", "AddToKnownFolders", [folderID, isActive]);
+  return decodeFolderInfo(Array.isArray(answer) ? answer[0] ?? null : null);
+}
+
+/**
  * Disconnects the pilot from the shared folder `folderID`, as Disconnect from Folder does (bookmarkSvc.RemoveFromKnownFolders,
  * 459 to 464): accessGroupBookmarkMgr.RemoveFromKnownFolders(folderID). The folder stays; the pilot no longer knows it.
  * Fails as the call fails.
