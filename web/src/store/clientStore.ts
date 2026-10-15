@@ -141,6 +141,11 @@ export interface StationSlice {
   readonly offices: StationOffices | null;
   /** The account's clone grade (0 an alpha clone's, 1 an omega's); null until read, and where it cannot be. */
   readonly cloneGrade: CloneGrade | null;
+  /**
+   * The pilot's own security status as crimewatchSvc keeps it (GetMySecurityStatus, 590 to 593: asked once, where
+   * something wants it; OnSecurityStatusUpdate from then on). null until asked.
+   */
+  readonly ownSecurityStatus: number | null;
   /** Non-null when the last docked-read refresh had a (non-fatal) failure. */
   readonly readError: string | null;
 }
@@ -219,6 +224,7 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   guests: Object.freeze([]) as readonly StationGuest[],
   offices: null,
   cloneGrade: null,
+  ownSecurityStatus: null,
   readError: null,
 });
 
@@ -1180,6 +1186,9 @@ export function createClientStore(): ClientStore {
         break;
       case "character/clone-grade":
         station.set({ ...station.get(), cloneGrade: event.cloneGrade });
+        break;
+      case "character/security-status":
+        station.set({ ...station.get(), ownSecurityStatus: event.securityStatus });
         break;
       case "station/read-error":
         station.set({ ...station.get(), readError: event.message });

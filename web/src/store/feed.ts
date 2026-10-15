@@ -679,6 +679,8 @@ export type FeedEvent =
   | { readonly type: "flight/crimewatch"; readonly crimewatch: CrimewatchReading }
   // The account's clone grade, as read when the pilot came online or as the server's notice said it.
   | { readonly type: "character/clone-grade"; readonly cloneGrade: CloneGrade | null }
+  // The pilot's own security status, as read (crimewatch.GetMySecurityStatus) or as OnSecurityStatusUpdate said it.
+  | { readonly type: "character/security-status"; readonly securityStatus: number | null }
   // Goal R11 — the Overview panel. A space snapshot read completed: everything
   // the ship can see right now plus the active ship's shield/armor/hull/cap.
   // The flow polls this ~1s while in space with the panel open; the panel is a

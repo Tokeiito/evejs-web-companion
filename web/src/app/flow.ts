@@ -174,9 +174,9 @@ import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { setSafetyLevel as setSafetyLevelCall } from "../bridge/crimewatchWrites.ts";
 import { acceptContract as acceptContractCall } from "../bridge/contractWrites.ts";
 import { removeLaunch } from "../bridge/launchWrites.ts";
-import { readClientStates } from "../bridge/crimewatchReads.ts";
+import { readClientStates, readMySecurityStatus } from "../bridge/crimewatchReads.ts";
 import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
-import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
+import { decodeClientStates, decodeSecurityStatus } from "../bridge/boundCrimewatch.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1621,6 +1621,11 @@ export interface AppFlow {
   readCharacterSetting(settingKey: string): Promise<string | null>;
   /** A character setting saved at the server (characterSettingsSvc.Save); an empty value deleted instead. */
   saveCharacterSetting(settingKey: string, value: string | null): Promise<void>;
+  /**
+   * crimewatchSvc.GetMySecurityStatus: the pilot's own security status asked, where none is kept and none is being
+   * asked; the answer kept in the store's station slice (ownSecurityStatus).
+   */
+  requestOwnSecurityStatus(): void;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -3154,6 +3159,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus) (598 to 600): the pilot's own status is what the
+    // server says, with nothing asked.
+    if (method === "OnSecurityStatusUpdate") {
+      const securityStatus = decodeSecurityStatus(args[0] as JsonValue | undefined);
+      if (securityStatus !== null) {
+        store.apply({ type: "character/security-status", securityStatus });
+      }
+      return;
+    }
     // planetUISvc.OnPILaunchesChange and the planets window's (planetWindow.py 58 to 61): the launches kept let go,
     // and read afresh where the window has wanted them.
     if (method === "OnPILaunchesChange") {
@@ -4236,6 +4250,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // transport that does not carry the call (the web gateway).
   async function loadCloneGrade(): Promise<void> {
     store.apply({ type: "character/clone-grade", cloneGrade: cloneGradeOf(await readCloneGrade(bridgeAsk)) });
+  }
+
+  // crimewatchSvc.GetMySecurityStatus (590 to 593): the pilot's own security status, asked while there is none and
+  // kept, the service's for the session (OnSessionReset clears it); OnSecurityStatusUpdate says what it is from then
+  // on. The client asks it where something wants it (a mission's place, agentDialogueUtil.LocationWrapper), and so
+  // does the page. The pilot asked for is held while the call is out: a read for a pilot no longer online here is
+  // not kept, and one that fails leaves none, to be asked again.
+  let ownSecurityStatusAsking: number | null = null;
+  function requestOwnSecurityStatus(): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null || ownSecurityStatusAsking === characterID || store.station.get().ownSecurityStatus !== null) return;
+    ownSecurityStatusAsking = characterID;
+    void readMySecurityStatus(bridgeAsk)
+      .then((securityStatus) => {
+        if ((store.station.get().online?.characterID ?? null) === characterID && securityStatus !== null) {
+          store.apply({ type: "character/security-status", securityStatus });
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (ownSecurityStatusAsking === characterID) ownSecurityStatusAsking = null;
+      });
   }
 
   // crimewatchSvc.SetSafetyLevel: the client sets the level at the server and
@@ -19013,6 +19049,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWalletShares,
     readCharacterSetting,
     saveCharacterSetting,
+    requestOwnSecurityStatus,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));

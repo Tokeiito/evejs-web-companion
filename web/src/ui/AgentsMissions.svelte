@@ -319,10 +319,18 @@
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
       say: (message) => sayOfMission(agentID, message),
       securityOf,
+      ownSecurityStatus,
     });
   });
   // A place's name has its system's security rating before it (bridge/locationWrapper.ts).
   const securityOf = (solarSystemID: number): number | null => $names.systemSecurity[solarSystemID] ?? null;
+  // And, where it is not low security, the outlaw's warning, by the pilot's own security status: asked of crimewatch
+  // the first time a place wants it, as the client's LocationWrapper asks its crimewatch service, and kept.
+  const ownSecurityStatus = (): number | null => {
+    const kept = $station.ownSecurityStatus;
+    if (kept === null) flow.requestOwnSecurityStatus();
+    return kept;
+  };
   // What an agent says of a dungeon, filled as everything it says of that mission is: the mission's
   // keywords, then the agent's own IDs (agents.py ProcessMessage).
   function sayOfMission(agentID: number, message: MissionMessage): string | null {
@@ -426,6 +434,7 @@
       sayOfMission: (messageID) => questionMarkup(byNumber(messageID), nameWithAgents, client),
       say: (message) => message.text ?? questionMarkup({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, nameWithAgents, pageClient(held.agentID, message.contentID ?? held.contentID)),
       securityOf,
+      ownSecurityStatus,
       // From where the pilot is now, by the autopilot's route.
       jumpsTo: (solarSystemID) => (place.solarSystemID === null ? undefined : $names.autopilotJumps[`${place.solarSystemID}:${solarSystemID}`]),
     });

@@ -243,6 +243,8 @@ export interface PageContext {
   readonly say: (message: MissionMessage) => string | null;
   /** The security a solar system was made with; null when it is not known. */
   readonly securityOf: (solarSystemID: number) => number | null;
+  /** The pilot's own security status as crimewatchSvc keeps it, asked only where a warning turns on it; null while not known. */
+  readonly ownSecurityStatus?: () => number | null;
   /**
    * The jumps on the autopilot's route from the pilot's solar system to another
    * (clientPathfinderService.GetAutopilotJumpCount): null where there is no route, and undefined while it
@@ -435,12 +437,13 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   const briefing = description === "" ? null : { title: words(PAGE_LABELS.briefingTitle), text: description };
 
   // LocationWrapper: a ship in space to go to is worded by its type; anything else by its own name. Either
-  // way with its system's security rating before it, and a warning after it where that is low.
+  // way with its system's security rating before it, and a warning after it where that is low (or, for an
+  // outlaw, where it is not).
   const placeText = (location: MissionLocation | null): string => {
     if (location === null || location.locationID === null) return "";
     const ship = location.shipTypeID === null ? null : words(PAGE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
     const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
-    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf);
+    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus);
   };
   // ObjectiveSteps._get_location_info: a station is the pilot's own, or stands for its system; a system is the pilot's own, or so many jumps away.
   const whereText = (location: MissionLocation | null): string | null => {

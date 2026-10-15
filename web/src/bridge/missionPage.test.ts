@@ -136,7 +136,7 @@ test("the messages the page words are the record's name, briefing, offer and ext
 
 test("every label the page uses is asked for", () => {
   // Its own, and those its time left is written with.
-  assert.deepEqual([...PAGE_WORD_LABELS].sort(), [...Object.values(L), ...SHORT_INTERVAL_WORD_LABELS, "UI/Agents/LocationWrapper", "UI/Agents/LowSecWarning"].sort());
+  assert.deepEqual([...PAGE_WORD_LABELS].sort(), [...Object.values(L), ...SHORT_INTERVAL_WORD_LABELS, "UI/Agents/LocationWrapper", "UI/Agents/LowSecWarning", "UI/Agents/HighSecWarning"].sort());
   assert.ok(PAGE_WORD_LABELS.includes("/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Chat/StartConversationAgent"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/AgentEntry/Level"));
