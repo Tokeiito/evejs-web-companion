@@ -8124,6 +8124,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scannerLoadGeneration += 1;
     }
     store.apply({ type: "flight/status", status });
+    // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
+    if (flightSystemChanged) void recheckWaypoints();
     // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off. And an
     // autopilot left on past waypoints that waited docked flies on once the ship is in space (autopilot.py Update).
     if (!waypointsArrived() && !disableAutopilotAtEachWaypoint.get()) flyOnAutopilot();
@@ -10165,10 +10167,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const characterID = onlineCharacterID();
     if (characterID !== waypointsOwner) {
       waypointsOwner = characterID;
-      waypointsSignal.set(characterID === null ? [] : readWaypoints(characterID));
+      keptWaypoints = characterID === null ? [] : readWaypoints(characterID);
+      waypointsSignal.set(keptWaypoints);
       autopilotSignal.set(false);
+      void recheckWaypoints();
     }
     return waypointsSignal.get();
+  }
+
+  /** The waypoints kept for the pilot at the helm (the char UI setting autopilot_waypoints), whether valid now or not. */
+  let keptWaypoints: readonly number[] = [];
+
+  /**
+   * GetWaypoints (starMapSvc.py 2370 to 2376): the kept waypoints, each checked again as a destination
+   * (_IsDestinationValid, with the pilot where it is now); where one is none, no waypoints at all, the kept ones
+   * left kept. Checked when they are read for a pilot and at each change of the pilot's system; an autopilot on
+   * with its route gone is off, as its Update finds no path.
+   */
+  async function recheckWaypoints(): Promise<void> {
+    const kept = keptWaypoints;
+    if (kept.length === 0) return;
+    const facts = await Promise.all(kept.map((id) => destinationFacts(id)));
+    if (keptWaypoints !== kept) return;
+    const valid = kept.every((id, i) => destinationValid(id, facts[i]!));
+    const next = valid ? kept : [];
+    if (next === waypointsSignal.get()) return;
+    waypointsSignal.set(next);
+    autopilotRouteChanged();
   }
 
   /** The waypoints as a window reads them: what is kept for the pilot at the helm, read on the first look. */
@@ -10184,6 +10209,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const characterID = onlineCharacterID();
     if (characterID === null) return;
     heldWaypoints();
+    keptWaypoints = next;
     waypointsSignal.set(next);
     keepWaypoints(characterID, next);
   }
