@@ -60,6 +60,7 @@
     hasChatManagerRole,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
+  import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { isSearchMatch } from "../bridge/searchMatch.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -240,6 +241,22 @@
     return plainText(formatTemplate(word(label, own), args, { nameOf: () => "" }));
   }
 
+  /** "Do not ask again" ticked on the waiting dialog (dialogSuppression.ts). */
+  let dontAskAgain = $state(false);
+
+  /**
+   * A dialog asked as prompt_player_fsd_dialog asks it: one the client asks keeping Yes whose Yes is kept is not
+   * shown, and its write is done; any other is shown, its checkbox clear.
+   */
+  function ask(waiting: { readonly dialog: string; readonly args: Record<string, string>; readonly act: () => Promise<void> }): void {
+    if (ASKED_KEEPING_YES.has(waiting.dialog) && flow.dialogYesKept(waiting.dialog)) {
+      void run(waiting.act);
+      return;
+    }
+    dontAskAgain = false;
+    confirming = waiting;
+  }
+
   /** One of the waiting dialog's two texts, filled. */
   function dialogText(part: "title" | "body"): string {
     const waiting = confirming;
@@ -351,11 +368,14 @@
     void run(() => flow.renameMailLabel(waiting.labelID, name));
   }
 
-  /** The pilot's yes: the write done. */
+  /** The pilot's yes: kept where "do not ask again" was ticked on a dialog that keeps it, and the write done. */
   function confirmed(): void {
     const waiting = confirming;
     confirming = null;
     if (waiting !== null) {
+      if (dontAskAgain && ASKED_KEEPING_YES.has(waiting.dialog)) {
+        flow.keepDialogYes(waiting.dialog);
+      }
       void run(waiting.act);
     }
   }
@@ -1453,7 +1473,7 @@
       await updateMembers();
     };
     if ((action === "member" || action === "muted") && chosen.includes(me)) {
-      confirming = { dialog: action === "member" ? "MailingListMemberSelfConfirm" : "MailingListMuteSelfConfirm", args: {}, act: () => write(true) };
+      ask({ dialog: action === "member" ? "MailingListMemberSelfConfirm" : "MailingListMuteSelfConfirm", args: {}, act: () => write(true) });
       return;
     }
     void run(() => write(false));
@@ -1879,7 +1899,8 @@
   onMount(() => {
     flow.requestWords([
       ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, NOTIFICATIONS_TAB, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
-      ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+      ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`, suppressableKey(dialog)]),
+      DO_NOT_ASK_AGAIN_LABEL,
       ...Object.values(LABEL_WORDS),
       ...LABEL_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       ...Object.values(MANAGE_WORDS),
@@ -2000,7 +2021,7 @@
             <li>
               {label.name}
               <button type="button" class="minor" disabled={busy} onclick={() => (renaming = { labelID: label.labelID, name: label.name })}>{word(LABEL_WORDS.rename, "Rename")}</button>
-              <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "DeleteMailLabel", args: { labelName: label.name }, act: () => flow.deleteMailLabel(label.labelID) })}>{word(LABEL_WORDS.delete, "Delete")}</button>
+              <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "DeleteMailLabel", args: { labelName: label.name }, act: () => flow.deleteMailLabel(label.labelID) }))}>{word(LABEL_WORDS.delete, "Delete")}</button>
             </li>
           {/each}
         </ul>
@@ -2196,6 +2217,10 @@
       <div class="mail-confirm" role="alertdialog" aria-label={dialogText("title")}>
         <strong>{dialogText("title")}</strong>
         <p>{dialogText("body")}</p>
+        {#if $words.templates[suppressableKey(confirming.dialog)] === "1"}
+          <!-- The message box's checkbox (messagebox.py construct_suppress_checkbox), on a dialog the install lets keep its answer. -->
+          <label class="dont-ask"><input type="checkbox" bind:checked={dontAskAgain} /> {plainText(word(DO_NOT_ASK_AGAIN_LABEL, "Skip this question from now on"))}</label>
+        {/if}
         <p class="controls">
           <button type="button" disabled={busy} onclick={confirmed}>{word(FOLDER_WRITE_WORDS.yes, "Yes")}</button>
           <button type="button" class="minor" onclick={() => (confirming = null)}>{word(FOLDER_WRITE_WORDS.no, "No")}</button>
@@ -2252,14 +2277,14 @@
                 {word(MANAGE_WORDS.open, "Manage the list")}
               </button>
             {/if}
-            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(id) }; }}>
+            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; ask({ dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(id) }); }}>
               {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName: listName })}
             </button>
-            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(id) }; }}>
+            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; ask({ dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(id) }); }}>
               {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName: listName })}
             </button>
             {#if shownList.isOwner}
-              <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(id); if (!(store.get().mail.lists ?? []).some((each) => each.listID === id)) viewingList = null; } }; }}>
+              <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; ask({ dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(id); if (!(store.get().mail.lists ?? []).some((each) => each.listID === id)) viewingList = null; } }); }}>
                 {word(FOLDER_WORDS.deleteList, "Delete the list")}
               </button>
             {:else}
@@ -2269,25 +2294,25 @@
             {/if}
           {/if}
         {:else if folder === MAIL_FOLDER_TRASH}
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailRestoreAll", args: {}, act: () => flow.restoreAllMail() })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailRestoreAll", args: {}, act: () => flow.restoreAllMail() }))}>
             {word(FOLDER_WRITE_WORDS.restoreAll, "Restore All")}
           </button>
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMaillDeleteAll", args: {}, act: () => flow.emptyMailTrash() })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMaillDeleteAll", args: {}, act: () => flow.emptyMailTrash() }))}>
             {word(FOLDER_WRITE_WORDS.emptyTrash, "Empty Trash")}
           </button>
         {:else if folder === null}
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailMarkAllRead", args: {}, act: () => flow.readAllMail(null) })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailMarkAllRead", args: {}, act: () => flow.readAllMail(null) }))}>
             {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
           </button>
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashAll", args: {}, act: () => flow.trashAllMail(null) })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailTrashAll", args: {}, act: () => flow.trashAllMail(null) }))}>
             {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
           </button>
         {:else}
           {@const labelID = folder}
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadLabelGroup", args: { labelName: folderName }, act: () => flow.readAllMail(labelID) })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailReadLabelGroup", args: { labelName: folderName }, act: () => flow.readAllMail(labelID) }))}>
             {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName })}
           </button>
-          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashLabelGroup", args: { labelName: folderName }, act: () => flow.trashAllMail(labelID) })}>
+          <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailTrashLabelGroup", args: { labelName: folderName }, act: () => flow.trashAllMail(labelID) }))}>
             {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName })}
           </button>
         {/if}

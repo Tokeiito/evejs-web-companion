@@ -1161,6 +1161,10 @@ export interface AppFlow {
   notificationGroupShown(): number | null;
   /** The notification window's group shown kept, on this machine. */
   keepNotificationGroupShown(groupID: number): void;
+  /** Whether a dialog's Yes is kept ("do not ask again"), on this machine. */
+  dialogYesKept(dialog: string): boolean;
+  /** A dialog's Yes kept, so it is not asked again, on this machine. */
+  keepDialogYes(dialog: string): void;
   /** How the client words each kind of notification, as its own code answers; null where it cannot be read. Asked once. */
   notificationFormats(): Promise<NotificationFormats | null>;
   /** The People & Places window's tab last chosen on this machine; none where none was. */
@@ -5826,6 +5830,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // notificationSvc.DeleteAll (300 to 310): DeleteAllNotifications, with nothing.
   async function deleteAllNotifications(): Promise<void> {
     await notificationWrite("DeleteAllNotifications", []);
+  }
+
+  // A dialog's answer kept, as the client keeps it in the user's settings (player_messaging/client/__init__.py 41 to
+  // 47: settings.user.suppress, 'suppress.' and the dialog's name; dialog_handler.py _persist_prompt_suppress_choice),
+  // kept in this browser. Only Yes is kept here, the page asking only the dialogs the client asks with
+  // suppress=ID_YES (bridge/dialogSuppression.ts).
+  const DIALOG_ANSWER_KEPT = "evejs.suppress.";
+
+  function dialogYesKept(dialog: string): boolean {
+    try {
+      return settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${dialog}`) === "yes";
+    } catch {
+      return false;
+    }
+  }
+
+  function keepDialogYes(dialog: string): void {
+    try {
+      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, "yes");
+    } catch {
+      // Storage full or refused: the dialog is asked again.
+    }
   }
 
   // The notification window's group last shown, as the client keeps it in the character's settings
@@ -15793,7 +15819,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "words/loaded", available: false, templates: Object.fromEntries(chunk.map((label) => [label, null])) });
         continue;
       }
-      // A key is a label, or "#" and a message's number, or a dialog's name and which of its two texts.
+      // A key is a label, or "#" and a message's number, or a dialog's name and which of its two texts (or whether its
+      // answer may be kept).
       const numbered = chunk.filter((key) => /^#\d+$/.test(key));
       const named = chunk.filter((key) => dialogOfKey(key) !== null);
       let result: Awaited<ReturnType<typeof api.loadWords>>;
@@ -16736,6 +16763,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deleteAllNotifications,
     notificationGroupShown,
     keepNotificationGroupShown,
+    dialogYesKept,
+    keepDialogYes,
     notificationFormats,
     addressBookTab,
     keepAddressBookTab,

@@ -19,6 +19,7 @@
   import { onDestroy, onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
+  import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { notificationTitle } from "../bridge/activity.ts";
   import { notificationWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
   import {
@@ -206,7 +207,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([...Object.values(WORDS), ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`])]);
+    flow.requestWords([...Object.values(WORDS), DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
     void run(async () => {
       formats = await flow.notificationFormats();
       if (groups === null) {
@@ -372,26 +373,26 @@
   /** MarkAllRead (form 238 to 241; notificationSvc.py 229 to 239): asked; nothing where none is unread. */
   function markAllRead(): void {
     menu = null;
-    confirming = {
+    ask({
       dialog: "EvemailNotificationsMarkAllRead",
       act: async () => {
         if (unread.length < 1) return;
         await flow.markAllNotificationsRead();
         await refreshed();
       },
-    };
+    });
   }
 
   /** DeleteAll (form 233 to 236; notificationSvc.py 300 to 310): asked, then every notification deleted. */
   function deleteAll(): void {
     menu = null;
-    confirming = {
+    ask({
       dialog: "EvemailNotificationsDeleteAll",
       act: async () => {
         await flow.deleteAllNotifications();
         await refreshed();
       },
-    };
+    });
   }
 
   /** MarkAllReadInGroup (notificationSvc.py 213 to 227): nothing where none of the group is unread; else asked. */
@@ -399,19 +400,19 @@
     menu = null;
     const ofGroup = await flow.notificationsOfGroup(groupID, false);
     if (!ofGroup.some((each) => unreadIDs.has(each.notificationID))) return;
-    confirming = {
+    ask({
       dialog: "EvemailNotificationsMarkGroupRead",
       act: async () => {
         await flow.markNotificationGroupRead(groupID);
         await refreshed();
       },
-    };
+    });
   }
 
   /** DeleteAllFromGroup (form 243 to 246; notificationSvc.py 287 to 298): asked; nothing where the group has none. */
   function deleteGroup(groupID: number): void {
     menu = null;
-    confirming = {
+    ask({
       dialog: "EvemailNotificationsDeleteGroup",
       act: async () => {
         const ofGroup = await flow.notificationsOfGroup(groupID, false);
@@ -419,7 +420,23 @@
         await flow.deleteNotificationGroup(groupID);
         await refreshed();
       },
-    };
+    });
+  }
+
+  /** "Do not ask again" ticked on the waiting dialog (dialogSuppression.ts). */
+  let dontAskAgain = $state(false);
+
+  /**
+   * A dialog asked as prompt_player_fsd_dialog asks it, with suppress=ID_YES: one whose Yes is kept is not shown,
+   * and its write is done; any other is shown, its checkbox clear.
+   */
+  function ask(waiting: { readonly dialog: (typeof DIALOGS)[number]; readonly act: () => Promise<void> }): void {
+    if (ASKED_KEEPING_YES.has(waiting.dialog) && flow.dialogYesKept(waiting.dialog)) {
+      void run(waiting.act);
+      return;
+    }
+    dontAskAgain = false;
+    confirming = waiting;
   }
 
   function dialogText(which: "title" | "body"): string {
@@ -431,7 +448,10 @@
   function confirmed(): void {
     const waiting = confirming;
     confirming = null;
-    if (waiting !== null) void run(waiting.act);
+    if (waiting === null) return;
+    // _persist_prompt_suppress_choice: Yes kept where the box was ticked.
+    if (dontAskAgain && ASKED_KEEPING_YES.has(waiting.dialog)) flow.keepDialogYes(waiting.dialog);
+    void run(waiting.act);
   }
 </script>
 
@@ -448,6 +468,10 @@
     <div class="notifications-confirm" role="alertdialog" aria-label={dialogText("title")}>
       <strong>{dialogText("title")}</strong>
       <p>{dialogText("body")}</p>
+      {#if $words.templates[suppressableKey(confirming.dialog)] === "1"}
+        <!-- The message box's checkbox (messagebox.py construct_suppress_checkbox), on a dialog the install lets keep its answer. -->
+        <label class="dont-ask"><input type="checkbox" bind:checked={dontAskAgain} /> {plainText(word(DO_NOT_ASK_AGAIN_LABEL, "Skip this question from now on"))}</label>
+      {/if}
       <p class="controls">
         <button type="button" disabled={busy} onclick={confirmed}>{plainText(word(WORDS.yes, "Yes"))}</button>
         <button type="button" class="minor" onclick={() => (confirming = null)}>{plainText(word(WORDS.no, "No"))}</button>
