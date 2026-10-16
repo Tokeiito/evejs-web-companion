@@ -3371,14 +3371,14 @@ test("each account has its own connection", async () => {
   assert.deepEqual(made.map((session) => session.closed).sort(), [false, true]);
 });
 
-test("an account's own call does not disturb a pilot of the same account", async () => {
-  const { pilots, made, timers } = accountBuild();
+// One connection for each account: a login closes every other session of its user (sessionMgr.CloseUserSessions,
+// carbon/common/script/sys/sessions.py 764), so a second connection beside the pilot would close the pilot.
+test("an account's own call is asked on the connection of its pilot, and makes no second", async () => {
+  const { pilots, made } = accountBuild();
   const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   await creationInfo(pilots);
-  assert.equal(made.length, 2, "its own connection, not the pilot's");
-  assert.equal(made[0].calls.some((call) => call.method === "GetCharCreationInfo"), false);
-  timers.fire(timers.live.find((timer) => timer.delay === 5000));
-  assert.equal(made[1].closed, true);
+  assert.equal(made.length, 1, "the pilot's connection, not a second");
+  assert.equal(made[0].calls.some((call) => call.method === "GetCharCreationInfo"), true);
   assert.equal(made[0].closed, false);
   assert.equal(pilots.size, 1);
   // The pilot's session still answers.

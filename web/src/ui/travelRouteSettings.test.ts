@@ -25,8 +25,13 @@ function drawn(kept: Record<string, unknown>, clientWords: boolean): string {
   if (clientWords) {
     store.apply({ type: "words/loaded", available: true, templates: CLIENT_WORDS });
   }
-  // Every call the panel makes of the flow is answered with nothing, but the one for the settings.
-  const flow = new Proxy({ autopilotSettings: () => kept }, { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => undefined) });
+  // Every call the panel makes of the flow is answered with nothing, but the ones for the settings; what it follows
+  // (the settings, the waypoints, the autopilot) is a value that does not change.
+  const held = <T,>(value: T) => ({ get: () => value, subscribe: (listener: (value: T) => void) => (listener(value), () => {}) });
+  const flow = new Proxy(
+    { autopilotSettings: () => kept, routeSettings: held(kept), waypoints: held([]), autopilotOn: held(false) },
+    { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => undefined) },
+  );
   const body = (render(Panel as never, { props: { store, flow } } as never) as { body: string }).body;
   const from = body.indexOf('<section class="route-settings');
   assert.ok(from >= 0, "the route settings are drawn");

@@ -141,6 +141,11 @@ export interface StationSlice {
   readonly offices: StationOffices | null;
   /** The account's clone grade (0 an alpha clone's, 1 an omega's); null until read, and where it cannot be. */
   readonly cloneGrade: CloneGrade | null;
+  /**
+   * The pilot's own security status as crimewatchSvc keeps it (GetMySecurityStatus, 590 to 593: asked once, where
+   * something wants it; OnSecurityStatusUpdate from then on). null until asked.
+   */
+  readonly ownSecurityStatus: number | null;
   /** Non-null when the last docked-read refresh had a (non-fatal) failure. */
   readonly readError: string | null;
 }
@@ -219,6 +224,7 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   guests: Object.freeze([]) as readonly StationGuest[],
   offices: null,
   cloneGrade: null,
+  ownSecurityStatus: null,
   readError: null,
 });
 
@@ -387,7 +393,6 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   availability: "unknown",
   fleet: null,
   pendingInvite: null,
-  inviteAnswered: null,
   activeAction: null,
   readError: null,
   actionError: null,
@@ -406,6 +411,7 @@ const INITIAL_SCANNER: ScannerCenterState = Object.freeze({
   scan: Object.freeze({ status: "loading" }),
   operations: Object.freeze({ status: "loading" }),
   refreshedAtMs: null,
+  probeResults: null,
 });
 
 // R17 contracts. READS ONLY — every mutator is refused at the gateway, so
@@ -462,6 +468,7 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   briefing: null,
   objectives: null,
   missionTimes: null,
+  agentLocation: null,
   missionPage: null,
   agentRecords: Object.freeze({}) as AgentsState["agentRecords"],
   agentSolarSystems: Object.freeze({}) as AgentsState["agentSolarSystems"],
@@ -1182,6 +1189,9 @@ export function createClientStore(): ClientStore {
       case "character/clone-grade":
         station.set({ ...station.get(), cloneGrade: event.cloneGrade });
         break;
+      case "character/security-status":
+        station.set({ ...station.get(), ownSecurityStatus: event.securityStatus });
+        break;
       case "station/read-error":
         station.set({ ...station.get(), readError: event.message });
         break;
@@ -1602,8 +1612,6 @@ export function createClientStore(): ClientStore {
           activeAction: event.action,
           actionError: null,
           actionErrorSaid: false,
-          // Another invitation sent: what was said of the last one is said no longer.
-          inviteAnswered: event.action === "invite" ? null : fleet.get().inviteAnswered,
         });
         break;
       case "fleet/action-finished":
@@ -1616,9 +1624,6 @@ export function createClientStore(): ClientStore {
         break;
       case "fleet/pending-invite":
         fleet.set({ ...fleet.get(), pendingInvite: event.invite });
-        break;
-      case "fleet/invite-answered":
-        fleet.set({ ...fleet.get(), inviteAnswered: event.words });
         break;
       case "fleet/invite-settled":
         // An invitation the pilot has answered is the window's no longer. Another fleet's stays.
@@ -1655,7 +1660,8 @@ export function createClientStore(): ClientStore {
         // Keep the last known sites visible while a manual refresh runs.
         scanner.set({ ...scanner.get(), loading: true });
         break;
-      case "scanner/loaded":
+      case "scanner/loaded": {
+        const probeResults = scanner.get().probeResults;
         scanner.set({
           loaded: true,
           loading: false,
@@ -1663,7 +1669,12 @@ export function createClientStore(): ClientStore {
           scan: event.scan,
           operations: event.operations,
           refreshedAtMs: event.refreshedAtMs,
+          probeResults: probeResults !== null && probeResults.solarSystemID === event.solarSystemID ? probeResults : null,
         });
+        break;
+      }
+      case "scanner/probe-results":
+        scanner.set({ ...scanner.get(), probeResults: event.probeResults });
         break;
       case "scanner/cleared":
         scanner.set(INITIAL_SCANNER);
@@ -1824,7 +1835,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "agents/conversation-closed":
-        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, objectives: null, missionTimes: null });
+        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, objectives: null, missionTimes: null, agentLocation: null });
         break;
       case "agents/mission-keywords": {
         const current = agents.get();
@@ -1839,6 +1850,9 @@ export function createClientStore(): ClientStore {
         break;
       case "agents/mission-times":
         agents.set({ ...agents.get(), missionTimes: event.times });
+        break;
+      case "agents/agent-location":
+        agents.set({ ...agents.get(), agentLocation: event.location });
         break;
       case "agents/mission-page":
         agents.set({ ...agents.get(), missionPage: event.page });

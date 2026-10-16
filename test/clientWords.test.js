@@ -333,20 +333,23 @@ test("a dialog is its kind, whether it can be suppressed, and the client's title
   const { readFile } = fakeClient();
   const words = createClientWords({ clientRoot: CLIENT, readFile });
   // The body is a text no label names: a dialog's texts are kept without the whole language file.
-  assert.deepEqual(words.dialog("MadeUpQuestion"), { type: "question", suppressable: true, title: "A made-up title?", body: "A text no label names" });
+  assert.deepEqual(words.dialog("MadeUpQuestion"), { type: "question", suppressable: true, suppress: "any", title: "A made-up title?", body: "A text no label names" });
   assert.equal(words.status().everyMessageKept, false);
-  assert.deepEqual(words.dialog("OnlyABody"), { type: "notify", suppressable: false, title: null, body: "A made-up body, until {[datetime]when}." });
+  assert.deepEqual(words.dialog("OnlyABody"), { type: "notify", suppressable: false, suppress: null, title: null, body: "A made-up body, until {[datetime]when}." });
   // A title and a body the language has no text for.
-  assert.deepEqual(words.dialog("NoWords"), { type: "warning", suppressable: false, title: null, body: null });
-  // Suppressed as an answer (ID_YES, ID_NO) is suppressable; false is not, whether said or left out.
+  assert.deepEqual(words.dialog("NoWords"), { type: "warning", suppressable: false, suppress: null, title: null, body: null });
+  // Suppressed as an answer (ID_YES, ID_NO) is suppressable; false is not, whether said or left out. Which answer may be
+  // kept is the client's GetSuppressValueForMessage's: any for true, Yes for ID_YES.
   assert.equal(words.dialog("AnsweredYes").suppressable, true);
+  assert.equal(words.dialog("AnsweredYes").suppress, "yes");
   assert.equal(words.dialog("NotSuppressed").suppressable, false);
+  assert.equal(words.dialog("NotSuppressed").suppress, null);
   assert.equal(words.dialog("OddlySuppressed").suppressable, false);
   for (const missing of ["NoSuchDialog", "madeupquestion", "", 1, null, undefined, ["MadeUpQuestion"]]) {
     assert.equal(words.dialog(missing), null, String(missing));
   }
   assert.deepEqual(words.dialogs(["OnlyABody", "NoSuchDialog", 7, null]), {
-    OnlyABody: { type: "notify", suppressable: false, title: null, body: "A made-up body, until {[datetime]when}." },
+    OnlyABody: { type: "notify", suppressable: false, suppress: null, title: null, body: "A made-up body, until {[datetime]when}." },
     NoSuchDialog: null,
   });
   assert.deepEqual(words.dialogs("not a list"), {});

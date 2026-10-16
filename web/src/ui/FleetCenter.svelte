@@ -5,6 +5,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import { memberWhereabouts } from "../bridge/fleetCenter.ts";
   import FleetHistory from "./FleetHistory.svelte";
+  import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
   import type { FleetMember, FleetSquad, FleetWing } from "../bridge/boundFleet.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
@@ -85,6 +86,12 @@
     );
   }
 
+  /** The heading the composition window's row menu gives a member's system (fleetCompositionWnd.py 163 and 164). */
+  const SYSTEM_HEADING = { label: "UI/Common/SolarSystem", own: "System" } as const;
+  function memberSystemID(member: FleetMember): number | null {
+    return positiveID(memberWhereabouts(member, composition).solarSystemID);
+  }
+
   function memberInSquad(member: FleetMember, squad: FleetSquad): boolean {
     const squadID = positiveID(squad.squadID);
     return squadID !== null && positiveID(member.squadID) === squadID;
@@ -137,10 +144,6 @@
     );
   }
 
-  function confirmAction(message: string): boolean {
-    return typeof window !== "undefined" && window.confirm(message);
-  }
-
   function resolveInvitee(): void {
     if (inviteeID !== null) {
       flow.requestNames([{ kind: "character", id: inviteeID }]);
@@ -156,32 +159,28 @@
     }
   }
 
+  // The client asks nothing before any of these (fleetSvc.CreateFleet, 331 to 342; Invite, 351 to 363; LeaveFleet,
+  // 365 to 371); an invitation is answered in its own dialog, of which the Accept and Decline here are the two
+  // answers (OnFleetInvite, 1193). So the page asks nothing either.
   async function formFleet(): Promise<void> {
-    if (confirmAction("Form a new fleet with you in command?")) await flow.formFleet();
+    await flow.formFleet();
   }
 
   async function acceptInvite(): Promise<void> {
-    if (confirmAction(`Accept the fleet invitation from ${inviteSender()}?`)) {
-      await flow.acceptFleetInvite();
-    }
+    await flow.acceptFleetInvite();
   }
 
   async function declineInvite(): Promise<void> {
-    if (confirmAction(`Decline the fleet invitation from ${inviteSender()}?`)) {
-      await flow.declineFleetInvite();
-    }
+    await flow.declineFleetInvite();
   }
 
   async function inviteMember(): Promise<void> {
     if (inviteeID === null) return;
-    const who = inviteeName ?? `character ID ${inviteeID}`;
-    if (confirmAction(`Invite ${who} to your fleet?`)) {
-      await flow.inviteFleetMember(inviteeID);
-    }
+    await flow.inviteFleetMember(inviteeID);
   }
 
   async function leaveFleet(): Promise<void> {
-    if (confirmAction("Leave your current fleet?")) await flow.leaveFleet();
+    await flow.leaveFleet();
   }
 
   onMount(() => {
@@ -193,7 +192,12 @@
   <li class="member-row">
     <div class="member-main">
       <strong>{memberName(member)}</strong>
-      <span class="meta">{memberShip(member)} · {memberLocation(member)}</span>
+      <span class="meta">
+        {memberShip(member)} · {memberLocation(member)}
+        {#if memberSystemID(member) !== null}
+          <PlaceRouteMenu {store} {flow} placeID={memberSystemID(member)!} heading={SYSTEM_HEADING} />
+        {/if}
+      </span>
     </div>
     <span class="badge">{memberRole(member)}</span>
   </li>
@@ -323,7 +327,6 @@
           </p>
         {/if}
       </form>
-      {#if $fleet.inviteAnswered}<p class="note">{$fleet.inviteAnswered}</p>{/if}
     </section>
 
     <FleetHistory {store} {flow} />

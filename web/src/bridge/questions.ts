@@ -33,6 +33,7 @@ import {
   typedLabels,
   typedNameRefs,
   type TemplateArguments,
+  type TypedContext,
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
@@ -229,11 +230,12 @@ const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 const DIALOG_NAME = /^\w{1,100}$/;
 
 /** The dialog and the part a words key names, or null when the key is a label or a message's number. */
-export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" | "type" } | null {
+export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" | "suppress" | "type" } | null {
   // "suppressable": whether the install lets the dialog's answer be kept ("1"), for "do not ask again"
-  // (dialogSuppression.ts). "type": the dialog's type, which says how the client puts it up (ClientDialogs.svelte).
-  const match = /^dialog:(\w{1,100})\/(title|body|suppressable|type)$/.exec(key);
-  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" | "type" } : null;
+  // (dialogSuppression.ts). "suppress": which answer it lets be kept ("any", "yes" or "no"; eveCfg.py
+  // GetSuppressValueForMessage). "type": the dialog's type, which says how the client puts it up (ClientDialogs.svelte).
+  const match = /^dialog:(\w{1,100})\/(title|body|suppressable|suppress|type)$/.exec(key);
+  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" | "suppress" | "type" } : null;
 }
 
 /**
@@ -261,11 +263,27 @@ export function argumentsOf(value: unknown): TemplateArguments {
  * it, which wins. A dialog's are prepared first as the client prepares them,
  * its typed values turned to text (cfg.__prepdict).
  */
+/**
+ * How the client's words are filled for a question or a dialog: names, the pilot, the install's templates, and an
+ * interval, a distance and ISK written the client's way where its words for them are to hand.
+ */
+function wordingContext(client: ClientWording, nameOf: NameOf): TypedContext {
+  return {
+    nameOf,
+    playerID: client.playerID ?? null,
+    templates: client.templates,
+    writeInterval: intervalWriter(client.templates),
+    writeShortInterval: shortIntervalWriter(client.templates),
+    // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
+    writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
+    writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
+  };
+}
+
 function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameOf): TemplateArguments {
   const given = parametersOf(words.parameters);
-  const sent = typeof words.dialog === "string"
-    ? prepareArguments(given, { nameOf, playerID: client.playerID ?? null, templates: client.templates })
-    : given;
+  // A dialog's typed values worded as the client prepares them (cfg.__prepdict), with the same writers.
+  const sent = typeof words.dialog === "string" ? prepareArguments(given, wordingContext(client, nameOf)) : given;
   return { ...(client.extra ?? {}), ...sent };
 }
 
@@ -277,18 +295,7 @@ function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameO
 export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: ClientWording): string | null {
   const key = wordsKey(words);
   const template = key !== null ? client.templates[key] : null;
-  // An interval in a label is written the client's way when the client's words for one are to hand.
-  return typeof template === "string"
-    ? formatTemplate(template, argumentsFor(words, client, nameOf), {
-        nameOf,
-        playerID: client.playerID ?? null,
-        writeInterval: intervalWriter(client.templates),
-        writeShortInterval: shortIntervalWriter(client.templates),
-        // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
-        writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
-        writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
-      })
-    : null;
+  return typeof template === "string" ? formatTemplate(template, argumentsFor(words, client, nameOf), wordingContext(client, nameOf)) : null;
 }
 
 /** The labels a dialog's numeric values are written with: a distance's units, and ISK's (ISK_LABELS). */
@@ -367,7 +374,7 @@ export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefine
       refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording, nameByID), { playerID: client?.playerID ?? null }));
       if (typeof words.dialog === "string") {
         // What the dialog's typed values name: they are text by the time the template is filled.
-        refs.push(...typedNameRefs(parametersOf(words.parameters)));
+        refs.push(...typedNameRefs(parametersOf(words.parameters), client?.templates));
       }
       continue;
     }
@@ -451,4 +458,99 @@ export function createBotPresses(): BotPresses {
       return question.kind === "yesNo" && question.agentID !== null && inFlight.has(question.agentID);
     },
   };
+}
+
+// ── a question's title, and its answer kept ("do not ask again") ─────────────
+//
+// What a question is put up as, by what asks it:
+//
+//   XmppChat.AskYesNoQuestion   a dialog of the install's by its name (prompt_player_fsd_dialog, YESNO; dialog_handler
+//                               _handle_player_fsd_dialog and _prompt_player): titled with the dialog's title, else
+//                               its type's own word (TITLE_BY_DIALOG_TYPE, 24 to 29; Information for any other); a
+//                               dialog the install marks suppressable has the box "/Carbon/UI/Common/DoNotAskAgain"
+//                               (messagebox.py prompt_player, 164 to 168); ticked, the answer is kept where the dialog
+//                               lets it be (_persist_prompt_suppress_choice, 126 to 132).
+//   agents.YesNo with a suppressID   the agent's box (agents.py ShowMessageWindow, 432 to 437; ui_message.py
+//                               prompt_player, 21 to 42), with the box "UI/Common/SuppressionShowMessage"; ticked, any
+//                               answer but No, Close or Cancel is kept.
+//   agents.SingleChoiceBox with a suppressID   its radio box (agents.py 439 to 468), with the box
+//                               "UI/Common/SuppressionShowMessageRemember"; ticked, the answer is kept whatever it is,
+//                               the button and the choice.
+//
+// An answer kept is the answer: the question is not put up (dialog_handler 59 to 64; prompt_player 22 to 25;
+// SingleChoiceBox 460 to 462). The client keeps them all in one place, settings.user.suppress, under 'suppress.' and
+// the dialog's name or the suppressID; so does the page (AppFlow.keepQuestionAnswer).
+
+/** TITLE_BY_DIALOG_TYPE: a dialog type's own word, for a box whose dialog has no title. */
+export const DIALOG_TYPE_TITLES: Readonly<Record<string, string>> = {
+  info: "UI/Common/Information",
+  infomodal: "UI/Common/Information",
+  warning: "UI/Generic/Warning",
+  question: "UI/Common/Question",
+  error: "UI/Common/Error",
+  fatal: "UI/Common/Fatal",
+};
+/** The title of a box whose dialog has none and whose type has no word of its own. */
+export const INFORMATION_TITLE = "UI/Common/Information";
+/** The page's own words for those, where the install's are not to hand. */
+export const OWN_DIALOG_TITLES: Readonly<Record<string, string>> = {
+  "UI/Common/Information": "Information",
+  "UI/Generic/Warning": "Warning",
+  "UI/Common/Question": "Question",
+  "UI/Common/Error": "Error",
+  "UI/Common/Fatal": "Fatal",
+};
+/** The agents' boxes' words (agents.py 435 and 465). */
+export const SUPPRESSION_SHOW_MESSAGE = "UI/Common/SuppressionShowMessage";
+export const SUPPRESSION_SHOW_MESSAGE_REMEMBER = "UI/Common/SuppressionShowMessageRemember";
+
+/** How a question's answer may be kept: by the dialog it is, or by the agent's suppressID; null where it may not. */
+export type QuestionKeeping =
+  | { readonly kind: "dialog"; readonly key: string }
+  | { readonly kind: "agentYesNo"; readonly key: string }
+  | { readonly kind: "agentChoice"; readonly key: string };
+
+/** The dialog a question is, where it is one of the install's (AskYesNoQuestion's), by its name; else null. */
+export function questionDialog(question: ClientQuestion): string | null {
+  return typeof question.body.dialog === "string" && question.body.dialog !== "" ? question.body.dialog : null;
+}
+
+export function questionKeeping(question: ClientQuestion): QuestionKeeping | null {
+  const dialog = questionDialog(question);
+  if (dialog !== null) return question.kind === "yesNo" ? { kind: "dialog", key: dialog } : null;
+  if (question.suppressID === null || question.suppressID === "") return null;
+  if (question.kind === "yesNo") return { kind: "agentYesNo", key: question.suppressID };
+  if (question.kind === "choice") return { kind: "agentChoice", key: question.suppressID };
+  return null;
+}
+
+/** The answer a kept one gives a question (`kept` as AppFlow keeps it); undefined where none is kept or it fits not. */
+export function keptQuestionAnswer(question: ClientQuestion, kept: string | null): QuestionAnswer | undefined {
+  const keeping = questionKeeping(question);
+  if (keeping === null || kept === null) return undefined;
+  if (keeping.kind === "agentChoice") {
+    const match = /^choice:(ok|cancel):(\d+)$/.exec(kept);
+    if (match === null) return undefined;
+    const answer = { confirmed: match[1] === "ok", index: Number(match[2]) };
+    return answerFits(question, answer) ? answer : undefined;
+  }
+  // A YESNO question's kept Yes or No (an OK kept by another dialog's box answers no Yes either: ID_OK is not ID_YES).
+  return kept === "yes" ? true : kept === "no" || kept === "ok" ? false : undefined;
+}
+
+/**
+ * What to keep of an answer given with the box ticked, or null where it is not kept: a dialog's where the dialog lets
+ * that answer be kept (`dialogSuppress`, its "suppress" words: "any", "yes" or "no"); an agent's Yes; an agent's
+ * choice whatever it is.
+ */
+export function keptValueOf(question: ClientQuestion, answer: QuestionAnswer, dialogSuppress: string | null | undefined): string | null {
+  const keeping = questionKeeping(question);
+  if (keeping === null) return null;
+  if (keeping.kind === "agentChoice") {
+    return answer !== null && typeof answer === "object" ? `choice:${answer.confirmed ? "ok" : "cancel"}:${answer.index}` : null;
+  }
+  if (typeof answer !== "boolean") return null;
+  if (keeping.kind === "agentYesNo") return answer ? "yes" : null;
+  const said = answer ? "yes" : "no";
+  return dialogSuppress === "any" || dialogSuppress === said ? said : null;
 }

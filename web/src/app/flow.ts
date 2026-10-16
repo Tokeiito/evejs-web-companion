@@ -124,7 +124,18 @@ import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
 import { filetimeOf } from "../bridge/journalWords.ts";
 import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
+  arrivalAwaited,
+  decodeMissionInfo,
+  decodeMissionInfos,
+  decodeMissionsUpdated,
+  isArrivalFlag,
+  placesAwaited,
+  type MissionInfo,
+  type TrackedMission,
+} from "../bridge/missionTracker.ts";
+import {
   AGENT_BUTTON,
+  AGENT_MISSION_STATE,
   decodeBriefing,
   decodeConversation,
   decodeJournal,
@@ -139,6 +150,9 @@ import { sessionChangeNames, sessionChangeValue, wholeDigits } from "../bridge/s
 import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
+import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
+import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, activateEntranceGate, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
+import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -163,9 +177,9 @@ import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { setSafetyLevel as setSafetyLevelCall } from "../bridge/crimewatchWrites.ts";
 import { acceptContract as acceptContractCall } from "../bridge/contractWrites.ts";
 import { removeLaunch } from "../bridge/launchWrites.ts";
-import { readClientStates } from "../bridge/crimewatchReads.ts";
+import { readClientStates, readMySecurityStatus } from "../bridge/crimewatchReads.ts";
 import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
-import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
+import { decodeClientStates, decodeSecurityStatus } from "../bridge/boundCrimewatch.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -203,10 +217,10 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -214,7 +228,9 @@ import { decodeNotificationFormats, type NotificationFormats } from "../bridge/n
 const CONTACTS_NOTIFICATION_GROUP = 9;
 /** const.ownerSystem, which a notification's sender of -1 is (neocom/notifications.py 176 to 177). */
 const OWNER_SYSTEM = 1;
-import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
+/** const.UE_LOC (carbon/common/lib/const.py 273): a dialog's value that is one of the client's labels, with its arguments. */
+const UE_LOC = 101;
+import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
@@ -268,14 +284,26 @@ import {
   type SystemGraph,
 } from "../nav/routeSolver.ts";
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
-import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
+import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotMap, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
+import { availableJumpGateJumps, type JumpGateJump } from "../nav/jumpGates.ts";
+import { decodeJumpBridgesWithMyAccess } from "../bridge/structures.ts";
 import {
+  AVOIDING_DIALOGS,
   autopilotSettingsFrom,
+  avoidanceItems,
+  avoidanceTickOn,
+  includingJumpGates,
   loadAutopilotSettings,
   saveAutopilotSettings,
+  withAvoidanceItem,
+  withAvoidanceTickClicked,
   withAvoidSystemsClicked,
+  withIncludeJumpGatesClicked,
+  withoutAvoidanceItem,
   withPenalty,
   withRouteType,
+  type AvoidanceTick,
+  type AvoidedLists,
   type SettingsStorage,
   type StoredAutopilotSettings,
 } from "../nav/autopilotSettings.ts";
@@ -285,10 +313,25 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, MissionSpot } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import {
+  ABYSS_LOOTABLE_OBJECTIVE,
+  ABYSS_LOOTABLE_RESTART_MS,
+  ABYSS_OBJECTIVE_CHAIN_ID,
+  AbyssObjectiveChain,
+  abyssalLocationEntered,
+  decodeObjectiveChain,
+  type AbyssObjectiveRow,
+  type ObjectiveChainData,
+} from "../bridge/abyssObjectives.ts";
+import { activateStep } from "../bridge/spaceActivate.ts";
+import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
+  decideCloseIn,
+  measureSpace,
   type AutopilotController,
   type AutopilotDeps,
   type RoutePlan,
@@ -407,9 +450,18 @@ import {
   placeSellOrder as placeSellOrderCall,
 } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
-import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
+import {
+  ABYSSAL_SCAN_QUESTION,
+  ABYSSAL_SCAN_UNANSWERED,
+  PROBE_STATE,
+  createScannerWrites,
+  formationOf,
+  isAbyssalSystem,
+  type ScannerShip,
+} from "../bridge/scannerWrites.ts";
+import { INITIAL_FORMATION, PINPOINT_FORMATION, addProbeToFormation, centerOf, createFormation, removeProbeFromFormation, type FormationState } from "../bridge/probeFormations.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
-import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
+import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
@@ -418,7 +470,6 @@ import { classifySalvageModules } from "../nav/salvageModules.ts";
 import { addToKnownFolders, moveBookmarks as fileBookmarksCall, updateKnownFolderState } from "../bridge/bookmarkFolders.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
-import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
@@ -428,19 +479,40 @@ import {
   fleetInviteAnswerWords,
   memberWhereabouts,
   type FleetInviteAnswer,
-  type FleetPendingInvite,
 } from "../bridge/fleetCenter.ts";
 import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
 import { readMyLaunches } from "../bridge/launchReads.ts";
+import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
+import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
+import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
+import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
+
+/**
+ * Corporations' and alliances' tickers as the page has them, by ID (cfg.corptickernames, cfg.allianceshortnames): a
+ * ticker, or null where the server has none.
+ */
+export interface OwnerTickers {
+  readonly corporations: Readonly<Record<string, string | null>>;
+  readonly alliances: Readonly<Record<string, string | null>>;
+}
+
+/** The pilot's shares as the flow keeps them for the wallet's Shares tab. */
+export interface WalletSharesRead {
+  readonly loaded: boolean;
+  readonly holdings: readonly ShareHolding[];
+  readonly error: string | null;
+}
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
-import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
-import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
+import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
+import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -452,8 +524,8 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
+import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
@@ -487,6 +559,60 @@ import {
 import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
+import { autoRejectInvitations } from "./autoRejectInvitations.ts";
+import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
+import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
+import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
+
+/** A place the route panel's search found: the kind the search names it by, its number, its name and its system. */
+export interface LocationFound {
+  readonly resultType: number;
+  readonly id: number;
+  readonly name: string;
+  readonly solarSystemID: number | null;
+}
+/**
+ * The kinds of place the route panel's search asks for, in its order (infoPanelRoute.py 136 to 141;
+ * eve/common/script/search/const.py ResultType): solar system, constellation, region, station, and structure with
+ * its data inlined.
+ */
+const ROUTE_SEARCH_KINDS = [7, 6, 8, 9, 13] as const;
+const STRUCTURE_WITH_INLINED_DATA = 13;
+/** The types the client's map gives a solar system, a constellation and a region (const.typeSolarSystem etc.). */
+const TYPE_SOLAR_SYSTEM = 5;
+const TYPE_CONSTELLATION = 4;
+const TYPE_REGION = 3;
+/** The name kind each of those is named by in the page's name cache. */
+const LOCATION_NAME_KINDS: Readonly<Record<number, "system" | "constellation" | "region" | "station">> = { 7: "system", 6: "constellation", 8: "region", 9: "station" };
+
+/** The route as the route panel shows it: its markers, each with its system's security, and its jumps. */
+export interface WaypointsRoute {
+  readonly markers: readonly (RouteMarker & { readonly security: number | null })[];
+  readonly jumps: number;
+}
+
+/**
+ * A place in the route window's lists (autopilotSettings.py LoadWaypoints and LoadAvoidance): what it is named by
+ * (`what`: a waypoint's type, an avoided place's group), and the places it is in, nearest first, as the window walks
+ * mapSvc.GetParent from it (a station's system, constellation and region; a structure's constellation and region, the
+ * walk starting at its system; a system's constellation and region; a constellation's region).
+ */
+export interface RouteWindowPlace {
+  readonly id: number;
+  readonly what: NameRef | null;
+  readonly within: readonly number[];
+}
+
+/** A waypoint in the route window, with the systems the autopilot's route goes through to it (GetRouteBetween[1:-1]). */
+export interface RouteWindowWaypoint extends RouteWindowPlace {
+  readonly between: readonly number[];
+}
+
+/** The route window's waypoints: the pilot's system first, then each waypoint the window can name. */
+export interface RouteWindowWaypoints {
+  readonly currentSystemID: number;
+  readonly waypoints: readonly RouteWindowWaypoint[];
+}
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -733,6 +859,8 @@ export interface SaidDialog {
   readonly values: JsonValue | null;
   /** What the page says where the install has not the dialog. */
   readonly fallback: string;
+  /** A question the client puts with Yes and No (uiconst.YESNO), answered by AppFlow.answerDialog; else OK alone. */
+  readonly answers?: "yesno";
 }
 
 export interface AppFlow {
@@ -779,6 +907,8 @@ export interface AppFlow {
    * left; on a no nothing is asked of the server.
    */
   boardCorvette(sure: () => boolean | Promise<boolean>): Promise<void>;
+  /** prompt_player_fsd_dialog('AskAreYouSure', {'cons': cons}, uiconst.YESNO): the client's own question, true on Yes. */
+  askAreYouSure(cons: string): Promise<boolean>;
   /**
    * Leave the active ship while docked — the character ends up in their
    * capsule, the ship stays in the hangar — then refresh.
@@ -993,6 +1123,48 @@ export interface AppFlow {
   recoverScannerProbes(): Promise<void>;
   /** Reconnect the session character's lost probes, then refresh scanner state. */
   reconnectScannerProbes(): Promise<void>;
+  /** The probe menu's Scan Range: the chosen probes given a range step (1 to 8), then the scanner read again. */
+  setProbeRangeStep(probeIDs: readonly number[], rangeStep: number): Promise<void>;
+  /** The probe menu's Recover Probe: the chosen probes recalled, then the scanner read again. */
+  recoverChosenProbes(probeIDs: readonly number[]): Promise<void>;
+  /** A formation's button (Pinpoint -2, Spread -1): the probes held sent to its places, the shortfall launched. */
+  launchProbeFormation(formationID: number): Promise<void>;
+  /** A result's Ignore Result (scanHandler.IgnoreResult): the client's own; nothing is asked of the server. */
+  ignoreProbeResults(resultIDs: readonly string[]): void;
+  /** A result's Ignore Other Results (scanHandler.IgnoreOtherResults): every other result now listed is ignored. */
+  ignoreOtherProbeResults(resultIDs: readonly string[]): void;
+  /** The ignored box's row for one (scanHandler.ShowIgnoredResult): listed again. */
+  showIgnoredProbeResult(resultID: string): void;
+  /** The ignored box's Clear All Ignored Results (scanHandler.ClearIgnoredResults). */
+  clearIgnoredProbeResults(): void;
+  /** An accurate result's Warp To or Warp to Within (menusvc.SolarsystemScanMenu): to stop `range` metres short. */
+  warpToProbeResult(resultID: string, range: number): Promise<void>;
+  /** An accurate result's Align To (scanSvc.AlignToPosition): the ship turned toward the result's place. */
+  alignToProbeResult(resultID: string): Promise<void>;
+  /** The filter panel's box for a filter (resultFilter.AddToActiveFilterSet / RemoveFromActiveFilterSet). */
+  setProbeResultFilterActive(filterID: number, active: boolean): void;
+  /** The filter panel's Anomalies box (resultFilter.ShowAnomalies / StopShowingAnomalies). */
+  setShowingProbeAnomalies(showing: boolean): void;
+  /** The filter editor's Save for a new filter (scanSvc.CreateResultFilter): its name and groups, not made active. */
+  createProbeResultFilter(name: string, groups: readonly string[]): void;
+  /** The filter editor's Save for one of the pilot's filters (scanSvc.EditResultFilter). */
+  editProbeResultFilter(filterID: number, name: string, groups: readonly string[]): void;
+  /** A filter's delete, once asked (scanSvc.DeleteFilter, RemoveFromActiveFilterSet). */
+  deleteProbeResultFilter(filterID: number): void;
+  /** The key activation window's combo as kept for the character (settings.char.ui 'abyssGameModeSetting'), 1 where none is. */
+  abyssGameModeSetting(): 1 | 2 | 3;
+  /** The combo's choice kept for the character (KeyActivationWindow.OnGameModeChanged). */
+  keepAbyssGameModeSetting(value: 1 | 2 | 3): void;
+  /** A filament's tier and weather (its type's attributes 2761 and 2760), each null where the tables have none. */
+  filamentFacts(typeID: number): Promise<{ readonly tier: number | null; readonly weather: number | null }>;
+  /** Which of the game modes' hull lists hold a ship's type (abyss/game_mode.py is_ship_allowed); null where not read. */
+  abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null>;
+  /**
+   * The key activation window's button (BaseActivationController.Activate): the filament deployed in the game mode,
+   * solo's through a session change, between two reads of the flight. Answered the errors an AbyssError said, for the
+   * button; any other refusal is put up as the client puts up a UserError, and answered as no errors.
+   */
+  deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -1212,6 +1384,14 @@ export interface AppFlow {
    * 140: cfg.corptickernames.Get, a priming of its own for each): the transport asks each not asked yet, in turn.
    */
   corpTickersEach(corpIDs: readonly number[]): Promise<void>;
+  /** The overview's tickers (overviewUtil GetCorpTickerName, GetAllianceTickerName), those the page has. */
+  readonly ownerTickers: ReadableSignal<OwnerTickers>;
+  /** Tickers the overview shows and the page has not: each one's Get (cfg.py 630 to 645), asked once. */
+  requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void;
+  /** Each NPC corporation's faction (npccorporations get_corporation_faction_id), by the corporation; null until read. */
+  readonly corporationFactions: ReadableSignal<Readonly<Record<string, number>> | null>;
+  /** The table of NPC corporations' factions read, once. */
+  loadCorporationFactions(): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -1382,6 +1562,16 @@ export interface AppFlow {
    * journal.
    */
   openMissionDetails(agentID: number): Promise<void>;
+  /**
+   * The mission tracker (missionObjectivesTracker.py; bridge/missionTracker.ts): each accepted mission's objectives as
+   * read, by its agent. Read once a window asks for it (refreshMissionTracker), and again as the client's tracker reads
+   * again.
+   */
+  readonly missionTracker: ReadableSignal<ReadonlyMap<number, TrackedMission>>;
+  /** The tracker read: its window opened; with `placeChanged`, the pilot's place changed or a warp ended. */
+  refreshMissionTracker(placeChanged?: boolean): void;
+  /** A waypoint's solar system (ConvertStationIDToSolarSystemIDIfNecessary): itself for a system, else as resolved; null where not known. */
+  waypointSystem(id: number): Promise<number | null>;
   /** Close the mission's page. */
   closeMissionDetails(): void;
   /**
@@ -1412,6 +1602,11 @@ export interface AppFlow {
   pilotWealth(): Promise<number | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
+  /**
+   * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK): AskAreYouSure with the tab's words, then
+   * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
+   */
+  giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -1477,6 +1672,72 @@ export interface AppFlow {
    */
   warpToMissionBookmark(spot: MissionSpot, range: number): Promise<void>;
   approachMissionBookmark(spot: MissionSpot): Promise<void>;
+  /**
+   * The planets window's Launches tab (bridge/planetLaunches.ts): the pilot's launches as the client's planet service
+   * keeps them, read as the window is built (planetLaunches; loadPlanetLaunches, afresh with `force`), and kept until
+   * the server says they changed.
+   */
+  readonly planetLaunches: ReadableSignal<PlanetLaunchesRead>;
+  loadPlanetLaunches(force?: boolean): Promise<void>;
+  /**
+   * A launch's menu (journal.py PlanetaryInteractionLaunchEntry, 446 to 466), each a flight step whose refusal is said
+   * as the flight's are: Approach Location (CmdFollowBall to the launch's container, 50 m); Warp To (CmdWarpToStuff
+   * 'launch'); and Remove for one burned up (the row taken off, DeleteLaunch, the launches read afresh).
+   */
+  approachPlanetLaunch(containerID: number): Promise<void>;
+  /**
+   * The wallet's Market Transactions (bridge/marketTransactions.ts): the pilot's trades as the client's market service
+   * keeps them, read as the tab is chosen (loadMarketTransactions) and kept until the pilot's own orders change.
+   */
+  readonly marketTransactions: ReadableSignal<MarketTransactionsRead>;
+  loadMarketTransactions(): Promise<void>;
+  /**
+   * The wallet's Transactions tab (bridge/walletJournal.ts): the journal for a period as the client's account service
+   * keeps it, with the kinds' names and journal messages. Read as the tab is shown (the period held) and as a period is
+   * chosen (None and None for the last thirty days, else a year and a month, 1 to 12).
+   */
+  readonly walletJournal: ReadableSignal<WalletJournalRead>;
+  loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  /**
+   * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
+   * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
+   */
+  readonly walletOverview: ReadableSignal<WalletOverviewRead>;
+  loadWalletOverview(): Promise<void>;
+  /** The Abyssal pocket's timer (OnAddExpiryDurationForAbyssalContent): its end by the server's clock; null where none. */
+  readonly abyssalTimer: ReadableSignal<{ readonly endMs: number; readonly clockOffsetMs: number } | null>;
+  /** The pocket's collapse warning the HUD shows for its eight seconds (_display_expiry_message); null where none. */
+  readonly collapseWarning: ReadableSignal<{ readonly seconds: number } | null>;
+  /** The Ship Restrictions window open (bridge/dungeonTracking.ts): its dungeon, its gate and their restrictions once read; null where closed. */
+  readonly shipRestrictions: ReadableSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>;
+  /** The Ship Restrictions window closed. */
+  closeShipRestrictions(): void;
+  /** The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet). */
+  shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** A trace's jump window open (Activate Gate on an Abyssal trace): the trace, its filament and its game mode; null where closed. */
+  readonly abyssJump: ReadableSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>;
+  /** The jump window closed. */
+  closeAbyssJump(): void;
+  /** The jump window's button (JumpActivationController._Activate): through the trace into its pocket, a session change. */
+  jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
+  /** The Abyssal info panel's objectives (bridge/abyssObjectives.ts), as drawn now; null where the abyss service has no chain. */
+  readonly abyssObjectives: ReadableSignal<readonly AbyssObjectiveRow[] | null>;
+  /** A thing in space activated as the client's menu.Activate does (bridge/spaceActivate.ts): an objective target's double click. */
+  activateSpaceThing(itemID: number): Promise<void>;
+  /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
+  readonly walletShares: ReadableSignal<WalletSharesRead>;
+  loadWalletShares(): Promise<void>;
+  /** One of the character's settings kept at the server (characterSettingsSvc.Get); null for none. */
+  readCharacterSetting(settingKey: string): Promise<string | null>;
+  /** A character setting saved at the server (characterSettingsSvc.Save); an empty value deleted instead. */
+  saveCharacterSetting(settingKey: string, value: string | null): Promise<void>;
+  /**
+   * crimewatchSvc.GetMySecurityStatus: the pilot's own security status asked, where none is kept and none is being
+   * asked; the answer kept in the store's station slice (ownSecurityStatus).
+   */
+  requestOwnSecurityStatus(): void;
+  warpToPlanetLaunch(launchID: number): Promise<void>;
+  removePlanetLaunch(launchID: number): Promise<void>;
   /**
    * R13 — cut the engines (CmdStop). As in retail, this also switches the
    * autopilot off: stopping the ship must not leave something still flying it.
@@ -1695,6 +1956,11 @@ export interface AppFlow {
    */
   jumpThrough(link: GateLink): Promise<void>;
   /**
+   * Activate Gate (bridge/gateActivation.ts): the client's system navigation to within 2,500 m of the gate, then the
+   * gate's own call by its type. Starts the navigation and answers; its refusals are the flight's.
+   */
+  activateGate(itemID: number, typeID: number | null): Promise<void>;
+  /**
    * R30 slice A — the stargates in `systemID` and where each one leads.
    *
    * NO new server surface: this is a read of the SAME client-side route graph
@@ -1747,11 +2013,6 @@ export interface AppFlow {
   /** Whether the client's autopilot is on (autoPilotSvc's GetState): the route flown to the first waypoint. */
   readonly autopilotOn: ReadableSignal<boolean>;
   /**
-   * The notify message the client's autopilot or star map last gave (AutoPilotEnabled, AutoPilotDisabled,
-   * AutoPilotWaypointReached, AutoPilotDisabledNoPathSet, or a waypoint refused), `n` telling one from the next.
-   */
-  readonly autopilotSaid: ReadableSignal<{ readonly dialog: string; readonly n: number } | null>;
-  /**
    * The dialogs the server's refusals named, oldest first, to be put up as the client puts up a UserError
    * (eve_exception_handler.handle_exception: prompt_player_fsd_dialog(exc.msg, exc.dict)); ClientDialogs.svelte
    * shows them.
@@ -1759,6 +2020,15 @@ export interface AppFlow {
   readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
+  /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
+  answerDialog(n: number, yes: boolean): void;
+  /**
+   * A dialog's answer kept, its box's "do not show again" or "do not ask again" ticked (dialog_handler.py
+   * _persist_prompt_suppress_choice): the dialog is not put up again, and a question is answered with what was kept.
+   */
+  keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void;
+  /** A server question's answer kept, by its dialog's name or its suppressID (bridge/questions.ts keptValueOf). */
+  keepQuestionAnswer(key: string, value: string): void;
   /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
@@ -1783,6 +2053,11 @@ export interface AppFlow {
     query: string,
     kind?: "system" | "station" | "dockable" | null,
   ): Promise<DestinationMatch[]>;
+  /**
+   * The route panel's search, as the client's (infoPanelRoute.py SearchForLocation): the places found by the kind
+   * the search names them by, each kind sorted by name; null where the text was refused before asking (said).
+   */
+  searchLocations(text: string): Promise<ReadonlyMap<number, readonly LocationFound[]> | null>;
   // --- R26: the mining bot -----------------------------------------------
   //
   // A SECOND browser decide-loop, built from the same parts as the autopilot
@@ -1934,6 +2209,19 @@ export interface AppFlow {
     readonly expiry: number;
   }): Promise<number | null>;
   /**
+   * The bookmark window's Submit for a probe result (bookmarkLocationWindow.py 226; bookmarkSvc.ACLBookmarkScanResult,
+   * 623 to 631): a result the sensor suite has a site of as that thing (BookmarkLocation), any other by the park's
+   * BookmarkScanResult, by its label. Answers the new bookmark's number, or null. Fails as the call fails.
+   */
+  bookmarkProbeResult(result: {
+    readonly resultID: string;
+    readonly folderID: number;
+    readonly subfolderID: number | null;
+    readonly label: string;
+    readonly note: string;
+    readonly expiry: number;
+  }): Promise<number | null>;
+  /**
    * Manual escape hatch: stop every loop, recall drones, and dock at the nearest
    * station on grid. Always available while a bot runs — the operator's override.
    */
@@ -2007,13 +2295,45 @@ export interface AppFlow {
   /** The autopilot's settings as the pilot has set them: only what has been set is there (nav/autopilotSettings.ts). */
   autopilotSettings(): StoredAutopilotSettings;
   /**
+   * The same, for a window to follow: changed by each change of a setting, and by another pilot's being read when
+   * `autopilotSettings` is next asked.
+   */
+  readonly routeSettings: ReadableSignal<StoredAutopilotSettings>;
+  /** The route through the waypoints as the route panel shows it (infoPanelRoute.py UpdateRoute); null with none. */
+  routeOfWaypoints(): Promise<WaypointsRoute | null>;
+  /** The route panel's Optimize Route (autopilot.py OptimizeRoute): the waypoints put in their order of fewest jumps. */
+  optimizeRoute(): Promise<void>;
+  /**
+   * The route window's waypoints (autopilotSettings.py LoadWaypoints, 104 to 170): the pilot's system, then each
+   * waypoint with the systems the route goes through to it. A structure the directory does not know is left out, as
+   * the window leaves it. Null with no waypoint, or no system known for the pilot.
+   */
+  routeWindowWaypoints(): Promise<RouteWindowWaypoints | null>;
+  /** The route window's avoidance list (LoadAvoidance, 182 to 213): each place on the list as it is kept. */
+  routeWindowAvoidance(): Promise<readonly RouteWindowPlace[]>;
+  /**
+   * The route window's drag and drop (ChangeWaypointSorting, 71 to 97, then starMapSvc.SetWaypoints): the waypoint at
+   * `index` put where the one at `orderID` stood, or last for -1; the route then as any change of the waypoints leaves
+   * it.
+   */
+  moveWaypoint(index: number, orderID: number): void;
+  /**
    * Change one of the autopilot's settings, as the client's route panel does: kept for this character, and
-   * what was worked out with the old settings forgotten. Each answers the settings as they now are. A route
-   * already being flown is not plotted again.
+   * what was worked out with the old settings forgotten. Each answers the settings as they now are. The autopilot,
+   * where it is flying, is set on the route as the new settings plot it, as the client's follows its star map's
+   * route plotted again (clientPathfinderService.py UpdatesAutopilot; starMapSvc.py 2645; autopilot.py 291).
    */
   setAutopilotRouteType(routeType: AutopilotRouteType): StoredAutopilotSettings;
   setAutopilotPenalty(penalty: number): StoredAutopilotSettings;
   clickAutopilotAvoidSystems(): StoredAutopilotSettings;
+  /** One of the ticks that add a list of the server's (pod kills, Triglavian and EDENCOM systems) clicked. */
+  clickAutopilotAvoidanceTick(tick: AvoidanceTick): StoredAutopilotSettings;
+  /** Include Jump Gates clicked: the jump gates the pilot may take read again, and the route optimized. */
+  clickIncludeJumpGates(): StoredAutopilotSettings;
+  /** A location's Avoid (menusvc.py 2030 to 2031: AddAvoidanceItem): a known-space system, constellation or region put on the list. */
+  avoidLocation(id: number): StoredAutopilotSettings;
+  /** A location's Do Not Avoid (2032 to 2033: RemoveAvoidanceItem): taken off the list, and avoiding set back to not set. */
+  stopAvoidingLocation(id: number): StoredAutopilotSettings;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -2039,6 +2359,8 @@ export interface AppFlow {
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
+  /** What the game server closed this account's pilot with, where it said (another login of its account), or null. */
+  readClosedByServer?(characterID: number): Promise<api.ClosedByServer | null>;
 }
 
 /**
@@ -2206,6 +2528,8 @@ const droneRangeBonusByTypeID = new Map<number, number | null>();
 
 /** godma.ProcessSessionChange (1156): the session's names at whose change godma primes itself again, and ends the repairs it began. */
 const GODMA_SESSION_NAMES: ReadonlySet<string> = new Set(["stationid", "solarsystemid", "shipid", "charid", "structureid"]);
+/** gameui.OnSessionChanged (433 to 470): the session's names of a place or a ship, at whose change the client's view goes where the session is now. */
+const VIEW_SESSION_NAMES: ReadonlySet<string> = new Set(["solarsystemid", "stationid", "structureid", "shipid"]);
 /** dogma attributes: a module's hit points, and the hit points a character mends in a minute with nanite paste. */
 const ATTRIBUTE_HP = 9;
 const ATTRIBUTE_MODULE_REPAIR_RATE = 1267;
@@ -2570,6 +2894,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // being shown (applyLiveFrame).
   const botPresses = createBotPresses();
 
+  // The BFF said the pilot's stream has ended: its connection is gone (the game server closed it, or the BFF lost
+  // it). The retail client puts up its connection-lost notice the moment its connection closes (disconnectNotice.py),
+  // so one read finds out at once whether the pilot is still on, and a pilot that is not goes offline, as any read
+  // that finds it gone does. A pilot docked and idle makes no read of its own to find it out by.
+  async function confirmStillOnline(): Promise<void> {
+    if (store.station.get().online === null) return;
+    try {
+      await api.getFlightStatus(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+    }
+  }
+
   function applyLiveFrame(frame: unknown): void {
     if (typeof frame !== "object" || frame === null) {
       return;
@@ -2586,6 +2926,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             ? state
             : "idle",
       });
+      if (state === "ended") void confirmStillOnline();
       return;
     }
     if (record.source !== "evejs-web-gateway") {
@@ -2630,6 +2971,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // the bot pressed it, and meant it.
       if (botPresses.answers(question)) {
         void api.answerClientQuestion(question.id, true, callOptions).catch(() => {});
+        return;
+      }
+      // An answer the user kept for it ("do not ask again") is the answer, and nothing is put up (bridge/questions.ts).
+      const keeping = questionKeeping(question);
+      const kept = keeping === null ? undefined : keptQuestionAnswer(question, questionAnswerKept(keeping.key));
+      if (kept !== undefined) {
+        void api.answerClientQuestion(question.id, kept, callOptions).catch(() => {});
         return;
       }
       store.apply({ type: "live/question", question, epoch, sequence });
@@ -2801,16 +3149,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         turnDownUnasked(fleetInvite.fleetID);
         return;
       }
+      // (1183 to 1185): with the pilot's Auto-reject invitations ticked, an invitation of a fleet the pilot did not
+      // apply to, and that does not say autoAccept, is turned away unasked: RejectInvite(False).
+      if (autoRejectInvitations.get() && expectingInvite !== fleetInvite.fleetID && fleetInvite.autoAccept !== true) {
+        void declineFleetInviteCall(bridgeDo, fleetInvite.fleetID, false, true).catch(() => {});
+        return;
+      }
+      // (1189): the fleet applied to is expected no longer.
+      expectingInvite = null;
       // (1192): with the dict's autoAccept (the fleet finder's) the client joins without asking its pilot.
       if (fleetInvite.autoAccept === true) {
         void acceptFleetInvite(fleetInvite.fleetID).catch(() => {});
         return;
       }
+      // (1191 to 1199): otherwise it asks its pilot (AskJoinFleet, yes or no), whoever the inviter is. So does the page.
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
       if (fleetInvite.inviterID !== null) {
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
       }
-      void autoAcceptCorpFleetInvite(fleetInvite);
       return;
     }
     // fleetSvc.OnFleetJoinReject (1217): the inviter is told that its invitation was turned down, and why where
@@ -2874,6 +3230,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const missionChange = decodeMissionChange(method, args);
     if (missionChange !== null) {
       onMissionChange(missionChange);
+      return;
+    }
+    if (method === "OnMissionsUpdated") {
+      onMissionsUpdated(decodeMissionsUpdated((args as readonly JsonValue[])[0]));
       return;
     }
     // The mailing lists service's notices (mailingListsSvc.py 144 to 180): the lists kept changed as it changes them.
@@ -2957,6 +3317,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus) (598 to 600): the pilot's own status is what the
+    // server says, with nothing asked.
+    if (method === "OnSecurityStatusUpdate") {
+      const securityStatus = decodeSecurityStatus(args[0] as JsonValue | undefined);
+      if (securityStatus !== null) {
+        store.apply({ type: "character/security-status", securityStatus });
+      }
+      return;
+    }
+    // planetUISvc.OnPILaunchesChange and the planets window's (planetWindow.py 58 to 61): the launches kept let go,
+    // and read afresh where the window has wanted them.
+    if (method === "OnPILaunchesChange") {
+      planetLaunchesChanged();
+    }
+    // marketSvc.OnOwnOrdersChanged (33 to 35): the trades kept are let go, and read again when the tab is next chosen.
+    if (method === "OnOwnOrdersChanged") {
+      marketTransactionsFor = null;
+    }
+    // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
+    // corporation, once the tab has been chosen.
+    if (method === "OnShareChange" && walletSharesWanted) {
+      const pilot = store.station.get().online?.characterID ?? null;
+      if (pilot !== null && (Number(args[0]) === pilot || Number(args[1]) === pilot)) void loadWalletShares().catch(() => undefined);
+    }
     const sessionNames = sessionChangeNames(method, args);
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
@@ -2977,6 +3361,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // ends every repair it began. So does the page.
     if (sessionNames?.some((name) => GODMA_SESSION_NAMES.has(name))) {
       void moduleRepairs.endAll();
+    }
+    // gameui.OnSessionChanged: another system, station, structure or ship, and the client's view goes where the
+    // session is now (_HandleSessionChangeInStation, InStructure, InSpace), whoever changed it: the pilot's own undock,
+    // dock or jump, or the server's own move (a capsule sent to its clone's station, a GM's move). The page reads its
+    // place again, from what the pilot's transport has of the session.
+    if (sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name))) {
+      void loadFlightStatus().catch(() => {});
+    }
+    // dungeonTracking.ProcessSessionChange (56 to 61): another location, and the dungeon tracked is let go.
+    if (sessionNames?.some((name) => name === "locationid" || name === "solarsystemid" || name === "stationid" || name === "structureid")) {
+      currentDungeon = null;
     }
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
@@ -3056,6 +3451,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (method !== null && scannerSnapshotNotifications.has(method)) {
+      // scanHandler.OnSystemScanStopped: the scan's results registered, and the absent targets' cleared.
+      if (method === "OnSystemScanStopped") probeScanStopped(args as readonly JsonValue[]);
       scheduleScannerRefresh();
       return;
     }
@@ -3089,6 +3486,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scheduleReloadRefresh(chargeLoad.durationMs);
       return;
     }
+    // The Abyssal pocket's timer and its end (bridge/abyssalKeys.ts; abyssal_service.py 128 to 131 and 175 to 181).
+    if (method === "OnAddExpiryDurationForAbyssalContent") {
+      const endMs = abyssalExpiryMs(args[0]);
+      if (endMs !== null) abyssalExpiryNoticed(endMs);
+      return;
+    }
+    if (method === "OnAbyssalContentFinished") {
+      abyssalContentFinished();
+      return;
+    }
+    // subwaySvc.OnSpecialFX (417 to 438): a travel effect played on the pilot's own ship (the game port hands on no
+    // other) begins its jump through the effect's target: PreJumpServiceCalls' OnJumpStarted(gateID, destinationID),
+    // which the objectives hear as OnClientEvent_JumpStarted.
+    if (method === "OnSpecialFX") {
+      const fx = args as readonly JsonValue[];
+      const shipID = Number(unwrapLong(fx[0]) ?? NaN);
+      const gateID = Number(unwrapLong(fx[3]) ?? NaN);
+      const ownShipID = store.flight.get().status?.shipID ?? null;
+      if (Number.isSafeInteger(gateID) && gateID > 0 && (ownShipID === null || shipID === ownShipID)) abyssJumpStarted(gateID);
+      return;
+    }
+    // The pocket's room, which starts the abyss service's objective chain or moves it on (abyssal_service.py 75 to 93).
+    if (method === "OnAbyssalLocationEntered") {
+      const room = abyssalLocationEntered((args as readonly JsonValue[])[0]);
+      if (room !== null) abyssRoomEntered(room);
+      return;
+    }
+    // The dungeon tracked (bridge/dungeonTracking.ts; dungeonTracking.py 124 to 137).
+    if (method === "OnEnteringDungeonRoom") {
+      const entered = dungeonEntered(args);
+      if (entered !== null) currentDungeon = enterDungeonRoom(currentDungeon, entered);
+      return;
+    }
+    if (method === "OnExitingDungeon") {
+      currentDungeon = exitDungeon(currentDungeon, args);
+      return;
+    }
     if (method === "OnIndustryMaterials") {
       // industrySvc.OnIndustryMaterials (324 to 327): what a monitored job's place has. It is kept for the window
       // whose job's monitor it names (bridge/industryMaterials.ts); what is no such notice is let go.
@@ -3097,6 +3531,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "industry/materials-said", ...said });
       }
       return;
+    }
+    if (method === "OnItemsChanged" || method === "OnItemChange") {
+      // (The mission tracker's OnItemsChanged, which the client's inventory cache raises for both.)
+      const first = (args as readonly JsonValue[])[0];
+      trackerOnItemsArrived(method === "OnItemChange" ? [first] : isListValue(first) ? first.items : Array.isArray(first) ? first : []);
     }
     if (method === "OnItemsChanged") {
       // Coalesced: mining grants ore stack by stack, so a busy cycle can push
@@ -3125,6 +3564,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // not been measured.
       if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
         scheduleDroneRefresh();
+      }
+      // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
+      // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
+      // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
+      // deploy came by this name, and the cargo went on listing it until a Refresh.
+      if (inventoryShowsItemChange(args)) {
+        scheduleInventoryRefresh();
       }
       return;
     }
@@ -3217,6 +3663,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // OnItemsChanged frames back to back. Coalesce them into one re-read.
   const HOLD_REFRESH_COALESCE_MS = 150;
   let holdRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * One item's move that the Inventory panel shows (above, OnItemChange): read again where the panel has been read
+   * (its `loaded`), an item in or from the ship flown, the ship whose bays are open or the station's hangar. A change
+   * that cannot be read is taken for the panel's.
+   */
+  const INVENTORY_REFRESH_COALESCE_MS = 400;
+  let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function inventoryShowsItemChange(args: readonly unknown[]): boolean {
+    const inventory = store.inventory.get();
+    if (!inventory.loaded) return false;
+    const places = itemChangeLocations(args);
+    if (places === null) return true;
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    return places.some((placeID) => shown.includes(placeID));
+  }
+  function scheduleInventoryRefresh(): void {
+    if (inventoryRefreshTimer !== null) return;
+    inventoryRefreshTimer = setTimeout(() => {
+      inventoryRefreshTimer = null;
+      void (async () => {
+        await loadInventory();
+        const open = store.inventory.get().openShip;
+        if (open) await openShipBays(open.itemID);
+      })().catch(() => {});
+    }, INVENTORY_REFRESH_COALESCE_MS);
+  }
   /**
    * Re-read the fit once a queued reload has landed, so the rack's counts show
    * what is in the guns rather than what was there before (and, with 0, once a
@@ -4014,6 +4487,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "character/clone-grade", cloneGrade: cloneGradeOf(await readCloneGrade(bridgeAsk)) });
   }
 
+  // crimewatchSvc.GetMySecurityStatus (590 to 593): the pilot's own security status, asked while there is none and
+  // kept, the service's for the session (OnSessionReset clears it); OnSecurityStatusUpdate says what it is from then
+  // on. The client asks it where something wants it (a mission's place, agentDialogueUtil.LocationWrapper), and so
+  // does the page. The pilot asked for is held while the call is out: a read for a pilot no longer online here is
+  // not kept, and one that fails leaves none, to be asked again.
+  let ownSecurityStatusAsking: number | null = null;
+  function requestOwnSecurityStatus(): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null || ownSecurityStatusAsking === characterID || store.station.get().ownSecurityStatus !== null) return;
+    ownSecurityStatusAsking = characterID;
+    void readMySecurityStatus(bridgeAsk)
+      .then((securityStatus) => {
+        if ((store.station.get().online?.characterID ?? null) === characterID && securityStatus !== null) {
+          store.apply({ type: "character/security-status", securityStatus });
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (ownSecurityStatusAsking === characterID) ownSecurityStatusAsking = null;
+      });
+  }
+
   // crimewatchSvc.SetSafetyLevel: the client sets the level at the server and
   // from then on has it as the level, asking crimewatch nothing. So here: the
   // level set goes into what was last read. With nothing read there is
@@ -4391,6 +4886,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const refs: NameRef[] = [];
     for (const blueprint of blueprints) {
       refs.push({ kind: "type", id: blueprint.typeID });
+      // Its facility, which the client's blueprint list shows (blueprintEntry.py, the Facility column).
+      if (blueprint.facilityID !== null) refs.push({ kind: "station", id: blueprint.facilityID });
     }
     for (const job of jobs) {
       refs.push({ kind: "type", id: job.blueprintTypeID });
@@ -4778,6 +5275,254 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let scannerRefreshDirty = false;
   let scannerRefreshScheduled = false;
 
+  // scanSvc.scanHandlerBySystem: a scan handler for each solar system the session has been in, each with its results
+  // history (bridge/probeResults.ts), for the session's life (scanSvc's OnSessionReset makes them afresh). The
+  // scanner's window shows the session's system's.
+  const probeResultsBySystem = new Map<number, ResultsHistory>();
+  // Each scan handler's resultsIgnored: the results the pilot has ignored in that system, the client's own (no call
+  // is made of them), kept as long as the handler.
+  const probeResultsIgnoredBySystem = new Map<number, Set<string>>();
+  function ignoredInSystem(solarSystemID: number): Set<string> {
+    let ignored = probeResultsIgnoredBySystem.get(solarSystemID);
+    if (ignored === undefined) {
+      ignored = new Set();
+      probeResultsIgnoredBySystem.set(solarSystemID, ignored);
+    }
+    return ignored;
+  }
+  function publishProbeResults(): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    const history = probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY;
+    const ignored = [...ignoredInSystem(solarSystemID)].sort()
+      .map((id) => heldResult(history, id))
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history), ignored, filter: probeResultFilter() } });
+  }
+  // resultFilter's active filters and whether anomalies are shown, kept as the client keeps them in the user's settings
+  // (probescanning.resultFilter.activeFilterSet and showingAnomalies), in this browser; the five standard filters and
+  // anomalies shown where nothing is kept.
+  const PROBE_RESULT_FILTER_KEPT = "evejs.probescanning.resultFilter";
+  function probeResultFilter(): ResultFilterSettings {
+    try {
+      const kept = JSON.parse(settingsStorage?.getItem(PROBE_RESULT_FILTER_KEPT) ?? "null") as { active?: unknown; showingAnomalies?: unknown; custom?: unknown } | null;
+      const active = Array.isArray(kept?.active)
+        ? kept.active.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id))
+        : [...DEFAULT_ACTIVE_RESULT_FILTERS];
+      const custom = Array.isArray(kept?.custom)
+        ? kept.custom.flatMap((each): CustomResultFilter[] => {
+          const row = each as { id?: unknown; name?: unknown; groups?: unknown } | null;
+          return row !== null && typeof row === "object" && typeof row.id === "number" && Number.isSafeInteger(row.id) && row.id > 0
+            && typeof row.name === "string" && Array.isArray(row.groups)
+            ? [{ id: row.id, name: row.name, groups: row.groups.filter((key): key is string => typeof key === "string") }]
+            : [];
+        })
+        : [];
+      return { active, showingAnomalies: typeof kept?.showingAnomalies === "boolean" ? kept.showingAnomalies : true, custom };
+    } catch {
+      return { active: [...DEFAULT_ACTIVE_RESULT_FILTERS], showingAnomalies: true, custom: [] };
+    }
+  }
+  // The pilot's own filters (resultFilter.CreateFilter, EditFilter and DeleteFilter, 31 to 55 and 89 to 93): a new
+  // one numbered one past the highest (1 for the first), not made active; one deleted is no longer active either
+  // (probeScannerPalette.DeleteFilter, 553 to 560). The editor's and the panel's checks are theirs.
+  function createProbeResultFilter(name: string, groups: readonly string[]): void {
+    const filter = probeResultFilter();
+    const id = filter.custom.reduce((highest, each) => Math.max(highest, each.id), 0) + 1;
+    keepProbeResultFilter({ ...filter, custom: [...filter.custom, { id, name, groups: [...groups] }] });
+  }
+  function editProbeResultFilter(filterID: number, name: string, groups: readonly string[]): void {
+    const filter = probeResultFilter();
+    keepProbeResultFilter({ ...filter, custom: filter.custom.map((each) => (each.id === filterID ? { id: filterID, name, groups: [...groups] } : each)) });
+  }
+  function deleteProbeResultFilter(filterID: number): void {
+    const filter = probeResultFilter();
+    keepProbeResultFilter({
+      ...filter,
+      custom: filter.custom.filter((each) => each.id !== filterID),
+      active: filter.active.filter((id) => id !== filterID),
+    });
+  }
+  // The Abyssal pocket's timer, to the server's clock, and the collapse's warning showing (bridge/abyssalKeys.ts): set
+  // by OnAddExpiryDurationForAbyssalContent, the warnings scheduled 300, 120 and 30 seconds before its end (one whose
+  // time is past at once, in that order, as the client's scheduler runs them), each shown for eight seconds; let go
+  // on OnAbyssalContentFinished.
+  const abyssalTimerSignal = createSignal<{ readonly endMs: number; readonly clockOffsetMs: number } | null>(null);
+  const collapseWarningSignal = createSignal<{ readonly seconds: number } | null>(null);
+  let collapseWarningTimers: ReturnType<typeof setTimeout>[] = [];
+  function clearCollapseWarnings(): void {
+    for (const timer of collapseWarningTimers) clearTimeout(timer);
+    collapseWarningTimers = [];
+  }
+  function abyssalExpiryNoticed(endMs: number): void {
+    clearCollapseWarnings();
+    abyssalTimerSignal.set({ endMs, clockOffsetMs: serverNow() - Date.now() });
+    for (const seconds of ABYSSAL_COLLAPSE_WARNING_SECONDS) {
+      collapseWarningTimers.push(setTimeout(() => {
+        collapseWarningSignal.set({ seconds });
+        collapseWarningTimers.push(setTimeout(() => {
+          if (collapseWarningSignal.get()?.seconds === seconds) collapseWarningSignal.set(null);
+        }, EXPIRATION_INDICATION_MS));
+      }, Math.max(0, endMs - seconds * 1000 - serverNow())));
+    }
+  }
+  /**
+   * The pocket's timer and room asked of the BFF (api.readPocketTimer), once for an Abyssal system, where the timer
+   * or the objective chain is not known.
+   */
+  let pocketTimerAskedFor: number | null = null;
+  function askPocketTimer(solarSystemID: number | null): void {
+    if (!isAbyssalSystem(solarSystemID) || (abyssalTimerSignal.get() !== null && abyssChain !== null) || pocketTimerAskedFor === solarSystemID) return;
+    pocketTimerAskedFor = solarSystemID;
+    void api.readPocketTimer(callOptions).then(({ endTime, room }) => {
+      const endMs = abyssalExpiryMs(endTime);
+      // One already run out is no timer (DeleteWhenFinished); one told meanwhile is the newer.
+      if (endMs !== null && endMs > serverNow() && abyssalTimerSignal.get() === null) abyssalExpiryNoticed(endMs);
+      const entered = abyssalLocationEntered(room);
+      if (entered !== null && abyssChain === null) abyssRoomEntered(entered);
+    }).catch(() => {
+      pocketTimerAskedFor = null;
+    });
+  }
+  function abyssalContentFinished(): void {
+    clearCollapseWarnings();
+    abyssalTimerSignal.set(null);
+    collapseWarningSignal.set(null);
+  }
+  // The key activation window (bridge/abyssalKeys.ts, ui/KeyActivationWindow.svelte): its combo kept for the character,
+  // as the client keeps it in settings.char.ui 'abyssGameModeSetting', in this browser.
+  const ABYSS_GAME_MODE_KEPT = "evejs.abyss.gameModeSetting";
+  function abyssGameModeSetting(): 1 | 2 | 3 {
+    const characterID = store.station.get().online?.characterID ?? null;
+    let kept: string | null = null;
+    try {
+      kept = characterID === null ? null : settingsStorage?.getItem(`${ABYSS_GAME_MODE_KEPT}.${characterID}`) ?? null;
+    } catch {
+      kept = null;
+    }
+    const value = Number(kept);
+    return value === 1 || value === 2 || value === 3 ? value : DEFAULT_GAME_MODE_SETTING;
+  }
+  function keepAbyssGameModeSetting(value: 1 | 2 | 3): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`${ABYSS_GAME_MODE_KEPT}.${characterID}`, String(value));
+    } catch {
+      // Storage full or refused: the choice holds while the window is open.
+    }
+  }
+  async function filamentFacts(typeID: number): Promise<{ readonly tier: number | null; readonly weather: number | null }> {
+    const rows = await attributesOfTypes([typeID], [ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID]);
+    const row = rows[typeID];
+    return { tier: row?.[ATTRIBUTE_DIFFICULTY_TIER] ?? null, weather: row?.[ATTRIBUTE_WEATHER_ID] ?? null };
+  }
+  /**
+   * The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet: every one of the
+   * type's required skills, its attributes 182, 183, 184, 1285, 1289 and 1290, at the level its 277, 278, 279, 1286,
+   * 1287 and 1288 say), the skill sheet read first where it is not. Expert systems are not counted yet.
+   */
+  async function shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    if (store.skills.get().skills === null) await loadSkills().catch(() => undefined);
+    const levels = new Map((store.skills.get().skills ?? []).map((skill) => [skill.typeID, skill.level]));
+    const pairs: ReadonlyArray<readonly [number, number]> = [[182, 277], [183, 278], [184, 279], [1285, 1286], [1289, 1287], [1290, 1288]];
+    const rows = await attributesOfTypes(typeIDs, pairs.flat());
+    return new Set(typeIDs.filter((typeID) => {
+      const row = rows[typeID];
+      if (row === undefined) return false;
+      return pairs.every(([skill, level]) => {
+        const skillTypeID = row[skill];
+        return skillTypeID === undefined || !(skillTypeID > 0) || (levels.get(skillTypeID) ?? 0) >= (row[level] ?? 0);
+      });
+    }));
+  }
+  async function abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null> {
+    const lists = await api.loadTypeListsHolding([shipTypeID], Object.values(GAME_MODES).map((mode) => mode.allowedShipsListID), callOptions);
+    return lists[shipTypeID] ?? null;
+  }
+  async function deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }> {
+    try {
+      if (GAME_MODES[gameModeID].jumpsOnDeploy) {
+        // PerformSessionChange('JumpToAbyss', ...): the BFF answers once the session is in the pocket.
+        await applyFlight(await orderedStep(() => deployEntranceGate(bridgeDo, itemID, gameModeID)));
+      } else {
+        await deployEntranceGate(bridgeDo, itemID, gameModeID);
+      }
+      return { deployed: true, errors: [] };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const errors = abyssErrorsOfRefusal(error instanceof BridgeCallError ? error.refusal : null);
+      if (errors !== null) return { deployed: false, errors };
+      // Any other UserError is raised on, and put up as the client puts one up (Activate, 96 and 97).
+      if (!sayRefusalDialog(error, error instanceof Error ? error.message : String(error))) {
+        store.apply({ type: "flight/action-error", message: `Activate refused: ${flightRefusalWords(error)}`, said: false });
+      }
+      return { deployed: false, errors: [] };
+    }
+  }
+  function keepProbeResultFilter(filter: ResultFilterSettings): void {
+    try {
+      settingsStorage?.setItem(PROBE_RESULT_FILTER_KEPT, JSON.stringify(filter));
+    } catch {
+      // Storage full or refused: the filter holds for this page only.
+    }
+    publishProbeResults();
+  }
+  // The filter panel's boxes: a filter's (OnFilterCheckBoxChange, 562 to 567: Add/RemoveFromActiveFilterSet) and the
+  // anomalies' (OnShowAnomaliesCheckBoxChange, 540 to 547: ShowAnomalies / StopShowingAnomalies).
+  function setProbeResultFilterActive(filterID: number, active: boolean): void {
+    const filter = probeResultFilter();
+    const others = filter.active.filter((id) => id !== filterID);
+    keepProbeResultFilter({ ...filter, active: active ? [...others, filterID] : others });
+  }
+  function setShowingProbeAnomalies(showing: boolean): void {
+    keepProbeResultFilter({ ...probeResultFilter(), showingAnomalies: showing });
+  }
+  /** The session's system's ignored results, changed, and the list said again (scanHandler's OnRefreshScanResults). */
+  function changeIgnoredProbeResults(change: (ignored: Set<string>, history: ResultsHistory) => void): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    change(ignoredInSystem(solarSystemID), probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY);
+    publishProbeResults();
+  }
+  // scanHandler.IgnoreResult, IgnoreOtherResults (every result LastResultIterator gives but these), ShowIgnoredResult
+  // and ClearIgnoredResults (65 to 97).
+  function ignoreProbeResults(resultIDs: readonly string[]): void {
+    changeIgnoredProbeResults((ignored) => {
+      for (const id of resultIDs) ignored.add(id);
+    });
+  }
+  function ignoreOtherProbeResults(resultIDs: readonly string[]): void {
+    changeIgnoredProbeResults((ignored, history) => {
+      for (const result of lastResults(history)) if (!resultIDs.includes(result.id)) ignored.add(result.id);
+    });
+  }
+  function showIgnoredProbeResult(resultID: string): void {
+    changeIgnoredProbeResults((ignored) => {
+      ignored.delete(resultID);
+    });
+  }
+  function clearIgnoredProbeResults(): void {
+    changeIgnoredProbeResults((ignored) => {
+      ignored.clear();
+    });
+  }
+  /** scanHandler.OnSystemScanStopped (46 to 58), in the session's system: RegisterResults, then ClearResults of the absent. */
+  function probeScanStopped(args: readonly JsonValue[]): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    const stopped = decodeScanStopped(args);
+    // scanSvc.OnSystemScanStopped (253 to 257): a scan that found nothing is told so, ScnNoResults (a notify, on the
+    // passing strip); a scan by the ship alone among them.
+    if (stopped.results.length === 0) sayDialog("ScnNoResults", null, "The scan found no signatures.");
+    const history = clearResults(registerResults(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, stopped.results), stopped.absentTargets);
+    probeResultsBySystem.set(solarSystemID, history);
+    // scanHandler.ClearResults (65 to 72): a result cleared is no longer ignored either.
+    const ignored = ignoredInSystem(solarSystemID);
+    for (const id of stopped.absentTargets) ignored.delete(id);
+    publishProbeResults();
+  }
+
   function scheduleScannerRefresh(): void {
     if (scannerRefreshPromise !== null) {
       scannerRefreshDirty = true;
@@ -4871,6 +5616,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       operations,
       refreshedAtMs: Date.now(),
     });
+    // And the probe results the session's system's scan handler keeps (a change of system shows that system's).
+    publishProbeResults();
+    // A probe the read shows for the first time takes its place in the formation (AddProbe); read again after.
+    if (operations.status === "ready" && operations.value.inSpace) {
+      void placeNewProbes(operations.value).then((sent) => {
+        if (sent) scheduleScannerRefresh();
+      }).catch(() => undefined);
+    }
 
     if (scan.status === "ready") {
       const refs: NameRef[] = [];
@@ -4934,8 +5687,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  // probeTracker's formation tracker (bridge/probeFormations.ts), for the pilot's session: Pinpoint about (0, 0, 0)
+  // until a formation's button makes another. Each probe the scanner's read shows for the first time takes the
+  // first free place and is sent to it (AddProbe, AddProbeToFormation, ProbeGoToPoint); one gone frees its place.
+  let probeFormation: FormationState = INITIAL_FORMATION;
+  let probesInFormation = new Set<number>();
+  /** The new probes of a read put in their places; true where any was sent to one. */
+  async function placeNewProbes(read: ScannerOperationsSnapshot): Promise<boolean> {
+    const present = new Set(read.probes.map((probe) => probe.probeID));
+    for (const probeID of probesInFormation) {
+      if (!present.has(probeID)) {
+        probeFormation = removeProbeFromFormation(probeFormation, probeID);
+        probesInFormation.delete(probeID);
+      }
+    }
+    let sent = false;
+    for (const probe of read.probes) {
+      if (probesInFormation.has(probe.probeID)) continue;
+      probesInFormation.add(probe.probeID);
+      const added = addProbeToFormation(probeFormation, probe.probeID);
+      probeFormation = added.state;
+      if (added.placement !== null && probe.state === PROBE_STATE.IDLE) {
+        await scannerWrites.sendToPlace(probe, added.placement);
+        sent = true;
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * A formation's button (scanSvc.MoveProbesToFormation, probeTracker 169 to 182): refused as the client's palette
+   * does not offer it; the formation made anew about the centre of the idle probes' destinations, the probes held
+   * sent to their places; any past eight recalled; else the shortfall launched, which take the free places as the
+   * server tells of them.
+   */
+  function launchProbeFormation(formationID: number): Promise<void> {
+    return runScannerAction(async () => {
+      const read = await api.loadScannerOperations(callOptions);
+      const plan = formationOf(read);
+      if ("refusal" in plan) throw new Error(plan.refusal);
+      const center = centerOf(read.probes.filter((probe) => probe.state === PROBE_STATE.IDLE).map((probe) => probe.destination));
+      const made = createFormation(formationID, read.probes.map((probe) => probe.probeID), center);
+      probeFormation = made.state;
+      probesInFormation = new Set(read.probes.map((probe) => probe.probeID));
+      for (const placement of made.placements) {
+        const probe = read.probes.find((candidate) => candidate.probeID === placement.probeID);
+        if (probe !== undefined) await scannerWrites.sendToPlace(probe, placement);
+      }
+      if (made.excess.length > 0) {
+        await scannerWrites.recoverSome(read, scannerShip(), made.excess);
+        return;
+      }
+      if (plan.launch !== null) await scannerWrites.launchCount(plan.launch.moduleID, plan.launch.count);
+    });
+  }
+
+  // The scanner's launch is the client's launch of a formation: Pinpoint, as its analyze button's (analyzeButton.py 86).
   function launchScannerProbes(): Promise<void> {
-    return runScannerAction(async () => scannerWrites.launch(await api.loadScannerOperations(callOptions)));
+    return launchProbeFormation(PINPOINT_FORMATION);
   }
 
   function analyzeScannerSignatures(): Promise<void> {
@@ -4948,6 +5757,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function reconnectScannerProbes(): Promise<void> {
     return runScannerAction(async () => scannerWrites.reconnect(await api.loadScannerOperations(callOptions), scannerShip()));
+  }
+
+  // The probe menu's two (scanSvc.GetProbeMenu): a range step for the chosen probes, and their recall.
+  function setProbeRangeStep(probeIDs: readonly number[], rangeStep: number): Promise<void> {
+    return runScannerAction(async () => scannerWrites.setRangeStep(await api.loadScannerOperations(callOptions), probeIDs, rangeStep));
+  }
+
+  function recoverChosenProbes(probeIDs: readonly number[]): Promise<void> {
+    return runScannerAction(async () => scannerWrites.recoverSome(await api.loadScannerOperations(callOptions), scannerShip(), probeIDs));
   }
 
   // --- Fleet Center -------------------------------------------------------
@@ -5170,11 +5988,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
   function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
+    // An answer kept for it (_handle_player_fsd_dialog, 59 to 64): not put up.
+    if (dialogAnswerKept(dialog) !== null) return;
     dialogsSaidCount += 1;
-    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, dialog, values, fallback }].slice(-20));
+    putDialog({ n: dialogsSaidCount, dialog, values, fallback });
+  }
+
+  /** The dialogs said, the newest twenty kept; a question that falls off them is answered No. */
+  function putDialog(one: SaidDialog): void {
+    const kept = [...dialogsSaidSignal.get(), one].slice(-20);
+    dialogsSaidSignal.set(kept);
+    for (const n of [...dialogAnswers.keys()]) {
+      if (!kept.some((each) => each.n === n)) answerDialog(n, false);
+    }
+  }
+
+  // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
+  // answer; true on Yes.
+  const dialogAnswers = new Map<number, (yes: boolean) => void>();
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string): Promise<boolean> {
+    const kept = dialogAnswerKept(dialog);
+    if (kept !== null) return Promise.resolve(kept === "yes");
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      dialogAnswers.set(n, resolve);
+      putDialog({ n, dialog, values, fallback, answers: "yesno" });
+    });
+  }
+
+  function answerDialog(n: number, yes: boolean): void {
+    const answer = dialogAnswers.get(n);
+    dialogAnswers.delete(n);
+    dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
+    answer?.(yes);
   }
 
   function dismissDialog(n: number): void {
+    if (dialogAnswers.has(n)) {
+      answerDialog(n, false);
+      return;
+    }
     dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
   }
 
@@ -5271,55 +6125,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await inviteFleetMember(characterID);
   }
 
-  /**
- * Join a fleet a CORP-MATE invited us to, without anybody clicking anything.
- *
- * ⚠ THE MANUAL PATH WAS UNRELIABLE IN A WAY NOBODY COULD SEE. An invitation
- * lives only in the session that received the push -- `pendingInvite` starts
- * null and is only ever set by `OnFleetInvite` -- so a page reload destroys it
- * and the panel then truthfully reports that no invitation has arrived. To an
- * operator that reads as "accepting invites works sometimes". It also sat behind
- * a `window.confirm`, which some embedded browsers suppress outright, failing
- * silently. Neither is fixed by trying again; both are fixed by not needing a
- * human at the moment the push lands.
- *
- * ⚠ CORP-MATES ONLY, AND "COULD NOT TELL" MEANS NO. The inviter is a mate where
- * its number is among the corporation's members as the registry lists them (the
- * page's own read, bridge/corpMemberReads.ts: the client's own test of a member).
- * A list that could not be read leaves the invitation sitting in the panel
- * for a human, which is exactly what used to happen for every invitation. This
- * only ever REMOVES a click, never widens who can put this character in a fleet:
- * an invite from outside the corporation still waits to be accepted by hand.
- *
- * ⚠ AND IT NEVER OVERRIDES A FLEET WE ARE ALREADY IN. `acceptFleetInvite`
- * refuses when the roster already reads ready, so a stray invitation cannot pull
- * a pilot out of the fleet it is flying with.
- */
-  async function autoAcceptCorpFleetInvite(invite: FleetPendingInvite): Promise<void> {
-    const inviter = invite.inviterID;
-    if (inviter === null) {
-      return;
-    }
-    let sameCorp: boolean;
-    try {
-      sameCorp = (await readCorporationMemberIDs(bridgeAsk)).includes(inviter);
-    } catch {
-      return;
-    }
-    if (!sameCorp) {
-      return;
-    }
-    // Still pending? A human may have accepted it in the seconds this read took.
-    if (store.fleet.get().pendingInvite?.fleetID !== invite.fleetID) {
-      return;
-    }
-    try {
-      await acceptFleetInvite();
-    } catch {
-      // The panel still shows the invitation; a human can press the button.
-    }
-  }
-
   async function acceptFleetInvite(fleetID?: number): Promise<void> {
     // ⚠ AN EXPLICIT ID BEATS THE SLICE, and the caller that has one is the one
     // that just applied. See the declaration for the race this avoids.
@@ -5346,14 +6151,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function tellOfInviteAnswer(answer: FleetInviteAnswer): Promise<void> {
     const told = onlineCharacterID();
-    await resolveNamesNow([{ kind: "character", id: answer.characterID }]);
+    // (The page's words name the pilot as a character; the client's label as an owner, its [character] tag's kind.)
+    await resolveNamesNow([{ kind: "character", id: answer.characterID }, { kind: "owner", id: answer.characterID }]);
     if (told === null || onlineCharacterID() !== told) {
       return;
     }
+    // fleetSvc.OnFleetJoinReject (1217 to 1223): a CustomNotify of UI/Fleet/InviteRejected, the pilot named; with the
+    // reason's own words (InviteRejectedWithReason) where it is one of the client's two (evefleet/const.py 16 to 19).
+    // The page's own words where the install's are not to hand.
+    const reasonLabel = answer.reason === "no-response" ? "UI/Fleet/FleetServer/NoResponse"
+      : answer.reason === "in-a-fleet" ? "UI/Fleet/FleetServer/AlreadyInFleet" : null;
+    const notify: JsonValue = reasonLabel === null
+      ? [UE_LOC, "UI/Fleet/InviteRejected", { type: "dict", entries: [["charID", answer.characterID]] }]
+      : [UE_LOC, "UI/Fleet/InviteRejectedWithReason", { type: "dict", entries: [["charID", answer.characterID], ["reason", [UE_LOC, reasonLabel]]] }];
     const words = fleetInviteAnswerWords(nameCache.get(nameKey("character", answer.characterID)) ?? null, answer.reason);
-    // (Said no longer, and then said: the same answer a second time is said a second time.)
-    store.apply({ type: "fleet/invite-answered", words: null });
-    store.apply({ type: "fleet/invite-answered", words });
+    sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, words);
   }
 
   /**
@@ -5617,6 +6429,261 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
   }
 
+  /**
+   * An accurate probe result warped to from its menu (menusvc.SolarsystemScanMenu, 1403 to 1430): Warp To at the
+   * pilot's own warp distance, or Warp to Within at one of the seven; by the page's own call, with the range.
+   */
+  async function warpToProbeResult(resultID: string, range: number): Promise<void> {
+    await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), resultID, range);
+  }
+
+  /**
+   * An accurate probe result's Align To (scanSvc.AlignToPosition, 459 to 465): the ship turned toward the result's
+   * place from its own position, as the space read has it (read first where there is none), by the page's own call.
+   */
+  async function alignToProbeResult(resultID: string): Promise<void> {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    const result = solarSystemID === null ? null : heldResult(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, resultID);
+    if (result === null || result.pos === null) throw new Error("That result has no place to align to.");
+    if ((store.space.get().snapshot?.ship ?? null) === null) await loadSpaceSnapshot();
+    const position = store.space.get().snapshot?.ship?.position ?? null;
+    if (position === null) throw new Error("Your ship's position is not known yet.");
+    await alignToPositionCall(bridgeDo, readFlightNow, result.pos, [position.x, position.y, position.z]);
+  }
+
+  /**
+   * Activate Gate (bridge/gateActivation.ts), as the client's GetCloseAndTryCommand makes it: its system navigation
+   * (autopilot.py __NavigateSystemTo), re-armed every two seconds over the shared rungs (nav/autopilotLoop.ts
+   * decideCloseIn): in warp it waits; within 2,500 m it makes the gate's call, once, and is done; too close for a warp
+   * the menu's approach; farther the menu's warp at nought. One navigation at a time: the autopilot is stopped for
+   * it, and another Activate Gate or the pilot's Stop ends it. Like the client's it has no time limit, and it ends
+   * without a word where it cannot tell what to do (a gate the ship cannot see: autopilot.py 523 to 525).
+   */
+  const GATE_NAVIGATION_TICK_MS = 2_000;
+  let gateNavigation = 0;
+
+  // The dungeon the pilot is in, as the client's dungeon tracking keeps it (bridge/dungeonTracking.ts): from the
+  // server's OnEnteringDungeonRoom and OnExitingDungeon, let go at a change of location, and asked of the keeper once
+  // where the page finds its pilot in space (the client's OnCharacterSessionChanged).
+  let currentDungeon: CurrentDungeon | null = null;
+  let currentDungeonAsked = false;
+  function askCurrentDungeon(): void {
+    if (currentDungeonAsked) return;
+    currentDungeonAsked = true;
+    void readCurrentDungeon(bridgeAsk).then((dungeon) => {
+      if (currentDungeon === null && dungeon !== null) currentDungeon = dungeon;
+    }).catch(() => {
+      currentDungeonAsked = false;
+    });
+  }
+  // The Ship Restrictions window (ui/ShipRestrictionsWindow.svelte; evedungeons/client/ship_restrictions_window.py):
+  // the dungeon and the gate it is opened for, and what the BFF answers of their restrictions.
+  const shipRestrictionsSignal = createSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>(null);
+  function openShipRestrictions(dungeonID: number, gateID: number | null): void {
+    shipRestrictionsSignal.set({ dungeonID, gateID, restrictions: null, loaded: false });
+    void api.loadShipRestrictions(dungeonID, gateID, callOptions).then((data) => {
+      const open = shipRestrictionsSignal.get();
+      if (open !== null && open.dungeonID === dungeonID && open.gateID === gateID) {
+        shipRestrictionsSignal.set({ ...open, restrictions: decodeShipRestrictions(data), loaded: true });
+      }
+    }).catch(() => {
+      const open = shipRestrictionsSignal.get();
+      if (open !== null && open.dungeonID === dungeonID) shipRestrictionsSignal.set({ ...open, loaded: true });
+    });
+  }
+  async function navigateToGate(itemID: number, typeID: number | null): Promise<void> {
+    autopilot?.abort();
+    const token = ++gateNavigation;
+    let approaching: number | null = null;
+    while (token === gateNavigation) {
+      const status = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+      if (token !== gateNavigation || !status.inSpace) return;
+      if (status.shipMode === null || !/warp/i.test(status.shipMode)) {
+        await loadSpaceSnapshot().catch(() => undefined);
+        if (token !== gateNavigation) return;
+        const step = decideCloseIn(itemID, GATE_ACTIVATION_RANGE_M, measureSpace(store.space.get().snapshot ?? null), approaching, MENU_WARP_RANGE_M);
+        if (step === null) {
+          gateNavigation += 1;
+          return;
+        }
+        if (step.kind === "arrive") {
+          gateNavigation += 1;
+          // An Abyssal trace (movementFunctions.RealActivateEntranceToAbyssalGate): its jump window, and no call.
+          if (typeID === TYPE_ABYSS_ENTRANCE_GATE) {
+            openAbyssJump(itemID);
+            return;
+          }
+          try {
+            await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+            store.apply({ type: "flight/action", action: "Activate Gate" });
+          } catch (error) {
+            // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
+            // Restrictions window for it and the gate's own object, and nothing else said.
+            const refusal = error instanceof BridgeCallError ? error.refusal : null;
+            if (refusal !== null && SHIP_RESTRICTION_REFUSALS.has(refusal.key) && currentDungeon !== null) {
+              const gate = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+              openShipRestrictions(currentDungeon.dungeonID, gate?.dunObjectID ?? null);
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+        if (step.kind === "approach") {
+          await approachShip(itemID, null);
+          approaching = itemID;
+        } else if (step.kind === "warp") {
+          await warpToThing(itemID, MENU_WARP_RANGE_M);
+          approaching = null;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, GATE_NAVIGATION_TICK_MS));
+    }
+  }
+  // A trace's jump window (ui/KeyActivationWindow.svelte as AbyssJumpWindow.py's): the trace and what its slim item
+  // says of its filament and game mode, as the space read last had them.
+  const abyssJumpSignal = createSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>(null);
+  function openAbyssJump(itemID: number): void {
+    const trace = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+    const filamentTypeID = trace?.abyssFilamentTypeID ?? null;
+    if (filamentTypeID === null) return;
+    abyssJumpSignal.set({ itemID, filamentTypeID, gameModeID: trace?.gameModeID ?? null });
+  }
+  async function jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }> {
+    try {
+      // PerformSessionChange('JumpToAbyss', abyss.activate_entrance_gate, itemID): the BFF answers once the session is in the pocket.
+      await applyFlight(await orderedStep(() => activateEntranceGate(bridgeDo, itemID)));
+      return { deployed: true, errors: [] };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const errors = abyssErrorsOfRefusal(error instanceof BridgeCallError ? error.refusal : null);
+      if (errors !== null) return { deployed: false, errors };
+      if (!sayRefusalDialog(error, error instanceof Error ? error.message : String(error))) {
+        store.apply({ type: "flight/action-error", message: `Activate refused: ${flightRefusalWords(error)}`, said: false });
+      }
+      return { deployed: false, errors: [] };
+    }
+  }
+  // The Abyssal info panel's objectives (bridge/abyssObjectives.ts; abyssal_service.py 69 to 110 and 195 to 207): the
+  // chain started at the pocket's first OnAbyssalLocationEntered, moved on at each later one, by what the space feed
+  // shows and by the jumps the pilot's ship begins (the travel effect), and let go where the pilot leaves Abyssal
+  // space. Its data is the client's, read once (GET /api/objectives/chain).
+  const abyssObjectivesSignal = createSignal<readonly AbyssObjectiveRow[] | null>(null);
+  let abyssChain: AbyssObjectiveChain | null = null;
+  let abyssChainRoom: number | null = null;
+  let abyssChainRead: Promise<ObjectiveChainData | null> | null = null;
+  let abyssLootableRestart: ReturnType<typeof setTimeout> | null = null;
+  const abyssEntities = (): readonly SpaceEntity[] => store.space.get().snapshot?.entities ?? [];
+  function publishAbyssObjectives(): void {
+    abyssObjectivesSignal.set(abyssChain === null ? null : abyssChain.view());
+  }
+  function readAbyssChain(): Promise<ObjectiveChainData | null> {
+    abyssChainRead ??= api.loadObjectiveChain(ABYSS_OBJECTIVE_CHAIN_ID, callOptions).then(decodeObjectiveChain).catch(() => {
+      abyssChainRead = null;
+      return null;
+    });
+    return abyssChainRead;
+  }
+  /** OnAbyssalLocationEntered: rooms_completed the room less one; the chain started, or its lootables looked for again. */
+  function abyssRoomEntered(room: number): void {
+    void readAbyssChain().then((data) => {
+      // The same room twice (told live, and kept by the BFF for a page drawn afresh) is one notice.
+      if (data === null || room === abyssChainRoom) return;
+      abyssChainRoom = room;
+      if (abyssChain === null) {
+        abyssChain = new AbyssObjectiveChain(data, { rooms_completed: room - 1 });
+        abyssChain.start(abyssEntities());
+      } else {
+        abyssChain.setContext("rooms_completed", room - 1);
+        abyssChain.stopObjective(ABYSS_LOOTABLE_OBJECTIVE);
+        if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+        const chain = abyssChain;
+        abyssLootableRestart = setTimeout(() => {
+          abyssLootableRestart = null;
+          if (abyssChain !== chain) return;
+          chain.startObjective(ABYSS_LOOTABLE_OBJECTIVE);
+          publishAbyssObjectives();
+        }, ABYSS_LOOTABLE_RESTART_MS);
+      }
+      publishAbyssObjectives();
+    });
+  }
+  /** Out of Abyssal space: the chain stopped and let go (abyssal_service.OnSessionChanged). */
+  function stopAbyssObjectives(): void {
+    if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+    abyssLootableRestart = null;
+    abyssChain = null;
+    abyssChainRoom = null;
+    publishAbyssObjectives();
+  }
+  /** OnClientEvent_JumpStarted(gate_id): the objectives' jump task through that gate complete. */
+  function abyssJumpStarted(gateID: number): void {
+    if (abyssChain === null) return;
+    abyssChain.jumpStarted(gateID);
+    publishAbyssObjectives();
+  }
+  store.space.subscribe(() => {
+    if (abyssChain === null) return;
+    abyssChain.observe(abyssEntities());
+    publishAbyssObjectives();
+  });
+
+  async function stopShip(): Promise<void> {
+    // Retail's Stop cancels the client-side navigation BEFORE the command and
+    // switches the autopilot off after it. Ours is the same order: abort the
+    // browser decide-loop first so it cannot issue another move into the stop,
+    // then tell the server to cut the engines.
+    autopilot?.abort();
+    // (And an Activate Gate's navigation, which is the client's too.)
+    gateNavigation += 1;
+    await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
+  }
+
+  /**
+   * A thing in space activated as the client's menu service activates one (bridge/spaceActivate.ts): stopped,
+   * docked at, its cargo opened, approached or aligned to. Opening the ship's own cargo hold and a control bunker's
+   * infrastructure hub are not made here (the objectives' targets are neither).
+   */
+  async function activateSpaceThing(itemID: number): Promise<void> {
+    const entities = store.space.get().snapshot?.entities ?? [];
+    const thing = entities.find((entity) => entity.itemID === itemID);
+    if (thing === undefined) return;
+    const self = entities.find((entity) => entity.isSelf) ?? null;
+    const measured = self !== null && self.geometryAvailable !== false && thing.geometryAvailable !== false;
+    const distance = measured ? surfaceDistanceMeters(self.position, self.radius, thing.position, thing.radius) : null;
+    switch (activateStep(thing, self?.groupID ?? null, distance)) {
+      case "stop":
+        await stopShip();
+        return;
+      case "dock":
+        await runFlightStep("Dock", () => dockStep(itemID));
+        await settleUntilDocked();
+        return;
+      case "openCargo":
+        await openContainer(itemID);
+        return;
+      case "approach":
+        await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, itemID, null)));
+        return;
+      case "alignTo":
+        await runFlightStep("Align", () => orderedStep((flightNow) => alignToCall(bridgeDo, flightNow, itemID)));
+        return;
+      default:
+    }
+  }
+
+  async function activateGate(itemID: number, typeID: number | null): Promise<void> {
+    if (typeID !== TYPE_ABYSS_ENTRANCE_GATE && gateCallFor(typeID, itemID) === null) {
+      store.apply({ type: "flight/action-error", message: "Activate Gate refused: this gate is not activated from here yet.", said: false });
+      return;
+    }
+    store.apply({ type: "flight/action", action: "Activate Gate" });
+    void navigateToGate(itemID, typeID).catch((error: unknown) => {
+      if (isSessionLost(error)) return;
+      store.apply({ type: "flight/action-error", message: `Activate Gate refused: ${flightRefusalWords(error)}`, said: sayRefusalDialog(error, flightRefusalWords(error)) });
+    });
+  }
+
   /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the mining bot and the script bots. */
   async function warpToThing(targetID: number, range: number): Promise<void> {
     await warpToItemCall(bridgeDo, readFlightNow, targetID, range);
@@ -5645,6 +6712,163 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A launch warped to by the page's own call (bridge/movementWrites.ts), by the launch's own number, for the script bots. */
   async function warpToLaunchPickup(launchID: number): Promise<void> {
     await warpToLaunchCall(bridgeDo, readFlightNow, launchID);
+  }
+
+  // The pilot's planetary launches, for the planets window's Launches tab (bridge/planetLaunches.ts), as the client's
+  // planet service keeps them (planetUISvc.GetLaunches, 170 to 173): read once for the pilot and kept, read afresh
+  // where asked to be; the server's word that they changed (OnPILaunchesChange, 175 to 177) lets what is kept go, and
+  // the window, drawn again at it (planetWindow.py 58 to 61), reads them afresh. The transport keeps the same.
+  const planetLaunchesSignal = createSignal<PlanetLaunchesRead>({ loaded: false, launches: [], error: null });
+  let planetLaunchesFor: number | null = null;
+  let planetLaunchesWanted = false;
+
+  async function loadPlanetLaunches(force = false): Promise<void> {
+    planetLaunchesWanted = true;
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (!force && characterID !== null && planetLaunchesFor === characterID) return;
+    // Another pilot's launches are not shown while this one's are read.
+    if (planetLaunchesFor !== null && planetLaunchesFor !== characterID) planetLaunchesSignal.set({ loaded: false, launches: [], error: null });
+    try {
+      const launches = await readMyLaunches(bridgeAsk);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      planetLaunchesFor = characterID;
+      planetLaunchesSignal.set({ loaded: true, launches, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      // What was read before for this pilot stays on show beside the failure; another pilot's does not.
+      const sameCharacter = planetLaunchesFor === characterID;
+      planetLaunchesFor = null;
+      planetLaunchesSignal.set({ loaded: true, launches: sameCharacter ? planetLaunchesSignal.get().launches : [], error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // The pilot's trades for the wallet's Market Transactions (bridge/marketTransactions.ts), as the client's market
+  // service keeps them (marketSvc.GetPersonalMarketTransactions, 20 to 26): read for the pilot and kept, let go when the
+  // pilot's own orders change (OnOwnOrdersChanged, 33 to 35) and read again when the tab is next chosen.
+  const marketTransactionsSignal = createSignal<MarketTransactionsRead>({ loaded: false, transactions: [], error: null });
+  let marketTransactionsFor: number | null = null;
+
+  async function loadMarketTransactions(): Promise<void> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null || marketTransactionsFor === characterID) return;
+    if (marketTransactionsSignal.get().loaded) marketTransactionsSignal.set({ loaded: false, transactions: [], error: null });
+    try {
+      const transactions = await readMarketTransactions(bridgeAsk, characterID);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      marketTransactionsFor = characterID;
+      marketTransactionsSignal.set({ loaded: true, transactions, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      marketTransactionsSignal.set({ loaded: true, transactions: [], error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // The wallet's Transactions tab (bridge/walletJournal.ts): the journal for the period chosen, as the client's account
+  // service keeps it (walletReads.journal), with the kinds' names (GetEntryTypes, kept) and each kind's journal message
+  // (the client's own built data, asked of the BFF once). Read as the tab is shown and as its period is chosen
+  // (TransactionsPanel.OnDateCombo); kept until any account changes, as the service keeps it.
+  const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+  const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
+  let walletJournalGeneration = 0;
+  let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
+  const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
+    journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
+      (read) => (read.available ? read.journalMessageIDs : null),
+      () => {
+        journalMessagesRead = null;
+        return null;
+      },
+    );
+    return journalMessagesRead;
+  };
+
+  async function loadWalletJournal(year: number | null = walletJournalSignal.get().year, month: number | null = walletJournalSignal.get().month): Promise<void> {
+    const generation = ++walletJournalGeneration;
+    const held = walletJournalSignal.get();
+    if (held.year !== year || held.month !== month) walletJournalSignal.set({ ...held, year, month, loaded: false, lines: [], error: null });
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.journal(year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== walletJournalGeneration) return;
+    for (const each of [entries, kinds]) {
+      if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    }
+    walletJournalSignal.set({
+      year,
+      month,
+      loaded: true,
+      lines: entries.status === "fulfilled" ? journalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletJournalSignal.get().kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
+    });
+  }
+
+  // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
+  // (the account service's GetPersonalTransactions(), as walletReads keeps it) and the kinds' names, read as the tab is
+  // chosen (OverviewPanel.OnTabSelect); the trades are the market service's (loadMarketTransactions).
+  const NO_WALLET_OVERVIEW: WalletOverviewRead = { loaded: false, lines: [], kinds: new Map(), error: null };
+  const walletOverviewSignal = createSignal<WalletOverviewRead>(NO_WALLET_OVERVIEW);
+  let walletOverviewGeneration = 0;
+
+  async function loadWalletOverview(): Promise<void> {
+    const generation = ++walletOverviewGeneration;
+    const [entries, kinds] = await Promise.allSettled([walletReads.journal(null, null), walletReads.entryKinds(), loadMarketTransactions()]);
+    if (generation !== walletOverviewGeneration) return;
+    for (const each of [entries, kinds]) {
+      if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    }
+    walletOverviewSignal.set({
+      loaded: true,
+      lines: entries.status === "fulfilled" ? journalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletOverviewSignal.get().kinds,
+      error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
+    });
+  }
+
+  // The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, asked each time the tab is chosen
+  // (sharesPanel.OnTabSelect) and again at the server's word that shares changed where the pilot is the shareholder
+  // or the corporation (OnShareChange) while the tab has been chosen.
+  const NO_WALLET_SHARES: WalletSharesRead = { loaded: false, holdings: [], error: null };
+  const walletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
+  let walletSharesWanted = false;
+
+  async function loadWalletShares(): Promise<void> {
+    walletSharesWanted = true;
+    const characterID = store.station.get().online?.characterID ?? null;
+    try {
+      const holdings = await readMyShares(bridgeAsk);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      walletSharesSignal.set({ loaded: true, holdings, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      walletSharesSignal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** characterSettingsSvc.Get (bridge/characterSettings.ts): one of the character's settings kept at the server. */
+  function readCharacterSetting(settingKey: string): Promise<string | null> {
+    return readCharacterSettingCall(bridgeAsk, settingKey);
+  }
+
+  /** characterSettingsSvc.Save (bridge/characterSettings.ts): an empty value deleted instead. */
+  function saveCharacterSetting(settingKey: string, value: string | null): Promise<void> {
+    return saveCharacterSettingCall(bridgeDo, settingKey, value);
+  }
+
+  /** OnPILaunchesChange: what is kept is let go, and read afresh where the window has wanted it. */
+  function planetLaunchesChanged(): void {
+    planetLaunchesFor = null;
+    if (planetLaunchesWanted) void loadPlanetLaunches(true).catch(() => undefined);
+  }
+
+  /** DeleteLaunchEntry (journal.py 456 to 466): the row taken off, the launch's record removed, the launches read afresh. */
+  async function removePlanetLaunch(launchID: number): Promise<void> {
+    const held = planetLaunchesSignal.get();
+    planetLaunchesSignal.set({ ...held, launches: held.launches.filter((launch) => launch.launchID !== launchID) });
+    try {
+      await removeLaunch(bridgeDo, launchID);
+    } finally {
+      await loadPlanetLaunches(true).catch(() => undefined);
+    }
   }
 
   /**
@@ -5712,6 +6936,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return orderedStep((flightNow) => jumpCall(bridgeDo, flightNow, fromGateID, toGateID));
   }
 
+  /** A jump through an Ansiblex jump gate (bridge/placeChanges.ts jumpThroughJumpGate). */
+  function jumpGateStep(structureID: number): Promise<FlightStepResult> {
+    return orderedStep((flightNow) => jumpThroughJumpGateCall(bridgeDo, flightNow, structureID));
+  }
+
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
     const before = await api.getFlightStatus(callOptions);
     await order(async () => decodeFlightStatus(before.flight));
@@ -5731,8 +6960,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // this round trip lied about itself.
     // The page's own call, and with the invitation to be taken unasked: who applies here has said yes already
     // (a fleet's name typed for the companions, or a bot's block), as the Agency's join window has.
+    expectingInvite = fleetID;
     return applyToJoinFleetCall(bridgeDo, fleetID, true);
   }
+
+  /** fleetSvc.ApplyToJoinFleet (1906): the fleet applied to, whose invitation the pilot's setting does not turn away. */
+  let expectingInvite: number | null = null;
 
   // --- R17 Mail -------------------------------------------------------------
 
@@ -6446,10 +7679,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function keepDialogYes(dialog: string): void {
+    keepDialogAnswer(dialog, "yes");
+  }
+
+  /** The answer kept for a dialog ("ok", "yes" or "no"), or null where none is. */
+  function dialogAnswerKept(dialog: string): string | null {
     try {
-      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, "yes");
+      const kept = settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${dialog}`) ?? null;
+      return kept === "ok" || kept === "yes" || kept === "no" ? kept : null;
     } catch {
-      // Storage full or refused: the dialog is asked again.
+      return null;
+    }
+  }
+
+  function keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void {
+    keepQuestionAnswer(dialog, answer);
+  }
+
+  /**
+   * A server question's answer kept, in the same place (bridge/questions.ts questionKeeping): by its dialog's name or
+   * the agent's suppressID, as written by keptValueOf ("yes", "no", "ok", or an agent's choice "choice:ok:2").
+   */
+  function questionAnswerKept(key: string): string | null {
+    try {
+      return settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${key}`) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function keepQuestionAnswer(key: string, value: string): void {
+    try {
+      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${key}`, value);
+    } catch {
+      // Storage full or refused: the question is asked again.
     }
   }
 
@@ -6484,6 +7747,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // priming (cfg.py Get, 630 to 645); what was asked already is not asked again (the transport keeps it).
   async function corpTickersEach(corpIDs: readonly number[]): Promise<void> {
     if (corpIDs.length > 0) await api.corpTickers(corpIDs, true, callOptions).catch(() => null);
+  }
+
+  // The overview's Corporation and Alliance columns (overviewUtil.py GetCorpTickerName, GetAllianceTickerName, 34 to
+  // 39): each thing's ticker from cfg.corptickernames and cfg.allianceshortnames, whose Get asks the server where the
+  // ticker is not known (Prime([key]), cfg.py 630 to 645). michelle primed those of every ball as it came, which the
+  // transport keeps (pilots.js ballsPrimed), so the page's asking is answered from that and asks the server only for
+  // one it did not see. Each asked once; one that could not be asked (or failed) is asked again after a while.
+  const ownerTickersSignal = createSignal<OwnerTickers>({ corporations: {}, alliances: {} });
+  const tickersAsked = { corporations: new Set<number>(), alliances: new Set<number>() };
+  const ASK_AGAIN_MS = 10_000;
+  function requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void {
+    const ask = (
+      ids: readonly number[],
+      asked: Set<number>,
+      read: typeof api.corpTickers,
+      slot: keyof OwnerTickers,
+    ): void => {
+      const fresh = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0 && !asked.has(id));
+      if (fresh.length === 0) return;
+      for (const id of fresh) asked.add(id);
+      const later = (again: readonly number[]): void => {
+        if (again.length > 0) setTimeout(() => again.forEach((id) => asked.delete(id)), ASK_AGAIN_MS);
+      };
+      read(fresh, true, callOptions)
+        .then(({ tickers, unresolved }) => {
+          const current = ownerTickersSignal.get();
+          ownerTickersSignal.set({ ...current, [slot]: { ...current[slot], ...tickers } });
+          later(unresolved);
+        })
+        .catch(() => later(fresh));
+    };
+    ask(corpIDs, tickersAsked.corporations, api.corpTickers, "corporations");
+    ask(allianceIDs, tickersAsked.alliances, api.allianceTickers, "alliances");
+  }
+
+  // The overview's Faction column (overviewWindow.py 967 to 975): an NPC owner's faction from the client's own table
+  // of NPC corporations, read once.
+  const corporationFactionsSignal = createSignal<Readonly<Record<string, number>> | null>(null);
+  let corporationFactionsAsked = false;
+  function loadCorporationFactions(): void {
+    if (corporationFactionsAsked) return;
+    corporationFactionsAsked = true;
+    api.loadCorporationFactions(callOptions)
+      .then((read) => corporationFactionsSignal.set(read.available ? read.factions : {}))
+      .catch(() => setTimeout(() => (corporationFactionsAsked = false), ASK_AGAIN_MS));
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -7186,7 +8494,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * the only waypoint, as starMapSvc.SetWaypoint(id, True) makes it. Nothing flies until the autopilot is on.
    */
   async function setDestinationToAssetStation(stationID: number): Promise<void> {
-    setDestination(stationID);
+    await setWaypointAs(stationID, true);
   }
 
   /**
@@ -7320,10 +8628,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
       await layOutConversation(agentID, conversation);
-      // A press changes what there is between the pilot and the agent: a mission requested is an offer in the journal.
-      if (first !== null) {
-        await loadJournal();
-      }
+      // A press changes what there is between the pilot and the agent (a mission requested is an offer in the
+      // journal), and the server says so (OnAgentMissionChange "offered"), which reads the journal again
+      // (refreshJournal); the client's window reads nothing of its own.
     });
   }
 
@@ -7358,6 +8665,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           journalReadAgain = false;
           await loadJournal();
         } while (journalReadAgain);
+        // (The tracker's missions are the journal's: OnAgentMissionChanged reads them again, missionObjectivesTracker.py 162 to 179.)
+        if (missionTrackerWanted) refreshMissionTracker();
       } catch {
         // The journal on show stays as it was; the next change, or Refresh, reads it again.
       } finally {
@@ -7379,7 +8688,167 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       talkToOpenAgentAgain();
     }
     missionPageOnChange(change);
+    trackerOnMissionChange(change);
     refreshJournal();
+  }
+
+  // --- the mission tracker: each accepted mission's objectives, as the client's job board's tracker shows them ------
+  //
+  // missionObjectivesTracker.py, for each mission the journal holds accepted and not expired:
+  //   the one it is on now (currentAgentMissionInfo): GetMissionInfoItems for each at the first use and again at each
+  //   change of the pilot's place and each warp's end (_InitializeCurrentAgentMissionInfo, 267 to 279: the transport
+  //   asks them then, as the client does, and answers the page from what it kept); set by OnMissionsUpdated (145 to
+  //   160) and taken away by OnAgentMissionChanged (162 to 179), with nothing asked; none for a mission accepted since;
+  //   its objectives (missionObjectives): GetAllMissionObjectives as the panel is built, kept until the mission
+  //   changes or the place does (GetAllAgentMissionInfo, 309 to 312);
+  //   whether the pilot is in its site: IsInActiveDungeonID, as its objectives ask it.
+  // Read only once a window has wanted it. (bridge/missionTracker.ts for what is shown of them.)
+  const missionTrackerSignal = createSignal<ReadonlyMap<number, TrackedMission>>(new Map());
+  const trackerCurrent = new Map<number, MissionInfo | null>();
+  const trackerObjectives = new Map<number, readonly MissionInfo[]>();
+  let trackerInitialized = false;
+  let trackerResetOwed = false;
+  let missionTrackerWanted = false;
+  let missionTrackerReading = false;
+  let missionTrackerReadAgain = false;
+
+  /** GetAgentMissions: the journal's missions accepted and not expired. */
+  function trackedJournalMissions(): JournalMission[] {
+    const journal = store.agents.get().journal;
+    const now = filetimeOf(Date.now());
+    return (journal?.active ?? []).filter((mission) => mission.missionState === AGENT_MISSION_STATE.ACCEPTED && mission.agentID !== null
+      && !(mission.expirationTime !== null && mission.expirationTime !== "0" && BigInt(mission.expirationTime) < now));
+  }
+
+  /**
+   * The tracker read as the client's reads it; `placeChanged` for a change of the pilot's place or a warp's end, after
+   * which the objectives now are asked again. Asks that come while it reads are answered by one more read.
+   */
+  function refreshMissionTracker(placeChanged = false): void {
+    missionTrackerWanted = true;
+    if (placeChanged) trackerResetOwed = true;
+    if (missionTrackerReading) {
+      missionTrackerReadAgain = true;
+      return;
+    }
+    missionTrackerReading = true;
+    void (async () => {
+      try {
+        do {
+          missionTrackerReadAgain = false;
+          if (store.agents.get().journal === null) await loadJournal();
+          const agentIDs = trackedJournalMissions().map((mission) => mission.agentID!);
+          if (!trackerInitialized || trackerResetOwed) {
+            trackerInitialized = true;
+            trackerResetOwed = false;
+            trackerCurrent.clear();
+            trackerObjectives.clear();
+            // (One after another, as the tracker asks them.)
+            for (const agentID of agentIDs) {
+              trackerCurrent.set(agentID, decodeMissionInfo(await bridgeAsk("missionTrackerMgr", "GetMissionInfoItems", [agentID])));
+            }
+          }
+          const read: TrackedMission[] = [];
+          for (const agentID of agentIDs) {
+            let all = trackerObjectives.get(agentID);
+            if (all === undefined) {
+              all = decodeMissionInfos(await bridgeAsk("missionTrackerMgr", "GetAllMissionObjectives", [agentID]));
+              trackerObjectives.set(agentID, all);
+            }
+            const inDungeon = await bridgeAsk("missionTrackerMgr", "IsInActiveDungeonID", [agentID]);
+            read.push({ agentID, all, current: trackerCurrent.get(agentID) ?? null, inActiveDungeon: inDungeon === true });
+          }
+          missionTrackerSignal.set(new Map(read.map((one) => [one.agentID, one])));
+        } while (missionTrackerReadAgain);
+      } catch {
+        // What is shown stays as it was; the next change reads again.
+      } finally {
+        missionTrackerReading = false;
+      }
+    })();
+  }
+
+  /** OnMissionsUpdated (missionObjectivesTracker.py 145 to 160): each mission's objective now, its objectives asked again. */
+  function onMissionsUpdated(missions: ReturnType<typeof decodeMissionsUpdated>): void {
+    for (const { agentID, info } of missions) {
+      // NotifyTrackerWhenTypeIDArrives or StopNotifyingTrackerForTypeID; and the place it names (the objective's
+      // SetDestinationNotificationTrigger, made as it is built).
+      const awaited = arrivalAwaited(info);
+      const was = waitingAgentType.get(agentID);
+      if (was !== undefined) waitingForTypes.get(was)?.delete(agentID);
+      if (awaited === null) waitingAgentType.delete(agentID);
+      else {
+        waitingAgentType.set(agentID, awaited);
+        if (!waitingForTypes.has(awaited)) waitingForTypes.set(awaited, new Set());
+        waitingForTypes.get(awaited)!.add(agentID);
+      }
+      for (const place of placesAwaited(info)) {
+        if (!placeTriggers.has(place)) placeTriggers.set(place, new Set());
+        placeTriggers.get(place)!.add(agentID);
+      }
+    }
+    if (!missionTrackerWanted) return;
+    for (const { agentID, info } of missions) {
+      trackerCurrent.set(agentID, info);
+      trackerObjectives.delete(agentID);
+    }
+    refreshMissionTracker();
+  }
+
+  /**
+   * OnAgentMissionChanged (162 to 179): the mission's objective now taken away unless it was only changed, and its
+   * objectives forgotten; a mission quit no more waited on at a place; one accepted asked after (UpdateMissionStatusData).
+   */
+  function trackerOnMissionChange(change: MissionChange): void {
+    if (change.agentID === null) return;
+    if (change.action === "quit") {
+      for (const agents of placeTriggers.values()) agents.delete(change.agentID);
+    } else if (change.action === "accepted") {
+      updateAllMissions([change.agentID]);
+    }
+    if (!missionTrackerWanted) return;
+    if (change.action !== "modified") trackerCurrent.set(change.agentID, null);
+    trackerObjectives.delete(change.agentID);
+  }
+
+  // The tracker's own asking of the server (UpdateMissionStatusData, 216 to 220): UpdateAllMissions with agents, which
+  // the server answers by OnMissionsUpdated. Asked for every accepted mission as the client's info panels start
+  // (RegisterMissionTracking, 235 to 246, by infoPanelSvc 109), for a mission accepted, for those waiting on an item's
+  // type as one comes aboard (OnItemsChanged, 104 to 131), and for those waiting on a place as the pilot reaches it or
+  // leaves it (UpdateMissionStatusForSessionChange, 207 to 214).
+  const waitingForTypes = new Map<number, Set<number>>();
+  const waitingAgentType = new Map<number, number>();
+  const placeTriggers = new Map<number, Set<number>>();
+  function updateAllMissions(agentIDs: readonly number[]): void {
+    if (agentIDs.length === 0) return;
+    void bridgeAsk("missionTrackerMgr", "UpdateAllMissions", [[...agentIDs]]).catch(() => undefined);
+  }
+  async function registerMissionTracking(): Promise<void> {
+    if (store.agents.get().journal === null) await loadJournal();
+    updateAllMissions(trackedJournalMissions().map((mission) => mission.agentID!));
+  }
+  /** OnItemsChanged's items (each a row of the item's columns): the missions waiting on any one's type, where it came. */
+  function trackerOnItemsArrived(items: readonly unknown[]): void {
+    if (waitingForTypes.size === 0) return;
+    const docked = store.flight.get().status?.docked === true;
+    const agents = new Set<number>();
+    for (const item of items) {
+      const fields = (item as { readonly fields?: Readonly<Record<string, unknown>> } | null)?.fields;
+      const typeID = Number(fields?.typeID);
+      const flagID = Number(fields?.flagID);
+      if (!Number.isSafeInteger(typeID) || !isArrivalFlag(flagID, docked)) continue;
+      for (const agentID of waitingForTypes.get(typeID) ?? []) agents.add(agentID);
+    }
+    updateAllMissions([...agents]);
+  }
+  /** session.locationid before and after: the missions waiting on either. */
+  function trackerOnPlaceChange(before: FlightStatus | null, after: FlightStatus): void {
+    const placeOf = (status: FlightStatus | null): number | null => (status === null ? null : status.docked ? status.stationID ?? status.structureID ?? null : status.solarSystemID);
+    const was = placeOf(before);
+    const now = placeOf(after);
+    if (before === null || was === now) return;
+    const agents = new Set<number>([...(was === null ? [] : placeTriggers.get(was) ?? []), ...(now === null ? [] : placeTriggers.get(now) ?? [])]);
+    updateAllMissions([...agents]);
   }
 
   // --- the journal's Read Details: the mission's page in the client's job board -------------------------
@@ -7524,6 +8993,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "agents/objectives", objectives: objectivesShown(conversation.lastActionInfo) ? decodeObjectives(reads.objective ?? undefined) : null });
     // The briefing's two times belong to what the agent says, not to the objectives: they are kept whatever the last action was.
     store.apply({ type: "agents/mission-times", times: decodeMissionTimes(reads.briefing) });
+    // The window's header (agentDialogueWindow.GetAgentHeader, bridge/agentHeader.ts): where the agent is, asked
+    // afresh for every layout.
+    store.apply({ type: "agents/agent-location", location: decodeAgentLocationWrap(reads.location) });
   }
 
   // R6 — the post-completion reward readout (Step 12): wallet / LP / standings.
@@ -7563,6 +9035,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
     // (The page's own call, bridge/giveMoney.ts; the pilot's ISK is put right by the OnAccountChange that follows.)
     await giveMoneyCall(bridgeDo, toID, amount, reason);
+  }
+
+  /**
+   * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK, 101 to 112): nothing for an amount not above
+   * nought; else AskAreYouSure with the tab's own words (`cons`), and on Yes GiveCash(toID, amount). Answers whether the
+   * server answered something (`if ret:`); false where the pilot said No.
+   */
+  async function giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean> {
+    if (!(amount > 0)) return false;
+    if (!(await askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons))) return false;
+    return giveIskFromWalletCall(bridgeDo, toID, amount);
   }
 
   async function loadWallet(how: { readonly fresh?: boolean } = {}): Promise<void> {
@@ -8074,6 +9557,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // not block on a panel refresh). Name resolution is always fire-and-forget.
   function observeFlightStatus(status: FlightStatus): Promise<void> {
     const previousSystemID = store.flight.get().status?.solarSystemID ?? null;
+    trackerOnPlaceChange(store.flight.get().status, status);
     const scannerBefore = store.scanner.get();
     const flightSystemChanged =
       previousSystemID !== null &&
@@ -8091,8 +9575,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scannerLoadGeneration += 1;
     }
     store.apply({ type: "flight/status", status });
-    // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off.
-    waypointsArrived();
+    // The pocket's timer where the page finds its pilot already in a pocket (a browser drawing it afresh): the
+    // client keeps it from the pocket's entry, so the BFF is asked what the pilot was last told, once for the system.
+    askPocketTimer(status.solarSystemID);
+    // Out of Abyssal space the abyss service's objective chain is no more (abyssal_service.OnSessionChanged).
+    if (flightSystemChanged && !isAbyssalSystem(status.solarSystemID)) stopAbyssObjectives();
+    // The dungeon the pilot is in, asked once where the page finds it in space (dungeonTracking.OnCharacterSessionChanged).
+    if (status.inSpace) askCurrentDungeon();
+    // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
+    if (flightSystemChanged) void recheckWaypoints();
+    // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off. And an
+    // autopilot left on past waypoints that waited docked flies on once the ship is in space (autopilot.py Update).
+    if (!waypointsArrived() && !disableAutopilotAtEachWaypoint.get()) flyOnAutopilot();
     if (refreshScanner) {
       void loadScanner().catch(() => undefined);
     }
@@ -9822,36 +11316,329 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return routeGraphLoading;
   }
 
+  /** A waypoint's system, as the route's resolver tells it: asked once for each place, and kept where it answered. */
+  const waypointSystems = new Map<number, number | null>();
+  async function waypointSystemOf(id: number): Promise<number | null> {
+    if (waypointSystems.has(id)) return waypointSystems.get(id) ?? null;
+    try {
+      const destination = await api.resolveDestination(id, callOptions);
+      let systemID = destination.solarSystemID;
+      if (systemID === null && destination.kind === "structure") {
+        systemID = (await api.resolveAccessibleStructure(id, callOptions)).solarSystemID;
+      }
+      waypointSystems.set(id, systemID ?? null);
+      return systemID ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The route panel's Optimize Route (autopilot.py OptimizeRoute, 644 to 755; nav/optimizeRoute.ts): once at a time;
+   * the waypoints' systems ordered for the fewest jumps from the pilot's system, by the autopilot's own counts with
+   * the pilot's settings; over ten of them, the pilot asked first (AskAreYouSure, msgOptimizeQuestion1 or 2); none
+   * reachable, AutoPilotDisabledUnreachable said; then the route set (SetWaypoints) as a route the pilot changed.
+   */
+  let optimizingRoute = false;
+  async function optimizeRoute(): Promise<void> {
+    if (optimizingRoute) return;
+    optimizingRoute = true;
+    try {
+      const current = pilotPlace().solarSystemID;
+      if (current === null) return;
+      const waypoints = heldWaypoints();
+      for (const waypoint of waypoints) {
+        if (!(waypoint >= 30_000_000 && waypoint < 33_000_000)) await waypointSystemOf(waypoint);
+      }
+      const route = routeToOptimize(waypoints, current, (id) => waypointSystems.get(id) ?? null);
+      if (route === null) return;
+      const count = route.systems.length;
+      const question = count > 12 ? "UI/Map/MapPallet/msgOptimizeQuestion1" : count > 10 ? "UI/Map/MapPallet/msgOptimizeQuestion2" : null;
+      if (question !== null) {
+        const cons: JsonValue = [UE_LOC, question, { type: "dict", entries: [["numWaypoints", route.originalCount]] }];
+        if (!(await askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, `Put ${route.originalCount} waypoints in their best order?`))) return;
+      }
+      const graph = await loadRouteGraph();
+      const map = await pathfinderMap(graph);
+      const settings = await pathfinderSettings(graph);
+      const targets = [...route.systems, current];
+      const countsFrom = new Map<number, Map<number, number | null>>();
+      const jumpCount = (fromID: number, toID: number): number => {
+        let counts = countsFrom.get(fromID);
+        if (counts === undefined) {
+          counts = autopilotJumpCounts(map, fromID, targets, settings);
+          countsFrom.set(fromID, counts);
+        }
+        return counts.get(toID) ?? UNREACHABLE_JUMP_COUNT;
+      };
+      const ordered = optimizedWaypoints(route, current, jumpCount);
+      if (ordered === "unreachable") {
+        sayDialog("AutoPilotDisabledUnreachable", null, "No route reaches those waypoints.");
+        return;
+      }
+      putWaypoints(ordered);
+      waypointsArrived();
+      autopilotRouteChanged();
+    } finally {
+      optimizingRoute = false;
+    }
+  }
+
+  /**
+   * The route as the route panel shows it (infoPanelRoute.py UpdateRoute and _GetNumJumps; nav/routeMarkers.ts): from
+   * the pilot's system through every waypoint, by the autopilot's own way with the pilot's settings, each marker with
+   * its system's security. Null with no waypoint, no system known for the pilot, or a waypoint no route reaches.
+   */
+  async function routeOfWaypoints(): Promise<WaypointsRoute | null> {
+    const waypoints = heldWaypoints();
+    const start = pilotPlace().solarSystemID;
+    if (waypoints.length === 0 || start === null) return null;
+    const graph = await loadRouteGraph();
+    for (const waypoint of waypoints) {
+      if (!(waypoint >= 30_000_000 && waypoint < 33_000_000)) await waypointSystemOf(waypoint);
+    }
+    const systemOf = (id: number): number | null => waypointSystems.get(id) ?? null;
+    const map = await pathfinderMap(graph);
+    const settings = await pathfinderSettings(graph);
+    const data = routeData(start, waypoints, systemOf, (fromID, toID) => autopilotPath(map, fromID, toID, settings));
+    if (data === null) return null;
+    return {
+      markers: routeMarkers(data, waypoints, start, systemOf).map((marker) => ({ ...marker, security: graph.security(marker.solarSystemID) })),
+      jumps: routeJumps(data, start, systemOf),
+    };
+  }
+
   // The autopilot's settings, as the client keeps them: with the character, on this machine. Read when the
   // pilot at the helm is first asked about, and kept here from then on.
   const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
   let autopilotKept: { readonly characterID: number | null; readonly stored: StoredAutopilotSettings } = { characterID: null, stored: {} };
+  const routeSettingsSignal = createSignal<StoredAutopilotSettings>({});
   function autopilotSettings(): StoredAutopilotSettings {
     const characterID = store.station.get().online?.characterID ?? null;
     if (characterID !== autopilotKept.characterID) {
       autopilotKept = { characterID, stored: characterID === null ? {} : loadAutopilotSettings(settingsStorage, characterID) };
+      routeSettingsSignal.set(autopilotKept.stored);
       // Another pilot, other settings: what was worked out for the last one is not this one's.
       store.apply({ type: "names/autopilot-jumps-cleared" });
     }
     return autopilotKept.stored;
   }
+  /**
+   * The settings the pathfinder is given: the list's constellations and regions as their systems on this map, and the
+   * server's lists whose ticks are on, read first (avoidedListsFor).
+   */
+  async function pathfinderSettings(graph: SystemGraph, stored: StoredAutopilotSettings = autopilotSettings()): Promise<AutopilotSettings> {
+    return autopilotSettingsFrom(stored, (id) => graph.systemsIn?.(id) ?? [id], await avoidedListsFor(stored));
+  }
+
+  // The server's lists the avoidance ticks add (stateinterface.py GetAvoidanceList, 68 to 83), read as the client
+  // reads them: the systems where pods were killed in the last day by the map service's GetHistory each time
+  // (clientPathfinderService.py UpdatePodKillList, 238 to 249: each system whose value3 is above nothing; the answer
+  // kept by the transport for as long as the server says, as the client's object cache keeps it); the Triglavians'
+  // and EDENCOM's minor victory systems once (mapSvc.py 504 to 513, Memoize); EDENCOM's fortress systems each time
+  // (501 to 502). A read that fails adds nothing, and is not kept.
+  const MAP_HISTORY_STAT_KILLS = 3;
+  let triglavianVictories: readonly number[] | null = null;
+  let edencomVictories: readonly number[] | null = null;
+  const systemIDsIn = (answer: JsonValue): number[] => {
+    const items = isListValue(answer) ? answer.items : Array.isArray(answer) ? answer : [];
+    return items.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  };
+  async function avoidedListsFor(stored: StoredAutopilotSettings): Promise<AvoidedLists> {
+    const lists: { -readonly [Tick in AvoidanceTick]?: readonly number[] } = {};
+    if (avoidanceTickOn(stored, "pfAvoidPodKill")) {
+      try {
+        const rows = readRowsetRows(await bridgeAsk("map", "GetHistory", [MAP_HISTORY_STAT_KILLS, 24]));
+        lists.pfAvoidPodKill = rows
+          .filter((row) => Number(row.value3) > 0)
+          .map((row) => Number(row.solarSystemID))
+          .filter((id) => Number.isSafeInteger(id) && id > 0)
+          .sort((a, b) => a - b);
+      } catch {
+        lists.pfAvoidPodKill = [];
+      }
+    }
+    if (avoidanceTickOn(stored, "pfAvoidTriglavianTales")) {
+      if (triglavianVictories === null) {
+        triglavianVictories = await bridgeAsk("map", "GetTriglavianMinorVictorySystems", []).then(systemIDsIn, () => null);
+      }
+      lists.pfAvoidTriglavianTales = triglavianVictories ?? [];
+    }
+    if (avoidanceTickOn(stored, "pfAvoidEdencomSystems")) {
+      const fortresses = await bridgeAsk("map", "GetEdencomFortressSystems", []).then(systemIDsIn, () => []);
+      if (edencomVictories === null) {
+        edencomVictories = await bridgeAsk("map", "GetEdencomMinorVictorySystems", []).then(systemIDsIn, () => null);
+      }
+      lists.pfAvoidEdencomSystems = [...fortresses, ...(edencomVictories ?? [])];
+    }
+    return lists;
+  }
+
+  // The jump gates the pathfinder may take (nav/jumpGates.ts), as the client's pathfinder service keeps them
+  // (lastJumpGatesLoaded): read as the pathfinder is first wanted for a pilot (Initialize, 190 to 203), read again when
+  // Include Jump Gates is clicked (UpdateJumpGates by OnMapShowsJumpGatesChanged) and each hour (autopilot.py 207,
+  // UpdateJumpGatesTimerThread). None while the tick is off; a read that fails gives none, and is not kept.
+  const JUMP_GATES_READ_AGAIN_MS = 60 * 60 * 1000;
+  let jumpGatesKept: { readonly characterID: number | null; readonly readAt: number; readonly jumps: readonly JumpGateJump[] } | null = null;
+  async function availableJumpGates(graph: SystemGraph): Promise<readonly JumpGateJump[]> {
+    const characterID = onlineCharacterID();
+    const kept = jumpGatesKept;
+    if (kept !== null && kept.characterID === characterID && Date.now() - kept.readAt < JUMP_GATES_READ_AGAIN_MS) return kept.jumps;
+    if (!includingJumpGates(autopilotSettings())) {
+      jumpGatesKept = { characterID, readAt: Date.now(), jumps: [] };
+      return [];
+    }
+    let access: ReturnType<typeof decodeJumpBridgesWithMyAccess>;
+    try {
+      access = decodeJumpBridgesWithMyAccess(await bridgeAsk("structureDirectory", "GetJumpBridgesWithMyAccess", []));
+    } catch {
+      return [];
+    }
+    const jumps = availableJumpGateJumps(access, (fromSystemID, toSystemID) => graph.neighbors(fromSystemID).some((edge) => edge.toSystemID === toSystemID));
+    jumpGatesKept = { characterID, readAt: Date.now(), jumps };
+    return jumps;
+  }
+  /** The pathfinder's map: the stargates' jumps and the jump gates the pilot may take. */
+  async function pathfinderMap(graph: SystemGraph): Promise<AutopilotMap> {
+    return autopilotMap(graph, await availableJumpGates(graph));
+  }
+
+  /**
+   * Include Jump Gates clicked (infoPanelRoute.py OnCheckBoxUseJumpGates, 196 to 200): the setting its opposite, then
+   * OnMapShowsJumpGatesChanged (autopilot.py UpdateJumpGatesAndRoute, 634 to 637): the jump gates read again, and the
+   * route optimized.
+   */
+  function clickIncludeJumpGates(): StoredAutopilotSettings {
+    jumpGatesKept = null;
+    const stored = changeAutopilotSettings(withIncludeJumpGatesClicked);
+    void optimizeRoute().catch(() => undefined);
+    return stored;
+  }
+
+  /**
+   * One of the route panel's avoiding ticks clicked (infoPanelRoute.py 163 to 189): the setting changed, and where it
+   * is turned on, the tick's warning put up first.
+   */
+  function clickAvoidingTick(tick: AvoidanceTick | "pfAvoidSystems"): StoredAutopilotSettings {
+    const before = autopilotSettings();
+    const turningOn = tick === "pfAvoidSystems" ? !(before.pfAvoidSystems ?? false) : !avoidanceTickOn(before, tick);
+    if (turningOn) sayDialog(AVOIDING_DIALOGS[tick], null, "Avoiding these may make the autopilot's routes very long.");
+    return changeAutopilotSettings((stored) => (tick === "pfAvoidSystems" ? withAvoidSystemsClicked(stored) : withAvoidanceTickClicked(stored, tick)));
+  }
   function changeAutopilotSettings(change: (stored: StoredAutopilotSettings) => StoredAutopilotSettings): StoredAutopilotSettings {
-    const stored = change(autopilotSettings());
+    const before = autopilotSettings();
+    const stored = change(before);
+    if (stored === before) return stored;
     const characterID = autopilotKept.characterID;
     autopilotKept = { characterID, stored };
     if (characterID !== null) {
       saveAutopilotSettings(settingsStorage, characterID, stored);
     }
+    routeSettingsSignal.set(stored);
     // The client's pathfinder keeps what it has worked out by its settings, and works it out again when they change.
     store.apply({ type: "names/autopilot-jumps-cleared" });
+    // And says so (UpdatesAutopilot, OnAutopilotUpdated): its star map plots the route again (starMapSvc.py 2645), and
+    // its autopilot flies the route as it is plotted at its next Update (autopilot.py 291). So a run under way here is
+    // planned again, from where the ship is.
+    replanAutopilotRun();
     return stored;
+  }
+  function replanAutopilotRun(): void {
+    if (!autopilotSignal.get() || autopilotStarting) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) return;
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    startAutopilotRun(next);
+  }
+  /** The settings as a window follows them: what is kept for the pilot at the helm, read on the first look. */
+  const routeSettingsView: ReadableSignal<StoredAutopilotSettings> = {
+    get: () => autopilotSettings(),
+    subscribe: (listener) => {
+      autopilotSettings();
+      return routeSettingsSignal.subscribe(listener);
+    },
+  };
+
+  /**
+   * The route window's waypoints (autopilotSettings.py LoadWaypoints, 104 to 170, and _GetWaypointInfo, 172 to 180):
+   * each waypoint with what it is (a system's type, a station's, a structure's) and the places it is in, and the
+   * systems the autopilot's route goes through to it from the last waypoint named (GetRouteBetween, starMapSvc.py
+   * 2430: the path between their systems, less its two ends; none where no path reaches).
+   */
+  async function routeWindowWaypoints(): Promise<RouteWindowWaypoints | null> {
+    const waypoints = heldWaypoints();
+    const currentSystemID = pilotPlace().solarSystemID;
+    if (waypoints.length === 0 || currentSystemID === null) return null;
+    const graph = await loadRouteGraph();
+    const map = await pathfinderMap(graph);
+    const settings = await pathfinderSettings(graph);
+    const parentsOf = (id: number | null): number[] => {
+      const out: number[] = [];
+      for (let at = id === null ? null : graph.parentOf?.(id) ?? null; at !== null; at = graph.parentOf?.(at) ?? null) out.push(at);
+      return out;
+    };
+    const listed: RouteWindowWaypoint[] = [];
+    let fromSystemID: number | null = currentSystemID;
+    for (const id of waypoints) {
+      let systemID: number | null;
+      let what: NameRef | null;
+      let within: number[];
+      if (id >= 30_000_000 && id <= 39_999_999) {
+        systemID = id;
+        what = { kind: "type", id: TYPE_SOLAR_SYSTEM };
+        within = parentsOf(id);
+      } else if (id >= 60_000_000 && id < 64_000_000) {
+        systemID = await waypointSystemOf(id);
+        what = { kind: "stationType", id };
+        within = systemID === null ? [] : [systemID, ...parentsOf(systemID)];
+      } else {
+        // A structure the directory knows (its answer's solarSystemID and typeID); one it does not know is left out.
+        const info = await structureInfo(id).catch(() => null);
+        if (info === null) continue;
+        systemID = info.solarSystemID;
+        what = info.typeID === null ? null : { kind: "type", id: info.typeID };
+        within = parentsOf(systemID);
+      }
+      const way = fromSystemID === null || systemID === null ? null : autopilotPath(map, fromSystemID, systemID, settings);
+      listed.push({ id, what, within, between: way === null ? [] : way.slice(1, -1) });
+      fromSystemID = systemID;
+    }
+    return { currentSystemID, waypoints: listed };
+  }
+
+  /** The route window's avoidance list (LoadAvoidance, 182 to 213): each place on it, named by its group (mapSvc.GetItem's typeID). */
+  async function routeWindowAvoidance(): Promise<readonly RouteWindowPlace[]> {
+    const items = avoidanceItems(autopilotSettings());
+    let graph: SystemGraph | null = null;
+    try {
+      graph = await loadRouteGraph();
+    } catch {
+      graph = null;
+    }
+    return items.map((id) => {
+      const typeID = id >= 30_000_000 && id <= 39_999_999 ? TYPE_SOLAR_SYSTEM : id >= 20_000_000 && id <= 29_999_999 ? TYPE_CONSTELLATION : id >= 10_000_000 && id <= 19_999_999 ? TYPE_REGION : null;
+      const within: number[] = [];
+      for (let at = graph?.parentOf?.(id) ?? null; at !== null; at = graph?.parentOf?.(at) ?? null) within.push(at);
+      return { id, what: typeID === null ? null : { kind: "typeGroup", id: typeID }, within };
+    });
+  }
+
+  /** The route window's drag and drop (ChangeWaypointSorting), then the waypoints set (starMapSvc.SetWaypoints, 2363 to 2368). */
+  function moveWaypoint(index: number, orderID: number): void {
+    const next = movedWaypoint(heldWaypoints(), index, orderID);
+    if (next === null) return;
+    putWaypoints(next);
+    waypointsArrived();
+    autopilotRouteChanged();
   }
 
   // The jumps on the autopilot's route from a system to every system it reaches, with the pilot's settings: what
   // the client's own lists count (GetAutopilotJumpCount), and what a bot would have to fly.
   async function autopilotDistancesFrom(fromSystemID: number): Promise<Map<number, number>> {
-    const settings = autopilotSettingsFrom(autopilotSettings());
-    return autopilotDistances(autopilotMap(await loadRouteGraph()), fromSystemID, settings);
+    const stored = autopilotSettings();
+    const graph = await loadRouteGraph();
+    return autopilotDistances(await pathfinderMap(graph), fromSystemID, await pathfinderSettings(graph, stored));
   }
 
   // The jumps on the autopilot's route, worked out here as the client works them out
@@ -9860,7 +11647,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!Number.isSafeInteger(fromSystemID) || fromSystemID <= 0) {
       return;
     }
-    const settings = autopilotSettingsFrom(autopilotSettings());
+    const stored = autopilotSettings();
     const held = store.names.get().autopilotJumps;
     const keyOf = (toID: number): string => `${fromSystemID}:${toID}`;
     const wanted = [...new Set(toSystemIDs)].filter((toID) => Number.isSafeInteger(toID) && toID > 0 && !(keyOf(toID) in held));
@@ -9868,8 +11655,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     void loadRouteGraph()
-      .then((graph) => {
-        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, settings);
+      .then(async (graph) => {
+        const settings = await pathfinderSettings(graph, stored);
+        const map = await pathfinderMap(graph);
+        // The settings changed while the server's lists were read: what was worked out with the old is not kept.
+        if (autopilotSettings() !== stored) return;
+        const counts = autopilotJumpCounts(map, fromSystemID, wanted, settings);
         store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
       })
       // Without the map nothing is kept: a later ask reads it again.
@@ -9930,6 +11721,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // this was the menu's warp at nought (R24 slice A), which a client's
         // autopilot does not make.
         await warpAsTheAutopilot(destinationID);
+        sayAutopilotFlying("AutoPilotWarpingTo", routePlaceName(destinationID));
       },
       approach: async (destinationID, byMenu) => {
         // The autopilot's own approach is the throttle and a follow at nought
@@ -9937,9 +11729,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // metres with no throttle (ShipApproach): a pilot's own Dock or Jump, and
         // the autopilot's last station under fifty kilometres.
         await approachShip(destinationID, byMenu ? null : 0);
+        if (!byMenu) sayAutopilotFlying("AutoPilotApproaching", null);
       },
-      jump: async (fromGateID, toGateID) => {
-        await jumpStep(fromGateID, toGateID);
+      jump: async (fromGateID, toGateID, throughJumpGate) => {
+        // (The system jumped to, named before the jump: the route is the one it is on. A jump gate's jump is said as a
+        // stargate's is, AutoPilotJumping with the system: autopilot.py 380.)
+        const into = routePlaceName(fromGateID);
+        await (throughJumpGate === true ? jumpGateStep(fromGateID) : jumpStep(fromGateID, toGateID));
+        sayAutopilotFlying("AutoPilotJumping", into);
       },
       dock: async (stationID) => {
         await dockStep(stationID);
@@ -9982,13 +11779,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // A waypoint changed while it flies leaves the run going to the waypoint it set out for.
   const waypointsSignal = createSignal<readonly number[]>([]);
   const autopilotSignal = createSignal(false);
-  const autopilotSaidSignal = createSignal<{ readonly dialog: string; readonly n: number } | null>(null);
   let waypointsOwner: number | null = null;
-  let autopilotSaidCount = 0;
 
+  /** The page's own words for the autopilot's and the star map's messages, where the install's are not to hand. */
+  const AUTOPILOT_OWN: Readonly<Record<string, string>> = {
+    AutoPilotEnabled: "Autopilot on",
+    AutoPilotDisabled: "Autopilot off",
+    AutoPilotWaypointReached: "Autopilot off at a waypoint",
+    AutoPilotDisabledNoPathSet: "Autopilot off: nowhere to go",
+    WaypointAlreadySet: "That place is on the route already",
+    WaypointAlreadyInConstellation: "You are in that constellation",
+    WaypointAlreadyInRegion: "You are in that region",
+    CantSetWaypoint: "That place cannot be on the route",
+  };
+
+  /**
+   * The autopilot's messages as it flies (autopilot.py): AutoPilotWarpingTo after its warp (AP_WarpToDestID, 466),
+   * AutoPilotApproaching after its approach (AP_ApproachDestID, 455), AutoPilotJumping after its jump (359), each
+   * where the autopilot is on and not for a pilot's own Dock or Jump. `what` is the place's name: the system a gate
+   * leads to, or the station (jumpToLocationName, 331 to 334).
+   */
+  function sayAutopilotFlying(dialog: "AutoPilotWarpingTo" | "AutoPilotApproaching" | "AutoPilotJumping", what: string | null): void {
+    if (!autopilotSignal.get()) return;
+    const own = dialog === "AutoPilotApproaching" ? "Approaching"
+      : `${dialog === "AutoPilotJumping" ? "Jumping to" : "Warping to"} ${what ?? "the next place"}`;
+    sayDialog(dialog, what === null ? null : { type: "dict", entries: [["what", what]] }, own);
+  }
+
+  /** The name of the place a gate on the route leads to, or of the route's station; null where it is not known. */
+  function routePlaceName(gateOrStationID: number): string | null {
+    const travel = store.travel.get();
+    const hop = travel.route.find((step) => step.gateToWarpID === gateOrStationID);
+    if (hop !== undefined) return hop.toSystemName;
+    return travel.destinationStationID === gateOrStationID ? travel.destinationName : null;
+  }
+
+  /**
+   * autopilot.py SetOn and SetOff (84 to 143) and starMapSvc.SetWaypoint (2327 to 2344): prompt_player_fsd_dialog of
+   * each message; a place that is no destination is its Command, worded by UI/Map/StarMap/CantSetWaypoint (2330).
+   */
   function sayAutopilot(dialog: string): void {
-    autopilotSaidCount += 1;
-    autopilotSaidSignal.set({ dialog, n: autopilotSaidCount });
+    if (dialog === "CantSetWaypoint") {
+      sayDialog("Command", { type: "dict", entries: [["command", [UE_LOC, "UI/Map/StarMap/CantSetWaypoint"]]] }, AUTOPILOT_OWN.CantSetWaypoint ?? dialog);
+      return;
+    }
+    sayDialog(dialog, null, AUTOPILOT_OWN[dialog] ?? dialog);
   }
 
   /** The waypoints of the pilot at the helm: what is kept for it, read again where the pilot is another. */
@@ -9996,10 +11831,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const characterID = onlineCharacterID();
     if (characterID !== waypointsOwner) {
       waypointsOwner = characterID;
-      waypointsSignal.set(characterID === null ? [] : readWaypoints(characterID));
+      keptWaypoints = characterID === null ? [] : readWaypoints(characterID);
+      waypointsSignal.set(keptWaypoints);
       autopilotSignal.set(false);
+      void recheckWaypoints();
     }
     return waypointsSignal.get();
+  }
+
+  /** The waypoints kept for the pilot at the helm (the char UI setting autopilot_waypoints), whether valid now or not. */
+  let keptWaypoints: readonly number[] = [];
+
+  /**
+   * GetWaypoints (starMapSvc.py 2370 to 2376): the kept waypoints, each checked again as a destination
+   * (_IsDestinationValid, with the pilot where it is now); where one is none, no waypoints at all, the kept ones
+   * left kept. Checked when they are read for a pilot and at each change of the pilot's system; an autopilot on
+   * with its route gone is off, as its Update finds no path.
+   */
+  async function recheckWaypoints(): Promise<void> {
+    const kept = keptWaypoints;
+    if (kept.length === 0) return;
+    const facts = await Promise.all(kept.map((id) => destinationFacts(id)));
+    if (keptWaypoints !== kept) return;
+    const valid = kept.every((id, i) => destinationValid(id, facts[i]!));
+    const next = valid ? kept : [];
+    if (next === waypointsSignal.get()) return;
+    waypointsSignal.set(next);
+    autopilotRouteChanged();
   }
 
   /** The waypoints as a window reads them: what is kept for the pilot at the helm, read on the first look. */
@@ -10015,6 +11873,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const characterID = onlineCharacterID();
     if (characterID === null) return;
     heldWaypoints();
+    keptWaypoints = next;
     waypointsSignal.set(next);
     keepWaypoints(characterID, next);
   }
@@ -10035,33 +11894,171 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (rest === null) return false;
     putWaypoints(rest);
     if (autopilotSignal.get()) {
-      autopilotSignal.set(false);
-      sayAutopilot("AutoPilotWaypointReached");
+      // (2448 to 2450): switched off here where the route panel's Disable Autopilot at Each Waypoint is ticked;
+      // otherwise left on, to fly on along the route.
+      if (disableAutopilotAtEachWaypoint.get()) {
+        autopilotSignal.set(false);
+        sayAutopilot("AutoPilotWaypointReached");
+      } else {
+        flyOnAutopilot();
+      }
     }
     return true;
   }
 
-  /** SetWaypoint (2327 to 2361): the place put on the list, or the client's refusal said; then UpdateRoute. */
-  function setWaypointAs(destinationID: number, clearOthers: boolean): void {
-    const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace());
+  /**
+   * The autopilot left on past a waypoint, as its Update finds it every 2000 ms (autopilot.py 290 onward): with no
+   * waypoint left it is switched off ("no destination path set", 290 to 293); docked, it waits, finding no ballpark
+   * (300 to 302); in space it flies the route to the next waypoint, where the route loop is not flying already.
+   */
+  function flyOnAutopilot(): void {
+    if (!autopilotSignal.get()) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) {
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotDisabledNoPathSet");
+      return;
+    }
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    const status = store.travel.get().status;
+    if (autopilotStarting || status === "running" || status === "paused") return;
+    startAutopilotRun(next);
+  }
+
+  /** The autopilot's run to a waypoint: planned from where the ship is, and off where none could be planned. */
+  function startAutopilotRun(destinationID: number): void {
+    autopilotTarget = destinationID;
+    autopilotStarting = true;
+    void startRoute(destinationID).then((outcome) => {
+      if (!outcome.started && autopilotSignal.get()) {
+        autopilotSignal.set(false);
+        sayAutopilot("AutoPilotDisabled");
+      }
+    }).catch(() => undefined).finally(() => {
+      autopilotStarting = false;
+    });
+  }
+  /** A route being planned for the autopilot: no second is started meanwhile. */
+  let autopilotStarting = false;
+  /** The waypoint the autopilot's run flies to. */
+  let autopilotTarget: number | null = null;
+
+  /**
+   * The structures the structure directory has answered for (structureDirectory.py GetStructureInfo, 33 to 39: asked
+   * once for each, by the remote service, and kept): its system and type where it knows one, null where it does not.
+   * A read that fails is not kept.
+   */
+  const knownStructures = new Map<number, { readonly solarSystemID: number | null; readonly typeID: number | null } | null>();
+  async function structureInfo(structureID: number): Promise<{ readonly solarSystemID: number | null; readonly typeID: number | null } | null> {
+    const kept = knownStructures.get(structureID);
+    if (kept !== undefined) return kept;
+    const info = await bridgeAsk("structureDirectory", "GetStructureInfo", [structureID]);
+    const idOf = (key: string): number | null => {
+      const value = Number(readKeyVal(info, key));
+      return Number.isSafeInteger(value) && value > 0 ? value : null;
+    };
+    const known = info === null || info === undefined ? null : { solarSystemID: idOf("solarSystemID"), typeID: idOf("typeID") };
+    knownStructures.set(structureID, known);
+    return known;
+  }
+  async function structureKnown(structureID: number): Promise<boolean> {
+    return (await structureInfo(structureID)) !== null;
+  }
+
+  /**
+   * SetWaypoint (2327 to 2361): the place put on the list, or the client's refusal said; then UpdateRoute. A structure
+   * is a destination where the directory knows it (_IsDestinationValid, 2317); asking is the only wait, so a station or
+   * a system is put on the list at once.
+   */
+  async function setWaypointAs(destinationID: number, clearOthers: boolean): Promise<void> {
+    const facts = await destinationFacts(destinationID);
+    const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace(), destinationValid(destinationID, facts));
     if ("refused" in made) {
       sayAutopilot(made.refused);
       return;
     }
     putWaypoints(made.waypoints);
     waypointsArrived();
+    autopilotRouteChanged();
+  }
+
+  /** A station's system and type as the map tells them (api.resolveDestination), asked once for each and kept. */
+  const stationFacts = new Map<number, { readonly solarSystemID: number; readonly stationTypeID: number | null } | null>();
+
+  /**
+   * What _IsDestinationValid reads (nav/waypoints.ts destinationValid): the map's Triglavian systems, the place as a
+   * station of the map, and whether the structure directory knows it. A read that fails refuses nothing.
+   */
+  async function destinationFacts(destinationID: number): Promise<DestinationFacts> {
+    let isTriglavian: ((systemID: number) => boolean) | null = null;
+    try {
+      const graph = await loadRouteGraph();
+      if (graph.isTriglavian) isTriglavian = (systemID) => graph.isTriglavian!(systemID);
+    } catch {
+      isTriglavian = null;
+    }
+    let station: DestinationFacts["station"] = null;
+    if (destinationID >= 60_000_000 && destinationID < 64_000_000) {
+      if (stationFacts.has(destinationID)) {
+        station = stationFacts.get(destinationID) ?? null;
+      } else {
+        try {
+          const resolved = await api.resolveDestination(destinationID, callOptions);
+          station = resolved.kind === "station" && resolved.solarSystemID !== null
+            ? { solarSystemID: resolved.solarSystemID, stationTypeID: resolved.stationTypeID }
+            : null;
+          stationFacts.set(destinationID, station);
+        } catch {
+          station = "unread";
+        }
+      }
+    }
+    let knownStructure = false;
+    if (!isWaypointPlace(destinationID) && isPlayerItemID(destinationID)) {
+      try {
+        knownStructure = await structureKnown(destinationID);
+      } catch {
+        knownStructure = false;
+      }
+    }
+    return { station, knownStructure, isTriglavian, currentSystemID: pilotPlace().solarSystemID };
   }
 
   function setDestination(destinationID: number): void {
-    setWaypointAs(destinationID, true);
+    void setWaypointAs(destinationID, true);
   }
 
   function addWaypoint(destinationID: number): void {
-    setWaypointAs(destinationID, false);
+    void setWaypointAs(destinationID, false);
   }
 
   function clearWaypoints(locationID?: number): void {
     putWaypoints(withoutWaypoint(heldWaypoints(), locationID ?? null));
+    autopilotRouteChanged();
+  }
+
+  /**
+   * The route changed by the pilot while the autopilot is on. The client's autopilot reads the star map's path afresh
+   * at each Update, every 2000 ms (autopilot.py 290 onward), so it heads for the new route's next place at once (a
+   * warp under way is finished first: Update does nothing in warp, 307 to 308); and with no waypoint left it is
+   * switched off ("no destination path set", 290 to 293). The page's run flies to one waypoint, so a new first
+   * waypoint is a new run, planned from where the ship is.
+   */
+  function autopilotRouteChanged(): void {
+    if (!autopilotSignal.get()) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) {
+      autopilotSignal.set(false);
+      autopilotTarget = null;
+      autopilot?.abort();
+      sayAutopilot("AutoPilotDisabledNoPathSet");
+      return;
+    }
+    if (next === autopilotTarget) return;
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    startAutopilotRun(next);
   }
 
   async function activateAutopilot(): Promise<void> {
@@ -10077,7 +12074,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       sayAutopilot("AutoPilotDisabledNoPathSet");
       return;
     }
-    const outcome = await startRoute(first);
+    autopilotStarting = true;
+    autopilotTarget = first;
+    let outcome: RouteStartOutcome;
+    try {
+      outcome = await startRoute(first);
+    } finally {
+      autopilotStarting = false;
+    }
     if (!outcome.started && autopilotSignal.get()) {
       autopilotSignal.set(false);
       sayAutopilot("AutoPilotDisabled");
@@ -10098,6 +12102,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!autopilotSignal.get()) return;
     if (travel.status === "arrived") {
       if (!waypointsArrived()) {
+        // The waypoint was taken off already, by the session's change (observeFlightStatus): where the autopilot is
+        // left on past waypoints it flies on; otherwise it is off at the route's end.
+        if (!disableAutopilotAtEachWaypoint.get()) {
+          flyOnAutopilot();
+          return;
+        }
         autopilotSignal.set(false);
         sayAutopilot("AutoPilotDisabled");
       }
@@ -10184,10 +12194,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
     //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
     //    nav/autopilotSettings.ts), not the fewest jumps.
-    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, autopilotSettingsFrom(autopilotSettings()));
-    // The way is through this same map, so each of its jumps has a gate.
-    const route = way === null ? null : routeAlong(graph, way);
-    if (route === null) {
+    const way = autopilotPath(await pathfinderMap(graph), originSystem, targetSystemID, await pathfinderSettings(graph));
+    // Each of the way's jumps is a stargate's, or where Include Jump Gates lets it go through an Ansiblex, that jump
+    // gate's (a hop the loop flies as the client's autopilot does: autopilot.py 348 to 389).
+    const route = way === null ? null : routeAlong(graph, way, await availableJumpGates(graph));
+    if (route === null || !route.reachable) {
       return planFailed(
         `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`,
       );
@@ -13762,7 +15773,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);
           else if (action.kind === "inviteToFleet") await inviteToFleetCall(bridgeDo, action.charID, onlineCharacterID());
           else if (action.kind === "acceptFleetInvite") await acceptFleetInviteCall(bridgeDo, action.fleetID, false);
-          else applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
+          else {
+            expectingInvite = action.fleetID;
+            applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
+          }
         } catch (error) {
           outcome = "unknown"; code = errorWords(error);
           if (error instanceof BridgeCallError) { diagnosticCode = error.code; httpStatus = error.status; }
@@ -16239,6 +18253,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // it is the only place that answer exists -- so it is kept rather
             // than discarded, and a throw leaves the previous value alone so a
             // failed apply reads as "no answer yet" and not as somebody else's.
+            expectingInvite = action.fleetID;
             const outcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
             fleetApplication = { fleetID: action.fleetID, outcome, ...(action.supportOrder ? { supportOrder: action.supportOrder } : {}) };
             return;
@@ -16289,9 +18304,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "scannerLaunch":
             await scannerWrites.launch(await api.loadScannerOperations(callOptions));
             return;
-          case "scannerAnalyze":
-            await scannerWrites.analyze(await api.loadScannerOperations(callOptions));
+          case "scannerAnalyze": {
+            const read = await api.loadScannerOperations(callOptions);
+            // In an Abyssal pocket the client asks its pilot first (scanSvc.RequestScans_Check, 183 to 187): a bot
+            // goes on only where the pilot has kept the Yes.
+            if (isAbyssalSystem(read.solarSystemID) && !dialogYesKept(ABYSSAL_SCAN_QUESTION)) {
+              throw new Error(ABYSSAL_SCAN_UNANSWERED);
+            }
+            await scannerWrites.analyze(read);
             return;
+          }
           case "scannerRecover":
             await scannerWrites.recover(await api.loadScannerOperations(callOptions), scannerShip());
             return;
@@ -16641,6 +18663,68 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           ? distances.get(match.solarSystemID) ?? null
           : null,
     }));
+  }
+
+  /**
+   * The route panel's search (infoPanelRoute.py SearchForLocation, 134 to 144, by way of searchUtil.GetResultsByGroupID,
+   * 274 to 282): the search service's Query with the text (its asterisks taken out and trimmed, _FormatSearchInput 304
+   * to 307), the five kinds of place in the client's order (solar systems, constellations, regions, stations, and
+   * structures with their data), and partial terms as `exact`. Refused before asking as _ValidateSearchInput refuses
+   * (310 to 319), said as the client says it; then null. The places found by kind, each kind sorted by name.
+   */
+  async function searchLocations(text: string): Promise<ReadonlyMap<number, readonly LocationFound[]> | null> {
+    const searchStr = text.replace(/\*/g, "").trim();
+    if (searchStr.length < 1) {
+      sayDialog("LookupStringMinimum", { type: "dict", entries: [["minimum", 1]] }, "Type something to search for.");
+      return null;
+    }
+    if (searchStr.length >= 100) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", [UE_LOC, "UI/Common/SearchStringTooLong"]]] }, "That is too long to search for.");
+      return null;
+    }
+    if (!searchStr.split(/\s+/).some((term) => term.length >= 3)) {
+      sayDialog("PartialSearchLessThanMinLength", { type: "dict", entries: [["minChars", 3]] }, "A word of three letters or more is needed.");
+      return null;
+    }
+    const answer = await bridgeAsk("search", "Query", [searchStr, [...ROUTE_SEARCH_KINDS]], { exact: 0 });
+    const found = new Map<number, LocationFound[]>();
+    const refs: NameRef[] = [];
+    for (const [key, value] of readDictPairs(answer)) {
+      const resultType = Number(key);
+      if (!Number.isSafeInteger(resultType)) continue;
+      const items = isListValue(value) ? value.items : Array.isArray(value) ? value : [];
+      const places: LocationFound[] = [];
+      for (const item of items) {
+        if (resultType === STRUCTURE_WITH_INLINED_DATA) {
+          // (searchUtil.py 219 to 225: each a structure's structureID, typeID and itemName.)
+          const id = Number(readKeyVal(item, "structureID"));
+          const name = readKeyVal(item, "itemName");
+          const systemID = Number(readKeyVal(item, "solarSystemID"));
+          if (Number.isSafeInteger(id) && id > 0) {
+            places.push({ resultType, id, name: typeof name === "string" ? name : String(id), solarSystemID: Number.isSafeInteger(systemID) && systemID > 0 ? systemID : null });
+          }
+          continue;
+        }
+        const id = Number(item);
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        places.push({ resultType, id, name: "", solarSystemID: resultType === 7 ? id : null });
+        refs.push({ kind: LOCATION_NAME_KINDS[resultType] ?? "system", id });
+      }
+      found.set(resultType, places);
+    }
+    // (A station's system, which its entry is rated and counted by: cfg.stations' solarSystemID, the page's resolver.)
+    const stations = found.get(9) ?? [];
+    const stationSystems = await Promise.all(stations.map((place) => waypointSystemOf(place.id)));
+    found.set(9, stations.map((place, i) => ({ ...place, solarSystemID: stationSystems[i] ?? null })));
+    await resolveNamesNow(refs);
+    const resolved = store.names.get().resolved;
+    return new Map([...found].map(([resultType, places]) => [resultType, places
+      .map((place) => {
+        if (place.name !== "") return place;
+        const name = resolved[nameKey(LOCATION_NAME_KINDS[resultType] ?? "system", place.id)];
+        return { ...place, name: typeof name === "string" && name !== "" ? name : String(place.id) };
+      })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))]));
   }
 
   // --- R7c Names everywhere (batch name cache) -----------------------------
@@ -16994,16 +19078,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // Set Destination to its station (the client's map menu of the agent's place); nothing flies until the
     // autopilot is on.
-    setDestination(agent.stationID);
+    await setWaypointAs(agent.stationID, true);
   }
 
   return {
     droneRecovery: readonlySignal(recoverySignal),
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
-    autopilotSaid: readonlySignal(autopilotSaidSignal),
+    routeOfWaypoints,
+    optimizeRoute,
+    routeWindowWaypoints,
+    routeWindowAvoidance,
+    moveWaypoint,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
+    answerDialog,
+    keepDialogAnswer,
+    keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
     setDestination,
@@ -17088,6 +19179,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const result = await api.selectCharacter(characterID, callOptions);
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      walletJournalGeneration += 1;
+      walletJournalSignal.set(NO_WALLET_JOURNAL);
+      walletOverviewGeneration += 1;
+      walletOverviewSignal.set(NO_WALLET_OVERVIEW);
+      walletSharesSignal.set(NO_WALLET_SHARES);
+      // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's; and so is the formation.
+      probeResultsBySystem.clear();
+      probeFormation = INITIAL_FORMATION;
+      probesInFormation = new Set();
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;
@@ -17123,6 +19223,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      // The mission tracker's registration as the client's info panels start (RegisterMissionTracking).
+      void registerMissionTracking().catch(() => {});
       await refreshStationPanel();
     },
 
@@ -17140,6 +19242,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runMutation(() => boardShipNow(shipID));
       await refreshActiveShipViews();
     },
+
+    askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
 
     async boardCorvette(sure) {
       // The page's own call (bridge/shipWrites.ts), as the client's lobby makes it (station.CreateNewbieShip): the
@@ -17561,6 +19665,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     analyzeScannerSignatures,
     recoverScannerProbes,
     reconnectScannerProbes,
+    setProbeRangeStep,
+    recoverChosenProbes,
+    launchProbeFormation,
+    ignoreProbeResults,
+    ignoreOtherProbeResults,
+    showIgnoredProbeResult,
+    clearIgnoredProbeResults,
+    warpToProbeResult,
+    alignToProbeResult,
+    setProbeResultFilterActive,
+    setShowingProbeAnomalies,
+    createProbeResultFilter,
+    editProbeResultFilter,
+    deleteProbeResultFilter,
+    abyssGameModeSetting,
+    keepAbyssGameModeSetting,
+    filamentFacts,
+    abyssShipTypeLists,
+    deployAbyssalFilament,
     loadFleet,
     formFleet,
     inviteFleetMember,
@@ -17656,6 +19779,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepContactsSearchSettings,
     searchOwners,
     corpTickersEach,
+    ownerTickers: readonlySignal(ownerTickersSignal),
+    requestOwnerTickers,
+    corporationFactions: readonlySignal(corporationFactionsSignal),
+    loadCorporationFactions,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
@@ -17705,8 +19832,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         // The briefing and the objectives are read again for this layout, as for every one, and shown
         // by the client's rule (layOutConversation). Completing a mission pays out: pull the Step-12
-        // reward reads (wallet / LP / standings). The journal always refreshes so the
-        // offered/accepted/cleared state stays truthful.
+        // reward reads (wallet / LP / standings). The journal is not read here: a press that changes it
+        // is followed by the server's OnAgentMissionChange, which reads it again (refreshJournal), as the
+        // client's journal takes it; agentDialogueWindow.ExecuteAgentAction reads nothing of its own.
         await layOutConversation(agentID, decoded);
         //
         // ⚠ PRESSING COMPLETE IS NOT COMPLETING. agentMgr.DoAction answers 200
@@ -17731,7 +19859,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // mission exactly as it was, and the layout above has read it again and keeps showing it.
           await loadRewards();
         }
-        await loadJournal();
       });
     },
 
@@ -17747,6 +19874,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openMissionDetails,
+    missionTracker: readonlySignal(missionTrackerSignal),
+    refreshMissionTracker,
+    waypointSystem: (id) => (id >= 30_000_000 && id < 40_000_000 ? Promise.resolve(id) : waypointSystemOf(id)),
 
     closeMissionDetails() {
       store.apply({ type: "agents/mission-page", page: null });
@@ -17757,6 +19887,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWallet,
     pilotWealth,
     giveMoney,
+    giveIskFromWallet,
 
     loadStandings,
 
@@ -17900,14 +20031,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachMissionLocationCall(bridgeDo, flightNow, spot)));
     },
 
-    async stopShip() {
-      // Retail's Stop cancels the client-side navigation BEFORE the command and
-      // switches the autopilot off after it. Ours is the same order: abort the
-      // browser decide-loop first so it cannot issue another move into the stop,
-      // then tell the server to cut the engines.
-      autopilot?.abort();
-      await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
+    planetLaunches: readonlySignal(planetLaunchesSignal),
+    loadPlanetLaunches,
+    marketTransactions: readonlySignal(marketTransactionsSignal),
+    loadMarketTransactions,
+    walletJournal: readonlySignal(walletJournalSignal),
+    loadWalletJournal,
+    walletOverview: readonlySignal(walletOverviewSignal),
+    abyssalTimer: readonlySignal(abyssalTimerSignal),
+    collapseWarning: readonlySignal(collapseWarningSignal),
+    shipRestrictions: readonlySignal(shipRestrictionsSignal),
+    closeShipRestrictions: () => shipRestrictionsSignal.set(null),
+    shipTypesUnlocked,
+    abyssJump: readonlySignal(abyssJumpSignal),
+    closeAbyssJump: () => abyssJumpSignal.set(null),
+    jumpThroughTrace,
+    abyssObjectives: readonlySignal(abyssObjectivesSignal),
+    activateSpaceThing,
+    loadWalletOverview,
+    walletShares: readonlySignal(walletSharesSignal),
+    loadWalletShares,
+    readCharacterSetting,
+    saveCharacterSetting,
+    requestOwnSecurityStatus,
+
+    async approachPlanetLaunch(containerID) {
+      await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));
     },
+
+    async warpToPlanetLaunch(launchID) {
+      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToLaunchCall(bridgeDo, flightNow, launchID)));
+    },
+
+    removePlanetLaunch,
+
+    stopShip,
 
     loadSpaceSnapshot,
     loadTargets,
@@ -17951,6 +20109,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFlightStep("Jump", () => jumpStep(fromGateID, toGateID));
     },
     jumpThrough,
+    activateGate,
 
     // R30 slice A. A pure read over the cached graph — it issues no game call
     // and starts nothing, so a panel may ask for it on every system change.
@@ -17976,6 +20135,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     startRoute,
 
     searchDestinations,
+    searchLocations,
 
     startFleetCompanion,
     pauseFleetCompanion,
@@ -18152,6 +20312,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return call(bridgeDo, place.itemID, place.folderID, place.label, place.note, place.expiry, place.subfolderID);
     },
 
+    async bookmarkProbeResult(result) {
+      // sensorSuiteService.GetPositionalSiteItemIDFromTargetID (799 to 804): the site among its anomalies and
+      // structures that goes by the result's label, as the page's warp to a result finds it.
+      const now = await readFlightNow();
+      if (!now.inSpace || now.solarSystemID === null) throw new Error("The ship is not in space; undock first.");
+      const sites = sitesLastRead !== null && sitesLastRead.solarSystemID === now.solarSystemID ? sitesLastRead : await readScanFullState(bridgeAsk);
+      const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === result.resultID)?.siteID;
+      if (typeof siteID === "number" && Number.isSafeInteger(siteID) && siteID > 0) {
+        return bookmarkLocationCall(bridgeDo, siteID, result.folderID, result.label, result.note, result.expiry, result.subfolderID);
+      }
+      return bookmarkScanResultCall(bridgeDo, now.solarSystemID, result.resultID, result.folderID, result.label, result.note, result.expiry, result.subfolderID);
+    },
+
     async listBookmarks() {
       const active = await readMyActiveBookmarks(bridgeAsk);
       return active.bookmarks
@@ -18198,9 +20371,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestSystemSecurity,
     requestAutopilotJumps,
     autopilotSettings,
+    routeSettings: routeSettingsView,
     setAutopilotRouteType: (routeType) => changeAutopilotSettings((stored) => withRouteType(stored, routeType)),
     setAutopilotPenalty: (penalty) => changeAutopilotSettings((stored) => withPenalty(stored, penalty)),
-    clickAutopilotAvoidSystems: () => changeAutopilotSettings(withAvoidSystemsClicked),
+    clickAutopilotAvoidSystems: () => clickAvoidingTick("pfAvoidSystems"),
+    clickAutopilotAvoidanceTick: (tick) => clickAvoidingTick(tick),
+    clickIncludeJumpGates,
+    avoidLocation: (id) => changeAutopilotSettings((stored) => withAvoidanceItem(stored, id)),
+    stopAvoidingLocation: (id) => changeAutopilotSettings((stored) => withoutAvoidanceItem(stored, id)),
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?
@@ -18227,7 +20405,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (store.station.get().online === null) {
         return;
       }
-      await api.getFlightStatus(callOptions);
+      try {
+        await api.getFlightStatus(callOptions);
+      } catch (error) {
+        // A pilot not in front whose connection is gone goes offline as one in front does.
+        if (isSessionLost(error)) {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+        }
+        throw error;
+      }
     },
 
     setLivePush(enabled) {
@@ -18245,6 +20432,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (store.station.get().online !== null) {
         startLiveStream();
       }
+    },
+
+    readClosedByServer(characterID: number) {
+      return api.readClosedByServer(characterID, callOptions);
     },
 
     async releaseSession() {

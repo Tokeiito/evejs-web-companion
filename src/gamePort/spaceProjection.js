@@ -202,6 +202,11 @@ function projectEntity(park, ball, slim, ego, placed) {
     categoryID,
     name: text(slim.get("name")) || null,
     ownerID: positive(slim.get("ownerID")),
+    // Whose side it is on, as its slim item says: its corporation, alliance and militia, which the client's overview
+    // reads of any slim item that has them (overviewWindow.py 951 to 966). None where there is none.
+    corporationID: positive(slim.get("corpID")),
+    allianceID: positive(slim.get("allianceID")),
+    warFactionID: positive(slim.get("warFactionID")),
     radius: ball.radius,
     position: vector(placed(ball).p),
     velocity: vector(placed(ball).v),
@@ -216,8 +221,6 @@ function projectEntity(park, ball, slim, ego, placed) {
   if (kind === "ship" || kind === "structure") {
     const security = number(slim.get("securityStatus"));
     row.characterID = positive(slim.get("charID"));
-    row.corporationID = positive(slim.get("corpID"));
-    row.allianceID = positive(slim.get("allianceID"));
     row.securityStatus = security;
     row.maxVelocity = ball.maxVelocity > 0 ? ball.maxVelocity : null;
     row.mode = MODE_NAME[ball.mode] ?? null;
@@ -255,6 +258,16 @@ function projectEntity(park, ball, slim, ego, placed) {
   }
   // importExportUI.py 94: which planet a customs office is, from the office's own slim item.
   if (kind === "orbital") row.planetID = positive(slim.get("planetID"));
+  // movementFunctions.py 557 to 560: an acceleration gate's own object in its dungeon, off its slim item, for the
+  // Ship Restrictions window the client opens on the gate's refusal (GetDungeonShipRestrictions(dungeonID, gateID)).
+  if (groupID === 366) row.dunObjectID = positive(slim.get("dunObjectID"));
+  // AbyssJumpWindow.py AbyssEntranceWindowController and abyss/client/validator.py is_entrance_gate_open: an Abyssal
+  // trace's filament, game mode and whether it is open, off its slim item.
+  if (row.typeID === 48964) {
+    row.abyssFilamentTypeID = positive(slim.get("abyssFilamentTypeID"));
+    row.gameModeID = number(slim.get("gameModeID"));
+    row.isAbyssGateOpen = slim.get("isAbyssGateOpen") === true || number(slim.get("isAbyssGateOpen")) === 1;
+  }
   return row;
 }
 

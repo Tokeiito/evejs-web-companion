@@ -163,6 +163,14 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     miningYieldTypeID: idOrNull(raw.miningYieldTypeID),
     // A customs office's planet, where the BFF says it.
     planetID: idOrNull(raw.planetID),
+    // An acceleration gate's own object in its dungeon, where the BFF says it.
+    dunObjectID: idOrNull(raw.dunObjectID),
+    // An Abyssal trace's filament, game mode and whether it is open, where the BFF says them.
+    ...(raw.abyssFilamentTypeID !== undefined ? {
+      abyssFilamentTypeID: idOrNull(raw.abyssFilamentTypeID),
+      gameModeID: typeof raw.gameModeID === "number" ? raw.gameModeID : null,
+      isAbyssGateOpen: raw.isAbyssGateOpen === true,
+    } : {}),
     beltID: idOrNull(raw.beltID),
     // The rock's ORE GRADE (dogma 2699), stamped by the BFF from static data.
     // An ABSENT oreGrade decodes to null ("unknown"), never 0: 0-Grade ore is a

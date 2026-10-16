@@ -8,14 +8,8 @@ scanner identity and intentional recovery restrictions.
 
 ## Routine and safety authority
 
-`modernDefenderCopy` makes an independent document from the historical routine.
-Storage, home and patrol bindings remain the caller's responsibility. It removes
-the hostile→raw launch watch, replaces stationary combat with mobile combat, and
-places Hull <30% → dock and pause first. Thirty percent is this routine's current
-policy, not a universal safe threshold. Serious hull damage does not automatically
-repair and resume. The historical armor <30% station fallback is retained, with an
-ordinary local armor-repair watch at that same threshold. An absent or already
-working repairer falls through.
+The "Modern Core" copy of the historical routine (`modernDefenderCopy`, never given a
+caller or a screen) was removed on 2026-10-15 at the operator's word.
 
 The shared runner checks explicit escape/pause authority before optional work,
 including an upgrade from a recoverable repair trip to terminal escape. Unreadable

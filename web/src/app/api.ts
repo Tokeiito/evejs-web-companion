@@ -247,6 +247,50 @@ async function getJson(
   return requestJson(path, { method: "GET" }, options);
 }
 
+/**
+ * GET /api/roster/characters: an account's characters as its selection screen lists them, for the Pilot Hangar, read
+ * with no game login (a launcher's listing: a login would close the account's other client). The answer is
+ * charUnboundMgr.GetCharacterSelectionData's, undecoded.
+ */
+export async function readRosterCharacters(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/roster/characters", options);
+  return data.result ?? null;
+}
+
+/** What the game server closed a pilot's connection with, where it said (another login of its account). */
+export interface ClosedByServer {
+  readonly reasonCode: string;
+  readonly reason: string;
+}
+
+/** GET /api/bridge/closed-by-server: what closed this account's pilot, or null where the server closed nothing. */
+export async function readClosedByServer(characterID: number, options: ApiOptions = {}): Promise<ClosedByServer | null> {
+  const data = await getJson(`/api/bridge/closed-by-server?characterID=${characterID}`, options);
+  const closed = data.closed;
+  if (typeof closed !== "object" || closed === null || Array.isArray(closed)) return null;
+  const { reasonCode, reason } = closed as Record<string, JsonValue>;
+  return typeof reasonCode === "string" && typeof reason === "string" ? { reasonCode, reason } : null;
+}
+
+/**
+ * GET /api/bridge/pocket-timer: the Abyssal pocket's timer as the pilot was last told it (the end_time of
+ * OnAddExpiryDurationForAbyssalContent, as the wire carries it), or null; `known` false where nothing is kept.
+ */
+export async function readPocketTimer(options: ApiOptions = {}): Promise<{ readonly known: boolean; readonly endTime: JsonValue | null; readonly room: JsonValue | null }> {
+  const data = await getJson("/api/bridge/pocket-timer", options);
+  return { known: data.known === true, endTime: (data.endTime ?? null) as JsonValue | null, room: (data.room ?? null) as JsonValue | null };
+}
+
+/** GET /api/objectives/chain: an objective chain, its objectives' and tasks' types and its type lists, as the client reads them. */
+export async function loadObjectiveChain(chainID: number, options: ApiOptions = {}): Promise<Readonly<Record<string, JsonValue>>> {
+  return await getJson(`/api/objectives/chain?chainID=${chainID}`, options);
+}
+
+/** GET /api/dungeons/ship-restrictions: a dungeon's ship restrictions from a gate of it, as the BFF answers them. */
+export async function loadShipRestrictions(dungeonID: number, gateID: number | null, options: ApiOptions = {}): Promise<Readonly<Record<string, JsonValue>>> {
+  return await getJson(`/api/dungeons/ship-restrictions?dungeonID=${dungeonID}${gateID !== null ? `&gateID=${gateID}` : ""}`, options);
+}
+
 export async function provisioningOptions(providerCharacterID: number | null, options: ApiOptions = {}): Promise<import("../bridge/provisioning.ts").ProvisioningOptions> {
   const data = await getJson(`/api/bridge/provisioning/options${providerCharacterID ? `?providerCharacterID=${providerCharacterID}` : ""}`, options);
   return data as unknown as import("../bridge/provisioning.ts").ProvisioningOptions;
@@ -1608,6 +1652,27 @@ export async function loadClientMission(missionID: number, options: ApiOptions =
   return data.mission ?? null;
 }
 
+/**
+ * Each wallet journal entry kind's journal message, from the client's own built data (eveaccounting
+ * get_entry_format_localization_id). `available` is false where the table could not be read.
+ */
+export async function loadAccountingEntryTypes(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly journalMessageIDs: Readonly<Record<string, number>> }> {
+  const data = await getJson("/api/client-data/accounting-entry-types", options);
+  return { available: data.available === true, journalMessageIDs: (data.journalMessageIDs ?? {}) as Record<string, number> };
+}
+
+/**
+ * Each NPC corporation's faction, from the client's own built data (npccorporations get_corporation_faction_id), by
+ * the corporation. `available` is false where the table could not be read.
+ */
+export async function loadCorporationFactions(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly factions: Readonly<Record<string, number>> }> {
+  const data = await getJson("/api/client-data/corporation-factions", options);
+  const raw = typeof data.factions === "object" && data.factions !== null && !Array.isArray(data.factions) ? (data.factions as Record<string, JsonValue>) : {};
+  const factions: Record<string, number> = {};
+  for (const [corporationID, factionID] of Object.entries(raw)) if (typeof factionID === "number") factions[corporationID] = factionID;
+  return { available: data.available === true, factions };
+}
+
 /** How the client words each kind of notification, as its own code answers (null where it cannot be read). */
 export async function loadNotificationFormats(options: ApiOptions = {}): Promise<unknown> {
   const data = await getJson("/api/client-data/notification-formats", options);
@@ -2395,6 +2460,10 @@ export interface SystemGraphResult {
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
   /** Each system's security as it was made, by its ID. */
   readonly security: Readonly<Record<string, number>>;
+  /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem). */
+  readonly triglavian: readonly number[];
+  /** Each system's constellation and region, by the system's ID. */
+  readonly within: Readonly<Record<string, readonly [number, number]>>;
 }
 
 /** Fetch the system-adjacency graph for the client-side route solver. */
@@ -2411,6 +2480,11 @@ export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemG
     security:
       typeof data.security === "object" && data.security !== null && !Array.isArray(data.security)
         ? (data.security as Record<string, number>)
+        : {},
+    triglavian: Array.isArray(data.triglavian) ? data.triglavian.filter((id): id is number => typeof id === "number") : [],
+    within:
+      typeof data.within === "object" && data.within !== null && !Array.isArray(data.within)
+        ? (data.within as Record<string, readonly [number, number]>)
         : {},
   };
 }
@@ -2432,6 +2506,8 @@ export interface ResolvedDestination {
    * must not cache the miss when this is set.
    */
   readonly lookupFailed: boolean;
+  /** A station's type (idCheckers.IsDeprecatedStation reads it); null for anything else, or where it is not known. */
+  readonly stationTypeID: number | null;
 }
 
 /**
@@ -2461,6 +2537,7 @@ export async function resolveDestination(
     stationID: asNumberOrNull(data.stationID),
     stationName: typeof data.stationName === "string" ? data.stationName : null,
     lookupFailed: data.lookupFailed === true,
+    stationTypeID: asNumberOrNull(data.stationTypeID),
   };
 }
 
@@ -3188,6 +3265,25 @@ export async function corpTickers(
   options: ApiOptions = {},
 ): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
   const data = await postJson("/api/corp-tickers", { corpIDs, each }, options);
+  return tickersRead(data);
+}
+
+/**
+ * Alliances' tickers as the client's cfg.allianceshortnames has them (POST /api/alliance-tickers): asked of the game
+ * server by the pilot's game-port transport where it has not been asked yet (config.GetMultiAllianceShortNamesEx), in
+ * one call, or in one for each where `each` is said. A ticker is null where the server answered none; one in
+ * `unresolved` was not asked.
+ */
+export async function allianceTickers(
+  allianceIDs: readonly number[],
+  each: boolean,
+  options: ApiOptions = {},
+): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
+  const data = await postJson("/api/alliance-tickers", { allianceIDs, each }, options);
+  return tickersRead(data);
+}
+
+function tickersRead(data: Record<string, JsonValue>): { tickers: Record<string, string | null>; unresolved: readonly number[] } {
   const raw = typeof data.tickers === "object" && data.tickers !== null && !Array.isArray(data.tickers)
     ? (data.tickers as Record<string, JsonValue>)
     : {};
@@ -3215,10 +3311,10 @@ export async function loadWords(
   messages: Record<string, string | null>;
   /**
    * A dialog by its name: its title and its body, each the client's text or null, whether the install lets its
-   * answer be kept ("1", else null), and its type (dialogType: "info", "notify" and the others). Null for a dialog it
-   * has not.
+   * answer be kept ("1", else null), which answer ("any", "yes" or "no", else null), and its type (dialogType: "info",
+   * "notify" and the others). Null for a dialog it has not.
    */
-  dialogs: Record<string, { title: string | null; body: string | null; suppressable: string | null; type: string | null } | null>;
+  dialogs: Record<string, { title: string | null; body: string | null; suppressable: string | null; suppress: string | null; type: string | null } | null>;
 }> {
   const data = await postJson(
     "/api/words",
@@ -3233,7 +3329,7 @@ export async function loadWords(
     }
     return out;
   };
-  const named: Record<string, { title: string | null; body: string | null; suppressable: string | null; type: string | null } | null> = {};
+  const named: Record<string, { title: string | null; body: string | null; suppressable: string | null; suppress: string | null; type: string | null } | null> = {};
   const rawDialogs = typeof data.dialogs === "object" && data.dialogs !== null && !Array.isArray(data.dialogs)
     ? (data.dialogs as Record<string, JsonValue>)
     : {};
@@ -3246,6 +3342,7 @@ export async function loadWords(
           title: typeof record.title === "string" ? record.title : null,
           body: typeof record.body === "string" ? record.body : null,
           suppressable: record.suppressable === true ? "1" : null,
+          suppress: record.suppress === "any" || record.suppress === "yes" || record.suppress === "no" ? record.suppress : null,
           type: typeof record.type === "string" ? record.type : null,
         };
   }
@@ -3457,6 +3554,33 @@ export async function loadOverloadEffects(
     }
   }
   return effects;
+}
+
+// --- The client type lists that hold a type (static reference data) --------------
+// GET /api/types/type-lists?typeIDs=...&listIDs=... answers { lists }: for each type, the lists among those asked that
+// hold it (the client's evetypes.GetTypeIDsByListID), or null where the tables lack the type or a list.
+
+export async function loadTypeListsHolding(
+  typeIDs: readonly number[],
+  listIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, readonly number[] | null>>> {
+  const data = await getJson(
+    `/api/types/type-lists?typeIDs=${encodeURIComponent(typeIDs.join(","))}&listIDs=${encodeURIComponent(listIDs.join(","))}`,
+    options,
+  );
+  const raw = typeof data.lists === "object" && data.lists !== null && !Array.isArray(data.lists)
+    ? (data.lists as Record<string, JsonValue>)
+    : {};
+  const lists: Record<number, readonly number[] | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    lists[typeID] = Array.isArray(value)
+      ? value.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id) && listIDs.includes(id))
+      : null;
+  }
+  return lists;
 }
 
 // --- A type's compressed form (static reference data) -------------------------
@@ -3966,6 +4090,9 @@ export async function loadScannerOperations(
           destination: scannerVector(row.destination),
           scanRange: asNumberOrNull(row.scanRange) ?? 0,
           rangeStep: asNumberOrNull(row.rangeStep) ?? 0,
+          rangeSteps: Array.isArray(row.rangeSteps)
+            ? row.rangeSteps.map((range) => asNumberOrNull(range)).filter((range): range is number => range !== null && range > 0)
+            : [],
           state: asNumberOrNull(row.state) ?? 0,
           expiry: typeof row.expiry === "string" ? row.expiry : "0",
         }];

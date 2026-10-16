@@ -982,11 +982,6 @@ export interface FleetCenterState {
   readonly availability: FleetAvailability | "unknown";
   readonly fleet: BoundFleet | null;
   readonly pendingInvite: FleetPendingInvite | null;
-  /**
-   * What the pilot was last told of an invitation it sent: that it was turned down, in the page's words
-   * (OnFleetJoinReject). Null until one is, and again once another invitation is sent from the window.
-   */
-  readonly inviteAnswered: string | null;
   readonly activeAction: FleetAction | null;
   readonly readError: string | null;
   readonly actionError: string | null;
@@ -1059,6 +1054,22 @@ export interface ScannerCenterState {
   readonly scan: ScannerDataState<ScanFullState>;
   readonly operations: ScannerDataState<ScannerOperationsSnapshot>;
   readonly refreshedAtMs: number | null;
+  /**
+   * The probe scanner's results in the session's solar system, as the client's scan handler for that system keeps
+   * them from OnSystemScanStopped (bridge/probeResults.ts); null before the flow has said them for this system.
+   */
+  readonly probeResults: {
+    readonly solarSystemID: number;
+    readonly scanNumber: number;
+    readonly results: readonly import("../bridge/probeResults.ts").ShownResult[];
+    /**
+     * The results the pilot has ignored in this system (scanHandler.resultsIgnored), each as held, by ID: left out of
+     * the list, counted in the ignored box and listed in it (scanSvc.GetIgnoredResultsDesc).
+     */
+    readonly ignored: readonly import("../bridge/probeResults.ts").ShownResult[];
+    /** What the results are filtered by: the active filters and whether anomalies are shown (resultFilter). */
+    readonly filter: import("../bridge/probeResults.ts").ResultFilterSettings;
+  } | null;
 }
 
 /** The verdict on a completed send, assembled from a RE-READ. */
@@ -1304,6 +1315,8 @@ export interface JournalMission {
   readonly expirationTime: string | null;
   /** The mission's marked spots, as the client's bookmark service takes them from the journal (bookmarkSvc.py 121 to 136). */
   readonly bookmarks?: readonly MissionSpot[];
+  /** Whether the mission may be handed in from anywhere (remoteCompletable): its tracker's last objective is talk then. */
+  readonly remoteCompletable?: boolean;
 }
 
 /**
@@ -1386,6 +1399,11 @@ export interface AgentsState {
   readonly objectives: MissionObjectives | null;
   /** What the mission's briefing says of time, as read for the layout on show; null with no briefing. */
   readonly missionTimes: MissionTimes | null;
+  /**
+   * Where the agent is, as GetAgentLocationWrap answered it for the layout on show (the window's header,
+   * agentDialogueWindow.GetAgentHeader); null with no conversation, or an answer that names no place.
+   */
+  readonly agentLocation: import("../bridge/agentHeader.ts").AgentLocationWrap | null;
   /** The mission's page on show (the journal's Read Details); null when none is. */
   readonly missionPage: MissionPageState | null;
   /**
@@ -1885,6 +1903,8 @@ export interface SpaceEntity {
    * the game port reports it, and only for wrecks and containers.
    */
   readonly lootRights?: { readonly ownerID: number | null; readonly corpID: number | null; readonly fleetID: number | null; readonly abandoned: boolean } | null;
+  /** The militia it is in, its slim item's warFactionID; none where there is none (the game port's rows). */
+  readonly warFactionID?: number | null;
   readonly securityStatus: number | null;
   readonly maxVelocity: number | null;
   readonly mode: string | null;
@@ -1910,6 +1930,18 @@ export interface SpaceEntity {
    * snapshot does not.
    */
   readonly planetID?: number | null;
+  /**
+   * An acceleration gate's own object in its dungeon (its slim item's dunObjectID), for the Ship Restrictions window
+   * opened on its refusal. null on every other row, and where the transport did not say (the web gateway's).
+   */
+  readonly dunObjectID?: number | null;
+  /**
+   * An Abyssal trace's filament, game mode and whether it is open (its slim item's abyssFilamentTypeID, gameModeID and
+   * isAbyssGateOpen), for its jump window. Absent on every other row, and where the transport did not say.
+   */
+  readonly abyssFilamentTypeID?: number | null;
+  readonly gameModeID?: number | null;
+  readonly isAbyssGateOpen?: boolean | null;
   readonly miningResourceFamily?: "ore" | "ice" | "gas" | null;
   readonly beltID: number | null;
   /**

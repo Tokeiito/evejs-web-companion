@@ -1237,6 +1237,11 @@ function createBotHost(options) {
           try {
             await bounded(suspended);
             await bounded(Promise.all([...pendingRequests]));
+            // The game server closed this pilot's connection with a reason of its own (another login of its account):
+            // a retail client so closed stays closed, and so does this run (gamePort/pilots.js closedByServer).
+            const closedByServer = typeof options.closedByServer === "function" ? options.closedByServer(characterID) : null;
+            if (closedByServer)
+              throw new Error(`The game server closed this pilot's connection (${closedByServer.reasonCode}): ${closedByServer.reason}`);
             if (!Number.isSafeInteger(observedShipID) || observedShipID <= 0) throw new Error("The original hosted hull was not positively observed.");
             const liveAccount = await bounded(loadAccount(record.username));
             if (!liveAccount || liveAccount.banned || Number(liveAccount.accountID) !== record.accountID) throw new Error("The hosted account is unavailable.");

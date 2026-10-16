@@ -28,6 +28,8 @@
   import Skills from "./Skills.svelte";
   import Planets from "./Planets.svelte";
   import Travel from "./Travel.svelte";
+  import RouteWindow from "./RouteWindow.svelte";
+  import MissionTracker from "./MissionTracker.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
@@ -147,7 +149,11 @@
 {:else if tab === "planets"}
   <Planets {store} {flow} />
 {:else if tab === "travel"}
-  <Travel {store} {flow} />
+  <Travel {store} {flow} showRouteWindow={() => onOpen?.("routeWindow")} />
+{:else if tab === "routeWindow"}
+  <RouteWindow {store} {flow} />
+{:else if tab === "missionTracker"}
+  <MissionTracker {store} {flow} showAgents={() => onOpen?.("agents")} />
 {:else if tab === "bots"}
   <Bots {store} {flow} />
 {:else if tab === "botBuilder"}

@@ -1291,7 +1291,8 @@
       "skillHandler.SaveNewQueue",
       "slash.SlashCmd",
       "structureDocking.Dock",
-      "structureDocking.Undock"
+      "structureDocking.Undock",
+      "structureJumpBridgeMgr.CmdJumpThroughStructureStargate"
     ],
     "browserSessionFields": [
       "languageID",

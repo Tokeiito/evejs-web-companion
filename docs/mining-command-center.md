@@ -46,6 +46,11 @@ The operation's delivery destination supplies the emergency home; a structure
 must be dockable by the Defender, but Defender does not need freight-delivery
 corporation access merely to dock there.
 
+Standard miners and haulers (every family, either unload policy) leave when rats
+bring their shield below 30%: they dock at the operation's delivery destination
+and pause (the watch `shield-below 0.3 → dock-and-pause`, the Bot Builder's own
+for a new bot; the operator's word of 2026-10-15).
+
 On target relocation, owned combat state settles before travel to the new
 target. The operation run and target claim are reread before new combat/site
 mutations; an old decision cannot start work at the retired target. Missing

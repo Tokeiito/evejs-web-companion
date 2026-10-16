@@ -24,6 +24,7 @@
     writeCollapsed,
   } from "./mobileCards.ts";
   import TargetBracket from "./TargetBracket.svelte";
+  import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { isLaunchable, isTabVisible, visibleTabsFor, type TabID } from "./tabs.ts";
   import { isWindowTab } from "./desktop.ts";
@@ -164,6 +165,10 @@
         thing to keep honest, and the honesty is the whole product.
       -->
       <TargetBracket {store} />
+      <!-- The Abyssal info panel, above the cards where a pocket has it (nothing elsewhere). -->
+      <ErrorBoundary name="Abyssal Deadspace">
+        <AbyssInfoPanel {store} {flow} />
+      </ErrorBoundary>
       {#each MOBILE_CARDS as card (card.id)}
         <MobileCard
           title={card.title}

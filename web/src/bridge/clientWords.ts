@@ -25,6 +25,7 @@
 
 import type { NameKind, NameRef } from "../store/names.ts";
 import type { JsonValue } from "./wire.ts";
+import { DISTANCE_LABELS } from "../space/overview.ts";
 
 export interface TemplateToken {
   /** The whole tag as written, braces and all. */
@@ -186,6 +187,7 @@ const idOf = (value: JsonValue | undefined): number | null => {
 /** Which of the page's name kinds a place's ID belongs to, by the game's ID ranges. */
 function locationKind(id: number): NameKind {
   if (id >= 10_000_000 && id < 20_000_000) return "region";
+  if (id >= 20_000_000 && id < 30_000_000) return "constellation";
   if (id >= 30_000_000 && id < 40_000_000) return "system";
   if (id >= 60_000_000 && id < 64_000_000) return "station";
   return "structure";
@@ -344,8 +346,24 @@ export function formatTemplate(template: string, args: TemplateArguments, contex
 //                              converted, and joined by the separator, or by
 //                              the client's list delimiter when there is none
 //
-// The client has more (dates, amounts, ISK, distances, group names, a message
-// inside a message). Those are not done, and come out as nothing.
+//     5  UE_TYPEID2            a type's description: not done (the page's tables have no descriptions), nothing
+//     6  UE_BPTYPEID           a blueprint's name (cfg.blueprints' blueprintTypeID: the type itself)
+//     7  UE_GROUPID            a group's name;  8 UE_GROUPID2, nothing
+//     9  UE_CATID              a category's name;  10 UE_CATID2, nothing
+//    14  UE_DATETIME           FmtDate(value): its label for 'll'; 15 UE_DATE 'ln', 16 UE_TIME 'nl', 17 UE_TIMESHRT
+//                              'ns' (carbon format.py FmtDate 71 to 114: below the year 1800 a length of time,
+//                              written out, short for 'ns')
+//    18  UE_AMT                FmtAmt(value): the whole number, grouped
+//    19, 20, 28  UE_AMT2, UE_AMT3, UE_ISK   FmtISK(value): ISK with its fractions (UI/Util/FmtIsk)
+//    21  UE_DIST               FmtDist(value), two places at most
+//    22  UE_MSGARGS            a dialog's text by its name, with its own parameters (cfg.GetMessage(name, args))
+//    25  UE_OWNERIDNICK        an owner's name to its first space
+//    29  UE_TYPEIDL            a list of types' names (UE_LIST of UE_TYPEID)
+//    30  UE_AUR                FmtAUR(value): Aurum with no fractions (UI/Util/FmtAurNoDecimal), rounded
+//   102  UE_MESSAGEID          a message by its number, with its own parameters (cfg._GetLocalizationByID)
+//
+// Any other code is what the client makes of one it has no format for: "INVALID FORMAT TYPE" with the code and the
+// value (FormatConvert, 377 to 380).
 //
 // The bridge keeps a tuple as an array and a list as {type: "list", items},
 // and the client tells them apart: FormatConvert reads a tuple given as a
@@ -363,6 +381,105 @@ const UE_LOCID = 3;
 const UE_TYPEID = 4;
 const UE_TYPEIDANDQUANTITY = 24;
 const UE_LIST = 103;
+/** carbon/common/lib/const.py 273: one of the client's labels, worded with its own arguments (cfg.py 125, _GetLocalization). */
+const UE_LOC = 101;
+/** eveexceptions/const.py and carbon/common/lib/const.py 268 to 274: the rest of the client's codes. */
+const UE_TYPEID2 = 5;
+const UE_BPTYPEID = 6;
+const UE_GROUPID = 7;
+const UE_GROUPID2 = 8;
+const UE_CATID = 9;
+const UE_CATID2 = 10;
+const UE_DATETIME = 14;
+const UE_DATE = 15;
+const UE_TIME = 16;
+const UE_TIMESHRT = 17;
+const UE_AMT = 18;
+const UE_AMT2 = 19;
+const UE_AMT3 = 20;
+const UE_DIST = 21;
+const UE_MSGARGS = 22;
+const UE_OWNERIDNICK = 25;
+const UE_ISK = 28;
+const UE_TYPEIDL = 29;
+const UE_AUR = 30;
+const UE_MESSAGEID = 102;
+
+/** cfg.py 120 to 123: the date codes' FmtDate formats. */
+const DATE_FORMAT_BY_CODE: Readonly<Record<number, string>> = { [UE_DATETIME]: "ll", [UE_DATE]: "ln", [UE_TIME]: "nl", [UE_TIMESHRT]: "ns" };
+/** The client's clock: 100 ns ticks. appConst.YEAR365 * 199, below which FmtDate takes the value for a length of time. */
+export const YEAR_1800_TICKS = 365n * 24n * 3600n * 10_000_000n * 199n;
+/** carbon's format.FmtDate (71 to 114): the label for each format, by its two letters. */
+export const DATE_LABELS: Readonly<Record<string, string>> = {
+  ll: "/Carbon/UI/Common/DateTime/SimpleDateUTC", sl: "/Carbon/UI/Common/DateTime/SimpleDateUTC", xs: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
+  ls: "/Carbon/UI/Common/DateTime/DateLongShort", ss: "/Carbon/UI/Common/DateTime/DateLongShort",
+  ln: "/Carbon/UI/Common/DateTime/DateLongNone", sn: "/Carbon/UI/Common/DateTime/DateLongNone", xn: "/Carbon/UI/Common/DateTime/DateLongNone",
+  nl: "/Carbon/UI/Common/DateTime/Time",
+  ns: "/Carbon/UI/Common/DateTime/HoursAndMinutes",
+  xl: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
+  el: "/Carbon/UI/Common/DateTime/DateExtendedLong",
+  es: "/Carbon/UI/Common/DateTime/DateExtendedShort",
+  en: "/Carbon/UI/Common/DateTime/DateExtendedNone",
+};
+/** eveFormat.CURRENCY_FORMAT_TRANSLATIONS: ISK with fractions, and Aurum without. */
+export const ISK_LABEL = "UI/Util/FmtIsk";
+export const AUR_NO_DECIMAL_LABEL = "UI/Util/FmtAurNoDecimal";
+/** carbon's format.FmtDist: its three units' labels. */
+const DIST_LABELS: readonly string[] = Object.values(DISTANCE_LABELS);
+/** Where the words store keeps a dialog's text (questions.ts wordsKey) and a message's, by its number. */
+const dialogBodyKey = (name: string): string => `dialog:${name}/body`;
+const messageKey = (messageID: number): string => `#${messageID}`;
+
+/** A value of the client's clock, as the bridge carries one (a number, or {type: "long", value}); null for anything else. */
+function ticksOf(value: JsonValue | undefined): bigint | null {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const inner = (value as { value?: unknown }).value;
+    if (typeof inner === "string" && /^-?\d+$/.test(inner)) return BigInt(inner);
+    if (typeof inner === "number" && Number.isSafeInteger(inner)) return BigInt(inner);
+  }
+  return null;
+}
+
+/**
+ * FmtDate(value, fmt) (carbon format.py 71 to 114): a moment as its format's label words it; a value below the year
+ * 1800 as a length of time written out from days to seconds (short for a format whose second letter is 's'); a
+ * negative one as its size. Nothing where the words are not to hand.
+ */
+function dateWords(value: JsonValue | undefined, fmt: string, context: TypedContext): string {
+  const ticks = ticksOf(value);
+  if (ticks === null) return "";
+  const size = ticks < 0n ? -ticks : ticks;
+  if (size < YEAR_1800_TICKS) {
+    const write = fmt[1] === "s" ? context.writeShortInterval : context.writeInterval;
+    return write?.(size, "day", "second") ?? "";
+  }
+  const template = context.templates?.[DATE_LABELS[fmt] ?? ""];
+  return typeof template === "string" ? formatTemplate(template, { datetime: { type: "long", value: size.toString() } }, context) : "";
+}
+
+/** What Python's %s makes of a value, for the client's words for a code it has no format for. */
+function pythonText(value: JsonValue | undefined): string {
+  if (value === null || value === undefined) return "None";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "True" : "False";
+  const ticks = ticksOf(value);
+  return ticks !== null ? ticks.toString() : JSON.stringify(value);
+}
+
+/** A dict as the bridge carries one ({type: "dict", entries}), as a label's arguments; anything else gives none. */
+function dictArguments(value: JsonValue | undefined): Record<string, JsonValue> {
+  const out: Record<string, JsonValue> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, JsonValue>;
+    if (record.type === "dict" && Array.isArray(record.entries)) {
+      for (const entry of record.entries) {
+        if (Array.isArray(entry) && typeof entry[0] === "string") out[entry[0]] = entry[1] ?? null;
+      }
+    }
+  }
+  return out;
+}
 
 export interface TypedContext extends FormatContext {
   /** The client's templates by label, for the two the conversion words with. */
@@ -428,8 +545,93 @@ export function convertTyped(code: JsonValue | undefined, value: JsonValue | und
       const separator = typeof second === "string" ? second : context.templates?.[LIST_DELIMITER] ?? ", ";
       return texts.join(separator);
     }
-    default:
+    case UE_LOC: {
+      // cfg._GetLocalization (264 to 284): the label's own text, filled with its arguments, each typed one worded first.
+      const template = typeof inner === "string" ? context.templates?.[inner] : undefined;
+      return typeof template === "string" ? formatTemplate(template, prepareArguments(dictArguments(second), context), context) : "";
+    }
+    case UE_MESSAGEID: {
+      // cfg._GetLocalizationByID (287 to 309): the message by its number, filled the same way.
+      const id = idOf(inner);
+      const template = id === null ? undefined : context.templates?.[messageKey(id)];
+      return typeof template === "string" ? formatTemplate(template, prepareArguments(dictArguments(second), context), context) : "";
+    }
+    case UE_MSGARGS: {
+      // cfg.GetMessage(value[0], value[1]).text: a dialog's text by its name, with its parameters prepared. Given as a
+      // list (a tuple the client would have taken for one more typed value, and worded as nonsense).
+      const parts = listEntries(value !== undefined && !Array.isArray(value) ? value : undefined);
+      const name = typeof parts[0] === "string" ? parts[0] : null;
+      const template = name === null ? undefined : context.templates?.[dialogBodyKey(name)];
+      return typeof template === "string" ? formatTemplate(template, prepareArguments(dictArguments(parts[1]), context), context) : "";
+    }
+    case UE_OWNERIDNICK: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("owner", id).split(" ")[0] ?? "";
+    }
+    case UE_TYPEID2:
       return "";
+    case UE_TYPEIDL: {
+      // FormatConvert(UE_LIST, [(UE_TYPEID, x) for x in value], value2).
+      const texts = listEntries(inner).map((entry) => {
+        const id = idOf(entry);
+        return id === null ? "" : context.nameOf("type", id);
+      });
+      const separator = typeof second === "string" ? second : context.templates?.[LIST_DELIMITER] ?? ", ";
+      return texts.join(separator);
+    }
+    case UE_BPTYPEID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("type", id);
+    }
+    case UE_GROUPID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("group", id);
+    }
+    case UE_CATID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("category", id);
+    }
+    case UE_GROUPID2:
+    case UE_CATID2:
+      return "";
+    case UE_DATETIME:
+    case UE_DATE:
+    case UE_TIME:
+    case UE_TIMESHRT:
+      return dateWords(inner, DATE_FORMAT_BY_CODE[code]!, context);
+    case UE_AMT: {
+      // FmtAmt(value): long(amount), grouped, no places.
+      const amount = numberOf(inner);
+      return amount === null ? "" : Math.trunc(amount).toLocaleString("en-US");
+    }
+    case UE_AMT2:
+    case UE_AMT3:
+    case UE_ISK: {
+      // FmtISK(value): FmtCurrency(value, showFractionsAlways=1), UI/Util/FmtIsk.
+      const amount = numberOf(inner);
+      if (amount === null) return "";
+      const written = context.writeIsk?.(amount, 2);
+      if (typeof written === "string") return written;
+      const template = context.templates?.[ISK_LABEL];
+      return typeof template === "string" ? formatTemplate(template, { amount }, context) : amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    case UE_AUR: {
+      // FmtAUR(value): FmtCurrency(value, 0, Aurum), the amount rounded, UI/Util/FmtAurNoDecimal.
+      const amount = numberOf(inner);
+      if (amount === null) return "";
+      const rounded = Math.sign(amount) * Math.round(Math.abs(amount));
+      const template = context.templates?.[AUR_NO_DECIMAL_LABEL];
+      return typeof template === "string" ? formatTemplate(template, { amount: rounded }, context) : rounded.toLocaleString("en-US");
+    }
+    case UE_DIST: {
+      // FmtDist(value): two places at most.
+      const metres = numberOf(inner);
+      if (metres === null) return "";
+      return context.writeDistance?.(metres, 2) ?? `${Math.round(metres).toLocaleString("en-US")} m`;
+    }
+    default:
+      // A tuple with no code at all is nothing; any other code is what the client says of one it has no format for.
+      return code === undefined ? "" : `INVALID FORMAT TYPE ${pythonText(code)}, value is ${pythonText(inner)}`;
   }
 }
 
@@ -443,17 +645,25 @@ export function prepareArguments(args: TemplateArguments, context: TypedContext)
 }
 
 /** What a typed value needs before it can be worded: the names, and the client's labels. */
-function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[]): void {
+function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[], templates?: TypedContext["templates"]): void {
   const [code, value] = tuple;
   if (nestedTyped(value)) {
-    typedNeeds(value, refs, labels);
+    typedNeeds(value, refs, labels, templates);
     return;
   }
   const id = idOf(value);
-  if (code === UE_LIST) {
+  if (code === UE_LOC && typeof value === "string") {
+    labels.push(value);
+    const args = dictArguments(third(tuple));
+    for (const each of Object.values(args)) {
+      if (Array.isArray(each)) typedNeeds(each, refs, labels, templates);
+    }
+    const template = templates?.[value];
+    if (typeof template === "string") refs.push(...templateNameRefs(template, args));
+  } else if (code === UE_LIST) {
     for (const entry of listEntries(value)) {
       if (Array.isArray(entry)) {
-        typedNeeds(entry, refs, labels);
+        typedNeeds(entry, refs, labels, templates);
       }
     }
     if (typeof third(tuple) !== "string") {
@@ -462,21 +672,54 @@ function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string
   } else if (code === UE_TYPEIDANDQUANTITY) {
     labels.push(QUANTITY_AND_ITEM);
     if (id !== null) refs.push({ kind: "type", id });
-  } else if (id !== null && code === UE_TYPEID) {
+  } else if (id !== null && (code === UE_TYPEID || code === UE_BPTYPEID)) {
     refs.push({ kind: "type", id });
-  } else if (id !== null && code === UE_OWNERID) {
+  } else if (id !== null && (code === UE_OWNERID || code === UE_OWNERIDNICK)) {
     refs.push({ kind: "owner", id });
   } else if (id !== null && code === UE_LOCID) {
     refs.push({ kind: locationKind(id), id });
+  } else if (id !== null && code === UE_GROUPID) {
+    refs.push({ kind: "group", id });
+  } else if (id !== null && code === UE_CATID) {
+    refs.push({ kind: "category", id });
+  } else if (code === UE_TYPEIDL) {
+    for (const entry of listEntries(value)) {
+      const typeID = idOf(entry);
+      if (typeID !== null) refs.push({ kind: "type", id: typeID });
+    }
+    if (typeof third(tuple) !== "string") labels.push(LIST_DELIMITER);
+  } else if (typeof code === "number" && code in DATE_FORMAT_BY_CODE) {
+    labels.push(DATE_LABELS[DATE_FORMAT_BY_CODE[code]!]!);
+  } else if (code === UE_AMT2 || code === UE_AMT3 || code === UE_ISK) {
+    labels.push(ISK_LABEL);
+  } else if (code === UE_AUR) {
+    labels.push(AUR_NO_DECIMAL_LABEL);
+  } else if (code === UE_DIST) {
+    labels.push(...DIST_LABELS);
+  } else if ((code === UE_MESSAGEID && id !== null) || code === UE_MSGARGS) {
+    // The message's or the dialog's text, and what its own parameters need.
+    const parts = code === UE_MSGARGS ? listEntries(value !== undefined && !Array.isArray(value) ? value : undefined) : [];
+    const key = code === UE_MESSAGEID ? messageKey(id!) : typeof parts[0] === "string" ? dialogBodyKey(parts[0]) : null;
+    if (key === null) return;
+    labels.push(key);
+    const args = dictArguments(code === UE_MESSAGEID ? third(tuple) : parts[1]);
+    for (const each of Object.values(args)) {
+      if (Array.isArray(each)) typedNeeds(each, refs, labels, templates);
+    }
+    const template = templates?.[key];
+    if (typeof template === "string") refs.push(...templateNameRefs(template, args));
   }
 }
 
-/** The names a dialog's typed arguments need, for the page's name cache to fetch. */
-export function typedNameRefs(args: TemplateArguments): NameRef[] {
+/**
+ * The names a dialog's typed arguments need, for the page's name cache to fetch. A label's own names (UE_LOC) are
+ * known only from its text, where `templates` has it.
+ */
+export function typedNameRefs(args: TemplateArguments, templates?: TypedContext["templates"]): NameRef[] {
   const refs: NameRef[] = [];
   for (const value of Object.values(args)) {
     if (Array.isArray(value)) {
-      typedNeeds(value, refs, []);
+      typedNeeds(value, refs, [], templates);
     }
   }
   return refs;

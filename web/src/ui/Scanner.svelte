@@ -6,7 +6,19 @@
   // client's call itself.
   import { onMount } from "svelte";
   import ScannerCenter from "./ScannerCenter.svelte";
-  import { SCAN_IN_PROGRESS, launchOf, recallOf, scanOf } from "../bridge/scannerWrites.ts";
+  import ProbeScanResults from "./ProbeScanResults.svelte";
+  import ScannerProbes from "./ScannerProbes.svelte";
+  import {
+    ABYSSAL_SCAN_QUESTION,
+    SCAN_IN_PROGRESS,
+    SHIP_SCANS_ALONE,
+    isAbyssalSystem,
+    launchOf,
+    recallOf,
+    scanOf,
+  } from "../bridge/scannerWrites.ts";
+  import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
+  import { plainText } from "../bridge/clientWords.ts";
   import { nameKey } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -18,6 +30,51 @@
   const scanner = store.scanner;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+
+  // The client's question before a scan in an Abyssal pocket (scanSvc.RequestScans_Check, 183 to 187):
+  // prompt_player_fsd_dialog('ProbeScannerAbyssalSpaceWarning', buttons=YESNO, suppress=ID_YES). The dialog has no
+  // title, so the box takes its type's (a warning: dialog_handler.py TITLE_BY_DIALOG_TYPE, 24 to 29, 107 to 109);
+  // Yes is kept where the box is ticked and the install lets it (_persist_prompt_suppress_choice), and a kept Yes
+  // asks nothing. No, and nothing is asked of the server. The page's own words stand while the install's are not
+  // to hand.
+  const QUESTION_WORDS = {
+    title: "UI/Generic/Warning",
+    yes: "UI/Common/Buttons/Yes",
+    no: "UI/Common/Buttons/No",
+  } as const;
+  const OWN_QUESTION = ["Warning", "Probes launched here are likely to be lost to this pocket's environment. Scan anyway?"] as const;
+  let abyssalQuestion = $state<{ readonly answer: (yes: boolean) => void } | null>(null);
+  let dontAskAgain = $state(false);
+
+  function word(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? plainText(template) : own;
+  }
+
+  /** The scan, asked first in an Abyssal pocket as the client asks. */
+  async function analyze(): Promise<void> {
+    const read = $scanner.operations.status === "ready" ? $scanner.operations.value : null;
+    if (read !== null && isAbyssalSystem(read.solarSystemID) &&
+        !(ASKED_KEEPING_YES.has(ABYSSAL_SCAN_QUESTION) && flow.dialogYesKept(ABYSSAL_SCAN_QUESTION))) {
+      dontAskAgain = false;
+      const yes = await new Promise<boolean>((resolve) => {
+        abyssalQuestion = { answer: resolve };
+      });
+      if (!yes) return;
+    }
+    await flow.analyzeScannerSignatures();
+  }
+
+  function answerAbyssal(yes: boolean): void {
+    const waiting = abyssalQuestion;
+    abyssalQuestion = null;
+    if (waiting === null) return;
+    // _persist_prompt_suppress_choice: Yes kept where the box was ticked.
+    if (yes && dontAskAgain) flow.keepDialogYes(ABYSSAL_SCAN_QUESTION);
+    waiting.answer(yes);
+  }
 
   const typeNames = $derived.by(() => {
     const catalog: Record<number, string> = {};
@@ -81,9 +138,10 @@
         run: () => flow.recoverScannerProbes(),
       },
       analyze: {
-        probeMap: "refusal" in scan ? {} : scan.probes,
+        probeMap: "refusal" in scan || scan.probes === null ? {} : scan.probes,
+        shipAlone: !("refusal" in scan) && scan.probes === null ? SHIP_SCANS_ALONE : undefined,
         blocked: "refusal" in scan ? scan.refusal : undefined,
-        run: () => flow.analyzeScannerSignatures(),
+        run: () => analyze(),
       },
       reconnect: {
         blocked: read.scanning === true ? SCAN_IN_PROGRESS : undefined,
@@ -96,6 +154,13 @@
     // Session-loss handling lives in the flow; suppress only the otherwise
     // unhandled onMount promise after it has taken the character offline.
     void flow.loadScanner().catch(() => undefined);
+    flow.requestWords([
+      ...Object.values(QUESTION_WORDS),
+      DO_NOT_ASK_AGAIN_LABEL,
+      `dialog:${ABYSSAL_SCAN_QUESTION}/title`,
+      `dialog:${ABYSSAL_SCAN_QUESTION}/body`,
+      suppressableKey(ABYSSAL_SCAN_QUESTION),
+    ]);
   });
 </script>
 
@@ -105,3 +170,29 @@
   {actions}
   onRefresh={() => flow.loadScanner()}
 />
+{#if abyssalQuestion !== null}
+  <!-- The client's warning before a scan in an Abyssal pocket: its title (the warning's own), body, the box that keeps
+       Yes where the install lets it, Yes and No. -->
+  {@const title = word(`dialog:${ABYSSAL_SCAN_QUESTION}/title`, word(QUESTION_WORDS.title, OWN_QUESTION[0]))}
+  <div class="scan-question" role="alertdialog" aria-label={title}>
+    <strong>{title}</strong>
+    <p>{word(`dialog:${ABYSSAL_SCAN_QUESTION}/body`, OWN_QUESTION[1])}</p>
+    {#if $words.templates[suppressableKey(ABYSSAL_SCAN_QUESTION)] === "1"}
+      <label><input type="checkbox" bind:checked={dontAskAgain} /> {word(DO_NOT_ASK_AGAIN_LABEL, "Skip this question from now on")}</label>
+    {/if}
+    <p class="controls">
+      <button type="button" onclick={() => answerAbyssal(true)}>{word(QUESTION_WORDS.yes, "Yes")}</button>
+      <button type="button" class="minor" onclick={() => answerAbyssal(false)}>{word(QUESTION_WORDS.no, "No")}</button>
+    </p>
+  </div>
+{/if}
+<ScannerProbes {store} {flow} />
+<ProbeScanResults {store} {flow} />
+
+<style>
+  .scan-question {
+    border: 1px solid currentColor;
+    padding: 0.5rem;
+    margin: 0.5rem 0;
+  }
+</style>

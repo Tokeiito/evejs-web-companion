@@ -395,8 +395,6 @@ export type FeedEvent =
   | { readonly type: "fleet/broadcast-history-cleared" }
   // An invitation answered or turned down: the window's no longer, where it is the one held.
   | { readonly type: "fleet/invite-settled"; readonly fleetID: number }
-  // What the inviter was told of an invitation it sent, or null to say it no longer.
-  | { readonly type: "fleet/invite-answered"; readonly words: string | null }
   // A one-shot fleet call (OnFleetBroadcast). Pure push-to-store, same shape
   // as fleet/pending-invite: last-write-wins, no reducer-side interpretation.
   | { readonly type: "fleet/broadcast"; readonly broadcast: FleetBroadcast }
@@ -416,6 +414,8 @@ export type FeedEvent =
       readonly refreshedAtMs: number;
     }
   | { readonly type: "scanner/cleared" }
+  // The probe scanner's results for the session's system, as its scan handler keeps them (bridge/probeResults.ts).
+  | { readonly type: "scanner/probe-results"; readonly probeResults: ScannerCenterState["probeResults"] }
   // Goal R17 (Slice A) — the Mail page. The inbox is a DELTA SYNC cold-started
   // by the BFF, so `messages` is always the WHOLE mailbox rather than a page of
   // it: the browser caches nothing across a page load and therefore holds no
@@ -527,6 +527,8 @@ export type FeedEvent =
   | { readonly type: "agents/objectives"; readonly objectives: import("../bridge/missionObjectives.ts").MissionObjectives | null }
   // What the briefing read for this layout says of the mission's time (null with no briefing).
   | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
+  // Where the agent is, as GetAgentLocationWrap answered it for this layout (null: no place named).
+  | { readonly type: "agents/agent-location"; readonly location: import("../bridge/agentHeader.ts").AgentLocationWrap | null }
   /** What the client's agents service knows of one agent, as answered (null: the server lists no such agent). */
   | { readonly type: "agents/record"; readonly agentID: number; readonly record: import("../bridge/agents.ts").AgentRecord | null }
   /** The solar system the server says an agent is in (null: none). */
@@ -681,6 +683,8 @@ export type FeedEvent =
   | { readonly type: "flight/crimewatch"; readonly crimewatch: CrimewatchReading }
   // The account's clone grade, as read when the pilot came online or as the server's notice said it.
   | { readonly type: "character/clone-grade"; readonly cloneGrade: CloneGrade | null }
+  // The pilot's own security status, as read (crimewatch.GetMySecurityStatus) or as OnSecurityStatusUpdate said it.
+  | { readonly type: "character/security-status"; readonly securityStatus: number | null }
   // Goal R11 — the Overview panel. A space snapshot read completed: everything
   // the ship can see right now plus the active ship's shield/armor/hull/cap.
   // The flow polls this ~1s while in space with the panel open; the panel is a

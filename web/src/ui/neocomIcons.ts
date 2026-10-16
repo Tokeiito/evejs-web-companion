@@ -111,6 +111,10 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   // error here instead of an empty box. It is also drawn on the window's own
   // title row and by the openers that raise it.
   showInfo: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18", "M12 8h.01", "M12 11v6"],
+  // The route window, contextual too: a list of places and an arrow along it.
+  routeWindow: ["M4 6h10M4 12h10M4 18h6", "M19 5v14", "M16 16l3 3 3-3"],
+  // The mission tracker: a list with a tick against its first line.
+  missionTracker: ["M4 7l2 2 4-4", "M13 7h7M4 13h16M4 18h12"],
   log: ["M5 4h14v16H5z", "M8 9h8M8 13h8M8 17h5"],
 };
 

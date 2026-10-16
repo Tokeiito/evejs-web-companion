@@ -475,6 +475,7 @@ function decodeJournalRow(row: JsonValue): JournalMission {
     agentID: toNumber(items[4]),
     expirationTime: toDecimalString(items[5]),
     missionID: toNumber(items[9]),
+    remoteCompletable: items[8] === true || items[8] === 1,
     bookmarks: seqItems(items[6]).map(decodeMissionSpot).filter((spot): spot is MissionSpot => spot !== null),
   };
 }

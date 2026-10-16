@@ -13,6 +13,8 @@
   import CharacterBar from "./CharacterBar.svelte";
   import FleetInvitation from "./FleetInvitation.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
+  import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
+  import AbyssJumpHost from "./AbyssJumpHost.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -325,13 +327,43 @@
   function removeSession(id: string): void {
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === sessions.length) return;
+    const gone = sessions.find((s) => s.id === id) ?? null;
     sessions = remaining;
+    sayWhyOffline(gone, lastOnline.get(id) ?? null);
+    lastOnline.delete(id);
     if (activeId === id) {
       activeId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     }
     if (remaining.length === 0 && onboarding === null) {
       hangarOpen = true;
     }
+  }
+
+  // Each pilot's character while it was online, to say who went and to ask why (sayWhyOffline). Not state: nothing
+  // is drawn from it.
+  const lastOnline = new Map<string, { characterID: number; characterName: string }>();
+
+  // A pilot the game server logged off with a reason of its own (another login of its account: one client for each
+  // account, as on Tranquility), said as the retail client puts up its connection-lost notice (disconnectNotice.py),
+  // until it is put away. A pilot released, logged out or lost for no reason the server gave goes without a word.
+  let offlineNotes = $state<{ id: number; text: string }[]>([]);
+  let offlineNoteSeq = 0;
+  function sayWhyOffline(gone: Session | null, last: { characterID: number; characterName: string } | null): void {
+    if (!gone || !last || typeof gone.flow.readClosedByServer !== "function") return;
+    gone.flow
+      .readClosedByServer(last.characterID)
+      .then((closed) => {
+        if (!closed) return;
+        offlineNoteSeq += 1;
+        offlineNotes = [
+          ...offlineNotes,
+          {
+            id: offlineNoteSeq,
+            text: `${last.characterName || `Character ${last.characterID}`} was logged off by the game server: ${closed.reason} (${closed.reasonCode}).`,
+          },
+        ];
+      })
+      .catch(() => {});
   }
 
   // Watch every online pilot's station slice; when one goes offline, prune it.
@@ -341,6 +373,9 @@
   $effect(() => {
     const unsubs = sessions.map((s) =>
       s.store.station.subscribe((slice) => {
+        if (slice.online !== null) {
+          lastOnline.set(s.id, { characterID: slice.online.characterID, characterName: slice.online.characterName });
+        }
         if (slice.online === null) removeSession(s.id);
         recomputeOnline();
       }),
@@ -696,10 +731,36 @@
       <ClientDialogs {session} inFront={session.id === activeId} />
     {/each}
   </ErrorBoundary>
+  <!-- The Ship Restrictions window an acceleration gate's refusal opens (ShipRestrictionsWindow.svelte), the pilot in
+       front's. -->
+  <ErrorBoundary name="Ship restrictions">
+    {#each sessions as session (session.id)}
+      <ShipRestrictionsWindow {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
+  <!-- A trace's jump window that Activate Gate on an Abyssal trace opens (AbyssJumpHost.svelte), the pilot in front's. -->
+  <ErrorBoundary name="Abyssal jump">
+    {#each sessions as session (session.id)}
+      <AbyssJumpHost {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
 {:else if restoring}
   <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->
   <h1>EveJS Web</h1>
   <p class="restoring-note">Restoring your pilots…</p>
+{/if}
+
+{#if offlineNotes.length > 0}
+  <div class="offline-notes" role="status">
+    {#each offlineNotes as note (note.id)}
+      <div class="offline-note">
+        <p>{note.text}</p>
+        <button type="button" class="minor" onclick={() => (offlineNotes = offlineNotes.filter((n) => n.id !== note.id))}>
+          OK
+        </button>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 {#if hangarOpen}

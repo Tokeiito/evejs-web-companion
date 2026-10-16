@@ -53,6 +53,8 @@ test("each table is one of the client's loaders over its own file, named in lowe
     missions: { loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" },
     npcCorporations: { loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" },
     npcCorporationDivisions: { loader: "npcCorporationDivisionsLoader", resource: "res:/staticdata/npccorporationdivisions.fsdbinary" },
+    // eveaccounting/data.py AccountingEntryTypes: res:/staticdata/accountingEntryTypes.fsdbinary, by its loader.
+    accountingEntryTypes: { loader: "accountingEntryTypesLoader", resource: "res:/staticdata/accountingentrytypes.fsdbinary" },
   });
   for (const table of Object.values(TABLES)) assert.equal(table.resource, table.resource.toLowerCase());
 });

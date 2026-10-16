@@ -458,8 +458,9 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
 //   __fleetMoniker.RejectInvite(False)   where the pilot's setting turns invitations away, or the window is blocked (1184, 1187)
 //   __fleetMoniker.RejectInvite()        on the pilot's no (1198)
 //
-// and nothing is read after any of them. No Tranquility recording has one. The page has no such setting and no
-// blocked window, so it says True or nothing.
+// and nothing is read after any of them. No Tranquility recording has one. The page has the setting (its Settings
+// window's Auto-reject invitations, app/autoRejectInvitations.ts) and no blocked window, so it says True, False for
+// the setting, or nothing.
 //
 // THE FLEET IS THE PAGE'S TO NAME (`of`), as its invitation named it, and the word is the page's to say: it is
 // the page that knows whether its pilot is in a fleet (src/server.js, rejectFleetInviteCall).
@@ -471,11 +472,12 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
 
 /**
  * Turns down the invitation of the fleet `fleetID`. `inAFleet` is whether the pilot is in a fleet, as the caller
- * knows it: from there the client says True with it, and so does this. Fails as the call fails.
+ * knows it: from there the client says True with it, and so does this. `bySetting` is the pilot's setting turning
+ * it away, where the client says False. Fails as the call fails.
  */
-export async function declineFleetInvite(act: Ask, fleetID: number, inAFleet: boolean): Promise<void> {
+export async function declineFleetInvite(act: Ask, fleetID: number, inAFleet: boolean, bySetting = false): Promise<void> {
   if (!Number.isSafeInteger(fleetID) || fleetID <= 0) {
     throw new Error("That invitation names no fleet.");
   }
-  await act("fleetObjectHandler", "RejectInvite", inAFleet ? [true] : [], undefined, fleetID);
+  await act("fleetObjectHandler", "RejectInvite", inAFleet ? [true] : bySetting ? [false] : [], undefined, fleetID);
 }

@@ -102,6 +102,17 @@
 // autopilot up before it asks (flow.stopShip), and so does the fleet companion's stop; a script bot's and a
 // support ship's stop is one step of a program that carries on, and gives nothing up.
 //
+// TURNED TOWARD A PLACE. scanSvc.AlignToPosition (459 to 465), a probe result's Align To (GetAlignToMenu, 704 to
+// 707, in an accurate result's menu):
+//
+//   directionalVector = geo2.Vec3SubtractD(position, myPosition)
+//   rbp.CmdGotoDirection(directionalVector[0], directionalVector[1], directionalVector[2])
+//
+// the place less the ship's own ball's position, on the ballpark's object. It answers nothing. Tranquility has the
+// call in six recordings, three floats and nothing else (the double click in space's, of length one). The server
+// (beyonceService.Handle_CmdGotoDirection) turns the session's own ship toward the direction. The page's "own
+// position" is its space read's of the ship, as the results' distances are.
+//
 // SENT INTO WARP, TO A SCAN RESULT. menusvc._WarpXToScanResult (1418 to 1428), which the scanner's list calls with
 // no range (scannerListEntries.py 276). With a park, the sensor suite is asked for the site that goes by the
 // result's label among its anomalies and its structures (sensorSuiteService.py 799), and the warp is
@@ -110,7 +121,9 @@
 //   michelle.CmdWarpToStuff('scan', label, minRange=None, fleet=False)      where it has none
 //
 // on the ballpark's object (michelle.py 737). It answers nothing. Two of Tranquility's recordings have the item's
-// form, with fleet=False beside the range; none has a warp by a label.
+// form, with fleet=False beside the range; none has a warp by a label. The probe results' menu makes the same warp
+// with a range (menusvc.SolarsystemScanMenu, 1403 to 1407: Warp To at the pilot's own warp distance, Warp to Within
+// at one of the seven, GetWarpOptions 1369 to 1381 and WarpToMenu 2254 to 2270), the range a float.
 //
 // The server (beyonceService.Handle_CmdWarpToStuff) flies the session's own ship in the session's own system: an
 // item is a thing of the session's scene, a site the server seeded is given its contents on the way, and a label
@@ -325,6 +338,28 @@ export async function goToPoint(act: Ask, flightNow: () => Promise<FlightNow>, p
 }
 
 /**
+ * Turns the pilot's ship toward a place, as a probe result's Align To does: the place less the ship's own position.
+ * Fails as the call fails, and before it where either is no position or the pilot is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP TURNED.
+ */
+export async function alignToPosition(
+  act: Ask,
+  flightNow: () => Promise<FlightNow>,
+  place: readonly [number, number, number],
+  shipPosition: readonly [number, number, number],
+): Promise<void> {
+  if (![...place, ...shipPosition].every(Number.isFinite)) {
+    throw new Error("Unknown place or ship position.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("beyonce", "CmdGotoDirection", [place[0] - shipPosition[0], place[1] - shipPosition[1], place[2] - shipPosition[2]]);
+}
+
+/**
  * Aligns the pilot's ship to a thing in space. Fails as the call fails, and before it where the client sends
  * nothing: for what is no thing, for a pilot that is not in space, and for the pilot's own ship.
  *
@@ -407,7 +442,7 @@ export async function stopShip(act: Ask, flightNow: () => Promise<FlightNow>): P
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. A ship already in warp is answered the same.
  */
-export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string): Promise<void> {
+export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string, minRange: number | null = null): Promise<void> {
   if (label === "") {
     throw new Error("A scan-site label is required.");
   }
@@ -417,7 +452,10 @@ export async function warpToScanResult(act: Ask, flightNow: () => Promise<Flight
   }
   const sites = kept !== null && kept.solarSystemID !== null && kept.solarSystemID === now.solarSystemID ? kept : await readSites();
   const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === label)?.siteID;
-  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange: null, fleet: false });
+  if (minRange !== null && !(Number.isFinite(minRange) && minRange >= 0)) {
+    throw new Error("A warp's range is a distance of nought or more.");
+  }
+  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange, fleet: false });
 }
 
 /** What a warp to a place of the pilot's own looks to before it is asked: that the place has a number, and that the pilot is in space. */

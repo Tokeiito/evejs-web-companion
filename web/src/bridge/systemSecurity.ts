@@ -38,6 +38,26 @@ export function securityClass(level: number): SecurityClass {
   return level < 0.95 ? SECURITY_CLASS.high : SECURITY_CLASS.safe;
 }
 
+/**
+ * The client's colour for a rating it shows (security/client/securityColor.py get_security_status_color, by way of
+ * eveFormat.FmtSystemSecStatus, 225 to 233: the level rounded to one decimal place first): its curve's entry for each
+ * tenth, nought and below the first. The curve's values were read from the client's compiled module by its own
+ * Python, since the decompiled source prints them wrongly.
+ */
+const SECURITY_STATUS_COLORS: readonly (readonly [number, number, number])[] = Object.freeze([
+  [0.553, 0.196, 0.392], [0.451, 0.125, 0.125], [0.737, 0.067, 0.09], [0.808, 0.267, 0.059], [0.863, 0.427, 0.027],
+  [0.961, 1.0, 0.514], [0.447, 0.906, 0.333], [0.38, 0.859, 0.643], [0.306, 0.808, 0.973], [0.227, 0.604, 0.922],
+  [0.173, 0.459, 0.886],
+]);
+
+/** A system's colour as the client draws it for a level, as CSS. */
+export function securityStatusColor(level: number): string {
+  const rounded = Number(level.toFixed(1));
+  const index = Math.min(SECURITY_STATUS_COLORS.length - 1, Math.trunc(Math.max(rounded, 0) * 10));
+  const [r, g, b] = SECURITY_STATUS_COLORS[index] ?? SECURITY_STATUS_COLORS[0]!;
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
 /** is_low_sec_or_lower: where the client warns before sending a pilot. */
 export function isLowSecOrLower(security: number): boolean {
   return securityClass(security) <= SECURITY_CLASS.low;

@@ -15,15 +15,24 @@
   // pilot it is for (the page's own words, as the fleet invitation's). What is to be put up is the flow's
   // (dialogsSaid); a box is taken down by its OK, the strip by its time.
   //
+  // A box whose dialog the install lets be kept has the client's checkbox (messagebox.py prompt_player, 158 to 168:
+  // Do Not Show Again under OK alone, Do Not Ask Again under a question); answered with it ticked, the answer is kept
+  // where the dialog lets that answer be kept, and the dialog is not put up again (dialog_handler.py, 59 to 64 and
+  // _persist_prompt_suppress_choice, 126 to 132; bridge/dialogSuppression.ts).
+  //
   // Not done: the dialog's icon, its sound (audio.AudioMessage), its line in the client's log (logger.AddMessage), the
   // strip's place with the HUD at the top and its being dragged, and the box's holding the rest of the client still
   // (is_modal) for a pilot not in front.
   import { onDestroy, tick } from "svelte";
+  import { DO_NOT_ASK_AGAIN_LABEL, DO_NOT_SHOW_AGAIN_LABEL, answerKept, suppressKey } from "../bridge/dialogSuppression.ts";
   import type { Session } from "../app/sessions.ts";
   import type { SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { NUMERIC_WORD_LABELS, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import {
+    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, questionText, wordsLabels, wordsNameRefs,
+    type ClientWording,
+  } from "../bridge/questions.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -45,6 +54,11 @@
     "UI/Common/Buttons/OK": "OK",
     "UI/Common/Buttons/Cancel": "Cancel",
   };
+  /** A question's two answers (uiconst.YESNO), in the client's words. */
+  const ANSWER_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/Buttons/Yes": "Yes",
+    "UI/Common/Buttons/No": "No",
+  };
   const wordOf = (label: string, own: string): string => {
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? template : own;
@@ -54,23 +68,10 @@
   const BOX_TYPES: ReadonlySet<string> = new Set(["info", "infomodal", "warning", "question", "error", "fatal", "windowhelp"]);
   const STRIP_TYPES: ReadonlySet<string> = new Set(["notify", "hint", "event"]);
   /** TITLE_BY_DIALOG_TYPE: the type's own word for a box whose dialog has no title; Information for any other. */
-  const TYPE_TITLES: Readonly<Record<string, string>> = {
-    info: "UI/Common/Information",
-    infomodal: "UI/Common/Information",
-    warning: "UI/Generic/Warning",
-    question: "UI/Common/Question",
-    error: "UI/Common/Error",
-    fatal: "UI/Common/Fatal",
-  };
-  const INFORMATION = "UI/Common/Information";
+  const TYPE_TITLES = DIALOG_TYPE_TITLES;
+  const INFORMATION = INFORMATION_TITLE;
   /** The page's own words for those, where the install's are not to hand. */
-  const OWN_TITLES: Readonly<Record<string, string>> = {
-    "UI/Common/Information": "Information",
-    "UI/Generic/Warning": "Warning",
-    "UI/Common/Question": "Question",
-    "UI/Common/Error": "Error",
-    "UI/Common/Fatal": "Fatal",
-  };
+  const OWN_TITLES = OWN_DIALOG_TITLES;
   /** How long the strip stays (QuickMessage.ShowMsg: AutoTimer(5000, self.hide)). */
   const STRIP_MS = 5000;
 
@@ -90,7 +91,10 @@
       return;
     }
     // (And the words a dialog's numeric distance and ISK are written in: questions.ts, writeDistance and writeIsk.)
-    flow.requestWords([...wordsLabels(parts), ...$said.map(typeKey), ...Object.keys(OWN_TITLES), ...NUMERIC_WORD_LABELS]);
+    flow.requestWords([
+      ...wordsLabels(parts), ...$said.map(typeKey), ...$said.map((one) => suppressKey(one.dialog)), ...Object.keys(OWN_TITLES), ...NUMERIC_WORD_LABELS,
+      ...Object.keys(ANSWER_WORDS), DO_NOT_SHOW_AGAIN_LABEL, DO_NOT_ASK_AGAIN_LABEL,
+    ]);
     const refs = wordsNameRefs(parts, client);
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -111,6 +115,8 @@
     const type = $words.templates[key] ?? null;
     // No such dialog to be read: the page's own words, in a box.
     if (type === null) return { said: one, kind: "box", type: null };
+    // A question waits on its answer: a box, whatever its type.
+    if (one.answers === "yesno") return { said: one, kind: "box", type };
     return { said: one, kind: BOX_TYPES.has(type) ? "box" : STRIP_TYPES.has(type) ? "strip" : "none", type };
   }));
 
@@ -133,8 +139,26 @@
     const typeWords = $words.templates[typeTitle];
     const title = own || (typeof typeWords === "string" && typeWords !== "" ? typeWords : OWN_TITLES[typeTitle] ?? "Information");
     const body = first.type === null ? first.said.fallback : questionText(partOf(first.said, "body"), nameOf, client) || first.said.fallback;
-    return { said: first.said, title, body };
+    const suppress = $words.templates[suppressKey(first.said.dialog)];
+    return { said: first.said, title, body, suppress: typeof suppress === "string" ? suppress : null };
   });
+  // The box's checkbox, unticked for each box put up.
+  let keepTicked = $state(false);
+  let keepTickedFor: number | null = null;
+  $effect(() => {
+    const n = box === null ? null : box.said.n;
+    if (n === keepTickedFor) return;
+    keepTickedFor = n;
+    keepTicked = false;
+  });
+  /** The box answered: OK, Yes or No; the answer kept where the checkbox is ticked and the dialog lets it be kept. */
+  function answerBox(answer: "ok" | "yes" | "no"): void {
+    const shownBox = box;
+    if (shownBox === null) return;
+    if (keepTicked && answerKept(shownBox.suppress, answer)) flow.keepDialogAnswer(shownBox.said.dialog, answer);
+    if (answer === "ok") flow.dismissDialog(shownBox.said.n);
+    else flow.answerDialog(shownBox.said.n, answer === "yes");
+  }
 
   const strip = $derived.by(() => {
     const strips = shown.filter((one) => one.kind === "strip");
@@ -244,8 +268,19 @@
       {/if}
       <strong>{box.title}</strong>
       <p class="body">{box.body}</p>
+      {#if box.suppress !== null}
+        <label class="keep">
+          <input type="checkbox" bind:checked={keepTicked} />
+          {box.said.answers === "yesno" ? wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again") : wordOf(DO_NOT_SHOW_AGAIN_LABEL, "Do not show me this again")}
+        </label>
+      {/if}
       <span class="answers">
-        <button type="button" onclick={() => flow.dismissDialog(box.said.n)}>OK</button>
+        {#if box.said.answers === "yesno"}
+          <button type="button" onclick={() => answerBox("yes")}>{wordOf("UI/Common/Buttons/Yes", "Yes")}</button>
+          <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+        {:else}
+          <button type="button" onclick={() => answerBox("ok")}>OK</button>
+        {/if}
       </span>
     </div>
   </div>
@@ -253,7 +288,7 @@
 {#if strip !== null}
   <div class="client-strip" role="status" data-dialog={strip.said.dialog} data-in-front={inFront}>
     {#if !inFront && pilotName !== null}<span class="for-pilot">For {pilotName}</span>{/if}
-    {strip.text}
+    <span class="strip-text">{strip.text}</span>
   </div>
 {/if}
 
@@ -264,7 +299,10 @@
   .client-dialog { pointer-events: auto; display: flex; flex-direction: column; gap: 0.6rem; width: min(26rem, calc(100vw - 2rem));
     padding: 0.75rem 1rem; background: #14273a; color: #d6e6f7; border: 1px solid #3c6f9e; }
   .body { margin: 0; white-space: pre-line; }
+  /* The client's label starts a new line at each line break in its text (trinity, Tr2LabelTextParser.cpp 360 to 375). */
+  .strip-text { white-space: pre-line; }
   .answers { display: flex; justify-content: flex-end; gap: 0.4rem; }
+  .keep { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
   .quantity { display: contents; }
   input { background: #0d1b29; color: inherit; border: 1px solid #3c6f9e; padding: 0.2rem 0.4rem; }
   button { border: 1px solid #5b93c7; background: #1b3956; color: inherit; padding: 0.2rem 1rem; cursor: pointer; }

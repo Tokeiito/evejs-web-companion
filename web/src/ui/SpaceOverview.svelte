@@ -28,7 +28,12 @@
   import TypeIcon from "./TypeIcon.svelte";
   import { SELECTION_GONE, selectionHasVanished, spaceSelection } from "../space/selection.ts";
   import { overviewTabs } from "../space/overviewTabs.ts";
+  import {
+    COLUMN_DESCRIPTIONS, COLUMN_LABELS, COLUMN_WORD_LABELS, DEFAULT_TAB_COLUMNS, OWN_COLUMN_WORDS,
+    RIGHT_ALIGNED_COLUMNS, listedColumns, moveColumn, overviewColumns, shownColumns, toggleColumn, type OverviewColumnID,
+  } from "../space/overviewColumns.ts";
   import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
     OVERVIEW_RECIPES,
     recipeByID,
@@ -58,11 +63,16 @@
   import {
     buildOverviewRows,
     fmtDist,
+    formatOverviewAngular,
     formatOverviewDistance,
+    formatOverviewSize,
+    formatOverviewVelocity,
+    SORTS_ORDERED_BEFORE_CAP,
     hostileLabel,
     hostileRows,
     isHostile,
     type OverviewRow,
+    type OverviewRowNames,
     type OverviewSort,
   } from "../space/overview.ts";
   import {
@@ -123,8 +133,13 @@
   // A distance's unit in the client's own words: asked for once, and used when they are to hand.
   const say = $derived(distanceSay($words.templates));
   $effect(() => {
-    flow.requestWords(DISTANCE_WORD_LABELS);
+    flow.requestWords([...DISTANCE_WORD_LABELS, ...COLUMN_WORD_LABELS]);
   });
+  /** A label's words from the install, or the page's own where they are not to hand. */
+  function columnWord(label: string | undefined, own: string): string {
+    const template = label === undefined ? undefined : $words.templates[label];
+    return typeof template === "string" && template !== "" ? plainText(template) : own;
+  }
   // svelte-ignore state_referenced_locally
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
@@ -137,6 +152,12 @@
   const mining = store.mining;
   // svelte-ignore state_referenced_locally
   const character = store.character;
+  // svelte-ignore state_referenced_locally
+  const fleetState = store.fleet;
+  // svelte-ignore state_referenced_locally
+  const ownerTickers = flow.ownerTickers;
+  // svelte-ignore state_referenced_locally
+  const corporationFactions = flow.corporationFactions;
 
   /**
    * The nearest N rows the list keeps.
@@ -190,6 +211,23 @@
   const tabSignal = overviewTabs.selected;
   const allTabs = $derived($tabsSignal);
   const activeTabID = $derived($tabIDSignal);
+  // The tab's columns (bridge: space/overviewColumns.ts), shown in its order; each one's width in the list's grid. The
+  // type's track is nothing on a narrow panel, where the row's second line says the type (styles.css --spc-type-col).
+  const columnsByTab = overviewColumns.byTab;
+  const tabColumns = $derived($columnsByTab[activeTabID] ?? DEFAULT_TAB_COLUMNS);
+  const shownCols = $derived(shownColumns(tabColumns));
+  const COLUMN_TRACKS: Readonly<Record<string, string>> = {
+    ICON: "24px", NAME: "minmax(0, 1.4fr)", TYPE: "var(--spc-type-col)", DISTANCE: "88px", VELOCITY: "58px", ANGULARVELOCITY: "58px",
+    TAG: "40px", FACTION: "96px", MILITIA: "96px",
+  };
+  const gridColumns = $derived(shownCols.map((column) => COLUMN_TRACKS[column] ?? "72px").join(" "));
+  /** The sort a column's header gives, or null for one that does not sort. */
+  const SORT_BY_COLUMN: Readonly<Partial<Record<OverviewColumnID, OverviewSort>>> = {
+    DISTANCE: "distance", NAME: "name", TYPE: "type", VELOCITY: "velocity", RADIALVELOCITY: "radialVelocity",
+    TRANSVERSALVELOCITY: "transversalVelocity", ANGULARVELOCITY: "angularVelocity", SIZE: "size", TAG: "tag",
+    CORPORATION: "corporation", ALLIANCE: "alliance", FACTION: "faction", MILITIA: "militia",
+  };
+  let columnsOpen = $state(false);
   const activeTab = $derived($tabSignal);
 
   /**
@@ -370,6 +408,7 @@
   const overview = $derived.by(() =>
     buildOverviewRows(presetSnapshot, origin, {
       sort: sortKey,
+      direction: sortDir,
       cap: ROW_CAP,
       filter: { text: search },
       // The search matches what the player SEES, so it searches the resolved
@@ -377,9 +416,64 @@
       names: (entity) => ({
         typeName: $names.resolved[nameKey("type", entity.typeID ?? 0)] ?? null,
         groupName: $names.resolved[nameKey("typeGroup", entity.typeID ?? 0)] ?? null,
+        ...affiliationWords(entity),
       }),
     }),
   );
+
+  /** idCheckers.IsNPC: an owner above the system's own and below the players'. */
+  const isNpcOwner = (ownerID: number | null | undefined): boolean => typeof ownerID === "number" && ownerID > 9999 && ownerID < 90_000_000;
+  /**
+   * The faction the Faction column names for a thing (overviewWindow.py 967 to 975): where its owner, or else its
+   * pilot, is an NPC, that one's faction (get_corporation_faction_id), of the client's own table of NPC corporations.
+   */
+  function npcFactionID(entity: SpaceEntity): number | null {
+    if (!isNpcOwner(entity.ownerID) && !isNpcOwner(entity.characterID)) return null;
+    const ownerID = entity.ownerID || entity.characterID;
+    return ownerID ? ($corporationFactions?.[String(ownerID)] ?? null) : null;
+  }
+  /**
+   * The words of the overview's text columns for a thing (overviewWindow.py 937 to 975): the fleet's tag on it (none
+   * where the pilot is in no fleet), its corporation's and alliance's tickers in brackets (overviewUtil.py 34 to 39),
+   * the faction of an NPC owner, and the militia it is in; null where the column has none, or the page none yet.
+   */
+  function affiliationWords(entity: SpaceEntity): Pick<OverviewRowNames, "tag" | "corporation" | "alliance" | "faction" | "militia"> {
+    const inFleet = ($fleetState.fleet?.fleetID ?? null) !== null;
+    const ticker = (value: string | null | undefined): string | null => (typeof value === "string" ? `[${value}]` : null);
+    const factionName = (factionID: number | null | undefined): string | null =>
+      factionID ? ($names.resolved[nameKey("faction", factionID)] ?? null) : null;
+    return {
+      tag: inFleet ? ($fleetState.targetTags?.get(entity.itemID) ?? null) : "",
+      corporation: entity.corporationID ? ticker($ownerTickers.corporations[String(entity.corporationID)]) : null,
+      alliance: entity.allianceID ? ticker($ownerTickers.alliances[String(entity.allianceID)]) : null,
+      faction: factionName(npcFactionID(entity)),
+      militia: factionName(entity.warFactionID),
+    };
+  }
+
+  // What the text columns shown need and the page has not: the tickers (each a Get of its own), the table of NPC
+  // corporations' factions, and the factions' names (cfg.eveowners, which the client has of its own data).
+  $effect(() => {
+    const shown = new Set(shownCols);
+    const listed = overview.rows;
+    if (shown.has("CORPORATION") || shown.has("ALLIANCE")) {
+      flow.requestOwnerTickers(
+        shown.has("CORPORATION") ? listed.flatMap((row) => (row.corporationID ? [row.corporationID] : [])) : [],
+        shown.has("ALLIANCE") ? listed.flatMap((row) => (row.allianceID ? [row.allianceID] : [])) : [],
+      );
+    }
+    if (shown.has("FACTION")) flow.loadCorporationFactions();
+    const factions = new Set<number>();
+    for (const row of listed) {
+      const factionID = shown.has("FACTION") ? npcFactionID(row) : null;
+      if (factionID) factions.add(factionID);
+      if (shown.has("MILITIA") && row.warFactionID) factions.add(row.warFactionID);
+    }
+    const refs = [...factions]
+      .filter((factionID) => ($names.resolved[nameKey("faction", factionID)] ?? null) === null)
+      .map((factionID): NameRef => ({ kind: "faction", id: factionID }));
+    if (refs.length > 0) flow.requestNames(refs);
+  });
 
   // ⚠ Delivered WITH the snapshot, never recomputed here: the links describe
   // the same grid the entities do, so they can never label a gate from a
@@ -401,7 +495,8 @@
     // ⚠ Reversed for DISPLAY only. The cap keeps the NEAREST rows, so "farthest
     // first" is the far end of what is on the list, not of what is on the grid —
     // which is why the truncation line below is never hidden.
-    return sortDir === 1 ? built : [...built].reverse();
+    // (The speed sorts are ordered before their cap, in either direction: buildOverviewRows.)
+    return sortDir === 1 || SORTS_ORDERED_BEFORE_CAP.has(sortKey) ? built : [...built].reverse();
   });
 
   const truncated = $derived(overview.matched > overview.rows.length);
@@ -455,6 +550,10 @@
       locked: lockedIDs.has(row.itemID),
       acquiring: acquiringIDs.has(row.itemID),
       gateLink: row.gateLink,
+      // Activate Gate's: the thing's group and type, and whether the ship warps.
+      groupID: row.groupID ?? null,
+      typeID: row.typeID ?? null,
+      warping: snapshot?.ship?.mode === "WARP",
       // What decides whether "Mine this" is offered at all. A stargate used to
       // get it, greyed out and blaming your equipment for a thing no equipment
       // could ever fix — space/rowActions.ts, isMineableCategory.
@@ -1048,7 +1147,7 @@
       await dispatchRowAction(
         flow as never,
         action.id,
-        { itemID: row.itemID, gateLink: row.gateLink },
+        { itemID: row.itemID, gateLink: row.gateLink, typeID: row.typeID ?? null },
         ranges,
       );
     });
@@ -1597,25 +1696,63 @@
       <span class="spc-search-glyph" aria-hidden="true">⌕</span>
       <input type="search" placeholder="name, type or group" aria-label="Search what is around you" bind:value={search} />
     </label>
+    <!-- The tab's columns: the header menu's ticks (GetColumnVisibilitySubMenu) and the configuration window's order
+         and reset (columnsPanel.py), in one place, as the page has no menu on the header. -->
+    <button type="button" class="spc-tool" aria-expanded={columnsOpen} onclick={() => (columnsOpen = !columnsOpen)}>Columns</button>
   </div>
+  {#if columnsOpen}
+    {@const caption = $words.templates["UI/Overview/TabColumnsCaption"]}
+    <div class="spc-columns" role="group" aria-label="Columns">
+      <!-- ColumnConfigurationWindow's caption, with the tab's name. -->
+      <p class="spc-menu-head">
+        {typeof caption === "string" ? plainText(formatTemplate(caption, { tabName: activeTab.name }, { nameOf: () => "" })) : `Columns: ${activeTab.name}`}
+      </p>
+      <ul>
+        {#each listedColumns(tabColumns) as column, index (column)}
+          <li>
+            <label title={COLUMN_DESCRIPTIONS[column] ? columnWord(COLUMN_DESCRIPTIONS[column], "") : undefined}>
+              <input
+                type="checkbox"
+                checked={tabColumns.visible.includes(column)}
+                onchange={() => overviewColumns.set(activeTabID, toggleColumn(tabColumns, column))}
+              />
+              {columnWord(COLUMN_LABELS[column], OWN_COLUMN_WORDS[column])}
+            </label>
+            <button type="button" class="spc-tool" aria-label="Move up" disabled={index === 0}
+              onclick={() => overviewColumns.set(activeTabID, moveColumn(tabColumns, column, -1))}>↑</button>
+            <button type="button" class="spc-tool" aria-label="Move down"
+              onclick={() => overviewColumns.set(activeTabID, moveColumn(tabColumns, column, 1))}>↓</button>
+          </li>
+        {/each}
+      </ul>
+      <button type="button" class="spc-tool" onclick={() => overviewColumns.reset(activeTabID)}>
+        {columnWord("UI/Overview/ResetColumns", "Reset columns")}
+      </button>
+    </div>
+  {/if}
 
   <!-- ============================================================= content -->
   <div class="spc-content" onscroll={() => (rangeMenu = null)}>
-    <div class="spc-colhead">
-      <span class="spc-cell-icon"></span>
-      <button type="button" class="spc-sort spc-cell-name" class:on={sortKey === "name"} onclick={() => sortBy("name")}>
-        Name {sortArrow("name")}
-      </button>
-      <span class="spc-cell-type">Type</span>
-      <span class="spc-cell-group">Group</span>
-      <button
-        type="button"
-        class="spc-sort spc-cell-range"
-        class:on={sortKey === "distance"}
-        onclick={() => sortBy("distance")}
-      >
-        Distance {sortArrow("distance")}
-      </button>
+    <div class="spc-colhead" style="grid-template-columns: {gridColumns}">
+      {#each shownCols as column (column)}
+        {@const sort = SORT_BY_COLUMN[column]}
+        {#if column === "ICON" || sort === undefined}
+          <span class="spc-cell-icon"></span>
+        {:else}
+          <button
+            type="button"
+            class="spc-sort spc-col-{column.toLowerCase()}"
+            class:spc-cell-name={column === "NAME"}
+            class:spc-cell-type={column === "TYPE"}
+            class:spc-cell-figure={RIGHT_ALIGNED_COLUMNS.has(column)}
+            class:on={sortKey === sort}
+            title={COLUMN_DESCRIPTIONS[column] ? columnWord(COLUMN_DESCRIPTIONS[column], "") : undefined}
+            onclick={() => sortBy(sort)}
+          >
+            {columnWord(COLUMN_LABELS[column], OWN_COLUMN_WORDS[column])} {sortArrow(sort)}
+          </button>
+        {/if}
+      {/each}
     </div>
 
     <ul class="spc-rows">
@@ -1630,10 +1767,13 @@
             class:picked={row.itemID === selectedID}
             class:hostile={isHostile(row)}
           >
-            <button type="button" class="spc-row-btn" aria-pressed={row.itemID === selectedID} onclick={() => pick(row.itemID)}>
+            <button type="button" class="spc-row-btn" style="grid-template-columns: {gridColumns}" aria-pressed={row.itemID === selectedID} onclick={() => pick(row.itemID)}>
+              {#each shownCols as column (column)}
+              {#if column === "ICON"}
               <span class="spc-cell-icon">
                 <TypeIcon typeID={row.typeID} name={rowName(row)} size="sm" />
               </span>
+              {:else if column === "NAME"}
               <span class="spc-cell-name">
                 <span class="spc-name" class:hostile={isHostile(row)}>
                   {rowName(row)}{#if lockedIDs.has(row.itemID)}<span class="spc-lock-mark" title="Locked">⌖</span>{/if}
@@ -1654,11 +1794,29 @@
                 {/if}
                 <span class="spc-meta">{typeName(row)} · {groupName(row)}</span>
               </span>
+              {:else if column === "TYPE"}
               <span class="spc-cell-type">{typeName(row)}</span>
-              <span class="spc-cell-group">{groupName(row)}</span>
+              {:else if column === "DISTANCE"}
               <span class="spc-cell-range" class:far={row.surfaceDistance >= 100_000}>
                 {formatOverviewDistance(row.surfaceDistance, say)}
               </span>
+              {:else if column === "VELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.speed)}</span>
+              {:else if column === "RADIALVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.radialVelocity)}</span>
+              {:else if column === "TRANSVERSALVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.transversalVelocity)}</span>
+              {:else if column === "ANGULARVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewAngular(row.angularVelocity)}</span>
+              {:else if column === "SIZE"}
+              <span class="spc-cell-figure">{formatOverviewSize(row.radius, say)}</span>
+              {:else if column === "TAG" || column === "CORPORATION" || column === "ALLIANCE" || column === "FACTION" || column === "MILITIA"}
+              {@const words = affiliationWords(row)[column === "TAG" ? "tag" : column === "CORPORATION" ? "corporation" : column === "ALLIANCE" ? "alliance" : column === "FACTION" ? "faction" : "militia"]}
+              <span class="spc-cell-text" title={words || undefined}>{words ?? ""}</span>
+              {:else}
+              <span></span>
+              {/if}
+              {/each}
             </button>
             <!--
               ⚠ NO PER-ROW HIDE CONTROL, AND THAT IS THE POINT. The first pass

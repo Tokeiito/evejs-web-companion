@@ -416,8 +416,11 @@ test("expanding a station asks for its item types by name", async () => {
 
 test("setting a destination from an asset location makes the station the destination, and flies nothing", async () => {
   // Set Destination, as the client's map menu sets it (starMapSvc.SetWaypoint(id, True)): the station the only
-  // waypoint, kept for the pilot; nothing is planned or flown until the autopilot is switched on.
-  const { store, flow } = makeFlow(respondOk());
+  // waypoint, kept for the pilot; nothing is planned or flown until the autopilot is switched on. It is a station of
+  // the map, in known space and of no deprecated type (_IsDestinationValid, 2301 to 2318), as the BFF's map answers.
+  const { store, flow } = makeFlow(respondOk((path) => (path === `/api/map/resolve/${STATION_ID}`
+    ? { status: 200, body: { ok: true, id: STATION_ID, kind: "station", stationID: STATION_ID, stationName: "A station", solarSystemID: SYSTEM_ID, systemName: "A system", stationTypeID: STATION_TYPE_ID } }
+    : null)));
   store.apply({
     type: "character/online",
     character: { characterID: 140000001, characterName: "Pilot", stationID: 60000001, structureID: null, solarSystemID: 30000140, corporationID: 1000001 },

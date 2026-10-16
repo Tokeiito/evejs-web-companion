@@ -38,14 +38,33 @@ const TABLES = Object.freeze({
   npcCorporations: Object.freeze({ loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" }),
   // The divisions agents work in, each with the message its name is (npcs/divisions.py).
   npcCorporationDivisions: Object.freeze({ loader: "npcCorporationDivisionsLoader", resource: "res:/staticdata/npccorporationdivisions.fsdbinary" }),
+  // The kinds of a wallet journal's entries, each with the message its line is worded by (eveaccounting/data.py
+  // get_entry_format_localization_id: entryJournalMessageID), which the client's FmtWalletEntry words it with.
+  accountingEntryTypes: Object.freeze({ loader: "accountingEntryTypesLoader", resource: "res:/staticdata/accountingentrytypes.fsdbinary" }),
+  // A ship type's group in the client's ship tree (evetypes.GetShipGroupID: the type's isisGroupID), which the Ship
+  // Restrictions window groups its hulls by. Only that attribute of the types is read: the table is too big to walk.
+  typeShipGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "isisGroupID" }),
+  // The objectives the client tracks without asking the server (objectives/common/objectives_data.py): a chain's
+  // objectives and its context's parameters, an objective's tasks, a task's own parameters, title and icon. The
+  // Abyssal info panel is one chain of them (abyssal_service.py ABYSS_OBJECTIVE_CHAIN_ID).
+  objectiveChains: Object.freeze({ loader: "objectiveChainsLoader", resource: "res:/staticdata/objectivechains.fsdbinary" }),
+  objectiveTypes: Object.freeze({ loader: "objectiveTypesLoader", resource: "res:/staticdata/objectivetypes.fsdbinary" }),
+  objectiveTaskTypes: Object.freeze({ loader: "objectiveTaskTypesLoader", resource: "res:/staticdata/objectivetasktypes.fsdbinary" }),
+  // The special effects that are a jump (fsdBuiltData/client/travelEffects.py, by guid): IsTravelEffect.
+  travelEffects: Object.freeze({ loader: "travelEffectsLoader", resource: "res:/staticdata/traveleffects.fsdbinary" }),
 });
 
+// The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),
+// its infoBubbleGroups), each with its name's message, its icons and more. The cache is an SQLite file of fsdlite's,
+// a row of JSON for each of its tables; it is read where it is, as it is.
+const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
+
 /** Runs the client's loader on a data file and answers what it printed. */
-function runLoader({ python, binFolder, loader, dataFile, timeoutMs = LOAD_TIMEOUT_MS }) {
+function runLoader({ python, binFolder, loader, dataFile, attribute = null, timeoutMs = LOAD_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     childProcess.execFile(
       python,
-      [SCRIPT, binFolder, loader, dataFile],
+      [SCRIPT, binFolder, loader, dataFile, ...(attribute ? [attribute] : [])],
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (error) {
@@ -92,6 +111,7 @@ function createClientBuiltData({
       binFolder: path.join(clientRoot, "tq", "bin64"),
       loader: described.loader,
       dataFile: path.join(clientRoot, "ResFiles", relative),
+      ...(described.attribute ? { attribute: described.attribute } : {}),
     });
     const table = JSON.parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
@@ -119,9 +139,43 @@ function createClientBuiltData({
     return reads.get(name);
   }
 
+  // The ship tree's groups, once (INFO_BUBBLES): {groupID: {nameID, iconSmall}}, or null where they cannot be read.
+  let infoBubbleGroupsRead = null;
+  function infoBubbleGroups() {
+    if (!available()) return Promise.resolve(null);
+    if (!infoBubbleGroupsRead) {
+      infoBubbleGroupsRead = Promise.resolve().then(() => {
+        const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
+        const relative = index.get(INFO_BUBBLES);
+        if (!relative) throw new Error(`The client's index has no ${INFO_BUBBLES}.`);
+        const { DatabaseSync } = require("node:sqlite");
+        const database = new DatabaseSync(path.join(clientRoot, "ResFiles", relative), { readOnly: true });
+        try {
+          const row = database.prepare("SELECT value FROM cache WHERE key = ?").get("infoBubbleGroups");
+          const groups = row ? JSON.parse(String(row.value)) : null;
+          if (!groups || typeof groups !== "object") throw new Error("The client's ship tree has no groups.");
+          const out = {};
+          for (const [key, value] of Object.entries(groups)) {
+            if (Number(key) > 0 && value && typeof value === "object") {
+              out[key] = { nameID: Number(value.nameID) || null, iconSmall: typeof value.iconSmall === "string" ? value.iconSmall : null };
+            }
+          }
+          return out;
+        } finally {
+          database.close();
+        }
+      }).catch((error) => {
+        onError(error);
+        return null;
+      });
+    }
+    return infoBubbleGroupsRead;
+  }
+
   return {
     available,
     table,
+    infoBubbleGroups,
     async lookup(name, key) {
       const loaded = await table(name);
       if (!loaded) return { available: false, row: null };

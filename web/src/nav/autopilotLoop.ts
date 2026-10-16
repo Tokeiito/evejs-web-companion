@@ -286,7 +286,7 @@ export type AutopilotAction =
   | { readonly kind: "undock" }
   | { readonly kind: "warp"; readonly destinationID: number; readonly label: string; readonly byMenu?: boolean }
   | { readonly kind: "approach"; readonly gateID: number; readonly label: string; readonly byMenu?: boolean }
-  | { readonly kind: "jump"; readonly fromGateID: number; readonly toGateID: number; readonly label: string }
+  | { readonly kind: "jump"; readonly fromGateID: number; readonly toGateID: number; readonly label: string; readonly throughJumpGate?: boolean }
   | { readonly kind: "dock"; readonly stationID: number; readonly label: string }
   | { readonly kind: "wait"; readonly reason: string }
   | { readonly kind: "arrived" }
@@ -330,7 +330,11 @@ export interface AutopilotDeps {
    * autopilot's last station under fifty kilometres.
    */
   approach(destinationID: number, byMenu?: boolean): Promise<void>;
-  jump(fromGateID: number, toGateID: number): Promise<void>;
+  /**
+   * Jump through a stargate, or with `throughJumpGate` through an Ansiblex jump gate (`fromGateID` the Ansiblex):
+   * structureJumpBridgeMgr.CmdJumpThroughStructureStargate, as the client's autopilot jumps one (autopilot.py 349).
+   */
+  jump(fromGateID: number, toGateID: number, throughJumpGate?: boolean): Promise<void>;
   dock(stationID: number): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): number;
@@ -682,6 +686,7 @@ function decideFromDistance(
               fromGateID: targetID,
               toGateID: hop.jumpToGateID,
               label: labels.jumpOrDock,
+              ...(hop.throughJumpGate === true ? { throughJumpGate: true } : {}),
             }
           : null;
       }
@@ -828,6 +833,7 @@ export function decideAutopilotAction(
       fromGateID: hop.gateToWarpID,
       toGateID: hop.jumpToGateID,
       label: `Jump to system ${hop.toSystemID}`,
+      ...(hop.throughJumpGate === true ? { throughJumpGate: true } : {}),
     };
   }
   return {
@@ -1031,7 +1037,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.settleTicks = SETTLE_APPROACH;
           break;
         case "jump":
-          await deps.jump(action.fromGateID, action.toGateID);
+          await deps.jump(action.fromGateID, action.toGateID, action.throughJumpGate === true);
           if (!isCurrent(token)) return;
           memory.jumpedFromSystem = sys;
           memory.pendingApproachGate = null;

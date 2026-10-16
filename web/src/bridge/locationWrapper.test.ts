@@ -18,8 +18,8 @@ const securityOf = (id: number): number | null => SECURITY[id] ?? null;
 const wrap = (name: string, systemID: number | null, templates: Record<string, string> = TEMPLATES) => wrapLocation(name, systemID, templates, securityOf);
 
 test("the labels are the client's", () => {
-  assert.deepEqual(LOCATION_LABELS, { wrapper: "UI/Agents/LocationWrapper", lowSecWarning: "UI/Agents/LowSecWarning" });
-  assert.deepEqual([...LOCATION_WORD_LABELS].sort(), ["UI/Agents/LocationWrapper", "UI/Agents/LowSecWarning"]);
+  assert.deepEqual(LOCATION_LABELS, { wrapper: "UI/Agents/LocationWrapper", lowSecWarning: "UI/Agents/LowSecWarning", highSecWarning: "UI/Agents/HighSecWarning" });
+  assert.deepEqual([...LOCATION_WORD_LABELS].sort(), ["UI/Agents/HighSecWarning", "UI/Agents/LocationWrapper", "UI/Agents/LowSecWarning"]);
 });
 
 test("a place is written with its system's security rating before it, to one decimal place, as plain text", () => {

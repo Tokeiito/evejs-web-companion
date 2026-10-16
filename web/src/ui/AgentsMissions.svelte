@@ -27,6 +27,7 @@
   import { questionMarkup, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { sessionPlace } from "../bridge/sessionPlace.ts";
   import { objectiveSystemIDs } from "../bridge/locationWrapper.ts";
+  import { AGENT_HEADER_WORD_LABELS, agentHeader, agentLocationNameRef } from "../bridge/agentHeader.ts";
   import { PAGE_WORD_LABELS, missionPage, pageAgentToLocate, pageMessageIDs, pageNameRefs, pageSystemIDs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -319,10 +320,65 @@
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
       say: (message) => sayOfMission(agentID, message),
       securityOf,
+      ownSecurityStatus,
     });
   });
   // A place's name has its system's security rating before it (bridge/locationWrapper.ts).
   const securityOf = (solarSystemID: number): number | null => $names.systemSecurity[solarSystemID] ?? null;
+  // And, where it is not low security, the outlaw's warning, by the pilot's own security status: asked of crimewatch
+  // the first time a place wants it, as the client's LocationWrapper asks its crimewatch service, and kept.
+  const ownSecurityStatus = (): number | null => {
+    const kept = $station.ownSecurityStatus;
+    if (kept === null) flow.requestOwnSecurityStatus();
+    return kept;
+  };
+
+  // The agent's header at the top of its window (bridge/agentHeader.ts): its name, its division, where it is (the
+  // layout's GetAgentLocationWrap), the pilot's effective standing with it, and the loyalty points the last action
+  // says. Asked for: the agent as the client's agents service knows it, the header's words and the division's
+  // name, the place's name and its system's security.
+  const header = $derived.by(() => {
+    const agentID = $agents.activeAgentID;
+    const conversation = $agents.conversation;
+    if (agentID === null || conversation === null) return null;
+    return agentHeader({
+      agentID,
+      record: $agents.agentRecords[agentID] ?? null,
+      location: $agents.agentLocation,
+      loyaltyPoints: conversation.lastActionInfo.loyaltyPoints,
+      standings: $standings.char === null ? null : new Map($standings.char.map((row) => [row.fromID, row.standing])),
+      skillLevel: $skills.skills === null ? null : ((levels) => (typeID: number) => levels.get(typeID) ?? 0)(new Map($skills.skills.map((skill) => [skill.typeID, skill.level]))),
+    }, {
+      templates: $words.templates,
+      nameOf: nameWithAgents,
+      messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
+      securityOf,
+      ownSecurityStatus,
+    });
+  });
+  $effect(() => {
+    const agentID = $agents.activeAgentID;
+    if (agentID === null || $agents.conversation === null) return;
+    flow.requestAgentRecord(agentID);
+    const divisionNameID = $agents.agentRecords[agentID]?.divisionNameID ?? null;
+    flow.requestWords([...AGENT_HEADER_WORD_LABELS, ...(divisionNameID === null ? [] : [`#${divisionNameID}`])]);
+    const location = $agents.agentLocation;
+    if (location !== null) {
+      flow.requestNames([agentLocationNameRef(location)]);
+      if (location.solarSystemID !== null) flow.requestSystemSecurity([location.solarSystemID]);
+    }
+  });
+  // The effective standing wants the pilot's standings and skills, which the client has had since it logged in:
+  // read here if they have not been, once for each agent whose window opens (this effect reads only which agent;
+  // a read that fails is not asked again on every change of the agents' store).
+  let headerReadsFor: number | null = null;
+  $effect(() => {
+    const agentID = $agents.activeAgentID;
+    if (agentID === null || agentID === headerReadsFor) return;
+    headerReadsFor = agentID;
+    if (!store.standings.get().loaded) void flow.loadStandings().catch(() => {});
+    if (store.skills.get().skills === null) void flow.loadSkills().catch(() => {});
+  });
   // What an agent says of a dungeon, filled as everything it says of that mission is: the mission's
   // keywords, then the agent's own IDs (agents.py ProcessMessage).
   function sayOfMission(agentID: number, message: MissionMessage): string | null {
@@ -426,6 +482,7 @@
       sayOfMission: (messageID) => questionMarkup(byNumber(messageID), nameWithAgents, client),
       say: (message) => message.text ?? questionMarkup({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, nameWithAgents, pageClient(held.agentID, message.contentID ?? held.contentID)),
       securityOf,
+      ownSecurityStatus,
       // From where the pilot is now, by the autopilot's route.
       jumpsTo: (solarSystemID) => (place.solarSystemID === null ? undefined : $names.autopilotJumps[`${place.solarSystemID}:${solarSystemID}`]),
     });
@@ -600,6 +657,16 @@
 {#if $agents.conversation}
   <section>
     <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
+    {#if header}
+      <!-- GetAgentLocationHeader, which the client's window begins what the agent says with (no portrait, no link). -->
+      <div class="mission-page-card agent-header">
+        <strong class="mission-page-card-name">{header.name}</strong>
+        {#if header.division}<span class="mission-page-card-line minor">{header.division}</span>{/if}
+        {#if header.location}<span class="mission-page-card-line">{header.location}</span>{/if}
+        {#if header.standing}<span class="mission-page-card-line standing" class:low={header.standingLow}>{header.standing}</span>{/if}
+        {#if header.loyaltyPoints}<span class="mission-page-card-line">{header.loyaltyPoints}</span>{/if}
+      </div>
+    {/if}
     {#if talkTitle}
       <h3 class="mission-title">{talkTitle}</h3>
     {/if}

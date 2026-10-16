@@ -7,6 +7,14 @@
 //   pfPenalty              50 (the route panel's slider goes from 1 to 100)
 //   pfAvoidSystems         on: whether the systems on the list are avoided
 //   autopilot_avoidance2   the list: Jita and Zarzakh
+//   pfAvoidPodKill         off: whether the systems with pod kills in the last day are avoided
+//   pfAvoidTriglavianTales off: whether the systems of the Triglavians' minor victories are avoided
+//   pfAvoidEdencomSystems  off: whether EDENCOM's fortress and minor victory systems are avoided
+//
+// The last three are lists the server's map service gives (clientPathfinderService.py UpdatePodKillList, 238 to 249:
+// GetHistory(mapHistoryStatKills, 24), each system with value3 above nothing; mapSvc.py 501 to 513), each added to
+// what the pathfinder avoids while its tick is on (stateinterface.py GetAvoidanceList, 68 to 83). Each tick is drawn
+// from its setting, off until set, and a click sets it to its opposite (infoPanelRoute.py 163 to 182).
 //
 // and its route panel's menu changes them (infoPanelRoute.py GetSettingsMenu): three choices of route
 // type, "prefer shorter" ("shortest"), "prefer safer" ("safe") and "prefer less secure" ("unsafe"); the
@@ -19,8 +27,17 @@
 //
 // Here they are kept the same way: by character, in this browser's own storage, under the client's names.
 //
-// Not done: the list's own window (adding and removing systems, constellations and regions), the other
-// avoidance ticks (pod kills, Triglavian and EDENCOM systems), jump gates, and stopping at each waypoint.
+// The list holds solar systems, constellations and regions of known space, each put on by the location's Avoid and
+// taken off by its Do Not Avoid (menusvc.py 2030 to 2033; clientPathfinderService.py 258 to 268), and shown in the
+// route window's second tab (autopilotSettings.py LoadAvoidance). A constellation or a region stands for its systems
+// (mapSvc.ExpandItems). Taking one off also sets the tick back to not set (pathfinder.py RemoveAvoidanceItem:
+// SetSystemAvoidance(None), which the settings read as never set), so avoiding is on again.
+//
+// And pathFinder_includeJumpGates, off until set: whether the pathfinder may take the Ansiblex jump gates the pilot may
+// use (nav/jumpGates.ts). Its click sets it to its opposite (infoPanelRoute.py OnCheckBoxUseJumpGates, 196 to 200);
+// the jump gates are then read again and the route optimized (autopilot.py OnMapShowsJumpGatesChanged, 634 to 641).
+//
+// (Stopping at each waypoint is the user's, not the character's: app/autopilotStopAtEachWaypoint.ts.)
 
 import { DEFAULT_AUTOPILOT_SETTINGS, isKnownSpaceSystem, type AutopilotRouteType, type AutopilotSettings } from "./autopilotRoute.ts";
 
@@ -30,7 +47,34 @@ export interface StoredAutopilotSettings {
   readonly pfPenalty?: number;
   readonly pfAvoidSystems?: boolean;
   readonly autopilot_avoidance2?: readonly number[];
+  readonly pfAvoidPodKill?: boolean;
+  readonly pfAvoidTriglavianTales?: boolean;
+  readonly pfAvoidEdencomSystems?: boolean;
+  readonly pathFinder_includeJumpGates?: boolean;
 }
+
+/** Whether the pathfinder may take jump gates (GetAvailableJumpGateJumps), and what the tick shows: off until set. */
+export function includingJumpGates(stored: StoredAutopilotSettings): boolean {
+  return stored.pathFinder_includeJumpGates ?? false;
+}
+
+/** Include Jump Gates clicked (OnCheckBoxUseJumpGates): the opposite of what it is. */
+export function withIncludeJumpGatesClicked(stored: StoredAutopilotSettings): StoredAutopilotSettings {
+  return { ...stored, pathFinder_includeJumpGates: !includingJumpGates(stored) };
+}
+
+/** The ticks for the server's lists, in the order the route panel has them (infoPanelRoute.py 109 to 111). */
+export type AvoidanceTick = "pfAvoidPodKill" | "pfAvoidTriglavianTales" | "pfAvoidEdencomSystems";
+export const AVOIDANCE_TICKS: readonly AvoidanceTick[] = Object.freeze(["pfAvoidPodKill", "pfAvoidTriglavianTales", "pfAvoidEdencomSystems"]);
+/** The warning each avoiding tick puts up as it is turned on (infoPanelRoute.py 163 to 189). */
+export const AVOIDING_DIALOGS: Readonly<Record<AvoidanceTick | "pfAvoidSystems", string>> = Object.freeze({
+  pfAvoidPodKill: "MapAutoPilotAvoidPodkillZones",
+  pfAvoidTriglavianTales: "MapAutoPilotAvoidTriglavianTales",
+  pfAvoidEdencomSystems: "MapAutoPilotAvoidEdencomSystems",
+  pfAvoidSystems: "MapAutoPilotAvoidSystems",
+});
+/** The server's lists, by the tick that adds each: the systems each names. */
+export type AvoidedLists = Partial<Readonly<Record<AvoidanceTick, readonly number[]>>>;
 
 /** The route types the client's route panel offers, in its order. */
 export const OFFERED_ROUTE_TYPES: readonly AutopilotRouteType[] = Object.freeze(["shortest", "safe", "unsafe"]);
@@ -53,14 +97,63 @@ export function avoidingSystems(stored: StoredAutopilotSettings): boolean {
   return stored.pfAvoidSystems ?? true;
 }
 
-/** What the pathfinder is given (AutopilotPathfinderInterface): the list only while avoiding is on, known space only, in order. */
-export function autopilotSettingsFrom(stored: StoredAutopilotSettings): AutopilotSettings {
-  const listed = stored.autopilot_avoidance2 ?? DEFAULT_AUTOPILOT_SETTINGS.avoid;
+/** Whether one of the ticks for the server's lists is on (IsPodkillAvoidanceEnabled and the others): off until set. */
+export function avoidanceTickOn(stored: StoredAutopilotSettings, tick: AvoidanceTick): boolean {
+  return stored[tick] ?? false;
+}
+
+/** One of those ticks clicked (OnCheckBoxAvoidPodKill and the others): the opposite of what it is. */
+export function withAvoidanceTickClicked(stored: StoredAutopilotSettings, tick: AvoidanceTick): StoredAutopilotSettings {
+  return { ...stored, [tick]: !avoidanceTickOn(stored, tick) };
+}
+
+/**
+ * What the pathfinder is given (AutopilotPathfinderInterface.GetAvoidanceList): the list only while avoiding is on,
+ * each constellation and region on it as its systems (`systemsIn`, mapSvc.ExpandItems); then each of the server's
+ * lists whose tick is on (`lists`); known space only, in order.
+ */
+export function autopilotSettingsFrom(
+  stored: StoredAutopilotSettings,
+  systemsIn: (id: number) => readonly number[] = (id) => [id],
+  lists: AvoidedLists = {},
+): AutopilotSettings {
+  const items = avoidingSystems(stored) ? avoidanceItems(stored).flatMap((id) => systemsIn(id)) : [];
+  for (const tick of AVOIDANCE_TICKS) {
+    if (avoidanceTickOn(stored, tick)) items.push(...(lists[tick] ?? []));
+  }
   return {
     routeType: routeTypeOf(stored),
     penalty: penaltyOf(stored),
-    avoid: avoidingSystems(stored) ? listed.filter(isKnownSpaceSystem).sort((a, b) => a - b) : [],
+    avoid: items.filter(isKnownSpaceSystem).sort((a, b) => a - b),
   };
+}
+
+/** The list as it is kept, its constellations and regions as they are (GetAvoidanceItems(expandSystems=False)): Jita and Zarzakh until set. */
+export function avoidanceItems(stored: StoredAutopilotSettings): readonly number[] {
+  return stored.autopilot_avoidance2 ?? DEFAULT_AUTOPILOT_SETTINGS.avoid;
+}
+
+/**
+ * Whether a place can be put on the list or taken off it (celestialCheckers.py OfferAvoidLocation, 545 to 550, by
+ * OfferShowLocationOnMap, 1439 to 1446): a solar system, a constellation or a region of known space.
+ */
+export function isAvoidablePlace(id: number): boolean {
+  return (id >= 10_000_000 && id <= 10_999_999) || (id >= 20_000_000 && id <= 20_999_999) || isKnownSpaceSystem(id);
+}
+
+/** Avoid (AddAvoidanceItem): put at the end of the list. The client offers it only for a place not on it already. */
+export function withAvoidanceItem(stored: StoredAutopilotSettings, id: number): StoredAutopilotSettings {
+  return { ...stored, autopilot_avoidance2: [...avoidanceItems(stored), id] };
+}
+
+/** Do Not Avoid (RemoveAvoidanceItem): the first of it on the list taken off, and the tick set back to not set. */
+export function withoutAvoidanceItem(stored: StoredAutopilotSettings, id: number): StoredAutopilotSettings {
+  const items = [...avoidanceItems(stored)];
+  const at = items.indexOf(id);
+  if (at === -1) return stored;
+  items.splice(at, 1);
+  const { pfAvoidSystems: _unset, ...rest } = stored;
+  return { ...rest, autopilot_avoidance2: items };
 }
 
 export function withRouteType(stored: StoredAutopilotSettings, routeType: AutopilotRouteType): StoredAutopilotSettings {
@@ -87,6 +180,10 @@ export const ROUTE_SETTING_LABELS = Object.freeze({
   unsafe: "UI/Map/MapPallet/cbPreferRisky",
   penalty: "UI/Map/MapPallet/lblSecurityPenelity",
   avoidSystems: "UI/Map/MapPallet/cbAdvoidSystemsOnList",
+  pfAvoidPodKill: "UI/Map/MapPallet/cbAdvoidPodkill",
+  pfAvoidTriglavianTales: "UI/Map/MapPallet/cbAvoidTriglavianTales",
+  pfAvoidEdencomSystems: "UI/Map/MapPallet/cbAvoidEdencomSystems",
+  includeJumpGates: "UI/Map/MapPallet/IncludeJumpGates",
 });
 export const ROUTE_SETTING_WORD_LABELS: readonly string[] = Object.values(ROUTE_SETTING_LABELS);
 /** This page's own words for them, for when the client's are not to hand. */
@@ -96,6 +193,10 @@ const OWN_WORDS: Readonly<Record<keyof typeof ROUTE_SETTING_LABELS, string>> = O
   unsafe: "Prefer less secure",
   penalty: "Security penalty",
   avoidSystems: "Avoid the systems on the list",
+  pfAvoidPodKill: "Avoid where pods were killed",
+  pfAvoidTriglavianTales: "Avoid the Triglavians' minor victories",
+  pfAvoidEdencomSystems: "Avoid EDENCOM's systems",
+  includeJumpGates: "Take jump gates",
 });
 
 /** The words for one of the settings: the client's where its text is to hand (given as plain text), this page's own where not. */
@@ -128,12 +229,17 @@ export function loadAutopilotSettings(storage: SettingsStorage | null, character
   if (kept === null) {
     return {};
   }
-  const { pfRouteType, pfPenalty, pfAvoidSystems, autopilot_avoidance2 } = kept as Record<string, unknown>;
+  const { pfRouteType, pfPenalty, pfAvoidSystems, autopilot_avoidance2, pfAvoidPodKill, pfAvoidTriglavianTales, pfAvoidEdencomSystems, pathFinder_includeJumpGates } =
+    kept as Record<string, unknown>;
   return {
     ...(typeof pfRouteType === "string" && ROUTE_TYPES.includes(pfRouteType) ? { pfRouteType: pfRouteType as AutopilotRouteType } : {}),
     ...(typeof pfPenalty === "number" && Number.isFinite(pfPenalty) ? { pfPenalty } : {}),
     ...(typeof pfAvoidSystems === "boolean" ? { pfAvoidSystems } : {}),
     ...(Array.isArray(autopilot_avoidance2) ? { autopilot_avoidance2: autopilot_avoidance2.filter((id): id is number => Number.isSafeInteger(id) && id > 0) } : {}),
+    ...(typeof pfAvoidPodKill === "boolean" ? { pfAvoidPodKill } : {}),
+    ...(typeof pfAvoidTriglavianTales === "boolean" ? { pfAvoidTriglavianTales } : {}),
+    ...(typeof pfAvoidEdencomSystems === "boolean" ? { pfAvoidEdencomSystems } : {}),
+    ...(typeof pathFinder_includeJumpGates === "boolean" ? { pathFinder_includeJumpGates } : {}),
   };
 }
 

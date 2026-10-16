@@ -137,3 +137,18 @@ export async function jump(act: Ask, flightNow: () => Promise<FlightNow>, fromGa
   const farGate = Number.isSafeInteger(toGateID) && toGateID > 0 ? toGateID : 0;
   await act("beyonce", "CmdStargateJump", [fromGateID, farGate, now.shipID]);
 }
+
+/**
+ * Jumps the pilot's ship through an Ansiblex jump gate, as the client's autopilot and its menu jump one (autopilot.py
+ * 349; menusvc.py ReallyJumpThroughStructureJumpBridge, 2106): structureJumpBridgeMgr's
+ * CmdJumpThroughStructureStargate with the Ansiblex, by the service's name, through a session change. Fails as the
+ * call fails, and before it for what is no structure's number, and for a ship not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS THE SESSION IN THE PAIR'S SYSTEM: the BFF answers once the ship is usable there.
+ */
+export async function jumpThroughJumpGate(act: Ask, flightNow: () => Promise<FlightNow>, structureID: number): Promise<void> {
+  if (!Number.isSafeInteger(structureID) || structureID <= 0) throw new Error("That jump gate could not be identified.");
+  const now = await flightNow();
+  if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
+  await act("structureJumpBridgeMgr", "CmdJumpThroughStructureStargate", [structureID]);
+}

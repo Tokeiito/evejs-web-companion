@@ -8,7 +8,6 @@ import { settleCombat, ownCombatAction, type CombatOwnership } from "./combatOwn
 import { decideDroneBoat } from "./droneBoatLadder.ts";
 import { decideScriptAction, initialMemory } from "./scriptDecide.ts";
 import { SCRIPT_MACROS } from "./scriptMacros.ts";
-import { modernDefenderCopy } from "../bots/defenderRoutine.ts";
 import { decodeItemInfo } from "../bridge/boundDogma.ts";
 import type { BotScript } from "../bots/botScript.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
@@ -154,15 +153,4 @@ test("ownership records only new activation and locks; unrelated flight survives
   assert.deepEqual(ownCombatAction(owned, { kind: "lock", targetID: 2 }, obs([], { lockedTargetIDs: [2] })).locks, [1]);
   const tick = settleCombat(obs([99]), { combatOwned: { ...owned, modules: {}, drones: [], launched: false, locks: [] } });
   assert.equal(tick.outcome.kind, "done");
-});
-test("modern standalone copy removes raw launch watch and uses mobile combat with hull first", () => {
-  const historical: BotScript = { format: "evejs-bot-script", version: 1, name: "Belt Defender", notes: "",
-    home: { entity: "station", id: 1, name: "Test home", systemName: "Test system" },
-    interrupts: [{ id: "old", when: { kind: "hostile-on-grid" }, respond: "launch-drones" }],
-    program: [{ id: "fight", kind: "macro", macro: "fight-the-rats", args: {} }] };
-  const copy = modernDefenderCopy(historical);
-  assert.equal(historical.program[0]?.kind === "macro" && historical.program[0].macro, "fight-the-rats");
-  assert.equal(copy.interrupts[0]?.when.kind, "hull-below");
-  assert.equal(copy.interrupts.some(row => row.respond === "launch-drones"), false);
-  assert.equal(copy.program[0]?.kind === "macro" && copy.program[0].macro, "fight-with-drones");
 });

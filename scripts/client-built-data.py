@@ -6,10 +6,12 @@ beside the client's executable (bin64/<name>Loader.pyd). Only that loader knows
 the layout. This runs the loader inside the client's own python27.dll, walks
 what it returns, and prints it as one JSON document.
 
-    python scripts/client-built-data.py <client bin64 folder> <loader module> <data file>
+    python scripts/client-built-data.py <client bin64 folder> <loader module> <data file> [<attribute>]
 
     <loader module>  the loader's module name, "missionsLoader"
     <data file>      the .fsdbinary on disk (under the client's ResFiles)
+    <attribute>      where given, only that attribute of each of the table's rows, by the row's key; rows without it
+                     are left out ("isisGroupID" of the types: a table too big to walk whole)
 
 What is printed: a cfsd dict as an object (its keys as strings), a cfsd list or
 vector as an array, a cfsd object as an object of the attributes it has (an
@@ -91,18 +93,30 @@ LOAD = r'''
 import sys
 sys.path[:] = [BIN]
 loader = __import__(LOADER)
+__data = loader.load(DATA)
 __out = open(OUT, 'wb')
-__out.write(walk(loader.load(DATA), 0))
+if ATTRIBUTE:
+    __parts = []
+    for __key, __row in __data.iteritems():
+        __item = getattr(__row, ATTRIBUTE, None)
+        if __item is not None:
+            __parts.append(text(str(__key)) + ':' + walk(__item, 1))
+    __out.write('{' + ','.join(__parts) + '}')
+else:
+    __out.write(walk(__data, 0))
 __out.close()
 '''
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
     dll_dir, loader, data_file = sys.argv[1], sys.argv[2], sys.argv[3]
+    attribute = sys.argv[4] if len(sys.argv) == 5 else ""
     if not re.match(r"^[A-Za-z0-9_]+Loader$", loader):
         sys.exit("The loader module's name is not one: %r" % loader)
+    if attribute and not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", attribute):
+        sys.exit("The attribute's name is not one: %r" % attribute)
     if not os.path.isfile(os.path.join(dll_dir, loader + ".pyd")):
         sys.exit("The client has no %s.pyd in %s." % (loader, dll_dir))
     if not os.path.isfile(data_file):
@@ -117,11 +131,12 @@ def main():
     handle, out_path = tempfile.mkstemp(suffix=".json")
     os.close(handle)
     try:
-        names = "BIN = %r\nLOADER = %r\nDATA = %r\nOUT = %r\n" % (
+        names = "BIN = %r\nLOADER = %r\nDATA = %r\nOUT = %r\nATTRIBUTE = %r\n" % (
             dll_dir.replace("\\", "/"),
             loader,
             data_file.replace("\\", "/"),
             out_path.replace("\\", "/"),
+            attribute,
         )
         status = py27.PyRun_SimpleString((names + WALKER + LOAD).encode("latin1"))
         if status != 0:

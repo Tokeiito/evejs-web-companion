@@ -41,7 +41,19 @@ const { createClientStore } = await import("../store/clientStore.ts");
 const { TABS, tabLabel } = await import("./tabs.ts");
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // The launches the window reads as it is built (planetWindow.py ReconstructWindow; flow.planetLaunches): read, and
+  // none, so the planets window shows its colonies alone.
+  const none = { loaded: true, launches: [], error: null };
+  const planetLaunches = { get: () => none, subscribe: (listener: (value: typeof none) => void) => (listener(none), () => {}) };
+  // And the journal the wallet's Transactions tab reads as it is shown (flow.walletJournal), not read yet.
+  const unread = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+  const walletJournal = { get: () => unread, subscribe: (listener: (value: typeof unread) => void) => (listener(unread), () => {}) };
+  // And what the wallet's Overview tab, which it opens on, reads: the overview and the trades, not read yet.
+  const overviewUnread = { loaded: false, lines: [], kinds: new Map(), error: null };
+  const walletOverview = { get: () => overviewUnread, subscribe: (listener: (value: typeof overviewUnread) => void) => (listener(overviewUnread), () => {}) };
+  const tradesUnread = { loaded: false, transactions: [], error: null };
+  const marketTransactions = { get: () => tradesUnread, subscribe: (listener: (value: typeof tradesUnread) => void) => (listener(tradesUnread), () => {}) };
+  return new Proxy({ planetLaunches, walletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 /** Compare the way a player does: case, punctuation and spacing are noise. */
