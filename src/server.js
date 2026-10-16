@@ -7506,15 +7506,16 @@ function stringQuery(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// GET /api/bridge/presence?targetID= — the onlineStatus reads, as THREE
-// independent reads (Promise.allSettled). All scope off the SESSION observer:
+// GET /api/bridge/presence?targetID= — the onlineStatus reads, as TWO
+// independent reads (Promise.allSettled). Both scope off the SESSION observer:
 //   • GetOnlineStatus(targetID) -> a BARE BOOLEAN (is that character online).
 //     targetID from ?targetID= (default 0 -> false; no contact named).
 //   • GetInitialState()         -> a Rowset[contactID, online] (the observer's
 //     whole contact-presence snapshot; empty for a character with no contacts).
-//   • Prime()                   -> ⚠ NOT void here: delegates to GetInitialState,
-//     so it returns the SAME Rowset. Wired for completeness; the decoder treats
-//     it identically. ⚠ contactID stays as data for later name resolution (R7d).
+//     ⚠ contactID stays as data for later name resolution (R7d).
+// Not Prime(): the client never asks the server for it. Prime is its online
+// status service's own method, which asks GetInitialState() once and keeps it
+// (comtool/onlineStatus.py 74 to 82).
 app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -7522,12 +7523,11 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   }
   const targetID = nonNegativeIntQuery(req.query.targetID, 0);
   try {
-    const [onlineStatus, initialState, prime] = await Promise.allSettled([
+    const [onlineStatus, initialState] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetOnlineStatus", [targetID], null),
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetInitialState", [], null),
-      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "Prime", [], null),
     ]);
-    for (const outcome of [onlineStatus, initialState, prime]) {
+    for (const outcome of [onlineStatus, initialState]) {
       if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
         next(outcome.reason);
         return;
@@ -7544,11 +7544,9 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
       requested: { targetID },
       onlineStatus: settledValue(onlineStatus),
       initialState: settledValue(initialState),
-      prime: settledValue(prime),
       errors: {
         onlineStatus: settledCode(onlineStatus),
         initialState: settledCode(initialState),
-        prime: settledCode(prime),
       },
     });
   } catch (error) {
