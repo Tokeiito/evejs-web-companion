@@ -1923,6 +1923,10 @@ function createGamePortPilots({
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // machoNet.OnGlobalConfigUpdated(key, value): the config kept changed, and what the client's services do at it.
+      if (notification.method === "OnGlobalConfigUpdated" && Array.isArray(notification.args) && notification.args.length === 2) {
+        globalConfigUpdated(entry, notification.args[0], notification.args[1]);
+      }
       // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a place's or a named item's row as it is now,
       // kept as cfg.evelocations keeps it, by its first column, the name its second.
       if (notification.method === "OnCfgDataChanged" && textOf((notification.args ?? [])[0]) === "evelocations") {
@@ -3762,16 +3766,53 @@ function createGamePortPilots({
    * once at a login, answered its chat domain, and no fallback, its global config naming the address.
    */
   /**
-   * The global config the server gave this pilot's client as it logged in (the login's config_vals, which machoNet
-   * keeps and globalConfig/getFunctions.py GetGlobalConfigValue reads), for the names asked: each one's value as
-   * given, a number or text, or null where it gave none.
+   * machoNet's globalConfig as the client keeps it (machoNet.py 1469 to 1477, 3355 to 3367): the config_vals the server
+   * gave as the client logged in, and each OnGlobalConfigUpdated(key, value) since set into it, or the key taken out
+   * where the value is None. The names to the values as they came.
+   */
+  function keptGlobalConfig(entry) {
+    if (!entry.globalConfig) {
+      const given = packets.dictGet(entry.session.loginResponse, "config_vals");
+      const entries = given && given.type === "dict" && Array.isArray(given.entries) ? given.entries : [];
+      entry.globalConfig = new Map(entries.map(([key, value]) => [packets.text(key), value]));
+    }
+    return entry.globalConfig;
+  }
+
+  /**
+   * machoNet.OnGlobalConfigUpdated(key, value) (3355 to 3367): the value set into the config kept, or the key taken out
+   * where the value is None; then the OnGlobalConfigChanged it scatters, as the client's services take it, one after
+   * another as ScatterEvent calls them. Those that ask the server: AirNpeController (storylines/client/airnpe.py 72 to
+   * 76) asks again whether the AIR tutorial is enabled; raffleSvc (raffles/client/raffle_service.py 182 to 192), where
+   * it has looked once (_is_available set: the login's look, raffleBanAsked), looks again, which asks AmIBanned. The
+   * rest keep to the client: the session change delay, the stackless settings, the community fittings let go, the
+   * PLEX store's mock settings, fast checkout's offers let go, the addiction warning's timer, the commands reloaded.
+   * Where the AIR tutorial is no longer enabled the client skips it, which on a session with a character first asks
+   * get_air_npe_state (85 to 88): not asked here, the operator's word of 2026-10-15 (no AIR state asked).
+   */
+  function globalConfigUpdated(entry, key, value) {
+    const name = packets.text(key);
+    if (name === null) return;
+    const kept = keptGlobalConfig(entry);
+    if (value === null || value === undefined) kept.delete(name);
+    else kept.set(name, value);
+    void (async () => {
+      await airNpeEnabledAsked(entry).catch(() => {});
+      if (entry.raffleBanned !== undefined && entry.raffleBanned !== null) await raffleBanAsked(entry).catch(() => {});
+    })();
+  }
+
+  /**
+   * The global config as this pilot's client keeps it (keptGlobalConfig), which globalConfig/getFunctions.py
+   * GetGlobalConfigValue reads, for the names asked: each one's value as given, a number or text, or null where it
+   * has none.
    */
   function globalConfigValues(names, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
-    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
+    const globalConfig = keptGlobalConfig(entry);
     const values = {};
     for (const name of Array.isArray(names) ? names : []) {
-      const value = packets.dictGet(globalConfig, name);
+      const value = globalConfig.get(name);
       values[name] = typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : packets.text(value);
     }
     return values;
@@ -3781,8 +3822,8 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     ledger.note(XMPP_CHAT_MGR, "Hostname", CHAT_HOSTNAME_AS_THE_CLIENT_ASKS);
     const hostname = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "Hostname", [], null));
-    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
-    let address = packets.text(packets.dictGet(globalConfig, EJABBERD_CLIENT_ADDRESS_CONFIG));
+    const globalConfig = keptGlobalConfig(entry);
+    let address = packets.text(globalConfig.get(EJABBERD_CLIENT_ADDRESS_CONFIG));
     if (address === null || address.length === 0) {
       ledger.note(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", CHAT_ADDRESS_AS_THE_CLIENT_ASKS);
       address = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", [], null));
@@ -3797,7 +3838,7 @@ function createGamePortPilots({
    * connection (xmppchatclient/xmppchatwindow.py 1344 to 1364).
    */
   function chatIdleSeconds(globalConfig) {
-    const configured = packets.dictGet(globalConfig, "maxChatChannelIdleTimeSeconds");
+    const configured = globalConfig.get("maxChatChannelIdleTimeSeconds");
     if (configured === undefined) return 180;
     if (typeof configured === "number" || typeof configured === "bigint") return Math.trunc(Number(configured));
     const written = packets.text(configured);

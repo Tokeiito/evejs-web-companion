@@ -6784,9 +6784,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const SKILL_PURCHASE_ENABLED_DEFAULT = true;
 
   /**
-   * globalConfig.IsSkillPurchaseEnabled (getFunctions.py 126, 14 to 21): the login's global config's value, as a
-   * whole number, not nought; its default where it gives none or one that is not a number, or where the pilot's
-   * transport does not carry it.
+   * globalConfig.IsSkillPurchaseEnabled (getFunctions.py 126, 14 to 21): the global config's value as the client
+   * keeps it (the login's, with each OnGlobalConfigUpdated since: the transport keeps it so), as a whole number, not
+   * nought; its default where it gives none or one that is not a number, or where the pilot's transport does not
+   * carry it.
    */
   async function skillPurchaseEnabled(): Promise<boolean> {
     const config = await api.getGlobalConfig([SKILL_PURCHASE_ENABLED_CONFIG], callOptions).catch(() => null);
