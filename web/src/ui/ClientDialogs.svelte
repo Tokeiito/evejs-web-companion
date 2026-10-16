@@ -66,6 +66,81 @@
   const buyAllAsked = flow.buyAllAsked;
   // svelte-ignore state_referenced_locally
   const viewFittingAsked = flow.viewFittingAsked;
+  // svelte-ignore state_referenced_locally
+  const multiFitAsked = flow.multiFitAsked;
+  // svelte-ignore state_referenced_locally
+  const inventory = session.store.inventory;
+  // The client's multifit window (fitting/multiFitWnd.py MultiFitWnd): its caption, the hull's icon (the fitting shown
+  // on a click), the ships' name (20 letters at most), the hull's name, the equipment's place (the item hangar or one of
+  // the pilot's own containers, by name), the count (one to GetMaxShipsToFit), the warnings (ships or equipment missing,
+  // with what is missing and Buy All; a strategic cruiser's fitting that will not go), the two counts (the hangar's
+  // packaged ships, the rounds of the fitting the place holds) in red where short of the count, each with what it lacks
+  // and Buy All, the refresh, the rigs box where the fitting has rigs, Fit Ships (as many as can be) and Close, and the
+  // count of ships fitted while it fits. Closed when the pilot undocks (OnSessionChanged). Its words are the install's;
+  // the page's own stand in. Not done: the QA tools' Create Missing and GM buttons, and dragging the fitting out.
+  const MULTIFIT_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader": "Fit several ships",
+    "UI/Fitting/ShowFitting": "Look at the fitting",
+    "UI/Common/ShipName": "The ships' name",
+    "UI/Fitting/FittingWindow/FittingManagement/EquipmentLocation": "Equipment from",
+    "UI/Fitting/FittingWindow/FittingManagement/EquipmentLocationHint": "Where the modules and charges are taken from",
+    "UI/Inventory/ItemHangar": "Item hangar",
+    "UI/Fitting/FittingWindow/FittingManagement/NumShipsToFit": "Ships to fit",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingShipEquipment": "Ships or equipment are missing",
+    "UI/Fitting/FittingWindow/FittingManagement/InvalidT3Fit": "This fitting cannot be put on its hull",
+    "UI/Fitting/FittingWindow/FittingManagement/RefreshInventoryStatusHint": "Count again",
+    "UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangar": "Packaged ships in the hangar",
+    "UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangarHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/RoundsOfFittingsInLocation": "Fittings' worth in {locationName}",
+    "UI/Fitting/FittingWindow/FittingManagement/FitRigs": "Fit the rigs",
+    "UI/Fitting/FittingWindow/FittingManagement/FitRigsHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/FitShips": "Fit {numToFit} ships",
+    "UI/Common/Close": "Close",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingItems": "Missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingShips": "Ships missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingEquipment": "Equipment missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MoreItemTypesMissing": "and {numMoreItems} more",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    // Said as the ships are fitted (flow.ts fitMultiFit): asked here, where they are fitted from.
+    "UI/Fitting/MissingItems": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BadFitFittingFailed": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning": "",
+  };
+  $effect(() => {
+    const fit = $multiFitAsked;
+    if (fit === null) return;
+    flow.requestWords(Object.keys(MULTIFIT_WORDS));
+    flow.requestNames([
+      { kind: "type" as const, id: fit.fitting.shipTypeID },
+      ...fit.containers.flatMap((container) => [{ kind: "evelocation" as const, id: container.itemID }, { kind: "type" as const, id: container.typeID }]),
+      ...(fit.status === null ? [] : [...fit.status.missingShips, ...fit.status.missingEquipment].map((each) => ({ kind: "type" as const, id: each.typeID }))),
+    ]);
+  });
+  // MultiFitWnd.OnSessionChanged: the window closed when the pilot is no longer docked.
+  $effect(() => {
+    const fit = $multiFitAsked;
+    if (fit !== null && $inventory.loaded && ($inventory.stationID ?? $inventory.structureID ?? null) === null) void flow.answerMultiFit(fit.n, "close");
+  });
+  /** A label of the multifit window, as plain text, with its arguments. */
+  function fitWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, MULTIFIT_WORDS[label] ?? ""), args, { nameOf }));
+  }
+  /** A container's name in the place's list (cfg.evelocations' name, else its type's). */
+  function containerName(container: { readonly itemID: number; readonly typeID: number }): string {
+    const own = resolvedName($names.resolved, "evelocation", container.itemID, "");
+    return own !== "" ? own : nameOf("type", container.typeID);
+  }
+  /** LoadCounterTooltip (472 to 492): what is missing, each type and how many, by name, ten at most and how many more. */
+  function missingLines(missing: readonly { readonly typeID: number; readonly qty: number }[]): string[] {
+    const sorted = missing.slice().sort((left, right) => {
+      const a = nameOf("type", left.typeID).toLowerCase();
+      const b = nameOf("type", right.typeID).toLowerCase();
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const lines = sorted.slice(0, 10).map((each) => `${each.qty}x ${nameOf("type", each.typeID)}`);
+    if (sorted.length > 10) lines.push(fitWord("UI/Fitting/FittingWindow/FittingManagement/MoreItemTypesMissing", { numMoreItems: sorted.length - 10 }));
+    return lines;
+  }
   // The client's fitting display window (fittingMgmtWindow.ViewFitting, its FittingMgmtContInStandalone): its caption
   // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, two tabs,
   // the contents by heading (each slot kind under its effect's name, each type "Nx" and its name with its icon) and the
@@ -967,6 +1042,93 @@
   </div>
 {/if}
 
+{#if $multiFitAsked !== null}
+  {@const fit = $multiFitAsked}
+  {@const status = fit.status}
+  {@const args = { numToFit: fit.numToFit, fittingName: fit.fitting.name }}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog multifit" role="dialog" aria-label={fitWord("UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader")} data-dialog="MultiFitWnd" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title">
+        <strong>{fitWord("UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader")}</strong>
+        <button type="button" class="close" aria-label="Close" disabled={fit.isFitting} onclick={() => void flow.answerMultiFit(fit.n, "close")}>✕</button>
+      </span>
+      <div class="multifit-top" class:dimmed={fit.isFitting}>
+        <button type="button" class="multifit-icon" title={fitWord("UI/Fitting/ShowFitting")} onclick={() => void flow.answerMultiFit(fit.n, "view").catch(() => {})}>
+          <TypeIcon typeID={fit.fitting.shipTypeID} name={nameOf("type", fit.fitting.shipTypeID)} size="lg" />
+        </button>
+        <div class="multifit-fields">
+          <input maxlength="20" value={fit.fitName} title={fitWord("UI/Common/ShipName")} aria-label={fitWord("UI/Common/ShipName")} disabled={fit.isFitting}
+            oninput={(event) => void flow.editMultiFit(fit.n, { fitName: event.currentTarget.value })} />
+          <span>{nameOf("type", fit.fitting.shipTypeID)}</span>
+          <label title={fitWord("UI/Fitting/FittingWindow/FittingManagement/EquipmentLocationHint")}>
+            <small>{fitWord("UI/Fitting/FittingWindow/FittingManagement/EquipmentLocation")}</small>
+            <select disabled={fit.isFitting} value={fit.locationID === null ? "" : String(fit.locationID)}
+              onchange={(event) => void flow.editMultiFit(fit.n, { locationID: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) }).catch(() => {})}>
+              <option value="">{fitWord("UI/Inventory/ItemHangar")}</option>
+              {#each fit.containers.slice().sort((left, right) => { const a = containerName(left).toLowerCase(); const b = containerName(right).toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; }) as container (container.itemID)}
+                <option value={String(container.itemID)}>{containerName(container)}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="multifit-grid" class:dimmed={fit.isFitting}>
+        <label class="multifit-count">
+          {fitWord("UI/Fitting/FittingWindow/FittingManagement/NumShipsToFit")}
+          <input type="number" min="1" max={fit.maxShips} value={fit.numToFit} disabled={fit.isFitting}
+            onchange={(event) => void flow.editMultiFit(fit.n, { numToFit: Number(event.currentTarget.value) }).catch(() => {})} />
+        </label>
+        {#if status !== null && (status.missingShips.length > 0 || status.missingEquipment.length > 0)}
+          <p class="multifit-warning" title={[fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingItems", args), ...missingLines([...status.missingShips, ...status.missingEquipment])].join("\n")}>
+            {fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingShipEquipment")}
+            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-missing").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+          </p>
+        {/if}
+        {#if fit.invalidT3}
+          <p class="multifit-warning">{fitWord("UI/Fitting/FittingWindow/FittingManagement/InvalidT3Fit")}</p>
+        {/if}
+        <div class="multifit-counters">
+          <span class="multifit-counter" class:short={status !== null && status.packagedShips < fit.numToFit}
+            title={status !== null && status.missingShips.length > 0 ? [fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingShips", args), ...missingLines(status.missingShips)].join("\n") : undefined}>
+            {status === null ? "…" : status.packagedShips}
+          </span>
+          <span title={fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangarHint")}>{fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangar")}</span>
+          {#if status !== null && status.missingShips.length > 0}
+            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-ships").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+          {:else}<span></span>{/if}
+          <span class="multifit-counter" class:short={status !== null && status.maxAvailableFitting !== null && status.maxAvailableFitting < fit.numToFit}
+            title={status !== null && status.missingEquipment.length > 0 ? [fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingEquipment", args), ...missingLines(status.missingEquipment)].join("\n") : undefined}>
+            {status === null ? "…" : status.maxAvailableFitting === null ? "-" : status.maxAvailableFitting}
+          </span>
+          <span>{fitWord("UI/Fitting/FittingWindow/FittingManagement/RoundsOfFittingsInLocation", { locationName: fit.locationID === null ? fitWord("UI/Inventory/ItemHangar") : containerName(fit.containers.find((container) => container.itemID === fit.locationID) ?? { itemID: fit.locationID, typeID: 0 }) })}</span>
+          {#if status !== null && status.missingEquipment.length > 0}
+            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-equipment").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+          {:else}<span></span>{/if}
+        </div>
+        <button type="button" class="minor multifit-refresh" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/RefreshInventoryStatusHint")} disabled={fit.isFitting}
+          onclick={() => void flow.answerMultiFit(fit.n, "refresh").catch(() => {})}>⟳</button>
+        {#if fit.rigsToFit}
+          <label class="keep" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/FitRigsHint")}>
+            <input type="checkbox" checked={fit.fitRigs} disabled={fit.isFitting} onchange={(event) => void flow.editMultiFit(fit.n, { fitRigs: event.currentTarget.checked }).catch(() => {})} />
+            {fitWord("UI/Fitting/FittingWindow/FittingManagement/FitRigs")}
+          </label>
+        {/if}
+      </div>
+      {#if fit.isFitting && status !== null}
+        <p class="multifit-progress">{fit.progress} / {status.canFitNum}</p>
+      {/if}
+      <span class="answers">
+        <button type="button" disabled={fit.isFitting || status === null || status.canFitNum < 1 || fit.invalidT3}
+          onclick={() => void flow.answerMultiFit(fit.n, "fit").catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/FittingManagement/FitShips", { numToFit: status?.canFitNum ?? 0 })}</button>
+        <button type="button" disabled={fit.isFitting} onclick={() => void flow.answerMultiFit(fit.n, "close")}>{fitWord("UI/Common/Close")}</button>
+      </span>
+    </div>
+  </div>
+{/if}
+
 {#if $buyAllAsked !== null}
   {@const box = $buyAllAsked}
   <div class="client-dialog-shade" class:modal={inFront}>
@@ -1185,6 +1347,23 @@
   .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
   .apply-points { margin-left: 0.6rem; padding: 0 0.5rem; }
   .multibuy { width: min(40rem, calc(100vw - 2rem)); }
+  /* The multifit window (multiFitWnd.py): the counts red where short of the count (WARNING_COLOR), the main area faded
+     while the ships are fitted (layoutGrid.opacity = 0.2). */
+  .multifit { width: min(30rem, calc(100vw - 2rem)); }
+  .multifit-top { display: flex; gap: 0.6rem; align-items: flex-start; }
+  .multifit-icon { padding: 0; background: none; border: none; }
+  .multifit-fields { display: flex; flex-direction: column; gap: 0.3rem; flex: 1; }
+  .multifit-fields label { display: flex; align-items: center; gap: 0.4rem; }
+  .multifit-grid { display: flex; flex-direction: column; gap: 0.4rem; }
+  .multifit-count { display: flex; align-items: center; gap: 0.6rem; }
+  .multifit-count input { width: 4rem; }
+  .multifit-warning { margin: 0; color: #ff8080; text-align: center; }
+  .multifit-counters { display: grid; grid-template-columns: 3rem 1fr auto; align-items: center; gap: 0.3rem 0.6rem; }
+  .multifit-counter { text-align: right; font-size: 1.2rem; }
+  .multifit-counter.short { color: rgba(255, 0, 0, 0.75); }
+  .multifit-refresh { align-self: center; }
+  .multifit-progress { margin: 0; text-align: center; font-size: 1.1rem; }
+  .dimmed { opacity: 0.2; pointer-events: none; }
   .multibuy-place { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.6rem; }
   .multibuy-orders { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.85rem; }
   .multibuy-orders input { width: 5rem; }

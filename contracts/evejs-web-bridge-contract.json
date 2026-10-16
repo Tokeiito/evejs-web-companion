@@ -1306,6 +1306,7 @@
       "scanMgr.SetProbeRangeStep",
       "ship.AssembleShip",
       "ship.Board",
+      "ship.FitShips",
       "ship.Jettison",
       "ship.LaunchDrones",
       "ship.LeaveShip",

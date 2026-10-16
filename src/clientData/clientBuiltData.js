@@ -76,6 +76,9 @@ const TABLES = Object.freeze({
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
   typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
   raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),
+  // A group's category (evetypes.GetCategoryIDByGroup), by which a structure's fitting's menu has no Fit to Active Ship
+  // (fittingBrowser.GetFittingMenu, 513).
+  groupCategories: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", attribute: "categoryID" }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),

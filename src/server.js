@@ -13160,7 +13160,7 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
 // displayNameID), for the effects asked; null for an effect with none. `available` false where the client's data
 // could not be read. No session: they do not vary by player.
 // The fitting browser's hulls (src/clientData/hullBrowser.js): every hull the market sells, its special edition
-// ships, each hull's group, faction, meta group and whether it is published, the same of each type asked (a saved
+// ships, each hull's group, faction, meta group, category and whether it is published, the same of each type asked (a saved
 // fitting's hull; null for a type the client does not have), and each race's name as the number of its message.
 // `available` false where the client's data could not be read. No session: they do not vary by player.
 app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => {
@@ -13170,7 +13170,7 @@ app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => 
       const typeID = Number(part);
       if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
     }
-    const names = ["marketGroupParents", "typeMarketGroups", "typePublished", "typeGroups", "typeFactions", "typeMetaGroups", "raceNameIDs"];
+    const names = ["marketGroupParents", "typeMarketGroups", "typePublished", "typeGroups", "typeFactions", "typeMetaGroups", "raceNameIDs", "groupCategories"];
     const read = await Promise.all(names.map((name) => clientBuiltData.table(name)));
     if (read.some((table) => !table)) {
       res.json({ ok: true, available: false });

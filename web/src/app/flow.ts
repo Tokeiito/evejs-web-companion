@@ -488,7 +488,8 @@ import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { type HullBrowserData } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
-import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
+import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
+import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
@@ -1011,6 +1012,42 @@ export interface MultiBuyAsk {
    * offered (AddBuyAndFitBtn), and after it the fitting is loaded again as the orders run out.
    */
   readonly fitting: SourcedFitting | null;
+}
+
+/** The client's multifit window open now (fitting/multiFitWnd.py MultiFitWnd), for a saved fitting. */
+export interface MultiFitAsk {
+  readonly n: number;
+  readonly fitting: SourcedFitting;
+  /** GetMaxShipsToFit: the most the count may be. */
+  readonly maxShips: number;
+  /** The count asked (numToFitEdit), one to maxShips. */
+  readonly numToFit: number;
+  /** The ships' name (fitNameEdit), the fitting's to begin with. */
+  readonly fitName: string;
+  /** The equipment's place (equipmentLocationCombo): null for the item hangar, else one of the pilot's containers. */
+  readonly locationID: number | null;
+  /** The pilot's own containers in the hangar (FindPersonalContainers), each with its type. */
+  readonly containers: readonly { readonly itemID: number; readonly typeID: number }[];
+  /** Whether the rigs are fitted (rigCB, fitting_rigCB: on until unset). */
+  readonly fitRigs: boolean;
+  /** Whether the fitting has rigs (the box is shown only then). */
+  readonly rigsToFit: boolean;
+  /** IsInvalidT3Fit: a strategic cruiser's fitting without its four subsystems, or with one of another hull. */
+  readonly invalidT3: boolean;
+  /** SetInventoryStatus's reckoning; null while it is read. */
+  readonly status: {
+    /** The hangar's packaged ships of the hull. */
+    readonly packagedShips: number;
+    /** The rounds of the fitting the equipment's place holds; null where the fitting needs nothing. */
+    readonly maxAvailableFitting: number | null;
+    /** How many can be fitted: the fewest of the count, the ships and the rounds. */
+    readonly canFitNum: number;
+    readonly missingShips: readonly { readonly typeID: number; readonly qty: number }[];
+    readonly missingEquipment: readonly { readonly typeID: number; readonly qty: number }[];
+  } | null;
+  /** While the ships are fitted (isFitting), and how many have been so far (OnItemChange). */
+  readonly isFitting: boolean;
+  readonly progress: number;
 }
 
 /** The client's fitting display window open now (fittingMgmtWindow.ViewFitting, FittingMgmtContInStandalone). */
@@ -2282,6 +2319,19 @@ export interface AppFlow {
   viewFitting(fittingID: number): Promise<void>;
   /** Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed), its Buy (multiBuyUtil.BuyFit), or closed. */
   answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void>;
+  /** The multifit window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly multiFitAsked: ReadableSignal<MultiFitAsk | null>;
+  /** GetMaxShipsToFit, as last read: nought where the config allows no multifit. */
+  readonly maxShipsToFit: ReadableSignal<number>;
+  /** A saved fitting's Open Multifit (fittingBrowser.DoBulkFit, OpenOrLoadMultiFitWnd): the window opened on it, or reloaded with it. */
+  openMultiFit(fittingID: number): Promise<void>;
+  /** The window's count, name, equipment's place or rigs box changed; its reckoning made again. */
+  editMultiFit(n: number, edit: { readonly numToFit: number } | { readonly fitName: string } | { readonly locationID: number | null } | { readonly fitRigs: boolean }): Promise<void>;
+  /**
+   * Its Fit Ships (DoFitShips), its refresh (OnRefreshClicked), the fitting shown (OpenFitting), Buy All for what is
+   * missing (AddBuyAllBtn: all, the ships' or the equipment's), or Close.
+   */
+  answerMultiFit(n: number, answer: "fit" | "refresh" | "view" | "buy-missing" | "buy-ships" | "buy-equipment" | "close"): Promise<void>;
   /**
    * Its Save (fittingMgmtCont.Save, SaveExistingFitting, fittingSvc.ChangeNameAndDescription) for the pilot's own
    * fitting: the name and the description as edited, and the window closed.
@@ -3870,6 +3920,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // MultiFitWnd.OnItemChange and OnMultipleItemChange (530 to 557): a ship fitted counted while the window fits, and
+    // the window's reckoning made again (at most twice a second) while it does not.
+    if (method === "OnItemsChanged" || method === "OnItemChange") multiFitItemsChanged(method, args);
     if (method === "OnItemsChanged" || method === "OnItemChange") {
       // (The mission tracker's OnItemsChanged, which the client's inventory cache raises for both.)
       const first = (args as readonly JsonValue[])[0];
@@ -7288,6 +7341,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * its alliance's, read again.
    */
   async function loadSavedFittings(): Promise<void> {
+    // GetMaxShipsToFit, which the fittings' menus offer Open Multifit by (GetFittingMenu, 508 and 516).
+    void readMaxShipsToFit().catch(() => {});
     const [library, enabled, alliance] = await Promise.all([loadRefitLibrary(), communityFittingsEnabled(), readOwnAllianceFittings()]);
     const community = await readCommunityFittings(enabled);
     communityFittingsEnabledSignal.set(enabled);
@@ -7316,6 +7371,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** inventorycommon/const.py rigSlotFlags, and dogma's attributeFitsToShipType; and eve's UE_TYPEID. */
   const RIG_SLOT_FLAGS: readonly number[] = [92, 93, 94];
   const ATTRIBUTE_FITS_TO_SHIP_TYPE = 1380;
+  /** dogma/const.py attributeModuleIsObsolete. */
+  const ATTRIBUTE_MODULE_IS_OBSOLETE = 2696;
   const UE_TYPEID = 4;
 
   /**
@@ -7656,6 +7713,277 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     fittingLetGo(fitting.fittingID);
+  }
+
+  const multiFitAskedSignal = createSignal<MultiFitAsk | null>(null);
+  const maxShipsToFitSignal = createSignal<number>(maxShipsToFit(undefined));
+  let multiFitRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // The groups and categories of a fitting's types, by the fitting, while its window is open (Fitting.__init__).
+  let multiFitTypeFacts: { readonly fitting: SourcedFitting; readonly facts: Map<number, { groupID: number | null; categoryID: number | null }> } | null = null;
+  /** settings.user.ui fitting_rigCB: the multifit window's rigs box, on until unset. */
+  const MULTIFIT_RIGS_KEPT = "evejs.fitting_rigCB";
+
+  /** GetMaxShipsToFit (getFunctions.py 48): the global config's bulkFit_maxShips, read again. */
+  async function readMaxShipsToFit(): Promise<number> {
+    const config = await api.getGlobalConfig([BULK_FIT_SHIPS_CONFIG], callOptions).catch(() => null);
+    const most = maxShipsToFit(config?.values[BULK_FIT_SHIPS_CONFIG]);
+    maxShipsToFitSignal.set(most);
+    return most;
+  }
+
+  /** shipfitting/fitting.py Fitting(fitting.fitData, None): the fitting sorted, its types' groups and categories read. */
+  async function multiFitApplying(fitting: SourcedFitting): Promise<ReturnType<typeof fittingForApplying>> {
+    if (multiFitTypeFacts === null || multiFitTypeFacts.fitting !== fitting) {
+      const types = [...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])];
+      const facts = new Map<number, { groupID: number | null; categoryID: number | null }>();
+      for (let at = 0; at < types.length; at += 50) {
+        const read = await api.getTypePrices(types.slice(at, at + 50), callOptions);
+        for (const typeID of types.slice(at, at + 50)) facts.set(typeID, { groupID: read.groupID[typeID] ?? null, categoryID: read.categoryID[typeID] ?? null });
+      }
+      multiFitTypeFacts = { fitting, facts };
+    }
+    const facts = multiFitTypeFacts.facts;
+    return fittingForApplying(
+      fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+      [],
+      (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null },
+    );
+  }
+
+  /**
+   * MultiFitWnd.IsInvalidT3Fit (566 to 584): for a strategic cruiser's fitting, true where a subsystem is for another
+   * hull, or where any of the four subsystem slots has no subsystem that is not obsolete; false for any other hull.
+   */
+  async function isInvalidT3Fit(fitting: SourcedFitting): Promise<boolean> {
+    await multiFitApplying(fitting);
+    if (!isModularShip(multiFitTypeFacts?.facts.get(fitting.shipTypeID)?.groupID ?? null)) return false;
+    const subsystems = fitting.modules.filter((module) => VISIBLE_SUBSYSTEM_FLAGS.includes(module.flagID));
+    const attributes = subsystems.length > 0
+      ? await api.fetchTypeDogma([...new Set(subsystems.map((module) => module.typeID))], [ATTRIBUTE_MODULE_IS_OBSOLETE, ATTRIBUTE_FITS_TO_SHIP_TYPE], callOptions)
+      : {};
+    const missing = new Set(VISIBLE_SUBSYSTEM_FLAGS);
+    for (const module of subsystems) {
+      if (!missing.has(module.flagID)) continue;
+      if (!attributes[module.typeID]?.[ATTRIBUTE_MODULE_IS_OBSOLETE]) missing.delete(module.flagID);
+      if (Math.trunc(attributes[module.typeID]?.[ATTRIBUTE_FITS_TO_SHIP_TYPE] ?? 0) !== fitting.shipTypeID) return true;
+    }
+    return missing.size > 0;
+  }
+
+  /**
+   * OpenOrLoadMultiFitWnd (fittingMgmtWindow.py 461 to 470): refused while a fitting is under way
+   * (CheckBusyFittingAndRaiseIfNeeded: BusyFittingWarning); else the window opened, or the open one loaded with the
+   * fitting (LoadWindow: the count one, the name the fitting's), and its reckoning made (SetInventoryStatus).
+   */
+  async function openMultiFit(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting === null) return;
+    if (busyFitting) {
+      const info = templateWords("UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning", {}, "A fitting is already being loaded.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+      return;
+    }
+    const maxShips = await readMaxShipsToFit();
+    const open = multiFitAskedSignal.get();
+    const n = open?.n ?? (dialogsSaidCount += 1);
+    let fitRigs = true;
+    try {
+      fitRigs = settingsStorage?.getItem(MULTIFIT_RIGS_KEPT) !== "0";
+    } catch {
+      // Storage refused: the box's default.
+    }
+    multiFitAskedSignal.set({
+      n, fitting, maxShips, numToFit: 1, fitName: fitting.name.slice(0, 20), locationID: open?.locationID ?? null,
+      containers: open?.containers ?? [], fitRigs, rigsToFit: false, invalidT3: false, status: null, isFitting: false, progress: 0,
+    });
+    const invalidT3 = await isInvalidT3Fit(fitting).catch(() => false);
+    const now = multiFitAskedSignal.get();
+    if (now !== null && now.n === n && now.fitting === fitting) multiFitAskedSignal.set({ ...now, invalidT3 });
+    await refreshMultiFit(n);
+  }
+
+  /**
+   * MultiFitWnd.RefreshInventory (182 to 186): the pilot's containers listed again (LoadEquipCombo), then
+   * SetInventoryStatus (281 to 333): the hangar's packaged ships of the hull (GetQtyInLocationByTypeIDs, singletons
+   * passed over), the rounds of the fitting the equipment's place holds and what it lacks for the count
+   * (_GetMaxAvailabeAndMissingForFullFit: the rigs always counted), how many can be fitted, and the ships missing.
+   */
+  async function refreshMultiFit(n: number): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (open === null || open.n !== n || characterID === null) return;
+    const hangar = await listPlace(bridgeAsk, null);
+    const containers = personalContainers(hangar, characterID).map((item) => ({ itemID: item.itemID, typeID: item.typeID }));
+    const locationID = open.locationID !== null && containers.some((container) => container.itemID === open.locationID) ? open.locationID : null;
+    const place = locationID === null ? hangar : await listPlace(bridgeAsk, locationID);
+    const fit = await multiFitApplying(open.fitting);
+    const rigTypeIDs = new Set(Object.entries(fit.modulesByFlag).filter(([flag]) => isRigFlag(Number(flag))).map(([, typeID]) => typeID));
+    const { maxAvailableFitting, missingForFullFit } = maxAvailableAndMissing(true, fit.itemTypes, open.numToFit, qtyInPlaceByTypeIDs(place, fit.itemTypes.keys()), rigTypeIDs);
+    const shipTypeID = open.fitting.shipTypeID;
+    const packagedShips = qtyInPlaceByTypeIDs(hangar, [shipTypeID], true).get(shipTypeID) ?? 0;
+    const canFitNum = Math.min(packagedShips, open.numToFit, ...(maxAvailableFitting === null ? [] : [maxAvailableFitting]));
+    const missingNumShips = Math.max(0, open.numToFit - packagedShips);
+    const now = multiFitAskedSignal.get();
+    if (now === null || now.n !== n || now.fitting !== open.fitting || now.numToFit !== open.numToFit || now.locationID !== open.locationID) return;
+    multiFitAskedSignal.set({
+      ...now,
+      containers,
+      locationID,
+      rigsToFit: Object.keys(fit.rigsByFlag).length > 0,
+      status: {
+        packagedShips,
+        maxAvailableFitting,
+        canFitNum,
+        missingShips: missingNumShips > 0 ? [{ typeID: shipTypeID, qty: missingNumShips }] : [],
+        missingEquipment: [...missingForFullFit].map(([typeID, qty]) => ({ typeID, qty })),
+      },
+    });
+  }
+
+  /** The window's count (OnNumChanged, kept to one to the most), name, equipment's place (OnEquipLocationChanged) or rigs box (OnCbChanged, kept). */
+  async function editMultiFit(n: number, edit: { readonly numToFit: number } | { readonly fitName: string } | { readonly locationID: number | null } | { readonly fitRigs: boolean }): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.isFitting) return;
+    if ("numToFit" in edit) {
+      const numToFit = Math.min(Math.max(1, Math.trunc(edit.numToFit) || 1), Math.max(1, open.maxShips));
+      multiFitAskedSignal.set({ ...open, numToFit });
+    } else if ("fitName" in edit) {
+      multiFitAskedSignal.set({ ...open, fitName: edit.fitName.slice(0, 20) });
+      return;
+    } else if ("locationID" in edit) {
+      multiFitAskedSignal.set({ ...open, locationID: edit.locationID });
+    } else {
+      try {
+        settingsStorage?.setItem(MULTIFIT_RIGS_KEPT, edit.fitRigs ? "1" : "0");
+      } catch {
+        // Storage refused: the box holds while the window is open.
+      }
+      multiFitAskedSignal.set({ ...open, fitRigs: edit.fitRigs });
+    }
+    await refreshMultiFit(n);
+  }
+
+  /** MultiFitWnd.OnItemChange and RefreshOnItemChanged_throttled (530 to 557). */
+  function multiFitItemsChanged(method: string, args: readonly unknown[]): void {
+    const open = multiFitAskedSignal.get();
+    if (open === null) return;
+    if (open.isFitting) {
+      if (method === "OnItemChange" && isShipAssembled(args, open.fitting.shipTypeID)) multiFitAskedSignal.set({ ...open, progress: open.progress + 1 });
+      return;
+    }
+    if (multiFitRefreshTimer !== null) return;
+    multiFitRefreshTimer = setTimeout(() => {
+      multiFitRefreshTimer = null;
+      const now = multiFitAskedSignal.get();
+      if (now !== null && !now.isFitting) void refreshMultiFit(now.n).catch(() => {});
+    }, 500);
+  }
+
+  /**
+   * fittingSvc.ShowFailedToLoadMsg (631 to 644): what could not be loaded, each "qty x name" sorted by name, said in
+   * MissingItems.
+   */
+  async function sayFailedToLoad(failedToLoad: readonly { readonly typeID: number; readonly qty: number }[]): Promise<void> {
+    const failed = failedToLoad.filter((each) => each.qty > 0);
+    if (failed.length === 0) return;
+    await resolveNamesNow(failed.map((each) => ({ kind: "type" as const, id: each.typeID })));
+    const nameOf = (typeID: number): string => nameCache.get(nameKey("type", typeID)) ?? String(typeID);
+    const lines = failed
+      .map((each) => ({ key: nameOf(each.typeID).toLowerCase(), line: `${each.qty}x ${nameOf(each.typeID)}` }))
+      .sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+      .map((each) => each.line);
+    const info = templateWords("UI/Fitting/MissingItems", { types: lines.join("<br>") }, `These could not be loaded: ${lines.join(", ")}`);
+    sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+  }
+
+  /**
+   * MultiFitWnd.DoFitShips (363 to 405): the name the edit's, else the fitting's or its hull's, without markup; the
+   * rigs to the cargo where the box is unset; refused undocked; what is missing for that many reckoned again, and where
+   * anything is, the reckoning made again and uiwarning03 said. Else fittingSvc.DoFitManyShips (504 to 521): FitShips,
+   * and where it answers a ship it could not fit, that ship named BadFitFittingFailed (_RenameShip), and what failed
+   * to load said (ShowFailedToLoadMsg). Then ResetUIAfterFitting: the reckoning made again. (CheckCanAccessService for
+   * the fitting service, which the client asks first, is not the page's.)
+   */
+  async function fitMultiFit(n: number): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.status === null || open.isFitting || busyFitting) return;
+    const fitting = open.fitting;
+    const numToActuallyFit = open.status.canFitNum;
+    if (numToActuallyFit < 1 || open.invalidT3) return;
+    let fittingName = open.fitName;
+    if (fittingName.trim() === "") {
+      fittingName = plainText(fitting.name || (nameCache.get(nameKey("type", fitting.shipTypeID)) ?? ""));
+    }
+    const fit = await multiFitApplying(fitting);
+    const rigsToFit = Object.keys(fit.rigsByFlag).length > 0;
+    const cargoItemsByType: Record<number, number> = {};
+    if (!open.fitRigs && rigsToFit) {
+      for (const [flag, typeID] of Object.entries(fit.modulesByFlag)) {
+        if (isRigFlag(Number(flag))) cargoItemsByType[typeID] = (cargoItemsByType[typeID] ?? 0) + 1;
+      }
+    }
+    const inventory = store.inventory.get();
+    const dockedAt = inventory.stationID ?? inventory.structureID ?? null;
+    if (dockedAt === null) return;
+    const place = await listPlace(bridgeAsk, open.locationID);
+    const rigTypeIDs = new Set(Object.entries(fit.modulesByFlag).filter(([flag]) => isRigFlag(Number(flag))).map(([, typeID]) => typeID));
+    const { missingForFullFit } = maxAvailableAndMissing(true, fit.itemTypes, numToActuallyFit, qtyInPlaceByTypeIDs(place, fit.itemTypes.keys()), rigTypeIDs);
+    if (missingForFullFit.size > 0) {
+      await refreshMultiFit(n);
+      sayDialog("uiwarning03", null, "Not everything needed is there.");
+      return;
+    }
+    busyFitting = true;
+    multiFitAskedSignal.set({ ...open, isFitting: true, progress: 0 });
+    let failed: Awaited<ReturnType<typeof fitShips>> = null;
+    try {
+      failed = await fitShips(bridgeDo, {
+        shipTypeID: fitting.shipTypeID,
+        fitInfo: {
+          chargesByType: fit.chargesByType, dronesByType: fit.dronesByType, fightersByTypeID: fit.fightersByType,
+          iceByType: fit.iceByType, modulesByFlag: fit.modulesByFlag, implantsByTypeID: fit.implantsByType,
+        },
+        itemLocationID: dockedAt,
+        cargoItemsByType,
+        fitRigs: open.fitRigs,
+        name: fittingName,
+        numToFit: numToActuallyFit,
+        itemContainerID: open.locationID,
+      });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The ships could not be fitted: ${errorWords(error)}`);
+    } finally {
+      busyFitting = false;
+      if (failed !== null) {
+        if (failed.failedShipID !== null) {
+          const badFitName = templateWords("UI/Fitting/FittingWindow/FittingManagement/BadFitFittingFailed", {}, "Fitting failed");
+          await setLabelCall(bridgeDo, failed.failedShipID, badFitName).catch(() => {});
+        }
+        await sayFailedToLoad(failed.failedToLoad).catch(() => {});
+      }
+      const now = multiFitAskedSignal.get();
+      if (now !== null && now.n === n) multiFitAskedSignal.set({ ...now, isFitting: false, progress: 0 });
+      void loadInventory().catch(() => {});
+      await refreshMultiFit(n).catch(() => {});
+    }
+  }
+
+  async function answerMultiFit(n: number, answer: "fit" | "refresh" | "view" | "buy-missing" | "buy-ships" | "buy-equipment" | "close"): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n) return;
+    if (answer === "close") {
+      if (!open.isFitting) multiFitAskedSignal.set(null);
+      return;
+    }
+    if (answer === "fit") await fitMultiFit(n);
+    else if (answer === "refresh") await refreshMultiFit(n);
+    else if (answer === "view") await openViewFitting(open.fitting);
+    else if (open.status !== null) {
+      // AddBuyAllBtn: BuyMultipleTypesWithQty of what is missing (both, from the warning's tooltip; or one counter's).
+      const missing = answer === "buy-ships" ? open.status.missingShips : answer === "buy-equipment" ? open.status.missingEquipment : [...open.status.missingShips, ...open.status.missingEquipment];
+      if (missing.length > 0) await openMultiBuy(new Map(missing.map((each) => [each.typeID, each.qty])));
+    }
   }
 
   /** A fitting no longer kept (fittingSvc.DeleteFitting, and its OnFittingDeleted): out of those kept. */
@@ -20908,6 +21236,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     viewFittingAsked: readonlySignal(viewFittingAskedSignal),
     viewFitting,
     answerViewFitting,
+    multiFitAsked: readonlySignal(multiFitAskedSignal),
+    maxShipsToFit: readonlySignal(maxShipsToFitSignal),
+    openMultiFit,
+    editMultiFit,
+    answerMultiFit,
     saveViewFitting,
     saveFitAs,
     fittingsWithSkills,

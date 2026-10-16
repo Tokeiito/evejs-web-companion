@@ -89,6 +89,10 @@
   // svelte-ignore state_referenced_locally
   const hullBrowser = flow.hullBrowser;
   // svelte-ignore state_referenced_locally
+  const maxShipsToFit = flow.maxShipsToFit;
+  /** inventorycommon/const.py categoryStructure. */
+  const CATEGORY_STRUCTURE = 65;
+  // svelte-ignore state_referenced_locally
   const station = store.station;
 
   let busy = $state(false);
@@ -220,11 +224,11 @@
   // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
   // it: its tree of ship groups, races and hulls with the fittings under each hull (bridge/hullBrowser.ts), and of a
   // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
-  // CanDeleteFit), and the tooltips of a fitting and of a hull. Its words are the install's; the page's own stand in. Not
-  // done: a hull's menu, its traits and its Simulate button, the menu's Simulate Fitting and the multifit, a fitting
-  // clicked (simulated), the groups' Compare, an unsupported fitting shown whole to a game master, and deleting a
-  // corporation's fitting (its fitting manager's role, and a call the page does not make). The tree's open groups
-  // are kept while the window is.
+  // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), and the tooltips of a fitting and of a
+  // hull. Its words are the install's; the page's own stand in. Not done: a hull's menu, its traits and its Simulate
+  // button, the menu's Simulate Fitting, a fitting clicked (simulated), the groups' Compare, an unsupported fitting
+  // shown whole to a game master, and deleting a corporation's fitting (its fitting manager's role, and a call the page
+  // does not make). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
@@ -233,6 +237,7 @@
     "UI/Fitting/FittingWindow/SaveFitAs": "Save this ship's fitting",
     "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
     "UI/Fitting/FittingWindow/FittingManagement/DeleteFitting": "Delete it",
+    "UI/Fitting/FittingWindow/FittingManagement/OpenMultifit": "Fit several ships",
     "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
     "UI/Common/NothingFound": "None found",
     // The browser's filter buttons' hints (hullAndHardwareTypeBrowser.py 406 to 413, LoadFilterBtnTooltipPanel).
@@ -1753,12 +1758,21 @@
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
           </button>
-          <button type="button" disabled={busy} onclick={() => void flow.fitFittingToActiveShip(saved.fittingID).catch(() => {})}>
-            {fitWord("UI/Fitting/FittingWindow/FitFittingToActiveShip")}
-          </button>
+          <!-- GetFittingMenu (513 to 516): no Fit to Active Ship for a structure's fitting (categoryStructure); Open
+               Multifit only where the config allows any (GetMaxShipsToFit) and the pilot is docked. -->
+          {#if $hullBrowser?.types.get(saved.shipTypeID)?.categoryID !== CATEGORY_STRUCTURE}
+            <button type="button" disabled={busy} onclick={() => void flow.fitFittingToActiveShip(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FitFittingToActiveShip")}
+            </button>
+          {/if}
           <button type="button" class="minor" onclick={() => void flow.buyFit(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Market/MarketQuote/BuyAll")}
           </button>
+          {#if $maxShipsToFit > 0 && ($inventory.stationID ?? $inventory.structureID ?? null) !== null}
+            <button type="button" class="minor" onclick={() => void flow.openMultiFit(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}
+            </button>
+          {/if}
           {#if saved.source === "personal"}
             <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
               {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}

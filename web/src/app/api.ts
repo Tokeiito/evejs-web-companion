@@ -3802,7 +3802,7 @@ export async function getHullBrowser(
       continue;
     }
     const facts = value as Record<string, JsonValue>;
-    types[typeID] = { groupID: orNull(facts.groupID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true };
+    types[typeID] = { groupID: orNull(facts.groupID), categoryID: orNull(facts.categoryID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true };
   }
   const raceNameIDs: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.raceNameIDs))) {

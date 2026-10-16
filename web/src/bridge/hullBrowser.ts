@@ -24,6 +24,8 @@
 /** A type's facts as the client's data has them (GET /api/client-data/hull-browser); null for a type it has not. */
 export interface HullFacts {
   readonly groupID: number | null;
+  /** The group's category (evetypes.GetCategoryID): a structure's is 65 (categoryStructure). */
+  readonly categoryID: number | null;
   readonly factionID: number | null;
   readonly metaGroupID: number | null;
   readonly published: boolean;
