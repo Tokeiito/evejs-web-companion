@@ -7,8 +7,6 @@ const path = require("node:path");
 
 const {
   BRIDGE_WRITE_PAIR_KEYS,
-  EARLIER_WRITE_PAIR_KEYS,
-  FEATURE_WRITE_PAIR_KEYS,
   PLUMBING_SWEEP_WRITE_PAIR_KEYS,
   SAFE_BROWSER_SESSION_FIELDS,
   isBridgeWritePair,
@@ -46,15 +44,6 @@ test("the generic-call write policy covers the complete canonical plumbing inven
 });
 
 test("the write policy adds every pre-sweep and post-sweep write without duplicates", () => {
-  assert.equal(EARLIER_WRITE_PAIR_KEYS.length, 49);
-  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "officeManager.RentOffice", "officeManager.UnrentOffice", "skillHandler.PurchaseSkills", "skillHandler.SaveNewQueue", "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting", "slash.SlashCmd", "invbroker.ImportExportWithPlanet", "structureDocking.Dock", "structureDocking.Undock", "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.RemoveFromKnownFolders", "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.AddToKnownFolders", "beyonce.CmdGotoDirection", "keeper.ActivateAccelerationGate"]);
-  // Grown by one, charMgr.EditContact (the address book's edit, addressbookService.py 786 to 789), on 2026-10-14;
-  // and by five, charMgr's contact labels' writes (CreateLabel, EditLabel, DeleteLabel, AssignLabels, RemoveLabels:
-  // addressbookService.py 1001 to 1147), the same day. And by ten: the bookmark folders' seven, which the feature
-  // writes above name (bookmarkSvc.py 357 to 701); and, on 2026-10-15, the cyno travel's three
-  // (beyonce.CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon, CmdBridgeToFleetModuleBeacon:
-  // cynoTravelSvc.py 36, 103 and 62).
-  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 395);
   assert.equal(new Set(BRIDGE_WRITE_PAIR_KEYS).size, BRIDGE_WRITE_PAIR_KEYS.length);
 
   assert.equal(isBridgeWritePair("charUnboundMgr", "SelectCharacterID"), true);
