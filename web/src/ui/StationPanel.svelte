@@ -887,6 +887,10 @@
   });
 
   const uncheckedBays = $derived(uncheckedShipBays(openShip));
+  /** A ship in the hangar as the panel says it: docked there, or packaged, with how many of it the stack holds. */
+  function shipState(ship: InventoryItemRow): string {
+    return ship.singleton ? "Docked here" : `Packaged · ${ship.quantity.toLocaleString()}`;
+  }
   const ships = $derived(shipRows($inventory));
 
   // --- the locations --------------------------------------------------------
@@ -1740,16 +1744,20 @@
               </span>
               <span class="stn-cell-name">
                 <span class="stn-name stn-ship-name">{nameOf(ship)}</span>
-                <span class="stn-meta">{flying ? "You are flying this" : "Docked here"}</span>
+                <span class="stn-meta">{flying ? "You are flying this" : shipState(ship)}</span>
               </span>
-              <span class="stn-cell-bays">{cargoSummary(ship.itemID)}</span>
+              <span class="stn-cell-bays">{ship.singleton ? cargoSummary(ship.itemID) : ""}</span>
               <span class="stn-cell-status" class:accent={flying}>
-                {flying ? "You are flying this" : "Docked here"}
+                {flying ? "You are flying this" : shipState(ship)}
               </span>
               <span class="stn-cell-move">
-                <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
-                  Open
-                </button>
+                <!-- A packaged ship has no holds to open and is not boarded: the client opens and boards an assembled
+                     one alone (menusvc.ActivateShip and its Open, `if invItem.singleton`). -->
+                {#if ship.singleton}
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
+                    Open
+                  </button>
+                {/if}
                 {#if isBoardableShip(ship, $inventory.activeShipID)}
                   <button
                     type="button"

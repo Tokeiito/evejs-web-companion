@@ -198,12 +198,15 @@ export function decodeContainer(
   };
 }
 
-/** A hangar row is a boardable ship when it is a ship (category 6) and not active. */
+/**
+ * A hangar row is a boardable ship when it is a ship (category 6), assembled, and not active: the client boards an
+ * assembled ship alone (menusvc.ActivateShip, 3381: `if invItem.singleton`); a packaged one is assembled first.
+ */
 export function isBoardableShip(
   row: InventoryItemRow,
   activeShipID: number | null,
 ): boolean {
-  return row.categoryID === 6 && row.itemID !== activeShipID;
+  return row.categoryID === 6 && row.singleton && row.itemID !== activeShipID;
 }
 
 // --- R14 inventory depth ----------------------------------------------------
