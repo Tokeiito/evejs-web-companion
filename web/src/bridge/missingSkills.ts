@@ -16,6 +16,25 @@
 //
 // The order of a type's own needs is the table's as the BFF gives it (by skill, rising); the client's is its built
 // table's, which was not read.
+//
+// And the rest of the window (skill_requirement.py, skillBtns.py, the skill bar):
+//
+//   each skill's mark   RequiredSkillRow._GetTexturePathAndHint (60 to 74): a book not injected, buyable or rare, or
+//                       a level short, by the level with the lapsed (SkillController.GetMyLevel)
+//   its five boxes      skillLevel.SkillLevel.Layout (44 to 72) with the bar's controller (skillBar/controller.py)
+//   the training time   GetSkillTrainingTimeLeftToUseType (620 to 646) and GetRawTrainingTimeForSkillLevel (708 to
+//                       724): every skill needed short of its level, each level's points at the pilot's rate
+//   the points needed   SkillActionContainer: GetSkillsMissingToUseItemExpandedList (79 to 92), each level to
+//                       train, and GetSkillPointsRequiredForSkills (648 to 666) over them
+//   Train Skills        AddToQueueButton (130 to 171): those levels of the skills held, added to the queue's end
+//                       (skillQueueSvc.AddSkillsToQueue, 285 to 323, those already in it passed over)
+
+import { skillPointsForLevel } from "./skillSheet.ts";
+
+/** const.MIN: a minute in the game's 100 ns ticks. */
+const MINUTE_TICKS = 600_000_000;
+/** characterskills.MAX_SKILL_LEVEL */
+const MAX_SKILL_LEVEL = 5;
 
 /** The skills each type needs, by type: skill to level. */
 export type RequiredSkills = Readonly<Record<number, Readonly<Record<number, number>>>>;
@@ -89,4 +108,203 @@ export function totalMissingLevels(typeID: number, required: RequiredSkills, ski
 /** skillsvc.GetSkillBooksMissingFromList: the skills listed that the pilot has not, lapsed or not. */
 export function missingSkillBooks(listed: readonly (readonly [number, number])[], includingLapsed: PilotSkills): readonly number[] {
   return listed.map(([skill]) => skill).filter((skill) => !includingLapsed.has(skill));
+}
+
+/** skillsvc.GetMissingSkillBooksFromList, which the skill actions go by: the skills listed the pilot has not (GetSkill). */
+export function skillsNotHeld(listed: readonly (readonly [number, number])[], skills: PilotSkills): readonly number[] {
+  return listed.map(([skill]) => skill).filter((skill) => !skills.has(skill));
+}
+
+/** skillsvc.GetRequiredSkillsRecursive: every skill the type needs, however deep, at the highest level any asks it. */
+export function requiredSkillsRecursive(typeID: number, required: RequiredSkills): ReadonlyMap<number, number> {
+  const all = new Map<number, number>();
+  const walk = (of: number, seen: ReadonlySet<number>): void => {
+    for (const [skill, level] of needsOf(required, of)) {
+      all.set(skill, Math.max(all.get(skill) ?? 0, level));
+      if (skill !== of && !seen.has(skill)) walk(skill, new Set([...seen, skill]));
+    }
+  };
+  walk(typeID, new Set([typeID]));
+  return all;
+}
+
+/** skillsvc.IsSkillRequirementMet: each skill the type itself needs trained to its level (MySkillLevel). */
+export function isSkillRequirementMet(typeID: number, required: RequiredSkills, skills: PilotSkills): boolean {
+  return needsOf(required, typeID).every(([skill, level]) => (skills.get(skill)?.trainedSkillLevel ?? 0) >= level);
+}
+
+/** What a skill's training is reckoned by, as the client's skill service has it. */
+export interface SkillTrainingFacts {
+  /** The skill's rank: its type's skillTimeConstant (GetSkillRank). Null where it is not known. */
+  rank(skill: number): number | null;
+  /** The pilot's points a minute at the skill, skill accelerators left out (GetSkillpointsPerMinute(includeBoosters=False)). */
+  rate(skill: number): number | null;
+  /** The pilot's points in the skill now, the training since it began counted (skillQueueSvc.GetSkillPointsFromSkillObject). */
+  pointsNow(skill: number): number;
+}
+
+/**
+ * skillsvc.GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the time, in ticks, to train every skill
+ * the type needs to its level; nought where the type's own needs are met. Null where a rank or a rate is not known.
+ */
+export function trainingTimeLeft(
+  typeID: number,
+  required: RequiredSkills,
+  skills: PilotSkills,
+  includingLapsed: PilotSkills,
+  facts: SkillTrainingFacts,
+): number | null {
+  if (isSkillRequirementMet(typeID, required, skills)) return 0;
+  let total = 0;
+  for (const [skill, toLevel] of requiredSkillsRecursive(typeID, required)) {
+    const had = includingLapsed.get(skill);
+    if (had !== undefined && had.trainedSkillLevel >= toLevel) continue;
+    for (let level = (had?.trainedSkillLevel ?? 0) + 1; level <= toLevel; level += 1) {
+      // GetRawTrainingTimeForSkillLevel: the level's points less those the pilot has toward it, at the pilot's rate.
+      const rank = facts.rank(skill);
+      const rate = facts.rate(skill);
+      if (rank === null || rate === null || !(rate > 0)) return null;
+      const toTrain = skillPointsForLevel(rank, level);
+      const mine = skills.get(skill);
+      const existing = mine === undefined ? 0 : level - 1 === mine.trainedSkillLevel ? facts.pointsNow(skill) : skillPointsForLevel(rank, level - 1);
+      if (existing <= toTrain) total += ((toTrain - existing) / rate) * MINUTE_TICKS;
+    }
+  }
+  return Math.trunc(total);
+}
+
+/** SkillActionContainer.GetSkillsMissingToUseItemExpandedList: each level of each skill listed above the one trained. */
+export function levelsToTrain(listed: readonly (readonly [number, number])[], skills: PilotSkills): readonly (readonly [number, number])[] {
+  const levels: (readonly [number, number])[] = [];
+  for (const [skill, level] of listed) {
+    const trained = skills.get(skill)?.trainedSkillLevel ?? 0;
+    for (let at = trained + 1; at <= level; at += 1) levels.push([skill, at]);
+  }
+  return levels;
+}
+
+/** skillsvc.GetSkillPointsRequiredForSkills, summed: the points each level costs, less those already toward it. Null where a rank is not known. */
+export function skillPointsRequired(
+  levels: readonly (readonly [number, number])[],
+  skills: PilotSkills,
+  rank: (skill: number) => number | null,
+): number | null {
+  let sum = 0;
+  for (const [skill, level] of levels) {
+    const mine = skills.get(skill);
+    if (mine !== undefined && mine.trainedSkillLevel >= level) continue;
+    const skillRank = rank(skill);
+    if (skillRank === null) return null;
+    const present = mine !== undefined && mine.trainedSkillLevel === level - 1 ? mine.trainedSkillPoints - skillPointsForLevel(skillRank, mine.trainedSkillLevel) : 0;
+    sum += skillPointsForLevel(skillRank, level) - skillPointsForLevel(skillRank, level - 1) - present;
+  }
+  return sum;
+}
+
+/** characterskills/common/purchase.py DIRECT_PURCHASE_TAX_RATE */
+const DIRECT_PURCHASE_TAX_RATE = 0.3;
+
+/** characterskills.common.get_direct_purchase_price: a book's base price and its tax. */
+export function directPurchasePrice(basePrice: number): number {
+  return basePrice * (1.0 + DIRECT_PURCHASE_TAX_RATE);
+}
+
+/**
+ * SkillPurchaseValidator.prevalidate (characterskills/client/purchase.py): the skills asked, each once, those that are
+ * skills, those not injected (IsSkillInjected: among the skills with the lapsed), split into those sold
+ * (IsSkillAvailableForPurchase) and those not.
+ */
+export function booksToBuy(
+  skillTypeIDs: readonly number[],
+  includingLapsed: PilotSkills,
+  isSkill: (typeID: number) => boolean,
+  isSold: (typeID: number) => boolean,
+): { readonly available: readonly number[]; readonly unavailable: readonly number[] } {
+  const wanted = [...new Set(skillTypeIDs)].filter((typeID) => isSkill(typeID) && !includingLapsed.has(typeID));
+  return { available: wanted.filter(isSold), unavailable: wanted.filter((typeID) => !isSold(typeID)) };
+}
+
+/** A skill's row's mark (RequiredSkillRow): its book not injected (one to buy, or a rare one), or a level short. */
+export type SkillRowMark = "book-missing" | "rare-book-missing" | "level-short" | null;
+
+export function skillRowMark(skill: number, level: number, includingLapsed: PilotSkills, buyable: boolean): SkillRowMark {
+  const had = includingLapsed.get(skill);
+  if (had === undefined) return buyable ? "book-missing" : "rare-book-missing";
+  return had.trainedSkillLevel < level ? "level-short" : null;
+}
+
+/** One place of the queue: a skill and the level it trains to. */
+export interface QueuedLevel {
+  readonly typeID: number;
+  readonly toLevel: number;
+}
+
+/** skillQueueSvc.IsSkillRequirementMetIncludingSkillQueue: each skill the type needs trained to its level, or queued to it. */
+export function isRequirementMetIncludingQueue(typeID: number, required: RequiredSkills, skills: PilotSkills, queue: readonly QueuedLevel[]): boolean {
+  return needsOf(required, typeID).every(([skill, level]) =>
+    (skills.get(skill)?.trainedSkillLevel ?? 0) >= level || queue.some((entry) => entry.typeID === skill && entry.toLevel >= level));
+}
+
+/** A level's box of the skill bar (skillLevel.SkillLevel.Layout), as an omega clone's bar shows it. */
+export type SkillLevelBox = "none" | "training" | "trained" | "queued" | "untrained" | "small";
+
+/**
+ * The skill bar's five boxes for a skill required at a level: past the level none (showEmpty is off); then the level
+ * in training, trained, trainable (queued or not, and the next one marked where the pilot has points toward it), or
+ * the small box of one that is not. "partial" is that mark. (An alpha clone's restricted levels are not read here.)
+ */
+export function skillLevelBoxes(
+  skill: number,
+  requiredLevel: number,
+  required: RequiredSkills,
+  skills: PilotSkills,
+  includingLapsed: PilotSkills,
+  queue: readonly QueuedLevel[],
+  training: number | null,
+  rank: number | null,
+): readonly { readonly box: SkillLevelBox; readonly partial: boolean }[] {
+  const myLevel = includingLapsed.get(skill)?.trainedSkillLevel ?? 0;
+  const injected = includingLapsed.has(skill);
+  const points = skills.get(skill)?.trainedSkillPoints ?? 0;
+  const lapsedPoints = includingLapsed.get(skill)?.trainedSkillPoints ?? 0;
+  const prerequisitesMet = isRequirementMetIncludingQueue(skill, required, skills, queue);
+  const partiallyTrained = injected && rank !== null && lapsedPoints - skillPointsForLevel(rank, myLevel) > 0;
+  const boxes: { box: SkillLevelBox; partial: boolean }[] = [];
+  for (let level = 1; level <= MAX_SKILL_LEVEL; level += 1) {
+    if (requiredLevel > 0 && level > requiredLevel) {
+      boxes.push({ box: "none", partial: false });
+      continue;
+    }
+    const inTraining = training === skill && queue[0]?.typeID === skill && queue[0]?.toLevel === level;
+    const trainable = level > myLevel && injected && (prerequisitesMet || points !== 0);
+    const box: SkillLevelBox = inTraining
+      ? "training"
+      : level <= myLevel
+        ? "trained"
+        : trainable
+          ? queue.some((entry) => entry.typeID === skill && entry.toLevel === level) ? "queued" : "untrained"
+          : "small";
+    boxes.push({ box, partial: trainable && !inTraining && level === myLevel + 1 && partiallyTrained });
+  }
+  return boxes;
+}
+
+/**
+ * skillQueueSvc.AddSkillsToQueue(levels, ignoreAlreadyPresent=True): the queue with each level not already in it
+ * added at its end, in turn.
+ */
+export function queueWithLevels(queue: readonly QueuedLevel[], levels: readonly (readonly [number, number])[]): readonly QueuedLevel[] {
+  const next = [...queue];
+  for (const [typeID, toLevel] of levels) {
+    if (!next.some((entry) => entry.typeID === typeID && entry.toLevel === toLevel)) next.push({ typeID, toLevel });
+  }
+  return next;
+}
+
+/** AddToQueueButton: whether every level is in the queue already, each skill queued at least so high (the button is then spent). */
+export function allLevelsQueued(levels: readonly (readonly [number, number])[], queue: readonly QueuedLevel[]): boolean {
+  return levels.every(([skill, level]) => {
+    const queued = queue.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel);
+    return queued.length > 0 && Math.max(...queued) >= level;
+  });
 }

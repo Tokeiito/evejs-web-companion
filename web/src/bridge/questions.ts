@@ -305,7 +305,7 @@ export const NUMERIC_WORD_LABELS: readonly string[] = [...DISTANCE_WORD_LABELS, 
  * (UI/Util/FmtIsk, UI/Util/FmtIskNoDecimal), the amount rounded half away from nought where without; null where the
  * label is not to hand.
  */
-function iskWords(amount: number, decimalPlaces: number, templates: ClientWording["templates"], nameOf: NameOf): string | null {
+export function iskWords(amount: number, decimalPlaces: number, templates: ClientWording["templates"], nameOf: NameOf): string | null {
   const fractions = decimalPlaces > 0;
   const template = templates[fractions ? "UI/Util/FmtIsk" : "UI/Util/FmtIskNoDecimal"];
   if (typeof template !== "string") return null;

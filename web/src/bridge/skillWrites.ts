@@ -91,6 +91,24 @@ export async function applyFreePoints(act: Ask, skillTypeID: number, points: num
   return act("skillHandler", "ApplyFreeSkillPoints", [skillTypeID, points]);
 }
 
+// SKILL BOOKS BOUGHT, the fourth. The client's books window (characterskills/client/UI/missingSkillbooksWnd.py),
+// which the skill requirement window's Buy and train opens, buys the books it lists as sold with one call:
+//
+//   skillHandler.PurchaseSkills(skill_type_ids)
+//                                  characterskills/client/purchase.py 100: on the handler, the skills as one list,
+//                                  after the window's own judging (each a skill, each sold, none injected, the cost
+//                                  within the wallet). It answers the skills bought, which the client then waits to
+//                                  see among its skills. In no recording.
+//
+// The server judges it again and takes the ISK. The game port carries it.
+
+/** Books bought and injected: the skills as one list. Answers the skills bought. Fails as the call fails. */
+export async function purchaseSkills(act: Ask, skillTypeIDs: readonly number[]): Promise<readonly number[]> {
+  const answered = await act("skillHandler", "PurchaseSkills", [[...skillTypeIDs]]);
+  const items = Array.isArray(answered) ? answered : answered !== null && typeof answered === "object" && Array.isArray((answered as { items?: unknown }).items) ? ((answered as { items: unknown[] }).items) : [];
+  return items.map((item) => (typeof item === "number" ? item : Number(item))).filter((skill) => Number.isSafeInteger(skill) && skill > 0);
+}
+
 /** One place of a queue: a skill, and the level it is to be trained to. */
 export interface QueuePlace {
   readonly typeID: number;

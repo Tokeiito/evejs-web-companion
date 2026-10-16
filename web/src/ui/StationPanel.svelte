@@ -1764,6 +1764,11 @@
                   <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
                     Open
                   </button>
+                  <!-- The client's Change Name (itemCheckers.OfferChangeName): an assembled ship of the pilot's own in
+                       the hangar where it is docked, which every ship this list shows is. -->
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => run(() => flow.renameShip(ship.itemID))}>
+                    Rename
+                  </button>
                 {:else if !isModularShipGroup(ship.groupID)}
                   <!-- A packaged ship, the client's two: Assemble Ship, and Board Ship (assembled first, then boarded:
                        invItemFunctions.AssembleAndBoardShip). A modular ship's subsystems are asked first: not offered. -->
