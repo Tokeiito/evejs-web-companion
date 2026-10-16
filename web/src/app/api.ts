@@ -3851,6 +3851,35 @@ export async function getCloneGrade(
 }
 
 /**
+ * A fitting read from text as the client's fitting window reads one from the clipboard (POST
+ * /api/client-data/fitting-import; fittingSvc.ImportFittingFromClipboard, shipfitting/importFittingUtil.py): the ship's
+ * type, the fitting's name, its entries and the lines it could not read; or the client's ImportingErrorFromClipboard.
+ */
+export async function importFitting(
+  text: string,
+  options: ApiOptions = {},
+): Promise<
+  | { readonly error: string }
+  | { readonly shipTypeID: number; readonly name: string; readonly fitData: readonly (readonly [number, number, number])[]; readonly errorLines: readonly string[] }
+> {
+  const data = await postJson("/api/client-data/fitting-import", { text }, options);
+  const shipTypeID = Number(data.shipTypeID);
+  if (typeof data.error === "string" || !Number.isSafeInteger(shipTypeID) || shipTypeID <= 0) {
+    return { error: typeof data.error === "string" ? data.error : "ImportingErrorFromClipboard" };
+  }
+  const fitData: (readonly [number, number, number])[] = [];
+  for (const entry of Array.isArray(data.fitData) ? (data.fitData as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const flagID = Number(entry[1]);
+    const qty = Number(entry[2]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(flagID) && Number.isSafeInteger(qty)) fitData.push([typeID, flagID, qty]);
+  }
+  const errorLines = Array.isArray(data.errorLines) ? (data.errorLines as JsonValue[]).map((line) => String(line)) : [];
+  return { shipTypeID, name: typeof data.name === "string" ? data.name : "", fitData, errorLines };
+}
+
+/**
  * A shopping list read as the client's multibuy window reads one from the clipboard (POST
  * /api/client-data/multibuy-import; textImporting.importMultibuy): each market type it names with its quantity, in the
  * order the client adds them, and the lines it could not read.

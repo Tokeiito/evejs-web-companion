@@ -96,6 +96,7 @@
   const station = store.station;
 
   let busy = $state(false);
+  let importExportOpen = $state(false);
   let error = $state("");
   /** Which module the player picked to fit, and where it is coming from. */
   let pickedItemID = $state<number | null>(null);
@@ -224,11 +225,12 @@
   // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
   // it: its tree of ship groups, races and hulls with the fittings under each hull (bridge/hullBrowser.ts), and of a
   // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
-  // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), and the tooltips of a fitting and of a
-  // hull. Its words are the install's; the page's own stand in. Not done: a hull's menu, its traits and its Simulate
-  // button, the menu's Simulate Fitting, a fitting clicked (simulated), the groups' Compare, an unsupported fitting
-  // shown whole to a game master, and deleting a corporation's fitting (its fitting manager's role, and a call the page
-  // does not make). The tree's open groups are kept while the window is.
+  // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), its import and export menu's Import
+  // from Clipboard and Export to Clipboard (not its Simulate from Clipboard, its files nor Copy All Skills), and the
+  // tooltips of a fitting and of a hull. Its words are the install's; the page's own stand in. Not done: a hull's menu,
+  // its traits and its Simulate button, the menu's Simulate Fitting, a fitting clicked (simulated), the groups'
+  // Compare, an unsupported fitting shown whole to a game master, and deleting a corporation's fitting (its fitting
+  // manager's role, and a call the page does not make). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
@@ -238,6 +240,14 @@
     "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
     "UI/Fitting/FittingWindow/FittingManagement/DeleteFitting": "Delete it",
     "UI/Fitting/FittingWindow/FittingManagement/OpenMultifit": "Fit several ships",
+    // The browser's import and export menu (hullAndHardwareTypeBrowser.py 680 to 694).
+    "UI/Fitting/FittingWindow/ImportAndExport": "Import and export",
+    "UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboard": "Read a fitting from the clipboard",
+    "UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboardHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard": "Copy this ship's fitting as text",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint": "",
+    // Said by the import (flow.ts importFittingFromClipboard): asked here, where it is made.
+    "UI/SkillQueue/CouldNotReadLines": "",
     "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
     "UI/Common/NothingFound": "None found",
     // The browser's filter buttons' hints (hullAndHardwareTypeBrowser.py 406 to 413, LoadFilterBtnTooltipPanel).
@@ -1719,6 +1729,23 @@
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
     <p class="controls">
       <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
+      <!-- hullAndHardwareTypeBrowser.AddExportImportMenu (680 to 694): Import from Clipboard and Export to Clipboard. -->
+      <span class="import-export">
+        <button type="button" class="minor" aria-haspopup="menu" aria-expanded={importExportOpen} title={fitWord("UI/Fitting/FittingWindow/ImportAndExport")}
+          onclick={() => (importExportOpen = !importExportOpen)}>⇅</button>
+        {#if importExportOpen}
+          <span class="import-export-menu" role="menu">
+            <button type="button" role="menuitem" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboardHint")}
+              onclick={() => { importExportOpen = false; void navigator.clipboard.readText().catch(() => null).then((text) => flow.importFittingFromClipboard(text)).catch(() => {}); }}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboard")}
+            </button>
+            <button type="button" role="menuitem" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint")}
+              onclick={() => { importExportOpen = false; void flow.currentFitText().then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}
+            </button>
+          </span>
+        {/if}
+      </span>
     </p>
     <p class="controls">
       <button type="button" class={showPersonalFittings ? "active" : "minor"} aria-pressed={showPersonalFittings}

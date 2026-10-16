@@ -114,6 +114,20 @@ function getMarketTypeNames() {
   return caches.get(cacheKey);
 }
 
+/**
+ * ImportFittingUtil's names (shipfitting/importFittingUtil.py 47 to 51; src/clientData/importFitting.js
+ * importTypeNames): the types of the nine categories, the ice products and the two type lists, by English name cleaned
+ * and lowered, with the lists' types. Made once.
+ */
+function getFittingImportNames() {
+  const cacheKey = "itemTypes:fittingImportNames";
+  if (!caches.has(cacheKey)) {
+    const { importTypeNames } = require("./clientData/importFitting");
+    caches.set(cacheKey, importTypeNames(buildIndex("itemTypes", "types", "typeID").values(), getTypeIDsByListID));
+  }
+  return caches.get(cacheKey);
+}
+
 function getTypeName(typeID) {
   const entry = getType(typeID);
   return entry ? String(entry.name || `Type ${typeID}`) : `Type ${typeID}`;
@@ -2202,6 +2216,7 @@ module.exports = {
   getLauncherEffectName,
   getOverloadEffectID,
   getMarketTypeNames,
+  getFittingImportNames,
   getPassiveFilteredEffects,
   getModuleChargeFitment,
   getChargeSize,

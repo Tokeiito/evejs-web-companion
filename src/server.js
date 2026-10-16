@@ -15,6 +15,7 @@ const { createClientTextures } = require("./clientData/clientTextures");
 const { createMultibuyImport } = require("./clientData/importMultibuy");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { hullBrowserData } = require("./clientData/hullBrowser");
+const { readFitting } = require("./clientData/importFitting");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
 const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
@@ -13147,6 +13148,24 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
   try {
     if (multibuyImport === null) multibuyImport = createMultibuyImport(staticData.getMarketTypeNames());
     res.json({ ok: true, ...multibuyImport.getTypesAndQty(text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A fitting read from text as the client's fitting window reads one from the clipboard (fittingSvc
+// ImportFittingFromClipboard; shipfitting/importFittingUtil.py, src/clientData/importFitting.js): the ship's type, the
+// fitting's name, its entries and the lines it could not read; or ImportingErrorFromClipboard where the client's
+// reading fails. The names are the types' English ones (getFittingImportNames). No session: they do not vary by player.
+app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A fitting is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    const { names, listed } = staticData.getFittingImportNames();
+    res.json({ ok: true, ...readFitting(text, { names, listed, typeOf: (typeID) => staticData.getType(typeID), dogmaOf: (typeID) => staticData.getTypeDogma(typeID) }) });
   } catch (error) {
     next(error);
   }

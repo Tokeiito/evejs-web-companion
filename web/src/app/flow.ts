@@ -2325,6 +2325,10 @@ export interface AppFlow {
    * fitting as the text the client copies (GetFittingEFTString), its types named first; null with no window.
    */
   viewFittingText(n: number): Promise<string | null>;
+  /** The fitting window's Export to Clipboard: the ship's fitting as it stands, as the client's text; null with no ship. */
+  currentFitText(): Promise<string | null>;
+  /** The fitting window's Import from Clipboard, of the clipboard's text (null where the browser would not give it). */
+  importFittingFromClipboard(text: string | null): Promise<void>;
   /** The multifit window open now (ClientDialogs.svelte shows it); null with none. */
   readonly multiFitAsked: ReadableSignal<MultiFitAsk | null>;
   /** GetMaxShipsToFit, as last read: nought where the config allows no multifit. */
@@ -7567,20 +7571,74 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * owner. (A simulated ship's is the client's other way, and the page has no simulation.)
    */
   async function saveFitAs(): Promise<void> {
+    const fitting = await currentShipFitting();
+    if (fitting !== null) await openViewFitting(fitting);
+  }
+
+  /**
+   * fittingSvc.GetFittingForCurrentInWnd (1166 to 1186): the fitting of the ship the window shows, as it stands
+   * (GetFittingDictForCurrentFittingWindowShip), named the ship's name, with no number and no owner; null with no ship.
+   */
+  async function currentShipFitting(): Promise<SourcedFitting | null> {
     const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
-    if (shipID === null) return;
+    if (shipID === null) return null;
     const [flight, shipItems] = await Promise.all([api.getFlightStatus(callOptions), listShip(bridgeAsk, shipID)]);
     const shipTypeID = decodeFlightStatus(flight.flight).shipTypeID ?? null;
-    if (shipTypeID === null) return;
+    if (shipTypeID === null) return null;
     const facts = await fittingTypeFacts([...new Set(shipItems.map((item) => item.typeID))]);
     const fitData = createFittingData(shipItems, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() });
     const named = await api.resolveNames([{ kind: "evelocation", id: shipID }, { kind: "type", id: shipTypeID }], callOptions)
       .then((read) => read.names).catch(() => ({} as Readonly<Record<string, string | null>>));
     const name = named[nameKey("evelocation", shipID)] ?? named[nameKey("type", shipTypeID)] ?? "";
-    await openViewFitting({
+    return {
       fittingID: 0, ownerID: 0, name, description: "", shipTypeID, savedDate: null, source: "personal",
       modules: fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    };
+  }
+
+  /** The text of a fitting as the client copies it (GetFittingEFTString), its types named first. */
+  async function fittingText(fitting: SourcedFitting): Promise<string> {
+    await resolveNamesNow([...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])].map((id) => ({ kind: "type" as const, id })));
+    return fittingEftString(
+      { shipTypeID: fitting.shipTypeID, name: fitting.name, modules: fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })) },
+      (typeID) => nameCache.get(nameKey("type", typeID)) ?? "",
+    );
+  }
+
+  /**
+   * The fitting window's Export to Clipboard (hullAndHardwareTypeBrowser._copy_fitting_to_clipboard, 713 to 716): the
+   * ship's fitting as it stands (GetFittingForCurrentInWnd) as the client's text; null with no ship.
+   */
+  async function currentFitText(): Promise<string | null> {
+    const fitting = await currentShipFitting();
+    return fitting === null ? null : fittingText(fitting);
+  }
+
+  /**
+   * The fitting window's Import from Clipboard (fittingSvc.ImportFittingFromClipboard, 1111 to 1138): the clipboard's
+   * text read as the client reads a fitting (the BFF's port of importFittingUtil); where it fails,
+   * ImportingErrorFromClipboard; else the display window on the fitting read, not saved (DisplayFitting, an owner of
+   * nought), and the lines it could not read said under CouldNotReadLines (CustomInfo). A clipboard the browser would
+   * not give is the page's own to say.
+   */
+  async function importFittingFromClipboard(text: string | null): Promise<void> {
+    if (text === null) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", "The browser did not let the clipboard be read."]] }, "The browser did not let the clipboard be read.");
+      return;
+    }
+    const read = await api.importFitting(text, callOptions);
+    if ("error" in read) {
+      sayDialog("ImportingErrorFromClipboard", null, "No fitting could be read from the clipboard.");
+      return;
+    }
+    await openViewFitting({
+      fittingID: 0, ownerID: 0, name: read.name, description: "", shipTypeID: read.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
     });
+    if (read.errorLines.length > 0) {
+      const info = `<b>${templateWords("UI/SkillQueue/CouldNotReadLines", {}, "These lines were not understood:")}</b><br>${read.errorLines.join("<br>")}`;
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    }
   }
 
   /** appConst.maxCharFittings: the most fittings a pilot may have. */
@@ -7706,12 +7764,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function viewFittingText(n: number): Promise<string | null> {
     const open = viewFittingAskedSignal.get();
     if (open === null || open.n !== n) return null;
-    const fitting = open.fitting;
-    await resolveNamesNow([...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])].map((id) => ({ kind: "type" as const, id })));
-    return fittingEftString(
-      { shipTypeID: fitting.shipTypeID, name: fitting.name, modules: fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })) },
-      (typeID) => nameCache.get(nameKey("type", typeID)) ?? "",
-    );
+    return fittingText(open.fitting);
   }
 
   /**
@@ -21261,6 +21314,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     viewFitting,
     answerViewFitting,
     viewFittingText,
+    currentFitText,
+    importFittingFromClipboard,
     multiFitAsked: readonlySignal(multiFitAskedSignal),
     maxShipsToFit: readonlySignal(maxShipsToFitSignal),
     openMultiFit,
