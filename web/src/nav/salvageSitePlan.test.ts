@@ -54,7 +54,11 @@ test("modules are started first; a lootable wreck or can in range is looted in t
   // A salvager can start on a locked wreck: that first, then the loot.
   const p = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], lockedTargetIDs: [100] }));
   assert.deepEqual(act(p), { kind: "activate", moduleID: 11, targetID: 100 });
-  const after = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], salvagers: [mod(11, true, 100), mod(12, true, 100)], lockedTargetIDs: [100] }));
+  // Every salvager busy: the other wreck is locked ahead for the next free one, and then looted meanwhile.
+  const busy = [mod(11, true, 100), mod(12, true, 100)];
+  const ahead = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], salvagers: busy, lockedTargetIDs: [100] }));
+  assert.deepEqual(act(ahead), { kind: "lock", targetID: 101 });
+  const after = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], salvagers: busy, lockedTargetIDs: [100], pendingLockIDs: [101] }));
   assert.deepEqual(act(after), { kind: "lootWreck", wreckID: 101, isContainer: false });
   // Nothing to start: the can is looted.
   const c = planSalvageTick(input({ containers: [can(200, 1500)], wrecks: [] }));
@@ -75,9 +79,35 @@ test("every idle tractor is put to work before the loot: a fast pull never starv
   assert.deepEqual(act(r), { kind: "lootWreck", wreckID: 303, isContainer: false });
 });
 
-test("a lootable unlooted wreck is never given to a salvager", () => {
+test("a wreck still holding loot is salvaged without waiting for its loot: the loot goes into the can it leaves", () => {
   const p = planSalvageTick(input({ wrecks: [wreck(100, 4000, { lootable: true, tractorable: false })], lockedTargetIDs: [100], tractors: [] }));
-  assert.ok(!("action" in p) || act(p).kind !== "activate");
+  assert.deepEqual(act(p), { kind: "activate", moduleID: 11, targetID: 100 });
+});
+
+test("every wreck in reach is locked ahead, before any is looted, so the salvagers spread instead of piling onto one", () => {
+  // Seen live 2026-10-16: wrecks pulled in, looted one by one, each locked only as a salvager came free, and all five
+  // salvagers on the one wreck that was ready.
+  const L = { lootable: true } as const;
+  const w = [wreck(100, 1000, L), wreck(101, 1200, L), wreck(102, 1400, L), wreck(103, 1600, L), wreck(104, 1800, L)];
+  const five = [mod(11), mod(12), mod(13), mod(14), mod(15)];
+  let plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers: five, maxLockedTargets: 10 }));
+  assert.deepEqual(act(plan), { kind: "lock", targetID: 100 });
+  plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers: five, maxLockedTargets: 10, pendingLockIDs: [100, 101, 102, 103] }));
+  assert.deepEqual(act(plan), { kind: "lock", targetID: 104 });
+  // The locks are coming: the loot meanwhile, and no salvager doubled onto a wreck that is already locked.
+  plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers: [mod(11, true, 100), mod(12), mod(13), mod(14), mod(15)], maxLockedTargets: 10,
+    lockedTargetIDs: [100], pendingLockIDs: [101, 102, 103, 104] }));
+  assert.deepEqual(act(plan), { kind: "lootWreck", wreckID: 100, isContainer: false });
+  // Locked: one salvager each.
+  plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers: [mod(11, true, 100), mod(12), mod(13), mod(14), mod(15)], maxLockedTargets: 10,
+    lockedTargetIDs: [100, 101, 102, 103, 104] }));
+  assert.deepEqual(act(plan), { kind: "activate", moduleID: 12, targetID: 101 });
+});
+
+test("at the lock cap with more wrecks than locks, a spare salvager doubles up rather than waiting for a lock that is not coming", () => {
+  const w = [wreck(100, 1000), wreck(101, 1200), wreck(102, 1400)];
+  const plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers: [mod(11, true, 100), mod(12, true, 101), mod(13)], maxLockedTargets: 2, lockedTargetIDs: [100, 101] }));
+  assert.deepEqual(act(plan), { kind: "activate", moduleID: 13, targetID: 100 });
 });
 
 test("multiple salvagers get distinct locked wrecks", () => {

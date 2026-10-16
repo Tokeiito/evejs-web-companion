@@ -354,6 +354,8 @@ export type ScriptAction =
       readonly supportOrder?: { readonly scope: import("./miningSupportFleet.ts").SupportFleetScope; readonly actionID: number } }
   /** Hand the SHARED autopilot a system-only route (arrives in space, no dock). */
   | { readonly kind: "startSystemRoute"; readonly systemID: number }
+  /** Stop the SHARED autopilot's route where the ship is (a trip home given up for a site in this system). */
+  | { readonly kind: "stopRoute" }
   /**
    * TELL THE PLAYER — a notification, a sound, a line in the readout. The one
    * action that touches nothing in the world; it is carried as an action anyway so

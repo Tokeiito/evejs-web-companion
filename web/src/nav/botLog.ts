@@ -261,6 +261,8 @@ export function describeAction(action: ScriptAction): string {
       return "stack the hangar";
     case "startSystemRoute":
       return `set course to system ${action.systemID}`;
+    case "stopRoute":
+      return "stop the route";
     case "createFleet":
       return "form a fleet";
     case "inviteToFleet":
