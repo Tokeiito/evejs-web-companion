@@ -29,7 +29,7 @@ logic into the browser.
 
 | File | What it holds |
 |---|---|
-| `docs/game-port-loop-log.md` | **The loop's own journal, kept in the working tree and never committed (git ignores it). Its Next list, at its end, says what to do next.** |
+| `docs/game-port-loop-log.md` | **The loop's own journal, kept in the working tree and never committed (git ignores it). Its Next list, at its end, says what to do next.** Begun afresh on 2026-10-15 (the operator's word); the entries before, with the old "For the operator" and "Server defects" sections, are in `docs/game-port-loop-log-until-2026-10-15.md`, also untracked, read for history and not written to. |
 | `docs/game-port-transport-plan.md` | The plan, each phase's "done when", and each phase's status |
 | `docs/game-port-client-reference.md` | What the retail client does on the connection, and where we match |
 | `docs/game-port-parity-report.md` | Gateway against game port, read by read (generated) |
