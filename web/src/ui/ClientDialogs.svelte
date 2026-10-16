@@ -69,14 +69,18 @@
   // The client's fitting display window (fittingMgmtWindow.ViewFitting, its FittingMgmtContInStandalone): its caption
   // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, two tabs,
   // the contents by heading (each slot kind under its effect's name, each type "Nx" and its name with its icon) and the
-  // description, and Fit and Buy. Its words are the install's; the page's own stand in. Not done: Save (the name and the
-  // description edited), Simulate, the settings and the header's menu (the multifit, the export), the ship's preview,
-  // the truncated mark, and an obsolete module's mark.
+  // description, and Fit, Save and Buy: the name (40 letters at most, the client's field) and the description (500,
+  // maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the install's; the page's
+  // own stand in. Not done: Save's menu (for the corporation or the alliance) and another's fitting saved as a copy,
+  // Simulate, the settings and the header's menu (the multifit, the export), the ship's preview, the truncated mark,
+  // and an obsolete module's mark.
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
     "UI/Fitting/FittingWindow/FittingManagement/Fittings": "Contents",
     "UI/Common/Description": "About it",
     "UI/Fitting/FittingWindow/FittingManagement/Fit": "Fit this ship",
+    "UI/Common/Buttons/Save": "Keep the changes",
+    "UI/Fitting/FittingWindow/FittingManagement/FittingName": "Name",
     "UI/Market/MarketQuote/CommandBuy": "Purchase",
     "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
     "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting": "Your corporation's fitting",
@@ -91,6 +95,21 @@
     [CONTENTS_LABELS.other]: "Everything else",
   };
   let viewFittingTab = $state<"contents" | "description">("contents");
+  // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
+  // changes, as its contents arrive, leave what is being typed).
+  let viewFittingName = $state("");
+  let viewFittingDescription = $state("");
+  let viewFittingShown = "";
+  $effect(() => {
+    const view = $viewFittingAsked;
+    const key = view === null ? "" : `${view.n}:${view.fitting.fittingID}`;
+    if (key === viewFittingShown) return;
+    viewFittingShown = key;
+    if (view !== null) {
+      viewFittingName = view.fitting.name;
+      viewFittingDescription = view.fitting.description;
+    }
+  });
   $effect(() => {
     if ($viewFittingAsked === null) return;
     flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...Object.values($viewFittingAsked.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))]);
@@ -911,7 +930,8 @@
       </span>
       <span class="multibuy-row">
         <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
-        <span class="multibuy-name" title={viewWord(view.fitting.source === "personal" ? "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting" : "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting")}>{view.fitting.name}</span>
+        <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
+          title={viewWord(view.fitting.source === "personal" ? "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting" : "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting")} />
       </span>
       <span class="answers">
         <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
@@ -934,10 +954,13 @@
           </ul>
         {/if}
       {:else}
-        <p>{view.fitting.description}</p>
+        <textarea rows="6" maxlength="500" bind:value={viewFittingDescription} aria-label={viewWord("UI/Common/Description")}></textarea>
       {/if}
       <span class="answers">
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
+        {#if view.fitting.source === "personal"}
+          <button type="button" onclick={() => void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
+        {/if}
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
       </span>
     </div>

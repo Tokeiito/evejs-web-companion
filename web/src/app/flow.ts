@@ -2280,6 +2280,11 @@ export interface AppFlow {
   /** Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed), its Buy (multiBuyUtil.BuyFit), or closed. */
   answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void>;
   /**
+   * Its Save (fittingMgmtCont.Save, SaveExistingFitting, fittingSvc.ChangeNameAndDescription) for the pilot's own
+   * fitting: the name and the description as edited, and the window closed.
+   */
+  saveViewFitting(n: number, name: string, description: string): Promise<void>;
+  /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
    */
@@ -7296,6 +7301,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
     const now = viewFittingAskedSignal.get();
     if (now !== null && now.n === n && now.fitting.fittingID === fittingID) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+  }
+
+  /**
+   * The display window's Save (fittingMgmtCont.Save, 281 to 285): SaveForOwner of the pilot (or of its corporation,
+   * for a fitting of the corporation's with its fitting manager's role). For the fitting's own owner that is
+   * SaveExistingFitting (311 to 330), fittingSvc.ChangeNameAndDescription (710 to 724): no name is
+   * FittingNeedsToHaveAName; the name trimmed; where either is changed, "@@" in either is InvalidFittingInvalidCharacter,
+   * and UpdateNameAndDescription(fittingID, ownerID, name, description) on the owner's fitting manager, the kept
+   * fitting changed with it; then the window closed (its saveCallback, CloseByUser). Only the pilot's own fitting is
+   * saved here: another's is saved as a copy (SaveNewFitting, fittingSvc.PersistFitting: SaveFitting), which is no
+   * call the page makes.
+   */
+  async function saveViewFitting(n: number, name: string, description: string): Promise<void> {
+    const open = viewFittingAskedSignal.get();
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (open === null || open.n !== n || characterID === null || open.fitting.ownerID !== characterID) return;
+    const fitting = open.fitting;
+    if (name.trim() === "") {
+      sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
+      return;
+    }
+    const newName = name.trim();
+    if (newName !== fitting.name || description !== fitting.description) {
+      if (newName.includes("@@") || description.includes("@@")) {
+        sayDialog("InvalidFittingInvalidCharacter", null, "A fitting's name and description may not hold \"@@\".");
+        return;
+      }
+      try {
+        await bridgeDo("charFittingMgr", "UpdateNameAndDescription", [fitting.fittingID, fitting.ownerID, newName, description]);
+      } catch (error) {
+        if (isSessionLost(error)) throw error;
+        sayRefusalDialog(error, `The fitting could not be saved: ${errorWords(error)}`);
+        return;
+      }
+      const kept = savedFittingsSignal.get();
+      if (kept !== null) {
+        savedFittingsSignal.set(kept.map((each) => (each.fittingID === fitting.fittingID ? { ...each, name: newName, description } : each)));
+      }
+    }
+    const now = viewFittingAskedSignal.get();
+    if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
   }
 
   /** The display window's Fit and Buy (FittingMgmtContInStandalone's buttons), or the window closed. */
@@ -20580,6 +20626,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     viewFittingAsked: readonlySignal(viewFittingAskedSignal),
     viewFitting,
     answerViewFitting,
+    saveViewFitting,
     deleteFitting,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
