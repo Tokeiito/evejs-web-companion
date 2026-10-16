@@ -1766,7 +1766,7 @@ function createGamePortPilots({
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
       lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
-      targets: createPilotTargets(),
+      targets: createPilotTargets({ hasBall: (id) => ballInPark(entry, id) }),
       targetsWork: Promise.resolve(),
       targetsOwed: false,
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
@@ -4239,7 +4239,13 @@ function createGamePortPilots({
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
       entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
-      entry.space.park.onBallsAdded = (slims) => ballsPrimed(entry, slims);
+      entry.space.park.onBallsAdded = (slims) => {
+        ballsPrimed(entry, slims);
+        // targetMgr.DoBallsAdded_: a target held for its ball is one now.
+        entry.targets.ballsAdded(slims.map((slim) => slim.get("itemID")));
+      };
+      // targetMgr.DoBallClear: a whole new state empties both lists.
+      entry.space.park.onBallClear = () => entry.targets.ballClear();
       // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
       // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
       // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
@@ -4508,6 +4514,17 @@ function createGamePortPilots({
   }
 
   /** The tick of the pilot's park, or null when it has none. */
+  /**
+   * Whether the pilot's ballpark has that item now, as the client's target service asks it (GetBallpark().GetInvItem):
+   * no where there is no park, or no state in it yet.
+   */
+  const ballInPark = (entry, id) => {
+    const park = entry.space && entry.space.park;
+    if (!park || !park.validState) return false;
+    const raw = id && typeof id === "object" && !Buffer.isBuffer(id) ? id.value : id;
+    const ball = typeof raw === "bigint" && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : raw;
+    return park.slimItems.has(ball);
+  };
   const parkTick = (entry) => (entry.space && entry.space.park && entry.space.park.validState ? entry.space.park.currentTime : null);
 
   /**
