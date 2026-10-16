@@ -645,6 +645,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "subscriptionMgr.GetCloneGrade",
   // An acceleration gate's activation, the keeper's (movementFunctions.py 553). The gateway's list has nothing of the keeper's.
   "keeper.ActivateAccelerationGate",
+  // A fitting saved, and one of the same name saved over (fittingSvc.PersistFitting, 302 and 304). The gateway's list
+  // has the fitting manager's SaveManyFittings and not these.
+  "charFittingMgr.SaveFitting", "charFittingMgr.UpdateFitting",
   // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
   "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
@@ -844,6 +847,45 @@ const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFuncti
 const INV_ITEM_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
+/**
+ * fittingSvc.PersistFitting (268 to 300): the fitting a utillib.KeyVal() given its fields one at a time, the name
+ * (stripped, at most 50), the description (at most 500), the ship's type and fitData, then the owner, so that they go
+ * out in the order a dict of the five iterates; the name and the description typed text (typedText: the display
+ * window's edits), and fitData a list of (typeID, flag, qty) tuples. A route gives the fitting as a plain object of
+ * those fields. Null for anything else.
+ */
+function persistedFitting(fitting) {
+  if (!fitting || typeof fitting !== "object" || Array.isArray(fitting) || fitting.type !== undefined) return null;
+  const rows = Array.isArray(fitting.fitData) ? fitting.fitData : null;
+  if (rows === null || typeof fitting.name !== "string" || typeof fitting.description !== "string") return null;
+  if (!wholeAndPositive(fitting.shipTypeID) || !wholeAndPositive(fitting.ownerID)) return null;
+  if (!rows.every((row) => Array.isArray(row) && row.length === 3 && row.every((value) => Number.isSafeInteger(value)))) return null;
+  return keyVal(orderEntries([
+    ["name", typedText(fitting.name)],
+    ["description", typedText(fitting.description)],
+    ["shipTypeID", fitting.shipTypeID],
+    ["fitData", { type: "list", items: rows.map((row) => [...row]) }],
+    ["ownerID", fitting.ownerID],
+  ]));
+}
+/** SaveFitting(ownerID, fitting), as PersistFitting asks it (304). */
+function fittingSaved(args, kwargs) {
+  const [ownerID, fitting] = args;
+  const made = persistedFitting(fitting);
+  if (args.length !== 2 || !wholeAndPositive(ownerID) || made === null || Object.keys(kwargs).length > 0) {
+    return { status: "differs", note: "The client saves an owner's fitting as the KeyVal of five PersistFitting makes, and nothing else." };
+  }
+  return { args: [ownerID, made], status: "reshaped" };
+}
+/** UpdateFitting(ownerID, fitting, fittingID=...), as PersistFitting asks it (302), for the owner's fitting of that name. */
+function fittingUpdated(args, kwargs) {
+  const [ownerID, fitting] = args;
+  const made = persistedFitting(fitting);
+  if (args.length !== 2 || !wholeAndPositive(ownerID) || made === null || !wholeAndPositive(kwargs.fittingID) || Object.keys(kwargs).length !== 1) {
+    return { status: "differs", note: "The client updates an owner's fitting with the KeyVal of five PersistFitting makes and the fitting's number by keyword, and nothing else." };
+  }
+  return { args: [ownerID, made], kwargs: { fittingID: kwargs.fittingID }, status: "reshaped" };
+}
 const CLIENT_PLANET = "eve/client/script/environment/planet/clientPlanet.py";
 const IMPORT_EXPORT = "eve/client/script/ui/shared/planet/importExportUI.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
@@ -1865,6 +1907,9 @@ const RETAIL_CALLS = Object.freeze({
 
   // ── saved fittings ─────────────────────────────────────────────────────────
   "charFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("characterID", "character"), "GetFittingMgr(session.charid).GetFittings(session.charid)"),
+  "charFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description): fittingSvc.ChangeNameAndDescription, from the fitting display's Save (fittingMgmtCont.SaveExistingFitting) where the name or the description changed; the name stripped, both typed in the window's edits. In no recording."), [2, 3]),
+  "charFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting): fittingSvc.PersistFitting, from the fitting display's Save of a fitting not saved yet (the fitting window's Save Fit As, fittingSvc.DoSaveFitting); the fitting the KeyVal of five it makes (persistedFitting). Answered the fitting's number. In no recording."),
+  "charFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=existingFitting.fittingID): PersistFitting where the owner has a fitting of that name for the ship and the pilot said Yes to UpdateFitPersonal (289 to 299). Answered the fitting's number. In no recording."),
   "corpFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("corporationID", "corporation"), "GetFittingMgr(session.corpid).GetFittings(session.corpid)"),
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 

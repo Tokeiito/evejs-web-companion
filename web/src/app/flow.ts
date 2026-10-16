@@ -486,7 +486,7 @@ import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
+import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -2284,6 +2284,8 @@ export interface AppFlow {
    * fitting: the name and the description as edited, and the window closed.
    */
   saveViewFitting(n: number, name: string, description: string): Promise<void>;
+  /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
+  saveFitAs(): Promise<void>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -7254,7 +7256,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * not.)
    */
   async function fitFittingToActiveShip(fittingID: number): Promise<void> {
-    const fitting = savedFittingOf(fittingID);
+    await fitToActiveShip(savedFittingOf(fittingID));
+  }
+
+  /** LoadFittingFromFittingListAndGetBuyOptionOnFailure, and fittingMgmtCont.Fit, of a fitting as it is held. */
+  async function fitToActiveShip(fitting: SourcedFitting | null): Promise<void> {
     const failed = await loadSavedFitting(fitting);
     if (failed === null || failed.length === 0 || fitting === null) return;
     dialogsSaidCount += 1;
@@ -7264,7 +7270,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** multiBuyUtil.BuyFit: each type of the fitting by how many, and the ship one. */
   async function buyFit(fittingID: number): Promise<void> {
     const fitting = savedFittingOf(fittingID);
-    if (fitting === null) return;
+    if (fitting !== null) await buyFitOf(fitting);
+  }
+
+  /** multiBuyUtil.BuyFit of a fitting as it is held. */
+  async function buyFitOf(fitting: SourcedFitting): Promise<void> {
     const wanted = new Map<number, number>();
     for (const module of fitting.modules) wanted.set(module.typeID, (wanted.get(module.typeID) ?? 0) + module.quantity);
     wanted.set(fitting.shipTypeID, 1);
@@ -7278,11 +7288,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function viewFitting(fittingID: number): Promise<void> {
     const fitting = savedFittingOf(fittingID);
-    if (fitting === null) return;
-    const open = viewFittingAskedSignal.get();
-    const n = open?.n ?? (dialogsSaidCount += 1);
-    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {} });
-    const types = [...new Set(fitting.modules.map((module) => module.typeID))];
+    if (fitting !== null) await openViewFitting(fitting);
+  }
+
+  /** What the fitting display goes by of types: each one's group and category, and which of the two type lists it is on. */
+  async function fittingTypeFacts(types: readonly number[]): Promise<Map<number, TypeFacts>> {
     const facts = new Map<number, TypeFacts>();
     for (let at = 0; at < types.length; at += 32) {
       const chunk = types.slice(at, at + 32);
@@ -7292,6 +7302,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ]);
       for (const typeID of chunk) facts.set(typeID, { groupID: prices.groupID[typeID] ?? null, categoryID: prices.categoryID[typeID] ?? null, lists: new Set(lists[typeID] ?? []) });
     }
+    return facts;
+  }
+
+  /** fittingSvc.DisplayFitting of a fitting as it is held, saved or not. */
+  async function openViewFitting(fitting: SourcedFitting): Promise<void> {
+    const open = viewFittingAskedSignal.get();
+    const n = open?.n ?? (dialogsSaidCount += 1);
+    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {} });
+    const facts = await fittingTypeFacts([...new Set(fitting.modules.map((module) => module.typeID))]);
     const contents = fittingContents(
       fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
       (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
@@ -7300,7 +7319,89 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ? open!.effectNames
       : await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
     const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n && now.fitting.fittingID === fittingID) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+  }
+
+  /**
+   * The fitting window's Save Fit As (hullAndHardwareTypeBrowser.SaveFitting, fittingSvc.DoSaveFitting and
+   * GetFittingForCurrentInWnd, 1150 to 1190): the display window opened on the ship's fit as it stands
+   * (GetFittingDictForActiveShip: each of the ship's own items, made fitData by CreateFittingData with the modules'
+   * charges put in the hold), named the ship's own name (cfg.evelocations), with no description, no number and no
+   * owner. (A simulated ship's is the client's other way, and the page has no simulation.)
+   */
+  async function saveFitAs(): Promise<void> {
+    const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
+    if (shipID === null) return;
+    const [flight, shipItems] = await Promise.all([api.getFlightStatus(callOptions), listShip(bridgeAsk, shipID)]);
+    const shipTypeID = decodeFlightStatus(flight.flight).shipTypeID ?? null;
+    if (shipTypeID === null) return;
+    const facts = await fittingTypeFacts([...new Set(shipItems.map((item) => item.typeID))]);
+    const fitData = createFittingData(shipItems, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() });
+    const named = await api.resolveNames([{ kind: "evelocation", id: shipID }, { kind: "type", id: shipTypeID }], callOptions)
+      .then((read) => read.names).catch(() => ({} as Readonly<Record<string, string | null>>));
+    const name = named[nameKey("evelocation", shipID)] ?? named[nameKey("type", shipTypeID)] ?? "";
+    await openViewFitting({
+      fittingID: 0, ownerID: 0, name, description: "", shipTypeID, savedDate: null, source: "personal",
+      modules: fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    });
+  }
+
+  /** appConst.maxCharFittings: the most fittings a pilot may have. */
+  const MAX_CHAR_FITTINGS = 500;
+
+  /**
+   * fittingSvc.PersistFitting (268 to 313), the display window's Save of a fitting not saved yet (SaveForOwner of the
+   * pilot, SaveNewFitting, 332 to 337): no name is FittingNeedsToHaveAName; the name trimmed and cut to 50, the
+   * description to 500 (maxLengthFittingName, maxLengthFittingDescription); the pilot's fittings as they are kept
+   * (PrimeFittings), and at 500 OwnerMaxFittings; VerifyFitting ("@@", nothing in it); a fitting of the pilot's of that
+   * name for the ship asked about first (UpdateFitPersonal, Yes to go on, its description kept where the new one is
+   * none) and saved over (UpdateFitting with its number), else SaveFitting; answered the fitting's number, the fitting
+   * then kept and the window closed (saveCallback).
+   */
+  async function persistFitting(n: number, ownerID: number, name: string, description: string, fit: SourcedFitting): Promise<void> {
+    if (name.trim() === "") {
+      sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
+      return;
+    }
+    const newName = name.trim().slice(0, 50);
+    let newDescription = description.slice(0, 500);
+    if (savedFittingsSignal.get() === null) await loadSavedFittings().catch(() => {});
+    const own = (savedFittingsSignal.get() ?? []).filter((each) => each.ownerID === ownerID);
+    if (own.length >= MAX_CHAR_FITTINGS) {
+      const owner = store.station.get().online?.characterName ?? "";
+      sayDialog("OwnerMaxFittings", { type: "dict", entries: [["owner", owner], ["maxFittings", MAX_CHAR_FITTINGS]] }, `${owner} has ${MAX_CHAR_FITTINGS} fittings already.`);
+      return;
+    }
+    if (newName.includes("@@") || newDescription.includes("@@")) {
+      sayDialog("InvalidFittingInvalidCharacter", null, "A fitting's name and description may not hold \"@@\".");
+      return;
+    }
+    if (fit.modules.length === 0) {
+      sayDialog("ParseFittingFittingDataEmpty", null, "There is nothing in this fitting.");
+      return;
+    }
+    const existing = own.find((each) => each.shipTypeID === fit.shipTypeID && each.name === newName) ?? null;
+    if (existing !== null) {
+      if (!(await askDialog("UpdateFitPersonal", { type: "dict", entries: [["fittingName", newName]] }, `You have a fitting named ${newName} already. Save over it?`))) return;
+      if (!newDescription) newDescription = existing.description;
+    }
+    const fitting = { name: newName, description: newDescription, shipTypeID: fit.shipTypeID, fitData: fit.modules.map((module) => [module.typeID, module.flagID, module.quantity]), ownerID };
+    let fittingID: number;
+    try {
+      const answer = existing !== null
+        ? await bridgeDo("charFittingMgr", "UpdateFitting", [ownerID, fitting], { fittingID: existing.fittingID })
+        : await bridgeDo("charFittingMgr", "SaveFitting", [ownerID, fitting]);
+      fittingID = Number(answer);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be saved: ${errorWords(error)}`);
+      return;
+    }
+    if (!(Number.isSafeInteger(fittingID) && fittingID > 0)) return;
+    const saved: SourcedFitting = { fittingID, ownerID, name: newName, description: newDescription, shipTypeID: fit.shipTypeID, savedDate: null, modules: fit.modules, source: "personal" };
+    savedFittingsSignal.set([...(savedFittingsSignal.get() ?? []).filter((each) => each.fittingID !== fittingID), saved]);
+    const now = viewFittingAskedSignal.get();
+    if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
   }
 
   /**
@@ -7316,7 +7417,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function saveViewFitting(n: number, name: string, description: string): Promise<void> {
     const open = viewFittingAskedSignal.get();
     const characterID = store.station.get().online?.characterID ?? null;
-    if (open === null || open.n !== n || characterID === null || open.fitting.ownerID !== characterID) return;
+    if (open === null || open.n !== n || characterID === null) return;
+    // SaveForOwner(session.charid): a fitting not saved yet (no owner) is saved new, PersistFitting.
+    if (!open.fitting.ownerID) {
+      await persistFitting(n, characterID, name, description, open.fitting);
+      return;
+    }
+    if (open.fitting.ownerID !== characterID) return;
     const fitting = open.fitting;
     if (name.trim() === "") {
       sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
@@ -7352,8 +7459,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       viewFittingAskedSignal.set(null);
       return;
     }
-    if (answer === "fit") await fitFittingToActiveShip(open.fitting.fittingID);
-    else await buyFit(open.fitting.fittingID);
+    if (answer === "fit") await fitToActiveShip(open.fitting);
+    else await buyFitOf(open.fitting);
   }
 
   /**
@@ -20627,6 +20734,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     viewFitting,
     answerViewFitting,
     saveViewFitting,
+    saveFitAs,
     deleteFitting,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,

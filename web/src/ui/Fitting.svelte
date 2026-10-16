@@ -222,6 +222,8 @@
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
     "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
+    // The fitting window's own button (hullAndHardwareTypeBrowser.py 577).
+    "UI/Fitting/FittingWindow/SaveFitAs": "Save this ship's fitting",
     "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
     "UI/Fitting/FittingWindow/FittingManagement/DeleteFitting": "Delete it",
     "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
@@ -1477,6 +1479,9 @@
   <!-- ===================== saved fittings ============================= -->
   <section>
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
+    <p class="controls">
+      <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
+    </p>
     {#if $savedFittings === null}
       <p class="note">…</p>
     {:else if fittingsForShip.length === 0}

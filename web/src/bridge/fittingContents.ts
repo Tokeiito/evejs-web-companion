@@ -52,6 +52,56 @@ export interface FittingContentsGroup {
   readonly entries: readonly { readonly typeID: number; readonly qty: number }[];
 }
 
+/** inventorycommon/const.py: the hidden modifiers' flag, the fighter tubes, and a structure's modules' category. */
+const FLAG_HIDDEN_MODIFIERS = 156;
+const FIGHTER_TUBES = new Set([159, 160, 161, 162, 163]);
+const CATEGORY_DRONE = 18;
+const CATEGORY_FIGHTER = 87;
+const CATEGORY_STRUCTURE_MODULE = 66;
+/** inventorycommon/const.py fittingFlags: the module slots, the visible subsystems, three rig slots, the service slots. */
+const FITTING_FLAGS = new Set([...LO_SLOTS, ...MED_SLOTS, ...HI_SLOTS, ...VISIBLE_SUBSYSTEMS, ...RIG_SLOTS, ...SERVICE_SLOTS]);
+const MODULE_SLOTS = new Set([...LO_SLOTS, ...MED_SLOTS, ...HI_SLOTS]);
+
+/**
+ * fittingSvc.CreateFittingData (180 to 222), with the modules' charges put in the hold (putModuleAmmoInCargo): each
+ * visible item of the ship's (inventorycommon.ItemIsVisible) that is fitted (IsShipFittingFlag and IsShipFittable)
+ * one entry of its slot; the drones, fighters, the hold's charges and the modules' (to the hold), fuel, implants, the
+ * hold's modules, filaments and the other things the hold takes, each type's stacks added up, after them in that
+ * order, each kind in the order its dict iterates.
+ */
+export function createFittingData(
+  items: readonly { readonly typeID: number; readonly flagID: number | null; readonly quantity: number }[],
+  facts: (typeID: number) => TypeFacts,
+): [number, number, number][] {
+  const fitData: [number, number, number][] = [];
+  const kinds: { readonly flag: number; readonly order: number[]; readonly totals: Map<number, number> }[] = [
+    FLAG_DRONE_BAY, FLAG_FIGHTER_BAY, FLAG_CARGO, FLAG_CARGO, FLAG_CARGO, FLAG_CARGO, FLAG_CARGO, FLAG_CARGO,
+  ].map((flag) => ({ flag, order: [] as number[], totals: new Map<number, number>() }));
+  const [drones, fighters, charges, ice, implants, modulesInCargo, filaments, other] = kinds;
+  const add = (kind: (typeof kinds)[number], typeID: number, quantity: number): void => {
+    if (!kind.totals.has(typeID)) kind.order.push(typeID);
+    kind.totals.set(typeID, (kind.totals.get(typeID) ?? 0) + quantity);
+  };
+  for (const { typeID, flagID: flag, quantity } of items) {
+    if (flag === null || flag === FLAG_HIDDEN_MODIFIERS) continue;
+    const { groupID, categoryID, lists } = facts(typeID);
+    if (FITTING_FLAGS.has(flag) && (categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM || categoryID === CATEGORY_STRUCTURE_MODULE)) fitData.push([typeID, flag, 1]);
+    else if (categoryID === CATEGORY_DRONE && flag === FLAG_DRONE_BAY) add(drones!, typeID, quantity);
+    else if (categoryID === CATEGORY_FIGHTER && (flag === FLAG_FIGHTER_BAY || FIGHTER_TUBES.has(flag))) add(fighters!, typeID, quantity);
+    else if (categoryID === CATEGORY_CHARGE && flag === FLAG_CARGO) add(charges!, typeID, quantity);
+    else if (categoryID === CATEGORY_IMPLANT && flag === FLAG_CARGO) add(implants!, typeID, quantity);
+    else if ((categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM) && flag === FLAG_CARGO) add(modulesInCargo!, typeID, quantity);
+    else if (groupID === GROUP_ICE_PRODUCT && flag === FLAG_CARGO) add(ice!, typeID, quantity);
+    else if (categoryID === CATEGORY_CHARGE && MODULE_SLOTS.has(flag)) add(charges!, typeID, quantity);
+    else if (lists.has(TYPE_LIST_FILAMENTS)) add(filaments!, typeID, quantity);
+    else if (lists.has(TYPE_LIST_OTHER_CARGO_HOLD_TYPES)) add(other!, typeID, quantity);
+  }
+  for (const kind of kinds) {
+    for (const typeID of intDictOrder(kind.order)) fitData.push([typeID, kind.flag, kind.totals.get(typeID) ?? 0]);
+  }
+  return fitData;
+}
+
 type Rack = keyof typeof RACK_EFFECTS;
 type Other = keyof typeof CONTENTS_LABELS;
 
