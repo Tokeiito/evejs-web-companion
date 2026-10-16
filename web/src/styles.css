@@ -3932,6 +3932,25 @@
   }
   .hud-head-state.stopped { color: var(--color-muted); }
   .hud-head-state.error { color: var(--color-danger); }
+  /* The bar the client fills while the ship lines up for a warp (indication_message_standard: 200 by 3, its ground
+   * at a fifth and its fill at half, the fill eased to each value over a quarter second), along the foot of the row
+   * under the state's words: placed by the row, so that the words' ellipsis does not clip it. */
+  .hud-head:has(.hud-warp-progress) { position: relative; }
+  .hud-warp-progress {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 3px;
+    /* No wider than the state's own column, the right of the row's three. */
+    width: min(200px, 40%);
+    height: 3px;
+    background: color-mix(in srgb, var(--color-text-bright) 20%, transparent);
+  }
+  .hud-warp-progress-fill {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--color-text-bright) 50%, transparent);
+    transition: width 0.25s linear;
+  }
   /* ⚠ A WRAPPING ROW, NOT A FIXED SET OF COLUMNS. READ THIS BEFORE ADDING ONE.
    *
    * The three clusters — cargo, the gauge, the racks — sit centred as a group

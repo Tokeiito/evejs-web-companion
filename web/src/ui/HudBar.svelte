@@ -40,6 +40,7 @@
     pointText,
     shipStoppingText,
     warpIndication,
+    warpProgress,
     warpText,
   } from "../space/actionIndication.ts";
   import { resolvedName } from "../store/names.ts";
@@ -187,6 +188,9 @@
   // the range it was told to keep. Only when the snapshot gives that range (the game port's does); otherwise
   // the page's own sentence stands.
   const indication = $derived(actionIndication(ship?.mode, actedOn.id, ship?.followRange));
+  // The bar the client fills under the header while the ship lines up for a warp (indication_message_standard:
+  // 200 by 3, its ground a fifth and its fill half, eased to each new value over a quarter second, gone at 0).
+  const warpBar = $derived(warpProgress($space.snapshot));
   const stateText = $derived.by(() => {
     // The pocket's collapse warning, for its eight seconds, over everything else.
     if ($collapseWarning !== null) {
@@ -309,7 +313,14 @@
            which is where R30 wants it. -->
       <span class="hud-head-state error" role="alert">{stopError}</span>
     {:else}
-      <span class="hud-head-state" class:stopped>{stateText}</span>
+      <span class="hud-head-state" class:stopped>
+        {stateText}
+        {#if warpBar}
+          <span class="hud-warp-progress" role="progressbar" aria-label="Warp alignment" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(warpBar * 100)}>
+            <span class="hud-warp-progress-fill" style="width: {warpBar * 100}%"></span>
+          </span>
+        {/if}
+      </span>
     {/if}
   </header>
 

@@ -293,7 +293,9 @@ function warpOf(park, egoBall, destinationID) {
   const id = destinationID === null || destinationID === undefined ? null : number(destinationID);
   const thing = id === null ? null : park.ballpark.ball(id);
   const lies = point && thing && checkWarpDestination(point, thing.newPos, egoBall.newPos, Math.PI / 32, 20000000);
-  return { preparing: egoBall.effectStamp < 0, point: point ? { ...point } : null, destinationID: lies ? id : null };
+  // The ball's effect stamp goes with it: while the ship lines up it is minus one less the ticks spent so (WarpTo
+  // sets -1, each tick of lining up takes one off), and the bar the client fills meanwhile is partly made of it.
+  return { preparing: egoBall.effectStamp < 0, effectStamp: egoBall.effectStamp, point: point ? { ...point } : null, destinationID: lies ? id : null };
 }
 
 function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, alignTarget = null, simTime = null }) {

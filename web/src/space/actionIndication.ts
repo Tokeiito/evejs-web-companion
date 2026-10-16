@@ -31,7 +31,7 @@
 // stop the HUD says "ship stopping" over whatever else it would say
 // (eveCommands.CmdStopShip, a passing indication).
 //
-// Not here yet: the bar the client fills while the ship lines up for a warp.
+// And the bar the client fills while the ship lines up for a warp, under the header (spaceMgr._GetWarpProgress).
 // Whenever the range or the point is not known, the caller keeps its own words.
 
 import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -179,6 +179,43 @@ export function warpIndication(snapshot: SpaceSnapshot | null | undefined): Warp
   const to = thing ? thing.position : warp.point;
   const distance = Math.hypot(to.x - ship.position.x, to.y - ship.position.y, to.z - ship.position.z);
   return { kind: warp.preparing ? "warpPreparing" : "warpActive", destinationID: thing ? thing.itemID : null, distance };
+}
+
+/** MAX_ALIGN_TICKS: after so many ticks of lining up the warp begins anyway (Ball::IsAlignedForWarp). */
+export const MAX_ALIGN_TICKS = 180;
+
+/**
+ * How full the client's bar under "establishing warp vector" is (spaceMgr._GetWarpProgress, set by IndicateWarp
+ * while the ball's effect stamp is below zero): the speed as a share of three quarters of the top speed, and the
+ * course's lining up with the way to the warp's destination ((cosine + 1) / 1.99, or nothing under a hundredth of
+ * the top speed), the lesser of the two cubed; or the share of the 180 ticks the ship has spent lining up, where that
+ * is more. Between 0 and 1 (the HUD's controller holds it there); the bar is not drawn at 0. Null when the ship is
+ * not lining up for a warp, or what it is made of is not known. The client's vectors are geo2's; here they are
+ * doubles.
+ */
+export function warpProgress(snapshot: SpaceSnapshot | null | undefined): number | null {
+  const ship = snapshot?.ship ?? null;
+  const warp = ship?.warp ?? null;
+  if (!snapshot || !ship || !warp || !warp.preparing || !warp.point || typeof warp.effectStamp !== "number") return null;
+  const max = ship.maxVelocity;
+  if (typeof max !== "number" || !(max > 0)) return null;
+  const v = ship.velocity;
+  const speed = Math.hypot(v.x, v.y, v.z);
+  if (!Number.isFinite(speed)) return null;
+  const speedFraction = Math.min(1.0, speed / max);
+  const speedProgress = Math.min(speedFraction / 0.75, 1.0);
+  // The way to the thing the warp is aimed at, where it is one the client can name, else to the warp's own point.
+  const thing = warp.destinationID === null ? null : (snapshot.entities.find((entity) => entity.itemID === warp.destinationID) ?? null);
+  const to = thing ? thing.position : warp.point;
+  const way = { x: to.x - ship.position.x, y: to.y - ship.position.y, z: to.z - ship.position.z };
+  const wayLength = Math.hypot(way.x, way.y, way.z);
+  const dotProduct = speedFraction > 0.01 && wayLength > 0
+    ? (v.x * way.x + v.y * way.y + v.z * way.z) / (speed * wayLength)
+    : -1.0;
+  const angleProgress = (dotProduct + 1.0) / 1.99;
+  const autoWarpProgress = Math.min(-warp.effectStamp / MAX_ALIGN_TICKS, 1.0);
+  const overall = Math.max(Math.min(speedProgress, angleProgress) ** 3, autoWarpProgress);
+  return Math.min(1.0, Math.max(0, overall));
 }
 
 /**

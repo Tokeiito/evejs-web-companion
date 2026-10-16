@@ -86,7 +86,8 @@ function decodeWarp(value: JsonValue | undefined): ShipWarp | null {
   if (typeof raw.preparing !== "boolean") {
     return null;
   }
-  return { preparing: raw.preparing, point: pointOrNull(raw.point), destinationID: idOrNull(raw.destinationID) };
+  const effectStamp = typeof raw.effectStamp === "number" && Number.isSafeInteger(raw.effectStamp) ? { effectStamp: raw.effectStamp } : {};
+  return { preparing: raw.preparing, point: pointOrNull(raw.point), destinationID: idOrNull(raw.destinationID), ...effectStamp };
 }
 
 /** A point whose three coordinates are all real numbers, or null. */

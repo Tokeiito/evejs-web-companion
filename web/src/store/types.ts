@@ -2030,6 +2030,11 @@ export interface ShipAlignTarget {
 export interface ShipWarp {
   /** Still lining up: the warp proper has not begun. */
   readonly preparing: boolean;
+  /**
+   * The ship's ball's effect stamp: while it lines up, minus one less the ticks spent so; the tick the warp began
+   * after. Absent where the transport does not say.
+   */
+  readonly effectStamp?: number;
   /** The point the server's warp is aimed at, or null when it has not said. */
   readonly point: SpaceVector | null;
   /** The thing the pilot asked to warp to, when the warp is aimed at it; else null. */
