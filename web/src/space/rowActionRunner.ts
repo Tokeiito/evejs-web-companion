@@ -25,6 +25,8 @@ export interface RowActionSubject {
   readonly itemID: number;
   /** The gate this row is, when it is one — `jump` needs its far side. */
   readonly gateLink: GateLink | null;
+  /** The thing's type — `activateGate` makes the call its type has (bridge/gateActivation.ts). */
+  readonly typeID?: number | null;
 }
 
 /** The distances the player has chosen, as numbers of metres. */
@@ -43,6 +45,7 @@ export interface RowActionFlow {
   alignTo(itemID: number): Promise<unknown>;
   dockAt(itemID: number): Promise<unknown>;
   jumpThrough(link: GateLink): Promise<unknown>;
+  activateGate(itemID: number, typeID: number | null): Promise<unknown>;
   lockTarget(itemID: number): Promise<unknown>;
   unlockTarget(itemID: number): Promise<unknown>;
 }
@@ -113,6 +116,10 @@ export async function dispatchRowAction(
       await flow.jumpThrough(link);
       return true;
     }
+    case "activateGate":
+      // GetCloseAndTryCommand: the system navigation to within 2,500 m, then the gate's own call.
+      await flow.activateGate(subject.itemID, subject.typeID ?? null);
+      return true;
     case "lock":
       await flow.lockTarget(subject.itemID);
       return true;

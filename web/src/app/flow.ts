@@ -314,9 +314,12 @@ import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatc
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
+import { GATE_ACTIVATION_RANGE_M, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
+  decideCloseIn,
+  measureSpace,
   type AutopilotController,
   type AutopilotDeps,
   type RoutePlan,
@@ -1903,6 +1906,11 @@ export interface AppFlow {
    * for, and arrival is the next system read back from FLIGHT STATUS.
    */
   jumpThrough(link: GateLink): Promise<void>;
+  /**
+   * Activate Gate (bridge/gateActivation.ts): the client's system navigation to within 2,500 m of the gate, then the
+   * gate's own call by its type. Starts the navigation and answers; its refusals are the flight's.
+   */
+  activateGate(itemID: number, typeID: number | null): Promise<void>;
   /**
    * R30 slice A — the stargates in `systemID` and where each one leads.
    *
@@ -6313,6 +6321,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const position = store.space.get().snapshot?.ship?.position ?? null;
     if (position === null) throw new Error("Your ship's position is not known yet.");
     await alignToPositionCall(bridgeDo, readFlightNow, result.pos, [position.x, position.y, position.z]);
+  }
+
+  /**
+   * Activate Gate (bridge/gateActivation.ts), as the client's GetCloseAndTryCommand makes it: its system navigation
+   * (autopilot.py __NavigateSystemTo), re-armed every two seconds over the shared rungs (nav/autopilotLoop.ts
+   * decideCloseIn): in warp it waits; within 2,500 m it makes the gate's call, once, and is done; too close for a warp
+   * the menu's approach; farther the menu's warp at nought. One navigation at a time: the autopilot is stopped for
+   * it, and another Activate Gate or the pilot's Stop ends it. Like the client's it has no time limit, and it ends
+   * without a word where it cannot tell what to do (a gate the ship cannot see: autopilot.py 523 to 525).
+   */
+  const GATE_NAVIGATION_TICK_MS = 2_000;
+  let gateNavigation = 0;
+  async function navigateToGate(itemID: number, typeID: number | null): Promise<void> {
+    autopilot?.abort();
+    const token = ++gateNavigation;
+    let approaching: number | null = null;
+    while (token === gateNavigation) {
+      const status = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+      if (token !== gateNavigation || !status.inSpace) return;
+      if (status.shipMode === null || !/warp/i.test(status.shipMode)) {
+        await loadSpaceSnapshot().catch(() => undefined);
+        if (token !== gateNavigation) return;
+        const step = decideCloseIn(itemID, GATE_ACTIVATION_RANGE_M, measureSpace(store.space.get().snapshot ?? null), approaching, MENU_WARP_RANGE_M);
+        if (step === null) {
+          gateNavigation += 1;
+          return;
+        }
+        if (step.kind === "arrive") {
+          gateNavigation += 1;
+          await runFlightStep("Activate Gate", () => orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+          return;
+        }
+        if (step.kind === "approach") {
+          await approachShip(itemID, null);
+          approaching = itemID;
+        } else if (step.kind === "warp") {
+          await warpToThing(itemID, MENU_WARP_RANGE_M);
+          approaching = null;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, GATE_NAVIGATION_TICK_MS));
+    }
+  }
+  async function activateGate(itemID: number, typeID: number | null): Promise<void> {
+    if (gateCallFor(typeID, itemID) === null) {
+      store.apply({ type: "flight/action-error", message: "Activate Gate refused: this gate is not activated from here yet.", said: false });
+      return;
+    }
+    store.apply({ type: "flight/action", action: "Activate Gate" });
+    void navigateToGate(itemID, typeID).catch((error: unknown) => {
+      if (isSessionLost(error)) return;
+      store.apply({ type: "flight/action-error", message: `Activate Gate refused: ${flightRefusalWords(error)}`, said: sayRefusalDialog(error, flightRefusalWords(error)) });
+    });
   }
 
   /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the mining bot and the script bots. */
@@ -19543,6 +19604,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // browser decide-loop first so it cannot issue another move into the stop,
       // then tell the server to cut the engines.
       autopilot?.abort();
+      // (And an Activate Gate's navigation, which is the client's too.)
+      gateNavigation += 1;
       await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
     },
 
@@ -19588,6 +19651,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFlightStep("Jump", () => jumpStep(fromGateID, toGateID));
     },
     jumpThrough,
+    activateGate,
 
     // R30 slice A. A pure read over the cached graph — it issues no game call
     // and starts nothing, so a panel may ask for it on every system change.
