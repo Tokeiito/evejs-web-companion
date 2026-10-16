@@ -88,9 +88,9 @@ export async function boardCorvette(act: Ask, ship: PilotsShip, sure: () => bool
 //
 // ship the ship's object for where the pilot is (gameui.GetShipAccess()); the second argument the ship left, or the
 // station where the pilot is in none. Before it the client asks for the skills the ship's type needs and, where
-// any is missing, says which and boards nothing (prompt_missing_skill_requirements); the page does not ask (its
-// route did not either), and the server refuses a ship the pilot cannot fly. Recorded on Tranquility in space as
-// (shipID, the ship left), the bind carrying it (src/gamePort/retailCalls.js).
+// any is missing, says which and boards nothing (prompt_missing_skill_requirements); so does the page since
+// 2026-10-16 (app/flow.ts boardShip, bridge/missingSkills.ts). Recorded on Tranquility in space as (shipID, the ship
+// left), the bind carrying it (src/gamePort/retailCalls.js).
 //
 // THE SESSION CHANGE IS KEPT BY THE BFF, as a swap of the pilot's ship held to the ship boarded (src/server.js, the
 // generic call's swaps; bridgeCallPolicy.js, PAGE_SHIP_SWAP_CALLS): answered once the pilot is in it. Until
@@ -105,6 +105,32 @@ export async function boardShip(act: Ask, shipID: number, leaving: number | null
     throw new Error("Which ship that is is not known yet.");
   }
   await act("ship", "Board", [shipID, known(leaving) ? leaving : null]);
+}
+
+// A PACKAGED SHIP ASSEMBLED, as the client assembles one (invItemFunctions.AssembleShip, 164 to 210), from a packaged
+// ship's menu in the hangar (Assemble Ship; Board Ship assembles it first, AssembleAndBoardShip, 213 to 240):
+//
+//   the name asked first, for one ship, unless the pilot said not to (prompt_rename_ship; settings.user.suppress
+//   'suppress.ShipNameChangeOnAssemble'): the name given, or None on Later
+//   sm.StartService('gameui').GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems)
+//   the answer the ships assembled, by their IDs; the default skin put on each (not done here)
+//
+// A modular ship's subsystems are asked first, and none is assembled in space (CantAssembleModularShipInSpace): the
+// page does not offer one. In no recording.
+
+/**
+ * Assembles a packaged ship in the hangar: on the ship's object, the ship as a list of one, the name given or none.
+ * Answers the ship assembled (another item than the one named, where it came off a stack), or null where the server
+ * named none. Fails as the call fails, and before it where the ship is not known.
+ */
+export async function assembleShip(act: Ask, shipID: number, name: string | null): Promise<number | null> {
+  if (!known(shipID)) {
+    throw new Error("Which ship that is is not known yet.");
+  }
+  const answered = await act("ship", "AssembleShip", [[shipID]], { name, subSystems: null });
+  const first = isListValue(answered) ? answered.items[0] : Array.isArray(answered) ? answered[0] : answered;
+  const id = unwrapLong(first);
+  return id !== null && id > 0n && id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : null;
 }
 
 /**

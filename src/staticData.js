@@ -586,6 +586,26 @@ const EFFECT_CATEGORY_OVERLOAD = 5;
  * overloads a module (shipmodulebutton.py 231) and what godma's Overload and
  * StopOverload carry. The page asks for it by GET /api/types/overload-effects.
  */
+/**
+ * dogmaStaticMgr.GetPassiveFilteredEffectsByType (eve/common/script/dogma/baseDogmaStaticSvc.py 153 to 167, 348): a
+ * type's effects whose category is passive (0) or system (7), less the four the client leaves out (hiPower 12,
+ * loPower 11, medPower 13, skillEffect 132). Null where the tables do not know the type.
+ */
+const PASSIVE_FILTER_UNWANTED_EFFECTS = new Set([12, 11, 13, 132]);
+function getPassiveFilteredEffects(typeID) {
+  const dogma = getTypeDogma(typeID);
+  if (!dogma) return null;
+  const effects = Array.isArray(dogma.effects) ? dogma.effects : [];
+  const passive = [];
+  for (const effectID of effects) {
+    if (PASSIVE_FILTER_UNWANTED_EFFECTS.has(Number(effectID))) continue;
+    const effect = getEffect(effectID);
+    const category = effect ? Number(effect.effectCategoryID) : NaN;
+    if (category === 0 || category === 7) passive.push(Number(effectID));
+  }
+  return passive;
+}
+
 function getOverloadEffectID(typeID) {
   const dogma = getTypeDogma(typeID);
   const effects = dogma && Array.isArray(dogma.effects) ? dogma.effects : [];
@@ -2206,6 +2226,7 @@ module.exports = {
   getLauncherEffectName,
   getOverloadEffectID,
   getTypeActivatable,
+  getPassiveFilteredEffects,
   getModuleChargeFitment,
   getChargeSize,
   getOreValuePerM3,

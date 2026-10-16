@@ -67,14 +67,19 @@ function unwrapRowList(result: JsonValue): JsonValue {
 }
 
 /** typeID → m³ per unit, keyed by the string the wire sends; null when unknown. */
+/**
+ * A type's volume by its typeID; and, under "p" and the typeID, a packaged stack's where the client's packaged volume
+ * is another than the type's own (a packaged ship: inventorycommon/util.py GetItemVolume, GetPackagedVolume).
+ */
 export type VolumeMap = Readonly<Record<string, number>>;
 
-function volumeFor(typeID: number, volumes: VolumeMap | undefined): number | null {
+function volumeFor(typeID: number, volumes: VolumeMap | undefined, packaged = false): number | null {
   if (volumes === undefined) {
     return null;
   }
-  const v = volumes[String(typeID)];
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+  const v = (packaged ? volumes[`p${typeID}`] : undefined) ?? volumes[String(typeID)];
+  // Nought is a type's volume where its type's is nought (blueprints and others), as the client's GetItemVolume has it.
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap | undefined): InventoryItemRow {
@@ -111,7 +116,7 @@ function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap |
     // it — it exists for the arithmetic, and the arithmetic wants a count.
     quantity: singleton ? 1 : quantity || stacksize,
     singleton,
-    volume: volumeFor(typeID, volumes),
+    volume: volumeFor(typeID, volumes, !singleton),
   };
 }
 
@@ -194,12 +199,15 @@ export function decodeContainer(
   };
 }
 
-/** A hangar row is a boardable ship when it is a ship (category 6) and not active. */
+/**
+ * A hangar row is a boardable ship when it is a ship (category 6), assembled, and not active: the client boards an
+ * assembled ship alone (menusvc.ActivateShip, 3381: `if invItem.singleton`); a packaged one is assembled first.
+ */
 export function isBoardableShip(
   row: InventoryItemRow,
   activeShipID: number | null,
 ): boolean {
-  return row.categoryID === 6 && row.itemID !== activeShipID;
+  return row.categoryID === 6 && row.singleton && row.itemID !== activeShipID;
 }
 
 // --- R14 inventory depth ----------------------------------------------------

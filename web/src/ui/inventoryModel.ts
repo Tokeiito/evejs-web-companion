@@ -297,6 +297,17 @@ export function activeBay(inventory: InventoryState, key: string): ShipBay | nul
 
 export const CATEGORY_SHIP = 6;
 
+/** uix.NAMEABLE_GROUPS (266 to 272): wrecks, cargo, secure, audit log and freight containers, and biomass. */
+const NAMEABLE_GROUPS: ReadonlySet<number> = new Set([186, 12, 340, 448, 649, 14]);
+
+/**
+ * uix.IsValidNamedItem (274 to 286): an assembled item the client names by its own name (cfg.evelocations) rather than
+ * its type's: a ship, or one of the nameable groups. (A thing with a deploy component is one too: not read here.)
+ */
+export function isNamedItem(row: InventoryItemRow): boolean {
+  return row.singleton && (row.categoryID === CATEGORY_SHIP || (row.groupID !== null && NAMEABLE_GROUPS.has(row.groupID)));
+}
+
 export function isShipRow(row: InventoryItemRow): boolean {
   return row.categoryID === CATEGORY_SHIP;
 }

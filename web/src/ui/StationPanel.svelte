@@ -59,6 +59,7 @@
     capacityText,
     fillPercent,
     hangarThings,
+    isNamedItem,
     matchesFilter,
     mergeOrder,
     moveDestinations,
@@ -310,8 +311,10 @@
 
   // --- names ----------------------------------------------------------------
 
+  /** uix.GetItemName: a named item's own name (cfg.evelocations) where it has one, its type's otherwise. */
   function nameOf(row: InventoryItemRow): string {
-    return resolvedName($names.resolved, "type", row.typeID);
+    const own = isNamedItem(row) ? $names.resolved[nameKey("evelocation", row.itemID)] : null;
+    return typeof own === "string" && own !== "" ? own : resolvedName($names.resolved, "type", row.typeID);
   }
 
   function nameOnly(id: number | null, kind: NameKind): string {
@@ -346,6 +349,8 @@
     ];
     for (const row of everyRow) {
       refs.push({ kind: "type", id: row.typeID });
+      // A named item's own name, as the client names it (uix.GetItemName).
+      if (isNamedItem(row)) refs.push({ kind: "evelocation", id: row.itemID });
       if (row.categoryID) {
         refs.push({ kind: "category", id: row.categoryID });
       }
@@ -835,7 +840,10 @@
       title: "Item hangar",
       place: { kind: "hangar" },
       rows: $inventory.hangar.error ? null : hangarThings($inventory),
-      capacity: $inventory.hangar.capacity,
+      // The client's Item hangar has no capacity (invCtrl.StationItems, hasCapacity False): no gauge, and the volume
+      // of what it shows, ships not among it (container.py UpdateLabel over GetItems, IsItemHere).
+      capacity: usedOnly(hangarThings($inventory)),
+      hasLimit: false,
       error: $inventory.hangar.error,
       stackKey: "hangar",
       emptyText: $inventory.loaded ? "Nothing here but your ships." : "Looking through your hangar…",
@@ -884,6 +892,12 @@
   });
 
   const uncheckedBays = $derived(uncheckedShipBays(openShip));
+  /** A strategic cruiser's group (IsModularShip): its subsystems are chosen before it is assembled. */
+  const isModularShipGroup = (groupID: number | null): boolean => groupID === 963;
+  /** A ship in the hangar as the panel says it: docked there, or packaged, with how many of it the stack holds. */
+  function shipState(ship: InventoryItemRow): string {
+    return ship.singleton ? "Docked here" : `Packaged · ${ship.quantity.toLocaleString()}`;
+  }
   const ships = $derived(shipRows($inventory));
 
   // --- the locations --------------------------------------------------------
@@ -1737,16 +1751,34 @@
               </span>
               <span class="stn-cell-name">
                 <span class="stn-name stn-ship-name">{nameOf(ship)}</span>
-                <span class="stn-meta">{flying ? "You are flying this" : "Docked here"}</span>
+                <span class="stn-meta">{flying ? "You are flying this" : shipState(ship)}</span>
               </span>
-              <span class="stn-cell-bays">{cargoSummary(ship.itemID)}</span>
+              <span class="stn-cell-bays">{ship.singleton ? cargoSummary(ship.itemID) : ""}</span>
               <span class="stn-cell-status" class:accent={flying}>
-                {flying ? "You are flying this" : "Docked here"}
+                {flying ? "You are flying this" : shipState(ship)}
               </span>
               <span class="stn-cell-move">
-                <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
-                  Open
-                </button>
+                <!-- A packaged ship has no holds to open and is not boarded: the client opens and boards an assembled
+                     one alone (menusvc.ActivateShip and its Open, `if invItem.singleton`). -->
+                {#if ship.singleton}
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
+                    Open
+                  </button>
+                  <!-- The client's Change Name (itemCheckers.OfferChangeName): an assembled ship of the pilot's own in
+                       the hangar where it is docked, which every ship this list shows is. -->
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => run(() => flow.renameShip(ship.itemID))}>
+                    Rename
+                  </button>
+                {:else if !isModularShipGroup(ship.groupID)}
+                  <!-- A packaged ship, the client's two: Assemble Ship, and Board Ship (assembled first, then boarded:
+                       invItemFunctions.AssembleAndBoardShip). A modular ship's subsystems are asked first: not offered. -->
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => run(() => flow.assembleShip(ship.itemID, false))}>
+                    Assemble
+                  </button>
+                  <button type="button" class="stn-btn stn-btn-quick" disabled={busy} onclick={() => run(() => flow.assembleShip(ship.itemID, true))}>
+                    Board
+                  </button>
+                {/if}
                 {#if isBoardableShip(ship, $inventory.activeShipID)}
                   <button
                     type="button"

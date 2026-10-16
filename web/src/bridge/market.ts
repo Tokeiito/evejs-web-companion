@@ -199,6 +199,96 @@ function toFiletime(value: JsonValue | undefined): bigint | null {
  * Every row already carries `bid`, so the tuple position is cross-checked
  * against it rather than trusted.
  */
+/**
+ * marketsvc.GetAveragePrice(typeID, days=7) (368 to 386): over the joined history's rows of the last `days` days, the
+ * sum of each day's average times its quantity over the sum of the quantities; with nothing traded, the type's base
+ * price over its portion size, or 1.0 where that is nothing; rounded to the hundredth. `now` is the clock in 100 ns
+ * ticks.
+ */
+export function averagePriceOf(
+  history: readonly MarketPriceHistoryRow[],
+  now: bigint,
+  fallback: { readonly basePrice: number | null; readonly portionSize: number | null },
+  days = 7,
+): number {
+  let volume = 0;
+  let priceVolume = 0.0;
+  for (const entry of history) {
+    if (entry.day === null || entry.day < now - BigInt(days) * DAY_OF_FILETIME) continue;
+    priceVolume += Number(entry.average) * entry.volume;
+    volume += entry.volume;
+  }
+  let average: number;
+  if (volume > 0) {
+    average = priceVolume / volume;
+  } else {
+    average = (fallback.basePrice ?? 0) / (fallback.portionSize || 1);
+    if (!(average > 0.0)) average = 1.0;
+  }
+  return Number(average.toFixed(2));
+}
+
+/** buySellItemContainerBase.GetDelta (57 to 63): how far a price is from the average, a fraction of it; nought with no price. */
+export function priceDelta(price: number | null, average: number): number {
+  return price === null ? 0 : (price - average) / average;
+}
+
+/**
+ * MultiBuy.GetOrderDelta (489 to 498): over the rows with a price, each row's distance from its average weighted by
+ * its share of the whole.
+ */
+export function orderDelta(rows: readonly { readonly total: number; readonly quantity: number; readonly average: number }[]): number {
+  const totalPrice = rows.reduce((sum, row) => sum + row.total, 0);
+  let change = 0;
+  for (const row of rows) {
+    const atAverage = row.quantity * row.average;
+    change += ((row.total - atAverage) / atAverage) * row.total / totalPrice;
+  }
+  return change;
+}
+
+/**
+ * marketQuote.GetBestAskPriceInStationAndNumberOrders (marketsvc.py 603 to 616): the sell orders at the station,
+ * cheapest first, taken until they hold the amount; the price of the last one taken, and how many were taken. Nulls
+ * where the station's orders do not hold it.
+ */
+export function bestAskInStation(
+  sells: readonly MarketOrderRow[],
+  stationID: number,
+  amount: number,
+): { readonly price: number | null; readonly numOrders: number | null } {
+  const atStation = sells.filter((order) => order.stationID === stationID).sort((left, right) => Number(left.price) - Number(right.price));
+  let held = 0;
+  let taken = 0;
+  for (const order of atStation) {
+    held += order.volumeRemaining;
+    taken += 1;
+    if (held >= amount) return { price: Number(order.price), numOrders: taken };
+  }
+  return { price: null, numOrders: null };
+}
+
+/**
+ * marketQuote.GetBestAskInRange (marketsvc.py 585 to 601): the first sell order, in the order the server answered
+ * them, within the range of the station with at least `amount` left; null where none is. An order at the station
+ * itself is nearer than its system (-1), one elsewhere in the system none (0), one further off as many jumps away
+ * as the server counted from the pilot's system (the order's `jumps`; the client counts them from the station's own
+ * system, which is the pilot's where it is docked there).
+ */
+export function bestAskInRange(
+  sells: readonly MarketOrderRow[],
+  stationID: number,
+  solarSystemID: number | null,
+  range: number,
+  amount = 1,
+): MarketOrderRow | null {
+  for (const order of sells) {
+    const jumps = order.stationID === stationID ? RANGE_STATION : solarSystemID !== null && order.solarSystemID === solarSystemID ? 0 : Math.max(1, order.jumps);
+    if (jumps <= range && order.volumeRemaining >= amount) return order;
+  }
+  return null;
+}
+
 export function decodeOrderBook(result: JsonValue): {
   readonly sells: readonly MarketOrderRow[];
   readonly buys: readonly MarketOrderRow[];

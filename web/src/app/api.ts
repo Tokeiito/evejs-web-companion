@@ -3506,69 +3506,6 @@ export async function loadBotCorpAssets(
   return getJson(`/api/bots/corp-assets?characterID=${characterID}&which=offices${location}`, options);
 }
 
-// --- R107 The hangar's training column, for pilots who are NOT signed in ----
-// GET /api/roster/training?characterIDs=a,b,c answers what each of those pilots
-// is training, read from the gateway's live queue snapshot.
-//
-// ⚠ IT REPLACES A FIELD THAT LIES. charUnboundMgr.GetCharacterSelectionData
-// carries skillTypeID / toLevel / trainingEndTime per character and the hangar
-// used to believe them; on this emulator they are always null, even for a pilot
-// with an active fifty-skill queue, so every training row read as IDLE. See the
-// route in src/server.js for the measurement.
-
-export interface RosterTrainingRow {
-  readonly characterID: number;
-  /** The skill being trained; null is the positive finding "the queue is empty". */
-  readonly skillTypeID: number | null;
-  /** Already resolved by the server — the roster needs no name lookup for it. */
-  readonly skillName: string | null;
-  readonly toLevel: number | null;
-  /** When the level completes, epoch ms, or null when nothing is training. */
-  readonly endsAtMs: number | null;
-}
-
-/**
- * What each of these pilots is training. Only pilots the server could actually
- * answer for come back: an id that is missing from the result was NOT answered
- * (not this account's, or the read failed), and the caller must keep whatever it
- * already had for it rather than reading the gap as an empty queue.
- */
-export async function loadRosterTraining(
-  characterIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<readonly RosterTrainingRow[]> {
-  const ids = characterIDs.filter((id) => Number.isFinite(id) && id > 0);
-  if (ids.length === 0) {
-    return [];
-  }
-  const data = await getJson(
-    `/api/roster/training?characterIDs=${encodeURIComponent(ids.join(","))}`,
-    options,
-  );
-  if (!Array.isArray(data.training)) {
-    return [];
-  }
-  const rows: RosterTrainingRow[] = [];
-  for (const entry of data.training as JsonValue[]) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      continue;
-    }
-    const row = entry as Record<string, JsonValue>;
-    const characterID = asNumberOrNull(row.characterID);
-    if (characterID === null) {
-      continue;
-    }
-    rows.push({
-      characterID,
-      skillTypeID: asNumberOrNull(row.skillTypeID),
-      skillName: typeof row.skillName === "string" ? row.skillName : null,
-      toLevel: asNumberOrNull(row.toLevel),
-      endsAtMs: asNumberOrNull(row.endsAtMs),
-    });
-  }
-  return rows;
-}
-
 // --- A module type's overload effect (static reference data) -----------------
 // GET /api/types/overload-effects?typeIDs=... answers { overloadEffectID }: for
 // each type the ID of its effect of the overload category, or null where it has
@@ -3697,8 +3634,8 @@ export async function loadCompressedTypes(
 }
 
 // --- A type's volume (static reference data) ---------------------------------
-// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³, or null where the static
-// tables have none. A client has it in its own static data; the page asks here, once for a type, where it lists
+// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³ (nought where it is nought, as
+// the client has it), or null where the static tables do not know the type. A client has it in its own static data; the page asks here, once for a type, where it lists
 // what the server listed by its own call (the BFF's routes that list items send it beside their answer still).
 // Not a bridge call, and no live session: it cannot vary by player.
 
@@ -3708,6 +3645,8 @@ const TYPE_VOLUMES_PER_REQUEST = 400;
 export interface TypeVolumesResult {
   /** typeID -> m³, or null where the tables have no volume for the type. A type not answered for is absent. */
   readonly volumes: Readonly<Record<number, number | null>>;
+  /** typeID -> its packaged volume in m³ (GetPackagedVolume), or null where it is not known. */
+  readonly packaged: Readonly<Record<number, number | null>>;
 }
 
 export async function loadTypeVolumes(
@@ -3715,6 +3654,7 @@ export async function loadTypeVolumes(
   options: ApiOptions = {},
 ): Promise<TypeVolumesResult> {
   const volumes: Record<number, number | null> = {};
+  const packaged: Record<number, number | null> = {};
   for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
     const data = await getJson(
       `/api/types/volumes?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
@@ -3729,10 +3669,19 @@ export async function loadTypeVolumes(
       if (!Number.isSafeInteger(typeID) || typeID <= 0) {
         continue;
       }
-      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    }
+    const packedRaw =
+      typeof data.packaged === "object" && data.packaged !== null && !Array.isArray(data.packaged)
+        ? (data.packaged as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(packedRaw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+      packaged[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
     }
   }
-  return { volumes };
+  return { volumes, packaged };
 }
 
 // --- R24 slice C: module cycle times (static reference data) ----------------
@@ -3793,6 +3742,95 @@ export async function loadBaseCycleTimes(
 // because only it knows which typeIDs it has already seen on the grid. An
 // EMPTY object for a typeID is a real answer ("the static tables do not know
 // this type") and is cached the same way a null from resolveNames is.
+
+/**
+ * The skills each of these types needs and at what level, and every skill those lead to, as the client's own data has
+ * them (GET /api/client-data/required-skills; evetypes/skills.py get_dogma_required_skills). `available` is false where
+ * the BFF could not read the client's table.
+ */
+export async function getRequiredSkills(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly required: Readonly<Record<number, Readonly<Record<number, number>>>> }> {
+  const data = await getJson(`/api/client-data/required-skills?typeIDs=${typeIDs.join(",")}`, options);
+  const raw =
+    typeof data.required === "object" && data.required !== null && !Array.isArray(data.required)
+      ? (data.required as Record<string, JsonValue>)
+      : {};
+  const required: Record<number, Record<number, number>> = {};
+  for (const [typeKey, skills] of Object.entries(raw)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeof skills !== "object" || skills === null || Array.isArray(skills)) continue;
+    const bySkill: Record<number, number> = {};
+    for (const [skillKey, level] of Object.entries(skills as Record<string, JsonValue>)) {
+      const skillID = Number(skillKey);
+      if (Number.isSafeInteger(skillID) && skillID > 0 && typeof level === "number" && Number.isSafeInteger(level)) bySkill[skillID] = level;
+    }
+    required[typeID] = bySkill;
+  }
+  return { available: data.available === true, required };
+}
+
+/**
+ * Each type's base price and whether it is published, as the client's own data has them (GET
+ * /api/client-data/type-prices: evetypes.GetBasePrice and IsPublished). Null for a type the data lacks; `available`
+ * false where the client's data could not be read.
+ */
+export async function getTypePrices(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly available: boolean;
+  readonly basePrice: Readonly<Record<number, number | null>>;
+  readonly published: Readonly<Record<number, boolean | null>>;
+  /** Each type's portion size (evetypes.GetPortionSize), or null. */
+  readonly portionSize: Readonly<Record<number, number | null>>;
+}> {
+  const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
+  const basePrice: Record<number, number | null> = {};
+  const published: Record<number, boolean | null> = {};
+  for (const [key, value] of Object.entries(record(data.basePrice))) basePrice[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
+  const portionSize: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.portionSize))) portionSize[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize };
+}
+
+/**
+ * The global config the game server gave the pilot's client at its login, for the names asked (GET
+ * /api/bridge/global-config): each value as given, or null. `available` false where the pilot's transport does not
+ * carry it (the web gateway): then the client's defaults stand.
+ */
+export async function getGlobalConfig(
+  names: readonly string[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly values: Readonly<Record<string, JsonValue>> }> {
+  const data = await getJson(`/api/bridge/global-config?names=${encodeURIComponent(names.join(","))}`, options);
+  const values = typeof data.values === "object" && data.values !== null && !Array.isArray(data.values) ? (data.values as Record<string, JsonValue>) : {};
+  return { available: data.available === true, values };
+}
+
+/**
+ * GET /api/types/passive-effects?typeIDs=...: each type's passive effects as the client's dogma static service
+ * filters them (GetPassiveFilteredEffectsByType), or null where the tables do not know the type.
+ */
+export async function loadPassiveEffects(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, readonly number[] | null>>> {
+  if (typeIDs.length === 0) return {};
+  const data = await getJson(`/api/types/passive-effects?typeIDs=${encodeURIComponent(typeIDs.join(","))}`, options);
+  const raw = typeof data.effects === "object" && data.effects !== null && !Array.isArray(data.effects) ? (data.effects as Record<string, JsonValue>) : {};
+  const effects: Record<number, readonly number[] | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    effects[typeID] = Array.isArray(value) ? value.map(Number).filter((id) => Number.isSafeInteger(id)) : null;
+  }
+  return effects;
+}
 
 export async function fetchTypeDogma(
   typeIDs: readonly number[],

@@ -14,7 +14,7 @@ const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
-const { STATION_CAPACITY, capacityAnswer, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
+const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -2229,7 +2229,16 @@ async function boundCall(held, webSessionID, bindSpec, method, args, kwargs, bin
   }
 }
 
-/** A type's own volume from the static tables, or null when they do not know it. */
+/**
+ * A type's own volume in m³ from the static tables, nought where it is nought (956 published types: blueprints,
+ * some modules and more), as the client's GetItemVolume has it; null only where the tables do not know the type.
+ * The hold reckoning (usedOfListed), the routes that list items (readTypeVolumes) and GET /api/types/volumes all go
+ * by it.
+ *
+ * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an enrichment: without it a panel shows "—" and
+ * a bot hands the server the whole stack to judge, both of which are defined behaviours. A static table that cannot
+ * answer therefore says null, never a 500 on a read the player asked for.
+ */
 function staticTypeVolume(typeID) {
   if (typeof staticData.getType !== "function") return null;
   const type = staticData.getType(typeID);
@@ -2281,6 +2290,8 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     const askedOf = (spec, flag) => (spec ? boundCall(held, req.webSessionID, spec, "GetCapacity", [flag], null) : noShip());
     const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
     const packaged = onGamePort ? await clientConstants.packagedVolumes() : null;
+    // A packaged stack's volume, the client's, for the rows (readTypeVolumes): read on either transport where it can be.
+    const packagedForVolumes = packaged ?? await packagedTablesOrNull();
     let hangarList;
     let hangarCap;
     let cargoList;
@@ -2344,13 +2355,13 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
       // Per-type VOLUME (m³) for every type in the hangar/cargo, from static
       // reference data — the SAME read the assets route does, no bridge call and
-      // no new allowlist pair. Volume is a property of the TYPE, not the stack,
-      // so it cannot vary by player. The browser needs it to work out how much of
+      // no new allowlist pair — and a packaged stack's own, the client's
+      // (readTypeVolumes). The browser needs it to work out how much of
       // a stack fits in a hold before it tries the move; absent for a type the
       // static tables do not know (handled as "unknown", never zero).
       volumes: {
-        ...readTypeVolumes(settledValue(hangarList)),
-        ...readTypeVolumes(settledValue(cargoList)),
+        ...readTypeVolumes(settledValue(hangarList), packagedForVolumes),
+        ...readTypeVolumes(settledValue(cargoList), packagedForVolumes),
       },
     });
   } catch (error) {
@@ -3257,7 +3268,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // to hand the WHOLE stack over and let the server judge — and a can
       // holding more than the free space was refused outright, over and over,
       // rather than being drained a load at a time.
-      volumes: readTypeVolumes(list.value.result),
+      volumes: readTypeVolumes(list.value.result, await packagedTablesOrNull()),
     });
   } catch (error) {
     next(error);
@@ -3643,6 +3654,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
         return;
       }
     }
+    const packagedForVolumes = await packagedTablesOrNull();
     res.json({
       ok: true,
       available: true,
@@ -3655,7 +3667,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
           // when a corporation never renamed it. A flag number is never shown.
           name: divisionNames[division] || null,
           list: settled.status === "fulfilled" ? settled.value.result : null,
-          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result) : {},
+          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result, packagedForVolumes) : {},
           error:
             settled.status === "rejected"
               ? String((settled.reason && settled.reason.code) || "READ_FAILED")
@@ -6519,43 +6531,40 @@ function readModuleChargeFits(result) {
  * Per-type volume (m³) for every type in a ListStationItems result.
  *
  * Reads the NAME-KEYED packedrow variant this handler builds. Types the static
- * tables do not know are simply absent from the map — never zero, which the
- * page would have to render as a real measurement.
+ * tables do not know are simply absent from the map; a volume of nought is
+ * there as nought, as the client has it (staticTypeVolume).
  */
-function readTypeVolumes(result) {
-  const rows = result && Array.isArray(result.items) ? result.items : [];
+function readTypeVolumes(result, packaged = null) {
   const volumes = {};
-  for (const row of rows) {
+  for (const row of inventoryListItems(result)) {
     const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
     const typeID = Number(fields && fields.typeID) || 0;
-    if (typeID <= 0 || Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+    if (typeID <= 0) {
       continue;
     }
-    const volume = staticTypeVolume(typeID);
-    if (volume !== null) {
-      volumes[typeID] = volume;
+    if (!Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+      const volume = staticTypeVolume(typeID);
+      if (volume !== null) {
+        volumes[typeID] = volume;
+      }
+    }
+    // A packaged stack takes the client's packaged volume, not its type's own (inventorycommon/util.py GetItemVolume,
+    // GetPackagedVolume): a packaged Rifter 2,500 m³ where an assembled one is 27,289. Given as "p" and the type where
+    // it is another than the type's own, from the client's tables where they could be read.
+    const key = `p${typeID}`;
+    if (packaged && !Number(fields.singleton) && !Object.prototype.hasOwnProperty.call(volumes, key)) {
+      const packed = packagedVolume(typeID, Number(fields.groupID), staticTypeVolume, packaged);
+      if (packed !== null && packed !== undefined && packed > 0 && packed !== volumes[typeID]) {
+        volumes[key] = packed;
+      }
     }
   }
   return volumes;
 }
 
-/**
- * A type's volume in m³ as static data has it, or null where it has none: never nought, which a page would have
- * to show as a real measurement. The routes that list items and GET /api/types/volumes both go by it.
- *
- * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an
- * enrichment: without it a panel shows "—" and a bot hands the server the
- * whole stack to judge, both of which are defined behaviours. A static table
- * that cannot answer therefore says null, never a 500 on a read the
- * player asked for.
- */
-function staticTypeVolume(typeID) {
-  if (typeof staticData.getType !== "function") {
-    return null;
-  }
-  const type = staticData.getType(typeID);
-  const volume = Number(type && type.volume);
-  return Number.isFinite(volume) && volume > 0 ? volume : null;
+/** The client's packaged volumes (src/clientData/clientConstants.js), or null where they cannot be read. */
+function packagedTablesOrNull() {
+  return clientConstants.packagedVolumes().catch(() => null);
 }
 
 /**
@@ -11056,7 +11065,7 @@ async function skillSheetFor(account, characterID, held = null, webSessionID = n
 }
 
 /**
- * A pilot's skill sheet for a read the ACCOUNT makes of it: the hangar's roster, Pilot Training, mining
+ * A pilot's skill sheet for a read the ACCOUNT makes of it: the PI boards, Pilot Training, mining
  * preparation. Such a read does not come from the web session that is flying the pilot, and may be of a pilot
  * nobody is flying.
  *
@@ -11091,41 +11100,6 @@ async function answerWithSkillSheet(res, account, characterID, extra = {}, held 
   res.json({ ok: true, ...extra, skills });
 }
 
-/**
- * The Pilot Hangar's training column, for pilots who are NOT signed in (R107).
- *
- * ⚠ WHY THIS ROUTE EXISTS AT ALL. The hangar used to take training straight out
- * of charUnboundMgr.GetCharacterSelectionData, which carries `skillTypeID`,
- * `toLevel` and `trainingEndTime` per character and is the one call the screen
- * already makes. On this emulator those three fields are ALWAYS null — measured
- * against a live server on 2026-09-09, every pilot on every account, including
- * pilots whose stored queue was active with fifty-odd entries. charService fills
- * them from `buildTrainingSelectionInfo`, which answers off a runtime snapshot
- * the selection path does not have warm, so the tuple is honest about nothing.
- * The hangar rendered that null as IDLE / "not training" and was wrong for every
- * pilot that was in fact training.
- *
- * The gateway's own GET /skills is the authority that does answer:
- * `skillQueueRuntime.getQueueSnapshot`, resolved to plain JSON with the skill
- * NAME and the queue's instants already in epoch milliseconds — and, like the
- * skill panel's read above, it needs no bridge session, because reading what a
- * character is training is not an act of piloting. So this route asks it once
- * per pilot and answers the three values the hangar row prints.
- *
- * OWNERSHIP IS THE GATEWAY'S. `characterIDs` comes from the browser, and every
- * one of them is passed to getSkills with the CALLER's accountID; the gateway's
- * validateOwnedCharacter refuses any character that account does not own. A
- * refused (or failed) id is simply left OUT of the answer rather than reported —
- * see below for why that is the useful shape.
- *
- * A MISSING ROW IS NOT AN IDLE ROW. The client keeps whatever it already had for
- * any id this route does not answer for, so one pilot's failed read can never
- * blank a column that was right a moment ago. Present-with-`skillTypeID: null`
- * is the positive statement "this queue is empty", and only that turns a row
- * IDLE.
- */
-const ROSTER_TRAINING_MAX_IDS = 12;
-
 /** A roster route's `characterIDs`: comma-separated, junk and repeats dropped. */
 function rosterCharacterIDs(value) {
   const characterIDs = [];
@@ -11142,7 +11116,8 @@ function rosterCharacterIDs(value) {
 // GetCharacterSelectionData), read without logging the account in on the game port. A launcher lists an account's
 // characters without a game login; a login closes the account's other client (EveJS's accountLoginClose.js, after
 // sessionMgr.CloseUserSessions), so the hangar opening would put off a retail client playing on the account. Asked of
-// the gateway as the account and no character, as the roster's training read below is.
+// the gateway as the account and no character. What each pilot is training is read from it too, as the client's
+// selection screen reads it (charselData.py GetSkillInTrainingInfo, 185 to 191; web/src/app/knownCharacters.ts).
 app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
   try {
     const outcome = await gateway.callMethod(
@@ -11154,63 +11129,6 @@ app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
       undefined,
     );
     res.json({ ok: true, result: outcome ? outcome.result ?? null : null });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/roster/training", requireAuth, async (req, res, next) => {
-  const characterIDs = rosterCharacterIDs(req.query.characterIDs);
-  if (characterIDs.length === 0) {
-    res.json({ ok: true, training: [] });
-    return;
-  }
-  if (characterIDs.length > ROSTER_TRAINING_MAX_IDS) {
-    res.status(400).json({
-      ok: false,
-      error: "TOO_MANY_CHARACTERS",
-      message: `Ask about at most ${ROSTER_TRAINING_MAX_IDS} pilots at a time.`,
-    });
-    return;
-  }
-  try {
-    // An account holds three pilots, so these go together rather than one after
-    // the other — the hangar already walks its accounts sequentially, and three
-    // reads inside one account do not need the same restraint.
-    const rows = await Promise.all(
-      characterIDs.map(async (characterID) => {
-        let skills = null;
-        try {
-          skills = await accountSkillSheet(req.account.accountID, characterID);
-        } catch (error) {
-          // Not ours, not there, or the gateway stumbled. Say nothing about this
-          // pilot; the client keeps the row it had.
-          void error;
-          return null;
-        }
-        if (!skills) {
-          return null;
-        }
-        const queue = skills.queue && typeof skills.queue === "object" ? skills.queue : null;
-        const entries = queue && Array.isArray(queue.entries) ? queue.entries : [];
-        const head = queue && queue.active === true ? entries[0] || null : null;
-        if (!head) {
-          return { characterID, skillTypeID: null, skillName: null, toLevel: null, endsAtMs: null };
-        }
-        const skillTypeID = Number(head.typeID) || null;
-        const named = Array.isArray(skills.skills)
-          ? skills.skills.find((row) => Number(row.typeID) === skillTypeID)
-          : null;
-        return {
-          characterID,
-          skillTypeID,
-          skillName: named && typeof named.name === "string" ? named.name : null,
-          toLevel: Number(head.toLevel) || null,
-          endsAtMs: Number.isFinite(head.endTimeMs) ? head.endTimeMs : null,
-        };
-      }),
-    );
-    res.json({ ok: true, training: rows.filter((row) => row !== null) });
   } catch (error) {
     next(error);
   }
@@ -12027,7 +11945,7 @@ app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
  * table that was present and empty. Selecting a character is for ACTING on a
  * colony, and that goes through the bot host, never through here.
  *
- * The shape is /api/roster/training's, deliberately: `characterIDs` from the
+ * The shape is deliberately the roster's: `characterIDs` from the
  * browser, each asked with the CALLER's accountID so the gateway refuses what
  * the account does not own, and a refused or failed pilot LEFT OUT — the board
  * keeps the reading it had rather than wiping a farmer's colonies on one bad
@@ -13139,6 +13057,93 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
   }
 });
 
+// The skills each type needs and at what level, as the client's own data has them (evetypes/skills.py
+// get_dogma_required_skills: the requiredSkillsForTypes table), for the types asked and every skill they lead to, so
+// that whoever asks walks them as the client's skill service walks them (skillsvc.py 534 to 595). A type that needs
+// none has {}. `available` is false when the table could not be read (no client install, or no Python to host the
+// client's loader); `required` is then empty. At most 50 types are asked at once.
+app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = await clientBuiltData.table("requiredSkillsForTypes");
+    const required = {};
+    const walk = (typeID) => {
+      if (Object.prototype.hasOwnProperty.call(required, typeID)) return;
+      const row = table && table[typeID] && typeof table[typeID] === "object" ? table[typeID] : {};
+      const skills = {};
+      for (const [skillID, level] of Object.entries(row)) {
+        const skill = Number(skillID);
+        const atLevel = Number(level);
+        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) skills[skill] = atLevel;
+      }
+      required[typeID] = skills;
+      for (const skillID of Object.keys(skills)) walk(Number(skillID));
+    };
+    if (table) for (const typeID of asked.slice(0, 50)) walk(typeID);
+    res.json({ ok: true, available: Boolean(table), required });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A type's base price and whether it is published, as the client's own data has them (evetypes.GetBasePrice and
+// IsPublished: the typeBasePrices and typePublished tables; and GetPortionSize, typePortionSizes, by which the
+// market's average falls back to the base price), for the types asked: what a skill book bought directly
+// costs (characterskills/common/purchase.py get_direct_purchase_price: the base price and 30 in a hundred more) and
+// whether it is sold so (evetypes.IsSkillAvailableForPurchase, with the type list of books for sale). A type the
+// client's data lacks has null. `available` is false when a table could not be read. At most 50 types at once.
+app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const [prices, published, portions] = await Promise.all([
+      clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished"), clientBuiltData.table("typePortionSizes"),
+    ]);
+    const basePrice = {};
+    const isPublished = {};
+    const portionSize = {};
+    for (const typeID of asked.slice(0, 50)) {
+      const price = prices ? Number(prices[typeID]) : NaN;
+      basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
+      isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
+      const portion = portions ? Number(portions[typeID]) : NaN;
+      portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
+    }
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The global config the game server gave the pilot's client as it logged in (machoNet's, which
+// globalConfig/getFunctions.py GetGlobalConfigValue reads: the login's config_vals), for the names asked, each its
+// value as given or null where it gave none. The client goes by these for what the server has switched on or off
+// (IsSkillPurchaseEnabled and the rest). A pilot on the web gateway has none here: `available` false, and whoever
+// asks goes by the client's defaults. At most 16 names, each a plain name.
+app.get("/api/bridge/global-config", requireAuth, (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const names = [...new Set(String((req.query && req.query.names) || "").split(",").filter((name) => /^[A-Za-z0-9_]{1,64}$/.test(name)))].slice(0, 16);
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.globalConfigValues !== "function") {
+    res.json({ ok: true, available: false, values: {} });
+    return;
+  }
+  try {
+    res.json({ ok: true, available: true, values: gamePortPilots.globalConfigValues(names, { userid: held.accountID }, held.bridgeSessionID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -13219,6 +13224,35 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
         owners.push({ key, kind, id });
       }
     }
+    // A named item's own name (the client's cfg.evelocations: a ship, a container, uix.GetItemName): the static
+    // tables have none, and it is asked of the game server as the client asks it, config.GetMultiLocationsEx, by the
+    // game-port transport, which keeps each row it is answered or told of (pilots.js locationsNamed). Off the game
+    // port, or with no pilot on, it is not known, and the page asks again.
+    const namedItems = [];
+    for (const [key, value] of Object.entries(names)) {
+      const separator = key.indexOf(":");
+      if (value === null && key.slice(0, separator) === "evelocation") namedItems.push({ key, id: Number(key.slice(separator + 1)) || 0 });
+    }
+    let locationsAsked = false;
+    if (namedItems.length > 0) {
+      const held = gamePortPilots ? bridgeSessions.get(req.webSessionID) || null : null;
+      if (!held || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...namedItems.map((item) => item.key));
+      } else {
+        locationsAsked = true;
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.locationsNamed(
+            namedItems.map((item) => item.id), { userid: held.accountID }, held.bridgeSessionID));
+          for (const item of namedItems) {
+            const name = named.get(item.id);
+            if (typeof name === "string" && name !== "") names[item.key] = name;
+          }
+        } catch (_error) {
+          unresolved.push(...namedItems.map((item) => item.key));
+        }
+      }
+    }
+
     let ownersAsked = false;
     if (owners.length > 0 && gamePortPilots) {
       const held = bridgeSessions.get(req.webSessionID) || null;
@@ -13246,7 +13280,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       ok: true,
       // Named on the wire so a consumer can see whether a live session was
       // involved at all, rather than inferring it.
-      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : [])].join("+"),
+      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : []), ...(locationsAsked ? ["game-server-locations"] : [])].join("+"),
       count: Object.keys(names).length,
       capped: result.capped,
       limit: result.limit,
@@ -13620,13 +13654,22 @@ app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
       }
     }
     const volumes = {};
+    // And each type's packaged volume (inventorycommon/util.py GetPackagedVolume: the client's own override for the
+    // type, else for its group, else the type's own; src/clientData/holdCapacity.js), where the client's tables can be
+    // read; null where they cannot, or the type is not known. The multibuy window's volume is so reckoned.
+    const packagedTables = await packagedTablesOrNull();
+    const packaged = {};
     for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
       volumes[String(typeID)] = staticTypeVolume(typeID);
+      const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+      const packed = packagedTables && type ? packagedVolume(typeID, Number(type.groupID), staticTypeVolume, packagedTables) : null;
+      packaged[String(typeID)] = typeof packed === "number" && Number.isFinite(packed) ? packed : null;
     }
     res.json({
       ok: true,
       source: "static-data",
       volumes,
+      packaged,
       // Said, not hidden: a type past the limit is not in the answer at all,
       // and a caller that asked for it must not take that for "has none".
       capped: asked.length > TYPE_VOLUME_TYPE_LIMIT,
@@ -13679,6 +13722,31 @@ app.get("/api/types/default-effects", requireAuth, async (req, res, next) => {
       capped: asked.length > OVERLOAD_EFFECT_TYPE_LIMIT,
       limit: OVERLOAD_EFFECT_TYPE_LIMIT,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * A type's passive effects, as the client's dogma static service filters them (GetPassiveFilteredEffectsByType), from
+ * static reference data: what the client asks to tell a booster a skill accelerator (dogma/effects IsBoosterSkillAccelerator).
+ * Null for a type the tables do not know. No gateway call and no live session: it cannot vary by player.
+ */
+const PASSIVE_EFFECT_TYPE_LIMIT = 500;
+app.get("/api/types/passive-effects", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const effects = {};
+    for (const typeID of asked.slice(0, PASSIVE_EFFECT_TYPE_LIMIT)) {
+      effects[String(typeID)] = typeof staticData.getPassiveFilteredEffects === "function" ? staticData.getPassiveFilteredEffects(typeID) : null;
+    }
+    res.json({ ok: true, source: "static-data", effects, capped: asked.length > PASSIVE_EFFECT_TYPE_LIMIT, limit: PASSIVE_EFFECT_TYPE_LIMIT });
   } catch (error) {
     next(error);
   }

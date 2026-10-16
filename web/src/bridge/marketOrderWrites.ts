@@ -167,6 +167,30 @@ export async function placeSellOrder(act: Ask, ask: Ask, sale: SaleOfAStack): Pr
   return { applied, declinedSilently: !applied, charged: iskDelta(balanceBefore, balanceAfter), balanceAfter };
 }
 
+/** One item of the multibuy window's Buy: its type, the price its row found, and how many in all. */
+export interface MultiBuyItem {
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+}
+
+/**
+ * The multibuy window's Buy (marketsvc.BuyMulti, buyMultiFromBase.py 296 to 311): BuyMultipleItems(stationID,
+ * itemList, useCorp), each item a util.KeyVal of the station, type, price rounded to cents, quantity, the least fill
+ * (1) and how far the price is from the type's average, which the game port works out as the client's row does
+ * (src/gamePort/retailCalls.js); not for the corporation. Answers how many orders the server made. Fails as the call
+ * fails.
+ */
+export async function buyMultipleItems(act: Ask, stationID: number, items: readonly MultiBuyItem[]): Promise<number> {
+  const answered = await act("marketProxy", "BuyMultipleItems", [
+    stationID,
+    items.map((item) => ({ stationID, typeID: item.typeID, price: roundPrice(item.price), quantity: item.quantity, minVolume: 1 })),
+    false,
+  ]);
+  const made = Array.isArray(answered) ? answered : answered !== null && typeof answered === "object" && Array.isArray((answered as { items?: unknown }).items) ? (answered as { items: unknown[] }).items : [];
+  return made.length;
+}
+
 /** Gives one of the pilot's own orders a new price, the order named by its number as the pilot's orders have it. */
 export async function modifyOrder(act: Ask, ask: Ask, orderID: string, price: number): Promise<MarketWriteChange> {
   if (!/^\d+$/.test(orderID)) throw new Error("That order could not be identified.");

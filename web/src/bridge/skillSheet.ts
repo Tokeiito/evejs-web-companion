@@ -105,6 +105,14 @@ export function pointsTrainedBy(points: number, startMs: number, nowMs: number, 
   return Math.trunc(((nowMs - startMs) / 60000) * rate + points);
 }
 
+/** The queue's places as answered (a list of entries), in order: each one's skill and the level it trains to. */
+export function queuedLevels(queue: unknown): readonly { readonly typeID: number; readonly toLevel: number }[] {
+  return itemsOf(queue)
+    .filter((entry) => entry !== null && typeof entry === "object" && (entry as { type?: unknown }).type === "object")
+    .map(queueFields)
+    .map((fields) => ({ typeID: number(fields.get("trainingTypeID")) ?? 0, toLevel: number(fields.get("trainingToLevel")) ?? 0 }));
+}
+
 /**
  * skillQueueSvc.SkillInTraining: the type of the queue's first entry, where that entry has an end. Null with an
  * empty queue, a stopped one, or none. `queue` is the queue as answered: a list of entries.
@@ -128,6 +136,28 @@ export function effectiveSkillLevel(skills: unknown, typeID: number): number {
     return fields ? Math.max(number(fields[1]) ?? 0, number(fields[4]) ?? 0) : 0;
   }
   return 0;
+}
+
+/**
+ * Each skill's trained level and points, and its effective level (the larger of the level trained and the level lent,
+ * as effectiveSkillLevel above), out of skillHandler.GetSkills or GetAllSkills as answered, by type.
+ */
+export function skillLevelsOf(
+  skills: unknown,
+): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number }> {
+  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number }>();
+  for (const [key, entry] of entriesOf(skills)) {
+    const typeID = number(key);
+    const fields = skillFields(entry);
+    if (typeID === null || fields === null) continue;
+    const trained = number(fields[1]) ?? 0;
+    levels.set(typeID, {
+      trainedSkillLevel: trained,
+      trainedSkillPoints: number(fields[2]) ?? 0,
+      effectiveSkillLevel: Math.max(trained, number(fields[4]) ?? 0),
+    });
+  }
+  return levels;
 }
 
 /** The types of the skills a list of them names, as answered: those that are a skill's entry at a level. */

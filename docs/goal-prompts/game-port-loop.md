@@ -353,23 +353,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   between the two test pilots (`contracts-stage.js` in the scratchpad shows how: give items,
   `/api/bridge/contracts/create` and `accept` through the gateway BFF), a search differed and
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
-- **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-10, as Test Two,
-  docked): 20 identical, 14 tolerated, nothing moved, nothing divergent, and the tool exits 0.
-  (It was 21 and 13 until the colonies route was read as the client reads it: that row is
-  tolerated now, for the time a colony is reckoned up to.)
-  Anything else is news: read it. The count is that pilot's. As Test Pilot, who is in no
-  alliance, two passes read 23 identical, 10 tolerated and 1 moved (2026-10-09, before that): the alliance's
-  reads are refused alike on both transports, and `/api/bridge/flight/status` had a notice in
-  the game port's answer both times. I took the other pilot's count for a fault and spent a
-  while finding out it was not: say which pilot a pass was of.
+- **What a pass of the parity tool reads when nothing is wrong** (2026-10-16, docked, the tool
+  exiting 0): as Test Two (`test2 140000002`), 19 identical and 15 tolerated; as Test Pilot
+  (`test 140000001`), who is in no alliance, 22 identical and 12 tolerated. Nothing moved,
+  nothing divergent. Anything else is news: read it. The count is the pilot's: I once took the
+  other pilot's for a fault and spent a while finding out it was not, so say which pilot a pass
+  was of. (Test Two's was 20 and 14 from 2026-10-10 until the flight's hull group, the server's
+  sets of rows and a named refusal were read for what they are, on 2026-10-16.)
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock, and the tool leaves the server's own (`serverNowMs`) and a search's own
   time (`searchTime`) out; a count of none against two is not. A read that takes what it reads
-  (`skillHandler.GetSkillChangesForISIS`) reads "moved" for whichever transport asks second:
-  run the pass again. And the first route of a pass, `/api/bridge/flight/status`, now and then
-  reads "moved" with a count of notices: a notice that reached the game port's session at login
-  (`OnModuleAttributeChanges`, seen 2026-10-09) goes out with the first answer.
+  (`skillHandler.GetSkillChangesForISIS`, which this server forgets at the fourth asking) is
+  read as `taken-by-the-first-reader`, not moved. The notices a session gets at login are
+  taken before the first route (the pilot's state read until two reads bring none) and printed
+  on the transport's line, so they no longer ride the first route's answer: the game port gets
+  `OnModuleAttributeChanges` twice and `OnServerBrainUpdated`, the gateway none.
 - **Print the whole of a pass, and make the first pass after a restart one of the two.** A pass
   read "1 moved" straight after the game-port BFF was restarted, and I had printed its last
   line only. It was `searchTime`, which the tool was meant to leave out and did not: the

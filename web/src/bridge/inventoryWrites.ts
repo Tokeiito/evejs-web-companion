@@ -239,6 +239,16 @@ export class TrashRefusedError extends Error {
  * Destroys items that lie in one place, on the inventory manager of where the pilot is, naming the place as the
  * client names it (`locationID`). Fails where the server answers refusals, with the server's own words.
  */
+/**
+ * Names an item, on the inventory manager of where the pilot is (menuFunctions.SetName: SetLabel(itemID, name), its
+ * line breaks made spaces). The server tells the name back as the item's row of cfg.evelocations. Fails as the call
+ * fails.
+ */
+export async function setLabel(act: Ask, itemID: number, name: string): Promise<void> {
+  if (!whole(itemID)) throw new Error("Which item that is is not known.");
+  await act("invbroker", "SetLabel", [itemID, name.replace(/\n/g, " ")]);
+}
+
 export async function trashItems(act: Ask, itemIDs: readonly number[], locationID: number): Promise<void> {
   if (itemIDs.length === 0 || !itemIDs.every(whole)) throw new Error("At least one item is required.");
   if (!whole(locationID)) throw new Error("Where those items lie is not known.");

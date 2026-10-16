@@ -26,7 +26,8 @@ import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/trave
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
-import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, slotFlagOf } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
+import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -40,7 +41,15 @@ import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInv
 import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
+  averagePriceOf,
+  bestAskInRange,
+  bestAskInStation,
+  RANGE_REGION,
+  RANGE_SOLAR_SYSTEM,
+  RANGE_STATION,
   decodeEscrow,
+  orderDelta,
+  priceDelta,
   decodeOrderBook,
   decodeOwnOrders,
   decodePriceHistory,
@@ -169,9 +178,17 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
+import {
+  allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
+  type RequiredSkills, type SkillLevelBox, type SkillRowMark,
+} from "../bridge/missingSkills.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
-import { applyFreePoints, pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
+import {
+  applyFreePoints, applyFreePointsToSkills, freePointsAppliedToSkills, pauseTraining, purchaseSkills, saveQueue, type QueuePlace, type SkillLevel,
+} from "../bridge/skillWrites.ts";
 import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { setSafetyLevel as setSafetyLevelCall } from "../bridge/crimewatchWrites.ts";
 import { acceptContract as acceptContractCall } from "../bridge/contractWrites.ts";
@@ -220,6 +237,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -323,7 +341,7 @@ import {
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
-import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
+import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
@@ -459,8 +477,9 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
+  buyMultipleItems,
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
   placeBuyOrder as placeBuyOrderCall,
@@ -542,7 +561,7 @@ import {
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
-import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
+import { assembleShip as assembleShipCall, boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
@@ -867,6 +886,136 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+}
+
+/** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
+export interface ShipNameAsk {
+  readonly n: number;
+  /** The ship's type: the window's hint is its name and the pilot's (UI/Inflight/OwnerAndShip). */
+  readonly typeID: number;
+  /** The name the field starts with: the ship's own for Change Name, none for an assembly. */
+  readonly currentName: string;
+  /** Whether the window offers Do Not Ask Again (show_suppress: on an assembly, not on Change Name). */
+  readonly suppress: boolean;
+}
+
+/** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
+export interface SkillsRequired {
+  readonly typeID: number;
+  /** [skill, level], as the window lists them (skillsvc.GetSkillsMissingToUseItemRecursive). */
+  readonly skills: readonly (readonly [number, number])[];
+  /** skillsvc.GetTotalMissingSkillLevelsToUseItem. */
+  readonly totalMissingLevels: number;
+  /** How many of the skills listed the pilot has not even lapsed (GetSkillBooksMissingFromList). */
+  readonly missingBooks: number;
+  /** Each skill listed, its row's mark (RequiredSkillRow) and its bar's five boxes; none where they were not read. */
+  readonly rows: readonly SkillsRequiredRow[];
+  /** The pilot's clone grade as the window goes by it: an omega's (or one not told), or an alpha's. */
+  readonly omega: boolean;
+  /**
+   * AddTrainingTimeForType: the time to train what the type needs, in ticks, skill accelerators left out (an alpha's,
+   * whose omega time is half of it); null where it is nought or was not reckoned, and then no row is shown.
+   */
+  readonly trainingTicks: number | null;
+  /** SkillActionContainer's figure: the points every level to train costs. Null where it was not reckoned. */
+  readonly skillPointsRequired: number | null;
+  /**
+   * The action (AddSkillAction): Train Skills, with the levels of the skills held it adds and whether the queue has
+   * them all already; "buy" where a book is not held (Buy and train); null where the type's needs are met.
+   */
+  readonly action:
+    | { readonly kind: "train"; readonly levels: readonly (readonly [number, number])[]; readonly queued: boolean }
+    | { readonly kind: "buy"; readonly levels: readonly (readonly [number, number])[]; readonly missing: readonly number[] }
+    | null;
+  /** Each skill listed: whether its book is sold (evetypes.IsSkillAvailableForPurchase) and its base price (or null). */
+  readonly books: Readonly<Record<number, { readonly sold: boolean; readonly basePrice: number | null }>>;
+  /** The pilot's free points, as the skill service has them (GetFreeSkillPoints), when the window opened. */
+  readonly freeSkillPoints: number;
+  /**
+   * The apply-points button's levels (SkillActionContainer: each level to train of the skills held), and whether it
+   * offers them where the pilot has free points (offer_injection: no book is missing).
+   */
+  readonly applyLevels: readonly SkillLevel[];
+  readonly offerInjection: boolean;
+}
+
+/** One row of the Apply Skill Points window (ApplySkillPointsListEntry): a skill at a level and its two gauges. */
+export interface ApplyPointsEntry {
+  readonly skill: number;
+  readonly level: number;
+  /** How far toward the level it is trained now (GetProgress), nought to one. */
+  readonly progress: number;
+  /** How far toward it with the free points (AdjustProgressWithFreePoints), nought to one. */
+  readonly progressWithFreePoints: number;
+  /** The training time the points save, in ticks (GetTimeSaved); null where it could not be reckoned. */
+  readonly timeSavedTicks: number | null;
+}
+
+/** The client's Apply Skill Points window open now (applySkillPointsWindow.py). */
+export interface ApplyPointsAsk {
+  readonly n: number;
+  readonly entries: readonly ApplyPointsEntry[];
+  /** The points the window would use (skillPointsToBeUsed). */
+  readonly points: number;
+  /** Whether Confirm is offered (the asking answered any points). */
+  readonly canConfirm: boolean;
+  /** Spent: the points applied, the buttons one Close. */
+  readonly finished: boolean;
+}
+
+/**
+ * The client's books window open now (MissingSkillbooksWnd): the books it lists as sold (Buy and Inject) and as not,
+ * and what those sold cost (its price label). The sold ones are gone from it once bought.
+ */
+/** A row of the client's multibuy window (buytItemEntry.BuyItemContainer): a type, how many, and its best price. */
+export interface MultiBuyRow {
+  readonly typeID: number;
+  /** How many in each order (the row's quantity field). */
+  readonly qty: number;
+  /** GetBestAskPriceInStationAndNumberOrders for qty times the orders: the price, null where the station's orders do not hold it. */
+  readonly price: number | null;
+  readonly numOrders: number | null;
+  /** The price being read again (isUpdating). */
+  readonly loading: boolean;
+  /** The type's average price over the week (the row's averagePrice: marketQuote.GetAveragePrice); null until read. */
+  readonly average: number | null;
+  /**
+   * The cheapest single unit at the window's station, in its system and in the region (the row's delta tooltip:
+   * GetBestMatchText, marketQuote.GetBestAskInRange for each range); null where there is none, or nowhere to buy.
+   */
+  readonly bestInStation: number | null;
+  readonly bestInSystem: number | null;
+  readonly bestInRegion: number | null;
+  /** inventorycommon/util.py GetPackagedVolume for the type, in m³ (the total's tooltip); null where it is not known. */
+  readonly packagedVolume: number | null;
+}
+
+/** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
+export interface MultiBuyAsk {
+  readonly n: number;
+  /** Where it buys: the station or structure the pilot is docked in (its station list's current one); null with none. */
+  readonly stationID: number | null;
+  /** The number of orders (orderMultiplierEdit): each row's quantity is bought this many times over. */
+  readonly multiplier: number;
+  readonly rows: readonly MultiBuyRow[];
+  /** A buy under way. */
+  readonly busy: boolean;
+}
+
+export interface SkillBooksAsk {
+  readonly n: number;
+  readonly available: readonly number[];
+  readonly unavailable: readonly number[];
+  /** The sum of each sold book's direct price; null where a price is not known. */
+  readonly cost: number | null;
+}
+
+/** A skill of the skill requirement window: its level, its mark and its five boxes. */
+export interface SkillsRequiredRow {
+  readonly skill: number;
+  readonly level: number;
+  readonly mark: SkillRowMark;
+  readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
 }
 
 /** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
@@ -2054,6 +2203,46 @@ export interface AppFlow {
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
   answerQuantity(n: number, quantity: number | null): void;
+  /** The client's skill requirement window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly skillsRequired: ReadableSignal<SkillsRequired | null>;
+  /** The window put away (its button). */
+  dismissSkillsRequired(): void;
+  /** Its Train Skills (AddToQueueButton): the window put away, and the levels added to the queue's end and committed started. */
+  trainSkillsRequired(): Promise<void>;
+  /**
+   * Its Buy and train (BuyAndTrainButton): the window put away, the books window opened for the books not held, and
+   * the levels queued as far as the books were bought.
+   */
+  buySkillsRequired(): Promise<void>;
+  /** The client's books window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly skillBooksAsked: ReadableSignal<SkillBooksAsk | null>;
+  /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
+  answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
+  /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly multiBuyAsked: ReadableSignal<MultiBuyAsk | null>;
+  /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
+  openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
+  /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
+  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void>;
+  /** Its Buy, or Cancel. */
+  answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void>;
+  /**
+   * The requirement window's apply-points button where the pilot has free points (ApplySkillPointsButton.ClickFunc):
+   * the window put away and the Apply Skill Points window opened for its levels.
+   */
+  applySkillPointsRequired(): Promise<void>;
+  /** The client's Apply Skill Points window open now; null with none. */
+  readonly applyPointsAsked: ReadableSignal<ApplyPointsAsk | null>;
+  /** Its answers: Confirm (the points spread), or Cancel and Close (put away). */
+  answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void>;
+  /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
+  /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
+  answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
+  /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
+  assembleShip(shipID: number, board: boolean): Promise<void>;
+  /** An assembled ship of the pilot's renamed, as the client's Change Name does: its name asked, then named. */
+  renameShip(shipID: number): Promise<void>;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -3210,6 +3399,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         );
       }
       return;
+    }
+    // godma.OnModuleAttributeChange and its batch, and those riding an OnMultiEvent: the active ship's attributes
+    // as the server tells of each change, and the Fitting window's figures made of them again. A module put online
+    // is told of at the server's next tick, after the re-read of the fit on the call's answer
+    // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
+    applyShipAttributeChanges(method, args);
+    // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a named item's or a place's row as it is now, its
+    // name the second column: the names kept of named items follow it (the panel's ships, the Fitting window's title).
+    if (method === "OnCfgDataChanged" && args[0] === "evelocations") {
+      const row = Array.isArray(args[1]) ? (args[1] as readonly unknown[]) : isListValue(args[1]) ? args[1].items : [];
+      const itemID = Number(unwrapLong(row[0]) ?? NaN);
+      if (Number.isSafeInteger(itemID) && itemID > 0 && typeof row[1] === "string") {
+        const key = nameKey("evelocation", itemID);
+        nameCache.set(key, row[1]);
+        store.apply({ type: "names/resolved", entries: { [key]: row[1] } });
+      }
     }
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
@@ -4697,6 +4902,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R12 Ship fitting ----------------------------------------------------
 
+  /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
+  function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
+    const current = store.fitting.get();
+    if (current.activeShipID === null || current.shipAttributes === undefined) return;
+    const changed = decodeItemAttributeChanges(method, args, current.activeShipID);
+    if (changed === null) return;
+    const attributes = new Map<number, number | null>(
+      Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
+    );
+    for (const [attributeID, value] of changed) attributes.set(attributeID, value);
+    store.apply({
+      type: "fitting/ship-attributes",
+      shipID: current.activeShipID,
+      shipAttributes: Object.fromEntries(attributes),
+      resources: resourcesOf(attributes),
+      stats: deriveShipStats(attributes),
+    });
+  }
+
   // Load the Fitting panel. The slot read and the resource read are
   // INDEPENDENT on the BFF, so each keeps its own error and a failed resource
   // read still shows the fit (and vice versa). A lost session unwinds to
@@ -4718,6 +4942,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
       chargeFits: decodeChargeFits(reads.chargeFits),
       resources: decodeResources(reads.shipInfo),
+      shipAttributes: Object.fromEntries(decodeShipAttributes(reads.shipInfo)),
       // R21 — the derived statistics come off the SAME ShipGetInfo attribute
       // map as the resource bars. No extra read, and nothing re-simulated:
       // the server already applied the ship's active-module effects before it
@@ -6130,6 +6355,651 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function answerQuantity(n: number, quantity: number | null): void {
     if (quantityAskedSignal.get()?.n !== n || quantityAnswer === null) return;
     quantityAnswer(quantity);
+  }
+
+  // The client's skill requirement window (skillRequirementDialog.py), one at a time.
+  const skillsRequiredSignal = createSignal<SkillsRequired | null>(null);
+
+  // The client's ship naming window (shipNameDialog.py, prompt_rename_ship), one at a time; a newer one ends it.
+  const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
+  // The client's books window (MissingSkillbooksWnd), one at a time; and what it has bought, which its end answers.
+  const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
+  let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
+  let skillBooksPurchased: number[] = [];
+  // The client's multibuy window, one at a time, and the sell orders read for its types (the quote service's order
+  // cache), kept for as long as it is open.
+  const multiBuyAskedSignal = createSignal<MultiBuyAsk | null>(null);
+  const multiBuyBooks = new Map<number, ReturnType<typeof decodeOrderBook>["sells"]>();
+  // And each type's average over the week, as its row reads it as it is made.
+  const multiBuyAverages = new Map<number, number>();
+  // And each type's packaged volume (GetPackagedVolume), read once for the window.
+  const multiBuyVolumes = new Map<number, number | null>();
+
+  /**
+   * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
+   * with its arguments and made plain; the page's own words where it has none.
+   */
+  function templateWords(label: string, args: Readonly<Record<string, string | number>>, own: string): string {
+    const template = store.words.get().templates[label];
+    if (typeof template !== "string" || template === "") return own;
+    return plainText(formatTemplate(template, args, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) }));
+  }
+
+  /**
+   * The type's average price over the week as the client's row has it (buySellItemContainerBase: marketQuote
+   * .GetAveragePrice): its price history's two halves joined (GetHistoryRowList) and averaged; the base price over
+   * the portion size where nothing traded. Null where the history could not be read.
+   */
+  async function averagePriceFor(typeID: number): Promise<number | null> {
+    const kept = multiBuyAverages.get(typeID);
+    if (kept !== undefined) return kept;
+    try {
+      const [old, fresh, facts] = await Promise.all([
+        bridgeAsk("marketProxy", "GetOldPriceHistory", [typeID]),
+        bridgeAsk("marketProxy", "GetNewPriceHistory", [typeID]),
+        api.getTypePrices([typeID], callOptions).catch(() => null),
+      ]);
+      const now = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      const average = averagePriceOf(joinPriceHistory(decodePriceHistory(old), decodePriceHistory(fresh), now), now, {
+        basePrice: facts?.basePrice[typeID] ?? null,
+        portionSize: facts?.portionSize[typeID] ?? null,
+      });
+      multiBuyAverages.set(typeID, average);
+      return average;
+    } catch {
+      return null;
+    }
+  }
+  // The client's Apply Skill Points window, one at a time, and its levels.
+  const applyPointsAskedSignal = createSignal<ApplyPointsAsk | null>(null);
+  let applyPointsLevels: readonly SkillLevel[] = [];
+  /** What the requirement window last read of the pilot's skills, which its apply-points button's window goes by. */
+  let skillWindowFacts: {
+    readonly rank: (skill: number) => number | null;
+    readonly pointsNow: (skill: number) => number;
+    readonly trainingRate: (skill: number) => number | null;
+    readonly mine: ReturnType<typeof skillLevelsOf>;
+    readonly queued: readonly { readonly typeID: number; readonly toLevel: number }[];
+  } | null = null;
+  let shipNameAnswer: ((name: string | null) => void) | null = null;
+  /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
+  const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
+
+  /** Asks the client's ship naming window (prompt_rename_ship): the name on Confirm, null on Later. */
+  function askShipName(typeID: number, currentName = "", suppress = true): Promise<string | null> {
+    shipNameAnswer?.(null);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      shipNameAnswer = (name) => {
+        shipNameAnswer = null;
+        shipNameAskedSignal.set(null);
+        resolve(name);
+      };
+      shipNameAskedSignal.set({ n, typeID, currentName, suppress });
+    });
+  }
+
+  function answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void {
+    if (shipNameAskedSignal.get()?.n !== n || shipNameAnswer === null) return;
+    // The window's checkbox is the pilot's setting from the moment it is ticked (SuppressSettingBool).
+    if (doNotAskAgain) keepQuestionAnswer(SHIP_NAME_SUPPRESS, "yes");
+    shipNameAnswer(name);
+  }
+
+  /**
+   * A ship boarded as the client boards one (station.TryActivateShip, base.py 214 to 235): where the pilot lacks a
+   * skill its type needs, nothing is asked of the server and the skill requirement window says which.
+   */
+  async function boardShipChecked(shipID: number, typeID: number | null): Promise<void> {
+    if (typeID !== null) {
+      const missing = await skillsMissingFor(typeID).catch(() => null);
+      if (missing !== null) {
+        skillsRequiredSignal.set(missing);
+        return;
+      }
+    }
+    await runMutation(() => boardShipNow(shipID));
+    await refreshActiveShipViews();
+  }
+
+  /**
+   * What the pilot is missing to fly a ship of this type, as the client's dogma location reckons it before it boards
+   * (GetMissingSkills), with what its window lists (bridge/missingSkills.ts). Null where nothing is missing, and where
+   * the client's table could not be read: then the server is asked, as before.
+   */
+  async function skillsMissingFor(typeID: number): Promise<SkillsRequired | null> {
+    const [needs, skills, allSkills] = await Promise.all([
+      api.getRequiredSkills([typeID], callOptions),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    if (!needs.available) return null;
+    const mine = skillLevelsOf(skills);
+    if (missingSkills(typeID, needs.required, mine).size === 0) return null;
+    const lapsed = skillLevelsOf(allSkills);
+    const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
+    const rest = await skillWindowRest(typeID, needs.required, skills, allSkills, listed).catch(() => null);
+    return {
+      typeID,
+      skills: listed,
+      totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
+      missingBooks: missingSkillBooks(listed, lapsed).length,
+      rows: rest?.rows ?? [],
+      omega: rest?.omega ?? true,
+      trainingTicks: rest?.trainingTicks ?? null,
+      skillPointsRequired: rest?.skillPointsRequired ?? null,
+      action: rest?.action ?? null,
+      books: rest?.books ?? {},
+      freeSkillPoints: rest?.freeSkillPoints ?? 0,
+      applyLevels: rest?.applyLevels ?? [],
+      offerInjection: rest?.offerInjection ?? false,
+    };
+  }
+
+  /** dogma/const.py attributeSkillTimeConstant: a skill's rank. */
+  const ATTRIBUTE_SKILL_TIME_CONSTANT = 275;
+  /** characterskills/attribute.py ATTRIBUTEBONUS_BY_ATTRIBUTEID: each of the pilot's attributes, and a booster's bonus to it. */
+  const ATTRIBUTE_BONUS_BY_ATTRIBUTE: ReadonlyMap<number, number> = new Map([[167, 178], [166, 177], [168, 179], [165, 176], [164, 175]]);
+  /** evetypes/const.py TYPE_LIST_SKILLS_AVAILABLE_FOR_PURCHASE: the books a pilot can buy (evetypes.IsSkillAvailableForPurchase). */
+  const SKILLS_FOR_PURCHASE_LIST = 93;
+  /** clonegrade/const.py ALPHA_TRAINING_MULTIPLIER */
+  const ALPHA_TRAINING_MULTIPLIER = 0.5;
+
+  /**
+   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
+   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
+   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
+   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
+   *
+   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
+   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
+   * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
+   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's restricted skills and levels are not
+   * read (NeedsOmegaUpgrade, the bar's restricted boxes): the window goes as for a pilot with none.
+   */
+  async function skillWindowRest(
+    typeID: number,
+    required: RequiredSkills,
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+    listed: readonly (readonly [number, number])[],
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection">> {
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
+    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes, lists] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetAttributes", []),
+      bridgeAsk("skillHandler", "GetBoosters", []),
+      api.fetchTypeDogma(skillTypes, [ATTRIBUTE_SKILL_TIME_CONSTANT, ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY], callOptions),
+      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
+    ]);
+    // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
+    // client's data the list alone goes.
+    const prices = await api.getTypePrices(listed.map(([skill]) => skill), callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>> }));
+    const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
+    const queued = queuedLevels(queue);
+    const training = skillInTraining(queue);
+    // The boosters answer is keyed by the booster's type (attributes.py 93 to 95), and only the skill accelerators count.
+    const boostersHeld = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const boosterEffects = boostersHeld.length === 0 ? {} : await api.loadPassiveEffects(boostersHeld, callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>));
+    const boosterTypes = boostersHeld.filter((booster) => isBoosterSkillAccelerator(boosterEffects[booster]));
+    const boosterBonuses = boosterTypes.length === 0 ? {} : await api.fetchTypeDogma(boosterTypes, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
+    const attributes = new Map(readDictPairs(attributesAnswer).map(([key, value]) => [Number(key), Number(value)] as const));
+    const grade = store.station.get().cloneGrade;
+    const omega = grade !== CLONE_GRADE_ALPHA;
+    const graded = (value: number): number => (omega ? value : value * ALPHA_TRAINING_MULTIPLIER);
+    /** skillsvc.GetCharacterAttribute(attributeID, includeBoosters=False) */
+    const characterAttribute = (attributeID: number): number | null => {
+      const value = attributes.get(attributeID);
+      if (value === undefined || !Number.isFinite(value)) return null;
+      const bonusID = ATTRIBUTE_BONUS_BY_ATTRIBUTE.get(attributeID);
+      const bonus = boosterTypes.reduce((sum, booster) => sum + (bonusID === undefined ? 0 : boosterBonuses[booster]?.[bonusID] ?? 0), 0);
+      return graded(value) - graded(bonus);
+    };
+    const rank = (skill: number): number | null => typeAttributes[skill]?.[ATTRIBUTE_SKILL_TIME_CONSTANT] ?? null;
+    const rate = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        return attributeID === undefined ? null : characterAttribute(attributeID);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    // The points each skill has now, the one in training at its true rate since it began (the Skills window's sheet).
+    const sheet = buildSkillSheet({
+      characterID: 0,
+      characterName: "",
+      skills: skillsAnswer,
+      allSkills: allSkillsAnswer,
+      queue,
+      freeSkillPoints: 0,
+      attributes: attributesAnswer,
+      now: serverNow,
+      typeName: () => null,
+      typeGroupName: () => null,
+      typeAttribute: (skill, attributeID) => typeAttributes[skill]?.[attributeID],
+    }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
+    const pointsNow = (skill: number): number =>
+      sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
+
+    const rows = listed.map(([skill, level]) => ({
+      skill,
+      level,
+      mark: skillRowMark(skill, level, lapsed, lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)),
+      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill)),
+    }));
+    const ticks = trainingTimeLeft(typeID, required, mine, lapsed, { rank, rate, pointsNow });
+    const books = Object.fromEntries(listed.map(([skill]) => [skill, {
+      sold: lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true),
+      basePrice: prices.basePrice[skill] ?? null,
+    }]));
+    let action: SkillsRequired["action"] = null;
+    let points: number | null = null;
+    let applyLevels: readonly SkillLevel[] = [];
+    let offerInjection = false;
+    if (!isSkillRequirementMet(typeID, required, mine)) {
+      const notHeld = skillsNotHeld(listed, mine);
+      const levels = levelsToTrain(listed, mine);
+      points = skillPointsRequired(levels, mine, rank);
+      const trainable = levels.filter(([skill]) => !notHeld.includes(skill));
+      action = notHeld.length > 0
+        ? { kind: "buy", levels, missing: notHeld }
+        : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, queued) };
+      applyLevels = trainable;
+      offerInjection = notHeld.length === 0;
+    }
+    // What the Apply Skill Points window goes by: the training at the pilot's own rate, boosters and all (the skill
+    // service's training time calculator), for the time its points save.
+    const trainingRate = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        const value = attributeID === undefined ? undefined : attributes.get(attributeID);
+        return value === undefined || !Number.isFinite(value) ? null : graded(value);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    skillWindowFacts = { rank, pointsNow, trainingRate, mine, queued };
+    const free = Number(Array.isArray(queueAnswer) ? queueAnswer[1] : 0);
+    return {
+      rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books,
+      freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0, applyLevels, offerInjection,
+    };
+  }
+
+  /**
+   * The requirement window's apply-points button, with free points (ApplySkillPointsButton.ClickFunc): the window put
+   * away (its on_click), and the Apply Skill Points window opened for the button's levels
+   * (ApplySkillPointsWindow.Open(skillTypeIDsAndLevels=...)), as it reckons its rows: the points the handler would
+   * spread (GetFreeSkillPointsAppliedToSkills), each skill's level and progress with them
+   * (skillQueueSvc.GetSkillLevelAndProgressWithFreePoints), each row's progress now (GetProgress: of the level in
+   * training, the points trained of it so far), and the time saved (GetTimeSaved: the gain times the level's
+   * training time from its start at the pilot's rate).
+   */
+  async function applySkillPointsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    const facts = skillWindowFacts;
+    if (open === null || facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
+    const levels = open.applyLevels;
+    const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, levels);
+    const reached = new Map<number, readonly [number, number]>();
+    for (const [skill, points] of pointsBySkill) {
+      const rank = facts.rank(skill);
+      if (rank === null) continue;
+      const total = (facts.mine.get(skill)?.trainedSkillPoints ?? 0) + points;
+      reached.set(skill, [skillLevelRaw(total, rank), levelProgress(total, rank)]);
+    }
+    const entries: ApplyPointsEntry[] = [];
+    for (const [skill, level] of levels) {
+      if (entries.some((entry) => entry.skill === skill && entry.level === level)) continue;
+      const [levelReached, withPoints] = reached.get(skill) ?? [0, 0];
+      // AdjustProgressWithFreePoints: the level reached is whole; one below it, the progress made toward it.
+      const progressWithFreePoints = levelReached >= level ? 1.0 : levelReached + 1 < level ? 0.0 : withPoints;
+      const rank = facts.rank(skill);
+      // GetProgress: the level in training (one above the level trained, first in the queue), how far it is.
+      const inTraining = (facts.mine.get(skill)?.trainedSkillLevel ?? 0) === level - 1
+        && facts.queued[0]?.typeID === skill && facts.queued[0]?.toLevel === level;
+      const progress = inTraining && rank !== null ? levelProgress(facts.pointsNow(skill), rank) : 0;
+      const rate = facts.trainingRate(skill);
+      const levelTicks = rank === null || rate === null || !(rate > 0)
+        ? null
+        : ((skillPointsForLevel(rank, level) - skillPointsForLevel(rank, level - 1)) / rate) * 600_000_000;
+      entries.push({ skill, level, progress, progressWithFreePoints, timeSavedTicks: levelTicks === null ? null : (progressWithFreePoints - progress) * levelTicks });
+    }
+    applyPointsLevels = levels;
+    dialogsSaidCount += 1;
+    const points = [...pointsBySkill.values()].reduce((sum, each) => sum + each, 0);
+    applyPointsAskedSignal.set({ n: dialogsSaidCount, entries, points, canConfirm: pointsBySkill.size > 0, finished: false });
+  }
+
+  /**
+   * The Apply Skill Points window's answers. Confirm (ApplySkillPoints): skillQueueSvc.ApplyFreeSkillPointsToSkills,
+   * the points asked again and spread where any, then the rows at their new progress and the buttons one Close.
+   * Cancel and Close: put away. The Skills window's sheet read again after the spreading.
+   */
+  /**
+   * multiBuyUtil.BuyMultipleTypesWithQty: the multibuy window opened with these types and quantities, or, where it is
+   * open, each added to it (AddToOrder: a type already in it has the quantity added to its row). Where the window
+   * opens it buys at the station or structure the pilot is docked in (LoadStationOptions: session.stationid first).
+   * Each row's price is then read (GetBestPrice).
+   */
+  async function openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void> {
+    const open = multiBuyAskedSignal.get();
+    const inventory = store.inventory.get();
+    const base: MultiBuyAsk = open ?? {
+      n: (dialogsSaidCount += 1),
+      stationID: inventory.stationID ?? inventory.structureID ?? null,
+      multiplier: 1,
+      rows: [],
+      busy: false,
+    };
+    if (open === null) {
+      multiBuyBooks.clear();
+      multiBuyAverages.clear();
+      multiBuyVolumes.clear();
+    }
+    const rows = [...base.rows];
+    for (const [typeID, qty] of wanted) {
+      const at = rows.findIndex((row) => row.typeID === typeID);
+      if (at >= 0) rows[at] = { ...rows[at]!, qty: rows[at]!.qty + qty, loading: true };
+      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume: null });
+    }
+    multiBuyAskedSignal.set({ ...base, rows });
+    await multiBuyPrices();
+  }
+
+  /** Each row's best price at the window's station for its quantity times the orders (BuyItemContainer.GetBestPrice). */
+  async function multiBuyPrices(): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null) return;
+    const priced = await Promise.all(asked.rows.map(async (row) => {
+      const packagedVolume = await multiBuyVolumeOf(row.typeID);
+      if (asked.stationID === null) return { ...row, price: null, numOrders: null, loading: false, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume };
+      let sells = multiBuyBooks.get(row.typeID);
+      if (sells === undefined) {
+        sells = await bridgeAsk("marketProxy", "GetOrders", [row.typeID]).then((answer) => decodeOrderBook(answer).sells).catch(() => []);
+        multiBuyBooks.set(row.typeID, sells);
+      }
+      const best = bestAskInStation(sells, asked.stationID, row.qty * asked.multiplier);
+      const average = row.average ?? await averagePriceFor(row.typeID);
+      // The window's station is the one the pilot is docked in, in the pilot's system.
+      const system = store.flight.get().status?.solarSystemID ?? null;
+      const cheapest = (range: number): number | null => { const order = bestAskInRange(sells!, asked.stationID!, system, range); return order === null ? null : Number(order.price); };
+      return {
+        ...row, price: best.price, numOrders: best.numOrders, loading: false, average,
+        bestInStation: cheapest(RANGE_STATION), bestInSystem: cheapest(RANGE_SOLAR_SYSTEM), bestInRegion: cheapest(RANGE_REGION), packagedVolume,
+      };
+    }));
+    const now = multiBuyAskedSignal.get();
+    if (now === null || now.n !== asked.n) return;
+    // A row edited while its price was read keeps its own quantity, and is read again with it.
+    const stale = now.rows.some((row) => { const was = asked.rows.find((each) => each.typeID === row.typeID); return was === undefined || was.qty !== row.qty; }) || now.multiplier !== asked.multiplier;
+    multiBuyAskedSignal.set({ ...now, rows: now.rows.map((row) => { const fresh = priced.find((each) => each.typeID === row.typeID); return fresh && fresh.qty === row.qty && !stale ? fresh : row; }) });
+    if (stale) await multiBuyPrices();
+  }
+
+  /** A type's packaged volume for the multibuy window, asked once (GET /api/types/volumes); null where it is not known. */
+  async function multiBuyVolumeOf(typeID: number): Promise<number | null> {
+    if (multiBuyVolumes.has(typeID)) return multiBuyVolumes.get(typeID) ?? null;
+    const volume = await api.loadTypeVolumes([typeID], callOptions).then((answer) => answer.packaged[typeID] ?? null).catch(() => null);
+    multiBuyVolumes.set(typeID, volume);
+    return volume;
+  }
+
+  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n || asked.busy) return;
+    if ("remove" in edit) {
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.filter((row) => row.typeID !== edit.remove) });
+      return;
+    }
+    if ("multiplier" in edit) {
+      // orderMultiplierEdit: a whole number from 1 to 1000.
+      const multiplier = Math.min(1000, Math.max(1, Math.trunc(edit.multiplier) || 1));
+      multiBuyAskedSignal.set({ ...asked, multiplier, rows: asked.rows.map((row) => ({ ...row, loading: true })) });
+    } else {
+      // The row's quantity field: a whole number, 1 at least.
+      const qty = Math.max(1, Math.trunc(edit.qty) || 1);
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.map((row) => (row.typeID === edit.typeID ? { ...row, qty, loading: true } : row)) });
+    }
+    await multiBuyPrices();
+  }
+
+  /**
+   * The multibuy window's Buy (_PerformTrade, 296 to 311): the rows with a price, each at it rounded to cents and its
+   * quantity times the orders (GetValidatedItem); none is the client's uiwarning03. Then
+   * GetMarketProxy().BuyMultipleItems(station, items, useCorp), and the window holds only the rows that had no price
+   * (CreateNewBuyOrder), the orders one again; with none left it is put away. Cancel puts it away.
+   */
+  async function answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    if (answer === "cancel") {
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    if (asked.busy || asked.rows.some((row) => row.loading)) return;
+    const buying = asked.rows.filter((row) => row.price !== null && row.price > 0 && row.qty * asked.multiplier >= 1);
+    if (asked.stationID === null || buying.length === 0) {
+      sayDialog("uiwarning03", null, "There is nothing in the window that can be bought here.");
+      return;
+    }
+    // ContinueAfterWarning (buySellMultiBase.py 336 to 362): where any row's price is more than its average again
+    // over (GetItemsWithBadDelta), or the whole order's is (GetOrderDeltaTextForWarning), the client asks first,
+    // its CustomQuestion under Warning, No the default.
+    const valued = buying.filter((row) => row.average !== null && row.average > 0);
+    const high = valued
+      .map((row) => ({ row, delta: priceDelta(row.price, row.average!) }))
+      .filter((each) => each.delta > 1.0)
+      .sort((left, right) => right.delta - left.delta);
+    const whole = valued.length === 0 ? 0 : orderDelta(valued.map((row) => ({
+      total: row.price! * row.qty * asked.multiplier, quantity: row.qty * asked.multiplier, average: row.average!,
+    })));
+    if (high.length > 0 || whole > 1.0) {
+      const percent = (delta: number): string => templateWords("UI/Common/Percentage", { percentage: Math.round(delta * 100) }, `${Math.round(delta * 100)}%`);
+      const lines: string[] = [];
+      if (whole > 1.0) lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverage", { percentage: percent(whole) }, `These are ${percent(whole)} above the average.`), "");
+      if (high.length > 0) {
+        lines.push(templateWords("UI/Market/MarketQuote/MultiBuyTypesAboveAverage", {}, "These are well above their average:"));
+        for (const { row, delta } of high) lines.push(`- ${nameCache.get(nameKey("type", row.typeID)) ?? `Type ${row.typeID}`} (${percent(delta)})`);
+        lines.push("");
+      }
+      lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverageConfirmation", {}, "Buy them all the same?"));
+      const header = templateWords("UI/Generic/Warning", {}, "Warning");
+      const yes = await askDialog("CustomQuestion", { type: "dict", entries: [["header", header], ["question", lines.join("<br>")]] }, lines.join("\n"));
+      if (!yes) return;
+    }
+    multiBuyAskedSignal.set({ ...asked, busy: true });
+    try {
+      await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })));
+    } catch (error) {
+      const now = multiBuyAskedSignal.get();
+      if (now !== null && now.n === n) multiBuyAskedSignal.set({ ...now, busy: false });
+      if (isSessionLost(error)) throw error;
+      // A refusal is put up as the client puts up a UserError the call raises.
+      sayRefusalDialog(error, `Those items could not be bought: ${errorWords(error)}`);
+      return;
+    }
+    void loadInventory().catch(() => {});
+    const failed = asked.rows.filter((row) => !buying.includes(row));
+    multiBuyBooks.clear();
+    if (failed.length === 0) {
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    multiBuyAskedSignal.set({ ...asked, busy: false, multiplier: 1, rows: failed.map((row) => ({ ...row, qty: row.qty * asked.multiplier, loading: true })) });
+    await multiBuyPrices();
+  }
+
+  async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
+    const asked = applyPointsAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    if (answer === "close") {
+      applyPointsAskedSignal.set(null);
+      return;
+    }
+    if (asked.finished || !asked.canConfirm) return;
+    try {
+      const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, applyPointsLevels);
+      if (pointsBySkill.size > 0) await applyFreePointsToSkills(bridgeDo, applyPointsLevels);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `Those points could not be applied: ${errorWords(error)}`);
+      return;
+    }
+    applyPointsAskedSignal.set({ ...asked, finished: true, entries: asked.entries.map((entry) => ({ ...entry, progress: entry.progressWithFreePoints })) });
+    await loadSkills().catch(() => {});
+  }
+
+  /** globalConfig/const.py SKILL_PURCHASE_ENABLED_CONFIG, and its default. */
+  const SKILL_PURCHASE_ENABLED_CONFIG = "SkillPurchaseEnabled";
+  const SKILL_PURCHASE_ENABLED_DEFAULT = true;
+
+  /**
+   * globalConfig.IsSkillPurchaseEnabled (getFunctions.py 126, 14 to 21): the global config's value as the client
+   * keeps it (the login's, with each OnGlobalConfigUpdated since: the transport keeps it so), as a whole number, not
+   * nought; its default where it gives none or one that is not a number, or where the pilot's transport does not
+   * carry it.
+   */
+  async function skillPurchaseEnabled(): Promise<boolean> {
+    const config = await api.getGlobalConfig([SKILL_PURCHASE_ENABLED_CONFIG], callOptions).catch(() => null);
+    const value = config?.values[SKILL_PURCHASE_ENABLED_CONFIG];
+    if (value === null || value === undefined) return SKILL_PURCHASE_ENABLED_DEFAULT;
+    const whole = Number.parseInt(String(value), 10);
+    return Number.isNaN(whole) ? SKILL_PURCHASE_ENABLED_DEFAULT : whole !== 0;
+  }
+
+  /** The pilot's skills with the lapsed (skillHandler.GetAllSkills), as read now. */
+  async function skillsIncludingLapsedNow(): Promise<ReturnType<typeof skillLevelsOf>> {
+    return skillLevelsOf(await bridgeAsk("skillHandler", "GetAllSkills", []));
+  }
+
+  /**
+   * The skill requirement window's Buy and train (skillBtns.BuyAndTrainButton.ClickFunc): the window put away (its
+   * on_click), then skillsvc.PurchaseSkills for the books not held (characterskills/client/purchase.py
+   * purchase_skills): refused where the server has switched buying off (SkillPurchaseDisabled), else the books
+   * judged (prevalidate) and the books window opened. Where it bought any, the client waits to see them among its
+   * skills (WaitUntilSkillsAreAvailable) and queues the levels of those it now has, all of them where every book was
+   * bought, committed started. Where it bought none, nothing more.
+   */
+  async function buySkillsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    if (open === null || open.action?.kind !== "buy") return;
+    const action = open.action;
+    if (!(await skillPurchaseEnabled())) {
+      sayDialog("SkillPurchaseDisabled", null, "Skill books cannot be bought directly here.");
+      return;
+    }
+    const lapsed = await skillsIncludingLapsedNow();
+    const { available, unavailable } = booksToBuy(action.missing, lapsed, (typeID) => typeID in open.books, (typeID) => open.books[typeID]?.sold === true);
+    const priceOf = (skill: number): number | null => {
+      const base = open.books[skill]?.basePrice ?? null;
+      return base === null ? null : directPurchasePrice(base);
+    };
+    const purchased = await askSkillBooks(available, unavailable, priceOf);
+    if (purchased.length === 0) return;
+    // WaitUntilSkillsAreAvailable: the skills read again until each bought one is among them (the server injects
+    // them before it answers; a few readings at most).
+    for (let reading = 0; reading < 5; reading += 1) {
+      const now = await skillsIncludingLapsedNow().catch(() => null);
+      if (now !== null && purchased.every((skill) => now.has(skill))) break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    const stillMissing = action.missing.filter((skill) => !purchased.includes(skill));
+    const toQueue = stillMissing.length === 0 ? action.levels : action.levels.filter(([skill]) => !stillMissing.includes(skill));
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    await saveSkillQueue(queueWithLevels(queue, toQueue), "Added to your skill queue", "those skills", true);
+  }
+
+  /** The books window opened (MissingSkillbooksWnd, modal); answers the skills it bought before it was put away. */
+  function askSkillBooks(available: readonly number[], unavailable: readonly number[], priceOf: (skill: number) => number | null): Promise<readonly number[]> {
+    skillBooksEnd?.(skillBooksPurchased);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    skillBooksPurchased = [];
+    const prices = available.map(priceOf);
+    const cost = prices.every((price): price is number => price !== null) ? prices.reduce((sum, price) => sum + price, 0) : null;
+    return new Promise((resolve) => {
+      skillBooksEnd = (purchased) => {
+        skillBooksEnd = null;
+        skillBooksAskedSignal.set(null);
+        resolve(purchased);
+      };
+      skillBooksAskedSignal.set({ n, available, unavailable, cost });
+    });
+  }
+
+  /**
+   * The books window's answers. Closed: put away, answering what it bought. Buy and Inject (_OnBuyAndInjectButton,
+   * the context's purchase_available_skills): the books sold judged as the client judges them (validate: each a skill,
+   * each sold, none injected, the cost within the wallet, SkillPurchaseValidator), a refusal said as the client says
+   * it (handle_skill_purchase_error: NotEnoughMoney and the rest) and the window kept; else
+   * GetSkillHandler().PurchaseSkills(those books). Bought, and none left that is not sold: the window put away;
+   * otherwise kept, without the books bought.
+   */
+  async function answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void> {
+    const asked = skillBooksAskedSignal.get();
+    if (asked === null || asked.n !== n || skillBooksEnd === null) return;
+    if (answer === "close") {
+      skillBooksEnd(skillBooksPurchased);
+      return;
+    }
+    // Check on Market (_OnAvailableCheckMarketButton, _OnUnavailableCheckMarketButton, _OnSharedCheckMarketButton):
+    // the books of the section, or of both, one of each, into the multibuy window (the context's multibuy_*), and the
+    // window put away.
+    if (answer !== "buy") {
+      const books = answer === "market-available" ? asked.available : answer === "market-unavailable" ? asked.unavailable : [...asked.available, ...asked.unavailable];
+      skillBooksEnd(skillBooksPurchased);
+      await openMultiBuy(new Map(books.map((skill) => [skill, 1])));
+      return;
+    }
+    if (asked.available.length === 0) return;
+    const lapsed = await skillsIncludingLapsedNow().catch(() => null);
+    const injected = lapsed === null ? undefined : asked.available.find((skill) => lapsed.has(skill));
+    if (injected !== undefined) {
+      sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
+      return;
+    }
+    const wealth = await walletReads.wealth().catch(() => null);
+    const balance = wealth === null ? null : Number(toAmountString(wealth));
+    if (asked.cost !== null && balance !== null && Number.isFinite(balance) && asked.cost > balance) {
+      sayDialog("NotEnoughMoney", { type: "dict", entries: [["balance", balance], ["amount", asked.cost]] }, "There is not enough ISK in the wallet for those books.");
+      return;
+    }
+    let bought: readonly number[];
+    try {
+      bought = await purchaseSkills(bridgeDo, asked.available);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      if (!sayRefusalDialog(error, `Those books could not be bought: ${errorWords(error)}`)) {
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", `Those books could not be bought: ${errorWords(error)}`]] }, "Those books could not be bought.");
+      }
+      return;
+    }
+    skillBooksPurchased = [...skillBooksPurchased, ...bought];
+    if (asked.unavailable.length === 0) {
+      skillBooksEnd(skillBooksPurchased);
+      return;
+    }
+    skillBooksAskedSignal.set({ ...asked, available: [], cost: 0 });
+  }
+
+  /**
+   * The window's Train Skills (skillBtns.AddToQueueButton.ClickFunc): the window put away first (its on_click), then
+   * the levels added to the end of the queue as it is, those already in it passed over, and the queue committed
+   * started (CommitTransaction(activate=True)). What the server refuses is said as any queue's refusal is.
+   */
+  async function trainSkillsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    if (open === null || open.action?.kind !== "train" || open.action.queued) return;
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    await saveSkillQueue(queueWithLevels(queue, open.action.levels), "Added to your skill queue", "those skills", true);
   }
 
   async function runFleetAction(
@@ -19633,6 +20503,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
+    skillsRequired: readonlySignal(skillsRequiredSignal),
+    dismissSkillsRequired: () => skillsRequiredSignal.set(null),
+    trainSkillsRequired,
+    buySkillsRequired,
+    skillBooksAsked: readonlySignal(skillBooksAskedSignal),
+    answerSkillBooks,
+    applySkillPointsRequired,
+    applyPointsAsked: readonlySignal(applyPointsAskedSignal),
+    answerApplyPoints,
+    multiBuyAsked: readonlySignal(multiBuyAskedSignal),
+    openMultiBuy,
+    editMultiBuy,
+    answerMultiBuy,
+    shipNameAsked: readonlySignal(shipNameAskedSignal),
+    answerShipName,
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -19775,8 +20660,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async boardShip(shipID) {
-      await runMutation(() => boardShipNow(shipID));
-      await refreshActiveShipViews();
+      // station.TryActivateShip (base.py 221 to 223): a ship whose skills the pilot lacks is not boarded, nothing is
+      // asked of the server, and the skill requirement window says what is missing (prompt_missing_skill_requirements).
+      await boardShipChecked(shipID, store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null);
+    },
+
+    async assembleShip(shipID, board) {
+      // invItemFunctions.AssembleShip (164 to 210): one ship, the name asked first unless the pilot said not to, then
+      // the call on the ship's object (bridge/shipWrites.ts). Later is no name, and the ship is assembled all the same.
+      const row = store.inventory.get().hangar.rows.find((each) => each.itemID === shipID) ?? null;
+      if (row === null || row.singleton) return;
+      const name = questionAnswerKept(SHIP_NAME_SUPPRESS) === null ? await askShipName(row.typeID) : null;
+      let assembled: number | null = null;
+      await runMutation(async () => {
+        assembled = await assembleShipCall(bridgeDo, shipID, name);
+      });
+      // AssembleAndBoardShip (213 to 240): the first ship assembled boarded, as any ship is (TryActivateShip).
+      if (board && assembled !== null) await boardShipChecked(assembled, row.typeID);
+    },
+
+    async renameShip(shipID) {
+      // menuFunctions.SetName (321 to 345), for a ship (itemCheckers.OfferChangeName: assembled, the pilot's own, in
+      // the hangar where it is docked): its row of cfg.evelocations primed and its name the field's start, the ship
+      // naming window asked with no Do Not Ask Again, and on a name, SetLabel on the inventory manager. Later is
+      // nothing. The new name comes back as the ship's row (OnCfgDataChanged), which the page's names follow.
+      const row = store.inventory.get().hangar.rows.find((each) => each.itemID === shipID) ?? null;
+      if (row === null || !row.singleton) return;
+      const key = nameKey("evelocation", shipID);
+      const known = await api.resolveNames([{ kind: "evelocation", id: shipID }], callOptions).catch(() => null);
+      const current = known?.names[key] ?? nameCache.get(key) ?? "";
+      const name = await askShipName(row.typeID, typeof current === "string" ? current : "", false);
+      if (!name) return;
+      await runMutation(async () => {
+        await setLabelCall(bridgeDo, shipID, name);
+      });
     },
 
     askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),

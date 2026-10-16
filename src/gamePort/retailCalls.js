@@ -210,6 +210,11 @@ const queueByPlace = (args, kwargs) => {
 const pointsForOneSkill = (args, kwargs) => (args.length === 2 && args.every((value) => Number.isSafeInteger(value) && value > 0) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client names one skill and how many points to put into it, more than none, and nothing else." });
+/** The Apply Skill Points window's levels (applySkillPointsWindow.py, skillTypeIDsAndLevels): one list of (typeID, level) pairs, and nothing else. */
+const levelsListed = (args) => ({
+  args: [list((Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : []).map((pair) => (Array.isArray(pair) ? pair : pair && Array.isArray(pair.items) ? pair.items : pair)))],
+  kwargs: {},
+});
 /** crimewatchSvc.SetSafetyLevel (343): one of the ship's three safety levels (crimewatch/const.py), and nothing else. */
 const oneSafetyLevel = (args, kwargs) => (args.length === 1 && [0, 1, 2].includes(args[0]) && Object.keys(kwargs).length === 0
   ? {}
@@ -601,7 +606,8 @@ const PROXY_SERVICES = Object.freeze(new Set([
 /**
  * Calls of the client's own that the transport makes when a feature wants them, and that no route of the BFF's
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
- * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners, and the
+ * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners, and cfg.evelocations',
+ * for a named item's own name (a ship, a container: uix.GetItemName, IsValidNamedItem), and the
  * corporations' and alliances' tickers', as the client primes them for the balls added and as its overview gets
  * them (cfg.corptickernames, cfg.allianceshortnames); one facility
  * asked for by itself, as the client's facility service asks where the server names it, where a job was refused
@@ -614,7 +620,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "config.GetMultiAllianceShortNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiLocationsEx", "config.GetMultiCorpTickerNamesEx", "config.GetMultiAllianceShortNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the
@@ -703,6 +709,13 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The queue's saving as the client's queue service makes it, on the handler. The page makes it by name (the
   // plan's Phase 6b). The gateway's list has skillMgr's save and not this: through the gateway the route saves.
   "skillHandler.SaveNewQueue",
+  // Skill books bought as the client's books window buys them, on the handler (characterskills/client/purchase.py
+  // 100). The page makes it by name. The gateway's list has not got it.
+  "skillHandler.PurchaseSkills",
+  // Free points spread over the levels of skills, as the client's Apply Skill Points window spreads them: what they
+  // would come to, and the spreading (skillQueueSvc.py 608 to 613). The page makes them by name. The gateway's list
+  // has neither.
+  "skillHandler.GetFreeSkillPointsAppliedToSkills", "skillHandler.ApplyFreeSkillPointsToSkills",
   // The account's extra training slots, which the client's queue service asks for to tell whether a change of
   // the queue may start it (skillQueueSvc.py 851). The gateway's list has nothing of the user service's.
   "userSvc.GetMultiCharactersTrainingSlots",
@@ -1977,6 +1990,9 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "TrashItems([itemIDs], locationID)",
   ),
+  "invbroker.DestroyFitting": same("eve/client/script/ui/shared/fitting/fittingSlotController.py:262",
+    "parentInv.DestroyFitting(moduleID), on the ship's own inventory (invCache.GetInventoryFromId(the ship)): a rig taken off the ship from the Fitting window, after the RigUnFittingInfo dialog's OK, where the rig cannot be unfitted whole (Unfit, 245 to 266). In no recording."),
+  "invbroker.SetLabel": typing(same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:343", "invCache.GetInventoryMgr().SetLabel(itemID, name), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr): an item named, from a ship's Change Name or a container's Set Name, the name the window answered with its line breaks made spaces. Recorded on Tranquility (SetLabel(itemID, u'LittleLittle')), the server's OnCfgDataChanged('evelocations', ...) after it."), [1]),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
   // ── an agent (a bound agentMgr object) ────────────────────────────────────
@@ -2085,6 +2101,8 @@ const RETAIL_CALLS = Object.freeze({
   // ── the reprocessing plant (the reprocessing service's Moniker) ───────────
   "reprocessingSvc.GetQuotes": judged("reprocessing/ui/quotes.py:20", quotingReprocessing,
     "GetReprocessingSvc().GetQuotes(itemIDs, activeShipID): the window's own dict of its items, each row by its item's ID, and the ship the pilot is in. Answers the place's tax, its efficiency by type, and each item's quote."),
+  "inSpaceCompressionMgr.CompressItemInSpace": same("itemcompression/client/itemCompression.py:9",
+    "sm.RemoteSvc('inSpaceCompressionMgr').CompressItemInSpace(compressibleItem.itemID, compressionFacilityBallID): from the compression window (compression_window.py 99) and the menu's Compress; answered (sourceItemID, sourceTypeID, sourceQuantity, outputItemID, outputTypeID, outputQuantity), or None, after which the client says nothing. In no recording."),
   "reprocessingSvc.Reprocess": judged("reprocessing/ui/itemReprocessor.py:71", reprocessingItems,
     "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
   "structureSettings.CharacterGetService": judged("eve/client/script/ui/services/marketsvc.py:239", ofAStructuresMarket,
@@ -2271,6 +2289,8 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdReturnBay(droneIDs): the drones a list. Recorded on Tranquility so eleven times, each riding its own bind."),
   "entity.CmdMineRepeatedly": reshaped(`${DRONE_FUNCTIONS}:151`, dronesListed,
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
+  "entity.CmdReconnectToDrones": reshaped(`${DRONE_FUNCTIONS}:254`, dronesListed,
+    "eveMoniker.GetEntityAccess().CmdReconnectToDrones(droneCandidates), on a Moniker made for the order: the candidates a list of the balls in the park that are the pilot's drones and not under its control (ReconnectToDrones, 215 to 233, at most MAX_DRONE_RECONNECTS), from Reconnect to Lost Drones. It answers each failure as a UserError's name and values, which the client raises five seconds apart (256 to 258). In no recording."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
   "accessGroupBookmarkMgr.BookmarkStaticLocation": typing(Object.freeze({
@@ -2378,6 +2398,22 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
   "skillHandler.ApplyFreeSkillPoints": judged(`${SKILL_SVC}:886`, pointsForOneSkill,
     "GetSkillHandler().ApplyFreeSkillPoints(skillTypeID, pointsToApply): free points put into one skill, from the skill's own menu (skillQueueSvc.UseFreeSkillPoints, 926). The service has the free points first, sends nothing for a skill in training, one not known, or no points, and takes what the handler answers for the free points left."),
+  "skillHandler.GetFreeSkillPointsAppliedToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:610",
+    levelsListed,
+    "GetSkillHandler().GetFreeSkillPointsAppliedToSkills(skillTypeIDsAndLevels): the levels as one list of (typeID, level). It answers the points each skill would take. Asked by the Apply Skill Points window as it opens (applySkillPointsWindow.py 123) and before the spreading. In no recording.",
+  ),
+  "skillHandler.ApplyFreeSkillPointsToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:612",
+    levelsListed,
+    "GetSkillHandler().ApplyFreeSkillPointsToSkills(skillTypeIDsAndLevels), where the asking before it answered any points: the levels as one list of (typeID, level). It answers the free points left. In no recording.",
+  ),
+  "skillHandler.PurchaseSkills": reshaped(
+    "characterskills/client/purchase.py:100",
+    // GetSkillHandler().PurchaseSkills(skill_type_ids): the skills as one list, and nothing else.
+    (args) => ({ args: [list(Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : [args[0]])], kwargs: {} }),
+    "GetSkillHandler().PurchaseSkills(skill_type_ids), from the books window's Buy and Inject (MissingSkillbooksWnd, after its context's validate: each a skill, each sold, none injected, the cost within the wallet): the books bought as one list. It answers the skills bought. In no recording.",
+  ),
   "skillHandler.SaveNewQueue": judged(
     "eve/client/script/ui/services/skillQueueSvc.py:153",
     queueByPlace,
@@ -2424,6 +2460,33 @@ const RETAIL_CALLS = Object.freeze({
       return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
     },
   }), "fee"),
+  "marketProxy.BuyMultipleItems": needing(Object.freeze({
+    status: "same",
+    source: `${MARKET_QUOTE}:271`,
+    note: "GetMarketProxy().BuyMultipleItems(stationID, itemList, useCorp) (marketsvc.BuyMulti, from the multibuy window's Buy, buyMultiFromBase.py 296 to 311): the station, a list of the items, each a util.KeyVal of six fields (marketutil/orderInfo.py GetBuyItemInfo: stationID, typeID, the price rounded to cents, quantity, minVolume 1, and delta, how far the price is from the type's average), and whether it is for the corporation. It answers the orders made. In no recording.",
+    shape: (args, kwargs, context) => {
+      const [stationID, given, useCorp] = args;
+      const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+      if (args.length !== 3 || !wholeAndPositive(stationID) || listed === null || listed.length === 0) {
+        return { args, kwargs, status: "differs", note: "The client sends three: the station, a list of the items, and whether it is for the corporation." };
+      }
+      if (listed.every((item) => item && typeof item === "object" && item.type === "object")) return { args, kwargs };
+      const items = listed.map((item) => {
+        if (!item || typeof item !== "object" || item.type !== undefined) return null;
+        if (!wholeAndPositive(item.typeID) || !wholeAndPositive(item.quantity) || typeof item.price !== "number" || !(item.price > 0)) return null;
+        const price = Math.round(item.price * 100) / 100;
+        const delta = item.delta !== undefined ? item.delta : deltaFrom(price, averagePriceOf(context, item.typeID));
+        return keyVal([
+          ["stationID", item.stationID ?? stationID], ["typeID", item.typeID], ["price", asFloat(price)], ["quantity", item.quantity],
+          ["minVolume", item.minVolume ?? 1], ["delta", asFloat(delta ?? 0)],
+        ]);
+      });
+      if (items.includes(null)) {
+        return { args, kwargs, status: "differs", note: "Each item the client sends has its type, a price above nought and how many; one of these has not." };
+      }
+      return { args: [stationID, { type: "list", items }, useCorp === true], kwargs: {}, status: "reshaped" };
+    },
+  }), "buy"),
   "marketProxy.PlaceMultiSellOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:276`,
@@ -2612,6 +2675,15 @@ const RETAIL_CALLS = Object.freeze({
   "ship.Jettison": judged(`${INV_ITEM_FUNCTIONS}:63`, jettisoning, "GetShipAccess().Jettison(itemIDs), the items as one list, from an item's menu (and a node graph's action, with no confirmation). Recorded twice, each on the bind of the ship's Moniker for the solar system, with one list of one ID and no keywords, and answered two lists: what went to a can, and what was launched for itself."),
   "ship.LeaveShip": judged(`${STATION_SVC}:248`, leavingTheShip, "station.TryLeaveShip: gameui.GetShipAccess().LeaveShip(shipid), for the ship the pilot is in and no other, docked; from the item's menu and before a clone jump. In a structure, structureDocking.LeaveShip makes the same call and then makes the capsule it answers active. In space the menu ejects. In no recording."),
   "dogmaIM.CreateNewbieShip": judged(`${STATION_SVC}:613`, boardingACorvette, "station.CreateNewbieShip: sm.RemoteSvc('dogmaIM').CreateNewbieShip(shipID, locationID), by the service's name, for the ship the pilot is in and where it is docked (session.stationid or session.structureid). The client asks the pilot first unless it is in a capsule, and refuses by itself aboard a corvette. From the lobby's corvette button and no other place. In no recording."),
+  "ship.AssembleShip": reshaped(
+    `${INV_ITEM_FUNCTIONS}:197`,
+    // GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems): the ships one list, the two keywords.
+    (args, kwargs) => ({
+      args: [list(Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : [args[0]])],
+      kwargs: { name: kwargs.name ?? null, subSystems: kwargs.subSystems ?? null },
+    }),
+    "GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems), from a packaged ship's menu in the hangar (Assemble Ship, and Board Ship's first step): the ships as one list, the name the pilot gave in the naming window or None, and a modular ship's subsystems or None. In no recording.",
+  ),
   "ship.Board": same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:209", "GetShipAccess().Board(shipID, session.shipid or session.stationid), through sessionMgr.PerformSessionChange('board', ...). Recorded on Tranquility in space as (shipID, the ship left), the bind carrying it."),
   "repairSvc.GetRepairQuotes": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:63", quotingRepairs, "GetRemoteRepairMgr().GetRepairQuotes(itemIDs): the items as a list, on a Moniker of repairSvc made for the one call (45 to 60). In no recording."),
   "repairSvc.RepairItemsInStation": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:67", repairingInAStation, "GetRemoteRepairMgr().RepairItemsInStation(itemIDs, payment), docked in a station: the items as a list and the payment a float, the amount the shop's window worked out (300 to 327). In no recording."),
@@ -2663,18 +2735,38 @@ const retailNeeds = (service, method) => RETAIL_CALLS[`${service}.${method}`]?.n
  */
 function createCallLedger() {
   const pairs = new Map();
+  const rowOf = (key) => pairs.get(key) ?? { pair: key, calls: 0, sent: 0, carried: 0, statuses: {}, source: null, note: null };
   return {
+    /**
+     * A pair the transport asked for, in the form it took: `calls` counts these. Not every asking is sent: one
+     * shared with the same call already out takes that call's answer (session.js _call).
+     */
     note(service, method, form) {
       const key = `${service}.${method}`;
-      const row = pairs.get(key) ?? { pair: key, calls: 0, statuses: {}, source: form.source, note: form.note };
+      const row = rowOf(key);
       row.calls += 1;
       row.statuses[form.status] = (row.statuses[form.status] ?? 0) + 1;
-      if (form.status !== "same" && form.note) row.note = form.note;
+      if (row.source === null) row.source = form.source ?? null;
+      if (row.note === null || (form.status !== "same" && form.note)) row.note = form.note ?? row.note;
       pairs.set(key, row);
     },
-    /** Every pair called, most called first. */
+    /**
+     * A pair the session put on the wire: `sent` counts these, and `carried` those of them a bind carried, which
+     * went in the bind's packet (MachoBindObject(params, (method, args, keywords))). A call on an object whose
+     * service the session does not know is counted under "(object)".
+     */
+    sent(service, method, { carried = false } = {}) {
+      const key = `${service ?? "(object)"}.${method}`;
+      const row = rowOf(key);
+      row.sent += 1;
+      if (carried) row.carried += 1;
+      pairs.set(key, row);
+    },
+    /** Every pair asked or sent, most sent first. */
     rows() {
-      return [...pairs.values()].sort((a, b) => b.calls - a.calls || a.pair.localeCompare(b.pair)).map((row) => ({ ...row, statuses: { ...row.statuses } }));
+      return [...pairs.values()]
+        .sort((a, b) => b.sent - a.sent || b.calls - a.calls || a.pair.localeCompare(b.pair))
+        .map((row) => ({ ...row, statuses: { ...row.statuses } }));
     },
   };
 }

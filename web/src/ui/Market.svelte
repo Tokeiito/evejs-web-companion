@@ -15,6 +15,7 @@
   // So it is implemented client-side here too, which is also why re-sorting the
   // book costs no round-trip.
   import { onMount } from "svelte";
+  import { marketDetailsTarget } from "./marketDetails.ts";
   import {
     DURATION_CHOICES,
     FILL_STATE_LABELS,
@@ -83,6 +84,19 @@
   let query = $state("");
   let matches = $state<readonly MarketTypeMatch[]>([]);
   let chosenName = $state("");
+  // The market read as the window opens: of the type whose market details were asked for from outside it
+  // (marketDetails.ts, marketutils.ShowMarketDetails), where one opened it, else of none; and of each type asked for
+  // so while it is open.
+  const marketDetailsRequests = marketDetailsTarget.requests;
+  let marketFirstRead = true;
+  $effect(() => {
+    void $marketDetailsRequests;
+    const wanted = marketDetailsTarget.take();
+    if (!marketFirstRead && wanted === null) return;
+    marketFirstRead = false;
+    chosenName = "";
+    void run(() => flow.loadMarket(wanted));
+  });
 
   // --- Client-local book controls (retail's `marketQuote`) -----------------
   /** -1 means "no limit"; anything else caps how far away an order may be. */
@@ -421,7 +435,7 @@
   }
 
   onMount(() => {
-    void run(() => flow.loadMarket(null));
+    // (The market's first read is the marketDetailsRequests effect's: the type asked for from outside the window, or none.)
     // The tree, so the panel opens on something to look AT rather than an empty
     // search box. Independent of the market read: it is static data.
     void openGroupID(0);

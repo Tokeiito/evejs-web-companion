@@ -330,7 +330,11 @@ function readCapacitor(attributes: ReadonlyMap<number, number | null>): number |
 
 /** Decode the ship's CPU / powergrid / capacitor / calibration readings. */
 export function decodeResources(result: JsonValue): FittingResources {
-  const attributes = decodeShipAttributes(result);
+  return resourcesOf(decodeShipAttributes(result));
+}
+
+/** The ship's CPU / powergrid / capacitor / calibration readings, out of its attributes by ID. */
+export function resourcesOf(attributes: ReadonlyMap<number, number | null>): FittingResources {
   const capacitor = readCapacitor(attributes);
   return {
     cpu: resource(attributes.get(ATTR.cpuLoad) ?? null, attributes.get(ATTR.cpuOutput) ?? null),

@@ -246,6 +246,8 @@ export type FeedEvent =
       readonly activeShipID: number | null;
       readonly slots: readonly FittingSlot[];
       readonly resources: FittingResources;
+      /** The ship's attributes by ID, that `resources` and `stats` were made of. */
+      readonly shipAttributes?: Readonly<Record<number, number | null>>;
       /** R21 — the derived statistics, from the same attribute map. */
       readonly stats: ShipStats;
       /**
@@ -255,6 +257,15 @@ export type FeedEvent =
       readonly chargeFits?: Readonly<Record<number, ChargeFitment>>;
       readonly slotsError: string | null;
       readonly resourcesError: string | null;
+    }
+  // The server told of the active ship's attributes changing (OnModuleAttributeChange, its batch, or an
+  // OnMultiEvent): the attributes as they are now, and the figures made of them again.
+  | {
+      readonly type: "fitting/ship-attributes";
+      readonly shipID: number;
+      readonly shipAttributes: Readonly<Record<number, number | null>>;
+      readonly resources: FittingResources;
+      readonly stats: ShipStats;
     }
   // R21 slice B — the bound-dogma snapshot that accompanies the fit: the active
   // ship and every fitted module with the SERVER's post-dogma attributes. Its

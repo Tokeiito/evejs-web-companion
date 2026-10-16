@@ -52,6 +52,17 @@ const TABLES = Object.freeze({
   objectiveTaskTypes: Object.freeze({ loader: "objectiveTaskTypesLoader", resource: "res:/staticdata/objectivetasktypes.fsdbinary" }),
   // The special effects that are a jump (fsdBuiltData/client/travelEffects.py, by guid): IsTravelEffect.
   travelEffects: Object.freeze({ loader: "travelEffectsLoader", resource: "res:/staticdata/traveleffects.fsdbinary" }),
+  // The skills a type needs and at what level, by type (evetypes/skills.py get_dogma_required_skills), which the
+  // client's skill service and dogma location walk to say what is missing to fly a ship or use a thing.
+  requiredSkillsForTypes: Object.freeze({ loader: "requiredSkillsForTypesLoader", resource: "res:/staticdata/requiredskillsfortypes.fsdbinary" }),
+  // A type's base price and whether it is published (evetypes.GetBasePrice and IsPublished): what a skill book bought
+  // directly costs (characterskills/common/purchase.py get_direct_purchase_price) and whether it is sold so at all
+  // (evetypes.IsSkillAvailableForPurchase). One attribute of the types each, as typeShipGroups is.
+  typeBasePrices: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "basePrice" }),
+  typePublished: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "published" }),
+  // A type's portion size (evetypes.GetPortionSize), by which the market's average falls back to the base price where
+  // nothing traded in the week (marketsvc.GetAveragePrice).
+  typePortionSizes: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "portionSize" }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),
