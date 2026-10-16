@@ -13423,7 +13423,10 @@ app.get("/api/types/type-lists", requireAuth, (req, res, next) => {
 // (evedungeons/client/ship_restrictions_window.py set_dungeon; staticData.getDungeonShipRestrictions, the client's
 // GetDungeonShipRestrictions): the dungeon's name's message, the gate's type list, the published ship types let
 // through with their groups, and the published ones of those groups that are not (the window's restricted ones).
-app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
+// The groups are the client's ship tree's where the client's data can be read (evetypes.GetShipGroupID, the type's
+// isisGroupID; the groups' names' messages from its infoBubbleGroups: clientBuiltData), a type with none left out as
+// the window's _validate_type leaves it; else the inventory groups, and `shipTree` false.
+app.get("/api/dungeons/ship-restrictions", requireAuth, async (req, res, next) => {
   const dungeonID = Number(req.query.dungeonID);
   const gateID = req.query.gateID === undefined || req.query.gateID === "" ? null : Number(req.query.gateID);
   if (!Number.isSafeInteger(dungeonID) || dungeonID <= 0 || (gateID !== null && (!Number.isSafeInteger(gateID) || gateID <= 0))) {
@@ -13436,17 +13439,34 @@ app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
       res.json({ ok: true, found: false });
       return;
     }
+    const [shipGroups, treeGroups] = await Promise.all([
+      clientBuiltData.table("typeShipGroups").catch(() => null),
+      typeof clientBuiltData.infoBubbleGroups === "function" ? clientBuiltData.infoBubbleGroups().catch(() => null) : null,
+    ]);
+    const shipTree = Boolean(shipGroups && treeGroups);
+    const groupOf = (typeID, type) => (shipTree ? Number(shipGroups[String(typeID)]) || 0 : Number(type.groupID) || 0);
+    // A published ship (the types' isisGroupID is set on some that are no ships; the client takes a group's types from
+    // its ship tree, which has ships alone: shipTreeSvc.GetShipTypeIDsByGroupID).
     const shown = (typeID) => {
       const type = staticData.getType(typeID);
-      return type && type.published === true && Number(type.groupID) > 0 ? { typeID: Number(typeID), groupID: Number(type.groupID) } : null;
+      const groupID = type && type.published === true && Number(type.categoryID) === 6 ? groupOf(typeID, type) : 0;
+      return groupID > 0 ? { typeID: Number(typeID), groupID } : null;
     };
     const allowed = restrictions.allowedShipTypes.map(shown).filter(Boolean);
     const allowedIDs = new Set(allowed.map((entry) => entry.typeID));
     const groups = new Set(allowed.map((entry) => entry.groupID));
-    const restricted = typeof staticData.getTypesInGroup === "function"
-      ? [...groups].flatMap((groupID) => staticData.getTypesInGroup(groupID)).map((type) => shown(type.typeID)).filter((entry) => entry && !allowedIDs.has(entry.typeID))
-      : [];
-    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, allowed, restricted });
+    const groupTypeIDs = shipTree
+      ? Object.keys(shipGroups).filter((typeID) => groups.has(Number(shipGroups[typeID]))).map(Number)
+      : [...groups].flatMap((groupID) => typeof staticData.getTypesInGroup === "function" ? staticData.getTypesInGroup(groupID).map((type) => Number(type.typeID)) : []);
+    const restricted = groupTypeIDs.map(shown).filter((entry) => entry && !allowedIDs.has(entry.typeID));
+    const groupNames = {};
+    if (shipTree) {
+      for (const groupID of groups) {
+        const group = treeGroups[String(groupID)];
+        if (group) groupNames[String(groupID)] = { nameID: group.nameID, iconSmall: group.iconSmall };
+      }
+    }
+    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, shipTree, groups: groupNames, allowed, restricted });
   } catch (error) {
     next(error);
   }

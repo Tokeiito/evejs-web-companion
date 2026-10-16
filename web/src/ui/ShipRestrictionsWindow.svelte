@@ -4,16 +4,19 @@
   //
   //   captioned UI/Dungeons/ShipRestrictionsWindow; headed with the dungeon's name (its dungeonNameID's message); a line
   //   saying the ship flown is or is not let through (DungeonShipRestrictionsListShipIsRestricted / IsNotRestricted, or
-  //   ShowList with no ship); the box "Hide restricted ships" (ship_restrictions_hide_restricted_ships, on where none is
-  //   kept); and the ship types let through, by group, each group with how many of its types are shown, as a fraction
-  //   of the group's where some are restricted (_get_group_secondary_text). Unticked, the restricted types of those
-  //   groups are shown too, in the danger colour (ShipTypeEntry).
+  //   ShowList with no ship); the boxes "Show unlocked ships only" (ship_restrictions_show_unlocked_ships_only, off where
+  //   none is kept: the types whose skill requirements the pilot meets) and "Hide restricted ships"
+  //   (ship_restrictions_hide_restricted_ships, on where none is kept); and the ship types let through, by the ship
+  //   tree's group (evetypes.GetShipGroupID), the groups in SHIP_GROUP_ORDER and then by name, each named by its message
+  //   (cfg.infoBubbleGroups' nameID) and with how many of its types are shown, as a fraction of the group's where not
+  //   all are (_get_group_secondary_text). Unticked, the restricted types of those groups are shown too, in the danger
+  //   colour (ShipTypeEntry).
   //
-  // Not yet as the client has it: the groups are the inventory groups, by name, where the client's are its ship tree's
-  // (evetypes.GetShipGroupID, SHIP_GROUP_ORDER); the box "Show unlocked ships only" (the pilot's skills per type); and
-  // the gate's type list's own description, which the server's tables do not carry.
+  // Not yet as the client has it: an expert system's ships among the unlocked (skills.IsUnlockedWithExpertSystem), and the
+  // gate's type list's own description, which the server's tables do not carry. Where the client's ship tree cannot be
+  // read the groups are the inventory groups, by name.
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
-  import { SHIP_RESTRICTIONS_LABELS } from "../bridge/dungeonTracking.ts";
+  import { SHIP_GROUP_ORDER, SHIP_RESTRICTIONS_LABELS } from "../bridge/dungeonTracking.ts";
   import { resolvedName } from "../store/names.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import type { Session } from "../app/sessions.ts";
@@ -30,23 +33,28 @@
   // svelte-ignore state_referenced_locally
   const open = flow.shipRestrictions;
 
-  /** ship_restrictions_hide_restricted_ships (UserSettingBool, True where none is kept), kept in this browser. */
-  const HIDE_KEPT = "evejs.ship_restrictions_hide_restricted_ships";
-  let hideRestricted = $state((() => {
+  /** The two boxes' settings (UserSettingBool), kept in this browser. */
+  function keptBox(key: string, fallback: boolean): boolean {
     try {
-      return localStorage.getItem(HIDE_KEPT) !== "false";
+      const kept = localStorage.getItem(key);
+      return kept === null ? fallback : kept === "true";
     } catch {
-      return true;
+      return fallback;
     }
-  })());
-  function setHideRestricted(value: boolean): void {
-    hideRestricted = value;
+  }
+  function keepBox(key: string, value: boolean): void {
     try {
-      localStorage.setItem(HIDE_KEPT, String(value));
+      localStorage.setItem(key, String(value));
     } catch {
       // Storage refused: the box holds while the window is open.
     }
   }
+  const HIDE_KEPT = "evejs.ship_restrictions_hide_restricted_ships";
+  const UNLOCKED_KEPT = "evejs.ship_restrictions_show_unlocked_ships_only";
+  let hideRestricted = $state(keptBox(HIDE_KEPT, true));
+  let unlockedOnly = $state(keptBox(UNLOCKED_KEPT, false));
+  /** The types listed whose skill requirements the pilot meets, read once the box is ticked; null until read. */
+  let unlocked = $state<ReadonlySet<number> | null>(null);
 
   const nameOf = (kind: Parameters<typeof resolvedName>[1], id: number): string => resolvedName($names.resolved, kind, id, "");
   function word(label: string, args: Record<string, string | number> = {}): string {
@@ -63,6 +71,10 @@
     const allowedHere = restrictions.allowed.some((entry) => entry.typeID === shipTypeID);
     return word(allowedHere ? SHIP_RESTRICTIONS_LABELS.notRestricted : SHIP_RESTRICTIONS_LABELS.restricted, { shipTypeID });
   });
+  function groupName(groupID: number): string {
+    const nameID = restrictions?.groupNameIDs[groupID];
+    return nameID !== undefined ? word(`#${nameID}`) || nameOf("group", groupID) : nameOf("group", groupID);
+  }
   const groups = $derived.by(() => {
     if (!restrictions) return [];
     const byGroup = new Map<number, { allowed: number[]; restricted: number[] }>();
@@ -76,18 +88,26 @@
       if (group) group.restricted.push(entry.typeID);
     }
     const byName = (a: number, b: number) => nameOf("type", a).localeCompare(nameOf("type", b));
+    const order = (groupID: number) => {
+      const at = restrictions.shipTree ? SHIP_GROUP_ORDER.indexOf(groupID) : -1;
+      return at === -1 ? 999 : at;
+    };
     return [...byGroup.entries()]
       .map(([groupID, group]) => {
-        const shown = hideRestricted ? group.allowed : [...group.allowed, ...group.restricted];
+        // _get_type_ids_to_sort: the allowed, and the restricted where they are not hidden; then the unlocked alone.
+        const listed = hideRestricted ? group.allowed : [...group.allowed, ...group.restricted];
+        const shown = unlockedOnly && unlocked !== null ? listed.filter((typeID) => unlocked!.has(typeID)) : listed;
+        const amount = shown.filter((typeID) => group.allowed.includes(typeID)).length;
         const total = group.allowed.length + group.restricted.length;
         return {
           groupID,
-          name: nameOf("group", groupID),
-          count: shown.length === total ? String(shown.length) : word("UI/Common/Formatting/Fraction", { a: shown.length, b: total }) || `${shown.length}/${total}`,
+          name: groupName(groupID),
+          order: order(groupID),
+          count: amount === total ? String(amount) : word("UI/Common/Formatting/Fraction", { a: amount, b: total }) || `${amount}/${total}`,
           types: [...shown].sort(byName).map((typeID) => ({ typeID, restricted: !group.allowed.includes(typeID) })),
         };
       })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
   });
 
   $effect(() => {
@@ -97,12 +117,21 @@
   $effect(() => {
     if (restrictions === null) return;
     if (restrictions.dungeonNameID) flow.requestWords([`#${restrictions.dungeonNameID}`]);
+    flow.requestWords(Object.values(restrictions.groupNameIDs).map((id) => `#${id}`));
     const groupIDs = [...new Set([...restrictions.allowed, ...restrictions.restricted].map((entry) => entry.groupID))];
     flow.requestNames([
-      ...groupIDs.map((id) => ({ kind: "group" as const, id })),
+      ...(restrictions.shipTree ? [] : groupIDs.map((id) => ({ kind: "group" as const, id }))),
       ...[...restrictions.allowed, ...restrictions.restricted].map((entry) => ({ kind: "type" as const, id: entry.typeID })),
       ...(shipTypeID !== null ? [{ kind: "type" as const, id: shipTypeID }] : []),
     ]);
+  });
+  // The unlocked types, read when the box is ticked, for what the window lists.
+  $effect(() => {
+    if (!unlockedOnly || restrictions === null || unlocked !== null) return;
+    const typeIDs = [...restrictions.allowed, ...restrictions.restricted].map((entry) => entry.typeID);
+    void flow.shipTypesUnlocked(typeIDs).then((set) => {
+      unlocked = set;
+    }).catch(() => {});
   });
 </script>
 
@@ -117,10 +146,16 @@
     {:else}
       {#if header}<h4 class="sr-dungeon">{header}</h4>{/if}
       <p class="sr-info">{infoText}</p>
-      <label class="sr-box">
-        <input type="checkbox" checked={hideRestricted} onchange={(event) => setHideRestricted((event.currentTarget as HTMLInputElement).checked)} />
-        {word(SHIP_RESTRICTIONS_LABELS.hideRestricted) || "Hide restricted ships"}
-      </label>
+      <div class="sr-boxes">
+        <label class="sr-box">
+          <input type="checkbox" checked={unlockedOnly} onchange={(event) => { unlockedOnly = (event.currentTarget as HTMLInputElement).checked; keepBox(UNLOCKED_KEPT, unlockedOnly); }} />
+          {word(SHIP_RESTRICTIONS_LABELS.showUnlockedOnly) || "Show unlocked ships only"}
+        </label>
+        <label class="sr-box">
+          <input type="checkbox" checked={hideRestricted} onchange={(event) => { hideRestricted = (event.currentTarget as HTMLInputElement).checked; keepBox(HIDE_KEPT, hideRestricted); }} />
+          {word(SHIP_RESTRICTIONS_LABELS.hideRestricted) || "Hide restricted ships"}
+        </label>
+      </div>
       <div class="sr-list">
         {#each groups as group (group.groupID)}
           <div class="sr-group">
@@ -171,6 +206,11 @@
     color: inherit;
     font-size: 1.1rem;
     cursor: pointer;
+  }
+  .sr-boxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 24px;
   }
   .sr-info,
   .sr-note {

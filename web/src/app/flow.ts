@@ -1682,6 +1682,8 @@ export interface AppFlow {
   readonly shipRestrictions: ReadableSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>;
   /** The Ship Restrictions window closed. */
   closeShipRestrictions(): void;
+  /** The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet). */
+  shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>>;
   /** A trace's jump window open (Activate Gate on an Abyssal trace): the trace, its filament and its game mode; null where closed. */
   readonly abyssJump: ReadableSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>;
   /** The jump window closed. */
@@ -5347,6 +5349,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const rows = await attributesOfTypes([typeID], [ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID]);
     const row = rows[typeID];
     return { tier: row?.[ATTRIBUTE_DIFFICULTY_TIER] ?? null, weather: row?.[ATTRIBUTE_WEATHER_ID] ?? null };
+  }
+  /**
+   * The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet: every one of the
+   * type's required skills, its attributes 182, 183, 184, 1285, 1289 and 1290, at the level its 277, 278, 279, 1286,
+   * 1287 and 1288 say), the skill sheet read first where it is not. Expert systems are not counted yet.
+   */
+  async function shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    if (store.skills.get().skills === null) await loadSkills().catch(() => undefined);
+    const levels = new Map((store.skills.get().skills ?? []).map((skill) => [skill.typeID, skill.level]));
+    const pairs: ReadonlyArray<readonly [number, number]> = [[182, 277], [183, 278], [184, 279], [1285, 1286], [1289, 1287], [1290, 1288]];
+    const rows = await attributesOfTypes(typeIDs, pairs.flat());
+    return new Set(typeIDs.filter((typeID) => {
+      const row = rows[typeID];
+      if (row === undefined) return false;
+      return pairs.every(([skill, level]) => {
+        const skillTypeID = row[skill];
+        return skillTypeID === undefined || !(skillTypeID > 0) || (levels.get(skillTypeID) ?? 0) >= (row[level] ?? 0);
+      });
+    }));
   }
   async function abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null> {
     const lists = await api.loadTypeListsHolding([shipTypeID], Object.values(GAME_MODES).map((mode) => mode.allowedShipsListID), callOptions);
@@ -19702,6 +19723,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     collapseWarning: readonlySignal(collapseWarningSignal),
     shipRestrictions: readonlySignal(shipRestrictionsSignal),
     closeShipRestrictions: () => shipRestrictionsSignal.set(null),
+    shipTypesUnlocked,
     abyssJump: readonlySignal(abyssJumpSignal),
     closeAbyssJump: () => abyssJumpSignal.set(null),
     jumpThroughTrace,
