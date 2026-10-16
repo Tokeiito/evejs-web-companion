@@ -3768,6 +3768,27 @@ export async function getTypePrices(
 }
 
 /**
+ * A shopping list read as the client's multibuy window reads one from the clipboard (POST
+ * /api/client-data/multibuy-import; textImporting.importMultibuy): each market type it names with its quantity, in the
+ * order the client adds them, and the lines it could not read.
+ */
+export async function importMultibuy(
+  text: string,
+  options: ApiOptions = {},
+): Promise<{ readonly found: readonly (readonly [number, number])[]; readonly failedLines: readonly string[] }> {
+  const data = await postJson("/api/client-data/multibuy-import", { text }, options);
+  const found: (readonly [number, number])[] = [];
+  for (const entry of Array.isArray(data.found) ? (data.found as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const qty = Number(entry[1]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(qty)) found.push([typeID, qty]);
+  }
+  const failedLines = Array.isArray(data.failedLines) ? (data.failedLines as JsonValue[]).map((line) => String(line)) : [];
+  return { found, failedLines };
+}
+
+/**
  * The global config the game server gave the pilot's client at its login, for the names asked (GET
  * /api/bridge/global-config): each value as given, or null. `available` false where the pilot's transport does not
  * carry it (the web gateway): then the client's defaults stand.

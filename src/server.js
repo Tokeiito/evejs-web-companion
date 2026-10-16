@@ -12,6 +12,7 @@ const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
 const { createClientTextures } = require("./clientData/clientTextures");
+const { createMultibuyImport } = require("./clientData/importMultibuy");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
@@ -13119,6 +13120,26 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
       portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
     res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A shopping list read as the client's multibuy window reads one from the clipboard (buyMultiFromBase
+// ImportShoppingList; textImporting.importMultibuy, src/clientData/importMultibuy.js): the market's types it names,
+// each with its quantity, in the order the client adds them, and the lines it could not read. The names are the
+// market's types' English names (getMarketTypeNames). No session: the market's names do not vary by player.
+const MULTIBUY_IMPORT_MAX_TEXT = 100_000;
+let multibuyImport = null;
+app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A list is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    if (multibuyImport === null) multibuyImport = createMultibuyImport(staticData.getMarketTypeNames());
+    res.json({ ok: true, ...multibuyImport.getTypesAndQty(text) });
   } catch (error) {
     next(error);
   }

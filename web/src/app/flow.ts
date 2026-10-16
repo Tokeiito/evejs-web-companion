@@ -2208,6 +2208,8 @@ export interface AppFlow {
   editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void>;
   /** Its Buy, or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void>;
+  /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
+  importMultiBuy(n: number, text: string | null): Promise<void>;
   /**
    * The requirement window's apply-points button where the pilot has free points (ApplySkillPointsButton.ClickFunc):
    * the window put away and the Apply Skill Points window opened for its levels.
@@ -6680,6 +6682,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const volume = await api.loadTypeVolumes([typeID], callOptions).then((answer) => answer.packaged[typeID] ?? null).catch(() => null);
     multiBuyVolumes.set(typeID, volume);
     return volume;
+  }
+
+  /**
+   * buyMultiFromBase.ImportShoppingList (139 to 151): the clipboard's text read as a shopping list
+   * (textImporting.importMultibuy, the BFF's port of it), what it names added to the window (AddToOrder), and the
+   * lines it could not read said, under CouldNotReadLines (CustomInfo). An empty clipboard is one line not read. A
+   * clipboard the browser would not give is the page's own to say.
+   */
+  async function importMultiBuy(n: number, text: string | null): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n || asked.busy) return;
+    if (text === null) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", "The browser did not let the clipboard be read."]] }, "The browser did not let the clipboard be read.");
+      return;
+    }
+    const read = await api.importMultibuy(text, callOptions);
+    if (read.found.length > 0) await openMultiBuy(new Map(read.found));
+    if (read.failedLines.length > 0) {
+      const info = `${templateWords("UI/SkillQueue/CouldNotReadLines", {}, "These lines were not understood:")}<br>${read.failedLines.join("<br>")}`;
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    }
   }
 
   async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void> {
@@ -19974,6 +19997,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openMultiBuy,
     editMultiBuy,
     answerMultiBuy,
+    importMultiBuy,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,
