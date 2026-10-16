@@ -9,6 +9,7 @@
   // of the list and counted in the ignored box, shown where there is one (scannerToolsUIComponents.IgnoredBox, 121 to
   // 129), which lists each by "id (name)" to be shown again, and Clear All Ignored Results where there are two or
   // more (probeScannerPalette.LoadIgnoredTooltipPanel, 492 to 537). None of it is asked of the server.
+  import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, resultRows, type Vec3 } from "../bridge/probeResults.ts";
   import { fmtDist } from "../space/overview.ts";
@@ -27,6 +28,15 @@
   const space = store.space;
 
   const held = $derived($scanner.probeResults);
+
+  // The distances are from the ship, as the space read has it (michelle.GetMyPosition). This window shows live space
+  // data, so it claims the space feed as every such window does (HudBar, SpaceOverview): on a screen with no HUD (the
+  // phone's layout) nothing else asked, and no distance was shown (seen 2026-10-15).
+  onMount(() => {
+    void flow.loadSpaceSnapshot().catch(() => {});
+    flow.startSpacePolling();
+    return () => flow.stopSpacePolling();
+  });
 
   $effect(() => {
     flow.requestWords(PROBE_RESULT_WORD_LABELS);
