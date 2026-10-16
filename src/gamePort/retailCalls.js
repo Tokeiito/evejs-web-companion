@@ -1981,6 +1981,7 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "TrashItems([itemIDs], locationID)",
   ),
+  "invbroker.SetLabel": typing(same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:343", "invCache.GetInventoryMgr().SetLabel(itemID, name), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr): an item named, from a ship's Change Name or a container's Set Name, the name the window answered with its line breaks made spaces. Recorded on Tranquility (SetLabel(itemID, u'LittleLittle')), the server's OnCfgDataChanged('evelocations', ...) after it."), [1]),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
   // ── an agent (a bound agentMgr object) ────────────────────────────────────

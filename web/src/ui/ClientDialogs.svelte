@@ -329,7 +329,7 @@
     const ask = $shipNameAsked;
     if ((ask?.n ?? null) === shipNameFor) return;
     shipNameFor = ask?.n ?? null;
-    shipNameTyped = "";
+    shipNameTyped = ask?.currentName ?? "";
     shipNameKeep = false;
     if (ask === null) return;
     flow.requestWords([...Object.keys(SHIP_NAME_WORDS), DO_NOT_ASK_AGAIN_LABEL]);
@@ -461,10 +461,12 @@
           <span class="ship-name-count">{shipNameTyped.length}/32</span>
         </label>
         <p class="body">{shipWord("UI/Ship/NameChange/InfoLabel")}</p>
-        <label class="keep">
-          <input type="checkbox" bind:checked={shipNameKeep} />
-          {wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again")}
-        </label>
+        {#if $shipNameAsked.suppress}
+          <label class="keep">
+            <input type="checkbox" bind:checked={shipNameKeep} />
+            {wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again")}
+          </label>
+        {/if}
         <span class="answers">
           <button type="submit">{shipWord("UI/Common/Confirm")}</button>
           <button type="button" onclick={() => answerShipName(false)}>{shipWord("UI/Common/Later")}</button>

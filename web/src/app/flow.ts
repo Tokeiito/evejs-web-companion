@@ -448,7 +448,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
@@ -861,6 +861,10 @@ export interface ShipNameAsk {
   readonly n: number;
   /** The ship's type: the window's hint is its name and the pilot's (UI/Inflight/OwnerAndShip). */
   readonly typeID: number;
+  /** The name the field starts with: the ship's own for Change Name, none for an assembly. */
+  readonly currentName: string;
+  /** Whether the window offers Do Not Ask Again (show_suppress: on an assembly, not on Change Name). */
+  readonly suppress: boolean;
 }
 
 /** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
@@ -2121,6 +2125,8 @@ export interface AppFlow {
   answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
   /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
   assembleShip(shipID: number, board: boolean): Promise<void>;
+  /** An assembled ship of the pilot's renamed, as the client's Change Name does: its name asked, then named. */
+  renameShip(shipID: number): Promise<void>;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -6197,8 +6203,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
   const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
 
-  /** Asks the client's ship naming window: the name on Confirm, null on Later. */
-  function askShipName(typeID: number): Promise<string | null> {
+  /** Asks the client's ship naming window (prompt_rename_ship): the name on Confirm, null on Later. */
+  function askShipName(typeID: number, currentName = "", suppress = true): Promise<string | null> {
     shipNameAnswer?.(null);
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
@@ -6208,7 +6214,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         shipNameAskedSignal.set(null);
         resolve(name);
       };
-      shipNameAskedSignal.set({ n, typeID });
+      shipNameAskedSignal.set({ n, typeID, currentName, suppress });
     });
   }
 
@@ -19706,6 +19712,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       // AssembleAndBoardShip (213 to 240): the first ship assembled boarded, as any ship is (TryActivateShip).
       if (board && assembled !== null) await boardShipChecked(assembled, row.typeID);
+    },
+
+    async renameShip(shipID) {
+      // menuFunctions.SetName (321 to 345), for a ship (itemCheckers.OfferChangeName: assembled, the pilot's own, in
+      // the hangar where it is docked): its row of cfg.evelocations primed and its name the field's start, the ship
+      // naming window asked with no Do Not Ask Again, and on a name, SetLabel on the inventory manager. Later is
+      // nothing. The new name comes back as the ship's row (OnCfgDataChanged), which the page's names follow.
+      const row = store.inventory.get().hangar.rows.find((each) => each.itemID === shipID) ?? null;
+      if (row === null || !row.singleton) return;
+      const key = nameKey("evelocation", shipID);
+      const known = await api.resolveNames([{ kind: "evelocation", id: shipID }], callOptions).catch(() => null);
+      const current = known?.names[key] ?? nameCache.get(key) ?? "";
+      const name = await askShipName(row.typeID, typeof current === "string" ? current : "", false);
+      if (!name) return;
+      await runMutation(async () => {
+        await setLabelCall(bridgeDo, shipID, name);
+      });
     },
 
     askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
