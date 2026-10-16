@@ -923,6 +923,8 @@ export interface SkillsRequired {
 export interface ApplyPointsEntry {
   readonly skill: number;
   readonly level: number;
+  /** The skill's group (evetypes.GetGroupID), which picks its icon (SetSkillGroupIcon); null where not known. */
+  readonly groupID: number | null;
   /** How far toward the level it is trained now (GetProgress), nought to one. */
   readonly progress: number;
   /** How far toward it with the free points (AdjustProgressWithFreePoints), nought to one. */
@@ -6580,6 +6582,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const total = (facts.mine.get(skill)?.trainedSkillPoints ?? 0) + points;
       reached.set(skill, [skillLevelRaw(total, rank), levelProgress(total, rank)]);
     }
+    // Each skill's group, for its row's icon (ApplySkillPointsListEntry.SetSkillGroupIcon).
+    const groups = await api.getTypePrices([...new Set(levels.map(([skill]) => skill))], callOptions)
+      .then((answer) => answer.groupID).catch(() => ({} as Readonly<Record<number, number | null>>));
     const entries: ApplyPointsEntry[] = [];
     for (const [skill, level] of levels) {
       if (entries.some((entry) => entry.skill === skill && entry.level === level)) continue;
@@ -6595,7 +6600,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const levelTicks = rank === null || rate === null || !(rate > 0)
         ? null
         : ((skillPointsForLevel(rank, level) - skillPointsForLevel(rank, level - 1)) / rate) * 600_000_000;
-      entries.push({ skill, level, progress, progressWithFreePoints, timeSavedTicks: levelTicks === null ? null : (progressWithFreePoints - progress) * levelTicks });
+      entries.push({ skill, level, groupID: groups[skill] ?? null, progress, progressWithFreePoints, timeSavedTicks: levelTicks === null ? null : (progressWithFreePoints - progress) * levelTicks });
     }
     applyPointsLevels = levels;
     dialogsSaidCount += 1;

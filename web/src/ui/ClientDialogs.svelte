@@ -38,6 +38,7 @@
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
+  import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
 
@@ -592,7 +593,13 @@
       <p class="body apply-description">{applyWord("UI/SkillTrading/ApplySkillPointsDescription", { color: "#3ea8d9", points: apply.points, amount: apply.entries.length })}</p>
       <ul class="apply-rows">
         {#each apply.entries as entry (`${entry.skill}:${entry.level}`)}
+          {@const groupIcon = skillGroupIcon(entry.groupID)}
+          {@const complete = apply.finished && entry.progressWithFreePoints === 1}
           <li class="apply-row">
+            <!-- ApplySkillPointsListEntry: the skill group's icon at the left (SetSkillGroupIcon), the book's mark at the
+                 right, which turns to the level's completion, in green, once the points have made it (OnGaugeProgressSet). -->
+            <span class="apply-icon">{#if groupIcon !== null}<img src={groupIcon} alt="" width="32" height="32" />{/if}</span>
+            <span class="apply-middle">
             <span class="apply-gauge">
               <span class="apply-fill with-points" style:width={`${entry.progressWithFreePoints * 100}%`}></span>
               <span class="apply-fill trained" class:complete={apply.finished && entry.progressWithFreePoints === 1} style:width={`${entry.progress * 100}%`}></span>
@@ -602,6 +609,12 @@
               <span class="dim">{entry.timeSavedTicks === null ? "" : applyWord("UI/SkillTrading/EstimatedSkillTimeSaved", { timeSaved: Math.max(0, Math.trunc(entry.timeSavedTicks)) })}</span>
               <span>{applyWord("UI/SkillTrading/SkillProgressLabel", { progress: percent(entry.progress), progressWithFreePoints: percent(entry.progressWithFreePoints) })}</span>
             </span>
+            </span>
+            {#if complete}
+              <span class="apply-book complete" style:mask-image={`url(${SKILL_TRAINING_COMPLETE})`} style:-webkit-mask-image={`url(${SKILL_TRAINING_COMPLETE})`}></span>
+            {:else}
+              <img class="apply-book" src={SKILL_BOOK_NOT_YET} alt="" width="32" height="32" />
+            {/if}
           </li>
         {/each}
       </ul>
@@ -934,7 +947,11 @@
   .apply-head { padding: 0.4rem 0.5rem; background: rgba(34, 34, 36, 0.7); }
   .apply-description { text-align: center; }
   .apply-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; max-height: 50vh; overflow-y: auto; }
-  .apply-row { display: flex; flex-direction: column; gap: 0.2rem; }
+  .apply-row { display: grid; grid-template-columns: 32px 1fr 32px; align-items: start; gap: 0.5rem; }
+  .apply-middle { display: flex; flex-direction: column; gap: 0.2rem; }
+  .apply-icon, .apply-book { width: 32px; height: 32px; }
+  /* skillBookIcon.SetRGBA(default_skillbook_green_color): the completion mark drawn in (0.239, 0.647, 0.278). */
+  .apply-book.complete { background-color: rgb(61, 165, 71); mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; }
   .apply-gauge { position: relative; height: 1.9rem; border: 1px solid rgba(255, 255, 255, 0.25); display: flex; align-items: center; justify-content: center; }
   .apply-fill { position: absolute; left: 0; top: 0; bottom: 0; }
   .apply-fill.with-points { background: rgba(54, 102, 140, 0.6); }

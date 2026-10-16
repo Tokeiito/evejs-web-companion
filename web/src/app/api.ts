@@ -3750,6 +3750,8 @@ export async function getTypePrices(
   readonly published: Readonly<Record<number, boolean | null>>;
   /** Each type's portion size (evetypes.GetPortionSize), or null. */
   readonly portionSize: Readonly<Record<number, number | null>>;
+  /** Each type's group (evetypes.GetGroupID), or null. */
+  readonly groupID: Readonly<Record<number, number | null>>;
 }> {
   const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
@@ -3760,7 +3762,9 @@ export async function getTypePrices(
   for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
   const portionSize: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.portionSize))) portionSize[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
-  return { available: data.available === true, basePrice, published, portionSize };
+  const groupID: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.groupID))) groupID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize, groupID };
 }
 
 /**

@@ -11,6 +11,7 @@ const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
+const { createClientTextures } = require("./clientData/clientTextures");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
@@ -239,6 +240,9 @@ const clientNotificationFormats = options.clientNotificationFormats || createCli
   python: config.clientPython,
   onError: (error) => console.warn(`[client-data] the client's notification formats could not be read: ${error && error.message}`),
 });
+// The retail client's own pictures, by their res: path, from the same install
+// (src/clientData/clientTextures.js).
+const clientTextures = options.clientTextures || createClientTextures({ clientRoot: config.clientRoot });
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
 const gameClientFactory = options.gameClientFactory || ((endpoint) => new GameClient(endpoint));
@@ -13102,14 +13106,19 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
     const basePrice = {};
     const isPublished = {};
     const portionSize = {};
+    // evetypes.GetGroupID: each type's group, as the static tables have it (a skill's group picks its icon:
+    // skills/skillConst.py ICON_BY_GROUPID).
+    const groupID = {};
     for (const typeID of asked.slice(0, 50)) {
+      const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+      groupID[typeID] = type && Number.isSafeInteger(Number(type.groupID)) ? Number(type.groupID) : null;
       const price = prices ? Number(prices[typeID]) : NaN;
       basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
       isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
       const portion = portions ? Number(portions[typeID]) : NaN;
       portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
-    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize });
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID });
   } catch (error) {
     next(error);
   }
@@ -15883,6 +15892,22 @@ app.post("/api/icons/cache", requireAuth, (req, res) => {
 // only reason a missing icon answers 404: without it the request falls through
 // to the catch-all, the browser receives index.html with a 200, `<img onerror>`
 // never fires, and every uncached icon becomes a permanently broken image.
+// The client's own textures by their res: path, for the page to draw what the client draws with them (a skill
+// group's icon, a skill book's mark): /client-res/ui/texture/... answers the PNG the install's index names for
+// res:/ui/texture/..., or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
+// player. Above the catch-all, for the same reason as the icon cache below.
+app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.png)$/, (req, res) => {
+  const file = clientTextures.fileFor(`res:/${req.params[0]}`);
+  if (!file) {
+    res.status(404).end();
+    return;
+  }
+  res.set("Cache-Control", "public, max-age=2592000, immutable");
+  res.type("png").sendFile(file, (error) => {
+    if (error && !res.headersSent) res.status(404).end();
+  });
+});
+
 app.use(config.iconCacheUrlPath, express.static(config.iconCacheDir, {
   fallthrough: false,
   immutable: true,
