@@ -167,9 +167,19 @@ export interface OverviewRow extends SpaceEntity {
    * (overviewConst.DEFAULT_COLUMNS), shows and sorts by; null where the snapshot gives no motion for it.
    */
   readonly speed: number | null;
+  /**
+   * The rest of UpdateVelocityData, of the thing beside the pilot's ship, null where either has no motion: its
+   * closing speed along the line between them (radial: the velocities' difference on the line's unit vector, a
+   * positive one moving away), the rest of that difference (transversal), and that over the surface distance, a
+   * metre at least (angular, radians a second).
+   */
+  readonly radialVelocity: number | null;
+  readonly transversalVelocity: number | null;
+  readonly angularVelocity: number | null;
 }
 
-export type OverviewSort = "distance" | "name" | "velocity";
+/** The columns a list is sorted by (overviewConst's, those the page draws). */
+export type OverviewSort = "distance" | "name" | "type" | "velocity" | "radialVelocity" | "transversalVelocity" | "angularVelocity";
 
 /**
  * A velocity's length as the client takes it: of the vector in single precision, in single precision (as
@@ -186,10 +196,50 @@ function speedOf(entity: SpaceEntity): number | null {
 
 /**
  * The Velocity column's figure (overviewScrollEntry._GetColumnValueVelocity: FormatNumeric(int(velocity),
- * useGrouping=True)): whole metres a second, cut, grouped; "-" where there is none.
+ * useGrouping=True)): whole metres a second, cut, grouped; "-" where there is none. The radial and transversal
+ * columns' the same (_GetColumnValueRadialVelocity, _GetColumnValueTransversalVelocity).
  */
 export function formatOverviewVelocity(speed: number | null): string {
-  return speed === null || !Number.isFinite(speed) ? "-" : Math.trunc(speed).toLocaleString("en-US");
+  // int() of a small negative is 0, never a "-0".
+  return speed === null || !Number.isFinite(speed) ? "-" : (Math.trunc(speed) || 0).toLocaleString("en-US");
+}
+
+/**
+ * The angular column's figure (_GetColumnValueAngularVelocity: round(value, 7) in degrees a second,
+ * FormatNumeric(value, useGrouping=True)). How the client's native formatter places a fraction it is given no places
+ * for is not read; this writes three at most.
+ */
+export function formatOverviewAngular(radiansPerSecond: number | null): string {
+  if (radiansPerSecond === null || !Number.isFinite(radiansPerSecond)) return "-";
+  const degrees = (Math.round(radiansPerSecond * 1e7) / 1e7) * 180 / Math.PI;
+  return degrees.toLocaleString("en-US");
+}
+
+type Vec = readonly [number, number, number];
+const f32 = Math.fround;
+/** geo2's vectors are single precision: each step of these is taken in it. */
+const length32 = (v: Vec): number => f32(Math.sqrt(f32(f32(f32(f32(v[0]) * f32(v[0])) + f32(f32(v[1]) * f32(v[1]))) + f32(f32(v[2]) * f32(v[2])))));
+const dot32 = (a: Vec, b: Vec): number => f32(f32(f32(f32(a[0]) * f32(b[0])) + f32(f32(a[1]) * f32(b[1]))) + f32(f32(a[2]) * f32(b[2])));
+
+/**
+ * overviewNodeUtil.UpdateVelocityData's radial, transversal and angular velocities of a thing beside the pilot's ship.
+ */
+function relativeMotion(entity: SpaceEntity, self: SpaceEntity | null, surfaceDistance: number): Pick<OverviewRow, "radialVelocity" | "transversalVelocity" | "angularVelocity"> {
+  const none = { radialVelocity: null, transversalVelocity: null, angularVelocity: null };
+  if (self === null || entity.motionAvailable === false || self.motionAvailable === false) return none;
+  const combined: Vec = [entity.velocity.x - self.velocity.x, entity.velocity.y - self.velocity.y, entity.velocity.z - self.velocity.z];
+  const apart: Vec = [entity.position.x - self.position.x, entity.position.y - self.position.y, entity.position.z - self.position.z];
+  if (![...combined, ...apart].every(Number.isFinite)) return none;
+  const size = length32(apart);
+  const normal: Vec = size > 0 ? [f32(f32(apart[0]) / size), f32(f32(apart[1]) / size), f32(f32(apart[2]) / size)] : [0, 0, 0];
+  const radial = dot32(combined, normal);
+  const across: Vec = [
+    f32(f32(combined[0]) - f32(normal[0] * radial)),
+    f32(f32(combined[1]) - f32(normal[1] * radial)),
+    f32(f32(combined[2]) - f32(normal[2] * radial)),
+  ];
+  const transversal = length32(across);
+  return { radialVelocity: radial, transversalVelocity: transversal, angularVelocity: transversal / Math.max(1, Math.max(surfaceDistance, 0)) };
 }
 
 export interface OverviewFilter {
@@ -311,6 +361,7 @@ export function buildOverviewRows(
   const needle = (filter.text ?? "").trim().toLowerCase();
 
   const radius = ownRadius(snapshot);
+  const self = snapshot.entities.find((entity) => entity.isSelf) ?? null;
   const matched: OverviewRow[] = [];
   for (const entity of snapshot.entities) {
     if (entity.isSelf || !overviewCanList(entity)) {
@@ -333,11 +384,13 @@ export function buildOverviewRows(
     if (needle.length > 0 && !matchesText(entity, lookup(entity), needle)) {
       continue;
     }
+    const surfaceDistance = surfaceDistanceMeters(origin, radius, entity.position, entity.radius);
     matched.push({
       ...entity,
       distance: distanceMeters(origin, entity.position),
-      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+      surfaceDistance,
       speed: speedOf(entity),
+      ...relativeMotion(entity, self, surfaceDistance),
     });
   }
 
@@ -349,11 +402,21 @@ export function buildOverviewRows(
         return byName;
       }
     }
-    if (sort === "velocity") {
-      // Slowest first; one with no speed before any (Python 2 orders None below every number).
-      const byVelocity = ((left.speed ?? -1) - (right.speed ?? -1)) * (options.direction ?? 1);
-      if (byVelocity !== 0) {
-        return byVelocity;
+    if (sort === "type") {
+      const typeOf = (row: OverviewRow) => lookup(row).typeName ?? "";
+      const byType = typeOf(left).localeCompare(typeOf(right));
+      if (byType !== 0) {
+        return byType;
+      }
+    }
+    if (sort === "velocity" || sort === "radialVelocity" || sort === "transversalVelocity" || sort === "angularVelocity") {
+      // Slowest first; one with no figure before any (Python 2 orders None below every number).
+      const figure = (row: OverviewRow) => (sort === "velocity" ? row.speed : row[sort]);
+      const a = figure(left);
+      const b = figure(right);
+      const byFigure = (a === null ? (b === null ? 0 : -1) : b === null ? 1 : a - b) * (options.direction ?? 1);
+      if (byFigure !== 0) {
+        return byFigure;
       }
     }
     // Distance is the tiebreaker for name sort and the primary key otherwise —
@@ -524,14 +587,19 @@ export function hostileRows(
     return [];
   }
   const radius = ownRadius(snapshot);
+  const self = snapshot.entities.find((entity) => entity.isSelf) ?? null;
   return snapshot.entities
     .filter((entity) => isHostile(entity))
-    .map((entity) => ({
-      ...entity,
-      distance: distanceMeters(origin, entity.position),
-      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
-      speed: speedOf(entity),
-    }))
+    .map((entity) => {
+      const surfaceDistance = surfaceDistanceMeters(origin, radius, entity.position, entity.radius);
+      return {
+        ...entity,
+        distance: distanceMeters(origin, entity.position),
+        surfaceDistance,
+        speed: speedOf(entity),
+        ...relativeMotion(entity, self, surfaceDistance),
+      };
+    })
     .sort((left, right) => left.distance - right.distance);
 }
 

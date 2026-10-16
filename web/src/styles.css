@@ -9515,9 +9515,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The columns' grid is the tab's own (SpaceOverview.svelte, space/overviewColumns.ts): the Type column's track is
+   * nothing on a narrow panel, its cell kept in its slot but unseen, and the row's second line says the type. */
+  .spc-colhead,
+  .spc-row-btn { --spc-type-col: 0px; }
   .spc-cell-type,
   .spc-cell-group {
-    display: none;
+    visibility: hidden;
     color: var(--stn-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -9532,13 +9536,25 @@
   /* Far things are dimmer, so the near ones read first. The figure is still
    * there — this is emphasis, not a hidden reading. */
   .spc-cell-range.far { color: var(--stn-muted); }
-  /* The client's Velocity column: 58 wide (overviewConst.COLUMN_DEFAULTSIZE), its figure to the right. */
-  .spc-cell-velocity {
+  /* The client's speed columns, to the right (overviewConst.RIGHTALIGNEDCOLUMNS); Velocity and Angular 58 wide
+   * (COLUMN_DEFAULTSIZE). */
+  .spc-cell-figure {
     text-align: right;
     font-variant-numeric: tabular-nums;
     color: var(--stn-secondary);
     white-space: nowrap;
   }
+  .spc-colhead .spc-cell-figure,
+  .spc-colhead .spc-col-distance { text-align: right; }
+  .spc-columns {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--stn-line);
+    display: grid;
+    gap: 6px;
+  }
+  .spc-columns ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .spc-columns li { display: flex; align-items: center; gap: 6px; }
+  .spc-columns label { flex: 1; display: flex; align-items: center; gap: 6px; }
 
   .spc-empty { padding: 18px 12px; color: var(--stn-muted); }
   .spc-note {
@@ -9559,9 +9575,10 @@
    */
   @container space (min-width: 560px) {
     .spc-colhead,
-    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px 58px; }
+    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px 58px; --spc-type-col: minmax(0, 1fr); }
+    .spc-colhead { --spc-type-col: minmax(0, 1fr); }
     .spc-cell-type,
-    .spc-cell-group { display: block; }
+    .spc-cell-group { visibility: visible; }
     .spc-meta { display: none; }
     .spc-row-btn { min-height: 32px; }
     .spc-search { flex: none; width: 200px; }

@@ -28,7 +28,12 @@
   import TypeIcon from "./TypeIcon.svelte";
   import { SELECTION_GONE, selectionHasVanished, spaceSelection } from "../space/selection.ts";
   import { overviewTabs } from "../space/overviewTabs.ts";
+  import {
+    COLUMN_DESCRIPTIONS, COLUMN_LABELS, COLUMN_WORD_LABELS, DEFAULT_TAB_COLUMNS, DRAWN_COLUMNS, OWN_COLUMN_WORDS,
+    RIGHT_ALIGNED_COLUMNS, listedColumns, moveColumn, overviewColumns, shownColumns, toggleColumn, type OverviewColumnID,
+  } from "../space/overviewColumns.ts";
   import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
     OVERVIEW_RECIPES,
     recipeByID,
@@ -58,6 +63,7 @@
   import {
     buildOverviewRows,
     fmtDist,
+    formatOverviewAngular,
     formatOverviewDistance,
     formatOverviewVelocity,
     hostileLabel,
@@ -124,8 +130,13 @@
   // A distance's unit in the client's own words: asked for once, and used when they are to hand.
   const say = $derived(distanceSay($words.templates));
   $effect(() => {
-    flow.requestWords(DISTANCE_WORD_LABELS);
+    flow.requestWords([...DISTANCE_WORD_LABELS, ...COLUMN_WORD_LABELS]);
   });
+  /** A label's words from the install, or the page's own where they are not to hand. */
+  function columnWord(label: string | undefined, own: string): string {
+    const template = label === undefined ? undefined : $words.templates[label];
+    return typeof template === "string" && template !== "" ? plainText(template) : own;
+  }
   // svelte-ignore state_referenced_locally
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
@@ -191,6 +202,23 @@
   const tabSignal = overviewTabs.selected;
   const allTabs = $derived($tabsSignal);
   const activeTabID = $derived($tabIDSignal);
+  // The tab's columns (bridge: space/overviewColumns.ts), shown in its order; each one's width in the list's grid. The
+  // type's track is nothing on a narrow panel, where the row's second line says the type (styles.css --spc-type-col).
+  const columnsByTab = overviewColumns.byTab;
+  const tabColumns = $derived($columnsByTab[activeTabID] ?? DEFAULT_TAB_COLUMNS);
+  const shownCols = $derived(shownColumns(tabColumns));
+  const COLUMN_TRACKS: Readonly<Record<string, string>> = {
+    ICON: "24px", NAME: "minmax(0, 1.4fr)", TYPE: "var(--spc-type-col)", DISTANCE: "88px", VELOCITY: "58px", ANGULARVELOCITY: "58px",
+  };
+  const gridColumns = $derived(shownCols.map((column) => COLUMN_TRACKS[column] ?? "72px").join(" "));
+  /** The sort a column's header gives, or null for one that does not sort. */
+  const SORT_BY_COLUMN: Readonly<Partial<Record<OverviewColumnID, OverviewSort>>> = {
+    DISTANCE: "distance", NAME: "name", TYPE: "type", VELOCITY: "velocity", RADIALVELOCITY: "radialVelocity",
+    TRANSVERSALVELOCITY: "transversalVelocity", ANGULARVELOCITY: "angularVelocity",
+  };
+  /** The sorts ordered before the list's cap (buildOverviewRows' direction). */
+  const FIGURE_SORTS: ReadonlySet<OverviewSort> = new Set(["velocity", "radialVelocity", "transversalVelocity", "angularVelocity"]);
+  let columnsOpen = $state(false);
   const activeTab = $derived($tabSignal);
 
   /**
@@ -403,8 +431,8 @@
     // ⚠ Reversed for DISPLAY only. The cap keeps the NEAREST rows, so "farthest
     // first" is the far end of what is on the list, not of what is on the grid —
     // which is why the truncation line below is never hidden.
-    // (The Velocity sort is ordered before its cap, in either direction: buildOverviewRows.)
-    return sortDir === 1 || sortKey === "velocity" ? built : [...built].reverse();
+    // (The speed sorts are ordered before their cap, in either direction: buildOverviewRows.)
+    return sortDir === 1 || FIGURE_SORTS.has(sortKey) ? built : [...built].reverse();
   });
 
   const truncated = $derived(overview.matched > overview.rows.length);
@@ -1604,34 +1632,63 @@
       <span class="spc-search-glyph" aria-hidden="true">⌕</span>
       <input type="search" placeholder="name, type or group" aria-label="Search what is around you" bind:value={search} />
     </label>
+    <!-- The tab's columns: the header menu's ticks (GetColumnVisibilitySubMenu) and the configuration window's order
+         and reset (columnsPanel.py), in one place, as the page has no menu on the header. -->
+    <button type="button" class="spc-tool" aria-expanded={columnsOpen} onclick={() => (columnsOpen = !columnsOpen)}>Columns</button>
   </div>
+  {#if columnsOpen}
+    {@const caption = $words.templates["UI/Overview/TabColumnsCaption"]}
+    <div class="spc-columns" role="group" aria-label="Columns">
+      <!-- ColumnConfigurationWindow's caption, with the tab's name. -->
+      <p class="spc-menu-head">
+        {typeof caption === "string" ? plainText(formatTemplate(caption, { tabName: activeTab.name }, { nameOf: () => "" })) : `Columns: ${activeTab.name}`}
+      </p>
+      <ul>
+        {#each listedColumns(tabColumns).filter((column) => DRAWN_COLUMNS.has(column)) as column, index (column)}
+          <li>
+            <label title={COLUMN_DESCRIPTIONS[column] ? columnWord(COLUMN_DESCRIPTIONS[column], "") : undefined}>
+              <input
+                type="checkbox"
+                checked={tabColumns.visible.includes(column)}
+                onchange={() => overviewColumns.set(activeTabID, toggleColumn(tabColumns, column))}
+              />
+              {columnWord(COLUMN_LABELS[column], OWN_COLUMN_WORDS[column])}
+            </label>
+            <button type="button" class="spc-tool" aria-label="Move up" disabled={index === 0}
+              onclick={() => overviewColumns.set(activeTabID, moveColumn(tabColumns, column, -1))}>↑</button>
+            <button type="button" class="spc-tool" aria-label="Move down"
+              onclick={() => overviewColumns.set(activeTabID, moveColumn(tabColumns, column, 1))}>↓</button>
+          </li>
+        {/each}
+      </ul>
+      <button type="button" class="spc-tool" onclick={() => overviewColumns.reset(activeTabID)}>
+        {columnWord("UI/Overview/ResetColumns", "Reset columns")}
+      </button>
+    </div>
+  {/if}
 
   <!-- ============================================================= content -->
   <div class="spc-content" onscroll={() => (rangeMenu = null)}>
-    <div class="spc-colhead">
-      <span class="spc-cell-icon"></span>
-      <button type="button" class="spc-sort spc-cell-name" class:on={sortKey === "name"} onclick={() => sortBy("name")}>
-        Name {sortArrow("name")}
-      </button>
-      <span class="spc-cell-type">Type</span>
-      <span class="spc-cell-group">Group</span>
-      <button
-        type="button"
-        class="spc-sort spc-cell-range"
-        class:on={sortKey === "distance"}
-        onclick={() => sortBy("distance")}
-      >
-        Distance {sortArrow("distance")}
-      </button>
-      <!-- The client's default columns end with Velocity (overviewConst.DEFAULT_COLUMNS). -->
-      <button
-        type="button"
-        class="spc-sort spc-cell-velocity"
-        class:on={sortKey === "velocity"}
-        onclick={() => sortBy("velocity")}
-      >
-        Velocity {sortArrow("velocity")}
-      </button>
+    <div class="spc-colhead" style="grid-template-columns: {gridColumns}">
+      {#each shownCols as column (column)}
+        {@const sort = SORT_BY_COLUMN[column]}
+        {#if column === "ICON" || sort === undefined}
+          <span class="spc-cell-icon"></span>
+        {:else}
+          <button
+            type="button"
+            class="spc-sort spc-col-{column.toLowerCase()}"
+            class:spc-cell-name={column === "NAME"}
+            class:spc-cell-type={column === "TYPE"}
+            class:spc-cell-figure={RIGHT_ALIGNED_COLUMNS.has(column)}
+            class:on={sortKey === sort}
+            title={COLUMN_DESCRIPTIONS[column] ? columnWord(COLUMN_DESCRIPTIONS[column], "") : undefined}
+            onclick={() => sortBy(sort)}
+          >
+            {columnWord(COLUMN_LABELS[column], OWN_COLUMN_WORDS[column])} {sortArrow(sort)}
+          </button>
+        {/if}
+      {/each}
     </div>
 
     <ul class="spc-rows">
@@ -1646,10 +1703,13 @@
             class:picked={row.itemID === selectedID}
             class:hostile={isHostile(row)}
           >
-            <button type="button" class="spc-row-btn" aria-pressed={row.itemID === selectedID} onclick={() => pick(row.itemID)}>
+            <button type="button" class="spc-row-btn" style="grid-template-columns: {gridColumns}" aria-pressed={row.itemID === selectedID} onclick={() => pick(row.itemID)}>
+              {#each shownCols as column (column)}
+              {#if column === "ICON"}
               <span class="spc-cell-icon">
                 <TypeIcon typeID={row.typeID} name={rowName(row)} size="sm" />
               </span>
+              {:else if column === "NAME"}
               <span class="spc-cell-name">
                 <span class="spc-name" class:hostile={isHostile(row)}>
                   {rowName(row)}{#if lockedIDs.has(row.itemID)}<span class="spc-lock-mark" title="Locked">⌖</span>{/if}
@@ -1670,12 +1730,24 @@
                 {/if}
                 <span class="spc-meta">{typeName(row)} · {groupName(row)}</span>
               </span>
+              {:else if column === "TYPE"}
               <span class="spc-cell-type">{typeName(row)}</span>
-              <span class="spc-cell-group">{groupName(row)}</span>
+              {:else if column === "DISTANCE"}
               <span class="spc-cell-range" class:far={row.surfaceDistance >= 100_000}>
                 {formatOverviewDistance(row.surfaceDistance, say)}
               </span>
-              <span class="spc-cell-velocity">{formatOverviewVelocity(row.speed)}</span>
+              {:else if column === "VELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.speed)}</span>
+              {:else if column === "RADIALVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.radialVelocity)}</span>
+              {:else if column === "TRANSVERSALVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewVelocity(row.transversalVelocity)}</span>
+              {:else if column === "ANGULARVELOCITY"}
+              <span class="spc-cell-figure">{formatOverviewAngular(row.angularVelocity)}</span>
+              {:else}
+              <span></span>
+              {/if}
+              {/each}
             </button>
             <!--
               ⚠ NO PER-ROW HIDE CONTROL, AND THAT IS THE POINT. The first pass
