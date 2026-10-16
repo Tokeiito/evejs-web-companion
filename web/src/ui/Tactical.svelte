@@ -448,6 +448,9 @@
       locked: $targeting.lockedTargetIDs.includes(picked),
       acquiring: $targeting.acquiringTargetIDs.includes(picked),
       gateLink: gateLinkFor($space.gateLinks, picked),
+      // Open Cargo's: the thing's group, and whether the ship warps.
+      groupID: row.groupID ?? null,
+      warping: $space.snapshot?.ship?.mode === "WARP",
       // Passed even though the multi-step filter below drops "Mine this"
       // anyway: the ring and the bar must hand the SAME context to the same
       // decider, or they will one day disagree about a verb neither filters.

@@ -288,6 +288,18 @@
     }
   });
 
+  // A can or a wreck opened by Open Cargo (flow.openCargo): its place shown, as the client's Inventory.OpenOrShow
+  // shows it in the primary window; also where this window is drawn for it.
+  // svelte-ignore state_referenced_locally
+  const cargoShown = flow.cargoShown;
+  let servedCargoShown = 0;
+  $effect(() => {
+    const shown = $cargoShown;
+    if (shown === null || shown.n === servedCargoShown) return;
+    servedCargoShown = shown.n;
+    if ($inventory.container?.itemID === shown.itemID) view = "container";
+  });
+
   // The container closed under us (or was never open): fall back rather than
   // sit on a location that no longer exists.
   $effect(() => {

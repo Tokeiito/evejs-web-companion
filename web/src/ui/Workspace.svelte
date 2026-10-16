@@ -324,6 +324,17 @@
       open(id);
     }
   };
+  // A can or a wreck opened by Open Cargo (flow.openCargo): the inventory window opened or raised for it, as the
+  // client's Inventory.OpenOrShow opens its primary window. Each one asked after this desktop was drawn.
+  // svelte-ignore state_referenced_locally
+  const cargoShown = flow.cargoShown;
+  let servedCargoShown = cargoShown.get()?.n ?? 0;
+  $effect(() => {
+    const shown = $cargoShown;
+    if (shown === null || shown.n === servedCargoShown) return;
+    servedCargoShown = shown.n;
+    openFromPopup("inventory");
+  });
   let servedOpenRequest = 0;
   $effect(() => {
     const request = openRequest;
