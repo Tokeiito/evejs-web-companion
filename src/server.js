@@ -1003,7 +1003,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // which that gate lets through, is CmdStop. So was every change of place the page makes (the undock, a flight
   // route until 2026-10-14).
   const ordersTheShip = body.service === "beyonce" && body.method !== "CmdStop";
-  if (write && (ordersTheShip || placeChangeOf(body.service, body.method) !== null) && heldBackForDroneRecovery(req, res)) {
+  if (write && (ordersTheShip || placeChangeOf(body.service, body.method, body.args) !== null) && heldBackForDroneRecovery(req, res)) {
     return;
   }
   // A call the client makes on an object of the service's for a thing it names (its Moniker(service, what)) says
@@ -1104,7 +1104,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // A write that takes the pilot to another place is made under the BFF's keeping of the session change, as the
   // client's session manager makes it and as its route made it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS): it
   // is answered as any call here is, once the pilot is usable in its new place.
-  const placeChange = placeChangeOf(body.service, body.method);
+  const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (placeChange !== null) {
     await dispatchPlaceChangeWrite(req, res, next, placeChange, body.service, body.method,
       Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
@@ -4621,6 +4621,9 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            and CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID)). Refused for a pilot not in space and
  *            for a member, a beacon or a system that is no number. Kept as a stargate's jump is (its keeping, latch
  *            and repark), into the beacon's system.
+ *   abyss    a filament's solo deploy into its pocket (keyActivationWindow.py 49 to 51: PerformSessionChange('JumpToAbyss',
+ *            abyss.deploy_entrance_gate, itemID, gameModeID)). Refused for a pilot not in space and for a filament
+ *            that is no number. Kept as a stargate's jump is (its keeping, latch and repark), into the pocket.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4700,6 +4703,17 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, toSolarSystemID: beaconSystemID, shipID };
+    } else if (kind === "abyss") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const itemID = Number(args[0]);
+      if (!Number.isSafeInteger(itemID) || itemID <= 0 || args.length !== 2) {
+        res.status(400).json({ ok: false, error: "INVALID_ITEM", message: "A filament is deployed by its number and the game mode's." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
     } else if (kind === "bridge") {
       if (before.flight.inSpace !== true) {
         res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
@@ -4714,9 +4728,9 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
-    // (A cyno's jump and a jump gate's are kept as a stargate's: a session into another system, the park bound again
-    // there.)
-    const keeping = kind === "cyno" || kind === "bridge" ? "stargate" : kind;
+    // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
+    // system, the park bound again there.)
+    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" ? "stargate" : kind;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -4765,7 +4779,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" ? "stargate" : kind)) {
+    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);
@@ -5443,7 +5457,9 @@ app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
 
 // --- abyssalMgr WRITES (5) — server-side rejection/no-op stubs
 // Its 5 write routes, made for no screen of the page's, went on 2026-10-14 (the loop's item 62): nothing
-// asked them. The pairs stay writes (bridgeCallPolicy.js), so the generic call refuses them.
+// asked them. The pairs stay writes (bridgeCallPolicy.js), so the generic call refuses them. A filament's deploy,
+// AbyssalEntranceDeployment, is the page's own write since 2026-10-15 (web/src/bridge/abyssalKeys.ts), solo's a
+// session change (dispatchPlaceChangeWrite, "abyss").
 
 // --- pvpFilamentMgr WRITES (3) — server-side rejection/no-op stubs
 // Its 3 write routes, made for no screen of the page's, went on 2026-10-14 (the loop's item 62): nothing
@@ -13341,6 +13357,29 @@ app.get("/api/types/compressed", requireAuth, (req, res, next) => {
       }
     }
     res.json({ ok: true, source: "static-data", compressedTypeIDs, capped: asked.length > TYPE_VOLUME_TYPE_LIMIT, limit: TYPE_VOLUME_TYPE_LIMIT });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The client type lists that hold each of some types, of those asked (staticData.getTypeListsHolding: the client's
+// evetypes.GetTypeIDsByListID), for a check the client makes against a list: a filament's game mode's hulls
+// (abyss/game_mode.py is_ship_allowed). A type or a list the tables lack answers null.
+app.get("/api/types/type-lists", requireAuth, (req, res, next) => {
+  const ids = (value) => typeof value === "string" && /^\d+(?:,\d+)*$/.test(value) ? [...new Set(value.split(",").map(Number))] : [];
+  const typeIDs = ids(req.query.typeIDs);
+  const listIDs = ids(req.query.listIDs);
+  if (!typeIDs.length || typeIDs.length > 32 || !listIDs.length || listIDs.length > 16 ||
+    [...typeIDs, ...listIDs].some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    res.status(400).json({ ok: false, error: "INVALID_TYPE_LIST_QUERY", message: "Bounded type and type list IDs are required." });
+    return;
+  }
+  try {
+    const lists = {};
+    for (const typeID of typeIDs) {
+      lists[String(typeID)] = typeof staticData.getTypeListsHolding === "function" ? staticData.getTypeListsHolding(typeID, listIDs) : null;
+    }
+    res.json({ ok: true, source: "static-data", lists });
   } catch (error) {
     next(error);
   }

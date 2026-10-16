@@ -3506,6 +3506,33 @@ export async function loadOverloadEffects(
   return effects;
 }
 
+// --- The client type lists that hold a type (static reference data) --------------
+// GET /api/types/type-lists?typeIDs=...&listIDs=... answers { lists }: for each type, the lists among those asked that
+// hold it (the client's evetypes.GetTypeIDsByListID), or null where the tables lack the type or a list.
+
+export async function loadTypeListsHolding(
+  typeIDs: readonly number[],
+  listIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, readonly number[] | null>>> {
+  const data = await getJson(
+    `/api/types/type-lists?typeIDs=${encodeURIComponent(typeIDs.join(","))}&listIDs=${encodeURIComponent(listIDs.join(","))}`,
+    options,
+  );
+  const raw = typeof data.lists === "object" && data.lists !== null && !Array.isArray(data.lists)
+    ? (data.lists as Record<string, JsonValue>)
+    : {};
+  const lists: Record<number, readonly number[] | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    lists[typeID] = Array.isArray(value)
+      ? value.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id) && listIDs.includes(id))
+      : null;
+  }
+  return lists;
+}
+
 // --- A type's compressed form (static reference data) -------------------------
 // GET /api/types/compressed?typeIDs=... answers { compressedTypeIDs }: each type's compressed form, or null where it
 // has none, as the server compresses. The client has it in its own static data (itemcompression/data.py) and offers

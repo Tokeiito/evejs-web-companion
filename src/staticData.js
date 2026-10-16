@@ -2013,6 +2013,28 @@ function getClientTypeList(listID) {
   return buildIndex("clientTypeLists", "typeLists", "listID").get(Number(listID) || 0) || null;
 }
 
+/**
+ * The client type lists among `listIDs` that hold a type (evetypes.GetTypeIDsByListID: the list's types and those of
+ * its groups and categories, less those it leaves out), as the server matches them
+ * (server/src/services/inventory/typeListAuthority.js). Null for a type the tables do not know or a list they lack.
+ */
+function getTypeListsHolding(typeID, listIDs) {
+  const type = getType(typeID);
+  if (!type) return null;
+  const groupID = Number(type.groupID);
+  const categoryID = Number(type.categoryID);
+  const held = [];
+  for (const listID of listIDs) {
+    const list = getClientTypeList(listID);
+    if (!list) return null;
+    const has = (key, id) => Array.isArray(list[key]) && list[key].map(Number).includes(id);
+    const included = has("includedTypeIDs", Number(typeID)) || has("includedGroupIDs", groupID) || has("includedCategoryIDs", categoryID);
+    const excluded = has("excludedTypeIDs", Number(typeID)) || has("excludedGroupIDs", groupID) || has("excludedCategoryIDs", categoryID);
+    if (included && !excluded) held.push(listID);
+  }
+  return held;
+}
+
 function getNpcIndustryFacility(facilityID) {
   return buildIndex(
     "industryFacilities",
@@ -2042,6 +2064,7 @@ module.exports = {
   getAllIndustryBlueprints,
   getTypesInGroup,
   getClientTypeList,
+  getTypeListsHolding,
   resolveNames,
   getMarketGroup,
   getMarketGroupName,

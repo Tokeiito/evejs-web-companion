@@ -151,6 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
+import { ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, GAME_MODES, abyssErrorsOfRefusal, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
 import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -1122,6 +1123,20 @@ export interface AppFlow {
   editProbeResultFilter(filterID: number, name: string, groups: readonly string[]): void;
   /** A filter's delete, once asked (scanSvc.DeleteFilter, RemoveFromActiveFilterSet). */
   deleteProbeResultFilter(filterID: number): void;
+  /** The key activation window's combo as kept for the character (settings.char.ui 'abyssGameModeSetting'), 1 where none is. */
+  abyssGameModeSetting(): 1 | 2 | 3;
+  /** The combo's choice kept for the character (KeyActivationWindow.OnGameModeChanged). */
+  keepAbyssGameModeSetting(value: 1 | 2 | 3): void;
+  /** A filament's tier and weather (its type's attributes 2761 and 2760), each null where the tables have none. */
+  filamentFacts(typeID: number): Promise<{ readonly tier: number | null; readonly weather: number | null }>;
+  /** Which of the game modes' hull lists hold a ship's type (abyss/game_mode.py is_ship_allowed); null where not read. */
+  abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null>;
+  /**
+   * The key activation window's button (BaseActivationController.Activate): the filament deployed in the game mode,
+   * solo's through a session change, between two reads of the flight. Answered the errors an AbyssError said, for the
+   * button; any other refusal is put up as the client puts up a UserError, and answered as no errors.
+   */
+  deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5180,6 +5195,58 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       custom: filter.custom.filter((each) => each.id !== filterID),
       active: filter.active.filter((id) => id !== filterID),
     });
+  }
+  // The key activation window (bridge/abyssalKeys.ts, ui/KeyActivationWindow.svelte): its combo kept for the character,
+  // as the client keeps it in settings.char.ui 'abyssGameModeSetting', in this browser.
+  const ABYSS_GAME_MODE_KEPT = "evejs.abyss.gameModeSetting";
+  function abyssGameModeSetting(): 1 | 2 | 3 {
+    const characterID = store.station.get().online?.characterID ?? null;
+    let kept: string | null = null;
+    try {
+      kept = characterID === null ? null : settingsStorage?.getItem(`${ABYSS_GAME_MODE_KEPT}.${characterID}`) ?? null;
+    } catch {
+      kept = null;
+    }
+    const value = Number(kept);
+    return value === 1 || value === 2 || value === 3 ? value : DEFAULT_GAME_MODE_SETTING;
+  }
+  function keepAbyssGameModeSetting(value: 1 | 2 | 3): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`${ABYSS_GAME_MODE_KEPT}.${characterID}`, String(value));
+    } catch {
+      // Storage full or refused: the choice holds while the window is open.
+    }
+  }
+  async function filamentFacts(typeID: number): Promise<{ readonly tier: number | null; readonly weather: number | null }> {
+    const rows = await attributesOfTypes([typeID], [ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID]);
+    const row = rows[typeID];
+    return { tier: row?.[ATTRIBUTE_DIFFICULTY_TIER] ?? null, weather: row?.[ATTRIBUTE_WEATHER_ID] ?? null };
+  }
+  async function abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null> {
+    const lists = await api.loadTypeListsHolding([shipTypeID], Object.values(GAME_MODES).map((mode) => mode.allowedShipsListID), callOptions);
+    return lists[shipTypeID] ?? null;
+  }
+  async function deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }> {
+    try {
+      if (GAME_MODES[gameModeID].jumpsOnDeploy) {
+        // PerformSessionChange('JumpToAbyss', ...): the BFF answers once the session is in the pocket.
+        await applyFlight(await orderedStep(() => deployEntranceGate(bridgeDo, itemID, gameModeID)));
+      } else {
+        await deployEntranceGate(bridgeDo, itemID, gameModeID);
+      }
+      return { deployed: true, errors: [] };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const errors = abyssErrorsOfRefusal(error instanceof BridgeCallError ? error.refusal : null);
+      if (errors !== null) return { deployed: false, errors };
+      // Any other UserError is raised on, and put up as the client puts one up (Activate, 96 and 97).
+      if (!sayRefusalDialog(error, error instanceof Error ? error.message : String(error))) {
+        store.apply({ type: "flight/action-error", message: `Activate refused: ${flightRefusalWords(error)}`, said: false });
+      }
+      return { deployed: false, errors: [] };
+    }
   }
   function keepProbeResultFilter(filter: ResultFilterSettings): void {
     try {
@@ -19020,6 +19087,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     createProbeResultFilter,
     editProbeResultFilter,
     deleteProbeResultFilter,
+    abyssGameModeSetting,
+    keepAbyssGameModeSetting,
+    filamentFacts,
+    abyssShipTypeLists,
+    deployAbyssalFilament,
     loadFleet,
     formFleet,
     inviteFleetMember,
