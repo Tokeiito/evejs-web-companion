@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 406,
-    "sha256": "e22867ff9304a7eb33cdf5badf5c019072368a9d4d13bb0a30652c8a358f3f4c",
+    "count": 408,
+    "sha256": "440d3fe0147856e2897265b91a4b471ea8398674ca4fff036a17f55f07c87956",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -764,6 +764,7 @@
       "agentMgr.RemoveOfferFromJournal",
       "agentMgr.WarpToAgentInSpace",
       "agentMgr.WarpToLocation",
+      "allianceFittingMgr.DeleteFitting",
       "allianceFittingMgr.SaveFitting",
       "allianceFittingMgr.UpdateFitting",
       "allianceFittingMgr.UpdateNameAndDescription",
@@ -850,6 +851,7 @@
       "contractProxy.GM_ExpireContract",
       "contractProxy.PlaceBid",
       "contractProxy.SplitStack",
+      "corpFittingMgr.DeleteFitting",
       "corpFittingMgr.SaveFitting",
       "corpFittingMgr.SaveManyFittings",
       "corpFittingMgr.UpdateFitting",
@@ -1165,6 +1167,7 @@
       "agentMgr.GotoLocation",
       "agentMgr.RemoveOfferFromJournal",
       "agentMgr.WarpToLocation",
+      "allianceFittingMgr.DeleteFitting",
       "allianceFittingMgr.SaveFitting",
       "allianceFittingMgr.UpdateFitting",
       "allianceFittingMgr.UpdateNameAndDescription",
@@ -1204,6 +1207,7 @@
       "charMgr.SaveCharacterSetting",
       "charMgr.UnblockOwners",
       "contractProxy.AcceptContract",
+      "corpFittingMgr.DeleteFitting",
       "corpFittingMgr.SaveFitting",
       "corpFittingMgr.UpdateFitting",
       "corpFittingMgr.UpdateNameAndDescription",

@@ -2350,6 +2350,8 @@ export interface AppFlow {
   saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void>;
   /** Whether the window's Save menu offers Save for Alliance (the pilot's corporation its alliance's executor). */
   saveForAllianceOffered(): Promise<boolean>;
+  /** Which owners' fittings the browser offers Delete Fitting for (fittingUtil.CanDeleteFit), besides the pilot's own. */
+  readonly fittingsDeletable: ReadableSignal<{ readonly corporation: boolean; readonly alliance: boolean }>;
   /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
   saveFitAs(): Promise<void>;
   /** Of saved fittings, those the pilot has the skills for (fittingSvc.HasSkillForFit), kept until the skills change. */
@@ -7360,6 +7362,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const community = await readCommunityFittings(enabled);
     communityFittingsEnabledSignal.set(enabled);
     savedFittingsSignal.set(withFittingsAfter(withFittingsAfter(library, community), alliance));
+    void reckonFittingsDeletable().catch(() => {});
   }
 
   /**
@@ -7818,18 +7821,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * fittingUtil.DeleteFittings for one fitting (376 to 399): the DeleteFitting question, Yes to go on; then
-   * fittingSvc.DeleteFitting (433 to 439): DeleteFitting(ownerID, fittingID) on the owner's fitting manager, and the
-   * fitting let go from those kept. Only the pilot's own is deleted here (fittingUtil.CanDeleteFit: a corporation's
-   * needs its fitting manager's role, and the corporation's manager's delete is no call the page makes).
+   * fittingUtil.CanDeleteFit (354 to 364): the pilot's own fitting; with the fitting manager's role, its corporation's;
+   * and with it, its alliance's where its corporation is the alliance's executor (alliance.GetAlliance).
+   */
+  async function canDeleteFit(ownerID: number): Promise<boolean> {
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return false;
+    if (owner.kind === "character") return true;
+    if (!hasFittingManagerRole()) return false;
+    if (owner.kind === "corporation") return true;
+    return saveForAllianceOffered();
+  }
+
+  // Which owners' fittings the browser offers Delete Fitting for (GetDeletableNodes), as last reckoned with the
+  // fittings read: the pilot's own always.
+  const fittingsDeletableSignal = createSignal<{ readonly corporation: boolean; readonly alliance: boolean }>({ corporation: false, alliance: false });
+
+  /** GetDeletableNodes' CanDeleteFit for the corporation's and the alliance's (the latter asked only where any is kept). */
+  async function reckonFittingsDeletable(): Promise<void> {
+    const online = store.station.get().online;
+    const corporation = online !== null && (online.corporationID ?? 0) > 0 && hasFittingManagerRole();
+    const anyAlliance = (savedFittingsSignal.get() ?? []).some((fitting) => fitting.source === "alliance");
+    const alliance = corporation && anyAlliance && (await saveForAllianceOffered().catch(() => false));
+    fittingsDeletableSignal.set({ corporation, alliance });
+  }
+
+  /**
+   * fittingUtil.DeleteFittings for one fitting (376 to 399), where CanDeleteFit lets it: the DeleteFitting question, Yes
+   * to go on; then fittingSvc.DeleteFitting (433 to 439): DeleteFitting(ownerID, fittingID) on the owner's fitting
+   * manager, and the fitting let go from those kept.
    */
   async function deleteFitting(fittingID: number): Promise<void> {
     const fitting = savedFittingOf(fittingID);
-    const characterID = store.station.get().online?.characterID ?? null;
-    if (fitting === null || characterID === null || fitting.ownerID !== characterID) return;
+    if (fitting === null) return;
+    const owner = fittingOwner(fitting.ownerID);
+    if (owner === null || !(await canDeleteFit(fitting.ownerID))) return;
     if (!(await askDialog("DeleteFitting", { type: "dict", entries: [] }, "Delete this fitting for good?"))) return;
     try {
-      await bridgeDo("charFittingMgr", "DeleteFitting", [fitting.ownerID, fitting.fittingID]);
+      await bridgeDo(owner.manager, "DeleteFitting", [fitting.ownerID, fitting.fittingID]);
     } catch (error) {
       if (isSessionLost(error)) throw error;
       sayRefusalDialog(error, `The fitting could not be deleted: ${errorWords(error)}`);
@@ -21373,6 +21402,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerMultiFit,
     saveViewFitting,
     saveForAllianceOffered,
+    fittingsDeletable: readonlySignal(fittingsDeletableSignal),
     saveFitAs,
     fittingsWithSkills,
     hullsWithSkills,

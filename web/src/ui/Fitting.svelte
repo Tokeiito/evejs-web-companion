@@ -90,6 +90,10 @@
   const hullBrowser = flow.hullBrowser;
   // svelte-ignore state_referenced_locally
   const maxShipsToFit = flow.maxShipsToFit;
+  // svelte-ignore state_referenced_locally
+  const fittingsDeletable = flow.fittingsDeletable;
+  /** GetDeletableNodes (fittingUtil.CanDeleteFit): the pilot's own, and the corporation's or the alliance's where it may. */
+  const deletable = (source: string): boolean => source === "personal" || (source === "corporation" && $fittingsDeletable.corporation) || (source === "alliance" && $fittingsDeletable.alliance);
   /** inventorycommon/const.py categoryStructure. */
   const CATEGORY_STRUCTURE = 65;
   // svelte-ignore state_referenced_locally
@@ -229,8 +233,9 @@
   // from Clipboard and Export to Clipboard (not its Simulate from Clipboard, its files nor Copy All Skills), and the
   // tooltips of a fitting and of a hull. Its words are the install's; the page's own stand in. Not done: a hull's menu,
   // its traits and its Simulate button, the menu's Simulate Fitting, a fitting clicked (simulated), the groups'
-  // Compare, an unsupported fitting shown whole to a game master, and deleting a corporation's fitting (its fitting
-  // manager's role, and a call the page does not make). The tree's open groups are kept while the window is.
+  // Compare, an unsupported fitting shown whole to a game master, and deleting several fittings at once
+  // (DeleteManyFittings). Delete Fitting is offered as GetDeletableNodes offers it (the corporation's and the
+  // alliance's by role). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
@@ -1800,7 +1805,7 @@
               {fitWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}
             </button>
           {/if}
-          {#if saved.source === "personal"}
+          {#if deletable(saved.source)}
             <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
               {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
             </button>
@@ -1883,7 +1888,7 @@
               {#each browserTree.unsupported as saved (saved.fittingID)}
                 <p class="controls saved-fitting">
                   <span>{saved.name} ({$hullBrowser?.types.get(saved.shipTypeID) ? hullName(saved.shipTypeID) : fitWord("UI/Fitting/FittingWindow/UnknownShipType")}) - unsupported</span>
-                  {#if saved.source === "personal"}
+                  {#if deletable(saved.source)}
                     <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
                       {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
                     </button>
