@@ -110,7 +110,9 @@
 //   michelle.CmdWarpToStuff('scan', label, minRange=None, fleet=False)      where it has none
 //
 // on the ballpark's object (michelle.py 737). It answers nothing. Two of Tranquility's recordings have the item's
-// form, with fleet=False beside the range; none has a warp by a label.
+// form, with fleet=False beside the range; none has a warp by a label. The probe results' menu makes the same warp
+// with a range (menusvc.SolarsystemScanMenu, 1403 to 1407: Warp To at the pilot's own warp distance, Warp to Within
+// at one of the seven, GetWarpOptions 1369 to 1381 and WarpToMenu 2254 to 2270), the range a float.
 //
 // The server (beyonceService.Handle_CmdWarpToStuff) flies the session's own ship in the session's own system: an
 // item is a thing of the session's scene, a site the server seeded is given its contents on the way, and a label
@@ -407,7 +409,7 @@ export async function stopShip(act: Ask, flightNow: () => Promise<FlightNow>): P
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. A ship already in warp is answered the same.
  */
-export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string): Promise<void> {
+export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string, minRange: number | null = null): Promise<void> {
   if (label === "") {
     throw new Error("A scan-site label is required.");
   }
@@ -417,7 +419,10 @@ export async function warpToScanResult(act: Ask, flightNow: () => Promise<Flight
   }
   const sites = kept !== null && kept.solarSystemID !== null && kept.solarSystemID === now.solarSystemID ? kept : await readSites();
   const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === label)?.siteID;
-  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange: null, fleet: false });
+  if (minRange !== null && !(Number.isFinite(minRange) && minRange >= 0)) {
+    throw new Error("A warp's range is a distance of nought or more.");
+  }
+  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange, fleet: false });
 }
 
 /** What a warp to a place of the pilot's own looks to before it is asked: that the place has a number, and that the pilot is in space. */

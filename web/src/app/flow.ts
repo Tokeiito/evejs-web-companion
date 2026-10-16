@@ -1108,6 +1108,8 @@ export interface AppFlow {
   showIgnoredProbeResult(resultID: string): void;
   /** The ignored box's Clear All Ignored Results (scanHandler.ClearIgnoredResults). */
   clearIgnoredProbeResults(): void;
+  /** An accurate result's Warp To or Warp to Within (menusvc.SolarsystemScanMenu): to stop `range` metres short. */
+  warpToProbeResult(resultID: string, range: number): Promise<void>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -6059,6 +6061,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function warpToSite(label: string): Promise<void> {
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
+  }
+
+  /**
+   * An accurate probe result warped to from its menu (menusvc.SolarsystemScanMenu, 1403 to 1430): Warp To at the
+   * pilot's own warp distance, or Warp to Within at one of the seven; by the page's own call, with the range.
+   */
+  async function warpToProbeResult(resultID: string, range: number): Promise<void> {
+    await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), resultID, range);
   }
 
   /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the mining bot and the script bots. */
@@ -18902,6 +18912,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ignoreOtherProbeResults,
     showIgnoredProbeResult,
     clearIgnoredProbeResults,
+    warpToProbeResult,
     loadFleet,
     formFleet,
     inviteFleetMember,

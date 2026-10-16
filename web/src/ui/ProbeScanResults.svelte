@@ -11,7 +11,9 @@
   // more (probeScannerPalette.LoadIgnoredTooltipPanel, 492 to 537). None of it is asked of the server.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
-  import { PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, resultRows, type Vec3 } from "../bridge/probeResults.ts";
+  import { MIN_WARP_DISTANCE, PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, isAccurate, resultRows, type Vec3 } from "../bridge/probeResults.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
+  import { flyingDistances, WARP_RANGES } from "./flyingDistances.ts";
   import { fmtDist } from "../space/overview.ts";
   import { nameKey, type NameKind } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -84,6 +86,24 @@
 
   let menuFor = $state<string | null>(null);
   let ignoredOpen = $state(false);
+
+  // An accurate result's warp (scanSvc.GetScannedDownMenu): offered where it is farther off than a warp's least
+  // distance (michelle.IsPositionWithinWarpDistance); Warp To at the pilot's own warp distance (the Settings' "Warp to
+  // within"), and Warp to Within at one of the seven (movementFunctions.GetWarpToRanges, 334 to 343).
+  const accurateIDs = $derived(new Set((held?.results ?? []).filter(isAccurate).map((result) => result.id)));
+  const defaultWarp = $derived(Number($flyingDistances.warp) || 0);
+  let warpListFor = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+  async function warpTo(resultID: string, range: number): Promise<void> {
+    menuFor = null;
+    warpListFor = null;
+    actionError = null;
+    try {
+      await flow.warpToProbeResult(resultID, range);
+    } catch (cause) {
+      actionError = panelErrorWords(cause);
+    }
+  }
 </script>
 
 {#if held !== null}
@@ -139,6 +159,22 @@
                   onclick={() => (menuFor = menuFor === row.id ? null : row.id)}>⋯</button>
                 {#if menuFor === row.id}
                   <span class="result-menu">
+                    {#if accurateIDs.has(row.id) && row.distance !== null && row.distance > MIN_WARP_DISTANCE}
+                      <button type="button" class="minor" onclick={() => warpTo(row.id, defaultWarp)}>
+                        {word(PROBE_RESULT_LABELS.warpToWithinDistance, { distance: fmtDist(defaultWarp) }) ?? `Warp to Within ${fmtDist(defaultWarp)}`}
+                      </button>
+                      <button type="button" class="minor" aria-expanded={warpListFor === row.id}
+                        onclick={() => (warpListFor = warpListFor === row.id ? null : row.id)}>
+                        {word(PROBE_RESULT_LABELS.warpToWithinMenu, { distance: 0 }) ?? "Warp to Within"} {warpListFor === row.id ? "▾" : "▸"}
+                      </button>
+                      {#if warpListFor === row.id}
+                        {#each WARP_RANGES as choice (choice.metres)}
+                          <button type="button" class="minor" onclick={() => warpTo(row.id, choice.metres)}>
+                            {word(PROBE_RESULT_LABELS.warpToWithin, { distance: fmtDist(choice.metres) }) ?? `Within ${fmtDist(choice.metres)}`}
+                          </button>
+                        {/each}
+                      {/if}
+                    {/if}
                     <button type="button" class="minor" onclick={() => { flow.ignoreProbeResults([row.id]); menuFor = null; }}>
                       {word(PROBE_RESULT_LABELS.ignoreResult) ?? "Ignore Result"}
                     </button>
@@ -152,6 +188,9 @@
           {/each}
         </tbody>
       </table>
+    {/if}
+    {#if actionError !== null}
+      <p class="error">{actionError}</p>
     {/if}
   </section>
 {/if}

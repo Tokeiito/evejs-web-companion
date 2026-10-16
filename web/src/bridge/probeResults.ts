@@ -91,6 +91,11 @@ export const PROBE_RESULT_LABELS = Object.freeze({
   clearAllIgnored: "UI/Inflight/Scanner/ClearAllIgnoredResults",
   /** Takes id and desc. */
   resultIdAndDesc: "UI/Inflight/Scanner/ResultIdAndDesc",
+  // An accurate result's warp (movementFunctions.GetDefaultWarpToLabel, 628 to 630; menusvc.GetWarpOptions and
+  // WarpToMenu): the default, the list's own heading and each of its seven. Each takes distance.
+  warpToWithinDistance: "UI/Inflight/WarpToWithinDistance",
+  warpToWithinMenu: "UI/Inflight/Submenus/WarpToWithin",
+  warpToWithin: "UI/Inflight/WarpToWithin",
 });
 export const PROBE_RESULT_WORD_LABELS: readonly string[] = [
   ...new Set([...Object.values(PROBE_RESULT_LABELS), ...Object.values(SCAN_GROUP_LABELS), ...Object.values(SITE_TYPE_LABELS), ...Object.values(COMBAT_GROUP_LABELS)]),
@@ -271,6 +276,20 @@ export interface ShownResult extends ProbeResultEntry {
 }
 
 const certaintyAt = (held: HeldResult, scanNumber: number): number => held.certainties.find(([scan]) => scan === scanNumber)?.[1] ?? 0;
+
+/** appConst.minWarpDistance (1480): a place farther off than this is within warp distance (michelle.py 705 to 715). */
+export const MIN_WARP_DISTANCE = 150_000;
+
+/**
+ * Whether a result's site is known exactly, so that its menu offers the warp, the align and the bookmark
+ * (scanSvc.GetAccurateScannedDownMenu): sensorsuite's SiteDataFromScanResult (probescanner.py 52 to 64) makes an
+ * anomaly's or a structure's site, which is always accurate (sitedata.py 19), and any other a signature's, accurate
+ * at full signal (signatures.py 33 and 34).
+ */
+export function isAccurate(result: ShownResult): boolean {
+  if (result.scanGroupID === SCAN_GROUP.anomalies || result.scanGroupID === SCAN_GROUP.structures) return true;
+  return result.certainty >= 1.0;
+}
 
 /**
  * A held result as the list would show it, still valid or not: ResultsHistory.GetResult, as
