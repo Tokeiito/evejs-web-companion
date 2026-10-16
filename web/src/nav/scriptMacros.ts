@@ -5521,14 +5521,44 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     shouldSetAside(obs.refusals, step.id, "activate", id, MAX_BLOCK_ATTEMPTS) ||
     shouldSetAside(obs.refusals, step.id, "lock", id, MAX_BLOCK_ATTEMPTS);
   const who = { characterID: obs.myCharacterID ?? null, corporationID: obs.myCorporationID ?? null };
+  // ⚠ A PULL THAT GOES NOWHERE. Seen live 2026-10-16: a beam cycled on a can for five minutes and the can never
+  // moved, and the salvager held position the whole time, waiting for a pull in progress; switched off and taken again,
+  // the can came in at once. Each running beam's target is watched: no nearer by PULL_PROGRESS_M for
+  // PULL_STALL_TICKS ticks and the beam is switched off (the planner takes it again); a target that stalls twice is
+  // not tractored again this site, and the ship goes to it instead.
+  const shipAt = ship.position;
+  const distTo = (e: { readonly position: SpaceVector }) => Math.hypot(e.position.x - shipAt.x, e.position.y - shipAt.y, e.position.z - shipAt.z);
+  const byItem = new Map(snapshot.entities.map((e) => [e.itemID, e]));
+  const pullsRaw = (mem["pulls"] as Record<string, { target: number; d: number; ticks: number }> | undefined) ?? {};
+  const stallsRaw = (mem["pullStalls"] as Record<string, number> | undefined) ?? {};
+  const pulls: Record<string, { target: number; d: number; ticks: number }> = {};
+  const pullStalls: Record<string, number> = { ...stallsRaw };
+  const stalledTractorIDs: number[] = [];
+  for (const id of tractorIDs) {
+    const m = module(id);
+    const target = m.targetID === null ? undefined : byItem.get(m.targetID);
+    if (!m.active || target === undefined) continue;
+    const d = distTo(target);
+    const was = pullsRaw[String(id)];
+    const kept = was !== undefined && was.target === target.itemID && d > was.d - PULL_PROGRESS_M
+      ? { target: target.itemID, d: was.d, ticks: was.ticks + 1 } : { target: target.itemID, d, ticks: 0 };
+    if (kept.ticks >= PULL_STALL_TICKS) {
+      stalledTractorIDs.push(id);
+      pullStalls[String(target.itemID)] = (pullStalls[String(target.itemID)] ?? 0) + 1;
+    } else {
+      pulls[String(id)] = kept;
+    }
+  }
+  const pullable = (itemID: number) => (pullStalls[String(itemID)] ?? 0) < PULL_STALLS_ALLOWED;
   const wrecks = wrecksOnGrid(snapshot).map((w) => {
     const ours = isOwnWreck(w, obs);
-    return { itemID: w.itemID, position: w.position, velocity: w.velocity, lootable: ours, looted: looted.has(w.itemID), tractorable: ours, setAside: setAside(w.itemID) };
+    return { itemID: w.itemID, position: w.position, velocity: w.velocity, lootable: ours, looted: looted.has(w.itemID), tractorable: ours && pullable(w.itemID), setAside: setAside(w.itemID) };
   });
   const containers = snapshot.entities.filter((e) => e.kind === "container" && !e.isSelf).map((c) => {
     const ours = isLootableContainer(c, who);
-    return { itemID: c.itemID, position: c.position, velocity: c.velocity, lootable: ours, looted: looted.has(c.itemID), tractorable: ours, setAside: setAside(c.itemID) };
+    return { itemID: c.itemID, position: c.position, velocity: c.velocity, lootable: ours, looted: looted.has(c.itemID), tractorable: ours && pullable(c.itemID), setAside: setAside(c.itemID) };
   });
+  next = { ...next, pulls, pullStalls };
 
   // The spot last chosen, until the ship is there.
   const anchorRaw = mem["anchor"] as SpaceVector | null | undefined;
@@ -5548,6 +5578,7 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     salvageRangeM: shortest(salvagerIDs, SALVAGER_RANGE_FALLBACK_M),
     lootRangeM: LOOT_RANGE_M,
     committedAnchor: anchor,
+    stalledTractorIDs,
   };
   const plan = planSalvageTick(planInput);
   next = { ...next, pending, lockTries };
@@ -5636,6 +5667,12 @@ const BATCH_MAX = 16;
 const BATCH_TRIES = 12;
 /** A wreck whose lock was asked for this many times and never made is set aside for the rest of the site. */
 const LOCK_TRIES = 3;
+/** A beam's target that has come no nearer than this... */
+const PULL_PROGRESS_M = 100;
+/** ...for this many ticks has stalled (a working pull brings a wreck hundreds of metres a tick). */
+const PULL_STALL_TICKS = 5;
+/** Stalls on one item before it is not tractored again this site. */
+const PULL_STALLS_ALLOWED = 2;
 type SalvageBatchStep = Extract<ScriptAction, { kind: "salvageBatch" }>["steps"][number];
 
 /** The plan's input as it will be once `action` has been done: the module on its target, the lock asked for. */
@@ -5646,7 +5683,8 @@ function afterStep(state: SalvagePlanInput, action: SalvageAction): SalvagePlanI
     case "activate":
       return { ...state, tractors: set(state.tractors, action.moduleID, true, action.targetID), salvagers: set(state.salvagers, action.moduleID, true, action.targetID) };
     case "deactivate":
-      return { ...state, tractors: set(state.tractors, action.moduleID, false, null), salvagers: set(state.salvagers, action.moduleID, false, null) };
+      return { ...state, tractors: set(state.tractors, action.moduleID, false, null), salvagers: set(state.salvagers, action.moduleID, false, null),
+        stalledTractorIDs: (state.stalledTractorIDs ?? []).filter((id) => id !== action.moduleID) };
     case "lock":
       return { ...state, pendingLockIDs: [...(state.pendingLockIDs ?? []), action.targetID] };
     case "unlock":
