@@ -14,8 +14,9 @@
 // window's folder and list writes (evemail.py 1116 to 1158), the notification window's four (neocom/notifications.py
 // 233 to 246; notificationSvc.py 223), a bookmark's removal (addressbookService.py DeleteBookmarks, 457 and 459), and
 // the Locations window's folders and subfolders (bookmarksPanel.py DeleteACLFolder, ForgetFolder, DeleteSubfolder and
-// CreateSubfolder, 435 to 487; locations/window.py _create_sub_folder, 152), and the folder window's two before a
-// folder is made offline or with a name another has (bookmarkContainerWindow.py Confirm, 231 to 237).
+// CreateSubfolder, 435 to 487; locations/window.py _create_sub_folder, 152), the folder window's two before a
+// folder is made offline or with a name another has (bookmarkContainerWindow.py Confirm, 231 to 237), and the
+// scanner's warning before a scan in Abyssal space (scanSvc.RequestScans_Check, 183 to 187).
 
 export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "EvemailMailMarkAllRead",
@@ -39,6 +40,7 @@ export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "ConfirmCreateAsInactiveSharedFolder",
   "ConfirmCreateFolderWithDuplicateName",
   "ConfirmForgetFolder",
+  "ProbeScannerAbyssalSpaceWarning",
 ]);
 
 /** The checkbox's words on a dialog that asks (messagebox.py 164 to 168). */

@@ -434,7 +434,15 @@ import {
   placeSellOrder as placeSellOrderCall,
 } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
-import { PROBE_STATE, createScannerWrites, formationOf, type ScannerShip } from "../bridge/scannerWrites.ts";
+import {
+  ABYSSAL_SCAN_QUESTION,
+  ABYSSAL_SCAN_UNANSWERED,
+  PROBE_STATE,
+  createScannerWrites,
+  formationOf,
+  isAbyssalSystem,
+  type ScannerShip,
+} from "../bridge/scannerWrites.ts";
 import { INITIAL_FORMATION, PINPOINT_FORMATION, addProbeToFormation, centerOf, createFormation, removeProbeFromFormation, type FormationState } from "../bridge/probeFormations.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
@@ -17472,9 +17480,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "scannerLaunch":
             await scannerWrites.launch(await api.loadScannerOperations(callOptions));
             return;
-          case "scannerAnalyze":
-            await scannerWrites.analyze(await api.loadScannerOperations(callOptions));
+          case "scannerAnalyze": {
+            const read = await api.loadScannerOperations(callOptions);
+            // In an Abyssal pocket the client asks its pilot first (scanSvc.RequestScans_Check, 183 to 187): a bot
+            // goes on only where the pilot has kept the Yes.
+            if (isAbyssalSystem(read.solarSystemID) && !dialogYesKept(ABYSSAL_SCAN_QUESTION)) {
+              throw new Error(ABYSSAL_SCAN_UNANSWERED);
+            }
+            await scannerWrites.analyze(read);
             return;
+          }
           case "scannerRecover":
             await scannerWrites.recover(await api.loadScannerOperations(callOptions), scannerShip());
             return;

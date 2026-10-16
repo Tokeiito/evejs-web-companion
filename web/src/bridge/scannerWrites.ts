@@ -60,6 +60,10 @@
 //   a scan                                 not in void space, systems 34,000,000 to 34,999,999
 //                                          (ProbeScannerVoidSpaceHint, 188 to 189; inventorycommon/const.py 48
 //                                          and 49)
+//   a scan in Abyssal space                asked of the pilot first, systems 32,000,000 to 32,999,999
+//                                          (ProbeScannerAbyssalSpaceWarning, Yes or No, Yes kept where the box is
+//                                          ticked, 183 to 187; const.py 46 and 47): the Scanner window asks it
+//                                          (Scanner.svelte), and a bot's scan there goes only on a kept Yes
 //   a reconnection                         needs an online probe launcher, and a minute since the last one
 //                                          asked (CanClaimProbes, 299 to 302; RECONNECT_DELAY_MINUTES, 24;
 //                                          ScannerProbeReconnectWait, 284 to 285). The time is noted before the
@@ -69,9 +73,7 @@
 // compiled modules through the client's own Python, which bore out the decompiled source.
 //
 // WHAT THE PAGE DOES NOT DO AS THE CLIENT DOES, and says so:
-//   - It has no formations: a probe launched stays where it came out, and is sent to scan from there.
-//   - In Abyssal space the client asks its pilot before it scans (ProbeScannerAbyssalSpaceWarning, 183 to 187).
-//     The page asks nothing.
+//   - It has the Pinpoint and Spread formations only (bridge/probeFormations.ts): no custom ones, no size slider.
 //   - With probes held and none of them idle the client sends None, a scan by the ship alone. The page has one
 //     button for a scan and one for a launch where the client has one for both, and offers no scan with no idle
 //     probe.
@@ -109,6 +111,19 @@ export const SCAN_RANGE_STEPS = 8;
 export const RECONNECT_DELAY_MS = 60_000;
 /** inventorycommon/const.py 48 and 49: mapVoidSystemMin and mapVoidSystemMax (idCheckers.IsVoidSpaceSystem, 129). */
 const VOID_SYSTEMS: readonly [number, number] = [34_000_000, 34_999_999];
+/** inventorycommon/const.py 46 and 47: mapAbyssalSystemMin and mapAbyssalSystemMax (idCheckers.IsAbyssalSpaceSystem, 101). */
+const ABYSSAL_SYSTEMS: readonly [number, number] = [32_000_000, 32_999_999];
+
+/**
+ * The client's question before a scan in Abyssal space (scanSvc.RequestScans_Check, 183 to 187): the dialog it puts
+ * up, Yes and No, with suppress=uiconst.ID_YES (so Yes alone may be kept); a No and nothing is asked of the server.
+ */
+export const ABYSSAL_SCAN_QUESTION = "ProbeScannerAbyssalSpaceWarning";
+
+/** Whether a system is an Abyssal pocket (idCheckers.IsAbyssalSpaceSystem). */
+export function isAbyssalSystem(systemID: number | null): boolean {
+  return systemID !== null && systemID >= ABYSSAL_SYSTEMS[0] && systemID <= ABYSSAL_SYSTEMS[1];
+}
 
 // The page's own words for what the client refuses. (The client's are its own text, and are not copied.)
 export const SCANNER_NEEDS_SPACE = "Your ship must be in space to use the scanner.";
@@ -124,6 +139,8 @@ export const PROBES_TOO_CLOSE_TO_RECOVER =
 export const NOT_ALL_PROBES_RETURNED =
   "Not every probe could be recalled. Refresh the scanner to see which are still out.";
 export const RECONNECT_NEEDS_A_LAUNCHER = "Reconnecting to probes takes an online probe launcher on your ship.";
+export const ABYSSAL_SCAN_UNANSWERED =
+  "A scan in an Abyssal pocket waits for the pilot's answer to the scanner's warning, which a bot cannot give.";
 
 /** A formation cannot be made of the probes out and the probes loaded. */
 export function notEnoughProbesForAFormation(held: number, loaded: number): string {
