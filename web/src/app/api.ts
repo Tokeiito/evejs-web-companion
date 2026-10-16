@@ -272,6 +272,15 @@ export async function readClosedByServer(characterID: number, options: ApiOption
   return typeof reasonCode === "string" && typeof reason === "string" ? { reasonCode, reason } : null;
 }
 
+/**
+ * GET /api/bridge/pocket-timer: the Abyssal pocket's timer as the pilot was last told it (the end_time of
+ * OnAddExpiryDurationForAbyssalContent, as the wire carries it), or null; `known` false where nothing is kept.
+ */
+export async function readPocketTimer(options: ApiOptions = {}): Promise<{ readonly known: boolean; readonly endTime: JsonValue | null }> {
+  const data = await getJson("/api/bridge/pocket-timer", options);
+  return { known: data.known === true, endTime: (data.endTime ?? null) as JsonValue | null };
+}
+
 export async function provisioningOptions(providerCharacterID: number | null, options: ApiOptions = {}): Promise<import("../bridge/provisioning.ts").ProvisioningOptions> {
   const data = await getJson(`/api/bridge/provisioning/options${providerCharacterID ? `?providerCharacterID=${providerCharacterID}` : ""}`, options);
   return data as unknown as import("../bridge/provisioning.ts").ProvisioningOptions;

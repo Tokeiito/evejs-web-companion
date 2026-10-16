@@ -1239,8 +1239,18 @@ function createGamePortPilots({
   // the pilot's stream as it arrives, and with the next answer, which is what a reader with no stream has.
   // So the copy kept for the answer names the stream frame it also went out in (its cursor), and a reader
   // that has both can tell they are one.
+  // The Abyssal pocket's timer, as the client's abyss service is told it (abyssal_service.py
+  // OnAddExpiryDurationForAbyssalContent, 128 to 131): its end, kept for the pilot until OnAbyssalContentFinished or
+  // the session leaves Abyssal space (the session's change, below), so that a browser drawing the pilot afresh is
+  // answered it (pocketTimer). The client is told it once, at the pocket's entry, and keeps it.
+  function keepPocketTimer(entry, notification) {
+    if (notification.method === "OnAddExpiryDurationForAbyssalContent") entry.pocketTimer = notification.args[0] ?? null;
+    else if (notification.method === "OnAbyssalContentFinished") entry.pocketTimer = null;
+  }
+
   function record(entry, notification) {
     if (SUPPRESSED_NOTIFICATIONS.has(notification.method)) return;
+    keepPocketTimer(entry, notification);
     const frame = publish(entry, { kind: "notification", notification });
     entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
@@ -1817,6 +1827,10 @@ function createGamePortPilots({
     session.onSessionChange((changes) => {
       // What the client's own services tell its object cache to forget on this change.
       forgetNamed(entry, namedOnSessionChange(changes, entry.session.attributes));
+      // Out of Abyssal space (idCheckers.IsAbyssalSpaceSystem: 32,000,000 to 32,999,999) the pocket's timer is no more.
+      if ("solarsystemid2" in changes && !(Number(changes.solarsystemid2[1]) >= 32000000 && Number(changes.solarsystemid2[1]) <= 32999999)) {
+        entry.pocketTimer = null;
+      }
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
@@ -5416,6 +5430,8 @@ function createGamePortPilots({
     readSpaceSnapshot,
     openSessionEventStream,
     accountCall,
+    /** The Abyssal pocket's timer as the pilot was last told it (keepPocketTimer): its end_time, as the notice had it, or null. */
+    pocketTimer: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketTimer ?? null,
     /** What the game server closed a character's last connection with ({ reasonCode, reason, at }), or null. */
     closedByServer: (characterID) => closedByServerByCharacter.get(positive(characterID)) ?? null,
     answerClientQuestion,

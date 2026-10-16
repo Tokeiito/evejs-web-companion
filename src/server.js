@@ -10344,6 +10344,23 @@ function requireExpectedInventoryFlight(res, expected, flight) {
   return true;
 }
 
+// The Abyssal pocket's timer as the pilot was last told it (gamePort/pilots.js keepPocketTimer): the end_time of
+// OnAddExpiryDurationForAbyssalContent, as the notice had it, or null. The client is told it once, at the pocket's
+// entry; a browser drawing the pilot afresh asks this instead. Through the web gateway nothing is kept: known false.
+app.get("/api/bridge/pocket-timer", requireAuth, (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.pocketTimer !== "function") {
+      res.json({ ok: true, known: false, endTime: null });
+      return;
+    }
+    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer({ userid: held.accountID }, held.bridgeSessionID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Why a pilot of this account went offline, where the game server closed its connection with a reason of its own
 // (another login of the account: gamePort/pilots.js closedByServer). The page asks as it lets the pilot go, and says
 // so, as the retail client puts up its connection-lost notice. Null where the server closed nothing.

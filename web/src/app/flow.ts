@@ -5275,6 +5275,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }, Math.max(0, endMs - seconds * 1000 - serverNow())));
     }
   }
+  /** The pocket's timer asked of the BFF (api.readPocketTimer), once for an Abyssal system, where none is known. */
+  let pocketTimerAskedFor: number | null = null;
+  function askPocketTimer(solarSystemID: number | null): void {
+    if (!isAbyssalSystem(solarSystemID) || abyssalTimerSignal.get() !== null || pocketTimerAskedFor === solarSystemID) return;
+    pocketTimerAskedFor = solarSystemID;
+    void api.readPocketTimer(callOptions).then(({ endTime }) => {
+      const endMs = abyssalExpiryMs(endTime);
+      // One already run out is no timer (DeleteWhenFinished); one told meanwhile is the newer.
+      if (endMs !== null && endMs > serverNow() && abyssalTimerSignal.get() === null) abyssalExpiryNoticed(endMs);
+    }).catch(() => {
+      pocketTimerAskedFor = null;
+    });
+  }
   function abyssalContentFinished(): void {
     clearCollapseWarnings();
     abyssalTimerSignal.set(null);
@@ -9206,6 +9219,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scannerLoadGeneration += 1;
     }
     store.apply({ type: "flight/status", status });
+    // The pocket's timer where the page finds its pilot already in a pocket (a browser drawing it afresh): the
+    // client keeps it from the pocket's entry, so the BFF is asked what the pilot was last told, once for the system.
+    askPocketTimer(status.solarSystemID);
     // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
     if (flightSystemChanged) void recheckWaypoints();
     // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off. And an
