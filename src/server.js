@@ -13264,6 +13264,35 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
         owners.push({ key, kind, id });
       }
     }
+    // A named item's own name (the client's cfg.evelocations: a ship, a container, uix.GetItemName): the static
+    // tables have none, and it is asked of the game server as the client asks it, config.GetMultiLocationsEx, by the
+    // game-port transport, which keeps each row it is answered or told of (pilots.js locationsNamed). Off the game
+    // port, or with no pilot on, it is not known, and the page asks again.
+    const namedItems = [];
+    for (const [key, value] of Object.entries(names)) {
+      const separator = key.indexOf(":");
+      if (value === null && key.slice(0, separator) === "evelocation") namedItems.push({ key, id: Number(key.slice(separator + 1)) || 0 });
+    }
+    let locationsAsked = false;
+    if (namedItems.length > 0) {
+      const held = gamePortPilots ? bridgeSessions.get(req.webSessionID) || null : null;
+      if (!held || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...namedItems.map((item) => item.key));
+      } else {
+        locationsAsked = true;
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.locationsNamed(
+            namedItems.map((item) => item.id), { userid: held.accountID }, held.bridgeSessionID));
+          for (const item of namedItems) {
+            const name = named.get(item.id);
+            if (typeof name === "string" && name !== "") names[item.key] = name;
+          }
+        } catch (_error) {
+          unresolved.push(...namedItems.map((item) => item.key));
+        }
+      }
+    }
+
     let ownersAsked = false;
     if (owners.length > 0 && gamePortPilots) {
       const held = bridgeSessions.get(req.webSessionID) || null;
@@ -13291,7 +13320,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       ok: true,
       // Named on the wire so a consumer can see whether a live session was
       // involved at all, rather than inferring it.
-      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : [])].join("+"),
+      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : []), ...(locationsAsked ? ["game-server-locations"] : [])].join("+"),
       count: Object.keys(names).length,
       capped: result.capped,
       limit: result.limit,

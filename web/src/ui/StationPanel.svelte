@@ -59,6 +59,7 @@
     capacityText,
     fillPercent,
     hangarThings,
+    isNamedItem,
     matchesFilter,
     mergeOrder,
     moveDestinations,
@@ -310,8 +311,10 @@
 
   // --- names ----------------------------------------------------------------
 
+  /** uix.GetItemName: a named item's own name (cfg.evelocations) where it has one, its type's otherwise. */
   function nameOf(row: InventoryItemRow): string {
-    return resolvedName($names.resolved, "type", row.typeID);
+    const own = isNamedItem(row) ? $names.resolved[nameKey("evelocation", row.itemID)] : null;
+    return typeof own === "string" && own !== "" ? own : resolvedName($names.resolved, "type", row.typeID);
   }
 
   function nameOnly(id: number | null, kind: NameKind): string {
@@ -346,6 +349,8 @@
     ];
     for (const row of everyRow) {
       refs.push({ kind: "type", id: row.typeID });
+      // A named item's own name, as the client names it (uix.GetItemName).
+      if (isNamedItem(row)) refs.push({ kind: "evelocation", id: row.itemID });
       if (row.categoryID) {
         refs.push({ kind: "category", id: row.categoryID });
       }

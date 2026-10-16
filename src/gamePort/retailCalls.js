@@ -601,7 +601,8 @@ const PROXY_SERVICES = Object.freeze(new Set([
 /**
  * Calls of the client's own that the transport makes when a feature wants them, and that no route of the BFF's
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
- * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners, and the
+ * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners, and cfg.evelocations',
+ * for a named item's own name (a ship, a container: uix.GetItemName, IsValidNamedItem), and the
  * corporations' and alliances' tickers', as the client primes them for the balls added and as its overview gets
  * them (cfg.corptickernames, cfg.allianceshortnames); one facility
  * asked for by itself, as the client's facility service asks where the server names it, where a job was refused
@@ -614,7 +615,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "config.GetMultiAllianceShortNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiLocationsEx", "config.GetMultiCorpTickerNamesEx", "config.GetMultiAllianceShortNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the

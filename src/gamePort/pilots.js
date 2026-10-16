@@ -1192,6 +1192,8 @@ function createGamePortPilots({
   const LOAD_SLOT_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/login/charSelection/characterSelection.py:750", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.evelocations' priming: config.GetMultiLocationsEx(list(keysToGet)), the Recordset's Prime (cfg.py 579), as Get makes it (630 to 645). */
+  const LOCATIONS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
   const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.allianceshortnames' priming: config.GetMultiAllianceShortNamesEx(list(keysToGet)), the Recordset's Prime (eveCfg.py 379). */
@@ -1686,6 +1688,9 @@ function createGamePortPilots({
       /** cfg.eveowners: each owner the server has been asked about, as { name, typeID }, or null for one it had no row for; and the askings, one after another. */
       owners: new Map(),
       ownersWork: Promise.resolve(),
+      /** cfg.evelocations, for the items the server has been asked about: each one's name, or null for one it had no row for; and the askings, one after another. */
+      locations: new Map(),
+      locationsWork: Promise.resolve(),
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
       tickersWork: Promise.resolve(),
@@ -1888,6 +1893,13 @@ function createGamePortPilots({
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a place's or a named item's row as it is now,
+      // kept as cfg.evelocations keeps it, by its first column, the name its second.
+      if (notification.method === "OnCfgDataChanged" && textOf((notification.args ?? [])[0]) === "evelocations") {
+        const row = itemsOf((notification.args ?? [])[1]);
+        const itemID = positive(row[0]);
+        if (itemID !== null) entry.locations.set(itemID, textOf(row[1]));
+      }
       // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
       if (notification.method === "OnItemChange") entry.inventory.itemChanged((notification.args ?? [])[0], (notification.args ?? [])[1]);
       if (notification.method === "OnItemsChanged") {
@@ -2821,6 +2833,36 @@ function createGamePortPilots({
       return new Map(wanted.map((each) => [each, entry.owners.get(each)]));
     }));
     entry.ownersWork = priming.catch(() => {});
+    return priming;
+  }
+
+  /**
+   * cfg.evelocations.Prime(keys) (cfg.py 501 to 600; the Recordset of eveCfg.py 666 over GetLocationsEx and
+   * GetMultiLocationsEx), for a named item's own name, which the client shows for a ship or a container it names
+   * (uix.GetItemName, IsValidNamedItem, 274 to 311): of the items asked about, those not known yet are asked for in
+   * one call, config.GetMultiLocationsEx(a list of their IDs). Each row answered is kept for as long as the pilot is
+   * on, and so is each the server tells of (OnCfgDataChanged('evelocations', row), cfg.py 146 to 161); an item the
+   * server answers no row for is not asked about again (knownLuzers). One asking after another.
+   *
+   * Answers a Map of each item asked about to its name, or to null for one with no row. Fails as the call fails,
+   * with nothing kept of it.
+   */
+  async function locationsNamed(itemIDs, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const wanted = [...new Set((Array.isArray(itemIDs) ? itemIDs : []).map(positive).filter((itemID) => itemID !== null))];
+    const priming = entry.locationsWork.then(() => run(entry, "config", "GetMultiLocationsEx", async () => {
+      const unknown = wanted.filter((itemID) => !entry.locations.has(itemID));
+      if (unknown.length > 0) {
+        ledger.note("config", "GetMultiLocationsEx", LOCATIONS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiLocationsEx", [{ type: "list", items: unknown }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [locationID, locationName] = ["locationID", "locationName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.locations.set(positive(row[locationID]), textOf(row[locationName]));
+        for (const each of unknown) if (!entry.locations.has(each)) entry.locations.set(each, null);
+      }
+      return new Map(wanted.map((each) => [each, entry.locations.get(each) ?? null]));
+    }));
+    entry.locationsWork = priming.catch(() => {});
     return priming;
   }
 
@@ -5802,6 +5844,7 @@ function createGamePortPilots({
     saveSkillQueue,
     journalKept,
     ownersNamed,
+    locationsNamed,
     corpTickersNamed,
     allianceTickersNamed,
     shipInfo,

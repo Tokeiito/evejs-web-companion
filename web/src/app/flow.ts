@@ -3176,6 +3176,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // is told of at the server's next tick, after the re-read of the fit on the call's answer
     // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
     applyShipAttributeChanges(method, args);
+    // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a named item's or a place's row as it is now, its
+    // name the second column: the names kept of named items follow it (the panel's ships, the Fitting window's title).
+    if (method === "OnCfgDataChanged" && args[0] === "evelocations") {
+      const row = Array.isArray(args[1]) ? (args[1] as readonly unknown[]) : isListValue(args[1]) ? args[1].items : [];
+      const itemID = Number(unwrapLong(row[0]) ?? NaN);
+      if (Number.isSafeInteger(itemID) && itemID > 0 && typeof row[1] === "string") {
+        const key = nameKey("evelocation", itemID);
+        nameCache.set(key, row[1]);
+        store.apply({ type: "names/resolved", entries: { [key]: row[1] } });
+      }
+    }
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
       // fleetSvc.OnFleetInvite (1179): from a session in a fleet the client turns the invitation down at once,

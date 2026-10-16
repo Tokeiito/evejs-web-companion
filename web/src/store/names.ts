@@ -62,6 +62,11 @@ export type NameKind =
   | "systemRegion"
   /** A planet by its number, as cfg.evelocations names one ("Muvolailen X"): the planets window's launches. */
   | "planet"
+  /**
+   * A named item by its own ID, as cfg.evelocations names it (a ship, a container: uix.GetItemName), asked of the game
+   * server as the client asks it (config.GetMultiLocationsEx) and kept from its OnCfgDataChanged.
+   */
+  | "evelocation"
   | "owner"
   /** An owner's kind: the group its type is in, by name (Character, Corporation, Alliance, Faction). */
   | "ownerGroup";
