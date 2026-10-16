@@ -67,13 +67,17 @@ function unwrapRowList(result: JsonValue): JsonValue {
 }
 
 /** typeID → m³ per unit, keyed by the string the wire sends; null when unknown. */
+/**
+ * A type's volume by its typeID; and, under "p" and the typeID, a packaged stack's where the client's packaged volume
+ * is another than the type's own (a packaged ship: inventorycommon/util.py GetItemVolume, GetPackagedVolume).
+ */
 export type VolumeMap = Readonly<Record<string, number>>;
 
-function volumeFor(typeID: number, volumes: VolumeMap | undefined): number | null {
+function volumeFor(typeID: number, volumes: VolumeMap | undefined, packaged = false): number | null {
   if (volumes === undefined) {
     return null;
   }
-  const v = volumes[String(typeID)];
+  const v = (packaged ? volumes[`p${typeID}`] : undefined) ?? volumes[String(typeID)];
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 }
 
@@ -111,7 +115,7 @@ function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap |
     // it — it exists for the arithmetic, and the arithmetic wants a count.
     quantity: singleton ? 1 : quantity || stacksize,
     singleton,
-    volume: volumeFor(typeID, volumes),
+    volume: volumeFor(typeID, volumes, !singleton),
   };
 }
 

@@ -14,7 +14,7 @@ const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
-const { STATION_CAPACITY, capacityAnswer, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
+const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -2281,6 +2281,8 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     const askedOf = (spec, flag) => (spec ? boundCall(held, req.webSessionID, spec, "GetCapacity", [flag], null) : noShip());
     const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
     const packaged = onGamePort ? await clientConstants.packagedVolumes() : null;
+    // A packaged stack's volume, the client's, for the rows (readTypeVolumes): read on either transport where it can be.
+    const packagedForVolumes = packaged ?? await packagedTablesOrNull();
     let hangarList;
     let hangarCap;
     let cargoList;
@@ -2344,13 +2346,13 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
       // Per-type VOLUME (m³) for every type in the hangar/cargo, from static
       // reference data — the SAME read the assets route does, no bridge call and
-      // no new allowlist pair. Volume is a property of the TYPE, not the stack,
-      // so it cannot vary by player. The browser needs it to work out how much of
+      // no new allowlist pair — and a packaged stack's own, the client's
+      // (readTypeVolumes). The browser needs it to work out how much of
       // a stack fits in a hold before it tries the move; absent for a type the
       // static tables do not know (handled as "unknown", never zero).
       volumes: {
-        ...readTypeVolumes(settledValue(hangarList)),
-        ...readTypeVolumes(settledValue(cargoList)),
+        ...readTypeVolumes(settledValue(hangarList), packagedForVolumes),
+        ...readTypeVolumes(settledValue(cargoList), packagedForVolumes),
       },
     });
   } catch (error) {
@@ -3257,7 +3259,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // to hand the WHOLE stack over and let the server judge — and a can
       // holding more than the free space was refused outright, over and over,
       // rather than being drained a load at a time.
-      volumes: readTypeVolumes(list.value.result),
+      volumes: readTypeVolumes(list.value.result, await packagedTablesOrNull()),
     });
   } catch (error) {
     next(error);
@@ -3643,6 +3645,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
         return;
       }
     }
+    const packagedForVolumes = await packagedTablesOrNull();
     res.json({
       ok: true,
       available: true,
@@ -3655,7 +3658,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
           // when a corporation never renamed it. A flag number is never shown.
           name: divisionNames[division] || null,
           list: settled.status === "fulfilled" ? settled.value.result : null,
-          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result) : {},
+          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result, packagedForVolumes) : {},
           error:
             settled.status === "rejected"
               ? String((settled.reason && settled.reason.code) || "READ_FAILED")
@@ -6522,21 +6525,37 @@ function readModuleChargeFits(result) {
  * tables do not know are simply absent from the map — never zero, which the
  * page would have to render as a real measurement.
  */
-function readTypeVolumes(result) {
-  const rows = result && Array.isArray(result.items) ? result.items : [];
+function readTypeVolumes(result, packaged = null) {
   const volumes = {};
-  for (const row of rows) {
+  for (const row of inventoryListItems(result)) {
     const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
     const typeID = Number(fields && fields.typeID) || 0;
-    if (typeID <= 0 || Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+    if (typeID <= 0) {
       continue;
     }
-    const volume = staticTypeVolume(typeID);
-    if (volume !== null) {
-      volumes[typeID] = volume;
+    if (!Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+      const volume = staticTypeVolume(typeID);
+      if (volume !== null) {
+        volumes[typeID] = volume;
+      }
+    }
+    // A packaged stack takes the client's packaged volume, not its type's own (inventorycommon/util.py GetItemVolume,
+    // GetPackagedVolume): a packaged Rifter 2,500 m³ where an assembled one is 27,289. Given as "p" and the type where
+    // it is another than the type's own, from the client's tables where they could be read.
+    const key = `p${typeID}`;
+    if (packaged && !Number(fields.singleton) && !Object.prototype.hasOwnProperty.call(volumes, key)) {
+      const packed = packagedVolume(typeID, Number(fields.groupID), staticTypeVolume, packaged);
+      if (packed !== null && packed !== undefined && packed > 0 && packed !== volumes[typeID]) {
+        volumes[key] = packed;
+      }
     }
   }
   return volumes;
+}
+
+/** The client's packaged volumes (src/clientData/clientConstants.js), or null where they cannot be read. */
+function packagedTablesOrNull() {
+  return clientConstants.packagedVolumes().catch(() => null);
 }
 
 /**
