@@ -32,7 +32,7 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { romanLevel } from "../bridge/skills.ts";
   import {
-    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, questionText, wordsLabels, wordsNameRefs,
+    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
   } from "../bridge/questions.ts";
   import { SHORT_INTERVAL_WORD_LABELS, shortWrittenInterval } from "../bridge/timeInterval.ts";
@@ -56,6 +56,8 @@
   const skillsRequired = flow.skillsRequired;
   // svelte-ignore state_referenced_locally
   const shipNameAsked = flow.shipNameAsked;
+  // svelte-ignore state_referenced_locally
+  const skillBooksAsked = flow.skillBooksAsked;
 
   /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
   const QUANTITY_WORDS: Readonly<Record<string, string>> = {
@@ -240,6 +242,9 @@
     "UI/SkillQueue/SkillBookMissing": "The book is not injected",
     "UI/SkillQueue/RareSkillBookMissing": "The book is not injected, and is not sold",
     "UI/InfoWindow/SkillNotTrainedToRequiredLevel": "Short of the level needed",
+    "UI/Skills/BuyAndTrain": "Buy them and train",
+    "UI/Skills/ErrorRareSkill": "This book is not sold directly",
+    "UI/Skills/ErrorRareRequirements": "A book this needs is not sold directly",
     "UI/Generic/Information": "Information",
     "Tooltips/SkillPlanner/SkillsRequiredToPerformActivity": "Skills needed to {doActivity}",
     "Tooltips/SkillPlanner/ActivityFlyShip": "fly it",
@@ -271,6 +276,31 @@
     const minutes = Math.ceil(ticks / 600_000_000);
     const [days, hours, mins] = [Math.floor(minutes / 1440), Math.floor((minutes % 1440) / 60), minutes % 60];
     return [days > 0 ? `${days}d` : "", hours > 0 ? `${hours}h` : "", mins > 0 || minutes === 0 ? `${mins}m` : ""].filter(Boolean).join(" ");
+  }
+  // The client's books window (characterskills/client/UI/missingSkillbooksWnd.py), which Buy and train opens: its
+  // title; the books sold, each by name, with what they cost and Buy and Inject; the books not sold, by name, under a
+  // heading of their own; each heading's skill book and its hint; and its close. Its words are the install's; the
+  // page's own stand in. Not done: Check on Market (the client's multibuy window) and the skill plan button.
+  const SKILL_BOOK_WORDS: Readonly<Record<string, string>> = {
+    "UI/SkillPlan/MissingSkillbooksWindow/ConfirmPurchaseTitle": "Buy skill books",
+    "UI/SkillPlan/MissingSkillbooksWindow/AvailableForRemoteInjection": "Sold for injection at once",
+    "UI/SkillPlan/MissingSkillbooksWindow/UnavailableForRemoteInjection": "Not sold for injection at once",
+    "UI/SkillPlan/MissingSkillbooksWindow/PriceLabel": "Cost: {[numeric]cost.isk}",
+    "UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectButton": "Buy and inject",
+    "UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectTooltip": "Buy each book listed here and inject it now",
+    "UI/SkillPlan/MissingSkillbooksWindow/RemoteInjectionTooltip": "Books bought this way are injected where the pilot is, with no book to carry.",
+  };
+  $effect(() => {
+    if ($skillBooksAsked === null) return;
+    flow.requestWords([...Object.keys(SKILL_BOOK_WORDS), ...NUMERIC_WORD_LABELS]);
+    flow.requestNames([...$skillBooksAsked.available, ...$skillBooksAsked.unavailable].map((id) => ({ kind: "type" as const, id })));
+  });
+  /** A label of the books window filled with `args`, as plain text, its ISK in the client's words. */
+  function bookWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, SKILL_BOOK_WORDS[label] ?? ""), args, {
+      nameOf,
+      writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, $words.templates, nameOf),
+    }));
   }
   /** eveformat.number: whole, grouped by thousands. */
   const groupedNumber = (value: number): string => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
@@ -363,6 +393,50 @@
           <button type="button" onclick={() => answerQuantity(false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
         </span>
       </form>
+    </div>
+  </div>
+{/if}
+
+{#if $skillBooksAsked !== null}
+  {@const books = $skillBooksAsked}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={bookWord("UI/SkillPlan/MissingSkillbooksWindow/ConfirmPurchaseTitle")} data-dialog="MissingSkillbooksWnd" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title">
+        <strong>{bookWord("UI/SkillPlan/MissingSkillbooksWindow/ConfirmPurchaseTitle")}</strong>
+        <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerSkillBooks(books.n, "close")}>✕</button>
+      </span>
+      {#if books.available.length > 0}
+        <section class="book-section">
+          <span class="book-heading" title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/RemoteInjectionTooltip")}>
+            <span class="skill-mark book"></span>{bookWord("UI/SkillPlan/MissingSkillbooksWindow/AvailableForRemoteInjection")}
+          </span>
+          <ul class="book-list">
+            {#each books.available as skill (skill)}<li>- {nameOf("type", skill)}</li>{/each}
+          </ul>
+          {#if books.cost !== null}
+            <span>{bookWord("UI/SkillPlan/MissingSkillbooksWindow/PriceLabel", { cost: books.cost })}</span>
+          {/if}
+          <button
+            type="button"
+            title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectTooltip")}
+            onclick={() => void flow.answerSkillBooks(books.n, "buy").catch(() => {})}
+          >{bookWord("UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectButton")}</button>
+        </section>
+      {/if}
+      {#if books.available.length > 0 && books.unavailable.length > 0}<hr class="book-line" />{/if}
+      {#if books.unavailable.length > 0}
+        <section class="book-section">
+          <span class="book-heading unavailable" title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/RemoteInjectionTooltip")}>
+            <span class="skill-mark book"></span>{bookWord("UI/SkillPlan/MissingSkillbooksWindow/UnavailableForRemoteInjection")}
+          </span>
+          <ul class="book-list">
+            {#each books.unavailable as skill (skill)}<li>- {nameOf("type", skill)}</li>{/each}
+          </ul>
+        </section>
+      {/if}
     </div>
   </div>
 {/if}
@@ -461,6 +535,16 @@
               onclick={() => void flow.trainSkillsRequired().catch(() => {})}
             >{skillWord("UI/Skills/TrainSkills")}</button>
           </span>
+        {:else}
+          <!-- BuyAndTrainButton: its hint says where a book is a rare one (isRareSkill, IsMissingRarePrereqs). -->
+          {@const rare = open.action.missing.some((skill) => open.books[skill]?.sold !== true)}
+          <span class="answers">
+            <button
+              type="button"
+              title={rare ? skillWord("UI/Skills/ErrorRareRequirements") : ""}
+              onclick={() => void flow.buySkillsRequired().catch(() => {})}
+            >{skillWord("UI/Skills/BuyAndTrain")}</button>
+          </span>
         {/if}
       {/if}
       <span class="answers">
@@ -525,6 +609,13 @@
   .skill-points { flex-direction: row; justify-content: space-between; }
   .skill-time .omega { color: #ff9e1b; }
   .dim { opacity: 0.7; }
+  .book-title { display: flex; justify-content: space-between; align-items: center; }
+  .book-title .close { padding: 0 0.4rem; border: none; background: none; }
+  .book-section { display: flex; flex-direction: column; gap: 0.35rem; }
+  .book-heading { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.3rem; background: rgba(51, 51, 51, 0.5); font-size: 1.05rem; }
+  .book-heading.unavailable { color: #ff4d4d; }
+  .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
+  .book-line { width: 100%; border: none; border-top: 1px solid rgba(240, 248, 255, 0.5); margin: 0.3rem 0; }
   .client-dialog-shade { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }
   .client-dialog-shade.modal { pointer-events: auto; background: rgba(0, 0, 0, 0.25); }

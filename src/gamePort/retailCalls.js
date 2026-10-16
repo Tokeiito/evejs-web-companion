@@ -704,6 +704,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The queue's saving as the client's queue service makes it, on the handler. The page makes it by name (the
   // plan's Phase 6b). The gateway's list has skillMgr's save and not this: through the gateway the route saves.
   "skillHandler.SaveNewQueue",
+  // Skill books bought as the client's books window buys them, on the handler (characterskills/client/purchase.py
+  // 100). The page makes it by name. The gateway's list has not got it.
+  "skillHandler.PurchaseSkills",
   // The account's extra training slots, which the client's queue service asks for to tell whether a change of
   // the queue may start it (skillQueueSvc.py 851). The gateway's list has nothing of the user service's.
   "userSvc.GetMultiCharactersTrainingSlots",
@@ -2379,6 +2382,12 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
   "skillHandler.ApplyFreeSkillPoints": judged(`${SKILL_SVC}:886`, pointsForOneSkill,
     "GetSkillHandler().ApplyFreeSkillPoints(skillTypeID, pointsToApply): free points put into one skill, from the skill's own menu (skillQueueSvc.UseFreeSkillPoints, 926). The service has the free points first, sends nothing for a skill in training, one not known, or no points, and takes what the handler answers for the free points left."),
+  "skillHandler.PurchaseSkills": reshaped(
+    "characterskills/client/purchase.py:100",
+    // GetSkillHandler().PurchaseSkills(skill_type_ids): the skills as one list, and nothing else.
+    (args) => ({ args: [list(Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : [args[0]])], kwargs: {} }),
+    "GetSkillHandler().PurchaseSkills(skill_type_ids), from the books window's Buy and Inject (MissingSkillbooksWnd, after its context's validate: each a skill, each sold, none injected, the cost within the wallet): the books bought as one list. It answers the skills bought. In no recording.",
+  ),
   "skillHandler.SaveNewQueue": judged(
     "eve/client/script/ui/services/skillQueueSvc.py:153",
     queueByPlace,

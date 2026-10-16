@@ -3787,6 +3787,39 @@ export async function getRequiredSkills(
   return { available: data.available === true, required };
 }
 
+/**
+ * Each type's base price and whether it is published, as the client's own data has them (GET
+ * /api/client-data/type-prices: evetypes.GetBasePrice and IsPublished). Null for a type the data lacks; `available`
+ * false where the client's data could not be read.
+ */
+export async function getTypePrices(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly basePrice: Readonly<Record<number, number | null>>; readonly published: Readonly<Record<number, boolean | null>> }> {
+  const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
+  const basePrice: Record<number, number | null> = {};
+  const published: Record<number, boolean | null> = {};
+  for (const [key, value] of Object.entries(record(data.basePrice))) basePrice[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
+  return { available: data.available === true, basePrice, published };
+}
+
+/**
+ * The global config the game server gave the pilot's client at its login, for the names asked (GET
+ * /api/bridge/global-config): each value as given, or null. `available` false where the pilot's transport does not
+ * carry it (the web gateway): then the client's defaults stand.
+ */
+export async function getGlobalConfig(
+  names: readonly string[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly values: Readonly<Record<string, JsonValue>> }> {
+  const data = await getJson(`/api/bridge/global-config?names=${encodeURIComponent(names.join(","))}`, options);
+  const values = typeof data.values === "object" && data.values !== null && !Array.isArray(data.values) ? (data.values as Record<string, JsonValue>) : {};
+  return { available: data.available === true, values };
+}
+
 export async function fetchTypeDogma(
   typeIDs: readonly number[],
   attributeIDs: readonly number[],

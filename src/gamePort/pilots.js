@@ -3728,6 +3728,22 @@ function createGamePortPilots({
    * each room's, the stream's own); the address is what the socket dials. Tranquility's recordings have Hostname()
    * once at a login, answered its chat domain, and no fallback, its global config naming the address.
    */
+  /**
+   * The global config the server gave this pilot's client as it logged in (the login's config_vals, which machoNet
+   * keeps and globalConfig/getFunctions.py GetGlobalConfigValue reads), for the names asked: each one's value as
+   * given, a number or text, or null where it gave none.
+   */
+  function globalConfigValues(names, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
+    const values = {};
+    for (const name of Array.isArray(names) ? names : []) {
+      const value = packets.dictGet(globalConfig, name);
+      values[name] = typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : packets.text(value);
+    }
+    return values;
+  }
+
   async function chatConnection(sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     ledger.note(XMPP_CHAT_MGR, "Hostname", CHAT_HOSTNAME_AS_THE_CLIENT_ASKS);
@@ -5850,6 +5866,7 @@ function createGamePortPilots({
     shipInfo,
     shipAttribute,
     chatConnection,
+    globalConfigValues,
     chatSecret,
     chatChannels,
     chatSessionChanges,

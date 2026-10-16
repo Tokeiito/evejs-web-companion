@@ -13184,6 +13184,54 @@ app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) 
   }
 });
 
+// A type's base price and whether it is published, as the client's own data has them (evetypes.GetBasePrice and
+// IsPublished: the typeBasePrices and typePublished tables), for the types asked: what a skill book bought directly
+// costs (characterskills/common/purchase.py get_direct_purchase_price: the base price and 30 in a hundred more) and
+// whether it is sold so (evetypes.IsSkillAvailableForPurchase, with the type list of books for sale). A type the
+// client's data lacks has null. `available` is false when a table could not be read. At most 50 types at once.
+app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const [prices, published] = await Promise.all([clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished")]);
+    const basePrice = {};
+    const isPublished = {};
+    for (const typeID of asked.slice(0, 50)) {
+      const price = prices ? Number(prices[typeID]) : NaN;
+      basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
+      isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
+    }
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The global config the game server gave the pilot's client as it logged in (machoNet's, which
+// globalConfig/getFunctions.py GetGlobalConfigValue reads: the login's config_vals), for the names asked, each its
+// value as given or null where it gave none. The client goes by these for what the server has switched on or off
+// (IsSkillPurchaseEnabled and the rest). A pilot on the web gateway has none here: `available` false, and whoever
+// asks goes by the client's defaults. At most 16 names, each a plain name.
+app.get("/api/bridge/global-config", requireAuth, (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const names = [...new Set(String((req.query && req.query.names) || "").split(",").filter((name) => /^[A-Za-z0-9_]{1,64}$/.test(name)))].slice(0, 16);
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.globalConfigValues !== "function") {
+    res.json({ ok: true, available: false, values: {} });
+    return;
+  }
+  try {
+    res.json({ ok: true, available: true, values: gamePortPilots.globalConfigValues(names, { userid: held.accountID }, held.bridgeSessionID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could

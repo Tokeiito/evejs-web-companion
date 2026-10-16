@@ -201,6 +201,29 @@ export function skillPointsRequired(
   return sum;
 }
 
+/** characterskills/common/purchase.py DIRECT_PURCHASE_TAX_RATE */
+const DIRECT_PURCHASE_TAX_RATE = 0.3;
+
+/** characterskills.common.get_direct_purchase_price: a book's base price and its tax. */
+export function directPurchasePrice(basePrice: number): number {
+  return basePrice * (1.0 + DIRECT_PURCHASE_TAX_RATE);
+}
+
+/**
+ * SkillPurchaseValidator.prevalidate (characterskills/client/purchase.py): the skills asked, each once, those that are
+ * skills, those not injected (IsSkillInjected: among the skills with the lapsed), split into those sold
+ * (IsSkillAvailableForPurchase) and those not.
+ */
+export function booksToBuy(
+  skillTypeIDs: readonly number[],
+  includingLapsed: PilotSkills,
+  isSkill: (typeID: number) => boolean,
+  isSold: (typeID: number) => boolean,
+): { readonly available: readonly number[]; readonly unavailable: readonly number[] } {
+  const wanted = [...new Set(skillTypeIDs)].filter((typeID) => isSkill(typeID) && !includingLapsed.has(typeID));
+  return { available: wanted.filter(isSold), unavailable: wanted.filter((typeID) => !isSold(typeID)) };
+}
+
 /** A skill's row's mark (RequiredSkillRow): its book not injected (one to buy, or a rare one), or a level short. */
 export type SkillRowMark = "book-missing" | "rare-book-missing" | "level-short" | null;
 
