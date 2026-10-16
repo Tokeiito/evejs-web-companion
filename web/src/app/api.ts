@@ -276,9 +276,14 @@ export async function readClosedByServer(characterID: number, options: ApiOption
  * GET /api/bridge/pocket-timer: the Abyssal pocket's timer as the pilot was last told it (the end_time of
  * OnAddExpiryDurationForAbyssalContent, as the wire carries it), or null; `known` false where nothing is kept.
  */
-export async function readPocketTimer(options: ApiOptions = {}): Promise<{ readonly known: boolean; readonly endTime: JsonValue | null }> {
+export async function readPocketTimer(options: ApiOptions = {}): Promise<{ readonly known: boolean; readonly endTime: JsonValue | null; readonly room: JsonValue | null }> {
   const data = await getJson("/api/bridge/pocket-timer", options);
-  return { known: data.known === true, endTime: (data.endTime ?? null) as JsonValue | null };
+  return { known: data.known === true, endTime: (data.endTime ?? null) as JsonValue | null, room: (data.room ?? null) as JsonValue | null };
+}
+
+/** GET /api/objectives/chain: an objective chain, its objectives' and tasks' types and its type lists, as the client reads them. */
+export async function loadObjectiveChain(chainID: number, options: ApiOptions = {}): Promise<Readonly<Record<string, JsonValue>>> {
+  return await getJson(`/api/objectives/chain?chainID=${chainID}`, options);
 }
 
 /** GET /api/dungeons/ship-restrictions: a dungeon's ship restrictions from a gate of it, as the BFF answers them. */

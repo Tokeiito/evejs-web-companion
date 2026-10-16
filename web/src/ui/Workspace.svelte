@@ -26,6 +26,7 @@
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
+  import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { deriveDocked, type TabID } from "./tabs.ts";
@@ -437,6 +438,9 @@
           </ErrorBoundary>
           <ErrorBoundary name="Locked targets">
             <TargetsPanel {store} x={targetsX} y={targetsY} onMove={(nx, ny) => { targetsX = nx; targetsY = ny; }} />
+          </ErrorBoundary>
+          <ErrorBoundary name="Abyssal Deadspace">
+            <AbyssInfoPanel {store} {flow} floating />
           </ErrorBoundary>
         {/if}
       </div>

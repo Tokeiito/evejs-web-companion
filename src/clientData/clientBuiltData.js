@@ -44,6 +44,12 @@ const TABLES = Object.freeze({
   // A ship type's group in the client's ship tree (evetypes.GetShipGroupID: the type's isisGroupID), which the Ship
   // Restrictions window groups its hulls by. Only that attribute of the types is read: the table is too big to walk.
   typeShipGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "isisGroupID" }),
+  // The objectives the client tracks without asking the server (objectives/common/objectives_data.py): a chain's
+  // objectives and its context's parameters, an objective's tasks, a task's own parameters, title and icon. The
+  // Abyssal info panel is one chain of them (abyssal_service.py ABYSS_OBJECTIVE_CHAIN_ID).
+  objectiveChains: Object.freeze({ loader: "objectiveChainsLoader", resource: "res:/staticdata/objectivechains.fsdbinary" }),
+  objectiveTypes: Object.freeze({ loader: "objectiveTypesLoader", resource: "res:/staticdata/objectivetypes.fsdbinary" }),
+  objectiveTaskTypes: Object.freeze({ loader: "objectiveTaskTypesLoader", resource: "res:/staticdata/objectivetasktypes.fsdbinary" }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),

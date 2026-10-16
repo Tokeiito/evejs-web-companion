@@ -1243,9 +1243,13 @@ function createGamePortPilots({
   // OnAddExpiryDurationForAbyssalContent, 128 to 131): its end, kept for the pilot until OnAbyssalContentFinished or
   // the session leaves Abyssal space (the session's change, below), so that a browser drawing the pilot afresh is
   // answered it (pocketTimer). The client is told it once, at the pocket's entry, and keeps it.
+  // The pocket's room too (OnAbyssalLocationEntered's client_data, 75 to 93: its location_id is the room), kept until
+  // the session leaves Abyssal space, as the client keeps the objective chain it starts with it (OnSessionChanged,
+  // 195 to 207), for the Abyssal info panel of a browser drawing the pilot afresh (pocketRoom).
   function keepPocketTimer(entry, notification) {
     if (notification.method === "OnAddExpiryDurationForAbyssalContent") entry.pocketTimer = notification.args[0] ?? null;
     else if (notification.method === "OnAbyssalContentFinished") entry.pocketTimer = null;
+    else if (notification.method === "OnAbyssalLocationEntered") entry.pocketRoom = notification.args[0] ?? null;
   }
 
   function record(entry, notification) {
@@ -1830,6 +1834,7 @@ function createGamePortPilots({
       // Out of Abyssal space (idCheckers.IsAbyssalSpaceSystem: 32,000,000 to 32,999,999) the pocket's timer is no more.
       if ("solarsystemid2" in changes && !(Number(changes.solarsystemid2[1]) >= 32000000 && Number(changes.solarsystemid2[1]) <= 32999999)) {
         entry.pocketTimer = null;
+        entry.pocketRoom = null;
       }
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
@@ -5432,6 +5437,8 @@ function createGamePortPilots({
     accountCall,
     /** The Abyssal pocket's timer as the pilot was last told it (keepPocketTimer): its end_time, as the notice had it, or null. */
     pocketTimer: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketTimer ?? null,
+    /** The Abyssal pocket's room as the pilot was last told it (keepPocketTimer): OnAbyssalLocationEntered's client_data, or null. */
+    pocketRoom: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketRoom ?? null,
     /** What the game server closed a character's last connection with ({ reasonCode, reason, at }), or null. */
     closedByServer: (characterID) => closedByServerByCharacter.get(positive(characterID)) ?? null,
     answerClientQuestion,

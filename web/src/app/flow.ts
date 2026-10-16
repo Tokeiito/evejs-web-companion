@@ -313,8 +313,18 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import {
+  ABYSS_LOOTABLE_OBJECTIVE,
+  ABYSS_LOOTABLE_RESTART_MS,
+  ABYSS_OBJECTIVE_CHAIN_ID,
+  AbyssObjectiveChain,
+  abyssalLocationEntered,
+  decodeObjectiveChain,
+  type AbyssObjectiveRow,
+  type ObjectiveChainData,
+} from "../bridge/abyssObjectives.ts";
 import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
@@ -1690,6 +1700,8 @@ export interface AppFlow {
   closeAbyssJump(): void;
   /** The jump window's button (JumpActivationController._Activate): through the trace into its pocket, a session change. */
   jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
+  /** The Abyssal info panel's objectives (bridge/abyssObjectives.ts), as drawn now; null where the abyss service has no chain. */
+  readonly abyssObjectives: ReadableSignal<readonly AbyssObjectiveRow[] | null>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -3449,6 +3461,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (method === "OnAbyssalContentFinished") {
       abyssalContentFinished();
+      return;
+    }
+    // The pocket's room, which starts the abyss service's objective chain or moves it on (abyssal_service.py 75 to 93).
+    if (method === "OnAbyssalLocationEntered") {
+      const room = abyssalLocationEntered((args as readonly JsonValue[])[0]);
+      if (room !== null) abyssRoomEntered(room);
       return;
     }
     // The dungeon tracked (bridge/dungeonTracking.ts; dungeonTracking.py 124 to 137).
@@ -5304,15 +5322,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }, Math.max(0, endMs - seconds * 1000 - serverNow())));
     }
   }
-  /** The pocket's timer asked of the BFF (api.readPocketTimer), once for an Abyssal system, where none is known. */
+  /**
+   * The pocket's timer and room asked of the BFF (api.readPocketTimer), once for an Abyssal system, where the timer
+   * or the objective chain is not known.
+   */
   let pocketTimerAskedFor: number | null = null;
   function askPocketTimer(solarSystemID: number | null): void {
-    if (!isAbyssalSystem(solarSystemID) || abyssalTimerSignal.get() !== null || pocketTimerAskedFor === solarSystemID) return;
+    if (!isAbyssalSystem(solarSystemID) || (abyssalTimerSignal.get() !== null && abyssChain !== null) || pocketTimerAskedFor === solarSystemID) return;
     pocketTimerAskedFor = solarSystemID;
-    void api.readPocketTimer(callOptions).then(({ endTime }) => {
+    void api.readPocketTimer(callOptions).then(({ endTime, room }) => {
       const endMs = abyssalExpiryMs(endTime);
       // One already run out is no timer (DeleteWhenFinished); one told meanwhile is the newer.
       if (endMs !== null && endMs > serverNow() && abyssalTimerSignal.get() === null) abyssalExpiryNoticed(endMs);
+      const entered = abyssalLocationEntered(room);
+      if (entered !== null && abyssChain === null) abyssRoomEntered(entered);
     }).catch(() => {
       pocketTimerAskedFor = null;
     });
@@ -6446,10 +6469,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             openAbyssJump(itemID);
             return;
           }
+          // The Abyss chain's jump task: the jump through this gate begun (OnClientEvent_JumpStarted), where it is answered.
+          const inFlight = abyssChain !== null ? new Set(abyssEntities().map((entity) => entity.itemID)) : null;
+          abyssGateInFlight = inFlight;
           try {
             await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+            if (inFlight !== null && abyssGateInFlight === inFlight && abyssChain !== null) {
+              abyssGateInFlight = null;
+              abyssChain.jumpStarted(itemID, inFlight);
+              abyssChain.observe(abyssEntities());
+              publishAbyssObjectives();
+            }
             store.apply({ type: "flight/action", action: "Activate Gate" });
           } catch (error) {
+            if (abyssGateInFlight === inFlight) abyssGateInFlight = null;
             // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
             // Restrictions window for it and the gate's own object, and nothing else said.
             const refusal = error instanceof BridgeCallError ? error.refusal : null;
@@ -6497,6 +6530,71 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return { deployed: false, errors: [] };
     }
   }
+  // The Abyssal info panel's objectives (bridge/abyssObjectives.ts; abyssal_service.py 69 to 110 and 195 to 207): the
+  // chain started at the pocket's first OnAbyssalLocationEntered, moved on at each later one, by what the space feed
+  // shows and by the jumps the page makes through a pocket's gates, and let go where the pilot leaves Abyssal space.
+  // Its data is the client's, read once (GET /api/objectives/chain).
+  const abyssObjectivesSignal = createSignal<readonly AbyssObjectiveRow[] | null>(null);
+  let abyssChain: AbyssObjectiveChain | null = null;
+  let abyssChainRoom: number | null = null;
+  let abyssChainRead: Promise<ObjectiveChainData | null> | null = null;
+  let abyssLootableRestart: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The things on the grid when a pocket gate's activation was sent, while it is unanswered. The client hears the
+   * jump begin (the travel effect) before the next room's ballpark; the page hears the call answered, which can come
+   * after it. So the feed is not looked at meanwhile, and what was not on the grid then is what the jump brought.
+   */
+  let abyssGateInFlight: ReadonlySet<number> | null = null;
+  const abyssEntities = (): readonly SpaceEntity[] => store.space.get().snapshot?.entities ?? [];
+  function publishAbyssObjectives(): void {
+    abyssObjectivesSignal.set(abyssChain === null ? null : abyssChain.view());
+  }
+  function readAbyssChain(): Promise<ObjectiveChainData | null> {
+    abyssChainRead ??= api.loadObjectiveChain(ABYSS_OBJECTIVE_CHAIN_ID, callOptions).then(decodeObjectiveChain).catch(() => {
+      abyssChainRead = null;
+      return null;
+    });
+    return abyssChainRead;
+  }
+  /** OnAbyssalLocationEntered: rooms_completed the room less one; the chain started, or its lootables looked for again. */
+  function abyssRoomEntered(room: number): void {
+    void readAbyssChain().then((data) => {
+      // The same room twice (told live, and kept by the BFF for a page drawn afresh) is one notice.
+      if (data === null || room === abyssChainRoom) return;
+      abyssChainRoom = room;
+      if (abyssChain === null) {
+        abyssChain = new AbyssObjectiveChain(data, { rooms_completed: room - 1 });
+        abyssChain.start(abyssEntities());
+      } else {
+        abyssChain.setContext("rooms_completed", room - 1);
+        abyssChain.stopObjective(ABYSS_LOOTABLE_OBJECTIVE);
+        if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+        const chain = abyssChain;
+        abyssLootableRestart = setTimeout(() => {
+          abyssLootableRestart = null;
+          if (abyssChain !== chain) return;
+          chain.startObjective(ABYSS_LOOTABLE_OBJECTIVE);
+          publishAbyssObjectives();
+        }, ABYSS_LOOTABLE_RESTART_MS);
+      }
+      publishAbyssObjectives();
+    });
+  }
+  /** Out of Abyssal space: the chain stopped and let go (abyssal_service.OnSessionChanged). */
+  function stopAbyssObjectives(): void {
+    if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+    abyssLootableRestart = null;
+    abyssChain = null;
+    abyssChainRoom = null;
+    abyssGateInFlight = null;
+    publishAbyssObjectives();
+  }
+  store.space.subscribe(() => {
+    if (abyssChain === null || abyssGateInFlight !== null) return;
+    abyssChain.observe(abyssEntities());
+    publishAbyssObjectives();
+  });
+
   async function activateGate(itemID: number, typeID: number | null): Promise<void> {
     if (typeID !== TYPE_ABYSS_ENTRANCE_GATE && gateCallFor(typeID, itemID) === null) {
       store.apply({ type: "flight/action-error", message: "Activate Gate refused: this gate is not activated from here yet.", said: false });
@@ -9342,6 +9440,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The pocket's timer where the page finds its pilot already in a pocket (a browser drawing it afresh): the
     // client keeps it from the pocket's entry, so the BFF is asked what the pilot was last told, once for the system.
     askPocketTimer(status.solarSystemID);
+    // Out of Abyssal space the abyss service's objective chain is no more (abyssal_service.OnSessionChanged).
+    if (flightSystemChanged && !isAbyssalSystem(status.solarSystemID)) stopAbyssObjectives();
     // The dungeon the pilot is in, asked once where the page finds it in space (dungeonTracking.OnCharacterSessionChanged).
     if (status.inSpace) askCurrentDungeon();
     // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
@@ -19727,6 +19827,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssJump: readonlySignal(abyssJumpSignal),
     closeAbyssJump: () => abyssJumpSignal.set(null),
     jumpThroughTrace,
+    abyssObjectives: readonlySignal(abyssObjectivesSignal),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,

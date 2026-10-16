@@ -10350,15 +10350,18 @@ function requireExpectedInventoryFlight(res, expected, flight) {
 // The Abyssal pocket's timer as the pilot was last told it (gamePort/pilots.js keepPocketTimer): the end_time of
 // OnAddExpiryDurationForAbyssalContent, as the notice had it, or null. The client is told it once, at the pocket's
 // entry; a browser drawing the pilot afresh asks this instead. Through the web gateway nothing is kept: known false.
+// With it the pocket's room as last told (pilots.js pocketRoom: OnAbyssalLocationEntered's client_data), or null.
 app.get("/api/bridge/pocket-timer", requireAuth, (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   try {
     if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.pocketTimer !== "function") {
-      res.json({ ok: true, known: false, endTime: null });
+      res.json({ ok: true, known: false, endTime: null, room: null });
       return;
     }
-    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer({ userid: held.accountID }, held.bridgeSessionID) });
+    const fields = { userid: held.accountID };
+    const room = typeof gamePortPilots.pocketRoom === "function" ? gamePortPilots.pocketRoom(fields, held.bridgeSessionID) : null;
+    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer(fields, held.bridgeSessionID), room });
   } catch (error) {
     next(error);
   }
@@ -13467,6 +13470,53 @@ app.get("/api/dungeons/ship-restrictions", requireAuth, async (req, res, next) =
       }
     }
     res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, shipTree, groups: groupNames, allowed, restricted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An objective chain as the client reads it without asking the server (objectives/common/objectives_data.py, read with
+// the client's own loaders: clientBuiltData): the chain, the types of its objectives, the types of their tasks, and the
+// types of each type list its context's parameters name (staticData.getTypeIDsByListID, the client's
+// evetypes.GetTypeIDsByListID), for the Abyssal info panel (abyssal_service.py ABYSS_OBJECTIVE_CHAIN_ID). found false
+// where the client's data cannot be read or has no such chain.
+app.get("/api/objectives/chain", requireAuth, async (req, res, next) => {
+  const chainID = Number(req.query.chainID);
+  if (!Number.isSafeInteger(chainID) || chainID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_OBJECTIVE_CHAIN", message: "An objective chain is asked for by its number." });
+    return;
+  }
+  try {
+    const [chains, objectiveTypes, taskTypes] = await Promise.all([
+      clientBuiltData.table("objectiveChains").catch(() => null),
+      clientBuiltData.table("objectiveTypes").catch(() => null),
+      clientBuiltData.table("objectiveTaskTypes").catch(() => null),
+    ]);
+    const chain = chains && Object.hasOwn(chains, String(chainID)) ? chains[String(chainID)] : null;
+    if (!chain || !objectiveTypes || !taskTypes) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const objectives = {};
+    const tasks = {};
+    for (const objective of Array.isArray(chain.objectives) ? chain.objectives : []) {
+      const objectiveType = objectiveTypes[String(objective && objective.objectiveType)];
+      if (!objectiveType) continue;
+      objectives[String(objective.objectiveType)] = objectiveType;
+      for (const task of Array.isArray(objectiveType.tasks) ? objectiveType.tasks : []) {
+        const taskType = taskTypes[String(task && task.taskType)];
+        if (taskType) tasks[String(task.taskType)] = taskType;
+      }
+    }
+    const typeLists = {};
+    for (const parameter of Array.isArray(chain.contextParameters) ? chain.contextParameters : []) {
+      const listID = Number(parameter && parameter.defaultValue);
+      if (parameter && parameter.parameterType === "eveTypeListIdType" && Number.isSafeInteger(listID) && listID > 0 &&
+        typeof staticData.getTypeIDsByListID === "function") {
+        typeLists[String(listID)] = staticData.getTypeIDsByListID(listID);
+      }
+    }
+    res.json({ ok: true, found: true, chainID, chain, objectiveTypes: objectives, taskTypes: tasks, typeLists });
   } catch (error) {
     next(error);
   }
