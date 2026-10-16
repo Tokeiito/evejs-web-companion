@@ -3160,6 +3160,9 @@ function sendPlaceError(res, error) {
   return false;
 }
 
+/** const.groupWreck: a wreck's group, which the client opens with no capacity (menusvc._OpenCargo, ItemWreck). */
+const GROUP_WRECK = 186;
+
 /**
  * A container's capacity as the retail client reckons it (invCache.py 1224 on,
  * asked with no flag): the capacity of the container's TYPE
@@ -3205,6 +3208,11 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
   // cannot be reckoned, and on the gateway, GetCapacity is asked as before.
   const containerTypeID = nonNegativeIntQuery(req.query.typeID, 0);
   const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+  // menusvc._OpenCargo: a wreck (const.groupWreck, 186) is opened as an ItemWreck, which has no capacity
+  // (invControllers.py 1634 to 1636: hasCapacity False). For one, nothing is reckoned and nothing asked, on either
+  // transport; its type's own capacity (27,500 m³ in the static tables) is not what the client shows.
+  const containerType = containerTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(containerTypeID) : null;
+  const wreck = Boolean(containerType) && Number(containerType.groupID) === GROUP_WRECK;
   try {
     const asked = () => boundCall(held, req.webSessionID, spec, "GetCapacity", [], null);
     const listed = boundCall(held, req.webSessionID, spec, "List", [], null);
@@ -3217,7 +3225,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
     };
     const [list, capacity] = await Promise.allSettled([
       listed,
-      !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
+      wreck ? { result: null } : !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
     ]);
     for (const settled of [list, capacity]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {

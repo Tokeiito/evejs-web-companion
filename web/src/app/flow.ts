@@ -4345,9 +4345,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
+    // A thing in space (a can, a wreck), opened from the overview or its brackets: its type as the space feed has it,
+    // as the client knows the slim item of what it opens (menusvc._OpenCargo).
+    const inSpace = store.space.get().snapshot?.entities.find((entity) => entity.itemID === containerID) ?? null;
     const knownTypeID = owningRow
       ? owningRow.typeID
-      : current.container && current.container.itemID === containerID ? current.container.typeID : 0;
+      : current.container && current.container.itemID === containerID
+        ? current.container.typeID
+        : inSpace?.typeID ?? 0;
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -4361,7 +4366,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         type: "inventory/container",
         container: {
           itemID: containerID,
-          typeID: owningRow ? owningRow.typeID : 0,
+          typeID: knownTypeID,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -4373,9 +4378,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "inventory/container",
       container: {
         itemID: containerID,
-        typeID: owningRow
-          ? owningRow.typeID
-          : (store.get().inventory.container?.typeID ?? 0),
+        // What it was opened as: its row's type, the type it was open with, or its type in space.
+        typeID: knownTypeID,
         rows: decodeInventoryRows(reads.list),
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         error: null,
