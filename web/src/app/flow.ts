@@ -434,9 +434,10 @@ import {
   placeSellOrder as placeSellOrderCall,
 } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
-import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
+import { PROBE_STATE, createScannerWrites, formationOf, type ScannerShip } from "../bridge/scannerWrites.ts";
+import { INITIAL_FORMATION, PINPOINT_FORMATION, addProbeToFormation, centerOf, createFormation, removeProbeFromFormation, type FormationState } from "../bridge/probeFormations.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
-import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
+import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
@@ -1089,6 +1090,8 @@ export interface AppFlow {
   setProbeRangeStep(probeIDs: readonly number[], rangeStep: number): Promise<void>;
   /** The probe menu's Recover Probe: the chosen probes recalled, then the scanner read again. */
   recoverChosenProbes(probeIDs: readonly number[]): Promise<void>;
+  /** A formation's button (Pinpoint -2, Spread -1): the probes held sent to its places, the shortfall launched. */
+  launchProbeFormation(formationID: number): Promise<void>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5163,6 +5166,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // And the probe results the session's system's scan handler keeps (a change of system shows that system's).
     publishProbeResults();
+    // A probe the read shows for the first time takes its place in the formation (AddProbe); read again after.
+    if (operations.status === "ready" && operations.value.inSpace) {
+      void placeNewProbes(operations.value).then((sent) => {
+        if (sent) scheduleScannerRefresh();
+      }).catch(() => undefined);
+    }
 
     if (scan.status === "ready") {
       const refs: NameRef[] = [];
@@ -5226,8 +5235,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  // probeTracker's formation tracker (bridge/probeFormations.ts), for the pilot's session: Pinpoint about (0, 0, 0)
+  // until a formation's button makes another. Each probe the scanner's read shows for the first time takes the
+  // first free place and is sent to it (AddProbe, AddProbeToFormation, ProbeGoToPoint); one gone frees its place.
+  let probeFormation: FormationState = INITIAL_FORMATION;
+  let probesInFormation = new Set<number>();
+  /** The new probes of a read put in their places; true where any was sent to one. */
+  async function placeNewProbes(read: ScannerOperationsSnapshot): Promise<boolean> {
+    const present = new Set(read.probes.map((probe) => probe.probeID));
+    for (const probeID of probesInFormation) {
+      if (!present.has(probeID)) {
+        probeFormation = removeProbeFromFormation(probeFormation, probeID);
+        probesInFormation.delete(probeID);
+      }
+    }
+    let sent = false;
+    for (const probe of read.probes) {
+      if (probesInFormation.has(probe.probeID)) continue;
+      probesInFormation.add(probe.probeID);
+      const added = addProbeToFormation(probeFormation, probe.probeID);
+      probeFormation = added.state;
+      if (added.placement !== null && probe.state === PROBE_STATE.IDLE) {
+        await scannerWrites.sendToPlace(probe, added.placement);
+        sent = true;
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * A formation's button (scanSvc.MoveProbesToFormation, probeTracker 169 to 182): refused as the client's palette
+   * does not offer it; the formation made anew about the centre of the idle probes' destinations, the probes held
+   * sent to their places; any past eight recalled; else the shortfall launched, which take the free places as the
+   * server tells of them.
+   */
+  function launchProbeFormation(formationID: number): Promise<void> {
+    return runScannerAction(async () => {
+      const read = await api.loadScannerOperations(callOptions);
+      const plan = formationOf(read);
+      if ("refusal" in plan) throw new Error(plan.refusal);
+      const center = centerOf(read.probes.filter((probe) => probe.state === PROBE_STATE.IDLE).map((probe) => probe.destination));
+      const made = createFormation(formationID, read.probes.map((probe) => probe.probeID), center);
+      probeFormation = made.state;
+      probesInFormation = new Set(read.probes.map((probe) => probe.probeID));
+      for (const placement of made.placements) {
+        const probe = read.probes.find((candidate) => candidate.probeID === placement.probeID);
+        if (probe !== undefined) await scannerWrites.sendToPlace(probe, placement);
+      }
+      if (made.excess.length > 0) {
+        await scannerWrites.recoverSome(read, scannerShip(), made.excess);
+        return;
+      }
+      if (plan.launch !== null) await scannerWrites.launchCount(plan.launch.moduleID, plan.launch.count);
+    });
+  }
+
+  // The scanner's launch is the client's launch of a formation: Pinpoint, as its analyze button's (analyzeButton.py 86).
   function launchScannerProbes(): Promise<void> {
-    return runScannerAction(async () => scannerWrites.launch(await api.loadScannerOperations(callOptions)));
+    return launchProbeFormation(PINPOINT_FORMATION);
   }
 
   function analyzeScannerSignatures(): Promise<void> {
@@ -18260,8 +18325,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
-      // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's.
+      // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's; and so is the formation.
       probeResultsBySystem.clear();
+      probeFormation = INITIAL_FORMATION;
+      probesInFormation = new Set();
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;
@@ -18739,6 +18806,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     reconnectScannerProbes,
     setProbeRangeStep,
     recoverChosenProbes,
+    launchProbeFormation,
     loadFleet,
     formFleet,
     inviteFleetMember,

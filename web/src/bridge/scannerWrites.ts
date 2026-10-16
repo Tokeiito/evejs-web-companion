@@ -94,6 +94,7 @@
 
 import type { ScannerOperationsSnapshot, ScannerProbeOperation } from "../scanner/scannerCenter.ts";
 import type { Ask } from "./ask.ts";
+import { rangeStepFor, type Placement } from "./probeFormations.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** probescanning/const.py: a probe's states. */
@@ -192,6 +193,22 @@ function probeSent(probe: ScannerProbeOperation): JsonValue {
 }
 
 /**
+ * A formation's button (probeScannerPalette.CheckButtonStates 636 to 649; probeTracker.MoveProbesToFormation 169 to
+ * 182): offered where the probes held and the charges loaded make the formation and every probe is idle. What it
+ * launches: the active probes' shortfall from eight, or nothing where eight are held (they are moved into it).
+ */
+export function formationOf(scanner: ScannerRead): { readonly launch: { readonly moduleID: number; readonly count: number } | null } | Refused {
+  const not = standing(scanner);
+  if (not) return not;
+  const held = scanner.probes.length;
+  const launcher = scanner.launcher !== null && scanner.launcher.online ? scanner.launcher : null;
+  const loaded = launcher === null ? 0 : launcher.loadedCount;
+  if (held + loaded < PROBES_IN_A_FORMATION) return { refusal: notEnoughProbesForAFormation(held, loaded) };
+  if (!scanner.probes.every(isIdle)) return { refusal: PROBES_ARE_BUSY };
+  return { launch: held < PROBES_IN_A_FORMATION && launcher !== null ? { moduleID: launcher.moduleID, count: PROBES_IN_A_FORMATION - held } : null };
+}
+
+/**
  * The probes a scan is asked with, by their numbers: the idle ones (probeTracker.GetProbesForScanning, 256 to
  * 263); or why no scan is asked.
  */
@@ -259,6 +276,24 @@ export function createScannerWrites(act: Ask, now: () => number = Date.now) {
       }
       const recalled = countOf(await act("scanMgr", "RecoverProbes", [[...recall.probeIDs]]));
       if (recalled !== null && recalled < recall.probeIDs.length) throw new Error(NOT_ALL_PROBES_RETURNED);
+    },
+
+    /** scanSvc.FindModuleAndLaunchProbes (487 to 498): LaunchProbes(module, count), as a formation's button wants. */
+    async launchCount(moduleID: number, count: number): Promise<void> {
+      await act("dogmaIM", "LaunchProbes", [moduleID, count]);
+    },
+
+    /**
+     * probeTracker.ProbeGoToPoint (148 to 157): an idle probe given its place as its destination, and the range step
+     * whose range is nearest the place's size. Both are the client's own list's; the game port's transport keeps
+     * them and sends nothing. (The client sets the step on the probe itself; SetProbeRangeStep also makes it the
+     * step a new probe starts on, which the next placement overrides.)
+     */
+    async sendToPlace(probe: ScannerProbeOperation, placement: Placement): Promise<void> {
+      if (probe.state !== PROBE_STATE.IDLE) return;
+      await act("scanMgr", "SetProbeDestination", [probe.probeID, [...placement.destination]]);
+      const step = rangeStepFor(placement.size, probe.rangeSteps ?? []);
+      if (step !== null && step !== probe.rangeStep) await act("scanMgr", "SetProbeRangeStep", [probe.probeID, step]);
     },
 
     /**

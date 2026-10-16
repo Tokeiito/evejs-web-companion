@@ -17,11 +17,13 @@
   // label, the time it has left and its scan range, an inactive one dimmed; and the probe menu
   // (scanSvc.GetProbeMenu): Scan Range, the type's eight ranges (GetScanRangeStepsByTypeID), and Recover Probe, for
   // the probe and any others chosen with it. The range is the client's own to keep (bridge/scannerWrites.ts,
-  // setRangeStep) and goes to the server with the next scan.
+  // setRangeStep) and goes to the server with the next scan. Above them, the palette's two formation buttons
+  // (bridge/probeFormations.ts): the probes sent to the formation's places, the shortfall launched.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { filetimeOf } from "../bridge/journalWords.ts";
-  import { PROBE_STATE } from "../bridge/scannerWrites.ts";
+  import { PROBE_STATE, formationOf } from "../bridge/scannerWrites.ts";
+  import { PINPOINT_FORMATION, SPREAD_FORMATION } from "../bridge/probeFormations.ts";
   import { SHORT_INTERVAL_WORD_LABELS, shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { fmtDist } from "../space/overview.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -40,6 +42,8 @@
     probeLabel: "UI/Inflight/Scanner/ProbeLabel",
     scanRange: "UI/Inflight/Scanner/ScanRange",
     recoverProbe: "UI/Inflight/Scanner/RecoverProbe",
+    pinpoint: "UI/Inflight/Scanner/LaunchPinpointFormation",
+    spread: "UI/Inflight/Scanner/LaunchSpreadFormation",
     none: "UI/Generic/None",
     expired: "UI/Inflight/Scanner/Expired",
   } as const;
@@ -58,7 +62,11 @@
     return () => clearInterval(timer);
   });
 
+  const inSpace = $derived($scanner.operations.status === "ready" && $scanner.operations.value.inSpace);
   const probes = $derived($scanner.operations.status === "ready" && $scanner.operations.value.inSpace ? $scanner.operations.value.probes : []);
+  // The palette's formation buttons (probeScannerPalette 239 to 248), offered as CheckButtonStates offers them.
+  const formation = $derived($scanner.operations.status === "ready" ? formationOf($scanner.operations.value) : { refusal: "" });
+  const formationRefusal = $derived("refusal" in formation ? formation.refusal : null);
   let chosen = $state<number[]>([]);
   let busy = $state(false);
   let failure = $state("");
@@ -91,8 +99,19 @@
   }
 </script>
 
-{#if probes.length > 0}
+{#if inSpace}
   <section class="scanner-probes">
+    <p class="controls">
+      <button type="button" disabled={busy || formationRefusal !== null} title={formationRefusal ?? ""}
+        onclick={() => void run(() => flow.launchProbeFormation(PINPOINT_FORMATION))}>
+        {word(WORDS.pinpoint) ?? "Launch Pinpoint Formation"}
+      </button>
+      <button type="button" disabled={busy || formationRefusal !== null} title={formationRefusal ?? ""}
+        onclick={() => void run(() => flow.launchProbeFormation(SPREAD_FORMATION))}>
+        {word(WORDS.spread) ?? "Launch Spread Formation"}
+      </button>
+    </p>
+    {#if probes.length > 0}
     <table class="guests">
       <tbody>
         {#each probes as probe (probe.probeID)}
@@ -128,6 +147,7 @@
         {/each}
       </tbody>
     </table>
+    {/if}
     {#if failure}
       <p class="error">{failure}</p>
     {/if}
