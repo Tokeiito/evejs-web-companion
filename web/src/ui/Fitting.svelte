@@ -220,10 +220,11 @@
   // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
   // it: its tree of ship groups, races and hulls with the fittings under each hull (bridge/hullBrowser.ts), and of a
   // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
-  // CanDeleteFit). Its words are the install's; the page's own stand in. Not done: an entry's tooltip, a hull's menu and
-  // tooltip and its Simulate button, the menu's Simulate Fitting and the multifit, a fitting clicked (simulated), the
-  // groups' Compare, an unsupported fitting shown whole to a game master, and deleting a corporation's fitting (its
-  // fitting manager's role, and a call the page does not make). The tree's open groups are kept while the window is.
+  // CanDeleteFit), and the tooltips of a fitting and of a hull. Its words are the install's; the page's own stand in. Not
+  // done: a hull's menu, its traits and its Simulate button, the menu's Simulate Fitting and the multifit, a fitting
+  // clicked (simulated), the groups' Compare, an unsupported fitting shown whole to a game master, and deleting a
+  // corporation's fitting (its fitting manager's role, and a call the page does not make). The tree's open groups
+  // are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
@@ -243,6 +244,20 @@
     "UI/Fitting/FittingWindow/FilterAllianceFittings": "Your alliance's fittings {numFittings}",
     "UI/Fitting/AllianceFittingHint": "Your alliance's fitting",
     "UI/Fitting/FittingWindow/SavedAllianceFittings": "Your alliance's fittings",
+    // A fitting's tooltip (entries/fitting.py FittingEntry.LoadTooltipPanel, 87 to 98) and a hull's
+    // (fittingBrowser.py HullTypeListGroup.LoadTooltipPanel, 705 to 738).
+    "UI/Fitting/FittingLastSavedHint": "Saved {timestamp}",
+    "/Carbon/UI/Common/DateTime/SimpleDateUTC": "",
+    "UI/Fitting/FittingWindow/SavedFittings": "Saved fittings",
+    "UI/Fitting/FittingWindow/PersonalFittingsNum": "Your own: {numFittings}",
+    "UI/Fitting/FittingWindow/PersonalFittingsNumShort": "Own: {numFittings}",
+    "UI/Fitting/FittingWindow/CorpFittingsNum": "Your corporation's: {numFittings}",
+    "UI/Fitting/FittingWindow/CorpFittingsNumShort": "Corporation: {numFittings}",
+    "UI/Fitting/FittingWindow/CommunityFittingsNum": "Shared with everyone: {numFittings}",
+    "UI/Fitting/FittingWindow/CommunityFittingsNumShort": "Shared: {numFittings}",
+    "UI/Fitting/FittingWindow/AllianceFittingsNum": "Your alliance's: {numFittings}",
+    "UI/Fitting/FittingWindow/AllianceFittingsNumShort": "Alliance: {numFittings}",
+    "UI/Fitting/FittingWindow/NoFittingsSaved": "No fittings saved for it",
     // The tree's own groups (fittingBrowser.py 131 to 182, GetNameAndIconIDForRace).
     "UI/Fitting/FittingWindow/NonEmpireFaction": "Other factions",
     "UI/Fitting/FittingWindow/SpecialEditionShips": "Special ships",
@@ -380,6 +395,50 @@
   }
   const hullName = (typeID: number): string => String($names.resolved[nameKey("type", typeID)] ?? "");
   const hullGroupName = (typeID: number): string => String($names.resolved[nameKey("typeGroup", typeID)] ?? "");
+  /** A label's words with its arguments, the page's own where the install's are not to hand. */
+  function fitWords(label: string, args: Record<string, string | number>): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "", args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }));
+  }
+  /**
+   * FittingEntry.LoadTooltipPanel (entries/fitting.py 87 to 98): the fitting's name, its hull's, its description where
+   * it has one, and when it was saved (FittingLastSavedHint, FmtDate: SimpleDateUTC) where it says. As a hint's lines;
+   * the description's markup as its text.
+   */
+  function fittingTooltip(saved: { readonly name: string; readonly shipTypeID: number; readonly description: string; readonly savedDate: bigint | null }): string {
+    const lines = [saved.name, hullName(saved.shipTypeID)];
+    if (saved.description) lines.push(plainText(saved.description));
+    if (saved.savedDate) {
+      const date = $words.templates["/Carbon/UI/Common/DateTime/SimpleDateUTC"];
+      const timestamp = typeof date === "string" && date !== "" ? plainText(formatTemplate(date, { datetime: saved.savedDate.toString() }, { nameOf: () => "" })) : "";
+      if (timestamp) lines.push(fitWords("UI/Fitting/FittingLastSavedHint", { timestamp }));
+    }
+    return lines.join("\n");
+  }
+  /**
+   * HullTypeListGroup.LoadTooltipPanel (fittingBrowser.py 705 to 738): the hull's name; then each owner's count of its
+   * fittings that has any, the community's only where community fittings are on and the alliance's only for a pilot
+   * in one, in short words under "Saved Fittings" where two owners or more have any; NoFittingsSaved where none has.
+   * (The hull's traits, which it shows after, are not the page's.)
+   */
+  function hullTooltip(typeID: number): string {
+    const count = fittingNumByTypeID.get(typeID) ?? { personal: 0, corporation: 0, community: 0, alliance: 0 };
+    const owners = [count.personal, count.corporation, count.community, count.alliance].filter((each) => each > 0).length;
+    const short = owners >= 2;
+    const lines = [hullName(typeID)];
+    if (short) lines.push(fitWord("UI/Fitting/FittingWindow/SavedFittings"));
+    const numAndPaths: [number, string][] = [
+      [count.personal, "UI/Fitting/FittingWindow/PersonalFittingsNum"],
+      [count.corporation, "UI/Fitting/FittingWindow/CorpFittingsNum"],
+      ...($communityFittingsEnabled ? [[count.community, "UI/Fitting/FittingWindow/CommunityFittingsNum"] as [number, string]] : []),
+      ...(allianceID !== null ? [[count.alliance, "UI/Fitting/FittingWindow/AllianceFittingsNum"] as [number, string]] : []),
+    ];
+    for (const [numFittings, path] of numAndPaths) {
+      if (numFittings) lines.push(fitWords(short ? `${path}Short` : path, { numFittings }));
+    }
+    if (!owners) lines.push(fitWord("UI/Fitting/FittingWindow/NoFittingsSaved"));
+    return lines.join("\n");
+  }
   /** A hull's fittings of each owner, every one read (fittingBrowser.GetNumShipsByTypeID, 200 to 211). */
   const fittingNumByTypeID = $derived.by(() => {
     const counts = new Map<number, { personal: number; corporation: number; community: number; alliance: number }>();
@@ -1690,7 +1749,7 @@
           {:else if saved.source === "alliance"}
             <span title={fitWord("UI/Fitting/AllianceFittingHint")}>🛡</span>
           {/if}
-          <span>{saved.name}</span>
+          <span title={fittingTooltip(saved)}>{saved.name}</span>
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
           </button>
@@ -1711,7 +1770,7 @@
       {@const id = `h:${hull.typeID}`}
       {@const count = fittingNumByTypeID.get(hull.typeID)}
       <details class="browser-node" class:current-hull={hull.isCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
-        <summary>
+        <summary title={hullTooltip(hull.typeID)}>
           <TypeIcon typeID={hull.typeID} name={hullName(hull.typeID)} size="sm" />
           <strong>{hullName(hull.typeID)}</strong>
           {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}
