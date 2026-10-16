@@ -57,6 +57,17 @@ const itemKey = (value) => (Array.isArray(value) ? value.map((part) => String(nu
 /** The key of a container, (location, owner) as the client's. */
 const containerKey = (location, owner) => `${num(location)}|${owner === null || owner === undefined ? "" : num(owner)}`;
 const itemsOf = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+/**
+ * The rows a listing answered, out of whichever envelope it came in: a list; a Python set, as Tranquility answers a
+ * flagged List (objectex1 of __builtin__.set and a one-tuple of its list); an object of one argument.
+ */
+const rowsOf = (answer) => {
+  if (answer && answer.type === "objectex1" && Array.isArray(answer.header) && answer.header[0] && answer.header[0].value === "__builtin__.set") {
+    return itemsOf(Array.isArray(answer.header[1]) ? answer.header[1][0] : null);
+  }
+  if (answer && answer.type === "object" && Array.isArray(answer.args)) return itemsOf(answer.args[0]);
+  return itemsOf(answer);
+};
 /** A dict off the wire as a Map of its entries. */
 const dictOf = (value) => new Map(value && Array.isArray(value.entries) ? value.entries.map(([k, v]) => [num(k), v]) : []);
 
@@ -114,7 +125,7 @@ function createPilotInventory({ rowFields, session }) {
 
   /** What a listing answered, taken into the container (invCacheContainer.List 1138 to 1142). */
   const takeListed = (container, answer) => {
-    for (const row of itemsOf(answer)) {
+    for (const row of rowsOf(answer)) {
       const fields = fieldsOf(row);
       if (fields === null) continue;
       container.items.set(itemKey(fields.itemID), row);
@@ -278,4 +289,4 @@ function createPilotInventory({ rowFields, session }) {
   };
 }
 
-module.exports = { createPilotInventory, CONTAINER_HANGAR };
+module.exports = { createPilotInventory, rowsOf, CONTAINER_HANGAR };

@@ -77,7 +77,7 @@ const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cache
 const { brokersFeeRate, brokersFeeRateInStructure } = require("./brokerFee");
 const { averagePrice, historyRows } = require("./priceHistory");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
-const { createPilotInventory, CONTAINER_HANGAR: INVENTORY_HANGAR } = require("./pilotInventory");
+const { createPilotInventory, rowsOf: listingRows, CONTAINER_HANGAR: INVENTORY_HANGAR } = require("./pilotInventory");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -5091,7 +5091,7 @@ function createGamePortPilots({
   }
 
   /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
-  const listedRows = (entry) => [...entry.inventory.rows(), ...entry.listings.answers().flatMap((listing) => itemsOf(listing))];
+  const listedRows = (entry) => [...entry.inventory.rows(), ...entry.listings.answers().flatMap((listing) => listingRows(listing))];
 
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
