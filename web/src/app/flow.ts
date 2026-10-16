@@ -170,8 +170,12 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
-import { skillLevelsOf } from "../bridge/skillSheet.ts";
-import { missingSkillBooks, missingSkills, missingSkillsRecursive, totalMissingLevels } from "../bridge/missingSkills.ts";
+import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsPerMinute } from "../bridge/skillSheet.ts";
+import {
+  allLevelsQueued, isSkillRequirementMet, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
+  type RequiredSkills, type SkillLevelBox, type SkillRowMark,
+} from "../bridge/missingSkills.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
 import { applyFreePoints, pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
@@ -314,7 +318,7 @@ import {
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
-import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
+import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
@@ -868,6 +872,30 @@ export interface SkillsRequired {
   readonly totalMissingLevels: number;
   /** How many of the skills listed the pilot has not even lapsed (GetSkillBooksMissingFromList). */
   readonly missingBooks: number;
+  /** Each skill listed, its row's mark (RequiredSkillRow) and its bar's five boxes; none where they were not read. */
+  readonly rows: readonly SkillsRequiredRow[];
+  /** The pilot's clone grade as the window goes by it: an omega's (or one not told), or an alpha's. */
+  readonly omega: boolean;
+  /**
+   * AddTrainingTimeForType: the time to train what the type needs, in ticks, skill accelerators left out (an alpha's,
+   * whose omega time is half of it); null where it is nought or was not reckoned, and then no row is shown.
+   */
+  readonly trainingTicks: number | null;
+  /** SkillActionContainer's figure: the points every level to train costs. Null where it was not reckoned. */
+  readonly skillPointsRequired: number | null;
+  /**
+   * The action (AddSkillAction): Train Skills, with the levels of the skills held it adds and whether the queue has
+   * them all already; "buy" where a book is not held (Buy and train); null where the type's needs are met.
+   */
+  readonly action: { readonly kind: "train"; readonly levels: readonly (readonly [number, number])[]; readonly queued: boolean } | { readonly kind: "buy" } | null;
+}
+
+/** A skill of the skill requirement window: its level, its mark and its five boxes. */
+export interface SkillsRequiredRow {
+  readonly skill: number;
+  readonly level: number;
+  readonly mark: SkillRowMark;
+  readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
 }
 
 /** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
@@ -2059,6 +2087,8 @@ export interface AppFlow {
   readonly skillsRequired: ReadableSignal<SkillsRequired | null>;
   /** The window put away (its button). */
   dismissSkillsRequired(): void;
+  /** Its Train Skills (AddToQueueButton): the window put away, and the levels added to the queue's end and committed started. */
+  trainSkillsRequired(): Promise<void>;
   /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
   readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
   /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
@@ -6191,12 +6221,131 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (missingSkills(typeID, needs.required, mine).size === 0) return null;
     const lapsed = skillLevelsOf(allSkills);
     const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
+    const rest = await skillWindowRest(typeID, needs.required, skills, allSkills, listed).catch(() => null);
     return {
       typeID,
       skills: listed,
       totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
       missingBooks: missingSkillBooks(listed, lapsed).length,
+      rows: rest?.rows ?? [],
+      omega: rest?.omega ?? true,
+      trainingTicks: rest?.trainingTicks ?? null,
+      skillPointsRequired: rest?.skillPointsRequired ?? null,
+      action: rest?.action ?? null,
     };
+  }
+
+  /** dogma/const.py attributeSkillTimeConstant: a skill's rank. */
+  const ATTRIBUTE_SKILL_TIME_CONSTANT = 275;
+  /** characterskills/attribute.py ATTRIBUTEBONUS_BY_ATTRIBUTEID: each of the pilot's attributes, and a booster's bonus to it. */
+  const ATTRIBUTE_BONUS_BY_ATTRIBUTE: ReadonlyMap<number, number> = new Map([[167, 178], [166, 177], [168, 179], [165, 176], [164, 175]]);
+  /** evetypes/const.py TYPE_LIST_SKILLS_AVAILABLE_FOR_PURCHASE: the books a pilot can buy (evetypes.IsSkillAvailableForPurchase). */
+  const SKILLS_FOR_PURCHASE_LIST = 93;
+  /** clonegrade/const.py ALPHA_TRAINING_MULTIPLIER */
+  const ALPHA_TRAINING_MULTIPLIER = 0.5;
+
+  /**
+   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
+   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
+   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
+   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
+   *
+   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
+   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha. A booster
+   * is taken for a skill accelerator by the attribute bonuses its type carries; the client asks its effects
+   * (IsBoosterSkillAccelerator), which the page cannot read. An alpha clone's restricted skills and levels are not
+   * read (NeedsOmegaUpgrade, the bar's restricted boxes): the window goes as for a pilot with none.
+   */
+  async function skillWindowRest(
+    typeID: number,
+    required: RequiredSkills,
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+    listed: readonly (readonly [number, number])[],
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action">> {
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
+    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes, lists] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetAttributes", []),
+      bridgeAsk("skillHandler", "GetBoosters", []),
+      api.fetchTypeDogma(skillTypes, [ATTRIBUTE_SKILL_TIME_CONSTANT, ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY], callOptions),
+      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
+    ]);
+    const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
+    const queued = queuedLevels(queue);
+    const training = skillInTraining(queue);
+    const boosterTypes = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const boosterBonuses = boosterTypes.length === 0 ? {} : await api.fetchTypeDogma(boosterTypes, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
+    const attributes = new Map(readDictPairs(attributesAnswer).map(([key, value]) => [Number(key), Number(value)] as const));
+    const grade = store.station.get().cloneGrade;
+    const omega = grade !== CLONE_GRADE_ALPHA;
+    const graded = (value: number): number => (omega ? value : value * ALPHA_TRAINING_MULTIPLIER);
+    /** skillsvc.GetCharacterAttribute(attributeID, includeBoosters=False) */
+    const characterAttribute = (attributeID: number): number | null => {
+      const value = attributes.get(attributeID);
+      if (value === undefined || !Number.isFinite(value)) return null;
+      const bonusID = ATTRIBUTE_BONUS_BY_ATTRIBUTE.get(attributeID);
+      const bonus = boosterTypes.reduce((sum, booster) => sum + (bonusID === undefined ? 0 : boosterBonuses[booster]?.[bonusID] ?? 0), 0);
+      return graded(value) - graded(bonus);
+    };
+    const rank = (skill: number): number | null => typeAttributes[skill]?.[ATTRIBUTE_SKILL_TIME_CONSTANT] ?? null;
+    const rate = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        return attributeID === undefined ? null : characterAttribute(attributeID);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    // The points each skill has now, the one in training at its true rate since it began (the Skills window's sheet).
+    const sheet = buildSkillSheet({
+      characterID: 0,
+      characterName: "",
+      skills: skillsAnswer,
+      allSkills: allSkillsAnswer,
+      queue,
+      freeSkillPoints: 0,
+      attributes: attributesAnswer,
+      now: serverNow,
+      typeName: () => null,
+      typeGroupName: () => null,
+      typeAttribute: (skill, attributeID) => typeAttributes[skill]?.[attributeID],
+    }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
+    const pointsNow = (skill: number): number =>
+      sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
+
+    const rows = listed.map(([skill, level]) => ({
+      skill,
+      level,
+      mark: skillRowMark(skill, level, lapsed, lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true),
+      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill)),
+    }));
+    const ticks = trainingTimeLeft(typeID, required, mine, lapsed, { rank, rate, pointsNow });
+    let action: SkillsRequired["action"] = null;
+    let points: number | null = null;
+    if (!isSkillRequirementMet(typeID, required, mine)) {
+      const notHeld = skillsNotHeld(listed, mine);
+      const levels = levelsToTrain(listed, mine);
+      points = skillPointsRequired(levels, mine, rank);
+      const trainable = levels.filter(([skill]) => !notHeld.includes(skill));
+      action = notHeld.length > 0 ? { kind: "buy" } : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, queued) };
+    }
+    return { rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action };
+  }
+
+  /**
+   * The window's Train Skills (skillBtns.AddToQueueButton.ClickFunc): the window put away first (its on_click), then
+   * the levels added to the end of the queue as it is, those already in it passed over, and the queue committed
+   * started (CommitTransaction(activate=True)). What the server refuses is said as any queue's refusal is.
+   */
+  async function trainSkillsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    if (open === null || open.action?.kind !== "train" || open.action.queued) return;
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    await saveSkillQueue(queueWithLevels(queue, open.action.levels), "Added to your skill queue", "those skills", true);
   }
 
   async function runFleetAction(
@@ -19226,6 +19375,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerQuantity,
     skillsRequired: readonlySignal(skillsRequiredSignal),
     dismissSkillsRequired: () => skillsRequiredSignal.set(null),
+    trainSkillsRequired,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,

@@ -105,6 +105,14 @@ export function pointsTrainedBy(points: number, startMs: number, nowMs: number, 
   return Math.trunc(((nowMs - startMs) / 60000) * rate + points);
 }
 
+/** The queue's places as answered (a list of entries), in order: each one's skill and the level it trains to. */
+export function queuedLevels(queue: unknown): readonly { readonly typeID: number; readonly toLevel: number }[] {
+  return itemsOf(queue)
+    .filter((entry) => entry !== null && typeof entry === "object" && (entry as { type?: unknown }).type === "object")
+    .map(queueFields)
+    .map((fields) => ({ typeID: number(fields.get("trainingTypeID")) ?? 0, toLevel: number(fields.get("trainingToLevel")) ?? 0 }));
+}
+
 /**
  * skillQueueSvc.SkillInTraining: the type of the queue's first entry, where that entry has an end. Null with an
  * empty queue, a stopped one, or none. `queue` is the queue as answered: a list of entries.
