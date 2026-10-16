@@ -60,6 +60,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { hullTree, NON_EMPIRE, type HullFacts } from "../bridge/hullBrowser.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
   let {
     store,
@@ -426,7 +427,7 @@
    * the description's markup as its text.
    */
   function fittingTooltip(saved: { readonly name: string; readonly shipTypeID: number; readonly description: string; readonly savedDate: bigint | null }): string {
-    const lines = [saved.name, hullName(saved.shipTypeID)];
+    const lines = [plainText(saved.name), hullName(saved.shipTypeID)];
     if (saved.description) lines.push(plainText(saved.description));
     if (saved.savedDate) {
       const date = $words.templates["/Carbon/UI/Common/DateTime/SimpleDateUTC"];
@@ -1777,6 +1778,12 @@
         onclick={() => { onlyWithSkills = !onlyWithSkills; keepHullSettings(); }}>📘</button>
       <input type="search" bind:value={hullFilterText} oninput={keepHullSettings} aria-label="Search fittings" />
     </p>
+    <!-- A fitting's name as the client's label draws it (FittingEntry, Generic's label: its markup read as the
+         client's text reads it, bridge/mailMarkup.ts mailBodyLines): bold, italic, underlined or a link as its tags say,
+         on one line. -->
+    {#snippet markedText(text: string)}
+      {#each mailBodyLines(text) as line, place (place)}{#if place > 0}{" "}{/if}{#each line as segment, at (at)}<span class="marked-run" class:bold={segment.bold} class:italic={segment.italic} class:underline={segment.underline || segment.link !== null}>{segment.text}</span>{/each}{/each}
+    {/snippet}
     {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
         <p class="controls saved-fitting">
           {#if saved.source === "corporation"}
@@ -1786,7 +1793,7 @@
           {:else if saved.source === "alliance"}
             <span title={fitWord("UI/Fitting/AllianceFittingHint")}>🛡</span>
           {/if}
-          <span title={fittingTooltip(saved)}>{saved.name}</span>
+          <span title={fittingTooltip(saved)}>{@render markedText(saved.name)}</span>
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
           </button>
@@ -1887,7 +1894,7 @@
             {#if opened.unsupported === true}
               {#each browserTree.unsupported as saved (saved.fittingID)}
                 <p class="controls saved-fitting">
-                  <span>{saved.name} ({$hullBrowser?.types.get(saved.shipTypeID) ? hullName(saved.shipTypeID) : fitWord("UI/Fitting/FittingWindow/UnknownShipType")}) - unsupported</span>
+                  <span>{@render markedText(`${saved.name} (${$hullBrowser?.types.get(saved.shipTypeID) ? hullName(saved.shipTypeID) : fitWord("UI/Fitting/FittingWindow/UnknownShipType")}) - unsupported`)}</span>
                   {#if deletable(saved.source)}
                     <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
                       {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}

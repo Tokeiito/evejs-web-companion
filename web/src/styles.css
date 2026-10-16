@@ -9687,6 +9687,10 @@
 .browser-node.holds-current > summary { color: var(--ok, #5aba56); }
 .browser-node.current-hull > summary { background: rgba(0, 128, 0, 0.12); }
 .browser-node > summary small { margin-left: 0.4rem; }
+/* A fitting's name drawn by its markup (ui/Fitting.svelte markedText). */
+.marked-run.bold { font-weight: 700; }
+.marked-run.italic { font-style: italic; }
+.marked-run.underline { text-decoration: underline; }
 /* The fitting browser's import and export menu (ui/Fitting.svelte). */
 .import-export { position: relative; display: inline-block; }
 .import-export-menu { position: absolute; left: 0; top: 100%; z-index: 5; display: flex; flex-direction: column; white-space: nowrap;
