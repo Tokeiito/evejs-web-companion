@@ -53,6 +53,10 @@ export interface FormatContext {
   readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
   /** The same for a tag that asks for an interval's short written form ("6d 8h 57m"). */
   readonly writeShortInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /** The same for an interval's written form in two units at most ("3 hours and 52 minutes"). */
+  readonly writeIntervalTwoPart?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /** The same for an interval's clock form ("02:15:07"), which a tag naming no form asks for too. */
+  readonly writeIntervalShortForm?: (ticks: bigint, from: string | null, to: string | null) => string | null;
   /**
    * A distance in metres written as the client writes one (NumericPropertyHandler._GetDistance: FmtDist(value,
    * maxdemicals=decimalPlaces, 3 where the tag says none)), for a numeric tag that asks for its distance. Without
@@ -304,9 +308,14 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
     }
     case "timeinterval": {
       const value = numberOf(given);
-      // timeIntervalPropertyHandler: writtenForm is FormatTimeIntervalWritten and shortWrittenForm is
-      // FormatTimeIntervalShortWritten, from and to as the tag sets them.
-      const writer = token.property === "writtenForm" ? context.writeInterval : token.property === "shortWrittenForm" ? context.writeShortInterval : undefined;
+      // timeIntervalPropertyHandler: writtenForm is FormatTimeIntervalWritten, writtenFormTwoPart the same in two
+      // units at most, shortWrittenForm is FormatTimeIntervalShortWritten, and shortForm, which is also what a tag with
+      // no form gets (_GetDefault), FormatTimeIntervalShort; from and to as the tag sets them.
+      const writer = token.property === "writtenForm" ? context.writeInterval
+        : token.property === "shortWrittenForm" ? context.writeShortInterval
+        : token.property === "writtenFormTwoPart" ? context.writeIntervalTwoPart
+        : token.property === "shortForm" || token.property === null ? context.writeIntervalShortForm
+        : undefined;
       const written = value !== null && writer ? writer(BigInt(Math.trunc(value)), token.settings.from ?? null, token.settings.to ?? null) : null;
       text = value === null ? "" : written ?? formatInterval(value);
       break;

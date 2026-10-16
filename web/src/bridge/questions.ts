@@ -36,7 +36,7 @@ import {
   type TypedContext,
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
-import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
+import { intervalWriters } from "./timeInterval.ts";
 import { fmtDist } from "../space/overview.ts";
 import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
 
@@ -272,8 +272,7 @@ function wordingContext(client: ClientWording, nameOf: NameOf): TypedContext {
     nameOf,
     playerID: client.playerID ?? null,
     templates: client.templates,
-    writeInterval: intervalWriter(client.templates),
-    writeShortInterval: shortIntervalWriter(client.templates),
+    ...intervalWriters(client.templates),
     // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
     writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
     writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
