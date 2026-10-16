@@ -30,6 +30,7 @@
   import { AGENT_HEADER_WORD_LABELS, agentHeader, agentLocationNameRef } from "../bridge/agentHeader.ts";
   import { PAGE_WORD_LABELS, missionPage, pageAgentToLocate, pageMessageIDs, pageNameRefs, pageSystemIDs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
+  import { showInfo } from "./showInfo.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -816,7 +817,23 @@
           <span class="mission-mark {step.state}" title={STEP_MARKS[step.state][1]}>{STEP_MARKS[step.state][0]}</span>
           {#if step.title}<span class="mission-row-label">{step.title}</span>{/if}
           {#if step.where}<span class="mission-step-where">{step.where}</span>{/if}
-          <span class="mission-row-text">{step.text}</span>
+          {#if step.place && step.place.length > 0}
+            <!-- LocationWrapper: the rating in its colour, the name a link to the place's information, the warning in red. -->
+            <span class="mission-row-text mission-place">
+              {#each step.place as run}
+                {#if run.link}
+                  {@const link = run.link}
+                  <button type="button" class="linkish" onclick={() => showInfo({ kind: "spaceObject", itemID: link.itemID, typeID: link.typeID })}>{run.text}</button>
+                {:else if run.color}
+                  <span style:color={run.color}>{run.text}</span>
+                {:else}
+                  {run.text}
+                {/if}
+              {/each}
+            </span>
+          {:else}
+            <span class="mission-row-text">{step.text}</span>
+          {/if}
         </li>
       {/each}
     </ul>

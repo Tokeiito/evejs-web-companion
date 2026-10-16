@@ -35,7 +35,7 @@ import { AGENT_TYPE_CAREER, type AgentRecord } from "./agents.ts";
 import { SECURITY_CLASS, securityClass } from "./systemSecurity.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
 import { BLUE_TIME, INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "./timeInterval.ts";
-import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation } from "./locationWrapper.ts";
+import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation, wrapLocationRuns, type PlaceRun } from "./locationWrapper.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -159,6 +159,8 @@ export interface PageStep {
   /** How far away its place is, beside the title: only "this station" and "this solar system" are known here. */
   readonly where: string | null;
   readonly text: string;
+  /** The place in runs, its rating coloured and its name a link (wrapLocationRuns); absent where `text` is all there is. */
+  readonly place?: readonly PlaceRun[] | null;
 }
 
 /** One group of steps, under the line the client writes above them. */
@@ -468,6 +470,14 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
     return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus);
   };
+  // The same in runs, the name a link to the place's own information (LocationWrapper's linkdata).
+  const placeRuns = (location: MissionLocation | null): readonly PlaceRun[] | null => {
+    if (location === null || location.locationID === null) return null;
+    const ship = location.shipTypeID === null ? null : words(PAGE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
+    const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
+    const link = location.typeID === null ? null : { typeID: location.typeID, itemID: location.locationID };
+    return wrapLocationRuns(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus, link);
+  };
   // ObjectiveSteps._get_location_info: a station is the pilot's own, or stands for its system; a system is the pilot's own, or so many jumps away.
   const whereText = (location: MissionLocation | null): string | null => {
     if (location === null || location.locationID === null) return null;
@@ -492,7 +502,7 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   const at = (location: MissionLocation | null): boolean => location !== null && location.locationID !== null && location.locationID === context.locationID;
   const marked = (done: boolean): StepState => (done ? "done" : "open");
   const located = (kind: PageStep["kind"], state: StepState, label: string, location: MissionLocation | null): PageStep =>
-    ({ kind, state, title: words(label), where: whereText(location), text: placeText(location) });
+    ({ kind, state, title: words(label), where: whereText(location), text: placeText(location), place: placeRuns(location) });
 
   // mission._build_objective_entries, and ObjectiveSteps for each step's words. The line above a group is its LAST step's.
   const general: PageStep[] = [];
