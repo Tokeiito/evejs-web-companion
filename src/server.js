@@ -2229,7 +2229,16 @@ async function boundCall(held, webSessionID, bindSpec, method, args, kwargs, bin
   }
 }
 
-/** A type's own volume from the static tables, or null when they do not know it. */
+/**
+ * A type's own volume in m³ from the static tables, nought where it is nought (956 published types: blueprints,
+ * some modules and more), as the client's GetItemVolume has it; null only where the tables do not know the type.
+ * The hold reckoning (usedOfListed), the routes that list items (readTypeVolumes) and GET /api/types/volumes all go
+ * by it.
+ *
+ * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an enrichment: without it a panel shows "—" and
+ * a bot hands the server the whole stack to judge, both of which are defined behaviours. A static table that cannot
+ * answer therefore says null, never a 500 on a read the player asked for.
+ */
 function staticTypeVolume(typeID) {
   if (typeof staticData.getType !== "function") return null;
   const type = staticData.getType(typeID);
@@ -6522,8 +6531,8 @@ function readModuleChargeFits(result) {
  * Per-type volume (m³) for every type in a ListStationItems result.
  *
  * Reads the NAME-KEYED packedrow variant this handler builds. Types the static
- * tables do not know are simply absent from the map — never zero, which the
- * page would have to render as a real measurement.
+ * tables do not know are simply absent from the map; a volume of nought is
+ * there as nought, as the client has it (staticTypeVolume).
  */
 function readTypeVolumes(result, packaged = null) {
   const volumes = {};
@@ -6556,25 +6565,6 @@ function readTypeVolumes(result, packaged = null) {
 /** The client's packaged volumes (src/clientData/clientConstants.js), or null where they cannot be read. */
 function packagedTablesOrNull() {
   return clientConstants.packagedVolumes().catch(() => null);
-}
-
-/**
- * A type's volume in m³ as static data has it, or null where it has none: never nought, which a page would have
- * to show as a real measurement. The routes that list items and GET /api/types/volumes both go by it.
- *
- * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an
- * enrichment: without it a panel shows "—" and a bot hands the server the
- * whole stack to judge, both of which are defined behaviours. A static table
- * that cannot answer therefore says null, never a 500 on a read the
- * player asked for.
- */
-function staticTypeVolume(typeID) {
-  if (typeof staticData.getType !== "function") {
-    return null;
-  }
-  const type = staticData.getType(typeID);
-  const volume = Number(type && type.volume);
-  return Number.isFinite(volume) && volume > 0 ? volume : null;
 }
 
 /**

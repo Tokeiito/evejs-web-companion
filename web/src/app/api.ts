@@ -3662,8 +3662,8 @@ export async function loadCompressedTypes(
 }
 
 // --- A type's volume (static reference data) ---------------------------------
-// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³, or null where the static
-// tables have none. A client has it in its own static data; the page asks here, once for a type, where it lists
+// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³ (nought where it is nought, as
+// the client has it), or null where the static tables do not know the type. A client has it in its own static data; the page asks here, once for a type, where it lists
 // what the server listed by its own call (the BFF's routes that list items send it beside their answer still).
 // Not a bridge call, and no live session: it cannot vary by player.
 
@@ -3694,7 +3694,7 @@ export async function loadTypeVolumes(
       if (!Number.isSafeInteger(typeID) || typeID <= 0) {
         continue;
       }
-      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
     }
   }
   return { volumes };

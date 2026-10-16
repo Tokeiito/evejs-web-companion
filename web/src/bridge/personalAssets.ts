@@ -142,7 +142,7 @@ export function decodeAssetItems(
       singleton,
       categoryID: toNumber(readRowField(row, "categoryID")),
       groupID: toNumber(readRowField(row, "groupID")),
-      volume: Number.isFinite(volume) && volume > 0 ? volume : null,
+      volume: Number.isFinite(volume) && volume >= 0 && volumes[String(typeID)] !== null && volumes[String(typeID)] !== undefined ? volume : null,
     });
   }
   // Biggest stacks first, then by type, so the same station reads the same way
