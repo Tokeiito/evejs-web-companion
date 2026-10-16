@@ -366,6 +366,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       // is the thing the pilot asked to warp to, which the client remembers from its own order.
       warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination, warpBookmark) : null,
       maxVelocity: own.maxVelocity,
+      // The speed the ship was told to make, as a share of its top speed (the ball's speedFraction): what the flight
+      // read says of it too, here as fresh as the reading.
+      speedFraction: egoBall ? egoBall.speedFraction : null,
       radius: own.radius,
       position: own.position,
       velocity: own.velocity,

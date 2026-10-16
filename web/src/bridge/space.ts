@@ -286,6 +286,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     weaponBanks: decodeWeaponBanks(raw.weaponBanks),
     rackHeat: decodeRackHeat(raw.rackHeat),
     followRange: rangeOrNull(raw.followRange),
+    speedFraction: ratioOrNull(raw.speedFraction),
     gotoPoint: pointOrNull(raw.gotoPoint),
     warp: decodeWarp(raw.warp),
     alignTarget: decodeAlignTarget(raw.alignTarget),

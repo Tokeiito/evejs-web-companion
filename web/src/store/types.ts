@@ -2066,6 +2066,8 @@ export interface SpaceShipStatus {
   readonly name: string | null;
   readonly mode: string | null;
   readonly maxVelocity: number | null;
+  /** The speed the ship was told to make, as a share of its top speed (the ball's speedFraction); absent where not said. */
+  readonly speedFraction?: number | null;
   /**
    * The ship's own hull radius, so the client can measure SURFACE distance the
    * way the server does — max(0, centre-to-centre - rA - rB). The autopilot
