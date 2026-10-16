@@ -2236,6 +2236,8 @@ export interface AppFlow {
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
+  /** What the game server closed this account's pilot with, where it said (another login of its account), or null. */
+  readClosedByServer?(characterID: number): Promise<api.ClosedByServer | null>;
 }
 
 /**
@@ -2769,6 +2771,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // being shown (applyLiveFrame).
   const botPresses = createBotPresses();
 
+  // The BFF said the pilot's stream has ended: its connection is gone (the game server closed it, or the BFF lost
+  // it). The retail client puts up its connection-lost notice the moment its connection closes (disconnectNotice.py),
+  // so one read finds out at once whether the pilot is still on, and a pilot that is not goes offline, as any read
+  // that finds it gone does. A pilot docked and idle makes no read of its own to find it out by.
+  async function confirmStillOnline(): Promise<void> {
+    if (store.station.get().online === null) return;
+    try {
+      await api.getFlightStatus(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+    }
+  }
+
   function applyLiveFrame(frame: unknown): void {
     if (typeof frame !== "object" || frame === null) {
       return;
@@ -2785,6 +2803,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             ? state
             : "idle",
       });
+      if (state === "ended") void confirmStillOnline();
       return;
     }
     if (record.source !== "evejs-web-gateway") {
@@ -19500,7 +19519,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (store.station.get().online === null) {
         return;
       }
-      await api.getFlightStatus(callOptions);
+      try {
+        await api.getFlightStatus(callOptions);
+      } catch (error) {
+        // A pilot not in front whose connection is gone goes offline as one in front does.
+        if (isSessionLost(error)) {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+        }
+        throw error;
+      }
     },
 
     setLivePush(enabled) {
@@ -19518,6 +19546,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (store.station.get().online !== null) {
         startLiveStream();
       }
+    },
+
+    readClosedByServer(characterID: number) {
+      return api.readClosedByServer(characterID, callOptions);
     },
 
     async releaseSession() {

@@ -247,6 +247,31 @@ async function getJson(
   return requestJson(path, { method: "GET" }, options);
 }
 
+/**
+ * GET /api/roster/characters: an account's characters as its selection screen lists them, for the Pilot Hangar, read
+ * with no game login (a launcher's listing: a login would close the account's other client). The answer is
+ * charUnboundMgr.GetCharacterSelectionData's, undecoded.
+ */
+export async function readRosterCharacters(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/roster/characters", options);
+  return data.result ?? null;
+}
+
+/** What the game server closed a pilot's connection with, where it said (another login of its account). */
+export interface ClosedByServer {
+  readonly reasonCode: string;
+  readonly reason: string;
+}
+
+/** GET /api/bridge/closed-by-server: what closed this account's pilot, or null where the server closed nothing. */
+export async function readClosedByServer(characterID: number, options: ApiOptions = {}): Promise<ClosedByServer | null> {
+  const data = await getJson(`/api/bridge/closed-by-server?characterID=${characterID}`, options);
+  const closed = data.closed;
+  if (typeof closed !== "object" || closed === null || Array.isArray(closed)) return null;
+  const { reasonCode, reason } = closed as Record<string, JsonValue>;
+  return typeof reasonCode === "string" && typeof reason === "string" ? { reasonCode, reason } : null;
+}
+
 export async function provisioningOptions(providerCharacterID: number | null, options: ApiOptions = {}): Promise<import("../bridge/provisioning.ts").ProvisioningOptions> {
   const data = await getJson(`/api/bridge/provisioning/options${providerCharacterID ? `?providerCharacterID=${providerCharacterID}` : ""}`, options);
   return data as unknown as import("../bridge/provisioning.ts").ProvisioningOptions;

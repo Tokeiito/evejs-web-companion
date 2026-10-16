@@ -1128,6 +1128,14 @@ function createGamePortPilots({
   const sessions = new Map();
   /** The accounts' own connections, by account, each with no character chosen on it. */
   const accountLines = new Map();
+  // Pilots whose connection the game server closed with a code of its own (a GPSTransportClosed's reasonCode): another
+  // login of the account (EveJS's accountLoginClose.js, after sessionMgr.CloseUserSessions, sessions.py 764, with
+  // machoNet.DisconnectUsers' CLIENTDISCONNECTED, machoNet.py 2513), a ban, a shutdown. A retail client so closed puts
+  // up its connection-lost notice and stays closed (disconnectNotice.py): nothing here logs such a pilot in again of
+  // its own accord, and whatever asks after it is told why. Kept by character and by handle; the character's is
+  // forgotten when it is chosen again.
+  const closedByServerByCharacter = new Map();
+  const closedByServerByHandle = new Map();
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
@@ -1424,14 +1432,42 @@ function createGamePortPilots({
 
   // ── sessions ──────────────────────────────────────────────────────────────
 
-  /** The live session a handle names, or SESSION_NOT_FOUND. */
+  /** The live session a handle names, or SESSION_NOT_FOUND: with the server's own reason where it closed it. */
   function held(handle, sessionFields) {
     const entry = sessions.get(String(handle || ""));
     const asked = sessionFields && sessionFields.userid !== undefined ? Number(sessionFields.userid) : undefined;
     if (!entry || entry.ended || (asked !== undefined && asked !== entry.accountID)) {
-      throw fail("SESSION_NOT_FOUND", SESSION_GONE);
+      const closed = closedByServerByHandle.get(String(handle || "")) ?? null;
+      throw closed && (asked === undefined || asked === closed.accountID)
+        ? closedByServerError(closed)
+        : fail("SESSION_NOT_FOUND", SESSION_GONE);
     }
     return entry;
+  }
+
+  /** SESSION_NOT_FOUND, as any lost pilot is, carrying the code and the words the server closed it with. */
+  function closedByServerError(closed) {
+    const error = fail("SESSION_NOT_FOUND", `The game server closed the connection (${closed.reasonCode}): ${closed.reason}`);
+    error.closedByServer = { reasonCode: closed.reasonCode, reason: closed.reason };
+    return error;
+  }
+
+  /** A pilot's connection ended: if the server closed it with a code of its own, that is kept (closedByServerByCharacter). */
+  function noteClosedByServer(entry, error) {
+    const closedBy = error && error.code === "TRANSPORT_CLOSED" ? error.detail : null;
+    if (!closedBy || typeof closedBy.reasonCode !== "string" || !closedBy.reasonCode) return false;
+    const closed = {
+      reasonCode: closedBy.reasonCode,
+      reason: String(closedBy.reason || closedBy.reasonCode),
+      characterID: entry.characterID,
+      accountID: entry.accountID,
+      at: now(),
+    };
+    closedByServerByCharacter.set(entry.characterID, closed);
+    closedByServerByHandle.set(entry.handle, closed);
+    // A handle is asked after for a little while at most; the oldest go first.
+    while (closedByServerByHandle.size > 64) closedByServerByHandle.delete(closedByServerByHandle.keys().next().value);
+    return true;
   }
 
   /** The session is over: forget it, close it, and tell whoever is listening. */
@@ -1480,6 +1516,11 @@ function createGamePortPilots({
     if (accountID === null) throw fail("CALL_INVALID", "Call session requires a positive integer userid.");
     if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
     if (characterID === null) throw fail("CALL_INVALID", "SelectCharacterID needs a character.");
+
+    // The account's own connection, if it has one and nothing is being asked on it, is closed first: the retail client
+    // has one connection, and the server closes an account's others as it logs in (closedByServerByCharacter).
+    const line = accountLines.get(accountID);
+    if (line && line.calls === 0) line.hangUp();
 
     let transport;
     try {
@@ -2083,8 +2124,10 @@ function createGamePortPilots({
     // The readings after the choosing fail quietly, each for itself. A connection lost under them is the choosing lost.
     if (session.closed) throw fail("SESSION_SELECT_FAILED", "The game server closed the connection during character selection.");
 
+    // Chosen again, it is the pilot's own choice: what the server closed before is forgotten.
+    closedByServerByCharacter.delete(characterID);
     sessions.set(entry.handle, entry);
-    session.onClose(() => end(entry, "connection_closed"));
+    session.onClose((error) => end(entry, noteClosedByServer(entry, error) ? "closed_by_server" : "connection_closed"));
     // A pilot that was left in space comes back in space.
     syncSpace(entry);
     return {
@@ -3820,15 +3863,28 @@ function createGamePortPilots({
     assertAllowed(service, method);
     // Choosing a character brings it online on the connection it is chosen on, and this one is not kept.
     if (method === "SelectCharacterID") throw fail("CALL_NOT_ALLOWED", "A character is chosen by selecting it, not by a call of the account's.");
-    const line = accountLine(accountID, userName);
-    timers.clearTimeout(line.timer);
-    line.timer = null;
-    line.calls += 1;
     // No session was handed out for this call, so there is none for the caller to have lost.
     const failed = (error) => {
       const mapped = toPilotError(error, service, method);
       return mapped.code === "SESSION_NOT_FOUND" ? fail("CALL_FAILED", `${service}.${method} failed: the game server closed the connection.`) : mapped;
     };
+    // One connection for each account, as the retail client has: a second would close the first (EveJS's
+    // accountLoginClose.js). With a pilot of the account on the game port, its connection is the account's, and the
+    // call is asked there.
+    const pilot = [...sessions.values()].find((candidate) => candidate.accountID === accountID && !candidate.ended);
+    if (pilot) {
+      const form = shape(service, method, args, kwargs, {});
+      ledger.note(service, method, form);
+      try {
+        return { service, method, result: wireToBridgeJson(await byName(pilot.session, service, method, form)), notifications: [] };
+      } catch (error) {
+        throw failed(error);
+      }
+    }
+    const line = accountLine(accountID, userName);
+    timers.clearTimeout(line.timer);
+    line.timer = null;
+    line.calls += 1;
     try {
       let session;
       try {
@@ -5357,6 +5413,8 @@ function createGamePortPilots({
     readSpaceSnapshot,
     openSessionEventStream,
     accountCall,
+    /** What the game server closed a character's last connection with ({ reasonCode, reason, at }), or null. */
+    closedByServer: (characterID) => closedByServerByCharacter.get(positive(characterID)) ?? null,
     answerClientQuestion,
     ship,
     fleet,

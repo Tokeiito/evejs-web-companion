@@ -380,6 +380,10 @@ const botHost =
     // live web session is flying. (Direction 2 — a tab may not take a bot's
     // character — is the guard in /api/bridge/select.)
     isCharacterHeld,
+    // What the game server closed a pilot's connection with, where it said (another login of its account): such a
+    // pilot is not logged in again by a run's recovery (gamePort/pilots.js closedByServer).
+    closedByServer: (characterID) =>
+      gamePortPilots && typeof gamePortPilots.closedByServer === "function" ? gamePortPilots.closedByServer(characterID) : null,
     disconnectOwnedSession: async ({ webSessionID, characterID, accountID, claimSecret, previousSecret }) => {
       const held = bridgeSessions.get(webSessionID);
       if (!held || held.characterID !== characterID || Number(held.accountID) !== accountID ||
@@ -10310,6 +10314,26 @@ function requireExpectedInventoryFlight(res, expected, flight) {
   return true;
 }
 
+// Why a pilot of this account went offline, where the game server closed its connection with a reason of its own
+// (another login of the account: gamePort/pilots.js closedByServer). The page asks as it lets the pilot go, and says
+// so, as the retail client puts up its connection-lost notice. Null where the server closed nothing.
+app.get("/api/bridge/closed-by-server", requireAuth, (req, res) => {
+  const characterID = Number(req.query.characterID);
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A character is required." });
+    return;
+  }
+  const closed = gamePortPilots && typeof gamePortPilots.closedByServer === "function"
+    ? gamePortPilots.closedByServer(characterID)
+    : null;
+  res.json({
+    ok: true,
+    closed: closed && Number(closed.accountID) === Number(req.account.accountID)
+      ? { reasonCode: closed.reasonCode, reason: closed.reason, at: closed.at }
+      : null,
+  });
+});
+
 app.get("/api/mining/compression-compatibility", requireAuth, (req, res, next) => {
   const ids = value => typeof value === "string" && /^\d+(?:,\d+)*$/.test(value)
     ? value.split(",").map(Number) : [];
@@ -11022,6 +11046,27 @@ function rosterCharacterIDs(value) {
   }
   return characterIDs;
 }
+
+// An account's characters for the Pilot Hangar, as the selection screen lists them (charUnboundMgr.
+// GetCharacterSelectionData), read without logging the account in on the game port. A launcher lists an account's
+// characters without a game login; a login closes the account's other client (EveJS's accountLoginClose.js, after
+// sessionMgr.CloseUserSessions), so the hangar opening would put off a retail client playing on the account. Asked of
+// the gateway as the account and no character, as the roster's training read below is.
+app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
+  try {
+    const outcome = await gateway.callMethod(
+      "charUnboundMgr",
+      "GetCharacterSelectionData",
+      [],
+      null,
+      { userid: Number(req.account.accountID) },
+      undefined,
+    );
+    res.json({ ok: true, result: outcome ? outcome.result ?? null : null });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/roster/training", requireAuth, async (req, res, next) => {
   const characterIDs = rosterCharacterIDs(req.query.characterIDs);

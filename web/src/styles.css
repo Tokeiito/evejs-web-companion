@@ -3746,6 +3746,34 @@
   .fleet-invitations > * {
     pointer-events: auto;
   }
+  /* A pilot the game server logged off with a reason of its own (another login of its account), said over every
+   * screen as the retail client puts up its connection-lost notice: above the hangar, until it is put away. */
+  .offline-notes {
+    position: fixed;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(40rem, calc(100vw - 2rem));
+    z-index: 700;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    pointer-events: none;
+  }
+  .offline-note {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    background: #3a1f1f;
+    border: 1px solid #a05050;
+    border-radius: 4px;
+  }
+  .offline-note p {
+    flex: 1;
+    margin: 0;
+  }
   /* ⚠ THERE IS NO SECOND STRIP ANY MORE, and its absence is the fix. This layer
    * used to put its own chips bottom-RIGHT, opposite the desktop's own strip, on
    * the reasoning that two layers deserved two strips. What a player sees is one
