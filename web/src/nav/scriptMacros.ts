@@ -5508,7 +5508,14 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
   }
 
   const triedRaw = (mem["tries"] as Record<string, number> | undefined) ?? {};
+  // Locks asked for a wreck that never became locked, kept by the site: the run's refusal streaks are forgotten
+  // whenever the hold changes, and the salvager loots between its locks, so those alone never reached their bound
+  // (seen live 2026-10-16: one wreck's lock refused, TargetingAttemptCancelled, every few seconds for minutes).
+  const lockTriesRaw = (mem["lockTries"] as Record<string, number> | undefined) ?? {};
+  const lockTries: Record<string, number> = {};
+  for (const [id, n] of Object.entries(lockTriesRaw)) if (!locked.has(Number(id))) lockTries[id] = n;
   const setAside = (id: number) =>
+    (lockTries[String(id)] ?? 0) >= LOCK_TRIES ||
     (triedRaw[String(id)] ?? 0) >= BATCH_TRIES ||
     shouldSetAside(obs.refusals, step.id, "lootWreck", id, MAX_BLOCK_ATTEMPTS) ||
     shouldSetAside(obs.refusals, step.id, "activate", id, MAX_BLOCK_ATTEMPTS) ||
@@ -5543,7 +5550,7 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     committedAnchor: anchor,
   };
   const plan = planSalvageTick(planInput);
-  next = { ...next, pending };
+  next = { ...next, pending, lockTries };
   // ⚠ ALL AT ONCE, AS A PILOT DOES IT. Module work is gathered for the whole tick: each step the planner gives is
   // taken as done (the beam on its wreck, the salvager on its, the lock asked for) and the planner asked again,
   // until it wants something that is not module work (a loot, a move) or nothing. Seen live 2026-10-14: one step a
@@ -5563,13 +5570,18 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     // Each target a step was aimed at, counted: a target asked for again and again without taking is set aside.
     const tries = { ...((mem["tries"] as Record<string, number> | undefined) ?? {}) };
     const newPending = { ...pending };
+    const newLockTries = { ...lockTries };
     let newLastSet = { ...lastSet };
     for (const st of steps) {
-      if (st.kind === "lock") { newPending[String(st.targetID)] = 0; tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1; }
+      if (st.kind === "lock") {
+        newPending[String(st.targetID)] = 0;
+        tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1;
+        newLockTries[String(st.targetID)] = (newLockTries[String(st.targetID)] ?? 0) + 1;
+      }
       if (st.kind === "activate") { newLastSet = { ...newLastSet, [String(st.moduleID)]: st.targetID }; tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1; }
       if (st.kind === "deactivate") { const { [String(st.moduleID)]: _gone, ...rest } = newLastSet; newLastSet = rest; }
     }
-    const nextMem = { ...next, pending: newPending, lastSet: newLastSet, tries };
+    const nextMem = { ...next, pending: newPending, lastSet: newLastSet, tries, lockTries: newLockTries };
     const action: ScriptAction = steps.length === 1
       ? (steps[0]!.kind === "activate" ? { kind: "activate", moduleID: steps[0]!.moduleID, targetID: steps[0]!.targetID }
         : steps[0]!.kind === "deactivate" ? { kind: "deactivate", moduleID: steps[0]!.moduleID } : steps[0]!)
@@ -5586,7 +5598,8 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     case "lootWreck":
       return { tick: tick({ kind: "lootWreck", wreckID: action.wreckID }, plan.why, SITE_PHASE, ACTING, true, { ...next, attempted: action.wreckID }) };
     case "lock":
-      return { tick: tick({ kind: "lock", targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true, { ...next, pending: { ...pending, [String(action.targetID)]: 0 } }) };
+      return { tick: tick({ kind: "lock", targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true,
+        { ...next, pending: { ...pending, [String(action.targetID)]: 0 }, lockTries: { ...lockTries, [String(action.targetID)]: (lockTries[String(action.targetID)] ?? 0) + 1 } }) };
     case "unlock":
       return { tick: tick({ kind: "unlock", targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true, next) };
     case "activate":
@@ -5621,6 +5634,8 @@ const BATCHABLE = new Set(["lock", "unlock", "activate", "deactivate"]);
 const BATCH_MAX = 16;
 /** A wreck a module or a lock was aimed at this many times without being done with is set aside. */
 const BATCH_TRIES = 12;
+/** A wreck whose lock was asked for this many times and never made is set aside for the rest of the site. */
+const LOCK_TRIES = 3;
 type SalvageBatchStep = Extract<ScriptAction, { kind: "salvageBatch" }>["steps"][number];
 
 /** The plan's input as it will be once `action` has been done: the module on its target, the lock asked for. */
