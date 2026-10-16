@@ -3774,6 +3774,26 @@ export async function getTypePrices(
 }
 
 /**
+ * Dogma effects' names as the numbers of their messages (GET /api/client-data/effect-names: the effect's displayNameID),
+ * null for an effect with none; `available` false where the client's data could not be read.
+ */
+export async function getEffectDisplayNameIDs(
+  effectIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly displayNameIDs: Readonly<Record<number, number | null>> }> {
+  const data = await getJson(`/api/client-data/effect-names?effectIDs=${effectIDs.join(",")}`, options);
+  const raw = typeof data.displayNameIDs === "object" && data.displayNameIDs !== null && !Array.isArray(data.displayNameIDs)
+    ? (data.displayNameIDs as Record<string, JsonValue>)
+    : {};
+  const displayNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const effectID = Number(key);
+    if (Number.isSafeInteger(effectID) && effectID > 0) displayNameIDs[effectID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  return { available: data.available === true, displayNameIDs };
+}
+
+/**
  * An alpha clone's skills and their highest levels for a race (GET /api/client-data/clone-grade): each skill's level, a
  * skill not listed 0; `available` false where the client's data could not be read.
  */

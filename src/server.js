@@ -13155,6 +13155,28 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
 // (clonegrade.CloneGradeStorage()[raceID]; src/clientData/clientBuiltData.js cloneGrades): a skill not listed is 0.
 // The client goes by them for an alpha (clone_grade_svc.get_max_skill_level). `available` false where the client's
 // data could not be read. No session: they do not vary by player.
+// Dogma effects' names, as the numbers of their messages (dogma.data.get_effect_display_name: the effect's
+// displayNameID), for the effects asked; null for an effect with none. `available` false where the client's data
+// could not be read. No session: they do not vary by player.
+app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.effectIDs) || "").split(",")) {
+      const effectID = Number(part);
+      if (Number.isSafeInteger(effectID) && effectID > 0 && !asked.includes(effectID)) asked.push(effectID);
+    }
+    const names = await clientBuiltData.table("effectDisplayNames");
+    const displayNameIDs = {};
+    for (const effectID of asked.slice(0, 50)) {
+      const messageID = names ? Number(names[effectID]) : NaN;
+      displayNameIDs[effectID] = Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;
+    }
+    res.json({ ok: true, available: Boolean(names), displayNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/clone-grade", requireAuth, async (req, res, next) => {
   const raceID = Number(req.query && req.query.raceID);
   if (!Number.isSafeInteger(raceID) || raceID <= 0) {

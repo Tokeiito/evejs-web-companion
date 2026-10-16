@@ -486,6 +486,7 @@ import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -1009,6 +1010,16 @@ export interface MultiBuyAsk {
    * offered (AddBuyAndFitBtn), and after it the fitting is loaded again as the orders run out.
    */
   readonly fitting: SourcedFitting | null;
+}
+
+/** The client's fitting display window open now (fittingMgmtWindow.ViewFitting, FittingMgmtContInStandalone). */
+export interface ViewFittingAsk {
+  readonly n: number;
+  readonly fitting: SourcedFitting;
+  /** Its contents by heading (fittingSvc.GetFittingInfoForScrollList); null while they are reckoned. */
+  readonly contents: readonly FittingContentsGroup[] | null;
+  /** Each slot kind's effect's name, as the number of its message (get_effect_display_name); null where none is had. */
+  readonly effectNames: Readonly<Record<number, number | null>>;
 }
 
 /** The client's Buy All box (missingItemsPopup.BuyAllMessageBox): what a fitting could not load, each type and how many. */
@@ -2262,6 +2273,17 @@ export interface AppFlow {
   readonly buyAllAsked: ReadableSignal<BuyAllAsk | null>;
   /** Its Buy All (the multibuy window with what is missing, for the fitting), or Close. */
   answerBuyAll(n: number, answer: "buy" | "close"): Promise<void>;
+  /** The fitting display window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly viewFittingAsked: ReadableSignal<ViewFittingAsk | null>;
+  /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
+  viewFitting(fittingID: number): Promise<void>;
+  /** Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed), its Buy (multiBuyUtil.BuyFit), or closed. */
+  answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void>;
+  /**
+   * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
+   * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
+   */
+  deleteFitting(fittingID: number): Promise<void>;
   /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
   importMultiBuy(n: number, text: string | null): Promise<void>;
   /**
@@ -3584,6 +3606,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (cloneGrade !== null) {
         store.apply({ type: "character/clone-grade", cloneGrade });
       }
+      return;
+    }
+    // fittingSvc.OnFittingDeleted(ownerID, fittingID): the fitting let go from those kept.
+    if (method === "OnFittingDeleted") {
+      const fittingID = Number(args[1]);
+      if (Number.isSafeInteger(fittingID) && fittingID > 0) fittingLetGo(fittingID);
       return;
     }
     // MarketProgressionNotifier.OnMarketEscrowChanged: the kept escrow is to be asked again (once its last asking is
@@ -6479,6 +6507,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The saved fittings as last read (fittingSvc.fittings), and the Buy All box. A fitting under way (busyFitting).
   const savedFittingsSignal = createSignal<readonly SourcedFitting[] | null>(null);
   const buyAllAskedSignal = createSignal<BuyAllAsk | null>(null);
+  const viewFittingAskedSignal = createSignal<ViewFittingAsk | null>(null);
   let busyFitting = false;
 
   /**
@@ -7235,6 +7264,77 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     for (const module of fitting.modules) wanted.set(module.typeID, (wanted.get(module.typeID) ?? 0) + module.quantity);
     wanted.set(fitting.shipTypeID, 1);
     await openMultiBuy(wanted);
+  }
+
+  /**
+   * fittingSvc.DisplayFitting (752 to 766): the ViewFitting window opened on the fitting, or the one open reloaded with
+   * it (ReloadWnd). Its contents are reckoned as the client lists them (bridge/fittingContents.ts), from each type's
+   * group and category and the two type lists, and each slot kind is headed by its effect's name.
+   */
+  async function viewFitting(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting === null) return;
+    const open = viewFittingAskedSignal.get();
+    const n = open?.n ?? (dialogsSaidCount += 1);
+    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {} });
+    const types = [...new Set(fitting.modules.map((module) => module.typeID))];
+    const facts = new Map<number, TypeFacts>();
+    for (let at = 0; at < types.length; at += 32) {
+      const chunk = types.slice(at, at + 32);
+      const [prices, lists] = await Promise.all([
+        api.getTypePrices(chunk, callOptions),
+        api.loadTypeListsHolding(chunk, [TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES], callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>)),
+      ]);
+      for (const typeID of chunk) facts.set(typeID, { groupID: prices.groupID[typeID] ?? null, categoryID: prices.categoryID[typeID] ?? null, lists: new Set(lists[typeID] ?? []) });
+    }
+    const contents = fittingContents(
+      fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+      (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
+    );
+    const effectNames = Object.keys(open?.effectNames ?? {}).length > 0
+      ? open!.effectNames
+      : await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
+    const now = viewFittingAskedSignal.get();
+    if (now !== null && now.n === n && now.fitting.fittingID === fittingID) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+  }
+
+  /** The display window's Fit and Buy (FittingMgmtContInStandalone's buttons), or the window closed. */
+  async function answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void> {
+    const open = viewFittingAskedSignal.get();
+    if (open === null || open.n !== n) return;
+    if (answer === "close") {
+      viewFittingAskedSignal.set(null);
+      return;
+    }
+    if (answer === "fit") await fitFittingToActiveShip(open.fitting.fittingID);
+    else await buyFit(open.fitting.fittingID);
+  }
+
+  /**
+   * fittingUtil.DeleteFittings for one fitting (376 to 399): the DeleteFitting question, Yes to go on; then
+   * fittingSvc.DeleteFitting (433 to 439): DeleteFitting(ownerID, fittingID) on the owner's fitting manager, and the
+   * fitting let go from those kept. Only the pilot's own is deleted here (fittingUtil.CanDeleteFit: a corporation's
+   * needs its fitting manager's role, and the corporation's manager's delete is no call the page makes).
+   */
+  async function deleteFitting(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (fitting === null || characterID === null || fitting.ownerID !== characterID) return;
+    if (!(await askDialog("DeleteFitting", { type: "dict", entries: [] }, "Delete this fitting for good?"))) return;
+    try {
+      await bridgeDo("charFittingMgr", "DeleteFitting", [fitting.ownerID, fitting.fittingID]);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be deleted: ${errorWords(error)}`);
+      return;
+    }
+    fittingLetGo(fitting.fittingID);
+  }
+
+  /** A fitting no longer kept (fittingSvc.DeleteFitting, and its OnFittingDeleted): out of those kept. */
+  function fittingLetGo(fittingID: number): void {
+    const kept = savedFittingsSignal.get();
+    if (kept !== null) savedFittingsSignal.set(kept.filter((fitting) => fitting.fittingID !== fittingID));
   }
 
   /** BuyAllMessageBox.BuyAll: the multibuy window with what is missing, for the fitting, and the box closed; or Close. */
@@ -20477,6 +20577,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buyFit,
     buyAllAsked: readonlySignal(buyAllAskedSignal),
     answerBuyAll,
+    viewFittingAsked: readonlySignal(viewFittingAskedSignal),
+    viewFitting,
+    answerViewFitting,
+    deleteFitting,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,

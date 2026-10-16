@@ -214,13 +214,16 @@
   // it: the pilot's and its corporation's fittings for the ship it is in (the browser's filter
   // fittings_show_only_for_current_ship), the pilot's before the corporation's and each by its name
   // (GetFittingEntriesForType: FITTING_OWNER_PERSONAL 0, FITTING_OWNER_CORP 1), and of a fitting's menu
-  // (GetFittingMenu) Fit to Active Ship and Buy All. Its words are the install's; the page's own stand in. Not done:
-  // the hulls and groups it is browsed by and its other filters, an entry's owner icon and tooltip, and the menu's View
-  // Fitting, Simulate Fitting, the multifit and Delete.
+  // (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own: CanDeleteFit).
+  // Its words are the install's; the page's own stand in. Not done: the hulls and groups it is browsed by and its other
+  // filters, an entry's owner icon and tooltip, the menu's Simulate Fitting and the multifit, and deleting a
+  // corporation's fitting (its fitting manager's role, and a call the page does not make).
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
+    "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
     "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
+    "UI/Fitting/FittingWindow/FittingManagement/DeleteFitting": "Delete it",
     "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
     "UI/Common/NothingFound": "None for this ship",
     // Said as a fitting is loaded (flow.ts loadSavedFitting): asked here, where it is loaded from.
@@ -1482,12 +1485,20 @@
       {#each fittingsForShip as saved (saved.fittingID)}
         <p class="controls saved-fitting">
           <span>{saved.name}</span>
+          <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
+            {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
+          </button>
           <button type="button" disabled={busy} onclick={() => void flow.fitFittingToActiveShip(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/FitFittingToActiveShip")}
           </button>
           <button type="button" class="minor" onclick={() => void flow.buyFit(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Market/MarketQuote/BuyAll")}
           </button>
+          {#if saved.source === "personal"}
+            <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+            </button>
+          {/if}
         </p>
       {/each}
     {/if}

@@ -41,6 +41,7 @@
   import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import { CONTENTS_LABELS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -63,6 +64,48 @@
   const skillBooksAsked = flow.skillBooksAsked;
   // svelte-ignore state_referenced_locally
   const buyAllAsked = flow.buyAllAsked;
+  // svelte-ignore state_referenced_locally
+  const viewFittingAsked = flow.viewFittingAsked;
+  // The client's fitting display window (fittingMgmtWindow.ViewFitting, its FittingMgmtContInStandalone): its caption
+  // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, two tabs,
+  // the contents by heading (each slot kind under its effect's name, each type "Nx" and its name with its icon) and the
+  // description, and Fit and Buy. Its words are the install's; the page's own stand in. Not done: Save (the name and the
+  // description edited), Simulate, the settings and the header's menu (the multifit, the export), the ship's preview,
+  // the truncated mark, and an obsolete module's mark.
+  const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/ShipFitting": "Fitting",
+    "UI/Fitting/FittingWindow/FittingManagement/Fittings": "Contents",
+    "UI/Common/Description": "About it",
+    "UI/Fitting/FittingWindow/FittingManagement/Fit": "Fit this ship",
+    "UI/Market/MarketQuote/CommandBuy": "Purchase",
+    "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
+    "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting": "Your corporation's fitting",
+    [CONTENTS_LABELS.charges]: "Ammunition",
+    [CONTENTS_LABELS.ice]: "Fuel",
+    [CONTENTS_LABELS.drones]: "Drones",
+    [CONTENTS_LABELS.fighters]: "Fighters",
+    [CONTENTS_LABELS.implants]: "Implants and boosters",
+    [CONTENTS_LABELS.modules]: "Modules in the hold",
+    [CONTENTS_LABELS.filaments]: "Filaments",
+    [CONTENTS_LABELS.otherInCargo]: "Other things in the hold",
+    [CONTENTS_LABELS.other]: "Everything else",
+  };
+  let viewFittingTab = $state<"contents" | "description">("contents");
+  $effect(() => {
+    if ($viewFittingAsked === null) return;
+    flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...Object.values($viewFittingAsked.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))]);
+    flow.requestNames([
+      { kind: "type" as const, id: $viewFittingAsked.fitting.shipTypeID },
+      ...($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID }))),
+    ]);
+  });
+  const viewWord = (label: string): string => plainText(wordOf(label, VIEW_FITTING_WORDS[label] ?? ""));
+  /** A heading of the contents: a slot kind's effect's name (the client's message), or the kind's label. */
+  function contentsHeading(header: FittingContentsGroup["header"], effectNames: Readonly<Record<number, number | null>>): string {
+    if ("label" in header) return viewWord(header.label);
+    const messageID = effectNames[header.effectID];
+    return messageID === null || messageID === undefined ? "" : plainText(wordOf(`#${messageID}`, ""));
+  }
   // The client's Buy All box (fittingScreen/missingItemsPopup.py BuyAllMessageBox), put up when a fitting could not all
   // be loaded: its info icon and caption, the header, each type that failed with how many ("%sx %s", by name) and its
   // icon, and Buy All (the multibuy window with them, for the fitting) and Close. Its words are the install's; the
@@ -850,6 +893,52 @@
         {/if}
         <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
+      </span>
+    </div>
+  </div>
+{/if}
+
+{#if $viewFittingAsked !== null}
+  {@const view = $viewFittingAsked}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog multibuy" role="dialog" aria-label={viewWord("UI/Fitting/ShipFitting")} data-dialog="ViewFitting" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title">
+        <strong>{viewWord("UI/Fitting/ShipFitting")}: {nameOf("type", view.fitting.shipTypeID)}</strong>
+        <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerViewFitting(view.n, "close")}>✕</button>
+      </span>
+      <span class="multibuy-row">
+        <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
+        <span class="multibuy-name" title={viewWord(view.fitting.source === "personal" ? "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting" : "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting")}>{view.fitting.name}</span>
+      </span>
+      <span class="answers">
+        <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
+        <button type="button" class:active={viewFittingTab === "description"} onclick={() => (viewFittingTab = "description")}>{viewWord("UI/Common/Description")}</button>
+      </span>
+      {#if viewFittingTab === "contents"}
+        {#if view.contents === null}
+          <p>…</p>
+        {:else}
+          <ul class="multibuy-rows">
+            {#each view.contents as group, at (at)}
+              <li class="multibuy-row"><strong>{contentsHeading(group.header, view.effectNames)}</strong></li>
+              {#each group.entries as entry (entry.typeID)}
+                <li class="multibuy-row">
+                  <TypeIcon typeID={entry.typeID} name={nameOf("type", entry.typeID)} size="sm" />
+                  <span class="multibuy-name">{groupedNumber(entry.qty)}x {nameOf("type", entry.typeID)}</span>
+                </li>
+              {/each}
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <p>{view.fitting.description}</p>
+      {/if}
+      <span class="answers">
+        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
+        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
       </span>
     </div>
   </div>
