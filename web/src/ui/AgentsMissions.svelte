@@ -429,6 +429,7 @@
       missionTitle: held.missionTitle,
       objectives: held.objectives,
       record: held.record,
+      acceptTime: typeof held.acceptTime === "string" && /^\d+$/.test(held.acceptTime) ? BigInt(held.acceptTime) : null,
       agent: $agents.agentRecords[held.agentID] ?? null,
       agentSolarSystemID: $agents.agentSolarSystems[held.agentID] ?? null,
       standings: $standings.char === null ? null : new Map($standings.char.map((row) => [row.fromID, row.standing])),
@@ -461,7 +462,8 @@
       return;
     }
     pageClock = Date.now();
-    const ticking = setInterval(() => { pageClock = Date.now(); }, 10_000);
+    // Each second, as the bonus's countdown counts seconds (TimerCont looks twice a second).
+    const ticking = setInterval(() => { pageClock = Date.now(); }, 1_000);
     return () => clearInterval(ticking);
   });
   const pageShown = $derived.by<{ readonly agentID: number; readonly page: MissionPage } | null>(() => {
@@ -834,7 +836,19 @@
 {#snippet pageRewards(kind: string, group: PageRewards | null)}
   {#if group}
     <div class="mission-page-rewards {kind}">
-      {#if group.title}<h3 class="mission-block-title">{group.title}</h3>{/if}
+      {#if group.title}
+        <h3 class="mission-block-title">
+          {group.title}
+          {#if group.timer}
+            <!-- TimerCont: a gauge of the bonus's time left and the time, the bonus's line as its hint. -->
+            <span class="mission-bonus-timer" class:expired={group.timer.expired} title={group.hint ?? undefined}>
+              <span class="mission-bonus-gauge" style="--left: {group.timer.left}" aria-hidden="true"></span>
+              {group.timer.text}
+            </span>
+          {/if}
+        </h3>
+      {/if}
+      {#if group.hint && !group.timer}<p class="mission-block-text">{group.hint}</p>{/if}
       <ul class="mission-rows">
         {#each group.rewards as reward}
           <li><span class="mission-row-text">{reward}</span></li>

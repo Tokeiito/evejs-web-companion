@@ -1367,6 +1367,12 @@ export interface MissionPageState {
   readonly missionTitle: string | null;
   readonly objectives: MissionObjectives | null;
   readonly record: import("../bridge/missionPage.ts").ClientMission | null;
+  /**
+   * When the mission was accepted, a FILETIME as a decimal string: the first of its journal bookmarks that says when
+   * it was made (AgentMissionJob._update_objective_info); null for an offer, or where none says. The bonus's
+   * countdown runs from it.
+   */
+  readonly acceptTime?: string | null;
 }
 
 /** The decoded mission journal: active + offered missions. */

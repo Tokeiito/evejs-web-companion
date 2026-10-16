@@ -3936,6 +3936,23 @@
    * at a fifth and its fill at half, the fill eased to each value over a quarter second), along the foot of the row
    * under the state's words: placed by the row, so that the words' ellipsis does not clip it. */
   .hud-head:has(.hud-warp-progress) { position: relative; }
+  /* The mission page's bonus countdown (TimerCont): a small round gauge of the time left, then the time. */
+  .mission-bonus-timer {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: 0.75rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .mission-bonus-timer.expired { opacity: 0.5; }
+  .mission-bonus-gauge {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: conic-gradient(var(--color-accent) calc(var(--left) * 360deg), color-mix(in srgb, var(--color-accent) 20%, transparent) 0);
+  }
   .hud-warp-progress {
     position: absolute;
     right: 0.6rem;

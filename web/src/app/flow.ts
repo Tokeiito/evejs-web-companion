@@ -8940,6 +8940,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         missionTitle: row.missionTitle ?? null,
         objectives: null,
         record: null,
+        // AgentMissionJob._update_objective_info: a mission that is not an offer was accepted when the first of its
+        // bookmarks that says when it was made was made.
+        acceptTime: journal !== null && journal.active.includes(row)
+          ? (() => { const made = (row.bookmarks ?? []).find((spot) => spot.created !== undefined && spot.created !== null)?.created; return made === undefined || made === null ? null : made.toString(); })()
+          : null,
       },
     });
     // The agent's own card, and its corporation's (page.py _construct_agent_section).

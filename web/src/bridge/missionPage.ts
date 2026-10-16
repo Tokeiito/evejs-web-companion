@@ -21,15 +21,20 @@
 // words store). What cannot be said is left out.
 //
 // Not done: "Objectives Complete" as the state (the client
-// has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
-// bonus's countdown; a blueprint's properties; what an alpha clone is paid.
-// The bonus's countdown is the one time on the client's page that is not written here.
+// has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; a
+// blueprint's properties; what an alpha clone is paid.
+//
+// The bonus's countdown (agentinteraction/rewardcont.py, BonusRewardTypeCont and TimerCont): the time
+// left to earn the bonus, from when the mission was accepted (the job board takes that from the first of
+// the mission's bookmarks that says when it was made: AgentMissionJob._update_objective_info) and the
+// bonus's minutes; "Expired" once it has run out; and the line that says what the bonus is for, as the
+// timer's hint, or as text where there is no timer.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import { AGENT_TYPE_CAREER, type AgentRecord } from "./agents.ts";
 import { SECURITY_CLASS, securityClass } from "./systemSecurity.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
-import { INTERVAL_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "./timeInterval.ts";
+import { BLUE_TIME, INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "./timeInterval.ts";
 import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation } from "./locationWrapper.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
@@ -77,6 +82,9 @@ export const PAGE_LABELS = Object.freeze({
   grantedText: `${FOLDER}GrantedItemText`,
   rewardsTitle: `${FOLDER}RewardsTitle`,
   bonusTitle: `${FOLDER}BonusRewardsTitle`,
+  /** {[timeinterval]timeRemaining.writtenForm, to=minute}: what the bonus is for, the shortest time to earn one in. */
+  bonusHeader: `${FOLDER}BonusRewardsHeader2`,
+  bonusExpired: `${FOLDER}BonusRewardsAreExpired`,
   /** The banner about reduced rewards where the agent's system is of the safest class. */
   securityTax: `${FOLDER}SecurityTaxMessage`,
   /** Takes lpAmount. */
@@ -97,8 +105,8 @@ export const PAGE_LABELS = Object.freeze({
 export const PAGE_WORD_LABELS: readonly string[] = [
   ...Object.values(PAGE_LABELS),
   ...SHORT_INTERVAL_WORD_LABELS,
-  // A label's interval with no form, or the clock's, is written the clock's way (DateTimeShort2Elements to 7Elements).
-  ...[2, 3, 4, 5, 6, 7].map(INTERVAL_LABELS.shortFormElements),
+  // A label's interval in its written forms and the clock's (the bonus's line is written).
+  ...INTERVAL_WORD_LABELS,
   ...LOCATION_WORD_LABELS,
 ];
 
@@ -186,6 +194,13 @@ export interface PageCorporation {
 export interface PageRewards {
   readonly title: string | null;
   readonly rewards: readonly string[];
+  /** The bonus's line: what it is for, within how long. The timer's hint where there is a timer, else shown. */
+  readonly hint?: string | null;
+  /**
+   * The bonus's countdown (TimerCont): the time left, the short way from days to seconds (FmtDate(diff, 'ss')), or
+   * the client's "Expired"; and how much of the bonus's time is left, 0 to 1, for its gauge.
+   */
+  readonly timer?: { readonly text: string; readonly left: number; readonly expired: boolean } | null;
 }
 
 export interface MissionPage {
@@ -230,6 +245,8 @@ export interface MissionPageInput {
   /** The level the pilot has in a skill, nought for one it has not; null before its skills have been read. */
   readonly skillLevel: ((typeID: number) => number) | null;
   readonly record: ClientMission | null;
+  /** When the mission was accepted, on the server's clock: its first bookmark's making; null for an offer, or none known. */
+  readonly acceptTime?: bigint | null;
 }
 
 export interface PageContext {
@@ -544,6 +561,22 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   // The page builds its rewards only when the mission pays something; the bonus is drawn inside them.
   const paid = objectives !== null && (objectives.normalRewards.length > 0 || objectives.loyaltyPoints > 0 || Math.round(objectives.researchPoints) > 0);
   const bonus = paid ? texts(objectives?.bonusRewards ?? []) : [];
+  // BonusRewardTypeCont.update_expiry_time: the first bonus with a time to earn it in, from an accepted time known,
+  // is the timer's; the line is the shortest time any bonus has (_get_hint_text).
+  const bonusRewards = paid ? objectives?.bonusRewards ?? [] : [];
+  const bonusMinutes = bonusRewards.map((reward) => reward.timeBonusIntervalMin).filter((minutes): minutes is number => typeof minutes === "number" && minutes > 0);
+  const bonusHint = bonusMinutes.length > 0 ? words(PAGE_LABELS.bonusHeader, { timeRemaining: Math.min(...bonusMinutes) * Number(BLUE_TIME.MIN) }) : null;
+  const acceptTime = input.acceptTime ?? null;
+  const timed = acceptTime === null ? undefined : bonusRewards.find((reward) => typeof reward.timeBonusIntervalMin === "number" && reward.timeBonusIntervalMin > 0);
+  let bonusTimer: PageRewards["timer"] = null;
+  if (acceptTime !== null && timed !== undefined && typeof timed.timeBonusIntervalMin === "number") {
+    const span = BigInt(timed.timeBonusIntervalMin) * BLUE_TIME.MIN;
+    const diff = acceptTime + span - context.now;
+    const left = diff <= 0n ? 0 : Math.min(1, Number(diff) / Number(span));
+    // TimerCont.update_expiry_elements_thread: past it, "Expired"; else FmtDate(diff, 'ss').
+    const text = diff < 0n ? words(PAGE_LABELS.bonusExpired) : shortWrittenInterval(diff, context.templates, "day", "second");
+    if (text !== null) bonusTimer = { text, left, expired: diff < 0n };
+  }
 
   const grantedTexts = (objectives?.agentGift ?? []).map((item) => itemText(item, true)).filter((text): text is string => text !== null);
   const collateralFirst = objectives?.collateral[0];
@@ -578,7 +611,7 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     collateral: collateralAmount !== null && offered ? { title: words(PAGE_LABELS.collateralTitle), text: words(PAGE_LABELS.collateralText), items: collateralAmount } : null,
     granted: grantedTexts.length === 0 ? null : { title: words(PAGE_LABELS.grantedItems), text: words(PAGE_LABELS.grantedText), items: grantedTexts.join(", ") },
     rewards: paid && normal.length > 0 ? { title: words(PAGE_LABELS.rewardsTitle), rewards: normal } : null,
-    bonusRewards: bonus.length > 0 ? { title: words(PAGE_LABELS.bonusTitle), rewards: bonus } : null,
+    bonusRewards: bonus.length > 0 ? { title: words(PAGE_LABELS.bonusTitle), rewards: bonus, hint: bonusHint, timer: bonusTimer } : null,
     reducedRewards: taxed ? words(PAGE_LABELS.securityTax) : null,
     extra: extraBody === "" ? null : { title: message(PAGE_MESSAGES.extraHeader), text: extraBody },
     talk: words(PAGE_LABELS.startConversation),
