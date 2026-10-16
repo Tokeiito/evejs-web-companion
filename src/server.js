@@ -11058,7 +11058,7 @@ async function skillSheetFor(account, characterID, held = null, webSessionID = n
 }
 
 /**
- * A pilot's skill sheet for a read the ACCOUNT makes of it: the hangar's roster, Pilot Training, mining
+ * A pilot's skill sheet for a read the ACCOUNT makes of it: the PI boards, Pilot Training, mining
  * preparation. Such a read does not come from the web session that is flying the pilot, and may be of a pilot
  * nobody is flying.
  *
@@ -11093,41 +11093,6 @@ async function answerWithSkillSheet(res, account, characterID, extra = {}, held 
   res.json({ ok: true, ...extra, skills });
 }
 
-/**
- * The Pilot Hangar's training column, for pilots who are NOT signed in (R107).
- *
- * ⚠ WHY THIS ROUTE EXISTS AT ALL. The hangar used to take training straight out
- * of charUnboundMgr.GetCharacterSelectionData, which carries `skillTypeID`,
- * `toLevel` and `trainingEndTime` per character and is the one call the screen
- * already makes. On this emulator those three fields are ALWAYS null — measured
- * against a live server on 2026-09-09, every pilot on every account, including
- * pilots whose stored queue was active with fifty-odd entries. charService fills
- * them from `buildTrainingSelectionInfo`, which answers off a runtime snapshot
- * the selection path does not have warm, so the tuple is honest about nothing.
- * The hangar rendered that null as IDLE / "not training" and was wrong for every
- * pilot that was in fact training.
- *
- * The gateway's own GET /skills is the authority that does answer:
- * `skillQueueRuntime.getQueueSnapshot`, resolved to plain JSON with the skill
- * NAME and the queue's instants already in epoch milliseconds — and, like the
- * skill panel's read above, it needs no bridge session, because reading what a
- * character is training is not an act of piloting. So this route asks it once
- * per pilot and answers the three values the hangar row prints.
- *
- * OWNERSHIP IS THE GATEWAY'S. `characterIDs` comes from the browser, and every
- * one of them is passed to getSkills with the CALLER's accountID; the gateway's
- * validateOwnedCharacter refuses any character that account does not own. A
- * refused (or failed) id is simply left OUT of the answer rather than reported —
- * see below for why that is the useful shape.
- *
- * A MISSING ROW IS NOT AN IDLE ROW. The client keeps whatever it already had for
- * any id this route does not answer for, so one pilot's failed read can never
- * blank a column that was right a moment ago. Present-with-`skillTypeID: null`
- * is the positive statement "this queue is empty", and only that turns a row
- * IDLE.
- */
-const ROSTER_TRAINING_MAX_IDS = 12;
-
 /** A roster route's `characterIDs`: comma-separated, junk and repeats dropped. */
 function rosterCharacterIDs(value) {
   const characterIDs = [];
@@ -11144,7 +11109,8 @@ function rosterCharacterIDs(value) {
 // GetCharacterSelectionData), read without logging the account in on the game port. A launcher lists an account's
 // characters without a game login; a login closes the account's other client (EveJS's accountLoginClose.js, after
 // sessionMgr.CloseUserSessions), so the hangar opening would put off a retail client playing on the account. Asked of
-// the gateway as the account and no character, as the roster's training read below is.
+// the gateway as the account and no character. What each pilot is training is read from it too, as the client's
+// selection screen reads it (charselData.py GetSkillInTrainingInfo, 185 to 191; web/src/app/knownCharacters.ts).
 app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
   try {
     const outcome = await gateway.callMethod(
@@ -11156,63 +11122,6 @@ app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
       undefined,
     );
     res.json({ ok: true, result: outcome ? outcome.result ?? null : null });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/roster/training", requireAuth, async (req, res, next) => {
-  const characterIDs = rosterCharacterIDs(req.query.characterIDs);
-  if (characterIDs.length === 0) {
-    res.json({ ok: true, training: [] });
-    return;
-  }
-  if (characterIDs.length > ROSTER_TRAINING_MAX_IDS) {
-    res.status(400).json({
-      ok: false,
-      error: "TOO_MANY_CHARACTERS",
-      message: `Ask about at most ${ROSTER_TRAINING_MAX_IDS} pilots at a time.`,
-    });
-    return;
-  }
-  try {
-    // An account holds three pilots, so these go together rather than one after
-    // the other — the hangar already walks its accounts sequentially, and three
-    // reads inside one account do not need the same restraint.
-    const rows = await Promise.all(
-      characterIDs.map(async (characterID) => {
-        let skills = null;
-        try {
-          skills = await accountSkillSheet(req.account.accountID, characterID);
-        } catch (error) {
-          // Not ours, not there, or the gateway stumbled. Say nothing about this
-          // pilot; the client keeps the row it had.
-          void error;
-          return null;
-        }
-        if (!skills) {
-          return null;
-        }
-        const queue = skills.queue && typeof skills.queue === "object" ? skills.queue : null;
-        const entries = queue && Array.isArray(queue.entries) ? queue.entries : [];
-        const head = queue && queue.active === true ? entries[0] || null : null;
-        if (!head) {
-          return { characterID, skillTypeID: null, skillName: null, toLevel: null, endsAtMs: null };
-        }
-        const skillTypeID = Number(head.typeID) || null;
-        const named = Array.isArray(skills.skills)
-          ? skills.skills.find((row) => Number(row.typeID) === skillTypeID)
-          : null;
-        return {
-          characterID,
-          skillTypeID,
-          skillName: named && typeof named.name === "string" ? named.name : null,
-          toLevel: Number(head.toLevel) || null,
-          endsAtMs: Number.isFinite(head.endTimeMs) ? head.endTimeMs : null,
-        };
-      }),
-    );
-    res.json({ ok: true, training: rows.filter((row) => row !== null) });
   } catch (error) {
     next(error);
   }
@@ -12029,7 +11938,7 @@ app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
  * table that was present and empty. Selecting a character is for ACTING on a
  * colony, and that goes through the bot host, never through here.
  *
- * The shape is /api/roster/training's, deliberately: `characterIDs` from the
+ * The shape is deliberately the roster's: `characterIDs` from the
  * browser, each asked with the CALLER's accountID so the gateway refuses what
  * the account does not own, and a refused or failed pilot LEFT OUT — the board
  * keeps the reading it had rather than wiping a farmer's colonies on one bad

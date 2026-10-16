@@ -203,6 +203,22 @@ The retail protocol only sees the logged-in character. Management needs more:
   game port the BFF refuses that itself since 2026-10-10, `d6d3de5`: the retail client has no
   pilot's call to make before a pilot is chosen.)
 
+**The store-side reads, each set beside what the client asks** (listed 2026-10-16 from every
+`gateway.` read in `src/server.js`; the pages for pilots who are not signed in are most of them):
+
+| Read | Where | For | What the retail client asks |
+|---|---|---|---|
+| `snapshot` | `/api/roster/planets`, `/api/roster/stock`, `/api/pi/customs-export`; `/api/bridge/planets` for a pilot on the gateway only | colonies and planetary goods of pilots not signed in | Nothing: it reads only the pilot it is logged in as. Logged in, each colony on the planet's own moniker (`GetPlanetInfo`, which a game-port pilot's `/api/bridge/planets` asks) and the goods through `invCache` |
+| `skills` | Pilot Training's reads and the PI boards' (`accountSkillSheet`), and the Skills window where the game port cannot make a sheet (`skillSheetFor`) | a pilot's skills and queue | Nothing for a pilot not logged in. Logged in, the skill handler's reads, which a pilot online here on the game port is answered from |
+| `character-status` | `isCharacterHeld`, `/api/pi/customs-export` | whether a pilot is online now | Nothing: it knows its own session alone |
+| `charUnboundMgr.GetCharacterSelectionData` as the account, on the gateway | `/api/roster/characters` | the Pilot Hangar's rows | The same call, on its selection screen after a login; asked here without one, as a launcher lists an account's characters, since a login closes the account's other client |
+
+The hangar's training column read `skills` for each pilot until 2026-10-16 (`/api/roster/training`,
+now gone): the selection tuple's training fields had been measured empty for every pilot on
+2026-09-09. Measured again on 2026-10-16, after a cold start too, they carry the skill, its level
+and its end, and the hangar reads them as the client's selection screen does
+(`charselData.py` 185 to 191).
+
 **What is not in that list** is what the retail client itself asks before a character is chosen.
 On its selection and creation screens it is logged in as the account and asks `charUnboundMgr`.
 For an account on the game port the BFF does the same (`accountCall`, the seam's tenth
