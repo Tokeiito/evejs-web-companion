@@ -146,11 +146,15 @@
   // the contents by heading (each slot kind under its effect's name, each type "Nx" and its name with its icon) and the
   // description, and Fit, Save and Buy: the name (40 letters at most, the client's field) and the description (500,
   // maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the install's; the page's
-  // own stand in. Not done: Save's menu (for the corporation or the alliance) and another's fitting saved as a copy,
-  // Simulate, the settings and the header's menu (the multifit, the export), the ship's preview, the truncated mark,
-  // and an obsolete module's mark.
+  // own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the fitting as the client's
+  // text, its names English). Not done: Save's menu (for the corporation or the alliance) and another's fitting saved
+  // as a copy, Simulate, the settings, the ship's preview, the truncated mark, and an obsolete module's mark.
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
+    // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
+    "UI/Fitting/FittingWindow/FittingManagement/OpenMultifit": "Fit several ships",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard": "Copy it as text",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint": "",
     "UI/Fitting/FittingWindow/FittingManagement/Fittings": "Contents",
     "UI/Common/Description": "About it",
     "UI/Fitting/FittingWindow/FittingManagement/Fit": "Fit this ship",
@@ -170,6 +174,7 @@
     [CONTENTS_LABELS.other]: "Everything else",
   };
   let viewFittingTab = $state<"contents" | "description">("contents");
+  let viewFittingMenuOpen = $state(false);
   // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
   // changes, as its contents arrive, leave what is being typed).
   let viewFittingName = $state("");
@@ -1001,6 +1006,18 @@
       {/if}
       <span class="book-title">
         <strong>{viewWord("UI/Fitting/ShipFitting")}: {nameOf("type", view.fitting.shipTypeID)}</strong>
+        <span class="multibuy-export">
+          <button type="button" aria-haspopup="menu" aria-expanded={viewFittingMenuOpen} onclick={() => (viewFittingMenuOpen = !viewFittingMenuOpen)}>☰</button>
+          {#if viewFittingMenuOpen}
+            <span class="multibuy-menu" role="menu">
+              {#if ($inventory.stationID ?? $inventory.structureID ?? null) !== null}
+                <button type="button" role="menuitem" onclick={() => { viewFittingMenuOpen = false; void flow.answerViewFitting(view.n, "multifit").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}</button>
+              {/if}
+              <button type="button" role="menuitem" title={viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint")}
+                onclick={() => { viewFittingMenuOpen = false; void flow.viewFittingText(view.n).then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}</button>
+            </span>
+          {/if}
+        </span>
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerViewFitting(view.n, "close")}>✕</button>
       </span>
       <span class="multibuy-row">

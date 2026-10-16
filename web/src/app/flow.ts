@@ -489,6 +489,7 @@ import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, re
 import { type HullBrowserData } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
+import { fittingEftString } from "../bridge/fittingExport.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -2318,7 +2319,12 @@ export interface AppFlow {
   /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
   viewFitting(fittingID: number): Promise<void>;
   /** Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed), its Buy (multiBuyUtil.BuyFit), or closed. */
-  answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void>;
+  answerViewFitting(n: number, answer: "fit" | "buy" | "multifit" | "close"): Promise<void>;
+  /**
+   * Its menu's Export to Clipboard (ViewFitting._AddCustomMenuOptions, fittingSvc.ExportFittingToClipboard): the
+   * fitting as the text the client copies (GetFittingEFTString), its types named first; null with no window.
+   */
+  viewFittingText(n: number): Promise<string | null>;
   /** The multifit window open now (ClientDialogs.svelte shows it); null with none. */
   readonly multiFitAsked: ReadableSignal<MultiFitAsk | null>;
   /** GetMaxShipsToFit, as last read: nought where the config allows no multifit. */
@@ -7683,15 +7689,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /** The display window's Fit and Buy (FittingMgmtContInStandalone's buttons), or the window closed. */
-  async function answerViewFitting(n: number, answer: "fit" | "buy" | "close"): Promise<void> {
+  async function answerViewFitting(n: number, answer: "fit" | "buy" | "multifit" | "close"): Promise<void> {
     const open = viewFittingAskedSignal.get();
     if (open === null || open.n !== n) return;
     if (answer === "close") {
       viewFittingAskedSignal.set(null);
       return;
     }
-    if (answer === "fit") await fitToActiveShip(open.fitting);
+    // ViewFitting._AddCustomMenuOptions (414 to 419): Open Multifit, docked, on a copy of the fitting shown.
+    if (answer === "multifit") await openMultiFitWith(open.fitting);
+    else if (answer === "fit") await fitToActiveShip(open.fitting);
     else await buyFitOf(open.fitting);
+  }
+
+  /** fittingSvc.ExportFittingToClipboard(fitting) (1145 to 1148): GetFittingEFTString, the English names. */
+  async function viewFittingText(n: number): Promise<string | null> {
+    const open = viewFittingAskedSignal.get();
+    if (open === null || open.n !== n) return null;
+    const fitting = open.fitting;
+    await resolveNamesNow([...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])].map((id) => ({ kind: "type" as const, id })));
+    return fittingEftString(
+      { shipTypeID: fitting.shipTypeID, name: fitting.name, modules: fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })) },
+      (typeID) => nameCache.get(nameKey("type", typeID)) ?? "",
+    );
   }
 
   /**
@@ -7777,7 +7797,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function openMultiFit(fittingID: number): Promise<void> {
     const fitting = savedFittingOf(fittingID);
-    if (fitting === null) return;
+    if (fitting !== null) await openMultiFitWith(fitting);
+  }
+
+  /** OpenOrLoadMultiFitWnd of a fitting as it is held, saved or not. */
+  async function openMultiFitWith(fitting: SourcedFitting): Promise<void> {
     if (busyFitting) {
       const info = templateWords("UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning", {}, "A fitting is already being loaded.");
       sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
@@ -21236,6 +21260,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     viewFittingAsked: readonlySignal(viewFittingAskedSignal),
     viewFitting,
     answerViewFitting,
+    viewFittingText,
     multiFitAsked: readonlySignal(multiFitAskedSignal),
     maxShipsToFit: readonlySignal(maxShipsToFitSignal),
     openMultiFit,
