@@ -29,7 +29,15 @@
 //     the cheaper then goes by how the sums round, and this rounds them as the module does;
 //   - where two such routes cost the same after rounding too, the module's answer goes by the order it
 //     was told of the map's jumps in (the same map shuffled gives another answer). Nothing here follows
-//     that: the answer is then one of the module's own, and which one is not promised;
+//     that: the answer is then one of the module's own, and which one is not promised. The order the
+//     client tells it in is its jump table's (cfg.mapJumpCache, res:/staticdata/jumps.static): one record
+//     for each pair of gates, by one of the two (the lower in 6,659 of 6,989), in the order of that gate's
+//     ID, each added both ways, out and then back (clientPathfinderService.CreatePathfinderCore).
+//     How the order settles a tie was looked for and not found (2026-10-16): over 180 small maps of one
+//     security, 497 of 2,480 pairs had their route change with the order; of 96 ways of breaking the ties
+//     tried (a least-first heap of four kinds, the jumps looked at in order or backwards, an equal cost
+//     taking a system over or not, routes walked back over the costs, systems numbered by where they first
+//     come), none gave every route, and the best gave 13,364 of 14,880;
 //   - an avoided system is never entered, unless it is where the route is going. A route that starts in
 //     one leaves it as any other;
 //   - the answer is the route found, or the number of jumps on it, and none at all where there is no
@@ -37,6 +45,10 @@
 //     order of the map too; the one given here costs what the module's does and is as long.
 //
 // The level a system is given is the one the client works with (pseudoSecurity, bridge/systemSecurity.ts).
+//
+// The map is the server's (GET /api/map/graph, from its stargates), and the client's own is the same: read
+// from the client's res:/staticdata/systems.static and jumps.static (2026-10-16), its 6,989 pairs of gates
+// make the same 13,978 jumps one way and the other, and the 5,268 systems they join have the same security.
 //
 // Not done: the avoidance lists other than the systems named (pod kills, Triglavian and EDENCOM systems),
 // jump gates the pilot may use, systems the server has locked, and a level the server has changed for a
