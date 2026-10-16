@@ -147,11 +147,17 @@ import {
   type RatResonances,
   type WeaponCycleFacts,
 } from "./companionAmmo.ts";
+import {
+  type CompanionSupplyMemory,
+  FRESH_COMPANION_SUPPLY,
+  superviseSupply,
+} from "./companionSupply.ts";
 import type { ChargeFacts } from "./ammoReach.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
   parseChatCommand,
+  selectsPilot,
   type ChatCommand,
 } from "./chatCommands.ts";
 
@@ -734,6 +740,25 @@ export interface CompanionFlee {
    */
   readonly arrivedSafe: boolean;
   /**
+   * Set when the fleet commander started this trip with `repair`, rather than
+   * the ship's health starting it. An ordered trip spends no flee round trip,
+   * never goes to the sun (there is nothing to repair at a safe spot), and is
+   * called off by `stop` like any other order. Always comes with `repairPaid`.
+   */
+  readonly ordered?: true;
+  /**
+   * Set when the fleet commander said `repair` to this pilot: the trip that
+   * started it, or a flee already under way when it was heard.
+   *
+   * ⚠ THE ORDER IS THE CONSENT TO PAY. `repairsAtStation` is off by default
+   * because a flee spends the operator's ISK on its own say-so; a commander who
+   * types `repair` has said so out loud. So the shop is paid whatever that
+   * setting says, and a shop that has refused `MAX_FLEE_REPAIR_ATTEMPTS` times
+   * sends the pilot back as it is rather than keeping it docked: a commander who
+   * asked for a repair still wants the ship.
+   */
+  readonly repairPaid?: true;
+  /**
    * The best tank reading seen while waiting at a safe spot, and when it was
    * last beaten. Absent until the first such tick. See `FLEE_RECOVERY_STALL_MS`:
    * a hold whose tank has not risen in that long is a hold that would never end.
@@ -996,6 +1021,20 @@ export interface FleetCompanionObservation extends ScriptObservation {
   /** Weapon module itemID -> the charge groupIDs its type accepts, from the fit's own chargeFits. */
   readonly weaponChargeGroups?: Readonly<Record<number, readonly number[]>> | null;
   /**
+   * What each online gun holds right now, from the same throttled fit read as
+   * `emptyWeaponModuleIDs`: a gun with nothing in it is absent. Null when the
+   * fit could not be read. For the `status` answer and the low-ammo warning
+   * (companionSupply.ts), which count reloads against it.
+   */
+  readonly loadedCharges?: readonly CompanionLoadedCharge[] | null;
+  /**
+   * This pilot's own character id and name, so a `status` or `repair` line can
+   * tell whether it names this pilot (`selectsPilot`). Null when unread, which
+   * answers only to a line addressed to everyone.
+   */
+  readonly selfCharacterID?: number | null;
+  readonly selfCharacterName?: string | null;
+  /**
    * What each hostile TYPE on this grid fights with and how it moves -- missile
    * or turret, optimal, falloff, attack range, orbit range, speed -- read from
    * static type dogma (`ratCombatFromAttributes`), for the `flight auto`
@@ -1036,6 +1075,13 @@ export interface CompanionCargoCharge {
   readonly itemID: number;
   readonly typeID: number;
   readonly groupID: number | null;
+  readonly quantity: number;
+}
+
+/** One gun's loaded charge. See `FleetCompanionObservation.loadedCharges`. */
+export interface CompanionLoadedCharge {
+  readonly moduleID: number;
+  readonly typeID: number;
   readonly quantity: number;
 }
 
@@ -1085,6 +1131,11 @@ export interface FleetCompanionDeps {
   onProgress?(progress: FleetCompanionProgress): void;
   /** The flight recorder (nav/companionLog.ts). Absent records nothing. */
   log?: BotLogSink | null;
+  /**
+   * Say one line in local chat as this pilot. Absent says nothing. A failure is
+   * the line lost, never the run's: the loop does not wait on it to fly.
+   */
+  say?(text: string): Promise<void>;
 }
 
 /**
@@ -2259,6 +2310,16 @@ export interface CompanionLadderMemory {
    * companionAmmo.ts. Carried like the other combat memory; fresh on resume.
    */
   readonly ammo: CompanionAmmoMemory;
+  /**
+   * A `repair` addressed to this pilot, heard at this time and not yet taken up
+   * by the flee rung, or null. A one-tick hand-off: the chat fold sets it, and
+   * rung 5 turns it into an ordered trip (`CompanionFlee.ordered`) or answers
+   * that there is no station to go to, and clears it either way. `stop` clears
+   * it too.
+   */
+  readonly repairOrderedAtMs: number | null;
+  /** Ammo loads seen, drones carried, the two warnings and a pending `status` (companionSupply.ts). */
+  readonly supply: CompanionSupplyMemory;
 }
 
 /** See `CompanionLadderMemory.rejoin`. */
@@ -2393,6 +2454,8 @@ export function freshLadderMemory(): CompanionLadderMemory {
     reloadInFlight: {},
     utilities: FRESH_COMPANION_UTILITIES,
     ammo: FRESH_COMPANION_AMMO,
+    repairOrderedAtMs: null,
+    supply: FRESH_COMPANION_SUPPLY,
   };
 }
 
@@ -2473,6 +2536,14 @@ export interface CompanionDecision {
    * and the ship gets its full budget the moment it becomes the target.
    */
   readonly preLock?: true;
+  /**
+   * Lines this pilot says in local chat this tick, in order: the `status`
+   * answer, the low-ammo and low-drone warnings (companionSupply.ts), and the
+   * repair trip's acknowledgements. Attached once, by `decideCompanionAction`;
+   * absent when there is nothing to say. Saying costs no tick: the controller
+   * sends them beside whatever the action is.
+   */
+  readonly say?: readonly string[];
 }
 
 /**
@@ -2646,7 +2717,7 @@ export function decideCompanionAction(
   nowMs: number = Date.now(),
 ): CompanionDecision {
   const outer = collecting;
-  const collector: TraceCollector = { slots: {}, notice: null };
+  const collector: TraceCollector = { slots: {}, notice: null, say: [] };
   collecting = collector;
   let decision: CompanionDecision;
   try {
@@ -2654,11 +2725,18 @@ export function decideCompanionAction(
   } finally {
     collecting = outer;
   }
+  // ⚠ AFTER THE STEP, ON THE MEMORY THE STEP KEPT, so a `status` the chat fold
+  // heard this tick is answered this tick, and no rung's early return can skip
+  // the warnings. It issues nothing: what it decides is only what to say.
+  const supply = superviseSupply(request, obs, decision.memory, nowMs);
+  const say = [...collector.say, ...supply.say];
   // A notice is said once, after whatever the rest of the ladder decided, so it
   // never takes a tick from a rung that had something to issue.
   return {
     ...decision,
+    memory: supply.memory,
     ...(collector.notice === null ? {} : { why: `${decision.why} ${collector.notice}` }),
+    ...(say.length === 0 ? {} : { say }),
     trace: collector.slots,
   };
 }
@@ -2680,6 +2758,8 @@ interface TraceCollector {
   readonly slots: TraceSlots;
   /** A one-tick sentence appended to the tick's readout (the utility give-up). */
   notice: string | null;
+  /** Lines to say in local chat this tick (`CompanionDecision.say`), in the order the rungs said them. */
+  readonly say: string[];
 }
 
 let collecting: TraceCollector | null = null;
@@ -2698,6 +2778,13 @@ function noteTrace<K extends keyof CompanionTrace>(slot: K, fragment: TraceSlots
 function noteHealth(fragment: HealthTrace): void {
   if (collecting !== null && collecting.slots.health === undefined) {
     collecting.slots.health = fragment;
+  }
+}
+
+/** Say one line in local chat this tick. See `CompanionDecision.say`. */
+function noteSay(line: string): void {
+  if (collecting !== null && line !== "") {
+    collecting.say.push(line);
   }
 }
 
@@ -3038,6 +3125,9 @@ function decideCompanionStep(
     // Carried: a human arriving switches nothing off.
     utilities: memory.utilities,
     ammo: memory.ammo,
+    // Carried: an order heard and what the ship has left are not about who is here.
+    repairOrderedAtMs: memory.repairOrderedAtMs,
+    supply: memory.supply,
   };
 
   // Rung 3: tank up. Threaded even when it has nothing to do this tick —
@@ -3547,6 +3637,12 @@ interface SafetyLeg {
   readonly because: string;
   /** Put an updated run back where this caller keeps it. */
   readonly write: (mem: CompanionLadderMemory, run: SafetyRun) => CompanionLadderMemory;
+  /**
+   * A station or nothing: no warp to the sun. An ordered repair's leg, which has
+   * no use for a safe spot (`CompanionFlee.ordered`). With no station in view
+   * `runToSafety` answers null, "nowhere to go", exactly as for no sun.
+   */
+  readonly stationOnly?: true;
 }
 
 /**
@@ -3875,9 +3971,9 @@ function runToSafety(
   // `kind === "celestial"` and a star's kind is `"sun"`, so it has been arriving
   // in every snapshot and falling through unread. An absence in the reader was
   // read as an absence in the world.
-  const sun = sunOnGrid(obs);
+  const sun = leg.stationOnly === true ? null : sunOnGrid(obs);
   if (sun === null) {
-    // No station and no star. This should not happen in a normal system, so it
+    // No station and no star (or a leg that wants a station or nothing). This should not happen in a normal system, so it
     // is reported rather than papered over: what SAYING so means differs per
     // caller — see this function's header.
     return null;
@@ -5314,7 +5410,7 @@ interface NamedOrder {
  */
 type NamedChatCommandKind = Exclude<
   ChatCommand["kind"],
-  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets" | "flight"
+  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets" | "flight" | "status" | "repair"
 >;
 
 const CHAT_ORDER_NAMES: Readonly<Record<NamedChatCommandKind, NamedOrderName>> = Object.freeze({
@@ -5568,7 +5664,9 @@ function withStandingChatOrders(
       command.kind === "targets" ||
       command.kind === "flight" ||
       command.kind === "salvage" ||
-      command.kind === "loot"
+      command.kind === "loot" ||
+      command.kind === "status" ||
+      command.kind === "repair"
     ) {
       heard.push({ command, at: message.createdAtMs, key: standingChatMessageKey(message) });
     }
@@ -5587,6 +5685,17 @@ function withStandingChatOrders(
     next = { ...next, standingChatCursor: { at,
       keys: next.standingChatCursor?.at === at ? [...next.standingChatCursor.keys, key] : [key] } };
     if (command.kind === "salvage" || command.kind === "loot") continue;
+    // ⚠ ADDRESSED TO PILOTS, SO EACH PILOT ASKS WHETHER IT IS ONE. A line naming
+    // somebody else is still consumed by the cursor above: it was heard, and it
+    // was not for this pilot.
+    if (command.kind === "status" || command.kind === "repair") {
+      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null)) {
+        next = command.kind === "status"
+          ? { ...next, supply: { ...next.supply, statusAsked: true } }
+          : { ...next, repairOrderedAtMs: at };
+      }
+      continue;
+    }
     if (command.kind === "follow") {
       // ⚠ A `follow` ALSO UN-SUSPENDS. That is the operator's own resume: there
       // is no separate "start following again" verb, and inventing one would
@@ -5627,6 +5736,12 @@ function withStandingChatOrders(
       destinationRoutedFor: null,
       stopHeardAtMs: at,
       stopShipIssued: false,
+      // A repair trip is an order like a trip is, so `stop` calls it off too: an
+      // ordered flee is dropped where it stands. A flee the ship's HEALTH started
+      // is not an order and is left alone -- `stop` must never keep a dying ship
+      // on the grid.
+      repairOrderedAtMs: null,
+      flee: next.flee?.ordered === true ? null : next.flee,
     };
   }
   return next;
@@ -6335,6 +6450,7 @@ function decideFlee(
   memory: CompanionLadderMemory,
   nowMs: number,
 ): FleeStep {
+  memory = withRepairOrder(request, obs, memory, nowMs);
   const running = memory.flee;
   if (running !== null) {
     return flyTheFlee(request, obs, memory, running, nowMs);
@@ -6393,6 +6509,71 @@ function decideFlee(
     rejoin: null,
   };
   return flyTheFlee(request, obs, started, latched, nowMs);
+}
+
+/**
+ * A `repair` heard for this pilot, taken up: an ordered trip to a station in
+ * this system, or the consent to pay added to a flee already under way, or --
+ * with no station to go to -- a line in chat saying so. The order is cleared in
+ * every case; it is a hand-off, not a latch. See `CompanionFlee.ordered`.
+ *
+ * ⚠ IN THIS SYSTEM ONLY. The trip is the flee's own leg, which docks at the
+ * nearest station in the scene and otherwise warps to the sun. A sun has no
+ * repair shop, so an ordered trip with no station in view is refused out loud
+ * rather than flown somewhere that cannot do what was asked.
+ */
+function withRepairOrder(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): CompanionLadderMemory {
+  if (memory.repairOrderedAtMs === null) {
+    return memory;
+  }
+  const cleared: CompanionLadderMemory = { ...memory, repairOrderedAtMs: null };
+  const running = memory.flee;
+  const stationInView = (obs.snapshot?.entities ?? []).some((entity) => DOCKABLE_KINDS.has(entity.kind ?? ""));
+  if (running !== null) {
+    if (running.repairPaid === true) {
+      return cleared;
+    }
+    noteSay("Already leaving the fight. Will pay for the repair once docked.");
+    // The shop's quote decides from here: a shield-only stamp would undock a
+    // ship nobody has looked at, and the commander asked for it to be looked at.
+    const paid: CompanionFlee = { ...running, repairPaid: true, onlyTheShieldWasHurt: false };
+    if (obs.docked === true || !running.arrivedSafe || !stationInView) {
+      return { ...cleared, flee: paid };
+    }
+    // Waiting at the sun, with a station in the system: fly the leg again, which
+    // docks before it ever looks at the sun (`holdAtTheSafeSpot`'s own reroute).
+    const { safeSpotWarpBackoff: _backoff, ...rest } = paid;
+    return { ...cleared, flee: { ...rest, arrivedSafe: false, safeSpotWarpIssued: false, safeSpotWarpSeen: false,
+      safeSpotWarpAttempts: 0, safeSpotWarpWaited: 0, droneRecallWaited: null } };
+  }
+  if (obs.docked !== true && !stationInView) {
+    noteSay("Cannot repair: no station in this system.");
+    return cleared;
+  }
+  noteSay(obs.docked === true ? "Repairing here, then coming back." : "Going to dock and repair, then coming back.");
+  const ordered: CompanionFlee = {
+    triggeredAtMs: nowMs,
+    triggeredAtHealth: tankHealth(request, obs) ?? 1,
+    fromSolarSystemID: obs.flightStatus?.solarSystemID ?? null,
+    repairAttempts: 0,
+    onlyTheShieldWasHurt: false,
+    arrivedSafe: false,
+    ordered: true,
+    repairPaid: true,
+    safeSpotWarpIssued: false,
+    safeSpotWarpAttempts: 0,
+    safeSpotWarpWaited: 0,
+    safeSpotWarpSeen: false,
+    droneRecallWaited: null,
+  };
+  // As a flee's latch does: the rotation and a rejoin under way end here, and
+  // the leg recalls every drone before it warps.
+  return { ...cleared, flee: ordered, droneRotation: emptyDroneRotationMemory(), rejoin: null };
 }
 
 /**
@@ -6714,6 +6895,7 @@ function recoverAndReturn(
   // back. `holdAtTheSafeSpot` is null only when the hold has stalled above the
   // floor and is given up, and then the pilot goes back below, as it is.
   const atSafeSpot = obs.docked !== true && !wellEnoughToReturn(request, obs, running);
+  let returningUnrepaired = false;
   if (atSafeSpot) {
     const held = holdAtTheSafeSpot(request, obs, mem, running, hurtAt, nowMs);
     if (held !== null) {
@@ -6738,7 +6920,7 @@ function recoverAndReturn(
     if (damaged === null) {
       return { decision: waiting("Safe", "Asking the repair shop for a quote.", mem), memory: mem };
     }
-    if (!request.repairsAtStation) {
+    if (!request.repairsAtStation && running.repairPaid !== true) {
       return {
         decision: waiting(
           "Safe",
@@ -6748,7 +6930,31 @@ function recoverAndReturn(
         memory: mem,
       };
     }
-    if (running.repairAttempts >= MAX_FLEE_REPAIR_ATTEMPTS) {
+    if (running.repairAttempts < MAX_FLEE_REPAIR_ATTEMPTS) {
+      // ⚠ AN EMPTY QUOTE NEVER REACHES HERE ANY MORE, AND THAT IS THE FIX RATHER
+      // THAN AN OVERSIGHT. It used to land on "the shop has nothing left to fix"
+      // and hold — which, for a docked pilot, was every repaired ship for ever:
+      // the repair worked, the quote emptied, and the return was still gated on a
+      // health read no station can produce. `wellEnoughToReturn` now reads that
+      // same empty quote as the station's own "this hull is whole", so a pilot
+      // whose armour has just been paid for undocks on the next tick.
+      const asked: CompanionLadderMemory = {
+        ...mem,
+        flee: { ...running, repairAttempts: running.repairAttempts + 1 },
+      };
+      return {
+        decision: {
+          action: { kind: "repairItems", itemIDs: damaged },
+          phase: "Repairing",
+          why: running.ordered === true
+            ? "Paying the station to repair the ship, as the fleet commander ordered."
+            : "Paying the station to put the armour back, so this pilot can rejoin.",
+          memory: asked,
+        },
+        memory: asked,
+      };
+    }
+    if (running.repairPaid !== true) {
       return {
         decision: waiting(
           "Safe",
@@ -6758,32 +6964,16 @@ function recoverAndReturn(
         memory: mem,
       };
     }
-    // ⚠ AN EMPTY QUOTE NEVER REACHES HERE ANY MORE, AND THAT IS THE FIX RATHER
-    // THAN AN OVERSIGHT. It used to land on "the shop has nothing left to fix"
-    // and hold — which, for a docked pilot, was every repaired ship for ever:
-    // the repair worked, the quote emptied, and the return was still gated on a
-    // health read no station can produce. `wellEnoughToReturn` now reads that
-    // same empty quote as the station's own "this hull is whole", so a pilot
-    // whose armour has just been paid for undocks on the next tick.
-    const asked: CompanionLadderMemory = {
-      ...mem,
-      flee: { ...running, repairAttempts: running.repairAttempts + 1 },
-    };
-    return {
-      decision: {
-        action: { kind: "repairItems", itemIDs: damaged },
-        phase: "Repairing",
-        why: "Paying the station to put the armour back, so this pilot can rejoin.",
-        memory: asked,
-      },
-      memory: asked,
-    };
+    // Asked for by the commander, so the ship goes back to them as it is: the
+    // undock below. Said once, because the latch is dropped with it.
+    returningUnrepaired = true;
+    noteSay("The station would not repair the ship. Coming back as it is.");
   }
 
   // Whole enough. ⚠ THE BUDGET IS CHECKED HERE TOO, not only at the trigger: a
   // pilot whose LAST trip took it over the limit must stay docked rather than
   // undock into the fight that keeps sending it home.
-  if (mem.fleeTripsSpent >= request.maxFleeAttempts) {
+  if (running.ordered !== true && mem.fleeTripsSpent >= request.maxFleeAttempts) {
     return {
       decision: waiting(
         "Safe",
@@ -6804,6 +6994,10 @@ function recoverAndReturn(
   const done: CompanionLadderMemory = { ...mem, flee: null, fleeRecoverySinceMs: null };
 
   if (obs.docked === true) {
+    // What the commander asked for, answered. A flee nobody ordered says nothing.
+    if (running.repairPaid === true && !returningUnrepaired) {
+      noteSay(running.repairAttempts > 0 ? "Repaired. Coming back." : "Nothing to repair. Coming back.");
+    }
     return {
       decision: {
         action: { kind: "undock" },
@@ -6969,20 +7163,29 @@ function flyTheFlee(
   // pilot has held above its return mark for `FLEE_RECOVERY_HOLD_MS`, so a ship
   // that actually recovers may flee again later in the same run.
   if (running.arrivedSafe) {
+    // An ordered trip spent no round trip, so a human taking the ship back out
+    // costs none either: the order is simply over.
     return {
       decision: null,
-      memory: { ...mem, flee: null, fleeTripsSpent: request.maxFleeAttempts },
+      memory: { ...mem, flee: null, fleeTripsSpent: running.ordered === true ? mem.fleeTripsSpent : request.maxFleeAttempts },
     };
   }
 
   const safe = runToSafety(request, obs, mem, {
     run: running,
-    phase: "Getting clear",
-    because: "this ship is hurt",
+    phase: running.ordered === true ? "Going to repair" : "Getting clear",
+    because: running.ordered === true ? "the fleet commander ordered a repair" : "this ship is hurt",
     write: (m, run) => ({ ...m, flee: { ...running, ...run } }),
+    ...(running.ordered === true ? { stationOnly: true as const } : {}),
   }, nowMs);
   if (safe !== null) {
     return { decision: safe, memory: safe.memory };
+  }
+  if (running.ordered === true) {
+    // The station `withRepairOrder` saw is gone from view. Nothing was spent, so
+    // nothing is handed back; the pilot says so and stays with the fleet.
+    noteSay("Cannot repair: no station in this system.");
+    return { decision: null, memory: { ...mem, flee: null } };
   }
 
   // ⚠ NOWHERE TO GO IS NOT A STOP, AND IT IS NOT A FLEE EITHER. No station on
@@ -10801,6 +11004,26 @@ function refusalWords(raw: string, refused = true): string {
   return refused ? "The server refused that call." : "The server did not confirm that call.";
 }
 
+/**
+ * Send a tick's chat lines one after another, never waited on by the tick.
+ *
+ * ⚠ NOT AWAITED, BECAUSE A CHAT LINE IS NEVER WORTH A LATE MODULE. The send is a
+ * round trip of its own, and a tick that waited on it would hand the next rung
+ * its call that much later. In order, because "Low on ammo" after the status
+ * line it explains reads backwards. A line that fails is dropped: what the ship
+ * has left is said again on the next `status`, and a warning that was lost is
+ * one the ladder already counts as said.
+ */
+async function sayInOrder(say: (text: string) => Promise<void>, lines: readonly string[]): Promise<void> {
+  for (const line of lines) {
+    try {
+      await say(line);
+    } catch {
+      // Dropped. See above.
+    }
+  }
+}
+
 export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionController {
   let mem = freshMemory();
   /**
@@ -11052,6 +11275,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     // ⚠ A TICK THAT ISSUES ALWAYS WRITES ITS `decide` LINE, changed or not, so
     // every `issue` and `result` has the decision of the same `seq` beside it.
     recorder.progress(snapshot(), { seq: tickSeq, force: decision.action.kind !== "wait" });
+    if (decision.say !== undefined && deps.say !== undefined) {
+      void sayInOrder(deps.say, decision.say);
+    }
     if (decision.pause !== undefined) {
       runToken += 1;
       mem.status = "paused";
@@ -11327,6 +11553,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           utilities: FRESH_COMPANION_UTILITIES,
           // No swap is in flight in a run that has issued none.
           ammo: FRESH_COMPANION_AMMO,
+          repairOrderedAtMs: null,
+          supply: FRESH_COMPANION_SUPPLY,
         };
       }
       runToken += 1;

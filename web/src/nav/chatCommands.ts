@@ -240,7 +240,33 @@ export type ChatCommandKind =
   | "warp"
   | "props"
   | "targets"
-  | "flight";
+  | "flight"
+  | "status"
+  | "repair";
+
+/**
+ * Which pilots a `status` or `repair` line is addressed to.
+ *
+ * ⚠ NAMES AND LINKS BOTH, BECAUSE A COMMANDER WRITES EITHER. Dragging a pilot
+ * into chat makes a showinfo link that carries the character id, and that id is
+ * the reliable half; typing the name is the quick half, and is matched as a
+ * whole word against what is left once the links are taken out. Nothing here
+ * knows the fleet's names, so the parser keeps both and `selectsPilot` asks each
+ * pilot whether it is one of them.
+ *
+ * ⚠ A LINE THAT NAMES NOBODY WE KNOW IS NOBODY, NEVER EVERYONE. Only an empty
+ * remainder (or `all` / `everyone` / `everybody`) addresses the whole fleet. So a
+ * misspelt name sends no ship to a station, which is the safe way to be wrong
+ * for an order that spends ISK and leaves the fight.
+ */
+export interface PilotSelector {
+  /** True when the line named nobody, or said `all`: every pilot answers. */
+  readonly everyone: boolean;
+  /** Character ids read out of showinfo links after the verb. */
+  readonly characterIDs: readonly number[];
+  /** The rest of the line with the links removed, entities decoded, lower-cased. */
+  readonly text: string;
+}
 
 /**
  * One parsed chat command. The four link verbs carry exactly the resolved
@@ -305,7 +331,19 @@ export type ChatCommand =
    * toggle like `targets`, not an order, and `stop` does not reset it. See the
    * table entry's section comment.
    */
-  | { readonly kind: "flight"; readonly mode: "follow" | "auto" };
+  | { readonly kind: "flight"; readonly mode: "follow" | "auto" }
+  /**
+   * `status [pilots]` -- each named pilot (every pilot when none is named) says
+   * in chat how much ammunition and how many drones it has left. A question, not
+   * an order: it moves nothing and `stop` has nothing to cancel.
+   */
+  | { readonly kind: "status"; readonly who: PilotSelector }
+  /**
+   * `repair [pilots]` -- each named pilot (every pilot when none is named) docks
+   * in this system, pays the station to repair the ship and comes back to the
+   * fleet commander.
+   */
+  | { readonly kind: "repair"; readonly who: PilotSelector };
 
 /**
  * Verb -> command kind, each with its own anchored, case-insensitive
@@ -606,7 +644,88 @@ const VALUE_COMMAND_VERBS: ReadonlyArray<{
         : { kind: "flight", mode: word.toLowerCase() === "auto" ? "auto" : "follow" };
     },
   },
+  // ─── `status` and `repair`: VERBS ADDRESSED TO PILOTS ─────────────────────
+  //
+  // ⚠ THEIR VALUE IS WHO, NOT HOW MUCH. Both always parse -- a bare verb is the
+  // whole fleet -- and what follows the verb only narrows which pilots answer.
+  // See `PilotSelector` for why a line naming nobody we know reaches nobody.
+  // `^status\b` and `^repair\b` keep "statuses", "repairs" and "repaired" out.
+  {
+    verb: "status",
+    pattern: /^status\b/i,
+    read: (remainder) => ({ kind: "status", who: pilotSelectorFrom(remainder) }),
+  },
+  {
+    verb: "repair",
+    pattern: /^repair\b/i,
+    read: (remainder) => ({ kind: "repair", who: pilotSelectorFrom(remainder) }),
+  },
 ];
+
+/** Every showinfo link in a line, either tag form, for stripping and reading ids. */
+const SHOWINFO_LINKS =
+  /<url=showinfo:\d+\/\/(\d+)>[^<]*<\/url>|<a href="showinfo:\d+\/\/(\d+)">[^<]*<\/a>/g;
+
+/** The entities the chat client escapes in message text, decoded for name matching. */
+function decodeChatEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** Who the text after a `status` or `repair` verb names. See `PilotSelector`. */
+function pilotSelectorFrom(remainder: string): PilotSelector {
+  const characterIDs: number[] = [];
+  for (const match of remainder.matchAll(SHOWINFO_LINKS)) {
+    const digits = match[1] ?? match[2];
+    const id = digits === undefined ? null : parseItemID(digits);
+    if (id !== null && !characterIDs.includes(id)) {
+      characterIDs.push(id);
+    }
+  }
+  // Punctuation at the ends is not part of anybody's name: "status?" and
+  // "repair, Test Two!" are the same lines without it.
+  const text = decodeChatEntities(remainder.replace(SHOWINFO_LINKS, " "))
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const everyone = characterIDs.length === 0 && (text === "" || /^(all|everyone|everybody)$/.test(text));
+  return { everyone, characterIDs, text };
+}
+
+/**
+ * Whether the pilot `characterID` / `characterName` is one a `status` or `repair`
+ * line addressed.
+ *
+ * A typed name counts only as a WHOLE WORD of the line, case-insensitively, so
+ * "Test" does not answer for "Test Two" and "Al" does not answer for "all". A
+ * pilot whose own name could not be read answers only to a link or to everyone.
+ */
+export function selectsPilot(
+  who: PilotSelector,
+  characterID: number | null,
+  characterName: string | null,
+): boolean {
+  if (who.everyone) {
+    return true;
+  }
+  if (characterID !== null && who.characterIDs.includes(characterID)) {
+    return true;
+  }
+  const name = characterName?.trim().toLowerCase() ?? "";
+  if (name === "") {
+    return false;
+  }
+  const isWordChar = (char: string | undefined): boolean => char !== undefined && /[\p{L}\p{N}]/u.test(char);
+  for (let at = who.text.indexOf(name); at !== -1; at = who.text.indexOf(name, at + 1)) {
+    if (!isWordChar(who.text[at - 1]) && !isWordChar(who.text[at + name.length])) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * One row of the human-facing command help: what to type, and what it does.
@@ -636,8 +755,11 @@ export const CHAT_COMMAND_HELP: readonly { readonly usage: string; readonly does
     { usage: "props on|off", does: "Run the afterburner or MWD, or stand it down" },
     { usage: "targets called|all", does: "Shoot only called targets, or free fire" },
     { usage: "flight follow|auto", does: "Hold station on the FC, or fly into range by itself" },
+    // Addressed to pilots: none named is everyone.
+    { usage: "status [names]", does: "Say ammo and drones left in local" },
+    { usage: "repair [names]", does: "Dock in this system, repair, come back to the FC" },
     // Cancel.
-    { usage: "stop", does: "Cancel orders and halt the ship" },
+    { usage: "stop", does: "Cancel orders, a repair trip included, and halt the ship" },
   ]);
 
 /**
