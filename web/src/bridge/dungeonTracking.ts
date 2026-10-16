@@ -58,16 +58,30 @@ export async function readCurrentDungeon(ask: Ask): Promise<CurrentDungeon | nul
 /** The Ship Restrictions window's words (ship_restrictions_window.py). */
 export const SHIP_RESTRICTIONS_LABELS = Object.freeze({
   caption: "UI/Dungeons/ShipRestrictionsWindow",
+  showUnlockedOnly: "UI/Dungeons/ShipRestrictionShowUnlockedOnly",
   hideRestricted: "UI/Dungeons/ShipRestrictionHideRestricted",
   showList: "UI/Agents/Dialogue/DungeonShipRestrictionsShowList",
   notRestricted: "UI/Agents/Dialogue/DungeonShipRestrictionsListShipIsNotRestricted",
   restricted: "UI/Agents/Dialogue/DungeonShipRestrictionsListShipIsRestricted",
 });
 
+/**
+ * ship_restrictions_window.SHIP_GROUP_ORDER: the ship tree's groups in the order the window lists them (shipgroup's
+ * groupRookie to groupJumpFreighter, read through the client's Python); any other after them, by name.
+ */
+export const SHIP_GROUP_ORDER: readonly number[] = Object.freeze([
+  4, 8, 9, 10, 11, 12, 13, 94, 14, 2101, 15, 93, 50, 16, 17, 18, 19, 20, 21, 96, 22, 23, 25, 24, 2109, 26, 47, 27, 28,
+  32, 2102, 2104, 33, 2113, 34, 35, 41, 48, 42, 43, 36, 44, 40, 45, 46, 37, 38,
+]);
+
 /** What the BFF answers of a dungeon's restrictions (GET /api/dungeons/ship-restrictions). */
 export interface ShipRestrictions {
   readonly dungeonNameID: number | null;
   readonly typeListID: number | null;
+  /** Whether the groups are the client's ship tree's (else the inventory groups). */
+  readonly shipTree: boolean;
+  /** The ship tree's groups' names' messages, by group. */
+  readonly groupNameIDs: Readonly<Record<number, number>>;
   readonly allowed: readonly { readonly typeID: number; readonly groupID: number }[];
   readonly restricted: readonly { readonly typeID: number; readonly groupID: number }[];
 }
@@ -81,5 +95,20 @@ export function decodeShipRestrictions(data: Readonly<Record<string, JsonValue>>
     const groupID = whole(row?.groupID);
     return typeID !== null && groupID !== null ? [{ typeID, groupID }] : [];
   });
-  return { dungeonNameID: whole(data.dungeonNameID), typeListID: whole(data.typeListID), allowed: entries(data.allowed), restricted: entries(data.restricted) };
+  const groupNameIDs: Record<number, number> = {};
+  const groups = data.groups;
+  if (typeof groups === "object" && groups !== null && !Array.isArray(groups)) {
+    for (const [key, value] of Object.entries(groups)) {
+      const nameID = whole((value as Record<string, JsonValue> | null)?.nameID);
+      if (whole(key) !== null && nameID !== null) groupNameIDs[Number(key)] = nameID;
+    }
+  }
+  return {
+    dungeonNameID: whole(data.dungeonNameID),
+    typeListID: whole(data.typeListID),
+    shipTree: data.shipTree === true,
+    groupNameIDs,
+    allowed: entries(data.allowed),
+    restricted: entries(data.restricted),
+  };
 }

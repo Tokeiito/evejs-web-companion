@@ -109,8 +109,10 @@ class Park {
    * an update (the client scatters them as OnMultiEvent).
    * `onBallsRemoved(list)` is told which balls are leaving, and which of them
    * are being destroyed rather than going out of sight.
+   * `onBallsAdded(slims)` is given the slim items of the balls a state or an
+   * add brought, those michelle's ProcessBallAdd takes (1208 to 1220).
    */
-  constructor({ ballpark = new Ballpark(), onEvent = null, requestState = null, onMultiEvent = null, onBallsRemoved = null, pilot = null } = {}) {
+  constructor({ ballpark = new Ballpark(), onEvent = null, requestState = null, onMultiEvent = null, onBallsRemoved = null, onBallsAdded = null, pilot = null } = {}) {
     this.ballpark = ballpark;
     /**
      * `pilot()` answers the session's character and ship, { charID, shipID }: a drone's state is kept only while the
@@ -130,6 +132,12 @@ class Park {
     this.onMultiEvent = onMultiEvent;
     /** Given [{ id, slim, terminal }] for the balls about to go: the client's DoBallsRemove. `terminal` is "it blew up". */
     this.onBallsRemoved = onBallsRemoved;
+    /**
+     * Given [slim] for the balls added: of a whole state each of its slim items, of an add each one not in the park
+     * already, and only a real ball's (an ID above DSTLOCALBALLS), as ProcessBallAdd takes them; then the batch
+     * goes to michelle's dispatcher (QueueBallData, 1007), which primes their owners and tickers.
+     */
+    this.onBallsAdded = onBallsAdded;
     this.lastStamp = -1;
     /** Snapshots of the park to go back to: [bytes, tick, midTick]. */
     this.states = [];
@@ -571,6 +579,7 @@ class Park {
       if (!this.ballpark.balls.has(itemID)) throw new Error(`BallNotInPark ${itemID}`);
       this.slimItems.set(itemID, slim);
     }
+    this._ballsAdded([...this.slimItems.values()]);
     this.validState = true;
     this.flushSimulationHistory();
     this.damageState = new Map();
@@ -610,11 +619,15 @@ class Park {
   AddBalls(chunk) {
     const [state, slims, damageDict] = items(chunk);
     this.ballpark.readState(state, 2);
+    const added = [];
     for (const slimItem of items(slims)) {
       const slim = fieldsOf(slimItem);
       const itemID = ballId(slim.get("itemID"));
-      if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
+      if (this.slimItems.has(itemID)) continue;
+      this.slimItems.set(itemID, slim);
+      added.push(slim);
     }
+    this._ballsAdded(added);
     for (const [id, damage] of fieldsOf(damageDict)) this._damage(ballId(id), damage);
     this._egoAwaited();
   }
@@ -623,15 +636,25 @@ class Park {
   AddBalls2(chunk) {
     const [state, extraBallData] = items(chunk);
     this.ballpark.readState(state, 2);
+    const added = [];
     for (const data of items(extraBallData)) {
       const [slimItemDict, damageState] = Array.isArray(data) ? data : [data, null];
       const slim = fieldsOf(slimItemDict);
       const itemID = ballId(slim.get("itemID"));
       // The client files it with the time it arrived, for working out the shield since. That clock is not kept yet.
       this._damage(itemID, damageState ?? null);
-      if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
+      if (this.slimItems.has(itemID)) continue;
+      this.slimItems.set(itemID, slim);
+      added.push(slim);
     }
+    this._ballsAdded(added);
     this._egoAwaited();
+  }
+
+  /** ProcessBallAdd's own test (1210): a ball of the client's own making is none of the dispatcher's. */
+  _ballsAdded(slims) {
+    if (typeof this.onBallsAdded !== "function") return;
+    this.onBallsAdded(slims.filter((slim) => ballId(slim.get("itemID")) > DSTLOCALBALLS));
   }
 
   /** Park.TerminalPlayDestructionEffect (1197): only what to show when the ball goes. */

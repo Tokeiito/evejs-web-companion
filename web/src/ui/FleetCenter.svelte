@@ -144,10 +144,6 @@
     );
   }
 
-  function confirmAction(message: string): boolean {
-    return typeof window !== "undefined" && window.confirm(message);
-  }
-
   function resolveInvitee(): void {
     if (inviteeID !== null) {
       flow.requestNames([{ kind: "character", id: inviteeID }]);
@@ -163,32 +159,28 @@
     }
   }
 
+  // The client asks nothing before any of these (fleetSvc.CreateFleet, 331 to 342; Invite, 351 to 363; LeaveFleet,
+  // 365 to 371); an invitation is answered in its own dialog, of which the Accept and Decline here are the two
+  // answers (OnFleetInvite, 1193). So the page asks nothing either.
   async function formFleet(): Promise<void> {
-    if (confirmAction("Form a new fleet with you in command?")) await flow.formFleet();
+    await flow.formFleet();
   }
 
   async function acceptInvite(): Promise<void> {
-    if (confirmAction(`Accept the fleet invitation from ${inviteSender()}?`)) {
-      await flow.acceptFleetInvite();
-    }
+    await flow.acceptFleetInvite();
   }
 
   async function declineInvite(): Promise<void> {
-    if (confirmAction(`Decline the fleet invitation from ${inviteSender()}?`)) {
-      await flow.declineFleetInvite();
-    }
+    await flow.declineFleetInvite();
   }
 
   async function inviteMember(): Promise<void> {
     if (inviteeID === null) return;
-    const who = inviteeName ?? `character ID ${inviteeID}`;
-    if (confirmAction(`Invite ${who} to your fleet?`)) {
-      await flow.inviteFleetMember(inviteeID);
-    }
+    await flow.inviteFleetMember(inviteeID);
   }
 
   async function leaveFleet(): Promise<void> {
-    if (confirmAction("Leave your current fleet?")) await flow.leaveFleet();
+    await flow.leaveFleet();
   }
 
   onMount(() => {

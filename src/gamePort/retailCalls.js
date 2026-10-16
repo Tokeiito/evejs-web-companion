@@ -601,7 +601,9 @@ const PROXY_SERVICES = Object.freeze(new Set([
 /**
  * Calls of the client's own that the transport makes when a feature wants them, and that no route of the BFF's
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
- * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners; one facility
+ * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners, and the
+ * corporations' and alliances' tickers', as the client primes them for the balls added and as its overview gets
+ * them (cfg.corptickernames, cfg.allianceshortnames); one facility
  * asked for by itself, as the client's facility service asks where the server names it, where a job was refused
  * at it, and where a job is given one that has rig modifiers or is not among the region's; the price table
  * the client's cfg asks for two seconds after it loads; and the chat service's four as it logs in to the chat
@@ -612,7 +614,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "config.GetMultiAllianceShortNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the
@@ -2017,6 +2019,7 @@ const RETAIL_CALLS = Object.freeze({
   "beyonce.CmdGroupJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:103", "bp.CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...) (menusvc.GroupJumpToMember). In no recording."),
   "beyonce.CmdBridgeToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:62", "bp.CmdBridgeToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, no session change: the ship that opens the bridge stays (menusvc.BridgeToMember). In no recording."),
   "abyssalMgr.AbyssalEntranceDeployment": same("abyss/client/abyssal_service.py:53", "RemoteSvc('abyssalMgr').AbyssalEntranceDeployment(item_id, game_mode_id), by the service's name, from the key activation window's button (keyActivationWindow.py 49 to 54): the filament and the game mode, 1 solo, 2 co-op, 3 two-player; solo's through sessionMgr.PerformSessionChange('JumpToAbyss', ...), the others' without. In no recording."),
+  "abyssalMgr.AbyssalEntranceGateActivation": same("abyss/client/abyssal_service.py:58", "RemoteSvc('abyssalMgr').AbyssalEntranceGateActivation(item_id), by the service's name, from a trace's jump window (AbyssJumpWindow.py JumpActivationController._Activate), through sessionMgr.PerformSessionChange('JumpToAbyss', ...): the trace. In no recording."),
   "abyssalMgr.AbyssalGateActivation": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:569", "RemoteSvc('abyssalMgr').AbyssalGateActivation(itemID, violateSafetyTimer=True), by the service's name, through sessionMgr.PerformSessionChange('abyssToAbyssJump', ...): a pocket's Transfer Conduit (typeAbyssEncounterGate), from the menu's Activate Gate once the ship is within 2,500 m (menusvc.ActivateAbyssalAccelerationGate). In no recording."),
   "abyssalMgr.AbyssalEndGateActivation": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:579", "RemoteSvc('abyssalMgr').AbyssalEndGateActivation(itemID), by the service's name, through sessionMgr.PerformSessionChange('abyssToKnownJump', ...): the last room's conduit out (typeAbyssExitGate), from the menu's Activate Gate once within 2,500 m. In no recording."),
   "keeper.GetCurrentDungeonForCharacter": same("eve/client/script/parklife/dungeonTracking.py:66", "RemoteSvc('keeper').GetCurrentDungeonForCharacter(), no arguments, by the service's name: the dungeon tracking's ask when a character's session starts in space (OnCharacterSessionChanged), answered (dungeon_id, room_id, instance_id, dungeon_values) or None. In no recording."),

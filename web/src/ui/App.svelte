@@ -14,6 +14,7 @@
   import FleetInvitation from "./FleetInvitation.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
   import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
+  import AbyssJumpHost from "./AbyssJumpHost.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -735,6 +736,12 @@
   <ErrorBoundary name="Ship restrictions">
     {#each sessions as session (session.id)}
       <ShipRestrictionsWindow {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
+  <!-- A trace's jump window that Activate Gate on an Abyssal trace opens (AbyssJumpHost.svelte), the pilot in front's. -->
+  <ErrorBoundary name="Abyssal jump">
+    {#each sessions as session (session.id)}
+      <AbyssJumpHost {session} inFront={session.id === activeId} />
     {/each}
   </ErrorBoundary>
 {:else if restoring}

@@ -123,6 +123,8 @@ const LOCK_REFUSALS = new Map([[1, "CharacterTransferring"], [2, "CharacterOnSal
 const GROUP_CAPSULE = 29;
 /** const.categoryShip (idCheckers.IsShip). */
 const CATEGORY_SHIP = 6;
+/** const.categoryDrone: michelle primes the owners of a ship's and a drone's ball (__categoryRequireOwnerPrime__). */
+const CATEGORY_DRONE = 18;
 const GROUP_SCANNER_PROBE = 479;
 const GROUP_SCAN_PROBE_LAUNCHER = 481;
 /** inventorycommon/const.py */
@@ -1124,8 +1126,26 @@ function createGamePortPilots({
   warsAgainAfterMs = WARS_AGAIN_AFTER_MS,
   // How long an account's own connection is kept after the last thing asked on it.
   accountIdleMs = ACCOUNT_IDLE_MS,
+  // The client's travel effects (fsdBuiltData/client/travelEffects.py GetTravelEffectsGuids): a Promise of their
+  // guids, or of null where the client's data cannot be read.
+  travelEffects = async () => null,
 } = {}) {
   const sessions = new Map();
+  // Asked for once, as a pilot's space starts; a table that could not be read is asked for again at the next.
+  // Once read, an effect is judged at once, in order with what else the server sent.
+  let travelEffectGuids = null;
+  let travelGuidsRead = null;
+  const travelGuids = () => {
+    travelEffectGuids ??= Promise.resolve().then(travelEffects).then((guids) => {
+      if (guids) travelGuidsRead = guids;
+      else travelEffectGuids = null;
+      return guids;
+    }, () => {
+      travelEffectGuids = null;
+      return null;
+    });
+    return travelEffectGuids;
+  };
   /** The accounts' own connections, by account, each with no character chosen on it. */
   const accountLines = new Map();
   // Pilots whose connection the game server closed with a code of its own (a GPSTransportClosed's reasonCode): another
@@ -1172,6 +1192,8 @@ function createGamePortPilots({
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
   const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.allianceshortnames' priming: config.GetMultiAllianceShortNamesEx(list(keysToGet)), the Recordset's Prime (eveCfg.py 379). */
+  const ALLIANCE_TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
    * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
    * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
@@ -1243,9 +1265,13 @@ function createGamePortPilots({
   // OnAddExpiryDurationForAbyssalContent, 128 to 131): its end, kept for the pilot until OnAbyssalContentFinished or
   // the session leaves Abyssal space (the session's change, below), so that a browser drawing the pilot afresh is
   // answered it (pocketTimer). The client is told it once, at the pocket's entry, and keeps it.
+  // The pocket's room too (OnAbyssalLocationEntered's client_data, 75 to 93: its location_id is the room), kept until
+  // the session leaves Abyssal space, as the client keeps the objective chain it starts with it (OnSessionChanged,
+  // 195 to 207), for the Abyssal info panel of a browser drawing the pilot afresh (pocketRoom).
   function keepPocketTimer(entry, notification) {
     if (notification.method === "OnAddExpiryDurationForAbyssalContent") entry.pocketTimer = notification.args[0] ?? null;
     else if (notification.method === "OnAbyssalContentFinished") entry.pocketTimer = null;
+    else if (notification.method === "OnAbyssalLocationEntered") entry.pocketRoom = notification.args[0] ?? null;
   }
 
   function record(entry, notification) {
@@ -1624,6 +1650,11 @@ function createGamePortPilots({
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
       tickersWork: Promise.resolve(),
+      /** cfg.allianceshortnames: each alliance the server has been asked about, its short name, or null for one it had no row for; and the askings, one after another. */
+      allianceTickers: new Map(),
+      allianceTickersWork: Promise.resolve(),
+      /** michelle's ball dispatcher: each batch of balls added has its owners and tickers primed, one batch after another. */
+      ballPrimesWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
@@ -1830,6 +1861,7 @@ function createGamePortPilots({
       // Out of Abyssal space (idCheckers.IsAbyssalSpaceSystem: 32,000,000 to 32,999,999) the pocket's timer is no more.
       if ("solarsystemid2" in changes && !(Number(changes.solarsystemid2[1]) >= 32000000 && Number(changes.solarsystemid2[1]) <= 32999999)) {
         entry.pocketTimer = null;
+        entry.pocketRoom = null;
       }
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
@@ -2765,6 +2797,72 @@ function createGamePortPilots({
     }));
     entry.tickersWork = priming.catch(() => {});
     return priming;
+  }
+
+  /**
+   * cfg.allianceshortnames (eveCfg.py 379: a Recordset by allianceID over GetAllianceShortNamesEx and
+   * GetMultiAllianceShortNamesEx, which the client fills from nothing of its own). Of the alliances asked about, those
+   * not known yet are asked for by the Recordset's Prime, config.GetMultiAllianceShortNamesEx(a list of their IDs): in
+   * one call, as michelle primes the balls added (ProcessDispatchOrders, 611 to 613), or in a call for each where
+   * `each` is said, as a Get makes one (cfg.py 630 to 645: the overview's GetAllianceTickerName, overviewUtil.py 34).
+   * Each row answered, (allianceID, shortName), is kept for as long as the pilot is on, and an alliance the server
+   * answers no row for is not asked about again (the Recordset's knownLuzers). One asking after another.
+   *
+   * Answers a Map of each alliance asked about to its short name, or to null for one with no row. Fails as a call
+   * fails, with nothing kept of it.
+   */
+  async function allianceTickersNamed(allianceIDs, each = false, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const wanted = [...new Set((Array.isArray(allianceIDs) ? allianceIDs : []).map(positive).filter((allianceID) => allianceID !== null))];
+    const priming = entry.allianceTickersWork.then(() => run(entry, "config", "GetMultiAllianceShortNamesEx", async () => {
+      const unknown = wanted.filter((allianceID) => !entry.allianceTickers.has(allianceID));
+      for (const asked of each ? unknown.map((allianceID) => [allianceID]) : unknown.length > 0 ? [unknown] : []) {
+        ledger.note("config", "GetMultiAllianceShortNamesEx", ALLIANCE_TICKERS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiAllianceShortNamesEx", [{ type: "list", items: asked }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [allianceID, shortName] = ["allianceID", "shortName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.allianceTickers.set(positive(row[allianceID]), textOf(row[shortName]));
+        for (const id of asked) if (!entry.allianceTickers.has(id)) entry.allianceTickers.set(id, null);
+      }
+      return new Map(wanted.map((id) => [id, entry.allianceTickers.get(id) ?? null]));
+    }));
+    entry.allianceTickersWork = priming.catch(() => {});
+    return priming;
+  }
+
+  /**
+   * michelle's ball dispatcher (ProcessBallAdd, 1208 to 1220; ProcessDispatchOrders, 585 to 616): of each batch of
+   * balls a state or an add brought, the owners of the ships and drones among them (each one's owner, and where its
+   * charID is not None that pilot and its corporation) are primed in cfg.eveowners, then every one's corporation in
+   * cfg.corptickernames, then its alliance in cfg.allianceshortnames, each Prime asking in one call for those not
+   * known yet. The client's table of owners holds the NPC owners from its own data (eveCfg.py LoadEveOwners, 548 to
+   * 584: factions, NPC corporations and characters, and owner 1), and asks for none of them: here an owner below the
+   * players' (minPlayerOwner) is taken for one of those. A priming that fails is let go, as the dispatcher logs it
+   * and goes on. One batch after another, as the dispatcher takes its queue.
+   */
+  function ballsPrimed(entry, slims) {
+    const owners = [];
+    const corporations = [];
+    const alliances = [];
+    for (const slim of slims) {
+      const categoryID = positive(slim.get("categoryID"));
+      if (categoryID === CATEGORY_SHIP || categoryID === CATEGORY_DRONE) {
+        owners.push(slim.get("ownerID"));
+        if (slim.get("charID") !== null && slim.get("charID") !== undefined) owners.push(slim.get("charID"), slim.get("corpID"));
+      }
+      const corpID = positive(slim.get("corpID"));
+      if (corpID !== null && !corporations.includes(corpID)) corporations.push(corpID);
+      const allianceID = positive(slim.get("allianceID"));
+      if (allianceID !== null && !alliances.includes(allianceID)) alliances.push(allianceID);
+    }
+    const playerOwners = owners.map(positive).filter((ownerID) => ownerID !== null && ownerID >= MIN_PLAYER_OWNER);
+    if (playerOwners.length === 0 && corporations.length === 0 && alliances.length === 0) return;
+    entry.ballPrimesWork = entry.ballPrimesWork.then(async () => {
+      if (!sessions.has(entry.handle)) return;
+      if (playerOwners.length > 0) await ownersNamed(playerOwners, {}, entry.handle).catch(() => {});
+      if (corporations.length > 0) await corpTickersNamed(corporations, false, {}, entry.handle).catch(() => {});
+      if (alliances.length > 0) await allianceTickersNamed(alliances, false, {}, entry.handle).catch(() => {});
+    });
   }
 
   // ── the station, as the client's station service keeps it ────────────────
@@ -4068,6 +4166,21 @@ function createGamePortPilots({
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
       entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
+      entry.space.park.onBallsAdded = (slims) => ballsPrimed(entry, slims);
+      // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
+      // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
+      // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
+      // with the pilot's notifications. Any other special effect is not.
+      void travelGuids();
+      entry.space.park.onEvent = (name, args) => {
+        if (name !== "OnSpecialFX" || !Array.isArray(args) || positive(args[0]) === null || positive(args[0]) !== positive(attribute(entry, "shipid"))) return;
+        const guid = textOf(args[5]);
+        const handOn = (guids) => {
+          if (guids && guid !== null && guids.has(guid) && sessions.has(entry.handle)) record(entry, notificationToBridgeJson({ method: "OnSpecialFX", args }));
+        };
+        if (travelGuidsRead) handOn(travelGuidsRead);
+        else void travelGuids().then(handOn);
+      };
       // Nobody waits on this: the state arrives when the server has answered the bind.
       Promise.resolve(entry.space.start()).catch((error) => onSpaceError(error, "start", entry.characterID));
     }
@@ -4117,7 +4230,7 @@ function createGamePortPilots({
       return {
         // Until the server's state has arrived there is a park and nothing in it: said so (stateValid), so that blind is not read as empty.
         space: park && park.validState
-          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
+          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, warpBookmark: entry.warpBookmark ? entry.warpBookmark.row : null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null, timeDilation, stateValid: false },
         notifications: drain(entry),
       };
@@ -4234,8 +4347,14 @@ function createGamePortPilots({
     if (method.startsWith("Cmd") && method !== "CmdFleetTagTarget") entry.lastMove = { method, targetID: positive(args[0]), range: typeof sent(args[1]) === "number" ? sent(args[1]) : null };
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
+      entry.warpBookmark = null;
     } else if (method === "CmdWarpToStuff") {
       entry.warpDestination = args[0] === "item" ? positive(args[1]) : null;
+      // movementFunctions.WarpToBookmark: space.WarpDestination(bookmarkID=...), and the HUD words the warp from the
+      // bookmark as the client keeps it (spaceMgr.StartWarpIndication: addressbook.GetBookmark). A fleet member's
+      // (menusvc.WarpToMember: WarpDestination(fleetMemberID=...)) is named by nothing there.
+      entry.warpBookmark = args[0] === "bookmark" && positive(args[1]) !== null ? { bookmarkID: positive(args[1]), row: null } : null;
+      if (entry.warpBookmark) warpBookmarkKept(entry, entry.warpBookmark);
     } else if (method === "CmdAlignTo") {
       // menusvc._AlignTo: what was aligned to is kept (StoreAlignTarget), a thing or a bookmark, and the HUD
       // names it for as long as the ship flies that course. `since` is the park's tick at the order.
@@ -4251,6 +4370,30 @@ function createGamePortPilots({
       // (StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)).
       entry.alignTarget = null;
     }
+  }
+
+  /**
+   * The bookmark a warp was ordered at, as the client keeps it (bookmarkSvc.GetBookmark: bookmarkCache[bookmarkID]):
+   * read from the bookmark manager's three lists as they are kept (asked for where none are), its memo, its item and
+   * its place (none where it is a thing's bookmark, x None). Where it is not among them the client's lookup fails
+   * and its HUD names nothing; so here, the row is left none.
+   */
+  function warpBookmarkKept(entry, wanted) {
+    bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry)))
+      .then((lists) => {
+        if (!isTheThreeLists(lists) || entry.warpBookmark !== wanted) return;
+        const row = itemsOf(lists[1])
+          .map((each) => (each && each.type === "object" && each.args ? each.args : null))
+          .find((args) => args !== null && positive(dictValue(args, "bookmarkID")) === wanted.bookmarkID);
+        if (!row) return;
+        const [x, y, z] = ["x", "y", "z"].map((name) => finite(dictValue(row, name)));
+        wanted.row = {
+          memo: textOf(dictValue(row, "memo")) ?? "",
+          itemID: positive(dictValue(row, "itemID")),
+          point: x === null || y === null || z === null ? null : { x, y, z },
+        };
+      })
+      .catch(() => {});
   }
 
   /**
@@ -5432,6 +5575,8 @@ function createGamePortPilots({
     accountCall,
     /** The Abyssal pocket's timer as the pilot was last told it (keepPocketTimer): its end_time, as the notice had it, or null. */
     pocketTimer: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketTimer ?? null,
+    /** The Abyssal pocket's room as the pilot was last told it (keepPocketTimer): OnAbyssalLocationEntered's client_data, or null. */
+    pocketRoom: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketRoom ?? null,
     /** What the game server closed a character's last connection with ({ reasonCode, reason, at }), or null. */
     closedByServer: (characterID) => closedByServerByCharacter.get(positive(characterID)) ?? null,
     answerClientQuestion,
@@ -5448,6 +5593,7 @@ function createGamePortPilots({
     journalKept,
     ownersNamed,
     corpTickersNamed,
+    allianceTickersNamed,
     shipInfo,
     shipAttribute,
     chatConnection,

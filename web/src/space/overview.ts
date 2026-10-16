@@ -161,9 +161,98 @@ export interface OverviewRow extends SpaceEntity {
    * overviewNodeUtil). A station's radius is kilometres, so the two are far apart.
    */
   readonly surfaceDistance: number;
+  /**
+   * The thing's own speed in metres a second (overviewNodeUtil.UpdateVelocityData: the length of the ball's
+   * velocity, a vector of single-precision numbers), what the overview's Velocity column, one of its default columns
+   * (overviewConst.DEFAULT_COLUMNS), shows and sorts by; null where the snapshot gives no motion for it.
+   */
+  readonly speed: number | null;
+  /**
+   * The rest of UpdateVelocityData, of the thing beside the pilot's ship, null where either has no motion: its
+   * closing speed along the line between them (radial: the velocities' difference on the line's unit vector, a
+   * positive one moving away), the rest of that difference (transversal), and that over the surface distance, a
+   * metre at least (angular, radians a second).
+   */
+  readonly radialVelocity: number | null;
+  readonly transversalVelocity: number | null;
+  readonly angularVelocity: number | null;
 }
 
-export type OverviewSort = "distance" | "name";
+/** The columns a list is sorted by (overviewConst's). */
+export type OverviewSort =
+  | "distance" | "name" | "type" | "velocity" | "radialVelocity" | "transversalVelocity" | "angularVelocity"
+  | "size" | "tag" | "corporation" | "alliance" | "faction" | "militia";
+
+/** The sorts whose order is applied before the list's cap (buildOverviewRows' `direction`). */
+export const SORTS_ORDERED_BEFORE_CAP: ReadonlySet<OverviewSort> = new Set([
+  "velocity", "radialVelocity", "transversalVelocity", "angularVelocity", "size", "tag", "corporation", "alliance", "faction", "militia",
+]);
+
+/** The Size column's figure (overviewWindow.py 931 to 936: FmtDist of the ball's radius twice over). */
+export function formatOverviewSize(radius: number, say: DistanceSay = ownDistanceWords): string {
+  return fmtDist(radius * 2, 2, say);
+}
+
+/**
+ * A velocity's length as the client takes it: of the vector in single precision, in single precision (as
+ * shipSpeed.ts singleLength; kept here so the overview's own module stays clear of the words modules).
+ */
+function speedOf(entity: SpaceEntity): number | null {
+  if (entity.motionAvailable === false) return null;
+  const { x, y, z } = entity.velocity;
+  if (![x, y, z].every(Number.isFinite)) return null;
+  const f = Math.fround;
+  const [vx, vy, vz] = [f(x), f(y), f(z)];
+  return f(Math.sqrt(f(f(f(vx * vx) + f(vy * vy)) + f(vz * vz))));
+}
+
+/**
+ * The Velocity column's figure (overviewScrollEntry._GetColumnValueVelocity: FormatNumeric(int(velocity),
+ * useGrouping=True)): whole metres a second, cut, grouped; "-" where there is none. The radial and transversal
+ * columns' the same (_GetColumnValueRadialVelocity, _GetColumnValueTransversalVelocity).
+ */
+export function formatOverviewVelocity(speed: number | null): string {
+  // int() of a small negative is 0, never a "-0".
+  return speed === null || !Number.isFinite(speed) ? "-" : (Math.trunc(speed) || 0).toLocaleString("en-US");
+}
+
+/**
+ * The angular column's figure (_GetColumnValueAngularVelocity: round(value, 7) in degrees a second,
+ * FormatNumeric(value, useGrouping=True)). How the client's native formatter places a fraction it is given no places
+ * for is not read; this writes three at most.
+ */
+export function formatOverviewAngular(radiansPerSecond: number | null): string {
+  if (radiansPerSecond === null || !Number.isFinite(radiansPerSecond)) return "-";
+  const degrees = (Math.round(radiansPerSecond * 1e7) / 1e7) * 180 / Math.PI;
+  return degrees.toLocaleString("en-US");
+}
+
+type Vec = readonly [number, number, number];
+const f32 = Math.fround;
+/** geo2's vectors are single precision: each step of these is taken in it. */
+const length32 = (v: Vec): number => f32(Math.sqrt(f32(f32(f32(f32(v[0]) * f32(v[0])) + f32(f32(v[1]) * f32(v[1]))) + f32(f32(v[2]) * f32(v[2])))));
+const dot32 = (a: Vec, b: Vec): number => f32(f32(f32(f32(a[0]) * f32(b[0])) + f32(f32(a[1]) * f32(b[1]))) + f32(f32(a[2]) * f32(b[2])));
+
+/**
+ * overviewNodeUtil.UpdateVelocityData's radial, transversal and angular velocities of a thing beside the pilot's ship.
+ */
+function relativeMotion(entity: SpaceEntity, self: SpaceEntity | null, surfaceDistance: number): Pick<OverviewRow, "radialVelocity" | "transversalVelocity" | "angularVelocity"> {
+  const none = { radialVelocity: null, transversalVelocity: null, angularVelocity: null };
+  if (self === null || entity.motionAvailable === false || self.motionAvailable === false) return none;
+  const combined: Vec = [entity.velocity.x - self.velocity.x, entity.velocity.y - self.velocity.y, entity.velocity.z - self.velocity.z];
+  const apart: Vec = [entity.position.x - self.position.x, entity.position.y - self.position.y, entity.position.z - self.position.z];
+  if (![...combined, ...apart].every(Number.isFinite)) return none;
+  const size = length32(apart);
+  const normal: Vec = size > 0 ? [f32(f32(apart[0]) / size), f32(f32(apart[1]) / size), f32(f32(apart[2]) / size)] : [0, 0, 0];
+  const radial = dot32(combined, normal);
+  const across: Vec = [
+    f32(f32(combined[0]) - f32(normal[0] * radial)),
+    f32(f32(combined[1]) - f32(normal[1] * radial)),
+    f32(f32(combined[2]) - f32(normal[2] * radial)),
+  ];
+  const transversal = length32(across);
+  return { radialVelocity: radial, transversalVelocity: transversal, angularVelocity: transversal / Math.max(1, Math.max(surfaceDistance, 0)) };
+}
 
 export interface OverviewFilter {
   /** Free-text match over the row's name / type name / group name. */
@@ -181,6 +270,17 @@ export interface OverviewFilter {
 export interface OverviewRowNames {
   readonly typeName?: string | null;
   readonly groupName?: string | null;
+  /**
+   * The words of the overview's other text columns, as _UpdateStaticDataForNodes puts them (overviewWindow.py 937 to
+   * 975), null where it puts none: the fleet's tag on it ("" where the pilot is in no fleet, null where it is in one
+   * and the thing has no tag), the corporation's and the alliance's tickers in brackets, the faction of an NPC owner,
+   * and the militia.
+   */
+  readonly tag?: string | null;
+  readonly corporation?: string | null;
+  readonly alliance?: string | null;
+  readonly faction?: string | null;
+  readonly militia?: string | null;
 }
 
 /** Look up the resolved names for one row (supplied by the component). */
@@ -253,6 +353,23 @@ export function overviewCanList(entity: Pick<SpaceEntity, "categoryID" | "groupI
 }
 
 /**
+ * A text column's sort value as _UpdateStaticDataForNodes sets it (overviewWindow.py 937 to 975): the words in lower
+ * case, or 0 where the column has none (the list's default). A tag is the exception: none in a fleet sorts as 'zzz',
+ * and no fleet as 0.
+ */
+function sortTextOf(names: OverviewRowNames, sort: "tag" | "corporation" | "alliance" | "faction" | "militia"): string | 0 {
+  const words = names[sort] ?? null;
+  if (sort === "tag" && words === null) return "zzz";
+  return words === null || words === "" ? 0 : words.toLowerCase();
+}
+
+/** Python 2's order of the two: 0 before any text, and texts by their UTF-16 units (a narrow build's unicode). */
+function compareSortText(left: string | 0, right: string | 0): number {
+  if (left === 0 || right === 0) return left === right ? 0 : left === 0 ? -1 : 1;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
  * Build the overview list: drop the player's own ship and what no overview
  * lists, apply the filters, compute each remaining row's distance from the
  * ship, and sort.
@@ -267,6 +384,12 @@ export function buildOverviewRows(
   options: {
     readonly filter?: OverviewFilter;
     readonly sort?: OverviewSort;
+    /**
+     * The order reversed where -1, for the sorts of SORTS_ORDERED_BEFORE_CAP: applied before the cap, so a reversed
+     * speed keeps the fastest things rather than the far end of the slowest (distance, name and type keep the nearest
+     * rows, and are reversed by the caller).
+     */
+    readonly direction?: 1 | -1;
     readonly cap?: number;
     readonly names?: OverviewNameLookup;
   } = {},
@@ -279,6 +402,7 @@ export function buildOverviewRows(
   const needle = (filter.text ?? "").trim().toLowerCase();
 
   const radius = ownRadius(snapshot);
+  const self = snapshot.entities.find((entity) => entity.isSelf) ?? null;
   const matched: OverviewRow[] = [];
   for (const entity of snapshot.entities) {
     if (entity.isSelf || !overviewCanList(entity)) {
@@ -301,10 +425,13 @@ export function buildOverviewRows(
     if (needle.length > 0 && !matchesText(entity, lookup(entity), needle)) {
       continue;
     }
+    const surfaceDistance = surfaceDistanceMeters(origin, radius, entity.position, entity.radius);
     matched.push({
       ...entity,
       distance: distanceMeters(origin, entity.position),
-      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+      surfaceDistance,
+      speed: speedOf(entity),
+      ...relativeMotion(entity, self, surfaceDistance),
     });
   }
 
@@ -314,6 +441,35 @@ export function buildOverviewRows(
       const byName = (left.name ?? "").localeCompare(right.name ?? "");
       if (byName !== 0) {
         return byName;
+      }
+    }
+    if (sort === "type") {
+      const typeOf = (row: OverviewRow) => lookup(row).typeName ?? "";
+      const byType = typeOf(left).localeCompare(typeOf(right));
+      if (byType !== 0) {
+        return byType;
+      }
+    }
+    if (sort === "size") {
+      const bySize = (left.radius * 2 - right.radius * 2) * (options.direction ?? 1);
+      if (bySize !== 0) {
+        return bySize;
+      }
+    }
+    if (sort === "tag" || sort === "corporation" || sort === "alliance" || sort === "faction" || sort === "militia") {
+      const byText = compareSortText(sortTextOf(lookup(left), sort), sortTextOf(lookup(right), sort)) * (options.direction ?? 1);
+      if (byText !== 0) {
+        return byText;
+      }
+    }
+    if (sort === "velocity" || sort === "radialVelocity" || sort === "transversalVelocity" || sort === "angularVelocity") {
+      // Slowest first; one with no figure before any (Python 2 orders None below every number).
+      const figure = (row: OverviewRow) => (sort === "velocity" ? row.speed : row[sort]);
+      const a = figure(left);
+      const b = figure(right);
+      const byFigure = (a === null ? (b === null ? 0 : -1) : b === null ? 1 : a - b) * (options.direction ?? 1);
+      if (byFigure !== 0) {
+        return byFigure;
       }
     }
     // Distance is the tiebreaker for name sort and the primary key otherwise —
@@ -484,13 +640,19 @@ export function hostileRows(
     return [];
   }
   const radius = ownRadius(snapshot);
+  const self = snapshot.entities.find((entity) => entity.isSelf) ?? null;
   return snapshot.entities
     .filter((entity) => isHostile(entity))
-    .map((entity) => ({
-      ...entity,
-      distance: distanceMeters(origin, entity.position),
-      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
-    }))
+    .map((entity) => {
+      const surfaceDistance = surfaceDistanceMeters(origin, radius, entity.position, entity.radius);
+      return {
+        ...entity,
+        distance: distanceMeters(origin, entity.position),
+        surfaceDistance,
+        speed: speedOf(entity),
+        ...relativeMotion(entity, self, surfaceDistance),
+      };
+    })
     .sort((left, right) => left.distance - right.distance);
 }
 

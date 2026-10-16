@@ -188,6 +188,11 @@ const gamePortPilots = options.gamePortPilots !== undefined
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
+      // The client's travel effects, from its own data (clientBuiltData, made below; asked for once a pilot is in space).
+      travelEffects: async () => {
+        const table = await clientBuiltData.table("travelEffects");
+        return table ? new Set(Object.keys(table)) : null;
+      },
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
@@ -4627,6 +4632,9 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *   abyssExit  the last room's conduit out of the pocket (movementFunctions.RealActivateAbyssalEndGate:
  *            PerformSessionChange('abyssToKnownJump', abyssalMgr.AbyssalEndGateActivation, itemID)). Refused for a
  *            pilot not in space and for a conduit that is no number. Kept as a stargate's jump is, out of the pocket.
+ *   abyssEntrance  a trace's jump into its pocket (AbyssJumpWindow.py: PerformSessionChange('JumpToAbyss',
+ *            abyss.activate_entrance_gate, itemID)). Refused as abyssExit is; kept as a stargate's jump is, into the
+ *            pocket.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4717,7 +4725,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
-    } else if (kind === "abyssExit") {
+    } else if (kind === "abyssExit" || kind === "abyssEntrance") {
       if (before.flight.inSpace !== true) {
         res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
         return;
@@ -4744,7 +4752,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     }
     // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
     // system, the park bound again there.)
-    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind;
+    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -4793,7 +4801,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind)) {
+    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);
@@ -10379,15 +10387,18 @@ function requireExpectedInventoryFlight(res, expected, flight) {
 // The Abyssal pocket's timer as the pilot was last told it (gamePort/pilots.js keepPocketTimer): the end_time of
 // OnAddExpiryDurationForAbyssalContent, as the notice had it, or null. The client is told it once, at the pocket's
 // entry; a browser drawing the pilot afresh asks this instead. Through the web gateway nothing is kept: known false.
+// With it the pocket's room as last told (pilots.js pocketRoom: OnAbyssalLocationEntered's client_data), or null.
 app.get("/api/bridge/pocket-timer", requireAuth, (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   try {
     if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.pocketTimer !== "function") {
-      res.json({ ok: true, known: false, endTime: null });
+      res.json({ ok: true, known: false, endTime: null, room: null });
       return;
     }
-    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer({ userid: held.accountID }, held.bridgeSessionID) });
+    const fields = { userid: held.accountID };
+    const room = typeof gamePortPilots.pocketRoom === "function" ? gamePortPilots.pocketRoom(fields, held.bridgeSessionID) : null;
+    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer(fields, held.bridgeSessionID), room });
   } catch (error) {
     next(error);
   }
@@ -13109,6 +13120,24 @@ app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res,
   }
 });
 
+// Each NPC corporation's faction, as the client's own data has it (npcs/npccorporations.py get_corporation_faction_id:
+// the corporation's factionID), what its overview's Faction column names for a thing an NPC owns (overviewWindow.py
+// 967 to 975). `available` is false when the table could not be read (no client install, or no Python to host the
+// client's loader); `factions` is then empty.
+app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("npcCorporations");
+    const factions = {};
+    for (const [corporationID, row] of Object.entries(table || {})) {
+      const factionID = row && Number(row.factionID);
+      if (Number.isSafeInteger(factionID) && factionID > 0) factions[corporationID] = factionID;
+    }
+    res.json({ ok: true, available: Boolean(table), factions });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -13260,6 +13289,38 @@ app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
           for (const corpID of players) tickers[corpID] = named.get(corpID) ?? null;
         } catch (_error) {
           unresolved.push(...players);
+        }
+      }
+    }
+    res.json({ ok: true, tickers, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Alliances' tickers, as the client's cfg.allianceshortnames has them: asked of the game server by the game-port
+// transport, which keeps each it is answered, those michelle primed as the balls came among them (pilots.js
+// allianceTickersNamed): in one call, or in one for each where `each` is said, as the overview's Get makes one. A
+// ticker that could not be asked (no pilot on the game port, or the call refused) is named in `unresolved`; null is
+// the server's answer of none.
+app.post("/api/alliance-tickers", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.allianceIDs) ? req.body.allianceIDs : [];
+    const allianceIDs = [...new Set(asked.filter((allianceID) => Number.isSafeInteger(allianceID) && allianceID > 0))].slice(0, 200);
+    const each = Boolean(req.body && req.body.each === true);
+    const tickers = {};
+    const unresolved = [];
+    if (allianceIDs.length > 0) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...allianceIDs);
+      } else {
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.allianceTickersNamed(
+            allianceIDs, each, { userid: held.accountID }, held.bridgeSessionID));
+          for (const allianceID of allianceIDs) tickers[allianceID] = named.get(allianceID) ?? null;
+        } catch (_error) {
+          unresolved.push(...allianceIDs);
         }
       }
     }
@@ -13452,7 +13513,10 @@ app.get("/api/types/type-lists", requireAuth, (req, res, next) => {
 // (evedungeons/client/ship_restrictions_window.py set_dungeon; staticData.getDungeonShipRestrictions, the client's
 // GetDungeonShipRestrictions): the dungeon's name's message, the gate's type list, the published ship types let
 // through with their groups, and the published ones of those groups that are not (the window's restricted ones).
-app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
+// The groups are the client's ship tree's where the client's data can be read (evetypes.GetShipGroupID, the type's
+// isisGroupID; the groups' names' messages from its infoBubbleGroups: clientBuiltData), a type with none left out as
+// the window's _validate_type leaves it; else the inventory groups, and `shipTree` false.
+app.get("/api/dungeons/ship-restrictions", requireAuth, async (req, res, next) => {
   const dungeonID = Number(req.query.dungeonID);
   const gateID = req.query.gateID === undefined || req.query.gateID === "" ? null : Number(req.query.gateID);
   if (!Number.isSafeInteger(dungeonID) || dungeonID <= 0 || (gateID !== null && (!Number.isSafeInteger(gateID) || gateID <= 0))) {
@@ -13465,17 +13529,81 @@ app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
       res.json({ ok: true, found: false });
       return;
     }
+    const [shipGroups, treeGroups] = await Promise.all([
+      clientBuiltData.table("typeShipGroups").catch(() => null),
+      typeof clientBuiltData.infoBubbleGroups === "function" ? clientBuiltData.infoBubbleGroups().catch(() => null) : null,
+    ]);
+    const shipTree = Boolean(shipGroups && treeGroups);
+    const groupOf = (typeID, type) => (shipTree ? Number(shipGroups[String(typeID)]) || 0 : Number(type.groupID) || 0);
+    // A published ship (the types' isisGroupID is set on some that are no ships; the client takes a group's types from
+    // its ship tree, which has ships alone: shipTreeSvc.GetShipTypeIDsByGroupID).
     const shown = (typeID) => {
       const type = staticData.getType(typeID);
-      return type && type.published === true && Number(type.groupID) > 0 ? { typeID: Number(typeID), groupID: Number(type.groupID) } : null;
+      const groupID = type && type.published === true && Number(type.categoryID) === 6 ? groupOf(typeID, type) : 0;
+      return groupID > 0 ? { typeID: Number(typeID), groupID } : null;
     };
     const allowed = restrictions.allowedShipTypes.map(shown).filter(Boolean);
     const allowedIDs = new Set(allowed.map((entry) => entry.typeID));
     const groups = new Set(allowed.map((entry) => entry.groupID));
-    const restricted = typeof staticData.getTypesInGroup === "function"
-      ? [...groups].flatMap((groupID) => staticData.getTypesInGroup(groupID)).map((type) => shown(type.typeID)).filter((entry) => entry && !allowedIDs.has(entry.typeID))
-      : [];
-    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, allowed, restricted });
+    const groupTypeIDs = shipTree
+      ? Object.keys(shipGroups).filter((typeID) => groups.has(Number(shipGroups[typeID]))).map(Number)
+      : [...groups].flatMap((groupID) => typeof staticData.getTypesInGroup === "function" ? staticData.getTypesInGroup(groupID).map((type) => Number(type.typeID)) : []);
+    const restricted = groupTypeIDs.map(shown).filter((entry) => entry && !allowedIDs.has(entry.typeID));
+    const groupNames = {};
+    if (shipTree) {
+      for (const groupID of groups) {
+        const group = treeGroups[String(groupID)];
+        if (group) groupNames[String(groupID)] = { nameID: group.nameID, iconSmall: group.iconSmall };
+      }
+    }
+    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, shipTree, groups: groupNames, allowed, restricted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An objective chain as the client reads it without asking the server (objectives/common/objectives_data.py, read with
+// the client's own loaders: clientBuiltData): the chain, the types of its objectives, the types of their tasks, and the
+// types of each type list its context's parameters name (staticData.getTypeIDsByListID, the client's
+// evetypes.GetTypeIDsByListID), for the Abyssal info panel (abyssal_service.py ABYSS_OBJECTIVE_CHAIN_ID). found false
+// where the client's data cannot be read or has no such chain.
+app.get("/api/objectives/chain", requireAuth, async (req, res, next) => {
+  const chainID = Number(req.query.chainID);
+  if (!Number.isSafeInteger(chainID) || chainID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_OBJECTIVE_CHAIN", message: "An objective chain is asked for by its number." });
+    return;
+  }
+  try {
+    const [chains, objectiveTypes, taskTypes] = await Promise.all([
+      clientBuiltData.table("objectiveChains").catch(() => null),
+      clientBuiltData.table("objectiveTypes").catch(() => null),
+      clientBuiltData.table("objectiveTaskTypes").catch(() => null),
+    ]);
+    const chain = chains && Object.hasOwn(chains, String(chainID)) ? chains[String(chainID)] : null;
+    if (!chain || !objectiveTypes || !taskTypes) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const objectives = {};
+    const tasks = {};
+    for (const objective of Array.isArray(chain.objectives) ? chain.objectives : []) {
+      const objectiveType = objectiveTypes[String(objective && objective.objectiveType)];
+      if (!objectiveType) continue;
+      objectives[String(objective.objectiveType)] = objectiveType;
+      for (const task of Array.isArray(objectiveType.tasks) ? objectiveType.tasks : []) {
+        const taskType = taskTypes[String(task && task.taskType)];
+        if (taskType) tasks[String(task.taskType)] = taskType;
+      }
+    }
+    const typeLists = {};
+    for (const parameter of Array.isArray(chain.contextParameters) ? chain.contextParameters : []) {
+      const listID = Number(parameter && parameter.defaultValue);
+      if (parameter && parameter.parameterType === "eveTypeListIdType" && Number.isSafeInteger(listID) && listID > 0 &&
+        typeof staticData.getTypeIDsByListID === "function") {
+        typeLists[String(listID)] = staticData.getTypeIDsByListID(listID);
+      }
+    }
+    res.json({ ok: true, found: true, chainID, chain, objectiveTypes: objectives, taskTypes: tasks, typeLists });
   } catch (error) {
     next(error);
   }

@@ -3932,6 +3932,25 @@
   }
   .hud-head-state.stopped { color: var(--color-muted); }
   .hud-head-state.error { color: var(--color-danger); }
+  /* The bar the client fills while the ship lines up for a warp (indication_message_standard: 200 by 3, its ground
+   * at a fifth and its fill at half, the fill eased to each value over a quarter second), along the foot of the row
+   * under the state's words: placed by the row, so that the words' ellipsis does not clip it. */
+  .hud-head:has(.hud-warp-progress) { position: relative; }
+  .hud-warp-progress {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 3px;
+    /* No wider than the state's own column, the right of the row's three. */
+    width: min(200px, 40%);
+    height: 3px;
+    background: color-mix(in srgb, var(--color-text-bright) 20%, transparent);
+  }
+  .hud-warp-progress-fill {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--color-text-bright) 50%, transparent);
+    transition: width 0.25s linear;
+  }
   /* ⚠ A WRAPPING ROW, NOT A FIXED SET OF COLUMNS. READ THIS BEFORE ADDING ONE.
    *
    * The three clusters — cargo, the gauge, the racks — sit centred as a group
@@ -9448,7 +9467,7 @@
   .spc-colhead,
   .spc-row-btn {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) 84px;
+    grid-template-columns: 24px minmax(0, 1fr) 84px 58px;
     column-gap: 8px;
     align-items: center;
     min-width: 0;
@@ -9515,9 +9534,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The columns' grid is the tab's own (SpaceOverview.svelte, space/overviewColumns.ts): the Type column's track is
+   * nothing on a narrow panel, its cell kept in its slot but unseen, and the row's second line says the type. */
+  .spc-colhead,
+  .spc-row-btn { --spc-type-col: 0px; }
   .spc-cell-type,
   .spc-cell-group {
-    display: none;
+    visibility: hidden;
     color: var(--stn-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -9532,6 +9555,33 @@
   /* Far things are dimmer, so the near ones read first. The figure is still
    * there — this is emphasis, not a hidden reading. */
   .spc-cell-range.far { color: var(--stn-muted); }
+  /* The client's speed columns, to the right (overviewConst.RIGHTALIGNEDCOLUMNS); Velocity and Angular 58 wide
+   * (COLUMN_DEFAULTSIZE). */
+  .spc-cell-figure {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--stn-secondary);
+    white-space: nowrap;
+  }
+  .spc-colhead .spc-cell-figure,
+  .spc-colhead .spc-col-distance { text-align: right; }
+  /* The tag, the tickers, the faction and the militia: words, cut where the column is narrow. */
+  .spc-cell-text {
+    min-width: 0;
+    color: var(--stn-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .spc-columns {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--stn-line);
+    display: grid;
+    gap: 6px;
+  }
+  .spc-columns ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .spc-columns li { display: flex; align-items: center; gap: 6px; }
+  .spc-columns label { flex: 1; display: flex; align-items: center; gap: 6px; }
 
   .spc-empty { padding: 18px 12px; color: var(--stn-muted); }
   .spc-note {
@@ -9552,9 +9602,10 @@
    */
   @container space (min-width: 560px) {
     .spc-colhead,
-    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px; }
+    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px 58px; --spc-type-col: minmax(0, 1fr); }
+    .spc-colhead { --spc-type-col: minmax(0, 1fr); }
     .spc-cell-type,
-    .spc-cell-group { display: block; }
+    .spc-cell-group { visibility: visible; }
     .spc-meta { display: none; }
     .spc-row-btn { min-height: 32px; }
     .spc-search { flex: none; width: 200px; }

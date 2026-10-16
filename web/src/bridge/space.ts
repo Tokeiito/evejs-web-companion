@@ -86,7 +86,15 @@ function decodeWarp(value: JsonValue | undefined): ShipWarp | null {
   if (typeof raw.preparing !== "boolean") {
     return null;
   }
-  return { preparing: raw.preparing, point: pointOrNull(raw.point), destinationID: idOrNull(raw.destinationID) };
+  const effectStamp = typeof raw.effectStamp === "number" && Number.isSafeInteger(raw.effectStamp) ? { effectStamp: raw.effectStamp } : {};
+  return {
+    preparing: raw.preparing,
+    point: pointOrNull(raw.point),
+    destinationID: idOrNull(raw.destinationID),
+    destinationName: typeof raw.destinationName === "string" ? raw.destinationName : null,
+    actualPoint: pointOrNull(raw.actualPoint),
+    ...effectStamp,
+  };
 }
 
 /** A point whose three coordinates are all real numbers, or null. */
@@ -163,6 +171,12 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     planetID: idOrNull(raw.planetID),
     // An acceleration gate's own object in its dungeon, where the BFF says it.
     dunObjectID: idOrNull(raw.dunObjectID),
+    // An Abyssal trace's filament, game mode and whether it is open, where the BFF says them.
+    ...(raw.abyssFilamentTypeID !== undefined ? {
+      abyssFilamentTypeID: idOrNull(raw.abyssFilamentTypeID),
+      gameModeID: typeof raw.gameModeID === "number" ? raw.gameModeID : null,
+      isAbyssGateOpen: raw.isAbyssGateOpen === true,
+    } : {}),
     beltID: idOrNull(raw.beltID),
     // The rock's ORE GRADE (dogma 2699), stamped by the BFF from static data.
     // An ABSENT oreGrade decodes to null ("unknown"), never 0: 0-Grade ore is a

@@ -2079,6 +2079,31 @@ function getTypeListsHolding(typeID, listIDs) {
 }
 
 /**
+ * A client type list's types, as the client takes them (evetypes.GetTypeIDsFromTypeList): its categories' types less
+ * those of the categories it leaves out, then with its groups' types less those of the groups it leaves out, then with
+ * its own types less those it leaves out; every type of a group or a category, published or not
+ * (evetypes._GetTypeIDsByGroupID). By number. Null for a list the tables lack.
+ */
+function getTypeIDsByListID(listID) {
+  const list = getClientTypeList(listID);
+  if (!list) return null;
+  const ids = (key) => (Array.isArray(list[key]) ? list[key].map(Number) : []);
+  const types = [...buildIndex("itemTypes", "types", "typeID").values()];
+  const typesOf = (field, wanted) => {
+    const asked = new Set(wanted);
+    return asked.size ? types.filter((type) => type && asked.has(Number(type[field]))).map((type) => Number(type.typeID)) : [];
+  };
+  const less = (kept, left) => {
+    const out = new Set(left);
+    return new Set([...kept].filter((typeID) => !out.has(typeID)));
+  };
+  let final = less(typesOf("categoryID", ids("includedCategoryIDs")), typesOf("categoryID", ids("excludedCategoryIDs")));
+  final = less([...final, ...typesOf("groupID", ids("includedGroupIDs"))], typesOf("groupID", ids("excludedGroupIDs")));
+  final = less([...final, ...ids("includedTypeIDs")], ids("excludedTypeIDs"));
+  return [...final].sort((a, b) => a - b);
+}
+
+/**
  * The client's own dungeon records (evedungeons.client.data.GetDungeon: its dungeonNameID and connections), as EveJS's
  * dungeon table holds them (dungeonAuthority, clientData.tables.dungeonsByID). Read once; only the dungeons are kept.
  */
@@ -2169,6 +2194,7 @@ module.exports = {
   getTypesInGroup,
   getClientTypeList,
   getTypeListsHolding,
+  getTypeIDsByListID,
   getClientDungeon,
   getDungeonShipRestrictions,
   resolveNames,

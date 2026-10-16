@@ -1897,6 +1897,8 @@ export interface SpaceEntity {
   readonly characterID: number | null;
   readonly corporationID: number | null;
   readonly allianceID: number | null;
+  /** The militia it is in, its slim item's warFactionID; none where there is none (the game port's rows). */
+  readonly warFactionID?: number | null;
   readonly securityStatus: number | null;
   readonly maxVelocity: number | null;
   readonly mode: string | null;
@@ -1927,6 +1929,13 @@ export interface SpaceEntity {
    * opened on its refusal. null on every other row, and where the transport did not say (the web gateway's).
    */
   readonly dunObjectID?: number | null;
+  /**
+   * An Abyssal trace's filament, game mode and whether it is open (its slim item's abyssFilamentTypeID, gameModeID and
+   * isAbyssGateOpen), for its jump window. Absent on every other row, and where the transport did not say.
+   */
+  readonly abyssFilamentTypeID?: number | null;
+  readonly gameModeID?: number | null;
+  readonly isAbyssGateOpen?: boolean | null;
   readonly miningResourceFamily?: "ore" | "ice" | "gas" | null;
   readonly beltID: number | null;
   /**
@@ -2021,10 +2030,22 @@ export interface ShipAlignTarget {
 export interface ShipWarp {
   /** Still lining up: the warp proper has not begun. */
   readonly preparing: boolean;
+  /**
+   * The ship's ball's effect stamp: while it lines up, minus one less the ticks spent so; the tick the warp began
+   * after. Absent where the transport does not say.
+   */
+  readonly effectStamp?: number;
   /** The point the server's warp is aimed at, or null when it has not said. */
   readonly point: SpaceVector | null;
   /** The thing the pilot asked to warp to, when the warp is aimed at it; else null. */
   readonly destinationID: number | null;
+  /** What the HUD names a warp to a bookmark by, its memo's title; null where it names none, or by the thing. */
+  readonly destinationName?: string | null;
+  /**
+   * Where the warp's way and distance are measured to (spaceMgr's actualDestinationPosition): the thing, or the
+   * bookmark's thing or place; null where there is none, and then they are measured to the warp's own point.
+   */
+  readonly actualPoint?: SpaceVector | null;
 }
 
 export interface SpaceShipStatus {

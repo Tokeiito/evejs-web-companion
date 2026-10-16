@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
+import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, activateEntranceGate, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
 import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -217,10 +217,10 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -325,8 +325,19 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
-import { GATE_ACTIVATION_RANGE_M, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import {
+  ABYSS_LOOTABLE_OBJECTIVE,
+  ABYSS_LOOTABLE_RESTART_MS,
+  ABYSS_OBJECTIVE_CHAIN_ID,
+  AbyssObjectiveChain,
+  abyssalLocationEntered,
+  decodeObjectiveChain,
+  type AbyssObjectiveRow,
+  type ObjectiveChainData,
+} from "../bridge/abyssObjectives.ts";
+import { activateStep } from "../bridge/spaceActivate.ts";
 import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
@@ -497,6 +508,15 @@ import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJourna
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
+
+/**
+ * Corporations' and alliances' tickers as the page has them, by ID (cfg.corptickernames, cfg.allianceshortnames): a
+ * ticker, or null where the server has none.
+ */
+export interface OwnerTickers {
+  readonly corporations: Readonly<Record<string, string | null>>;
+  readonly alliances: Readonly<Record<string, string | null>>;
+}
 
 /** The pilot's shares as the flow keeps them for the wallet's Shares tab. */
 export interface WalletSharesRead {
@@ -905,6 +925,8 @@ export interface AppFlow {
    * left; on a no nothing is asked of the server.
    */
   boardCorvette(sure: () => boolean | Promise<boolean>): Promise<void>;
+  /** prompt_player_fsd_dialog('AskAreYouSure', {'cons': cons}, uiconst.YESNO): the client's own question, true on Yes. */
+  askAreYouSure(cons: string): Promise<boolean>;
   /**
    * Leave the active ship while docked — the character ends up in their
    * capsule, the ship stays in the hangar — then refresh.
@@ -1380,6 +1402,14 @@ export interface AppFlow {
    * 140: cfg.corptickernames.Get, a priming of its own for each): the transport asks each not asked yet, in turn.
    */
   corpTickersEach(corpIDs: readonly number[]): Promise<void>;
+  /** The overview's tickers (overviewUtil GetCorpTickerName, GetAllianceTickerName), those the page has. */
+  readonly ownerTickers: ReadableSignal<OwnerTickers>;
+  /** Tickers the overview shows and the page has not: each one's Get (cfg.py 630 to 645), asked once. */
+  requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void;
+  /** Each NPC corporation's faction (npccorporations get_corporation_faction_id), by the corporation; null until read. */
+  readonly corporationFactions: ReadableSignal<Readonly<Record<string, number>> | null>;
+  /** The table of NPC corporations' factions read, once. */
+  loadCorporationFactions(): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -1700,6 +1730,18 @@ export interface AppFlow {
   readonly shipRestrictions: ReadableSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>;
   /** The Ship Restrictions window closed. */
   closeShipRestrictions(): void;
+  /** The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet). */
+  shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** A trace's jump window open (Activate Gate on an Abyssal trace): the trace, its filament and its game mode; null where closed. */
+  readonly abyssJump: ReadableSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>;
+  /** The jump window closed. */
+  closeAbyssJump(): void;
+  /** The jump window's button (JumpActivationController._Activate): through the trace into its pocket, a session change. */
+  jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
+  /** The Abyssal info panel's objectives (bridge/abyssObjectives.ts), as drawn now; null where the abyss service has no chain. */
+  readonly abyssObjectives: ReadableSignal<readonly AbyssObjectiveRow[] | null>;
+  /** A thing in space activated as the client's menu.Activate does (bridge/spaceActivate.ts): an objective target's double click. */
+  activateSpaceThing(itemID: number): Promise<void>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -2003,6 +2045,8 @@ export interface AppFlow {
    * _persist_prompt_suppress_choice): the dialog is not put up again, and a question is answered with what was kept.
    */
   keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void;
+  /** A server question's answer kept, by its dialog's name or its suppressID (bridge/questions.ts keptValueOf). */
+  keepQuestionAnswer(key: string, value: string): void;
   /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
@@ -2996,6 +3040,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void api.answerClientQuestion(question.id, true, callOptions).catch(() => {});
         return;
       }
+      // An answer the user kept for it ("do not ask again") is the answer, and nothing is put up (bridge/questions.ts).
+      const keeping = questionKeeping(question);
+      const kept = keeping === null ? undefined : keptQuestionAnswer(question, questionAnswerKept(keeping.key));
+      if (kept !== undefined) {
+        void api.answerClientQuestion(question.id, kept, callOptions).catch(() => {});
+        return;
+      }
       store.apply({ type: "live/question", question, epoch, sequence });
       return;
     }
@@ -3510,6 +3561,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (method === "OnAbyssalContentFinished") {
       abyssalContentFinished();
+      return;
+    }
+    // subwaySvc.OnSpecialFX (417 to 438): a travel effect played on the pilot's own ship (the game port hands on no
+    // other) begins its jump through the effect's target: PreJumpServiceCalls' OnJumpStarted(gateID, destinationID),
+    // which the objectives hear as OnClientEvent_JumpStarted.
+    if (method === "OnSpecialFX") {
+      const fx = args as readonly JsonValue[];
+      const shipID = Number(unwrapLong(fx[0]) ?? NaN);
+      const gateID = Number(unwrapLong(fx[3]) ?? NaN);
+      const ownShipID = store.flight.get().status?.shipID ?? null;
+      if (Number.isSafeInteger(gateID) && gateID > 0 && (ownShipID === null || shipID === ownShipID)) abyssJumpStarted(gateID);
+      return;
+    }
+    // The pocket's room, which starts the abyss service's objective chain or moves it on (abyssal_service.py 75 to 93).
+    if (method === "OnAbyssalLocationEntered") {
+      const room = abyssalLocationEntered((args as readonly JsonValue[])[0]);
+      if (room !== null) abyssRoomEntered(room);
       return;
     }
     // The dungeon tracked (bridge/dungeonTracking.ts; dungeonTracking.py 124 to 137).
@@ -5365,15 +5433,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }, Math.max(0, endMs - seconds * 1000 - serverNow())));
     }
   }
-  /** The pocket's timer asked of the BFF (api.readPocketTimer), once for an Abyssal system, where none is known. */
+  /**
+   * The pocket's timer and room asked of the BFF (api.readPocketTimer), once for an Abyssal system, where the timer
+   * or the objective chain is not known.
+   */
   let pocketTimerAskedFor: number | null = null;
   function askPocketTimer(solarSystemID: number | null): void {
-    if (!isAbyssalSystem(solarSystemID) || abyssalTimerSignal.get() !== null || pocketTimerAskedFor === solarSystemID) return;
+    if (!isAbyssalSystem(solarSystemID) || (abyssalTimerSignal.get() !== null && abyssChain !== null) || pocketTimerAskedFor === solarSystemID) return;
     pocketTimerAskedFor = solarSystemID;
-    void api.readPocketTimer(callOptions).then(({ endTime }) => {
+    void api.readPocketTimer(callOptions).then(({ endTime, room }) => {
       const endMs = abyssalExpiryMs(endTime);
       // One already run out is no timer (DeleteWhenFinished); one told meanwhile is the newer.
       if (endMs !== null && endMs > serverNow() && abyssalTimerSignal.get() === null) abyssalExpiryNoticed(endMs);
+      const entered = abyssalLocationEntered(room);
+      if (entered !== null && abyssChain === null) abyssRoomEntered(entered);
     }).catch(() => {
       pocketTimerAskedFor = null;
     });
@@ -5410,6 +5483,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const rows = await attributesOfTypes([typeID], [ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID]);
     const row = rows[typeID];
     return { tier: row?.[ATTRIBUTE_DIFFICULTY_TIER] ?? null, weather: row?.[ATTRIBUTE_WEATHER_ID] ?? null };
+  }
+  /**
+   * The ship types of these whose skill requirements the pilot meets (skills.IsSkillRequirementMet: every one of the
+   * type's required skills, its attributes 182, 183, 184, 1285, 1289 and 1290, at the level its 277, 278, 279, 1286,
+   * 1287 and 1288 say), the skill sheet read first where it is not. Expert systems are not counted yet.
+   */
+  async function shipTypesUnlocked(typeIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    if (store.skills.get().skills === null) await loadSkills().catch(() => undefined);
+    const levels = new Map((store.skills.get().skills ?? []).map((skill) => [skill.typeID, skill.level]));
+    const pairs: ReadonlyArray<readonly [number, number]> = [[182, 277], [183, 278], [184, 279], [1285, 1286], [1289, 1287], [1290, 1288]];
+    const rows = await attributesOfTypes(typeIDs, pairs.flat());
+    return new Set(typeIDs.filter((typeID) => {
+      const row = rows[typeID];
+      if (row === undefined) return false;
+      return pairs.every(([skill, level]) => {
+        const skillTypeID = row[skill];
+        return skillTypeID === undefined || !(skillTypeID > 0) || (levels.get(skillTypeID) ?? 0) >= (row[level] ?? 0);
+      });
+    }));
   }
   async function abyssShipTypeLists(shipTypeID: number): Promise<readonly number[] | null> {
     const lists = await api.loadTypeListsHolding([shipTypeID], Object.values(GAME_MODES).map((mode) => mode.allowedShipsListID), callOptions);
@@ -6483,6 +6575,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         if (step.kind === "arrive") {
           gateNavigation += 1;
+          // An Abyssal trace (movementFunctions.RealActivateEntranceToAbyssalGate): its jump window, and no call.
+          if (typeID === TYPE_ABYSS_ENTRANCE_GATE) {
+            openAbyssJump(itemID);
+            return;
+          }
           try {
             await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
             store.apply({ type: "flight/action", action: "Activate Gate" });
@@ -6510,8 +6607,140 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await new Promise((resolve) => setTimeout(resolve, GATE_NAVIGATION_TICK_MS));
     }
   }
+  // A trace's jump window (ui/KeyActivationWindow.svelte as AbyssJumpWindow.py's): the trace and what its slim item
+  // says of its filament and game mode, as the space read last had them.
+  const abyssJumpSignal = createSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>(null);
+  function openAbyssJump(itemID: number): void {
+    const trace = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+    const filamentTypeID = trace?.abyssFilamentTypeID ?? null;
+    if (filamentTypeID === null) return;
+    abyssJumpSignal.set({ itemID, filamentTypeID, gameModeID: trace?.gameModeID ?? null });
+  }
+  async function jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }> {
+    try {
+      // PerformSessionChange('JumpToAbyss', abyss.activate_entrance_gate, itemID): the BFF answers once the session is in the pocket.
+      await applyFlight(await orderedStep(() => activateEntranceGate(bridgeDo, itemID)));
+      return { deployed: true, errors: [] };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const errors = abyssErrorsOfRefusal(error instanceof BridgeCallError ? error.refusal : null);
+      if (errors !== null) return { deployed: false, errors };
+      if (!sayRefusalDialog(error, error instanceof Error ? error.message : String(error))) {
+        store.apply({ type: "flight/action-error", message: `Activate refused: ${flightRefusalWords(error)}`, said: false });
+      }
+      return { deployed: false, errors: [] };
+    }
+  }
+  // The Abyssal info panel's objectives (bridge/abyssObjectives.ts; abyssal_service.py 69 to 110 and 195 to 207): the
+  // chain started at the pocket's first OnAbyssalLocationEntered, moved on at each later one, by what the space feed
+  // shows and by the jumps the pilot's ship begins (the travel effect), and let go where the pilot leaves Abyssal
+  // space. Its data is the client's, read once (GET /api/objectives/chain).
+  const abyssObjectivesSignal = createSignal<readonly AbyssObjectiveRow[] | null>(null);
+  let abyssChain: AbyssObjectiveChain | null = null;
+  let abyssChainRoom: number | null = null;
+  let abyssChainRead: Promise<ObjectiveChainData | null> | null = null;
+  let abyssLootableRestart: ReturnType<typeof setTimeout> | null = null;
+  const abyssEntities = (): readonly SpaceEntity[] => store.space.get().snapshot?.entities ?? [];
+  function publishAbyssObjectives(): void {
+    abyssObjectivesSignal.set(abyssChain === null ? null : abyssChain.view());
+  }
+  function readAbyssChain(): Promise<ObjectiveChainData | null> {
+    abyssChainRead ??= api.loadObjectiveChain(ABYSS_OBJECTIVE_CHAIN_ID, callOptions).then(decodeObjectiveChain).catch(() => {
+      abyssChainRead = null;
+      return null;
+    });
+    return abyssChainRead;
+  }
+  /** OnAbyssalLocationEntered: rooms_completed the room less one; the chain started, or its lootables looked for again. */
+  function abyssRoomEntered(room: number): void {
+    void readAbyssChain().then((data) => {
+      // The same room twice (told live, and kept by the BFF for a page drawn afresh) is one notice.
+      if (data === null || room === abyssChainRoom) return;
+      abyssChainRoom = room;
+      if (abyssChain === null) {
+        abyssChain = new AbyssObjectiveChain(data, { rooms_completed: room - 1 });
+        abyssChain.start(abyssEntities());
+      } else {
+        abyssChain.setContext("rooms_completed", room - 1);
+        abyssChain.stopObjective(ABYSS_LOOTABLE_OBJECTIVE);
+        if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+        const chain = abyssChain;
+        abyssLootableRestart = setTimeout(() => {
+          abyssLootableRestart = null;
+          if (abyssChain !== chain) return;
+          chain.startObjective(ABYSS_LOOTABLE_OBJECTIVE);
+          publishAbyssObjectives();
+        }, ABYSS_LOOTABLE_RESTART_MS);
+      }
+      publishAbyssObjectives();
+    });
+  }
+  /** Out of Abyssal space: the chain stopped and let go (abyssal_service.OnSessionChanged). */
+  function stopAbyssObjectives(): void {
+    if (abyssLootableRestart !== null) clearTimeout(abyssLootableRestart);
+    abyssLootableRestart = null;
+    abyssChain = null;
+    abyssChainRoom = null;
+    publishAbyssObjectives();
+  }
+  /** OnClientEvent_JumpStarted(gate_id): the objectives' jump task through that gate complete. */
+  function abyssJumpStarted(gateID: number): void {
+    if (abyssChain === null) return;
+    abyssChain.jumpStarted(gateID);
+    publishAbyssObjectives();
+  }
+  store.space.subscribe(() => {
+    if (abyssChain === null) return;
+    abyssChain.observe(abyssEntities());
+    publishAbyssObjectives();
+  });
+
+  async function stopShip(): Promise<void> {
+    // Retail's Stop cancels the client-side navigation BEFORE the command and
+    // switches the autopilot off after it. Ours is the same order: abort the
+    // browser decide-loop first so it cannot issue another move into the stop,
+    // then tell the server to cut the engines.
+    autopilot?.abort();
+    // (And an Activate Gate's navigation, which is the client's too.)
+    gateNavigation += 1;
+    await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
+  }
+
+  /**
+   * A thing in space activated as the client's menu service activates one (bridge/spaceActivate.ts): stopped,
+   * docked at, its cargo opened, approached or aligned to. Opening the ship's own cargo hold and a control bunker's
+   * infrastructure hub are not made here (the objectives' targets are neither).
+   */
+  async function activateSpaceThing(itemID: number): Promise<void> {
+    const entities = store.space.get().snapshot?.entities ?? [];
+    const thing = entities.find((entity) => entity.itemID === itemID);
+    if (thing === undefined) return;
+    const self = entities.find((entity) => entity.isSelf) ?? null;
+    const measured = self !== null && self.geometryAvailable !== false && thing.geometryAvailable !== false;
+    const distance = measured ? surfaceDistanceMeters(self.position, self.radius, thing.position, thing.radius) : null;
+    switch (activateStep(thing, self?.groupID ?? null, distance)) {
+      case "stop":
+        await stopShip();
+        return;
+      case "dock":
+        await runFlightStep("Dock", () => dockStep(itemID));
+        await settleUntilDocked();
+        return;
+      case "openCargo":
+        await openContainer(itemID);
+        return;
+      case "approach":
+        await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, itemID, null)));
+        return;
+      case "alignTo":
+        await runFlightStep("Align", () => orderedStep((flightNow) => alignToCall(bridgeDo, flightNow, itemID)));
+        return;
+      default:
+    }
+  }
+
   async function activateGate(itemID: number, typeID: number | null): Promise<void> {
-    if (gateCallFor(typeID, itemID) === null) {
+    if (typeID !== TYPE_ABYSS_ENTRANCE_GATE && gateCallFor(typeID, itemID) === null) {
       store.apply({ type: "flight/action-error", message: "Activate Gate refused: this gate is not activated from here yet.", said: false });
       return;
     }
@@ -7531,10 +7760,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void {
+    keepQuestionAnswer(dialog, answer);
+  }
+
+  /**
+   * A server question's answer kept, in the same place (bridge/questions.ts questionKeeping): by its dialog's name or
+   * the agent's suppressID, as written by keptValueOf ("yes", "no", "ok", or an agent's choice "choice:ok:2").
+   */
+  function questionAnswerKept(key: string): string | null {
     try {
-      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, answer);
+      return settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${key}`) ?? null;
     } catch {
-      // Storage full or refused: the dialog is asked again.
+      return null;
+    }
+  }
+
+  function keepQuestionAnswer(key: string, value: string): void {
+    try {
+      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${key}`, value);
+    } catch {
+      // Storage full or refused: the question is asked again.
     }
   }
 
@@ -7569,6 +7814,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // priming (cfg.py Get, 630 to 645); what was asked already is not asked again (the transport keeps it).
   async function corpTickersEach(corpIDs: readonly number[]): Promise<void> {
     if (corpIDs.length > 0) await api.corpTickers(corpIDs, true, callOptions).catch(() => null);
+  }
+
+  // The overview's Corporation and Alliance columns (overviewUtil.py GetCorpTickerName, GetAllianceTickerName, 34 to
+  // 39): each thing's ticker from cfg.corptickernames and cfg.allianceshortnames, whose Get asks the server where the
+  // ticker is not known (Prime([key]), cfg.py 630 to 645). michelle primed those of every ball as it came, which the
+  // transport keeps (pilots.js ballsPrimed), so the page's asking is answered from that and asks the server only for
+  // one it did not see. Each asked once; one that could not be asked (or failed) is asked again after a while.
+  const ownerTickersSignal = createSignal<OwnerTickers>({ corporations: {}, alliances: {} });
+  const tickersAsked = { corporations: new Set<number>(), alliances: new Set<number>() };
+  const ASK_AGAIN_MS = 10_000;
+  function requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void {
+    const ask = (
+      ids: readonly number[],
+      asked: Set<number>,
+      read: typeof api.corpTickers,
+      slot: keyof OwnerTickers,
+    ): void => {
+      const fresh = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0 && !asked.has(id));
+      if (fresh.length === 0) return;
+      for (const id of fresh) asked.add(id);
+      const later = (again: readonly number[]): void => {
+        if (again.length > 0) setTimeout(() => again.forEach((id) => asked.delete(id)), ASK_AGAIN_MS);
+      };
+      read(fresh, true, callOptions)
+        .then(({ tickers, unresolved }) => {
+          const current = ownerTickersSignal.get();
+          ownerTickersSignal.set({ ...current, [slot]: { ...current[slot], ...tickers } });
+          later(unresolved);
+        })
+        .catch(() => later(fresh));
+    };
+    ask(corpIDs, tickersAsked.corporations, api.corpTickers, "corporations");
+    ask(allianceIDs, tickersAsked.alliances, api.allianceTickers, "alliances");
+  }
+
+  // The overview's Faction column (overviewWindow.py 967 to 975): an NPC owner's faction from the client's own table
+  // of NPC corporations, read once.
+  const corporationFactionsSignal = createSignal<Readonly<Record<string, number>> | null>(null);
+  let corporationFactionsAsked = false;
+  function loadCorporationFactions(): void {
+    if (corporationFactionsAsked) return;
+    corporationFactionsAsked = true;
+    api.loadCorporationFactions(callOptions)
+      .then((read) => corporationFactionsSignal.set(read.available ? read.factions : {}))
+      .catch(() => setTimeout(() => (corporationFactionsAsked = false), ASK_AGAIN_MS));
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -9355,6 +9645,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The pocket's timer where the page finds its pilot already in a pocket (a browser drawing it afresh): the
     // client keeps it from the pocket's entry, so the BFF is asked what the pilot was last told, once for the system.
     askPocketTimer(status.solarSystemID);
+    // Out of Abyssal space the abyss service's objective chain is no more (abyssal_service.OnSessionChanged).
+    if (flightSystemChanged && !isAbyssalSystem(status.solarSystemID)) stopAbyssObjectives();
     // The dungeon the pilot is in, asked once where the page finds it in space (dungeonTracking.OnCharacterSessionChanged).
     if (status.inSpace) askCurrentDungeon();
     // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
@@ -19269,6 +19561,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     dismissDialog,
     answerDialog,
     keepDialogAnswer,
+    keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
     setDestination,
@@ -19416,6 +19709,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runMutation(() => boardShipNow(shipID));
       await refreshActiveShipViews();
     },
+
+    askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
 
     async boardCorvette(sure) {
       // The page's own call (bridge/shipWrites.ts), as the client's lobby makes it (station.CreateNewbieShip): the
@@ -19951,6 +20246,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepContactsSearchSettings,
     searchOwners,
     corpTickersEach,
+    ownerTickers: readonlySignal(ownerTickersSignal),
+    requestOwnerTickers,
+    corporationFactions: readonlySignal(corporationFactionsSignal),
+    loadCorporationFactions,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
@@ -20210,6 +20509,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     collapseWarning: readonlySignal(collapseWarningSignal),
     shipRestrictions: readonlySignal(shipRestrictionsSignal),
     closeShipRestrictions: () => shipRestrictionsSignal.set(null),
+    shipTypesUnlocked,
+    abyssJump: readonlySignal(abyssJumpSignal),
+    closeAbyssJump: () => abyssJumpSignal.set(null),
+    jumpThroughTrace,
+    abyssObjectives: readonlySignal(abyssObjectivesSignal),
+    activateSpaceThing,
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,
@@ -20227,16 +20532,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     removePlanetLaunch,
 
-    async stopShip() {
-      // Retail's Stop cancels the client-side navigation BEFORE the command and
-      // switches the autopilot off after it. Ours is the same order: abort the
-      // browser decide-loop first so it cannot issue another move into the stop,
-      // then tell the server to cut the engines.
-      autopilot?.abort();
-      // (And an Activate Gate's navigation, which is the client's too.)
-      gateNavigation += 1;
-      await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
-    },
+    stopShip,
 
     loadSpaceSnapshot,
     loadTargets,

@@ -105,7 +105,7 @@ export type AbyssErrorEntry = readonly [code: number, args: readonly (number | s
 
 /** A game mode's rules (abyss/game_mode.py AbyssSoloGameMode, AbyssCoOpGameMode, AbyssTwoPlayerGameMode). */
 export interface AbyssGameMode {
-  readonly id: GameModeID;
+  readonly id: GameModeID | -1;
   /** The type list of the hulls it takes (evetypes.GetTypeIDsByListID). */
   readonly allowedShipsListID: number;
   readonly maxPlayers: number;
@@ -114,6 +114,9 @@ export interface AbyssGameMode {
   readonly shipRestrictionError: number;
   readonly jumpsOnDeploy: boolean;
 }
+
+/** abyss/game_mode.py UnknownGameMode: a trace of no mode; any hull (allowed_ships_list_id -1), no players, no key. */
+export const UNKNOWN_GAME_MODE: AbyssGameMode = Object.freeze({ id: -1, allowedShipsListID: -1, maxPlayers: -1, keyStackSize: -1, shipRestrictionError: -1, jumpsOnDeploy: false });
 
 export const GAME_MODES: Readonly<Record<GameModeID, AbyssGameMode>> = Object.freeze({
   1: { id: 1, allowedShipsListID: 57, maxPlayers: 1, keyStackSize: 1, shipRestrictionError: ABYSS_ERROR.INVALID_SHIP_TYPE, jumpsOnDeploy: true },
@@ -297,14 +300,39 @@ const within = (id: number | null, [low, high]: readonly [number, number]): bool
  * tether and the invulnerability timer the page does not know yet; the server checks both.
  */
 export function validateDeploy(facts: DeployFacts, mode: AbyssGameMode): AbyssErrorEntry[] {
-  const errors: AbyssErrorEntry[] = [];
+  const errors = baseErrors(facts, mode);
   const add = (code: number, ...args: (number | string)[]) => errors.push([code, args]);
   const demo = facts.keyTier === TIER_0_DEMO;
+  // perform_deploy_validation_checks: the fleet, the filament, the proximity (none, the client's), the safety.
+  if (mode.maxPlayers > 1 && facts.inFleet === false) add(ABYSS_ERROR.SHIP_NOT_IN_FLEET);
+  if (facts.key.groupID !== GROUP_ABYSSAL_KEYS) add(ABYSS_ERROR.INVALID_KEY_TYPE);
+  if (!facts.key.ownedByPilot) add(ABYSS_ERROR.INVALID_OWNER);
+  if (facts.key.quantity < mode.keyStackSize) add(ABYSS_ERROR.INVALID_KEY_AMOUNT, mode.keyStackSize);
+  if (!demo && isSuspicious(facts.security, facts.keyTier) && facts.safetyLevel === SHIP_SAFETY_LEVEL_FULL) add(ABYSS_ERROR.SAFETY_ENGAGED);
+  return errors;
+}
+
+/**
+ * ClientValidator.validate_jump's errors, a trace's jump window's (AbyssJumpWindow.py JumpActivationController): the
+ * base checks with the trace's filament for the key's tier, then perform_jump_validation_checks, of which the client's
+ * own validator can fail only the closed entrance (its distance is nought, its fleet always the same, its ships none:
+ * abyss/client/validator.py).
+ */
+export function validateJump(facts: DeployFacts, mode: AbyssGameMode, entranceOpen: boolean): AbyssErrorEntry[] {
+  const errors = baseErrors(facts, mode);
+  if (!entranceOpen) errors.push([ABYSS_ERROR.ENTRANCE_CLOSED, []]);
+  return errors;
+}
+
+/** perform_base_validation_checks, the deploy's and the jump's alike. */
+function baseErrors(facts: DeployFacts, mode: AbyssGameMode): AbyssErrorEntry[] {
+  const errors: AbyssErrorEntry[] = [];
+  const add = (code: number, ...args: (number | string)[]) => errors.push([code, args]);
   if (isInSecureSystem(facts)) add(ABYSS_ERROR.VERY_SECURE_SYSTEM_DISALLOWED);
   if (within(facts.solarSystemID, VOID_SYSTEMS)) add(ABYSS_ERROR.VOID_SPACE_DISALLOWED);
   if (facts.shipTypeID === null) {
     add(ABYSS_ERROR.SHIP_NOT_FOUND);
-  } else if (facts.shipTypeLists !== null && !facts.shipTypeLists.includes(mode.allowedShipsListID)) {
+  } else if (mode.allowedShipsListID !== -1 && facts.shipTypeLists !== null && !facts.shipTypeLists.includes(mode.allowedShipsListID)) {
     add(mode.shipRestrictionError);
   }
   if (facts.docked) add(ABYSS_ERROR.SHIP_IS_DOCKED);
@@ -316,13 +344,25 @@ export function validateDeploy(facts: DeployFacts, mode: AbyssGameMode): AbyssEr
   if (facts.sessionChangeInProgress) add(ABYSS_ERROR.SESSION_CHANGE_IN_PROGRESS);
   // _is_in_banned_system: eveuniverse.solar_systems.is_abyssal_filament_restricted, a hazard system, which is Zarzakh.
   if (facts.solarSystemID === SOLAR_SYSTEM_ZARZAKH) add(ABYSS_ERROR.IN_BANNED_SYSTEM);
-  // perform_deploy_validation_checks: the fleet, the filament, the proximity (none, the client's), the safety.
-  if (mode.maxPlayers > 1 && facts.inFleet === false) add(ABYSS_ERROR.SHIP_NOT_IN_FLEET);
-  if (facts.key.groupID !== GROUP_ABYSSAL_KEYS) add(ABYSS_ERROR.INVALID_KEY_TYPE);
-  if (!facts.key.ownedByPilot) add(ABYSS_ERROR.INVALID_OWNER);
-  if (facts.key.quantity < mode.keyStackSize) add(ABYSS_ERROR.INVALID_KEY_AMOUNT, mode.keyStackSize);
-  if (!demo && isSuspicious(facts.security, facts.keyTier) && facts.safetyLevel === SHIP_SAFETY_LEVEL_FULL) add(ABYSS_ERROR.SAFETY_ENGAGED);
   return errors;
+}
+
+/** abyss/game_mode.py: each mode's jump_description_label, the jump window's first line (the unknown mode's the fleet's). */
+export const JUMP_DESCRIPTION_LABELS: Readonly<Record<number, string>> = Object.freeze({
+  1: "UI/Abyss/AbyssSoloEntranceShortDescription",
+  2: "UI/Abyss/AbyssFleetEntranceShortDescription",
+  3: "UI/Abyss/AbyssTwoPlayerEntranceShortDescription",
+});
+export const UNKNOWN_JUMP_DESCRIPTION_LABEL = "UI/Abyss/AbyssFleetEntranceShortDescription";
+
+/**
+ * A trace's jump (abyssal_service.activate_entrance_gate, 56 to 59): RemoteSvc('abyssalMgr').
+ * AbyssalEntranceGateActivation(item_id), by the service's name, through PerformSessionChange('JumpToAbyss', ...)
+ * (AbyssJumpWindow.py 37 to 40): the call coming back is the session in the pocket.
+ */
+export async function activateEntranceGate(act: Ask, itemID: number): Promise<void> {
+  if (!Number.isSafeInteger(itemID) || itemID <= 0) throw new Error("That trace could not be identified.");
+  await act("abyssalMgr", "AbyssalEntranceGateActivation", [itemID]);
 }
 
 // THE POCKET'S TIMER (abyss/client/abyssal_service.py): the server's OnAddExpiryDurationForAbyssalContent(end_time)
