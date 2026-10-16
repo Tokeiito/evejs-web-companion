@@ -490,6 +490,15 @@ import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
 
+/**
+ * Corporations' and alliances' tickers as the page has them, by ID (cfg.corptickernames, cfg.allianceshortnames): a
+ * ticker, or null where the server has none.
+ */
+export interface OwnerTickers {
+  readonly corporations: Readonly<Record<string, string | null>>;
+  readonly alliances: Readonly<Record<string, string | null>>;
+}
+
 /** The pilot's shares as the flow keeps them for the wallet's Shares tab. */
 export interface WalletSharesRead {
   readonly loaded: boolean;
@@ -1373,6 +1382,14 @@ export interface AppFlow {
    * 140: cfg.corptickernames.Get, a priming of its own for each): the transport asks each not asked yet, in turn.
    */
   corpTickersEach(corpIDs: readonly number[]): Promise<void>;
+  /** The overview's tickers (overviewUtil GetCorpTickerName, GetAllianceTickerName), those the page has. */
+  readonly ownerTickers: ReadableSignal<OwnerTickers>;
+  /** Tickers the overview shows and the page has not: each one's Get (cfg.py 630 to 645), asked once. */
+  requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void;
+  /** Each NPC corporation's faction (npccorporations get_corporation_faction_id), by the corporation; null until read. */
+  readonly corporationFactions: ReadableSignal<Readonly<Record<string, number>> | null>;
+  /** The table of NPC corporations' factions read, once. */
+  loadCorporationFactions(): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -7726,6 +7743,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // priming (cfg.py Get, 630 to 645); what was asked already is not asked again (the transport keeps it).
   async function corpTickersEach(corpIDs: readonly number[]): Promise<void> {
     if (corpIDs.length > 0) await api.corpTickers(corpIDs, true, callOptions).catch(() => null);
+  }
+
+  // The overview's Corporation and Alliance columns (overviewUtil.py GetCorpTickerName, GetAllianceTickerName, 34 to
+  // 39): each thing's ticker from cfg.corptickernames and cfg.allianceshortnames, whose Get asks the server where the
+  // ticker is not known (Prime([key]), cfg.py 630 to 645). michelle primed those of every ball as it came, which the
+  // transport keeps (pilots.js ballsPrimed), so the page's asking is answered from that and asks the server only for
+  // one it did not see. Each asked once; one that could not be asked (or failed) is asked again after a while.
+  const ownerTickersSignal = createSignal<OwnerTickers>({ corporations: {}, alliances: {} });
+  const tickersAsked = { corporations: new Set<number>(), alliances: new Set<number>() };
+  const ASK_AGAIN_MS = 10_000;
+  function requestOwnerTickers(corpIDs: readonly number[], allianceIDs: readonly number[]): void {
+    const ask = (
+      ids: readonly number[],
+      asked: Set<number>,
+      read: typeof api.corpTickers,
+      slot: keyof OwnerTickers,
+    ): void => {
+      const fresh = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0 && !asked.has(id));
+      if (fresh.length === 0) return;
+      for (const id of fresh) asked.add(id);
+      const later = (again: readonly number[]): void => {
+        if (again.length > 0) setTimeout(() => again.forEach((id) => asked.delete(id)), ASK_AGAIN_MS);
+      };
+      read(fresh, true, callOptions)
+        .then(({ tickers, unresolved }) => {
+          const current = ownerTickersSignal.get();
+          ownerTickersSignal.set({ ...current, [slot]: { ...current[slot], ...tickers } });
+          later(unresolved);
+        })
+        .catch(() => later(fresh));
+    };
+    ask(corpIDs, tickersAsked.corporations, api.corpTickers, "corporations");
+    ask(allianceIDs, tickersAsked.alliances, api.allianceTickers, "alliances");
+  }
+
+  // The overview's Faction column (overviewWindow.py 967 to 975): an NPC owner's faction from the client's own table
+  // of NPC corporations, read once.
+  const corporationFactionsSignal = createSignal<Readonly<Record<string, number>> | null>(null);
+  let corporationFactionsAsked = false;
+  function loadCorporationFactions(): void {
+    if (corporationFactionsAsked) return;
+    corporationFactionsAsked = true;
+    api.loadCorporationFactions(callOptions)
+      .then((read) => corporationFactionsSignal.set(read.available ? read.factions : {}))
+      .catch(() => setTimeout(() => (corporationFactionsAsked = false), ASK_AGAIN_MS));
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -19637,6 +19699,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepContactsSearchSettings,
     searchOwners,
     corpTickersEach,
+    ownerTickers: readonlySignal(ownerTickersSignal),
+    requestOwnerTickers,
+    corporationFactions: readonlySignal(corporationFactionsSignal),
+    loadCorporationFactions,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,

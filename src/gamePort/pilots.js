@@ -123,6 +123,8 @@ const LOCK_REFUSALS = new Map([[1, "CharacterTransferring"], [2, "CharacterOnSal
 const GROUP_CAPSULE = 29;
 /** const.categoryShip (idCheckers.IsShip). */
 const CATEGORY_SHIP = 6;
+/** const.categoryDrone: michelle primes the owners of a ship's and a drone's ball (__categoryRequireOwnerPrime__). */
+const CATEGORY_DRONE = 18;
 const GROUP_SCANNER_PROBE = 479;
 const GROUP_SCAN_PROBE_LAUNCHER = 481;
 /** inventorycommon/const.py */
@@ -1190,6 +1192,8 @@ function createGamePortPilots({
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
   const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.allianceshortnames' priming: config.GetMultiAllianceShortNamesEx(list(keysToGet)), the Recordset's Prime (eveCfg.py 379). */
+  const ALLIANCE_TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
    * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
    * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
@@ -1646,6 +1650,11 @@ function createGamePortPilots({
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
       tickersWork: Promise.resolve(),
+      /** cfg.allianceshortnames: each alliance the server has been asked about, its short name, or null for one it had no row for; and the askings, one after another. */
+      allianceTickers: new Map(),
+      allianceTickersWork: Promise.resolve(),
+      /** michelle's ball dispatcher: each batch of balls added has its owners and tickers primed, one batch after another. */
+      ballPrimesWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
@@ -2788,6 +2797,72 @@ function createGamePortPilots({
     }));
     entry.tickersWork = priming.catch(() => {});
     return priming;
+  }
+
+  /**
+   * cfg.allianceshortnames (eveCfg.py 379: a Recordset by allianceID over GetAllianceShortNamesEx and
+   * GetMultiAllianceShortNamesEx, which the client fills from nothing of its own). Of the alliances asked about, those
+   * not known yet are asked for by the Recordset's Prime, config.GetMultiAllianceShortNamesEx(a list of their IDs): in
+   * one call, as michelle primes the balls added (ProcessDispatchOrders, 611 to 613), or in a call for each where
+   * `each` is said, as a Get makes one (cfg.py 630 to 645: the overview's GetAllianceTickerName, overviewUtil.py 34).
+   * Each row answered, (allianceID, shortName), is kept for as long as the pilot is on, and an alliance the server
+   * answers no row for is not asked about again (the Recordset's knownLuzers). One asking after another.
+   *
+   * Answers a Map of each alliance asked about to its short name, or to null for one with no row. Fails as a call
+   * fails, with nothing kept of it.
+   */
+  async function allianceTickersNamed(allianceIDs, each = false, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const wanted = [...new Set((Array.isArray(allianceIDs) ? allianceIDs : []).map(positive).filter((allianceID) => allianceID !== null))];
+    const priming = entry.allianceTickersWork.then(() => run(entry, "config", "GetMultiAllianceShortNamesEx", async () => {
+      const unknown = wanted.filter((allianceID) => !entry.allianceTickers.has(allianceID));
+      for (const asked of each ? unknown.map((allianceID) => [allianceID]) : unknown.length > 0 ? [unknown] : []) {
+        ledger.note("config", "GetMultiAllianceShortNamesEx", ALLIANCE_TICKERS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiAllianceShortNamesEx", [{ type: "list", items: asked }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [allianceID, shortName] = ["allianceID", "shortName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.allianceTickers.set(positive(row[allianceID]), textOf(row[shortName]));
+        for (const id of asked) if (!entry.allianceTickers.has(id)) entry.allianceTickers.set(id, null);
+      }
+      return new Map(wanted.map((id) => [id, entry.allianceTickers.get(id) ?? null]));
+    }));
+    entry.allianceTickersWork = priming.catch(() => {});
+    return priming;
+  }
+
+  /**
+   * michelle's ball dispatcher (ProcessBallAdd, 1208 to 1220; ProcessDispatchOrders, 585 to 616): of each batch of
+   * balls a state or an add brought, the owners of the ships and drones among them (each one's owner, and where its
+   * charID is not None that pilot and its corporation) are primed in cfg.eveowners, then every one's corporation in
+   * cfg.corptickernames, then its alliance in cfg.allianceshortnames, each Prime asking in one call for those not
+   * known yet. The client's table of owners holds the NPC owners from its own data (eveCfg.py LoadEveOwners, 548 to
+   * 584: factions, NPC corporations and characters, and owner 1), and asks for none of them: here an owner below the
+   * players' (minPlayerOwner) is taken for one of those. A priming that fails is let go, as the dispatcher logs it
+   * and goes on. One batch after another, as the dispatcher takes its queue.
+   */
+  function ballsPrimed(entry, slims) {
+    const owners = [];
+    const corporations = [];
+    const alliances = [];
+    for (const slim of slims) {
+      const categoryID = positive(slim.get("categoryID"));
+      if (categoryID === CATEGORY_SHIP || categoryID === CATEGORY_DRONE) {
+        owners.push(slim.get("ownerID"));
+        if (slim.get("charID") !== null && slim.get("charID") !== undefined) owners.push(slim.get("charID"), slim.get("corpID"));
+      }
+      const corpID = positive(slim.get("corpID"));
+      if (corpID !== null && !corporations.includes(corpID)) corporations.push(corpID);
+      const allianceID = positive(slim.get("allianceID"));
+      if (allianceID !== null && !alliances.includes(allianceID)) alliances.push(allianceID);
+    }
+    const playerOwners = owners.map(positive).filter((ownerID) => ownerID !== null && ownerID >= MIN_PLAYER_OWNER);
+    if (playerOwners.length === 0 && corporations.length === 0 && alliances.length === 0) return;
+    entry.ballPrimesWork = entry.ballPrimesWork.then(async () => {
+      if (!sessions.has(entry.handle)) return;
+      if (playerOwners.length > 0) await ownersNamed(playerOwners, {}, entry.handle).catch(() => {});
+      if (corporations.length > 0) await corpTickersNamed(corporations, false, {}, entry.handle).catch(() => {});
+      if (alliances.length > 0) await allianceTickersNamed(alliances, false, {}, entry.handle).catch(() => {});
+    });
   }
 
   // ── the station, as the client's station service keeps it ────────────────
@@ -4091,6 +4166,7 @@ function createGamePortPilots({
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
       entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
+      entry.space.park.onBallsAdded = (slims) => ballsPrimed(entry, slims);
       // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
       // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
       // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
@@ -5487,6 +5563,7 @@ function createGamePortPilots({
     journalKept,
     ownersNamed,
     corpTickersNamed,
+    allianceTickersNamed,
     shipInfo,
     shipAttribute,
     chatConnection,

@@ -13088,6 +13088,24 @@ app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res,
   }
 });
 
+// Each NPC corporation's faction, as the client's own data has it (npcs/npccorporations.py get_corporation_faction_id:
+// the corporation's factionID), what its overview's Faction column names for a thing an NPC owns (overviewWindow.py
+// 967 to 975). `available` is false when the table could not be read (no client install, or no Python to host the
+// client's loader); `factions` is then empty.
+app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("npcCorporations");
+    const factions = {};
+    for (const [corporationID, row] of Object.entries(table || {})) {
+      const factionID = row && Number(row.factionID);
+      if (Number.isSafeInteger(factionID) && factionID > 0) factions[corporationID] = factionID;
+    }
+    res.json({ ok: true, available: Boolean(table), factions });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -13239,6 +13257,38 @@ app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
           for (const corpID of players) tickers[corpID] = named.get(corpID) ?? null;
         } catch (_error) {
           unresolved.push(...players);
+        }
+      }
+    }
+    res.json({ ok: true, tickers, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Alliances' tickers, as the client's cfg.allianceshortnames has them: asked of the game server by the game-port
+// transport, which keeps each it is answered, those michelle primed as the balls came among them (pilots.js
+// allianceTickersNamed): in one call, or in one for each where `each` is said, as the overview's Get makes one. A
+// ticker that could not be asked (no pilot on the game port, or the call refused) is named in `unresolved`; null is
+// the server's answer of none.
+app.post("/api/alliance-tickers", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.allianceIDs) ? req.body.allianceIDs : [];
+    const allianceIDs = [...new Set(asked.filter((allianceID) => Number.isSafeInteger(allianceID) && allianceID > 0))].slice(0, 200);
+    const each = Boolean(req.body && req.body.each === true);
+    const tickers = {};
+    const unresolved = [];
+    if (allianceIDs.length > 0) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...allianceIDs);
+      } else {
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.allianceTickersNamed(
+            allianceIDs, each, { userid: held.accountID }, held.bridgeSessionID));
+          for (const allianceID of allianceIDs) tickers[allianceID] = named.get(allianceID) ?? null;
+        } catch (_error) {
+          unresolved.push(...allianceIDs);
         }
       }
     }

@@ -1652,7 +1652,6 @@ export async function loadClientMission(missionID: number, options: ApiOptions =
   return data.mission ?? null;
 }
 
-/** How the client words each kind of notification, as its own code answers (null where it cannot be read). */
 /**
  * Each wallet journal entry kind's journal message, from the client's own built data (eveaccounting
  * get_entry_format_localization_id). `available` is false where the table could not be read.
@@ -1662,6 +1661,19 @@ export async function loadAccountingEntryTypes(options: ApiOptions = {}): Promis
   return { available: data.available === true, journalMessageIDs: (data.journalMessageIDs ?? {}) as Record<string, number> };
 }
 
+/**
+ * Each NPC corporation's faction, from the client's own built data (npccorporations get_corporation_faction_id), by
+ * the corporation. `available` is false where the table could not be read.
+ */
+export async function loadCorporationFactions(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly factions: Readonly<Record<string, number>> }> {
+  const data = await getJson("/api/client-data/corporation-factions", options);
+  const raw = typeof data.factions === "object" && data.factions !== null && !Array.isArray(data.factions) ? (data.factions as Record<string, JsonValue>) : {};
+  const factions: Record<string, number> = {};
+  for (const [corporationID, factionID] of Object.entries(raw)) if (typeof factionID === "number") factions[corporationID] = factionID;
+  return { available: data.available === true, factions };
+}
+
+/** How the client words each kind of notification, as its own code answers (null where it cannot be read). */
 export async function loadNotificationFormats(options: ApiOptions = {}): Promise<unknown> {
   const data = await getJson("/api/client-data/notification-formats", options);
   return data.formats ?? null;
@@ -3253,6 +3265,25 @@ export async function corpTickers(
   options: ApiOptions = {},
 ): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
   const data = await postJson("/api/corp-tickers", { corpIDs, each }, options);
+  return tickersRead(data);
+}
+
+/**
+ * Alliances' tickers as the client's cfg.allianceshortnames has them (POST /api/alliance-tickers): asked of the game
+ * server by the pilot's game-port transport where it has not been asked yet (config.GetMultiAllianceShortNamesEx), in
+ * one call, or in one for each where `each` is said. A ticker is null where the server answered none; one in
+ * `unresolved` was not asked.
+ */
+export async function allianceTickers(
+  allianceIDs: readonly number[],
+  each: boolean,
+  options: ApiOptions = {},
+): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
+  const data = await postJson("/api/alliance-tickers", { allianceIDs, each }, options);
+  return tickersRead(data);
+}
+
+function tickersRead(data: Record<string, JsonValue>): { tickers: Record<string, string | null>; unresolved: readonly number[] } {
   const raw = typeof data.tickers === "object" && data.tickers !== null && !Array.isArray(data.tickers)
     ? (data.tickers as Record<string, JsonValue>)
     : {};

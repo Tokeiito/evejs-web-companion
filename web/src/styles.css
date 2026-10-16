@@ -9546,6 +9546,14 @@
   }
   .spc-colhead .spc-cell-figure,
   .spc-colhead .spc-col-distance { text-align: right; }
+  /* The tag, the tickers, the faction and the militia: words, cut where the column is narrow. */
+  .spc-cell-text {
+    min-width: 0;
+    color: var(--stn-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .spc-columns {
     padding: 6px 10px;
     border-bottom: 1px solid var(--stn-line);

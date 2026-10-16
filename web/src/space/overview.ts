@@ -178,8 +178,20 @@ export interface OverviewRow extends SpaceEntity {
   readonly angularVelocity: number | null;
 }
 
-/** The columns a list is sorted by (overviewConst's, those the page draws). */
-export type OverviewSort = "distance" | "name" | "type" | "velocity" | "radialVelocity" | "transversalVelocity" | "angularVelocity";
+/** The columns a list is sorted by (overviewConst's). */
+export type OverviewSort =
+  | "distance" | "name" | "type" | "velocity" | "radialVelocity" | "transversalVelocity" | "angularVelocity"
+  | "size" | "tag" | "corporation" | "alliance" | "faction" | "militia";
+
+/** The sorts whose order is applied before the list's cap (buildOverviewRows' `direction`). */
+export const SORTS_ORDERED_BEFORE_CAP: ReadonlySet<OverviewSort> = new Set([
+  "velocity", "radialVelocity", "transversalVelocity", "angularVelocity", "size", "tag", "corporation", "alliance", "faction", "militia",
+]);
+
+/** The Size column's figure (overviewWindow.py 931 to 936: FmtDist of the ball's radius twice over). */
+export function formatOverviewSize(radius: number, say: DistanceSay = ownDistanceWords): string {
+  return fmtDist(radius * 2, 2, say);
+}
 
 /**
  * A velocity's length as the client takes it: of the vector in single precision, in single precision (as
@@ -258,6 +270,17 @@ export interface OverviewFilter {
 export interface OverviewRowNames {
   readonly typeName?: string | null;
   readonly groupName?: string | null;
+  /**
+   * The words of the overview's other text columns, as _UpdateStaticDataForNodes puts them (overviewWindow.py 937 to
+   * 975), null where it puts none: the fleet's tag on it ("" where the pilot is in no fleet, null where it is in one
+   * and the thing has no tag), the corporation's and the alliance's tickers in brackets, the faction of an NPC owner,
+   * and the militia.
+   */
+  readonly tag?: string | null;
+  readonly corporation?: string | null;
+  readonly alliance?: string | null;
+  readonly faction?: string | null;
+  readonly militia?: string | null;
 }
 
 /** Look up the resolved names for one row (supplied by the component). */
@@ -330,6 +353,23 @@ export function overviewCanList(entity: Pick<SpaceEntity, "categoryID" | "groupI
 }
 
 /**
+ * A text column's sort value as _UpdateStaticDataForNodes sets it (overviewWindow.py 937 to 975): the words in lower
+ * case, or 0 where the column has none (the list's default). A tag is the exception: none in a fleet sorts as 'zzz',
+ * and no fleet as 0.
+ */
+function sortTextOf(names: OverviewRowNames, sort: "tag" | "corporation" | "alliance" | "faction" | "militia"): string | 0 {
+  const words = names[sort] ?? null;
+  if (sort === "tag" && words === null) return "zzz";
+  return words === null || words === "" ? 0 : words.toLowerCase();
+}
+
+/** Python 2's order of the two: 0 before any text, and texts by their UTF-16 units (a narrow build's unicode). */
+function compareSortText(left: string | 0, right: string | 0): number {
+  if (left === 0 || right === 0) return left === right ? 0 : left === 0 ? -1 : 1;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
  * Build the overview list: drop the player's own ship and what no overview
  * lists, apply the filters, compute each remaining row's distance from the
  * ship, and sort.
@@ -345,8 +385,9 @@ export function buildOverviewRows(
     readonly filter?: OverviewFilter;
     readonly sort?: OverviewSort;
     /**
-     * Fastest first where -1, for the Velocity sort only: its order is applied before the cap, so a reversed speed
-     * keeps the fastest things rather than the far end of the slowest (distance and name keep the nearest rows).
+     * The order reversed where -1, for the sorts of SORTS_ORDERED_BEFORE_CAP: applied before the cap, so a reversed
+     * speed keeps the fastest things rather than the far end of the slowest (distance, name and type keep the nearest
+     * rows, and are reversed by the caller).
      */
     readonly direction?: 1 | -1;
     readonly cap?: number;
@@ -407,6 +448,18 @@ export function buildOverviewRows(
       const byType = typeOf(left).localeCompare(typeOf(right));
       if (byType !== 0) {
         return byType;
+      }
+    }
+    if (sort === "size") {
+      const bySize = (left.radius * 2 - right.radius * 2) * (options.direction ?? 1);
+      if (bySize !== 0) {
+        return bySize;
+      }
+    }
+    if (sort === "tag" || sort === "corporation" || sort === "alliance" || sort === "faction" || sort === "militia") {
+      const byText = compareSortText(sortTextOf(lookup(left), sort), sortTextOf(lookup(right), sort)) * (options.direction ?? 1);
+      if (byText !== 0) {
+        return byText;
       }
     }
     if (sort === "velocity" || sort === "radialVelocity" || sort === "transversalVelocity" || sort === "angularVelocity") {

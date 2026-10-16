@@ -1897,6 +1897,8 @@ export interface SpaceEntity {
   readonly characterID: number | null;
   readonly corporationID: number | null;
   readonly allianceID: number | null;
+  /** The militia it is in, its slim item's warFactionID; none where there is none (the game port's rows). */
+  readonly warFactionID?: number | null;
   readonly securityStatus: number | null;
   readonly maxVelocity: number | null;
   readonly mode: string | null;

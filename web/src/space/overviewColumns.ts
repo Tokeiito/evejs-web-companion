@@ -11,9 +11,6 @@
 // MoveColumn, ResetColumns).
 //
 // Kept in this browser, by the page's own tab, as the client keeps them in the user's settings by its tab.
-//
-// The page draws eight of the fourteen: tag (a fleet tag), the corporation's and the alliance's tickers, faction,
-// militia and size are not drawn yet, and are not offered.
 
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 
@@ -89,11 +86,6 @@ export const DEFAULT_COLUMNS: readonly OverviewColumnID[] = ["ICON", "DISTANCE",
 export const RIGHT_ALIGNED_COLUMNS: ReadonlySet<OverviewColumnID> = new Set([
   "DISTANCE", "SIZE", "VELOCITY", "RADIALVELOCITY", "ANGULARVELOCITY", "TRANSVERSALVELOCITY",
 ]);
-/** The columns the page draws; the others are not offered yet. */
-export const DRAWN_COLUMNS: ReadonlySet<OverviewColumnID> = new Set([
-  "ICON", "DISTANCE", "NAME", "TYPE", "VELOCITY", "RADIALVELOCITY", "TRANSVERSALVELOCITY", "ANGULARVELOCITY",
-]);
-
 const isColumn = (value: unknown): value is OverviewColumnID => typeof value === "string" && Object.hasOwn(COLUMN_LABELS, value);
 
 /** A tab's choice: the columns it shows, and the order of all fourteen. */
@@ -104,9 +96,9 @@ export interface TabColumns {
 
 export const DEFAULT_TAB_COLUMNS: TabColumns = { visible: DEFAULT_COLUMNS, order: ALL_COLUMNS };
 
-/** overviewColumns.GetColumns: the shown columns in the tab's order (those the page draws). */
+/** overviewColumns.GetColumns: the shown columns in the tab's order. */
 export function shownColumns(columns: TabColumns): readonly OverviewColumnID[] {
-  return columns.order.filter((column) => columns.visible.includes(column) && DRAWN_COLUMNS.has(column));
+  return columns.order.filter((column) => columns.visible.includes(column));
 }
 
 /** columnsPanel.LoadColumns: the tab's order with any column it lacks after it, as the window lists them. */
@@ -122,16 +114,12 @@ export function toggleColumn(columns: TabColumns, column: OverviewColumnID): Tab
   return { ...columns, visible };
 }
 
-/**
- * columnsPanel.MoveColumn, by one place up (-1) or down (+1) in the window's list: the list the page offers, so past
- * the next column it offers and any it does not between them.
- */
+/** columnsPanel.MoveColumn, by one place up (-1) or down (+1) in the window's list. */
 export function moveColumn(columns: TabColumns, column: OverviewColumnID, by: -1 | 1): TabColumns {
   const order = [...listedColumns(columns)];
   const at = order.indexOf(column);
   if (at === -1) return columns;
-  let to = at + by;
-  while (to >= 0 && to < order.length && !DRAWN_COLUMNS.has(order[to]!)) to += by;
+  const to = at + by;
   if (to < 0 || to >= order.length) return columns;
   order.splice(at, 1);
   order.splice(to, 0, column);
