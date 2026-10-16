@@ -491,12 +491,14 @@
   }
   /** inventorycommon.const typeSkillInjector: what the apply-points button's market details are of, without free points. */
   const TYPE_SKILL_INJECTOR = 40520;
+  /** inventorycommon.const typeAlphaTrainingInjector: what an alpha clone's apply-points button offers in the store. */
+  const TYPE_ALPHA_TRAINING_INJECTOR = 46375;
   // The skill requirement window's apply-points button (skillBtns.ApplySkillPointsButton) and the client's Apply Skill
   // Points window it opens where the pilot has free points (skilltrading/applySkillPointsWindow.py): its title and
   // words, each level a row with its gauges (trained, and with the points), the time saved and the percentages, and
-  // Confirm and Cancel, then Close. Its words are the install's; the page's own stand in. Not done: the rows' group
-  // icons and their book marks, the gauges' animation, and the button for an alpha clone with no free points (the
-  // client's store, which this server has not).
+  // Confirm and Cancel, then Close. Its words are the install's; the page's own stand in. Not done: the gauges'
+  // animation, and the store an alpha clone's button opens with no free points (the page has none: the button is shown
+  // and not live).
   const APPLY_WORDS: Readonly<Record<string, string>> = {
     "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
     "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
@@ -512,7 +514,7 @@
     if ($skillsRequired === null && $applyPointsAsked === null) return;
     flow.requestWords([...Object.keys(APPLY_WORDS), ...SHORT_INTERVAL_WORD_LABELS]);
     if ($applyPointsAsked !== null) flow.requestNames($applyPointsAsked.entries.map((entry) => ({ kind: "type" as const, id: entry.skill })));
-    else flow.requestNames([{ kind: "type", id: TYPE_SKILL_INJECTOR }]);
+    else flow.requestNames([{ kind: "type", id: TYPE_SKILL_INJECTOR }, { kind: "type", id: TYPE_ALPHA_TRAINING_INJECTOR }]);
   });
   /** A label of the apply-points button or its window, filled with `args`, as plain text. */
   function applyWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -525,13 +527,16 @@
   const percent = (fraction: number): number => Math.round(fraction * 1000) / 10;
   /**
    * The apply-points button (ApplySkillPointsButton.UpdateState and ClickFunc): with free points it puts them into the
-   * levels, offered where no book is missing; without, an omega clone's opens the Skill Injector's market details.
+   * levels, offered where no book is missing; without, an omega clone's opens the Skill Injector's market details, and
+   * an alpha clone's the store at the Alpha Training Injector (vgsService.OpenStore), which the page has not: `why`.
    */
-  function applyPointsButton(open: { readonly freeSkillPoints: number; readonly offerInjection: boolean; readonly omega: boolean }): { readonly hint: string; readonly enabled: boolean; readonly use: () => void } | null {
+  function applyPointsButton(open: { readonly freeSkillPoints: number; readonly offerInjection: boolean; readonly omega: boolean }): { readonly hint: string; readonly enabled: boolean; readonly why?: string; readonly use: () => void } {
     if (open.freeSkillPoints > 0) {
       return { hint: applyWord("UI/SkillQueue/ApplySkillPoints"), enabled: open.offerInjection, use: () => void flow.applySkillPointsRequired().catch(() => {}) };
     }
-    if (!open.omega) return null;
+    if (!open.omega) {
+      return { hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_ALPHA_TRAINING_INJECTOR }), enabled: false, why: "The page has no store.", use: () => {} };
+    }
     return {
       hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_SKILL_INJECTOR }),
       enabled: true,
@@ -917,13 +922,11 @@
         </div>
       {/if}
       {#if open.action !== null}
+        {@const button = applyPointsButton(open)}
         <div class="skill-points">
           <span class="dim">{skillWord("UI/Skills/SkillPointsRequired")}</span>
           <span>{open.skillPointsRequired === null ? "" : groupedNumber(open.skillPointsRequired)}</span>
-          {#if applyPointsButton(open) !== null}
-            {@const button = applyPointsButton(open)!}
-            <button type="button" class="apply-points" title={button.hint} aria-label={button.hint} disabled={!button.enabled} onclick={button.use}>+</button>
-          {/if}
+          <button type="button" class="apply-points" title={button.why === undefined ? button.hint : `${button.hint} (${button.why})`} aria-label={button.hint} disabled={!button.enabled} onclick={button.use}>+</button>
         </div>
         {#if open.action.kind === "train"}
           <span class="answers">
