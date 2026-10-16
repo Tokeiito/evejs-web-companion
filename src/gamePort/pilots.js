@@ -1124,8 +1124,26 @@ function createGamePortPilots({
   warsAgainAfterMs = WARS_AGAIN_AFTER_MS,
   // How long an account's own connection is kept after the last thing asked on it.
   accountIdleMs = ACCOUNT_IDLE_MS,
+  // The client's travel effects (fsdBuiltData/client/travelEffects.py GetTravelEffectsGuids): a Promise of their
+  // guids, or of null where the client's data cannot be read.
+  travelEffects = async () => null,
 } = {}) {
   const sessions = new Map();
+  // Asked for once, as a pilot's space starts; a table that could not be read is asked for again at the next.
+  // Once read, an effect is judged at once, in order with what else the server sent.
+  let travelEffectGuids = null;
+  let travelGuidsRead = null;
+  const travelGuids = () => {
+    travelEffectGuids ??= Promise.resolve().then(travelEffects).then((guids) => {
+      if (guids) travelGuidsRead = guids;
+      else travelEffectGuids = null;
+      return guids;
+    }, () => {
+      travelEffectGuids = null;
+      return null;
+    });
+    return travelEffectGuids;
+  };
   /** The accounts' own connections, by account, each with no character chosen on it. */
   const accountLines = new Map();
   // Pilots whose connection the game server closed with a code of its own (a GPSTransportClosed's reasonCode): another
@@ -4073,6 +4091,20 @@ function createGamePortPilots({
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
       entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
+      // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
+      // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
+      // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
+      // with the pilot's notifications. Any other special effect is not.
+      void travelGuids();
+      entry.space.park.onEvent = (name, args) => {
+        if (name !== "OnSpecialFX" || !Array.isArray(args) || positive(args[0]) === null || positive(args[0]) !== positive(attribute(entry, "shipid"))) return;
+        const guid = textOf(args[5]);
+        const handOn = (guids) => {
+          if (guids && guid !== null && guids.has(guid) && sessions.has(entry.handle)) record(entry, notificationToBridgeJson({ method: "OnSpecialFX", args }));
+        };
+        if (travelGuidsRead) handOn(travelGuidsRead);
+        else void travelGuids().then(handOn);
+      };
       // Nobody waits on this: the state arrives when the server has answered the bind.
       Promise.resolve(entry.space.start()).catch((error) => onSpaceError(error, "start", entry.characterID));
     }

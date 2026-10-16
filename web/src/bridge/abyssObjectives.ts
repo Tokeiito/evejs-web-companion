@@ -35,12 +35,12 @@
 //      _find_target: FindClosestObject(group_id=groupWarpGate)), by its name; complete when the jump through it starts
 //      (OnClientEvent_JumpStarted).
 //
-// Not as the client has it yet: the jump's start is the page's own activation of the gate answered, where the client
-// takes it from the travel effect the server plays on its ship (subwaySvc.OnSpecialFX, PreJumpServiceCalls), which
-// the page is not given; a thing's name is its type's (the client's is its slim item's nameID message where it has
-// one); the icons are not the client's; a task's click, double click and menu (TargetTask mouse_down, click,
-// double_click, get_context_menu) and its highlight are not made; the chain's context-parameter triggers (none in the
-// Abyss chain) are not run.
+// The jump's start is the travel effect the server plays on the pilot's ship (subwaySvc.OnSpecialFX,
+// PreJumpServiceCalls), which the game port hands on to the page (gamePort/pilots.js).
+//
+// Not as the client has it yet: a thing's name is its type's (the client's is its slim item's nameID message where it
+// has one); the icons are not the client's; the chain's context-parameter triggers (none in the Abyss chain) are not
+// run.
 
 import { GROUP_WARP_GATE } from "./gateActivation.ts";
 import { readDictEntry, unwrapLong, type JsonValue } from "./wire.ts";
@@ -332,12 +332,8 @@ export class AbyssObjectiveChain {
     }
   }
 
-  /**
-   * OnClientEvent_JumpStarted(gate_id): a jump through a gate begun. `seenBefore` is what was on the grid as the jump
-   * was asked for: anything not among it at the next look is what came after the jump began (the next room's).
-   */
-  jumpStarted(gateID: number, seenBefore?: ReadonlySet<number>): void {
-    if (seenBefore !== undefined) this.seen = seenBefore;
+  /** OnClientEvent_JumpStarted(gate_id): a jump through a gate begun. */
+  jumpStarted(gateID: number): void {
     for (const objective of [...this.objectives.values()]) {
       for (const task of objective.tasks.values()) {
         if (task.active && task.info.taskType === TASK_JUMP_THROUGH_ABYSS_GATE && task.gateID === gateID) this.setCompleted(objective, task, true);

@@ -220,7 +220,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -3466,6 +3466,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       abyssalContentFinished();
       return;
     }
+    // subwaySvc.OnSpecialFX (417 to 438): a travel effect played on the pilot's own ship (the game port hands on no
+    // other) begins its jump through the effect's target: PreJumpServiceCalls' OnJumpStarted(gateID, destinationID),
+    // which the objectives hear as OnClientEvent_JumpStarted.
+    if (method === "OnSpecialFX") {
+      const fx = args as readonly JsonValue[];
+      const shipID = Number(unwrapLong(fx[0]) ?? NaN);
+      const gateID = Number(unwrapLong(fx[3]) ?? NaN);
+      const ownShipID = store.flight.get().status?.shipID ?? null;
+      if (Number.isSafeInteger(gateID) && gateID > 0 && (ownShipID === null || shipID === ownShipID)) abyssJumpStarted(gateID);
+      return;
+    }
     // The pocket's room, which starts the abyss service's objective chain or moves it on (abyssal_service.py 75 to 93).
     if (method === "OnAbyssalLocationEntered") {
       const room = abyssalLocationEntered((args as readonly JsonValue[])[0]);
@@ -6472,20 +6483,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             openAbyssJump(itemID);
             return;
           }
-          // The Abyss chain's jump task: the jump through this gate begun (OnClientEvent_JumpStarted), where it is answered.
-          const inFlight = abyssChain !== null ? new Set(abyssEntities().map((entity) => entity.itemID)) : null;
-          abyssGateInFlight = inFlight;
           try {
             await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
-            if (inFlight !== null && abyssGateInFlight === inFlight && abyssChain !== null) {
-              abyssGateInFlight = null;
-              abyssChain.jumpStarted(itemID, inFlight);
-              abyssChain.observe(abyssEntities());
-              publishAbyssObjectives();
-            }
             store.apply({ type: "flight/action", action: "Activate Gate" });
           } catch (error) {
-            if (abyssGateInFlight === inFlight) abyssGateInFlight = null;
             // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
             // Restrictions window for it and the gate's own object, and nothing else said.
             const refusal = error instanceof BridgeCallError ? error.refusal : null;
@@ -6535,19 +6536,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   // The Abyssal info panel's objectives (bridge/abyssObjectives.ts; abyssal_service.py 69 to 110 and 195 to 207): the
   // chain started at the pocket's first OnAbyssalLocationEntered, moved on at each later one, by what the space feed
-  // shows and by the jumps the page makes through a pocket's gates, and let go where the pilot leaves Abyssal space.
-  // Its data is the client's, read once (GET /api/objectives/chain).
+  // shows and by the jumps the pilot's ship begins (the travel effect), and let go where the pilot leaves Abyssal
+  // space. Its data is the client's, read once (GET /api/objectives/chain).
   const abyssObjectivesSignal = createSignal<readonly AbyssObjectiveRow[] | null>(null);
   let abyssChain: AbyssObjectiveChain | null = null;
   let abyssChainRoom: number | null = null;
   let abyssChainRead: Promise<ObjectiveChainData | null> | null = null;
   let abyssLootableRestart: ReturnType<typeof setTimeout> | null = null;
-  /**
-   * The things on the grid when a pocket gate's activation was sent, while it is unanswered. The client hears the
-   * jump begin (the travel effect) before the next room's ballpark; the page hears the call answered, which can come
-   * after it. So the feed is not looked at meanwhile, and what was not on the grid then is what the jump brought.
-   */
-  let abyssGateInFlight: ReadonlySet<number> | null = null;
   const abyssEntities = (): readonly SpaceEntity[] => store.space.get().snapshot?.entities ?? [];
   function publishAbyssObjectives(): void {
     abyssObjectivesSignal.set(abyssChain === null ? null : abyssChain.view());
@@ -6589,11 +6584,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssLootableRestart = null;
     abyssChain = null;
     abyssChainRoom = null;
-    abyssGateInFlight = null;
+    publishAbyssObjectives();
+  }
+  /** OnClientEvent_JumpStarted(gate_id): the objectives' jump task through that gate complete. */
+  function abyssJumpStarted(gateID: number): void {
+    if (abyssChain === null) return;
+    abyssChain.jumpStarted(gateID);
     publishAbyssObjectives();
   }
   store.space.subscribe(() => {
-    if (abyssChain === null || abyssGateInFlight !== null) return;
+    if (abyssChain === null) return;
     abyssChain.observe(abyssEntities());
     publishAbyssObjectives();
   });

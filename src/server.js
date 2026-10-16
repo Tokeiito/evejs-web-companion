@@ -188,6 +188,11 @@ const gamePortPilots = options.gamePortPilots !== undefined
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
+      // The client's travel effects, from its own data (clientBuiltData, made below; asked for once a pilot is in space).
+      travelEffects: async () => {
+        const table = await clientBuiltData.table("travelEffects");
+        return table ? new Set(Object.keys(table)) : null;
+      },
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
