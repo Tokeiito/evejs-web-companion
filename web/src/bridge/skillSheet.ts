@@ -31,7 +31,7 @@
 // The BFF's making (the web gateway's sheet) does neither.
 
 import type { JsonValue } from "./wire.ts";
-import { allTrainingLengths, estimatedPointsTrained, type SkillAccelerator, type TrainingFacts } from "./skillTraining.ts";
+import { allTrainingLengths, estimatedPointsTrained, trainingEstimate, type SkillAccelerator, type TrainingFacts } from "./skillTraining.ts";
 
 /** characterskills/const.py */
 const MAX_SKILL_LEVEL = 5;
@@ -314,6 +314,8 @@ export function buildSkillSheet(given: SkillSheetGiven): JsonValue {
         ? nowMs + [...lengths.values()].reduce((sum, length) => sum + length.lengthMs, 0)
         : null,
       maxEntries: SKILLQUEUE_MAX_NUM_SKILLS,
+      // GetEstimatedSkillPointsTrained's reckoning of the skill in training, which the readout steps between reads.
+      estimate: training === null || given.attributes === null ? null : trainingEstimate(facts, training, trainingStartMs, nowMs),
     },
     queueWarning: null,
   } as unknown as JsonValue;

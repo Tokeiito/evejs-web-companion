@@ -139,12 +139,67 @@ export function pointsTrainedAt(facts: TrainingFacts, skill: number, startingPoi
 }
 
 /**
+ * GetEstimatedSkillPointsTrained's reckoning as data (the reckoning stood at the queue's start), for the readout to step
+ * between reads as the client's skill entry does each second (skillQueueSkillEntry.UpdateProgress): the points the
+ * skill has, the queue's start, the rate then, and the rate from each booster's expiry after it.
+ */
+export interface TrainingEstimate {
+  readonly startingPoints: number;
+  readonly startMs: number;
+  readonly rate: number;
+  readonly changes: readonly { readonly offsetMs: number; readonly rate: number }[];
+}
+
+/** The estimate of the skill in training from the queue's start (now where none is had); null where a rate cannot be had. */
+export function trainingEstimate(facts: TrainingFacts, skill: number, queueStartMs: number | null, nowMs: number): TrainingEstimate | null {
+  const start = queueStartMs ?? nowMs;
+  const rate = rateAt(facts, skill, 0, start);
+  if (rate === null) return null;
+  const changes: { offsetMs: number; rate: number }[] = [];
+  for (const expiry of expiryOffsets(facts, start)) {
+    const after = rateAt(facts, skill, expiry, start);
+    if (after === null) return null;
+    changes.push({ offsetMs: expiry, rate: after });
+  }
+  return { startingPoints: facts.trained(skill)?.points ?? 0, startMs: start, rate, changes };
+}
+
+/** get_skill_points_trained_at_sample_time (skill_training.py 147 to 167) of an estimate, at `sampleMs`. */
+export function estimateAt(estimate: TrainingEstimate, sampleMs: number): number {
+  if (estimate.startMs > sampleMs) return estimate.startingPoints;
+  let rate = estimate.rate;
+  const sampleOffset = sampleMs - estimate.startMs;
+  let untilSample = sampleOffset;
+  let accumulatedPoints = 0;
+  let accumulatedTime = 0;
+  for (const change of estimate.changes) {
+    if (change.offsetMs >= sampleOffset) {
+      untilSample = sampleOffset - accumulatedTime;
+      break;
+    }
+    const untilExpiry = change.offsetMs - accumulatedTime;
+    accumulatedPoints += (untilExpiry / MIN) * rate;
+    accumulatedTime += untilExpiry;
+    rate = change.rate;
+  }
+  accumulatedPoints += (untilSample / MIN) * rate;
+  return Math.trunc(accumulatedPoints + estimate.startingPoints);
+}
+
+/** The rate of an estimate at `sampleMs`: the last booster's expiry passed decides it. */
+export function estimateRateAt(estimate: TrainingEstimate, sampleMs: number): number {
+  let rate = estimate.rate;
+  for (const change of estimate.changes) if (estimate.startMs + change.offsetMs <= sampleMs) rate = change.rate;
+  return rate;
+}
+
+/**
  * skillQueueSvc.GetEstimatedSkillPointsTrained: the points of the skill in training now, reckoned from the queue's
  * start with the reckoning stood at that start (specific_current_time_context).
  */
 export function estimatedPointsTrained(facts: TrainingFacts, skill: number, queueStartMs: number | null, nowMs: number): number | null {
-  const start = queueStartMs ?? nowMs;
-  return pointsTrainedAt(facts, skill, facts.trained(skill)?.points ?? 0, start, nowMs, start);
+  const estimate = trainingEstimate(facts, skill, queueStartMs, nowMs);
+  return estimate === null ? null : estimateAt(estimate, nowMs);
 }
 
 /**

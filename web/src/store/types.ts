@@ -3140,6 +3140,16 @@ export interface SkillQueueState {
   readonly reckonedEndMs?: number | null;
   /** The server's own cap on queue length, shown rather than enforced here. */
   readonly maxEntries: number;
+  /**
+   * GetEstimatedSkillPointsTrained's reckoning of the skill in training (bridge/skillTraining.ts TrainingEstimate): its
+   * points, the queue's start, the rate then and from each booster's expiry; null or absent where not reckoned.
+   */
+  readonly estimate?: {
+    readonly startingPoints: number;
+    readonly startMs: number;
+    readonly rate: number;
+    readonly changes: readonly { readonly offsetMs: number; readonly rate: number }[];
+  } | null;
 }
 
 /** The decoded GET /api/bridge/skills payload. */
