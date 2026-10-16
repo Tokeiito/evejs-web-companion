@@ -232,6 +232,7 @@
     "UI/Fitting/FittingWindow/FilterPersonalFittings": "Your own fittings {numFittings}",
     "UI/Fitting/FittingWindow/FilterCorpFittings": "Your corporation's fittings {numFittings}",
     "UI/Fitting/FittingWindow/FilterCurrentHull": "Only for the ship you are in",
+    "UI/Fitting/FittingWindow/FilterSkillsForFitting": "Only those you have the skills for",
     // Said as a fitting is loaded (flow.ts loadSavedFitting): asked here, where it is loaded from.
     "UI/Fitting/ShipHasRigsAlready": "",
     "UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning": "",
@@ -257,18 +258,27 @@
   // (CharSettingString lastHullFilterString, the character's), which a fitting's name, its hull's name or the hull's
   // group's holds (FilterOutFittings, TextMatched, 265 to 320). The toggles are the account's (UserSettingBool), kept
   // here in this browser, as is the search for the character. The fittings are shown by hull, each hull under its name
-  // and its group's. Not done: the community's, the alliance's and the skills' filters, the browser's race level and
-  // its hulls without fittings.
+  // and its group's. The skills' filter lets through only the fittings the pilot has the skills for (FilterOutFittings,
+  // 283 to 289; the flow's fittingsWithSkills, fittingSvc.HasSkillForFit). Not done: the community's and the alliance's
+  // filters, the browser's race level and its hulls without fittings.
   const HULL_SETTINGS_KEPT = "evejs.BrowserHullSettings";
   const HULL_FILTER_KEPT = "evejs.lastHullFilterString";
-  const keptHullSettings = ((): { personal: boolean; corp: boolean; currentShip: boolean } => {
+  const keptHullSettings = ((): { personal: boolean; corp: boolean; currentShip: boolean; skills: boolean } => {
     try {
       const kept = JSON.parse(localStorage.getItem(HULL_SETTINGS_KEPT) ?? "null") as Record<string, unknown> | null;
-      return { personal: kept?.personal === true, corp: kept?.corp === true, currentShip: kept?.currentShip === true };
+      return { personal: kept?.personal === true, corp: kept?.corp === true, currentShip: kept?.currentShip === true, skills: kept?.skills === true };
     } catch {
-      return { personal: false, corp: false, currentShip: false };
+      return { personal: false, corp: false, currentShip: false, skills: false };
     }
   })();
+  let onlyWithSkills = $state(keptHullSettings.skills);
+  /** The fittings the pilot has the skills for, as the flow last answered; null while none is answered. */
+  let fittingsWithSkills = $state<ReadonlySet<number> | null>(null);
+  $effect(() => {
+    if (!onlyWithSkills) return;
+    const ids = ($savedFittings ?? []).map((saved) => saved.fittingID);
+    void flow.fittingsWithSkills(ids).then((set) => { fittingsWithSkills = set; }).catch(() => {});
+  });
   let showPersonalFittings = $state(keptHullSettings.personal);
   let showCorpFittings = $state(keptHullSettings.corp);
   let onlyCurrentHull = $state(keptHullSettings.currentShip);
@@ -286,7 +296,7 @@
   })());
   function keepHullSettings(): void {
     try {
-      localStorage.setItem(HULL_SETTINGS_KEPT, JSON.stringify({ personal: showPersonalFittings, corp: showCorpFittings, currentShip: onlyCurrentHull }));
+      localStorage.setItem(HULL_SETTINGS_KEPT, JSON.stringify({ personal: showPersonalFittings, corp: showCorpFittings, currentShip: onlyCurrentHull, skills: onlyWithSkills }));
       const key = hullFilterKey();
       if (key !== null) localStorage.setItem(key, hullFilterText);
     } catch {
@@ -311,6 +321,7 @@
     const text = hullFilterText.toLowerCase();
     const shown = ($savedFittings ?? []).filter((saved) => {
       if (ownerFilterIsSet && !(saved.source === "personal" ? showPersonalFittings : showCorpFittings)) return false;
+      if (onlyWithSkills && fittingsWithSkills !== null && !fittingsWithSkills.has(saved.fittingID)) return false;
       if (onlyCurrentHull && activeShipTypeID !== null && saved.shipTypeID !== activeShipTypeID) return false;
       return !text || saved.name.toLowerCase().includes(text) || hullName(saved.shipTypeID).toLowerCase().includes(text) || hullGroupName(saved.shipTypeID).toLowerCase().includes(text);
     });
@@ -1560,6 +1571,9 @@
       <button type="button" class={onlyCurrentHull ? "active" : "minor"} aria-pressed={onlyCurrentHull}
         title={fitWord("UI/Fitting/FittingWindow/FilterCurrentHull")}
         onclick={() => { onlyCurrentHull = !onlyCurrentHull; keepHullSettings(); }}>⛴</button>
+      <button type="button" class={onlyWithSkills ? "active" : "minor"} aria-pressed={onlyWithSkills}
+        title={fitWord("UI/Fitting/FittingWindow/FilterSkillsForFitting")}
+        onclick={() => { onlyWithSkills = !onlyWithSkills; keepHullSettings(); }}>📘</button>
       <input type="search" bind:value={hullFilterText} oninput={keepHullSettings} aria-label="Search fittings" />
     </p>
     {#if $savedFittings === null}

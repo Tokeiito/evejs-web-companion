@@ -2286,6 +2286,8 @@ export interface AppFlow {
   saveViewFitting(n: number, name: string, description: string): Promise<void>;
   /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
   saveFitAs(): Promise<void>;
+  /** Of saved fittings, those the pilot has the skills for (fittingSvc.HasSkillForFit), kept until the skills change. */
+  fittingsWithSkills(fittingIDs: readonly number[]): Promise<ReadonlySet<number>>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -3615,6 +3617,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // fittingSvc.OnSkillsChanged (1050 to 1052): what is kept of the fittings' skills let go, at the server's word of the
+    // skills (skillsvc's OnServerSkillsChanged and OnServerSkillsRemoved scatter it), and at its own.
+    if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") hasSkillByFittingID.clear();
     // fittingSvc.OnFittingDeleted(ownerID, fittingID): the fitting let go from those kept.
     if (method === "OnFittingDeleted") {
       const fittingID = Number(args[1]);
@@ -7127,6 +7132,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const notify = templateWords("UI/Market/MarketQuote/SomeItemsCouldNotBeFitted", {}, "Some of the items could not be fitted.");
       sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
     }
+  }
+
+  // fittingSvc.hasSkillByFittingID: whether the pilot has the skills for a fitting, kept by its number until the
+  // skills change (OnSkillsChanged, 1050 to 1052).
+  const hasSkillByFittingID = new Map<number, boolean>();
+
+  /**
+   * fittingSvc.HasSkillForFit and CheckSkillRequirementsForFit (1010 to 1031), for the browser's skills filter: the
+   * ship's own required skills met at the pilot's effective levels (godma.CheckSkillRequirementsForType, 623 to 632:
+   * GetRequiredSkills, each skill's effectiveSkillLevel), and each type of the fitting's but a rig's. Answers the
+   * fittings, of those named, the pilot has the skills for. Where the client's table of required skills cannot be had,
+   * every one named.
+   */
+  async function fittingsWithSkills(fittingIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    const fittings = fittingIDs.map(savedFittingOf).filter((fitting): fitting is SourcedFitting => fitting !== null);
+    const unknown = fittings.filter((fitting) => !hasSkillByFittingID.has(fitting.fittingID));
+    if (unknown.length > 0) {
+      const types = [...new Set(unknown.flatMap((fitting) => [fitting.shipTypeID, ...fitting.modules.filter((module) => !RIG_SLOT_FLAGS.includes(module.flagID)).map((module) => module.typeID)]))];
+      const required: Record<number, Readonly<Record<number, number>>> = {};
+      for (let at = 0; at < types.length; at += 50) {
+        const read = await api.getRequiredSkills(types.slice(at, at + 50), callOptions);
+        if (!read.available) return new Set(fittingIDs);
+        Object.assign(required, read.required);
+      }
+      const mine = skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", []));
+      const met = (typeID: number): boolean => Object.entries(required[typeID] ?? {}).every(([skill, level]) => (mine.get(Number(skill))?.effectiveSkillLevel ?? 0) >= Number(level));
+      for (const fitting of unknown) {
+        hasSkillByFittingID.set(fitting.fittingID, met(fitting.shipTypeID) && fitting.modules.every((module) => RIG_SLOT_FLAGS.includes(module.flagID) || met(module.typeID)));
+      }
+    }
+    return new Set(fittings.filter((fitting) => hasSkillByFittingID.get(fitting.fittingID) === true).map((fitting) => fitting.fittingID));
   }
 
   /** fittingSvc.PrimeFittings: the pilot's fittings and its corporation's, read again. */
@@ -20735,6 +20771,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerViewFitting,
     saveViewFitting,
     saveFitAs,
+    fittingsWithSkills,
     deleteFitting,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
