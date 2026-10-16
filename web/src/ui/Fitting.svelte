@@ -58,6 +58,7 @@
   import { LAYERS, type LayerName, type Stat, unavailable } from "../bridge/shipStats.ts";
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { plainText } from "../bridge/clientWords.ts";
 
   let {
     store,
@@ -78,6 +79,10 @@
   const dogma = store.dogma;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const savedFittings = flow.savedFittings;
 
   let busy = $state(false);
   let error = $state("");
@@ -204,6 +209,47 @@
       : "";
     return `${slotName(slot)}, ${name}, ${slot.module.online ? "online" : "offline"}${loaded}`;
   }
+
+  // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
+  // it: the pilot's and its corporation's fittings for the ship it is in (the browser's filter
+  // fittings_show_only_for_current_ship), the pilot's before the corporation's and each by its name
+  // (GetFittingEntriesForType: FITTING_OWNER_PERSONAL 0, FITTING_OWNER_CORP 1), and of a fitting's menu
+  // (GetFittingMenu) Fit to Active Ship and Buy All. Its words are the install's; the page's own stand in. Not done:
+  // the hulls and groups it is browsed by and its other filters, an entry's owner icon and tooltip, and the menu's View
+  // Fitting, Simulate Fitting, the multifit and Delete.
+  const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
+    // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
+    "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
+    "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    "UI/Common/NothingFound": "None for this ship",
+    // Said as a fitting is loaded (flow.ts loadSavedFitting): asked here, where it is loaded from.
+    "UI/Fitting/ShipHasRigsAlready": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning": "",
+  };
+  const fitWord = (label: string): string => {
+    const template = $words.templates[label];
+    return plainText(typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "");
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(FITTING_BROWSER_WORDS));
+  });
+  // The fittings read once the window has a ship (fittingSvc.PrimeFittings).
+  let fittingsAsked = false;
+  $effect(() => {
+    if (!$fitting.activeShipID || fittingsAsked) return;
+    fittingsAsked = true;
+    void flow.loadSavedFittings().catch(() => {});
+  });
+  const fittingsForShip = $derived.by(() => {
+    const ownerType = (source: string): number => (source === "corporation" ? 1 : 0);
+    return ($savedFittings ?? [])
+      .filter((saved) => saved.shipTypeID === activeShipTypeID)
+      .slice()
+      .sort((left, right) => ownerType(left.source) - ownerType(right.source)
+        || (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : left.name.toLowerCase() > right.name.toLowerCase() ? 1 : 0));
+  });
 
   /** "160" — a stack count, grouped. A singleton charge reports -1; call it 1. */
   function chargeCount(quantity: number): string {
@@ -1424,6 +1470,28 @@
       {@render statsPanel()}
     </section>
   {/if}
+
+  <!-- ===================== saved fittings ============================= -->
+  <section>
+    <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
+    {#if $savedFittings === null}
+      <p class="note">…</p>
+    {:else if fittingsForShip.length === 0}
+      <p class="note">{fitWord("UI/Common/NothingFound")}</p>
+    {:else}
+      {#each fittingsForShip as saved (saved.fittingID)}
+        <p class="controls saved-fitting">
+          <span>{saved.name}</span>
+          <button type="button" disabled={busy} onclick={() => void flow.fitFittingToActiveShip(saved.fittingID).catch(() => {})}>
+            {fitWord("UI/Fitting/FittingWindow/FitFittingToActiveShip")}
+          </button>
+          <button type="button" class="minor" onclick={() => void flow.buyFit(saved.fittingID).catch(() => {})}>
+            {fitWord("UI/Market/MarketQuote/BuyAll")}
+          </button>
+        </p>
+      {/each}
+    {/if}
+  </section>
 
   <!-- ===================== modules you can fit ======================== -->
   <section>

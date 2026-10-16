@@ -13110,18 +13110,21 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
     const isPublished = {};
     const portionSize = {};
     // evetypes.GetGroupID: each type's group, as the static tables have it (a skill's group picks its icon:
-    // skills/skillConst.py ICON_BY_GROUPID).
+    // skills/skillConst.py ICON_BY_GROUPID). And evetypes.GetCategoryID, its category (a saved fitting's cargo
+    // entry is an implant by it: shipfitting/fitting.py _IsImplant).
     const groupID = {};
+    const categoryID = {};
     for (const typeID of asked.slice(0, 50)) {
       const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
       groupID[typeID] = type && Number.isSafeInteger(Number(type.groupID)) ? Number(type.groupID) : null;
+      categoryID[typeID] = type && Number.isSafeInteger(Number(type.categoryID)) ? Number(type.categoryID) : null;
       const price = prices ? Number(prices[typeID]) : NaN;
       basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
       isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
       const portion = portions ? Number(portions[typeID]) : NaN;
       portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
-    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID });
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID, categoryID });
   } catch (error) {
     next(error);
   }

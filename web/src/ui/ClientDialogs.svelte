@@ -62,14 +62,33 @@
   // svelte-ignore state_referenced_locally
   const skillBooksAsked = flow.skillBooksAsked;
   // svelte-ignore state_referenced_locally
+  const buyAllAsked = flow.buyAllAsked;
+  // The client's Buy All box (fittingScreen/missingItemsPopup.py BuyAllMessageBox), put up when a fitting could not all
+  // be loaded: its info icon and caption, the header, each type that failed with how many ("%sx %s", by name) and its
+  // icon, and Buy All (the multibuy window with them, for the fitting) and Close. Its words are the install's; the
+  // page's own stand in. Not done: GM: Give All, which a game master's role adds (the page does not hold the session's
+  // role).
+  const BUY_ALL_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/Information": "Note",
+    "UI/Fitting/MissingItemsHeader": "These could not be fitted, for want of them in the hangar:",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    "/Carbon/UI/Common/Close": "Close",
+  };
+  $effect(() => {
+    if ($buyAllAsked === null) return;
+    flow.requestWords(Object.keys(BUY_ALL_WORDS));
+    flow.requestNames($buyAllAsked.missing.map((entry) => ({ kind: "type" as const, id: entry.typeID })));
+  });
+  const buyAllWord = (label: string): string => plainText(wordOf(label, BUY_ALL_WORDS[label] ?? ""));
+  // svelte-ignore state_referenced_locally
   const multiBuyAsked = flow.multiBuyAsked;
   // The client's multibuy window (eve/client/script/ui/shared/market/buyMultiFromBase.py, with its base and rows): its
   // title with how many rows, where it buys (the station list's current one), the number of orders, each type a row
   // with its icon and name, its quantity, the total where the orders are more than one, its best price at the station
-  // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel. Its words are
-  // the install's; the page's own stand in. Not done: the other markets of the system in the station list, each row's
-  // distance from the average and its tooltip, the corporation's wallet, the warning above the average, importing and
-  // exporting a list, dropping types in, Buy and Fit, the orders' expiry kept watch on.
+  // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel, and Buy and Fit
+  // first of them where it was opened for a fitting (AddBuyAndFitBtn). Its words are the install's; the page's own stand
+  // in. Not done: the other markets of the system in the station list, dropping types in, Add Order to Quickbar, and
+  // Buy and Fit's tooltip (LoadFittingInfoTooltip).
   const MULTIBUY_WORDS: Readonly<Record<string, string>> = {
     "UI/Inventory/ItemActions/MultiBuy": "Shopping list",
     "UI/Market/MarketQuote/CurrentStation": "Here: {stationName}",
@@ -114,6 +133,9 @@
     "UI/Corporations/Common/CorporateDivisionWalletFifth": "Wallet division 5",
     "UI/Corporations/Common/CorporateDivisionWalletSixth": "Wallet division 6",
     "UI/Corporations/Common/CorporateDivisionWalletSeventh": "Wallet division 7",
+    "UI/Market/MarketQuote/BuyAndFit": "Buy, then fit",
+    // Said as the fitting is loaded again after Buy and Fit (flow.ts multiBuyTryFit): asked here.
+    "UI/Market/MarketQuote/SomeItemsCouldNotBeFitted": "",
   };
   /** The words for each wallet division where the corporation named it none (bco_corporations.GetDivisionNames, 8 to 14). */
   const WALLET_DIVISION_WORDS = ["UI/Corporations/Common/CorporateDivisionMasterWallet", "UI/Corporations/Common/CorporateDivisionWalletSecond",
@@ -823,8 +845,36 @@
       {/if}
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
+        {#if buy.fitting !== null}
+          <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy-and-fit").catch(() => {})}>{buyWord("UI/Market/MarketQuote/BuyAndFit")}</button>
+        {/if}
         <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
+      </span>
+    </div>
+  </div>
+{/if}
+
+{#if $buyAllAsked !== null}
+  {@const box = $buyAllAsked}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={buyAllWord("UI/Common/Information")} data-dialog="BuyAllMessageBox" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title"><strong>ⓘ {buyAllWord("UI/Common/Information")}</strong></span>
+      <p>{buyAllWord("UI/Fitting/MissingItemsHeader")}</p>
+      <ul class="multibuy-rows">
+        {#each box.missing.slice().sort((left, right) => nameOf("type", left.typeID).toLowerCase().localeCompare(nameOf("type", right.typeID).toLowerCase())) as entry (entry.typeID)}
+          <li class="multibuy-row">
+            <TypeIcon typeID={entry.typeID} name={nameOf("type", entry.typeID)} size="sm" />
+            <span class="multibuy-name">{entry.qty}x {nameOf("type", entry.typeID)}</span>
+          </li>
+        {/each}
+      </ul>
+      <span class="answers">
+        <button type="button" onclick={() => void flow.answerBuyAll(box.n, "buy").catch(() => {})}>{buyAllWord("UI/Market/MarketQuote/BuyAll")}</button>
+        <button type="button" onclick={() => void flow.answerBuyAll(box.n, "close")}>{buyAllWord("/Carbon/UI/Common/Close")}</button>
       </span>
     </div>
   </div>

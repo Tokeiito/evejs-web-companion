@@ -485,6 +485,7 @@ import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
@@ -1002,6 +1003,18 @@ export interface MultiBuyAsk {
   readonly corpAccount: { readonly division: number; readonly name: string | null } | null;
   /** The box ticked (TradingForCorp): the buy is paid from the corporation's wallet. */
   readonly useCorp: boolean;
+  /**
+   * The fitting the window was opened for (BuyMultipleTypesWithQty's fitting, the Buy All box's): its Buy and Fit is
+   * offered (AddBuyAndFitBtn), and after it the fitting is loaded again as the orders run out.
+   */
+  readonly fitting: SourcedFitting | null;
+}
+
+/** The client's Buy All box (missingItemsPopup.BuyAllMessageBox): what a fitting could not load, each type and how many. */
+export interface BuyAllAsk {
+  readonly n: number;
+  readonly missing: readonly { readonly typeID: number; readonly qty: number }[];
+  readonly fitting: SourcedFitting;
 }
 
 export interface SkillBooksAsk {
@@ -2226,8 +2239,23 @@ export interface AppFlow {
   openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
   /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
   editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
-  /** Its Buy, or Cancel. */
-  answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void>;
+  /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
+  answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
+  /** The saved fittings, the pilot's and its corporation's (fittingSvc.GetFittings), as last read; null before. */
+  readonly savedFittings: ReadableSignal<readonly SourcedFitting[] | null>;
+  /** Reads them (fittingSvc.PrimeFittings: each owner's fitting manager's GetFittings). */
+  loadSavedFittings(): Promise<void>;
+  /**
+   * A saved fitting's Fit to Active Ship (fittingBrowser.FitToActiveShip, fittingSvc
+   * LoadFittingFromFittingIDAndGetBuyOptionOnFailure): the fitting loaded, and the Buy All box for what it could not.
+   */
+  fitFittingToActiveShip(fittingID: number): Promise<void>;
+  /** A saved fitting's Buy All (fittingBrowser.BuyItemsForFit, multiBuyUtil.BuyFit): the multibuy window with its ship and its items. */
+  buyFit(fittingID: number): Promise<void>;
+  /** The client's Buy All box open now (ClientDialogs.svelte shows it); null with none. */
+  readonly buyAllAsked: ReadableSignal<BuyAllAsk | null>;
+  /** Its Buy All (the multibuy window with what is missing, for the fitting), or Close. */
+  answerBuyAll(n: number, answer: "buy" | "close"): Promise<void>;
   /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
   importMultiBuy(n: number, text: string | null): Promise<void>;
   /**
@@ -6334,6 +6362,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // left of each (expiredOrders).
   const multiBuyActiveOrders = new Set<string>();
   const multiBuyExpiredOrders = new Map<string, { readonly typeID: number | null; readonly volRemaining: number | null }>();
+  // Its Buy and Fit (buyAndFitClicked, set by Buy and Fit and cleared by Buy and Cancel) and a loading of the fitting
+  // waited for (fittingPending).
+  let multiBuyFitClicked = false;
+  let multiBuyFitPending = false;
+  // The saved fittings as last read (fittingSvc.fittings), and the Buy All box. A fitting under way (busyFitting).
+  const savedFittingsSignal = createSignal<readonly SourcedFitting[] | null>(null);
+  const buyAllAskedSignal = createSignal<BuyAllAsk | null>(null);
+  let busyFitting = false;
 
   /**
    * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
@@ -6657,8 +6693,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * opens it buys at the station or structure the pilot is docked in (LoadStationOptions: session.stationid first).
    * Each row's price is then read (GetBestPrice).
    */
-  async function openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void> {
-    const open = multiBuyAskedSignal.get();
+  async function openMultiBuy(wanted: ReadonlyMap<number, number>, fitting: SourcedFitting | null = null): Promise<void> {
+    const opened = multiBuyAskedSignal.get();
+    // AddToOrder: a fitting given makes it the window's.
+    const open = opened !== null && fitting !== null ? { ...opened, fitting } : opened;
     const inventory = store.inventory.get();
     const base: MultiBuyAsk = open ?? {
       n: (dialogsSaidCount += 1),
@@ -6669,8 +6707,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       disabled: false,
       corpAccount: null,
       useCorp: buyUseCorp(),
+      fitting,
     };
     if (open === null) {
+      multiBuyFitClicked = false;
+      multiBuyFitPending = false;
       multiBuyBooks.clear();
       multiBuyAverages.clear();
       multiBuyVolumes.clear();
@@ -6803,9 +6844,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * GetMarketProxy().BuyMultipleItems(station, items, useCorp), and the window holds only the rows that had no price
    * (CreateNewBuyOrder), the orders one again; with none left it is put away. Cancel puts it away.
    */
-  async function answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void> {
+  async function answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void> {
     const asked = multiBuyAskedSignal.get();
     if (asked === null || asked.n !== n) return;
+    // BuyAndFit, PerformTrade and Cancel (283 to 294): only Buy and Fit leaves the fitting to be loaded.
+    multiBuyFitClicked = answer === "buy-and-fit";
     if (answer === "cancel") {
       multiBuyAskedSignal.set(null);
       return;
@@ -6883,20 +6926,204 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function multiBuyOrdersRunOut(orderIDs: readonly string[]): Promise<void> {
     const failed = new Map<number, number>();
+    const fitting = multiBuyAskedSignal.get()?.fitting ?? null;
     for (const orderID of orderIDs) {
       if (!multiBuyActiveOrders.has(orderID)) continue;
       const order = multiBuyExpiredOrders.get(orderID);
       if (order && order.typeID !== null && order.volRemaining !== null && order.volRemaining !== 0) failed.set(order.typeID, (failed.get(order.typeID) ?? 0) + order.volRemaining);
       multiBuyActiveOrders.delete(orderID);
+      multiBuyFitBuffered(fitting);
     }
     const asked = multiBuyAskedSignal.get();
     if (asked === null) return;
     if (failed.size === 0 && asked.rows.length === 0 && multiBuyActiveOrders.size === 0) {
+      // CloseWnd (592 to 596).
+      if (multiBuyFitClicked && fitting !== null) multiBuyFitOnClosing(fitting);
       multiBuyAskedSignal.set(null);
       return;
     }
     if (asked.disabled && multiBuyActiveOrders.size === 0) multiBuyAskedSignal.set({ ...asked, disabled: false });
     if (failed.size > 0) await openMultiBuy(failed);
+  }
+
+  /**
+   * TryApplyFittingToBuffer (676 to 685): after Buy and Fit, as each of the window's orders runs out, the fitting is
+   * loaded again two seconds on (_TryApplyFittingBuffered, BufferedCall(2000)), one such waited for at a time. (The
+   * client's progress window, Attempting to Fit Ship, is not drawn.)
+   */
+  function multiBuyFitBuffered(fitting: SourcedFitting | null): void {
+    if (!multiBuyFitClicked || fitting === null || multiBuyFitPending) return;
+    multiBuyFitPending = true;
+    setTimeout(() => void multiBuyTryFit(fitting), 2000);
+  }
+
+  /** TryApplyFittingOnClosing (691 to 696): the window closed after Buy and Fit; half a second on, unless one is waited for. */
+  function multiBuyFitOnClosing(fitting: SourcedFitting): void {
+    setTimeout(() => {
+      if (!multiBuyFitPending) void multiBuyTryFit(fitting);
+    }, 500);
+  }
+
+  /** TryApplyFitting and _TryApplyFitting (698 to 714): the fitting loaded again, and what it could not load said. */
+  async function multiBuyTryFit(fitting: SourcedFitting): Promise<void> {
+    multiBuyFitPending = false;
+    const failed = await loadSavedFitting(fitting);
+    if (failed !== null && failed.length > 0) {
+      const notify = templateWords("UI/Market/MarketQuote/SomeItemsCouldNotBeFitted", {}, "Some of the items could not be fitted.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+    }
+  }
+
+  /** fittingSvc.PrimeFittings: the pilot's fittings and its corporation's, read again. */
+  async function loadSavedFittings(): Promise<void> {
+    savedFittingsSignal.set(await loadRefitLibrary());
+  }
+
+  /** A saved fitting by its number, from those last read (fittingSvc.fittings[ownerID][fittingID]); null where none. */
+  function savedFittingOf(fittingID: number): SourcedFitting | null {
+    return savedFittingsSignal.get()?.find((fitting) => fitting.fittingID === fittingID) ?? null;
+  }
+
+  /** inventorycommon/const.py rigSlotFlags, and dogma's attributeFitsToShipType; and eve's UE_TYPEID. */
+  const RIG_SLOT_FLAGS: readonly number[] = [92, 93, 94];
+  const ATTRIBUTE_FITS_TO_SHIP_TYPE = 1380;
+  const UE_TYPEID = 4;
+
+  /**
+   * fittingSvc.LoadFitting (554 to 618), getFailedDict: refused while one is under way (BusyFittingWarning), in space
+   * (CannotLoadFittingInSpace), for a fitting not had (FittingDoesNotExist) and for another type of ship
+   * (ShipTypeInFittingNotSameAsShip). A fitting with rigs: the ship's own fitted if they are the same or it is a
+   * strategic cruiser, the ship's left with a word if they differ, else asked (FitRigs), the rigs going to the cargo on
+   * No. Subsystems are checked as the client checks them. Then the hangar's stacks named and FitFitting asked of the
+   * ship's own inventory. Answers what failed to load, or null where it was refused before the call. (The ship is not
+   * renamed after the fitting: the client's setting for it, off unless set, is not the page's.)
+   */
+  async function loadSavedFitting(fitting: SourcedFitting | null): Promise<{ typeID: number; qty: number }[] | null> {
+    if (busyFitting) {
+      const info = templateWords("UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning", {}, "A fitting is already being loaded.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+      return null;
+    }
+    const inventory = store.inventory.get();
+    const dockedAt = inventory.stationID ?? inventory.structureID ?? null;
+    if (dockedAt === null) {
+      sayDialog("CannotLoadFittingInSpace", null, "A fitting can be loaded only while docked.");
+      return null;
+    }
+    if (fitting === null) {
+      sayDialog("FittingDoesNotExist", null, "That fitting is no longer there.");
+      return null;
+    }
+    const shipID = store.fitting.get().activeShipID ?? inventory.activeShipID;
+    if (shipID === null) return null;
+    busyFitting = true;
+    try {
+      const [hangar, shipItems] = await Promise.all([listHangar(bridgeAsk), listShip(bridgeAsk, shipID)]);
+      const shipTypeID = hangar.find((item) => item.itemID === shipID)?.typeID ?? null;
+      if (shipTypeID !== fitting.shipTypeID) {
+        sayDialog("ShipTypeInFittingNotSameAsShip", null, "That fitting is for another type of ship.");
+        return null;
+      }
+      const types = [...new Set([shipTypeID, ...fitting.modules.map((module) => module.typeID)])];
+      const facts = new Map<number, { groupID: number | null; categoryID: number | null }>();
+      for (let at = 0; at < types.length; at += 50) {
+        const read = await api.getTypePrices(types.slice(at, at + 50), callOptions);
+        for (const typeID of types.slice(at, at + 50)) facts.set(typeID, { groupID: read.groupID[typeID] ?? null, categoryID: read.categoryID[typeID] ?? null });
+      }
+      const fit = fittingForApplying(
+        fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+        shipItems,
+        (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null },
+      );
+      const modular = isModularShip(facts.get(shipTypeID)?.groupID ?? null);
+      let fitRigs = false;
+      const cargoItemsByType: Record<number, number> = {};
+      if (Object.keys(fit.rigsByFlag).length > 0) {
+        const fitted = fittedRigsByFlag(shipItems);
+        const rigMismatch = isThereRigMismatch(fitted, fit.rigsByFlag);
+        const sameRigsInSameSlots = Object.keys(fitted).length === Object.keys(fit.rigsByFlag).length
+          && Object.entries(fit.rigsByFlag).every(([flag, typeID]) => fitted[Number(flag)] === typeID);
+        if (rigMismatch && !modular) {
+          const notify = templateWords("UI/Fitting/ShipHasRigsAlready", {}, "The ship has other rigs fitted, so the fitting's rigs were left out.");
+          sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+        } else if (modular || sameRigsInSameSlots) {
+          fitRigs = true;
+        } else if (await askDialog("FitRigs", { type: "dict", entries: [] }, "Fit the fitting's rigs as well? A rig fitted cannot be taken off again.")) {
+          fitRigs = true;
+        } else {
+          for (const [flag, typeID] of Object.entries(fit.modulesByFlag)) {
+            if (RIG_SLOT_FLAGS.includes(Number(flag))) cargoItemsByType[typeID] = (cargoItemsByType[typeID] ?? 0) + 1;
+          }
+        }
+      }
+      const itemsToFit = itemsToFitFrom(hangar, fit.itemTypes);
+      if (fit.numSubSystems > 0) {
+        const alreadyFitted = new Set(shipItems.filter((item) => item.flagID !== null && VISIBLE_SUBSYSTEM_FLAGS.includes(item.flagID)).map((item) => item.typeID));
+        if (fit.numSubSystems !== VISIBLE_SUBSYSTEM_FLAGS.length) {
+          sayDialog("CantUnfitSubSystems", null, "A strategic cruiser's subsystems are changed all together.");
+          return null;
+        }
+        const subsystems = Object.entries(fit.modulesByFlag).filter(([flag]) => VISIBLE_SUBSYSTEM_FLAGS.includes(Number(flag))).map(([, typeID]) => typeID);
+        const fitsTo = await api.fetchTypeDogma(subsystems, [ATTRIBUTE_FITS_TO_SHIP_TYPE], callOptions);
+        for (const module of subsystems) {
+          if (alreadyFitted.has(module)) continue;
+          const valid = Math.trunc(fitsTo[module]?.[ATTRIBUTE_FITS_TO_SHIP_TYPE] ?? 0);
+          if (shipTypeID !== valid) {
+            const typed = (typeID: number): JsonValue => ({ type: "tuple", items: [UE_TYPEID, typeID] });
+            sayDialog("CannotFitSubSystemNotShip", { type: "dict", entries: [["subSystemName", typed(module)], ["validShipName", typed(valid)], ["shipName", typed(shipTypeID)]] }, "That subsystem is for another ship.");
+            return null;
+          }
+          if ((fit.itemTypes.get(module) ?? 0) > 0) {
+            sayDialog("CantUnfitSubSystems", null, "A strategic cruiser's subsystems are changed all together.");
+            return null;
+          }
+        }
+      }
+      const failed = await fitFitting(bridgeDo, shipID, shipTypeID, itemsToFit, dockedAt, {
+        chargesByType: fit.chargesByType, dronesByType: fit.dronesByType, fightersByTypeID: fit.fightersByType,
+        iceByType: fit.iceByType, modulesByFlag: fit.modulesByFlag, implantsByTypeID: fit.implantsByType,
+      }, cargoItemsByType, fitRigs);
+      void loadInventory().catch(() => {});
+      void loadFitting().catch(() => {});
+      return failed;
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be loaded: ${errorWords(error)}`);
+      return null;
+    } finally {
+      busyFitting = false;
+    }
+  }
+
+  /**
+   * LoadFittingFromFittingListAndGetBuyOptionOnFailure: the fitting loaded, and where anything failed to load, the Buy
+   * All box with it (OpenBuyAllBox). (With nothing failed the client leaves its fitting simulation, which the page has
+   * not.)
+   */
+  async function fitFittingToActiveShip(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    const failed = await loadSavedFitting(fitting);
+    if (failed === null || failed.length === 0 || fitting === null) return;
+    dialogsSaidCount += 1;
+    buyAllAskedSignal.set({ n: dialogsSaidCount, missing: failed, fitting });
+  }
+
+  /** multiBuyUtil.BuyFit: each type of the fitting by how many, and the ship one. */
+  async function buyFit(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting === null) return;
+    const wanted = new Map<number, number>();
+    for (const module of fitting.modules) wanted.set(module.typeID, (wanted.get(module.typeID) ?? 0) + module.quantity);
+    wanted.set(fitting.shipTypeID, 1);
+    await openMultiBuy(wanted);
+  }
+
+  /** BuyAllMessageBox.BuyAll: the multibuy window with what is missing, for the fitting, and the box closed; or Close. */
+  async function answerBuyAll(n: number, answer: "buy" | "close"): Promise<void> {
+    const asked = buyAllAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    buyAllAskedSignal.set(null);
+    if (answer === "buy") await openMultiBuy(new Map(asked.missing.map((entry) => [entry.typeID, entry.qty])), asked.fitting);
   }
 
   async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
@@ -20103,10 +20330,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),
     answerApplyPoints,
     multiBuyAsked: readonlySignal(multiBuyAskedSignal),
-    openMultiBuy,
+    openMultiBuy: (wanted: ReadonlyMap<number, number>) => openMultiBuy(wanted),
     editMultiBuy,
     answerMultiBuy,
     importMultiBuy,
+    savedFittings: readonlySignal(savedFittingsSignal),
+    loadSavedFittings,
+    fitFittingToActiveShip,
+    buyFit,
+    buyAllAsked: readonlySignal(buyAllAskedSignal),
+    answerBuyAll,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,
