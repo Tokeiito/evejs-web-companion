@@ -102,7 +102,18 @@ export interface TacticalScene {
   readonly nameOf: (bracket: TacticalBracket) => string;
   /** How to put a distance's unit on: the client's own words when the caller holds them. */
   readonly say?: DistanceSay;
+  /** The ships that have the pilot's locked (the client's targetedBy); each gets the client's hostile bracket. */
+  readonly lockedBy?: ReadonlySet<number>;
 }
+
+/**
+ * The client's hostile bracket for a ship that has the pilot's locked (inSpaceBracket.Hostile, spaceObjectIcon
+ * SetHostileState): yellow (1, 0.8, 0), blinking from 0.3 to 0.6 and back in half a second. This picture is painted
+ * about twice a second, the blink's own rate, so a blink would be read at the same point each time: it is drawn steady
+ * at the blink's middle.
+ */
+const LOCKED_BY_COLOUR = "rgb(255, 204, 0)";
+const LOCKED_BY_ALPHA = 0.45;
 
 /**
  * The EVE corner bracket: four L-shaped marks, never a closed box.
@@ -142,7 +153,7 @@ const TILT = 0.42;
 
 /** Paint the whole scene. Clears first; leaves the context's state as it found it. */
 export function drawTactical(ctx: CanvasRenderingContext2D, scene: TacticalScene): void {
-  const { view, brackets, rings, labelled, selectedID, palette, nameOf, say } = scene;
+  const { view, brackets, rings, labelled, selectedID, palette, nameOf, say, lockedBy } = scene;
   const { cx, cy, radius } = plotGeometry(view);
 
   ctx.save();
@@ -210,6 +221,15 @@ export function drawTactical(ctx: CanvasRenderingContext2D, scene: TacticalScene
     ctx.lineWidth = isSelected || isThreat ? 1.75 : 1;
     const size = isSelected ? 18 : 12;
     drawCornerBracket(ctx, bracket.x, bracket.y, size, isSelected ? 6 : 4);
+
+    if (lockedBy && lockedBy.has(bracket.itemID)) {
+      ctx.globalAlpha = LOCKED_BY_ALPHA;
+      ctx.strokeStyle = LOCKED_BY_COLOUR;
+      ctx.lineWidth = 2;
+      const box = size + 6;
+      ctx.strokeRect(bracket.x - box / 2, bracket.y - box / 2, box, box);
+      ctx.lineWidth = isSelected || isThreat ? 1.75 : 1;
+    }
 
     // The picked object also gets a full ring, so "selected" survives being
     // surrounded by other brackets of the same colour.

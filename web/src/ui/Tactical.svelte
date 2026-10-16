@@ -161,6 +161,8 @@
   });
   const rings = $derived(width > 0 && height > 0 ? tacticalRings() : []);
   const labelled = $derived(labelledBracketIDs(brackets, $selected));
+  // The ships that have the pilot's locked, marked as the client's space brackets mark them.
+  const lockedBy = $derived(new Set($targeting.lockedByIDs ?? []));
 
   /** A bracket's name as the player reads it: its own, else its type's (R7d). */
   function bracketName(bracket: TacticalBracket): string {
@@ -230,6 +232,7 @@
       palette: readPalette(element),
       nameOf: bracketName,
       say,
+      lockedBy,
     });
   }
 
@@ -248,6 +251,7 @@
     void brackets;
     void rings;
     void labelled;
+    void lockedBy;
     void $selected;
     void width;
     void height;
