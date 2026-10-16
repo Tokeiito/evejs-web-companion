@@ -196,12 +196,12 @@ const warping = (warp: Record<string, unknown> | null, extra: Record<string, unk
 test("in warp: lining up or under way, and how far the thing the warp is aimed at still is", () => {
   const point = along(2 * AU - 5_000_000);
   // Aimed at the moon: the distance is to the moon itself.
-  assert.deepEqual(warpIndication(warping({ preparing: true, point, destinationID: 40009089 })), { kind: "warpPreparing", destinationID: 40009089, distance: 2 * AU });
-  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 40009089 })), { kind: "warpActive", destinationID: 40009089, distance: 2 * AU });
+  assert.deepEqual(warpIndication(warping({ preparing: true, point, destinationID: 40009089 })), { kind: "warpPreparing", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true });
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 40009089 })), { kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true });
   // Aimed at no thing the page can name: the distance is to the warp's own point.
-  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, distance: 2 * AU - 5_000_000 });
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, destinationName: null, distance: 2 * AU - 5_000_000, measured: false });
   // Aimed at a thing that is not in view: the same.
-  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 777 })), { kind: "warpActive", destinationID: null, distance: 2 * AU - 5_000_000 });
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 777 })), { kind: "warpActive", destinationID: null, destinationName: null, distance: 2 * AU - 5_000_000, measured: false });
   // The distance is from where the ship is.
   assert.equal(warpIndication(warping({ preparing: false, point, destinationID: 40009089 }, { position: along(AU) }))?.distance, AU);
 });
@@ -214,7 +214,7 @@ test("nothing is said of a warp the ship is not in, or one the server has given 
   assert.equal(warpIndication(warping({ preparing: false, point, destinationID: null }, { mode: "GOTO" })), null);
   assert.equal(warpIndication(null), null);
   // The ship's line asks about the warp before anything else.
-  assert.deepEqual(shipIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, distance: AU });
+  assert.deepEqual(shipIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, destinationName: null, distance: AU, measured: false });
 });
 
 test("the warp's header is the client's word for lining up or for being under way", () => {
@@ -234,26 +234,27 @@ test("the line beneath a warp's header: where to and how far, put together as th
     [WARP_LABELS.withDistanceAndBubble]: "{warpDestination}{distance} to the tunnel's end",
   };
   // Aimed at a named thing: its line, a break, the distance (FmtDist, two decimals for AU).
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates), "Bound for A moon · Still 2.00 AU");
-  assert.equal(warpText({ kind: "warpPreparing", destinationID: 40009089, distance: 150_000_000 }, "A moon", templates), `Bound for A moon · Still ${(150000).toLocaleString()} km`);
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true }, "A moon", templates), "Bound for A moon · Still 2.00 AU");
+  assert.equal(warpText({ kind: "warpPreparing", destinationID: 40009089, destinationName: null, distance: 150_000_000, measured: true }, "A moon", templates), `Bound for A moon · Still ${(150000).toLocaleString()} km`);
   // Aimed at nothing the client can name: no destination line, and the other joining label.
-  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, null, templates), "Still 2.00 AU to the tunnel's end");
-  // A name with no thing behind it is not used.
-  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, "A moon", templates), "Still 2.00 AU to the tunnel's end");
-  // A thing with no name to give is treated as no thing.
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, null, templates), "Still 2.00 AU to the tunnel's end");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, destinationName: null, distance: 2 * AU, measured: false }, null, templates), "Still 2.00 AU to the tunnel's end");
+  // A bookmark's memo with no place known (a thing's bookmark whose thing is not in view): its line, and the bubble's
+  // words (StartWarpIndication names it by the memo whatever the place).
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, destinationName: "A moon", distance: 2 * AU, measured: false }, "A moon", templates), "Bound for A moon · Still 2.00 AU to the tunnel's end");
+  // A place known with no name given: the distance alone, in the words for a known place.
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true }, null, templates), "Still 2.00 AU");
   // No distance left: the destination's line alone, or nothing at all.
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 0 }, "A moon", templates), "Bound for A moon");
-  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 0 }, null, templates), "");
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 0, measured: true }, "A moon", templates), "Bound for A moon");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, destinationName: null, distance: 0, measured: false }, null, templates), "");
   // The unit is put on by whoever the caller gives.
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates, (unit, figure) => `${figure} of ${unit}`), "Bound for A moon · Still 2.00 of au");
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true }, "A moon", templates, (unit, figure) => `${figure} of ${unit}`), "Bound for A moon · Still 2.00 of au");
 });
 
 test("without all of the client's four labels for it, the warp's line is the page's own", () => {
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", {}), "To A moon · 2.00 AU to go");
-  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, null, {}), "2.00 AU to go");
-  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 0 }, "A moon", {}), "To A moon");
-  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 0 }, null, {}), "");
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true }, "A moon", {}), "To A moon · 2.00 AU to go");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, destinationName: null, distance: 2 * AU, measured: false }, null, {}), "2.00 AU to go");
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 0, measured: true }, "A moon", {}), "To A moon");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, destinationName: null, distance: 0, measured: false }, null, {}), "");
   // One of the four missing is none of them: a line half in each would be neither.
   for (const missing of [WARP_LABELS.destination, WARP_LABELS.distance, WARP_LABELS.withDistance, WARP_LABELS.withDistanceAndBubble]) {
     const templates: Record<string, string | null> = {
@@ -261,7 +262,7 @@ test("without all of the client's four labels for it, the warp's line is the pag
       [WARP_LABELS.withDistance]: "{warpDestination}{distance}", [WARP_LABELS.withDistanceAndBubble]: "{warpDestination}{distance} more",
     };
     templates[missing] = null;
-    assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates), "To A moon · 2.00 AU to go", missing);
+    assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, destinationName: null, distance: 2 * AU, measured: true }, "A moon", templates), "To A moon · 2.00 AU to go", missing);
   }
 });
 

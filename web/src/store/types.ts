@@ -2039,6 +2039,13 @@ export interface ShipWarp {
   readonly point: SpaceVector | null;
   /** The thing the pilot asked to warp to, when the warp is aimed at it; else null. */
   readonly destinationID: number | null;
+  /** What the HUD names a warp to a bookmark by, its memo's title; null where it names none, or by the thing. */
+  readonly destinationName?: string | null;
+  /**
+   * Where the warp's way and distance are measured to (spaceMgr's actualDestinationPosition): the thing, or the
+   * bookmark's thing or place; null where there is none, and then they are measured to the warp's own point.
+   */
+  readonly actualPoint?: SpaceVector | null;
 }
 
 export interface SpaceShipStatus {

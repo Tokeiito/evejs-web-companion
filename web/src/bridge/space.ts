@@ -87,7 +87,14 @@ function decodeWarp(value: JsonValue | undefined): ShipWarp | null {
     return null;
   }
   const effectStamp = typeof raw.effectStamp === "number" && Number.isSafeInteger(raw.effectStamp) ? { effectStamp: raw.effectStamp } : {};
-  return { preparing: raw.preparing, point: pointOrNull(raw.point), destinationID: idOrNull(raw.destinationID), ...effectStamp };
+  return {
+    preparing: raw.preparing,
+    point: pointOrNull(raw.point),
+    destinationID: idOrNull(raw.destinationID),
+    destinationName: typeof raw.destinationName === "string" ? raw.destinationName : null,
+    actualPoint: pointOrNull(raw.actualPoint),
+    ...effectStamp,
+  };
 }
 
 /** A point whose three coordinates are all real numbers, or null. */

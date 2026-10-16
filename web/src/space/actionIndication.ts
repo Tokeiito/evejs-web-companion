@@ -94,8 +94,12 @@ export interface WarpIndication {
   readonly kind: WarpKind;
   /** The thing the pilot asked to warp to, when the warp is aimed at it and it is in view; else null. */
   readonly destinationID: number | null;
-  /** How far the ship is from that thing, or failing it from the point the warp is aimed at. */
+  /** What a warp to a bookmark is named by, the memo's title, where the HUD names it so; else null. */
+  readonly destinationName: string | null;
+  /** How far the ship is from that thing or the bookmark's, or failing them from the point the warp is aimed at. */
   readonly distance: number;
+  /** Whether that is to a known place (actualDestinationPosition): the client's line then has no bubble's words. */
+  readonly measured: boolean;
 }
 
 /** The client's labels for a warp: the two headers, and what the line beneath is put together from. */
@@ -174,11 +178,27 @@ export function warpIndication(snapshot: SpaceSnapshot | null | undefined): Warp
   if (!snapshot || !ship || !warp || (ship.mode ?? "").trim().toUpperCase() !== "WARP" || !warp.point) {
     return null;
   }
-  // The distance is to the thing itself when the warp is aimed at one, and to the warp's own point otherwise.
+  const aim = warpAim(snapshot, warp);
+  const distance = Math.hypot(aim.to.x - ship.position.x, aim.to.y - ship.position.y, aim.to.z - ship.position.z);
+  return {
+    kind: warp.preparing ? "warpPreparing" : "warpActive",
+    destinationID: aim.thingID,
+    destinationName: warp.destinationName ?? null,
+    distance,
+    measured: aim.measured,
+  };
+}
+
+/**
+ * Where a warp's way and distance are measured to (IndicateWarp, _GetWarpProgress): the place the transport says
+ * (the thing, or a bookmark's thing or place), else the thing the warp is aimed at where it is in view, else the
+ * warp's own point. `measured` where it is one of the first two.
+ */
+function warpAim(snapshot: SpaceSnapshot, warp: NonNullable<NonNullable<SpaceSnapshot["ship"]>["warp"]>): { readonly to: SpaceVector; readonly thingID: number | null; readonly measured: boolean } {
   const thing = warp.destinationID === null ? null : (snapshot.entities.find((entity) => entity.itemID === warp.destinationID) ?? null);
-  const to = thing ? thing.position : warp.point;
-  const distance = Math.hypot(to.x - ship.position.x, to.y - ship.position.y, to.z - ship.position.z);
-  return { kind: warp.preparing ? "warpPreparing" : "warpActive", destinationID: thing ? thing.itemID : null, distance };
+  if (warp.actualPoint) return { to: warp.actualPoint, thingID: thing ? thing.itemID : null, measured: true };
+  if (thing) return { to: thing.position, thingID: thing.itemID, measured: true };
+  return { to: warp.point as SpaceVector, thingID: null, measured: false };
 }
 
 /** MAX_ALIGN_TICKS: after so many ticks of lining up the warp begins anyway (Ball::IsAlignedForWarp). */
@@ -204,9 +224,8 @@ export function warpProgress(snapshot: SpaceSnapshot | null | undefined): number
   if (!Number.isFinite(speed)) return null;
   const speedFraction = Math.min(1.0, speed / max);
   const speedProgress = Math.min(speedFraction / 0.75, 1.0);
-  // The way to the thing the warp is aimed at, where it is one the client can name, else to the warp's own point.
-  const thing = warp.destinationID === null ? null : (snapshot.entities.find((entity) => entity.itemID === warp.destinationID) ?? null);
-  const to = thing ? thing.position : warp.point;
+  // The way to the place the warp is measured to, else to the warp's own point.
+  const to = warpAim(snapshot, warp).to;
   const way = { x: to.x - ship.position.x, y: to.y - ship.position.y, z: to.z - ship.position.z };
   const wayLength = Math.hypot(way.x, way.y, way.z);
   const dotProduct = speedFraction > 0.01 && wayLength > 0
@@ -327,7 +346,9 @@ const OWN_HEADER: Readonly<Record<ActionKind | WarpKind | "alignTo", string>> = 
  * is. In the client's words when the page holds all four of the labels it is
  * put together from, the page's own otherwise. Where the client breaks the
  * line, the parts are set apart by " · ". `destinationName` is what the
- * caller calls the thing the warp is aimed at, or null when it is aimed at none.
+ * caller calls the thing the warp is aimed at (or the bookmark's memo title the
+ * indication carries), or null when it names none. The distance's words are the
+ * bubble's where the warp is measured to no known place.
  */
 export function warpText(
   indication: WarpIndication,
@@ -335,7 +356,7 @@ export function warpText(
   templates: Readonly<Record<string, string | null | undefined>>,
   say?: DistanceSay,
 ): string {
-  const named = indication.destinationID !== null && destinationName !== null;
+  const named = destinationName !== null;
   const far = fmtDist(indication.distance, 2, say);
   const [destination, withDistance, withBubble, distance] = [WARP_LABELS.destination, WARP_LABELS.withDistance, WARP_LABELS.withDistanceAndBubble, WARP_LABELS.distance].map((label) => templates[label]);
   if (typeof destination !== "string" || typeof withDistance !== "string" || typeof withBubble !== "string" || typeof distance !== "string") {
@@ -345,7 +366,7 @@ export function warpText(
   const none = { nameOf: () => "" };
   const where = named ? `${formatTemplate(destination, { destinationName }, none)}<br>` : "";
   const text = indication.distance > 0
-    ? formatTemplate(named ? withDistance : withBubble, { warpDestination: where, distance: formatTemplate(distance, { distToItem: far }, none) }, none)
+    ? formatTemplate(indication.measured ? withDistance : withBubble, { warpDestination: where, distance: formatTemplate(distance, { distToItem: far }, none) }, none)
     : where;
   return plainText(text).split("\n").map((line) => line.trim()).filter((line) => line.length > 0).join(" · ");
 }

@@ -204,8 +204,11 @@
     const warp = warpIndication($space.snapshot);
     if (warp !== null) {
       const thing = warp.destinationID === null ? null : (($space.snapshot?.entities ?? []).find((e) => e.itemID === warp.destinationID) ?? null);
-      const named = thing ? (thing.name && thing.name.length > 0 ? thing.name : resolvedName($names.resolved, "type", thing.typeID, "")) : "";
-      const beneath = warpText(warp, named.length > 0 ? named : null, $words.templates, say);
+      // A bookmark's warp is named by its memo; a thing's by its name (GetWarpDestinationName), and none else.
+      const named = warp.destinationName !== null
+        ? warp.destinationName
+        : thing ? (thing.name && thing.name.length > 0 ? thing.name : resolvedName($names.resolved, "type", thing.typeID, "")) : "";
+      const beneath = warpText(warp, warp.destinationName !== null || named.length > 0 ? named : null, $words.templates, say);
       const header = indicationHeader(warp.kind, $words.templates);
       return beneath.length > 0 ? `${header} · ${beneath}` : header;
     }

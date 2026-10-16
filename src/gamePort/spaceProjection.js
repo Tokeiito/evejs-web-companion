@@ -288,17 +288,41 @@ function checkWarpDestination(warpPoint, destinationPoint, egoPoint, angularTole
  * points (within pi/32 of the direction, or 20,000 km). The client makes that check once, as the warp is
  * ordered; here it is made on each reading, from where the ship then is.
  */
-function warpOf(park, egoBall, destinationID) {
+function warpOf(park, egoBall, destinationID, bookmark = null) {
   const point = park.warpPoint ?? null;
+  // The ball's effect stamp goes with it: while the ship lines up it is minus one less the ticks spent so (WarpTo
+  // sets -1, each tick of lining up takes one off), and the bar the client fills meanwhile is partly made of it.
+  const base = { preparing: egoBall.effectStamp < 0, effectStamp: egoBall.effectStamp, point: point ? { ...point } : null };
+  if (bookmark) return { ...base, destinationID: null, ...bookmarkWarpWords(park, egoBall, point, bookmark) };
   const id = destinationID === null || destinationID === undefined ? null : number(destinationID);
   const thing = id === null ? null : park.ballpark.ball(id);
   const lies = point && thing && checkWarpDestination(point, thing.newPos, egoBall.newPos, Math.PI / 32, 20000000);
-  // The ball's effect stamp goes with it: while the ship lines up it is minus one less the ticks spent so (WarpTo
-  // sets -1, each tick of lining up takes one off), and the bar the client fills meanwhile is partly made of it.
-  return { preparing: egoBall.effectStamp < 0, effectStamp: egoBall.effectStamp, point: point ? { ...point } : null, destinationID: lies ? id : null };
+  return { ...base, destinationID: lies ? id : null, destinationName: null, actualPoint: lies ? { x: thing.newPos.x, y: thing.newPos.y, z: thing.newPos.z } : null };
 }
 
-function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, alignTarget = null, simTime = null }) {
+/**
+ * StartWarpIndication's bookmark (spaceMgr.py 573 to 593), { memo, itemID, point }: what the HUD names (the memo's
+ * title, up to its first tab, as UI/Inflight/Messages/WarpDestination) and the place the warp's way and distance are
+ * measured to. A thing's bookmark (no x) with a memo is named by it, and measured to the thing where it is in the park
+ * and the warp points there; with no memo it says nothing. A place's bookmark, where the warp points there and it has
+ * a memo, is named by it and measured to the place; else nothing, the memo's place included.
+ */
+function bookmarkWarpWords(park, egoBall, point, bookmark) {
+  const none = { destinationName: null, actualPoint: null };
+  const memo = typeof bookmark.memo === "string" ? bookmark.memo : "";
+  const tab = memo.indexOf("\t");
+  const title = tab > -1 ? memo.slice(0, tab) : memo;
+  if (!bookmark.point) {
+    if (!memo) return none;
+    const thing = bookmark.itemID === null || bookmark.itemID === undefined ? null : park.ballpark.ball(number(bookmark.itemID));
+    const at = point && thing && checkWarpDestination(point, thing.newPos, egoBall.newPos, Math.PI / 32, 20000000);
+    return { destinationName: title, actualPoint: at ? { x: thing.newPos.x, y: thing.newPos.y, z: thing.newPos.z } : null };
+  }
+  if (!point || !checkWarpDestination(point, bookmark.point, egoBall.newPos, Math.PI / 32, 20000000) || !memo) return none;
+  return { destinationName: title, actualPoint: { ...bookmark.point } };
+}
+
+function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, warpBookmark = null, alignTarget = null, simTime = null }) {
   const ego = park.ego;
   const entities = [];
   const placed = simTime === null ? (ball) => ({ p: ball.newPos, v: ball.newVel }) : (ball) => park.ballpark.drawn(ball, simTime);
@@ -340,7 +364,7 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       alignTarget: own.mode === "GOTO" && alignTarget ? { itemID: alignTarget.itemID ?? null, bookmark: Boolean(alignTarget.bookmark) } : null,
       // In warp, or lining up for one: what the client's HUD says of it is made from this. `warpDestination`
       // is the thing the pilot asked to warp to, which the client remembers from its own order.
-      warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination) : null,
+      warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination, warpBookmark) : null,
       maxVelocity: own.maxVelocity,
       radius: own.radius,
       position: own.position,

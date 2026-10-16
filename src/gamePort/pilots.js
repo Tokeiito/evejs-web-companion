@@ -4230,7 +4230,7 @@ function createGamePortPilots({
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
+          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, warpBookmark: entry.warpBookmark ? entry.warpBookmark.row : null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null, timeDilation },
         notifications: drain(entry),
       };
@@ -4347,8 +4347,14 @@ function createGamePortPilots({
     if (method.startsWith("Cmd") && method !== "CmdFleetTagTarget") entry.lastMove = { method, targetID: positive(args[0]), range: typeof sent(args[1]) === "number" ? sent(args[1]) : null };
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
+      entry.warpBookmark = null;
     } else if (method === "CmdWarpToStuff") {
       entry.warpDestination = args[0] === "item" ? positive(args[1]) : null;
+      // movementFunctions.WarpToBookmark: space.WarpDestination(bookmarkID=...), and the HUD words the warp from the
+      // bookmark as the client keeps it (spaceMgr.StartWarpIndication: addressbook.GetBookmark). A fleet member's
+      // (menusvc.WarpToMember: WarpDestination(fleetMemberID=...)) is named by nothing there.
+      entry.warpBookmark = args[0] === "bookmark" && positive(args[1]) !== null ? { bookmarkID: positive(args[1]), row: null } : null;
+      if (entry.warpBookmark) warpBookmarkKept(entry, entry.warpBookmark);
     } else if (method === "CmdAlignTo") {
       // menusvc._AlignTo: what was aligned to is kept (StoreAlignTarget), a thing or a bookmark, and the HUD
       // names it for as long as the ship flies that course. `since` is the park's tick at the order.
@@ -4364,6 +4370,30 @@ function createGamePortPilots({
       // (StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)).
       entry.alignTarget = null;
     }
+  }
+
+  /**
+   * The bookmark a warp was ordered at, as the client keeps it (bookmarkSvc.GetBookmark: bookmarkCache[bookmarkID]):
+   * read from the bookmark manager's three lists as they are kept (asked for where none are), its memo, its item and
+   * its place (none where it is a thing's bookmark, x None). Where it is not among them the client's lookup fails
+   * and its HUD names nothing; so here, the row is left none.
+   */
+  function warpBookmarkKept(entry, wanted) {
+    bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry)))
+      .then((lists) => {
+        if (!isTheThreeLists(lists) || entry.warpBookmark !== wanted) return;
+        const row = itemsOf(lists[1])
+          .map((each) => (each && each.type === "object" && each.args ? each.args : null))
+          .find((args) => args !== null && positive(dictValue(args, "bookmarkID")) === wanted.bookmarkID);
+        if (!row) return;
+        const [x, y, z] = ["x", "y", "z"].map((name) => finite(dictValue(row, name)));
+        wanted.row = {
+          memo: textOf(dictValue(row, "memo")) ?? "",
+          itemID: positive(dictValue(row, "itemID")),
+          point: x === null || y === null || z === null ? null : { x, y, z },
+        };
+      })
+      .catch(() => {});
   }
 
   /**
