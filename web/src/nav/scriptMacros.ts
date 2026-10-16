@@ -5795,6 +5795,16 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     }
     mem = { ...mem, stage: "warp", warp: null };
   }
+  if (mem["stage"] === "warp" && !flag(sub("warp"), "issued")) {
+    // Already at the site, as after a restart on it (seen live 2026-10-16: the warp refused as too close, over and
+    // over): straight to work, as a pilot would not warp to where they sit.
+    const ship = obs.snapshot?.ship?.position ?? null;
+    const at = target.position ?? null;
+    if (ship !== null && at !== null && target.solarSystemID === here
+      && Math.hypot(ship.x - at.x, ship.y - at.y, ship.z - at.z) < MIN_WARP_DISTANCE_M) {
+      mem = { ...mem, stage: "site", warp: null, work: null };
+    }
+  }
   if (mem["stage"] === "warp") {
     if (!flag(sub("warp"), "issued") && !isOpen(target)) {
       return tick(WAIT, "At the site's system; the bookmark opens to this pilot in a moment (the server holds a new shared bookmark for two minutes).",

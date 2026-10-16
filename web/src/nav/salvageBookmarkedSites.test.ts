@@ -99,6 +99,17 @@ test("salvager: a bookmark made while it works a site never takes it off that si
   assert.deepEqual(t.action, { kind: "lock", targetID: 4201 });
 });
 
+test("salvager: already at the site (as after a restart on it), it goes straight to work instead of warping", () => {
+  // Seen live 2026-10-16: a restart on the site warped to its own bookmark, refused as too close, over and over.
+  const onIt = [{ ...sites[1]!, position: { x: 20_000, y: 0, z: 0 } }];
+  const t = salvager(step, obs({ bookmarks: onIt }), ready, NB);
+  assert.notEqual(t.action.kind, "warpBookmark");
+  assert.equal(t.nextMem["stage"] === "site" || t.action.kind === "moveBookmarks", true);
+  // From farther than a warp's least distance, it warps.
+  const far = [{ ...sites[1]!, position: { x: 400_000, y: 0, z: 0 } }];
+  assert.deepEqual(salvager(step, obs({ bookmarks: far }), ready, NB).action, { kind: "warpBookmark", bookmarkID: NEAR_SITE });
+});
+
 test("salvager: a site in another system is travelled to first", () => {
   const t = salvager(step, obs({ bookmarks: [sites[0]!] }), ready, NB);
   assert.deepEqual(t.action, { kind: "startSystemRoute", systemID: ELSEWHERE });

@@ -24894,6 +24894,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               // two minutes (eve.js beyonceService.isBookmarkDelayed), so its age is what a bot needs.
               ageMs: bm.created === null ? null : serverNow() - Number((bm.created - 116444736000000000n) / 10000n),
               solarSystemID: bm.locationID > 0 ? bm.locationID : null,
+              position: bm.x !== null && bm.y !== null && bm.z !== null ? { x: bm.x, y: bm.y, z: bm.z } : null,
             }));
           } catch {
             bookmarks = null;
