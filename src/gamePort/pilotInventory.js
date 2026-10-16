@@ -78,6 +78,20 @@ const dictOf = (value) => new Map(value && Array.isArray(value.entries) ? value.
 function createPilotInventory({ rowFields, session }) {
   /** The containers held, by key: { location, owner, objectID, items: Map(itemKey -> row), listed: Set(flag | null), work }. */
   const containers = new Map();
+  /** The binds under way, by key: each a promise of the bound object, or of null where the bind failed. */
+  const binding = new Map();
+  /** How many times everything was let go: a bind begun before is not held after. */
+  let forgotten = 0;
+
+  /** A container bound: held from now on, by its key. */
+  const hold = (key, objectID) => {
+    const [location, owner] = key.split("|");
+    if (!containers.has(key)) {
+      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new Map(), listed: new Set(), work: Promise.resolve() });
+    } else {
+      containers.get(key).objectID = objectID;
+    }
+  };
 
   /** An item's fields, its stack size as the client's row has it (a singleton is one). */
   const fieldsOf = (row) => {
@@ -202,16 +216,33 @@ function createPilotInventory({ rowFields, session }) {
     rows: () => [...containers.values()].flatMap((container) => [...container.items.values()]),
     /** The key of the container (location, owner). */
     keyOf: containerKey,
-    /** The bound object of a container held, or null: asked for again, it is the one given (GetInventoryFromId 553). */
-    boundObject: (key) => containers.get(key)?.objectID ?? null,
-    /** A container bound: held from now on, by its key. */
-    hold(key, objectID) {
-      const [location, owner] = key.split("|");
-      if (!containers.has(key)) {
-        containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new Map(), listed: new Set(), work: Promise.resolve() });
-      } else {
-        containers.get(key).objectID = objectID;
-      }
+    /**
+     * The bound object of a container held, or of one being bound now, as a promise (null where the binding failed);
+     * null where neither: asked for again, it is the one given (GetInventoryFromId 553).
+     */
+    boundObject(key) {
+      const held = containers.get(key);
+      if (held && held.objectID) return Promise.resolve(held.objectID);
+      return binding.get(key) ?? null;
+    },
+    /**
+     * A container being bound (`making`, the bind's promise): asked for meanwhile it is the one given, and once bound
+     * it is held, unless everything was let go while it was being bound.
+     */
+    binding(key, making) {
+      const generation = forgotten;
+      const tracked = Promise.resolve(making).then(
+        (objectID) => {
+          if (objectID && generation === forgotten) hold(key, objectID);
+          return objectID || null;
+        },
+        () => null,
+      );
+      binding.set(key, tracked);
+      tracked.then(() => {
+        if (binding.get(key) === tracked) binding.delete(key);
+      });
+      return tracked;
     },
     /**
      * invCacheContainer.List(flag): the flag's items, asked for (`ask()`) where the flag has not been listed, and
@@ -282,9 +313,11 @@ function createPilotInventory({ rowFields, session }) {
         if (own && own.ownerID === num(ownerID)) containers.delete(key);
       }
     },
-    /** Every container let go (InvalidateCache). */
+    /** Every container let go (InvalidateCache), and the binds under way not held when they come. */
     forget() {
       containers.clear();
+      binding.clear();
+      forgotten += 1;
     },
   };
 }

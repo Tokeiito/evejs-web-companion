@@ -5544,10 +5544,10 @@ function createGamePortPilots({
     // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
     // invCache.GetInventory and GetInventoryFromId: a container already held is the one given, and nothing is asked
-    // (GetInventoryFromId 553 to 556, GetInventory 527 to 531).
+    // (GetInventoryFromId 553 to 556, GetInventory 527 to 531); one being bound is waited for, and given.
     const container = service === "invbroker" ? inventoryContainerOf(entry, method, Array.isArray(args) ? args : []) : null;
-    const heldObject = container === null ? null : entry.inventory.boundObject(container);
-    if (heldObject !== null) {
+    const heldObject = container === null ? null : await (entry.inventory.boundObject(container) ?? null);
+    if (heldObject) {
       const handle = randomBytes(24).toString("base64url");
       entry.bound.set(handle, { objectID: heldObject, service, container });
       return { boundHandle: handle, service, method, notifications: drain(entry) };
@@ -5571,7 +5571,10 @@ function createGamePortPilots({
     }
     let objectID;
     try {
-      objectID = await run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      // The container is being bound: held once it is, and given meanwhile to whoever asks for it (pilotInventory.js).
+      if (container !== null) entry.inventory.binding(container, making);
+      objectID = await making;
     } catch (error) {
       // The session's own word for a bind the server answered without an object.
       if (error.code === "CALL_FAILED" && / did not return a bound object\.| could not say where its object lives\./.test(error.message)) objectID = null;
@@ -5581,8 +5584,6 @@ function createGamePortPilots({
     const boundHandle = randomBytes(24).toString("base64url");
     const object = container === null ? { objectID, service } : { objectID, service, container };
     entry.bound.set(boundHandle, object);
-    // The container held from now on, for what it lists and to be given again (pilotInventory.js).
-    if (container !== null) entry.inventory.hold(container, objectID);
     // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), from the answer on.
     if (method === "CreateFleet") entry.fleet = object;
     return { boundHandle, service, method, notifications: drain(entry) };
