@@ -471,12 +471,16 @@ export async function createCharacter(
  * so uniqueness (which no client-side rule can know) is checked against the real
  * roster. A null code means the read itself did not answer; that is not a
  * verdict, and the screen must not treat it as one.
+ *
+ * `namesChecked` is the client's second argument (chooseNameSection.IsNameValid: ValidateNameEx(charName,
+ * len(self.namesChecked))), how many names the screen has checked before this one.
  */
 export async function validateCharacterName(
   name: string,
   options: ApiOptions = {},
+  namesChecked = 0,
 ): Promise<number | null> {
-  const outcome = await callMethod("charUnboundMgr", "ValidateNameEx", [name], null, options);
+  const outcome = await callMethod("charUnboundMgr", "ValidateNameEx", [name, namesChecked], null, options);
   return decodeNameValidation(outcome.result);
 }
 
@@ -658,6 +662,8 @@ export interface RawContainerReads {
   readonly containerID: number;
   readonly list: JsonValue;
   readonly capacity: JsonValue;
+  /** False where the client's controller for it has no capacity (a wreck); a capacity unread is still true. */
+  readonly hasCapacity: boolean;
   /** Per-type m³ for the rows above, so a caller can work out what FITS. */
   readonly volumes: Readonly<Record<string, number>>;
 }
@@ -682,6 +688,7 @@ export async function openContainer(
     containerID: asNumberOrNull(data.containerID) ?? containerID,
     list: data.list ?? null,
     capacity: data.capacity ?? null,
+    hasCapacity: data.hasCapacity !== false,
     // Normalised here, exactly as the inventory panel's read does it: a bridge
     // that does not send the field yields an empty map, which reads downstream
     // as "no volume known for this type" rather than as zero.
@@ -2236,7 +2243,7 @@ export async function getSpaceSnapshot(
 /** What the server says is locked right now — the only authority. */
 export interface TargetsResult {
   readonly targetIDs: JsonValue;
-  /** What has this ship locked (GetTargeters); null when it could not be read. */
+  /** The ships that have the pilot's locked (dogmaIM.GetTargeters); null where the read could not say. */
   readonly targeterIDs: JsonValue;
   readonly notifications: readonly JsonValue[];
 }
@@ -2255,9 +2262,9 @@ function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[
   return Array.isArray(data.notifications) ? data.notifications : [];
 }
 
-/** Read the locked-target list (dogmaIM.GetTargets). */
-export async function getTargets(options: ApiOptions = {}, withTargeters = false): Promise<TargetsResult> {
-  const data = await getJson(withTargeters ? "/api/bridge/targets?targeters=1" : "/api/bridge/targets", options);
+/** Read the locked-target list (dogmaIM.GetTargets) and what has the pilot's ship locked (GetTargeters). */
+export async function getTargets(options: ApiOptions = {}): Promise<TargetsResult> {
+  const data = await getJson("/api/bridge/targets", options);
   return {
     targetIDs: data.targetIDs ?? null,
     targeterIDs: data.targeterIDs ?? null,
@@ -3090,8 +3097,35 @@ function asLastAlert(value: JsonValue | undefined): { message: string; atMs: num
   return { message, atMs: asNumberOrNull(row.atMs) ?? 0 };
 }
 
+/**
+ * The bot rosters several of the page's windows poll at once: the hangar's and the landing's markers every five
+ * seconds (GET /api/bots/active), the Bot Manager's, the Companions' and the server list's rosters every three
+ * (GET /api/bots, each account's own). Measured with the four windows open on the hangar page: 38 rosters and 6
+ * marker reads in 30 seconds, of the same few answers. Here one asking per roster, account and BFF is shared:
+ * whoever asks while it is on its way, or within ROSTER_SHARE_MS of its asking, is given the same answer. A start or
+ * stop of a bot lets every answer go, so that a window reading after its own press sees the press. A call with its
+ * own fetch (a test's) is never shared.
+ */
+const ROSTER_SHARE_MS = 2_000;
+const rosterReads = new Map<string, { readonly at: number; readonly answer: Promise<unknown> }>();
+
+function sharedRosterRead<T>(path: string, options: ApiOptions, read: () => Promise<T>): Promise<T> {
+  if (options.fetch) return read();
+  const key = `${options.baseUrl ?? ""} ${path} ${"token" in options ? `token:${options.token ?? ""}` : "tab"}`;
+  const now = Date.now();
+  const kept = rosterReads.get(key);
+  if (kept && now - kept.at < ROSTER_SHARE_MS) return kept.answer as Promise<T>;
+  const answer = read();
+  rosterReads.set(key, { at: now, answer });
+  // A failed asking is not handed on to the next asker: it asks for itself.
+  answer.catch(() => {
+    if (rosterReads.get(key)?.answer === answer) rosterReads.delete(key);
+  });
+  return answer;
+}
+
 export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
-  const data = await getJson("/api/bots", options);
+  const data = await sharedRosterRead("/api/bots", options, () => getJson("/api/bots", options));
   return Array.isArray(data.bots) ? data.bots.map(asServerBot) : [];
 }
 
@@ -3163,7 +3197,7 @@ function asActiveServerBot(value: JsonValue): ActiveServerBot {
  * ship vitals before any sign-in exists.
  */
 export async function listActiveServerBots(options: ApiOptions = {}): Promise<ActiveServerBot[]> {
-  const data = await getJson("/api/bots/active", options);
+  const data = await sharedRosterRead("/api/bots/active", options, () => getJson("/api/bots/active", options));
   return Array.isArray(data.bots) ? data.bots.map(asActiveServerBot) : [];
 }
 
@@ -3173,11 +3207,12 @@ export async function startServerBot(
   grant: BotLaunchGrant,
   options: ApiOptions = {},
 ): Promise<ServerBot> {
+  rosterReads.clear();
   const data = await postJson(
     "/api/bots/start",
     { characterID, scriptID, grant: grant as unknown as JsonValue },
     options,
-  );
+  ).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 
@@ -3200,6 +3235,7 @@ export async function startServerCompanion(
   grant: BotLaunchGrant,
   options: ApiOptions = {},
 ): Promise<ServerBot> {
+  rosterReads.clear();
   const data = await postJson(
     "/api/bots/start",
     {
@@ -3209,12 +3245,13 @@ export async function startServerCompanion(
       grant: grant as unknown as JsonValue,
     },
     options,
-  );
+  ).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 
 export async function stopServerBot(botID: string, options: ApiOptions = {}): Promise<ServerBot> {
-  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options);
+  rosterReads.clear();
+  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 

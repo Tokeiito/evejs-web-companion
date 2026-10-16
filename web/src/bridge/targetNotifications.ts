@@ -32,12 +32,13 @@
 //   "otheradd"   SOMEBODY ELSE locked this ship (`:33063`)
 //   "otherlost"  somebody else dropped their lock on this ship (`:33115`)
 //
-// ⚠ ONLY THE FIRST THREE ARE DECODED, AND THE OTHER TWO ARE NOT AN OVERSIGHT.
-// `otheradd`/`otherlost` carry the SOURCE ship's id, not a target of ours, and
-// they describe who is pointing at us — a different question, answered today by
-// `isTargetedByPlayer` off the space snapshot. Folding them into a lock list
-// would put another ship's id where this hull's own locks live, and every
-// `isAlreadyLocked` check downstream would read it as a lock we hold.
+// ⚠ THE FIRST THREE ARE DECODED HERE, THE OTHER TWO BY `decodeTargeterNotification`
+// BELOW, INTO A LIST OF THEIR OWN. `otheradd`/`otherlost` carry the SOURCE ship's
+// id, not a target of ours: who has this ship locked, the client's target
+// service's `targetedBy` (targetMgr.OnTargetByOther, 1162, and its loss, 1190).
+// Folding them into the lock list would put another ship's id where this hull's
+// own locks live, and every `isAlreadyLocked` check downstream would read it as
+// a lock we hold.
 //
 // ⚠ IT ALREADY REACHES THE BROWSER — no BFF route and no gateway patch. The web
 // gateway's notification stub suppresses exactly one method, `DoDestinyUpdate`
@@ -119,6 +120,48 @@ export function decodeTargetNotification(
     targetID,
     reason: what === "lost" ? reason : null,
   };
+}
+
+/** One `OnTarget` push about a ship that has this one locked: it has (`otheradd`), or no longer has (`otherlost`). */
+export interface TargeterEvent {
+  readonly locking: boolean;
+  /** The ship that locked this one, or let it go. */
+  readonly sourceID: number;
+}
+
+/**
+ * Decode one `OnTarget` push about a ship locking this one, or null when it is another method, another `what`, or
+ * names no ship that can be read. The client's target service takes it (targetMgr.OnTarget, 593 to 596) whether or
+ * not the ship's ball has come: `targetedBy` holds it at once.
+ */
+export function decodeTargeterNotification(
+  method: string | null,
+  args: readonly unknown[],
+): TargeterEvent | null {
+  if (method !== "OnTarget") {
+    return null;
+  }
+  const what = typeof args[0] === "string" ? args[0].trim() : "";
+  if (what !== "otheradd" && what !== "otherlost") {
+    return null;
+  }
+  const sourceID = positiveSafeID(args[1]);
+  return sourceID === null ? null : { locking: what === "otheradd", sourceID };
+}
+
+/**
+ * Fold one such push into the list of ships that have this one locked. The same array back when nothing changed. A
+ * ship named twice is listed once (the client logs it and keeps one, OnTargetByOther 1164).
+ */
+export function applyTargeterEvent(
+  lockedByIDs: readonly number[],
+  event: TargeterEvent,
+): readonly number[] {
+  if (event.locking) {
+    return lockedByIDs.includes(event.sourceID) ? lockedByIDs : [...lockedByIDs, event.sourceID];
+  }
+  const remaining = lockedByIDs.filter((id) => id !== event.sourceID);
+  return remaining.length === lockedByIDs.length ? lockedByIDs : remaining;
 }
 
 /**

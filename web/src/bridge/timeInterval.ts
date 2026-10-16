@@ -14,6 +14,10 @@
 // unit; one stands alone; more are joined with the list delimiter, and the last with the list form's
 // "and". (Japanese and Korean join differently; this does the others.)
 //
+// FormatTimeIntervalShort (103 to 116) is the clock's way, "02:15:07": every unit from the first shown to the last,
+// noughts and all, each with two figures (a millisecond's three), one alone or set side by side by the label for
+// that many (DateTimeShort2Elements to 7Elements). It is what a label's tag writes where it names no form.
+//
 // FormatTimeIntervalShortWritten (153 to 166) is the short way, "6d 8h 57m": the interval is first rounded
 // UP to a whole number of its last unit, divided the same way, and each unit that is not nought is
 // written with the client's short label for it. None at all is the last unit, at nought. One stands
@@ -66,15 +70,18 @@ export const INTERVAL_LABELS = Object.freeze({
   shortPart: (part: TimePart): string => `${SHORT_WRITTEN}/${named(part)}`,
   /** Takes value1 to value<count>: that many short parts side by side, for two to seven of them. */
   shortElements: (count: number): string => `${SHORT_WRITTEN}/DateTimeShortWritten${count}Elements`,
+  /** The clock's way: takes value1 to value<count>, each a unit's figures, for two to seven of them. */
+  shortFormElements: (count: number): string => `/Carbon/UI/Common/DateTimeQuantity/DateTimeShort${count}Elements`,
 });
 
-/** Every label an interval may need, for asking the words store. */
+/** Every label an interval may need, for asking the words store: its written forms and its clock's form. */
 export const INTERVAL_WORD_LABELS: readonly string[] = [
   ...TIME_PARTS.map(INTERVAL_LABELS.part),
   ...TIME_PARTS.map(INTERVAL_LABELS.lessThanOne),
   INTERVAL_LABELS.listForm,
   INTERVAL_LABELS.delimiter,
   INTERVAL_LABELS.shortAmount,
+  ...[2, 3, 4, 5, 6, 7].map(INTERVAL_LABELS.shortFormElements),
 ];
 
 /** Every label a short written interval may need. */
@@ -105,10 +112,11 @@ export function intervalParts(value: bigint, showFrom: TimePart, showTo: TimePar
 }
 
 /**
- * FormatTimeIntervalWritten(value, showFrom="year", showTo): the interval in the client's words, or null
- * when the client would refuse the interval or its words for it are not to hand.
+ * FormatTimeIntervalWritten(value, showFrom="year", showTo, maxParts): the interval in the client's words, or null
+ * when the client would refuse the interval or its words for it are not to hand. With `maxParts` only the first so
+ * many units that are not nought are written (_GetFormattedTimeString: timeList[:maxParts]).
  */
-export function writtenInterval(value: bigint, showTo: TimePart, templates: Templates, showFrom: TimePart = "year"): string | null {
+export function writtenInterval(value: bigint, showTo: TimePart, templates: Templates, showFrom: TimePart = "year", maxParts: number | null = null): string | null {
   const parts = intervalParts(value, showFrom, showTo);
   if (parts === null) {
     return null;
@@ -126,6 +134,9 @@ export function writtenInterval(value: bigint, showTo: TimePart, templates: Temp
       }
       written.push(text);
     }
+  }
+  if (maxParts !== null && maxParts > 0) {
+    written.splice(maxParts);
   }
   if (written.length === 0) {
     return words(INTERVAL_LABELS.lessThanOne(showTo));
@@ -169,6 +180,27 @@ export function shortWrittenInterval(value: bigint, templates: Templates, showFr
 }
 
 /**
+ * FormatTimeIntervalShort(value, showFrom, showTo): the interval the clock's way, in the client's words, or null when
+ * the client would refuse the interval or its words for it are not to hand. Every unit from `showFrom` to `showTo`
+ * is written, noughts too, with two figures at least (FormatNumeric(part, leadingZeroes=2), a millisecond's three).
+ */
+export function shortFormInterval(value: bigint, templates: Templates, showFrom: TimePart = "year", showTo: TimePart = "second"): string | null {
+  const parts = intervalParts(value, showFrom, showTo);
+  if (parts === null) {
+    return null;
+  }
+  const figures = parts.map(([part, count]) => count.toString().padStart(part === "millisecond" ? 3 : 2, "0"));
+  if (figures.length === 1) {
+    return figures[0]!;
+  }
+  const template = templates[INTERVAL_LABELS.shortFormElements(figures.length)];
+  if (typeof template !== "string") {
+    return null;
+  }
+  return plainText(formatTemplate(template, Object.fromEntries(figures.map((text, index) => [`value${index + 1}`, text])), { nameOf: () => "" }));
+}
+
+/**
  * For a label's {[timeinterval]x.writtenForm, from=…, to=…} (timeIntervalPropertyHandler._GetWrittenForm):
  * the interval written from `from` (years, unless the tag says) down to `to` (seconds, unless it says).
  * Null for a unit the client does not have, as for words that are not to hand.
@@ -191,6 +223,43 @@ export function shortIntervalWriter(templates: Templates): (ticks: bigint, from:
     const showFrom = part(from, "year");
     const showTo = part(to, "second");
     return showFrom === null || showTo === null ? null : shortWrittenInterval(ticks, templates, showFrom, showTo);
+  };
+}
+
+/** The same for {[timeinterval]x.writtenFormTwoPart, …} (_GetWrittenFormTwoPart: the written form, two units at most). */
+export function twoPartIntervalWriter(templates: Templates): (ticks: bigint, from: string | null, to: string | null) => string | null {
+  const part = (name: string | null, otherwise: TimePart): TimePart | null =>
+    name === null ? otherwise : (TIME_PARTS as readonly string[]).includes(name) ? (name as TimePart) : null;
+  return (ticks, from, to) => {
+    const showFrom = part(from, "year");
+    const showTo = part(to, "second");
+    return showFrom === null || showTo === null ? null : writtenInterval(ticks, showTo, templates, showFrom, 2);
+  };
+}
+
+/** The same for {[timeinterval]x.shortForm, …}, and for a tag that names no form (_GetDefault is _GetShortForm). */
+export function shortFormIntervalWriter(templates: Templates): (ticks: bigint, from: string | null, to: string | null) => string | null {
+  const part = (name: string | null, otherwise: TimePart): TimePart | null =>
+    name === null ? otherwise : (TIME_PARTS as readonly string[]).includes(name) ? (name as TimePart) : null;
+  return (ticks, from, to) => {
+    const showFrom = part(from, "year");
+    const showTo = part(to, "second");
+    return showFrom === null || showTo === null ? null : shortFormInterval(ticks, templates, showFrom, showTo);
+  };
+}
+
+/** All four of a label's interval forms, as a label's formatter takes them (FormatContext). */
+export function intervalWriters(templates: Templates): {
+  readonly writeInterval: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  readonly writeShortInterval: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  readonly writeIntervalTwoPart: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  readonly writeIntervalShortForm: (ticks: bigint, from: string | null, to: string | null) => string | null;
+} {
+  return {
+    writeInterval: intervalWriter(templates),
+    writeShortInterval: shortIntervalWriter(templates),
+    writeIntervalTwoPart: twoPartIntervalWriter(templates),
+    writeIntervalShortForm: shortFormIntervalWriter(templates),
   };
 }
 

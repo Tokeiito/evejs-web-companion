@@ -92,6 +92,27 @@
 
   const stationCount = $derived($assets.stations.length);
 
+  // assetsWindow.GetLocationData (599 to 606): each place's route from where the pilot is, the autopilot's way with the
+  // pilot's settings (GetAutopilotJumpCount), and "No gate-to-gate route" where there is none.
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
+  const hereSystem = $derived($flight.status?.solarSystemID ?? null);
+  const NO_ROUTE = "UI/Generic/NoGateToGateRoute";
+  function routeText(row: AssetStationRow): string {
+    if (hereSystem === null) return "";
+    if (row.solarSystemID === hereSystem) return "0";
+    const count = $names.autopilotJumps[`${hereSystem}:${row.solarSystemID}`];
+    if (count === undefined) return "";
+    return count === null ? word(NO_ROUTE, "No route") : String(count);
+  }
+  // Asked again when the autopilot's settings change, which lets the counts go.
+  $effect(() => {
+    void $names.autopilotJumps;
+    if (hereSystem === null) return;
+    const systems = [...new Set($assets.stations.map((row) => row.solarSystemID).filter((id) => id > 0 && id !== hereSystem))];
+    if (systems.length > 0) flow.requestAutopilotJumps(hereSystem, systems);
+  });
+
   const openStation = $derived(
     $assets.expandedStationID === null
       ? null
@@ -132,7 +153,7 @@
   }
 
   onMount(() => {
-    flow.requestWords(Object.values(ROUTE_WORDS));
+    flow.requestWords([...Object.values(ROUTE_WORDS), NO_ROUTE]);
     void run(() => flow.loadPersonalAssets());
   });
 </script>
@@ -201,6 +222,7 @@
           <tr>
             <th>Place</th>
             <th>System</th>
+            <th class="num">Jumps</th>
             <th class="num">Holding</th>
             <th></th>
           </tr>
@@ -215,6 +237,7 @@
                 </span>
               </td>
               <td data-label="System">{systemName(row.solarSystemID)}</td>
+              <td class="num" data-label="Jumps">{routeText(row)}</td>
               <td class="num" data-label="Holding">{stackText(row.itemCount)}</td>
               <td data-label="">
                 <div class="row-actions">

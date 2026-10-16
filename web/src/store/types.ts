@@ -276,6 +276,11 @@ export interface OpenContainerState {
   readonly typeID: number;
   readonly rows: readonly InventoryItemRow[];
   readonly capacity: CapacityInfo | null;
+  /**
+   * False for a container the client keeps no capacity for (a wreck: invControllers.py ItemWreck, hasCapacity
+   * False), drawn with no gauge and the volume of what is in it. Absent or true otherwise.
+   */
+  readonly hasCapacity?: boolean;
   readonly error: string | null;
 }
 
@@ -1367,6 +1372,12 @@ export interface MissionPageState {
   readonly missionTitle: string | null;
   readonly objectives: MissionObjectives | null;
   readonly record: import("../bridge/missionPage.ts").ClientMission | null;
+  /**
+   * When the mission was accepted, a FILETIME as a decimal string: the first of its journal bookmarks that says when
+   * it was made (AgentMissionJob._update_objective_info); null for an offer, or where none says. The bonus's
+   * countdown runs from it.
+   */
+  readonly acceptTime?: string | null;
 }
 
 /** The decoded mission journal: active + offered missions. */
@@ -2066,6 +2077,8 @@ export interface SpaceShipStatus {
   readonly name: string | null;
   readonly mode: string | null;
   readonly maxVelocity: number | null;
+  /** The speed the ship was told to make, as a share of its top speed (the ball's speedFraction); absent where not said. */
+  readonly speedFraction?: number | null;
   /**
    * The ship's own hull radius, so the client can measure SURFACE distance the
    * way the server does — max(0, centre-to-centre - rA - rB). The autopilot
@@ -2263,6 +2276,11 @@ export interface LockedTarget {
 export interface TargetingState {
   readonly lockedTargetIDs: readonly number[];
   readonly acquiringTargetIDs: readonly number[];
+  /**
+   * The ships that have the pilot's locked, in the order they did: the client's target service's targetedBy
+   * (GetTargeters' answer, then OnTarget 'otheradd' and 'otherlost'). Absent until first read.
+   */
+  readonly lockedByIDs?: readonly number[];
   /** True once a GetTargets read has populated the slice. */
   readonly loaded: boolean;
   /** The last lock/unlock/activate action issued, for the status readout. */

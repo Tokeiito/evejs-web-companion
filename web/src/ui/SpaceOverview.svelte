@@ -132,8 +132,10 @@
   const words = store.words;
   // A distance's unit in the client's own words: asked for once, and used when they are to hand.
   const say = $derived(distanceSay($words.templates));
+  /** The client's overview tooltip for a ship that has the pilot's locked (overviewScrollEntry, threatTargetsMe). */
+  const TARGET_LOCK_LABEL = "Tooltips/Overview/TargetLock";
   $effect(() => {
-    flow.requestWords([...DISTANCE_WORD_LABELS, ...COLUMN_WORD_LABELS]);
+    flow.requestWords([...DISTANCE_WORD_LABELS, ...COLUMN_WORD_LABELS, TARGET_LOCK_LABEL]);
   });
   /** A label's words from the install, or the page's own where they are not to hand. */
   function columnWord(label: string | undefined, own: string): string {
@@ -539,6 +541,10 @@
 
   const lockedIDs = $derived(new Set($targeting.lockedTargetIDs ?? []));
   const acquiringIDs = $derived(new Set($targeting.acquiringTargetIDs ?? []));
+  // The ships that have the pilot's locked: the client's targetedBy, drawn as its blinking bracket round the row's icon
+  // (spaceObjectIcon.SetHostileState) and said in its tooltip.
+  const lockedByIDs = $derived(new Set($targeting.lockedByIDs ?? []));
+  const lockedByWord = $derived(columnWord(TARGET_LOCK_LABEL, "Has your ship locked"));
 
   const selectedActions = $derived.by<readonly RowAction[]>(() => {
     const row = selectedRow;
@@ -1770,7 +1776,11 @@
             <button type="button" class="spc-row-btn" style="grid-template-columns: {gridColumns}" aria-pressed={row.itemID === selectedID} onclick={() => pick(row.itemID)}>
               {#each shownCols as column (column)}
               {#if column === "ICON"}
-              <span class="spc-cell-icon">
+              <span
+                class="spc-cell-icon"
+                class:locked-by={lockedByIDs.has(row.itemID)}
+                title={lockedByIDs.has(row.itemID) ? lockedByWord : undefined}
+              >
                 <TypeIcon typeID={row.typeID} name={rowName(row)} size="sm" />
               </span>
               {:else if column === "NAME"}

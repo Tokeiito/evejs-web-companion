@@ -3160,6 +3160,9 @@ function sendPlaceError(res, error) {
   return false;
 }
 
+/** const.groupWreck: a wreck's group, which the client opens with no capacity (menusvc._OpenCargo, ItemWreck). */
+const GROUP_WRECK = 186;
+
 /**
  * A container's capacity as the retail client reckons it (invCache.py 1224 on,
  * asked with no flag): the capacity of the container's TYPE
@@ -3205,6 +3208,11 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
   // cannot be reckoned, and on the gateway, GetCapacity is asked as before.
   const containerTypeID = nonNegativeIntQuery(req.query.typeID, 0);
   const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+  // menusvc._OpenCargo: a wreck (const.groupWreck, 186) is opened as an ItemWreck, which has no capacity
+  // (invControllers.py 1634 to 1636: hasCapacity False). For one, nothing is reckoned and nothing asked, on either
+  // transport; its type's own capacity (27,500 m³ in the static tables) is not what the client shows.
+  const containerType = containerTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(containerTypeID) : null;
+  const wreck = Boolean(containerType) && Number(containerType.groupID) === GROUP_WRECK;
   try {
     const asked = () => boundCall(held, req.webSessionID, spec, "GetCapacity", [], null);
     const listed = boundCall(held, req.webSessionID, spec, "List", [], null);
@@ -3217,7 +3225,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
     };
     const [list, capacity] = await Promise.allSettled([
       listed,
-      !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
+      wreck ? { result: null } : !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
     ]);
     for (const settled of [list, capacity]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
@@ -3236,6 +3244,10 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // A container that reports no capacity is still browsable; the panel
       // simply omits the gauge.
       capacity: capacity.status === "fulfilled" ? capacity.value.result : null,
+      // Whether the client's controller for it has a capacity at all (invControllers.py hasCapacity): a wreck's
+      // (ItemWreck) has none, and the client draws it with no gauge and the volume of what is in it
+      // (container.py UpdateLabel, UI/Inventory/ContainerCapacity). Not a capacity unread.
+      hasCapacity: !wreck,
       // Per-type VOLUME, from static reference data — the same lookup the
       // inventory and asset routes already use, so no bridge call and no new
       // allowlist pair. Volume is a property of the TYPE, never of the stack.
@@ -4134,7 +4146,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
   if (!held) {
     return;
   }
-  // A typeID is OPTIONAL: the player's own orders, transactions and escrow are
+  // A typeID is OPTIONAL: the player's own orders and escrow are
   // worth showing before they have picked an item to look at.
   const typeID = Number(req.query.typeID) || 0;
   try {
@@ -4145,19 +4157,19 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // Six INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
     // player whose order book fails to load still sees their own orders and
     // their ISK.
-    const [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld] =
+    // The pilot's trades are not asked here: the client keeps them in its market service, asked once and let go
+    // when its own orders change (marketSvc.GetPersonalMarketTransactions, 20 to 35), and the page reads them so
+    // (flow.loadMarketTransactions). Asked with every market read, they went twice where the client asks once.
+    // Nor the pilot's ISK: the client's wallet service asks it once and keeps it as OnAccountChange says (walletSvc.py
+    // 41 to 49, 81 to 100); the page keeps it so (walletReads.wealth) and the market window shows that.
+    const [book, ownOrders, history, escrow, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
           : Promise.resolve({ result: null }),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
-        // fromDate 0 = everything the server still keeps.
-        heldTopLevelCall(held, req.webSessionID, "marketProxy", "CharGetTransactions", [0], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
-        // Already allowlisted since R6. The wallet sits beside the order book
-        // so the player can see what they have before they spend it.
-        heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
@@ -4168,7 +4180,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
           : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld];
+    const settled = [book, ownOrders, history, escrow, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -4208,9 +4220,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },
-      transactions: { result: valueOf(transactions), error: codeOf(transactions) },
       escrow: { result: valueOf(escrow), error: codeOf(escrow) },
-      cashBalance: { result: valueOf(balance), error: codeOf(balance) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
       priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage
@@ -7496,15 +7506,16 @@ function stringQuery(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// GET /api/bridge/presence?targetID= — the onlineStatus reads, as THREE
-// independent reads (Promise.allSettled). All scope off the SESSION observer:
+// GET /api/bridge/presence?targetID= — the onlineStatus reads, as TWO
+// independent reads (Promise.allSettled). Both scope off the SESSION observer:
 //   • GetOnlineStatus(targetID) -> a BARE BOOLEAN (is that character online).
 //     targetID from ?targetID= (default 0 -> false; no contact named).
 //   • GetInitialState()         -> a Rowset[contactID, online] (the observer's
 //     whole contact-presence snapshot; empty for a character with no contacts).
-//   • Prime()                   -> ⚠ NOT void here: delegates to GetInitialState,
-//     so it returns the SAME Rowset. Wired for completeness; the decoder treats
-//     it identically. ⚠ contactID stays as data for later name resolution (R7d).
+//     ⚠ contactID stays as data for later name resolution (R7d).
+// Not Prime(): the client never asks the server for it. Prime is its online
+// status service's own method, which asks GetInitialState() once and keeps it
+// (comtool/onlineStatus.py 74 to 82).
 app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -7512,12 +7523,11 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   }
   const targetID = nonNegativeIntQuery(req.query.targetID, 0);
   try {
-    const [onlineStatus, initialState, prime] = await Promise.allSettled([
+    const [onlineStatus, initialState] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetOnlineStatus", [targetID], null),
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetInitialState", [], null),
-      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "Prime", [], null),
     ]);
-    for (const outcome of [onlineStatus, initialState, prime]) {
+    for (const outcome of [onlineStatus, initialState]) {
       if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
         next(outcome.reason);
         return;
@@ -7534,11 +7544,9 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
       requested: { targetID },
       onlineStatus: settledValue(onlineStatus),
       initialState: settledValue(initialState),
-      prime: settledValue(prime),
       errors: {
         onlineStatus: settledCode(onlineStatus),
         initialState: settledCode(initialState),
-        prime: settledCode(prime),
       },
     });
   } catch (error) {
@@ -9476,26 +9484,21 @@ async function readLockedTargetIDs(held, webSessionID) {
 }
 
 /**
- * The itemIDs that have this ship locked RIGHT NOW (dogmaIM.GetTargeters), or
- * null when that could not be read.
+ * The ships that have the pilot's locked RIGHT NOW (dogmaIM.GetTargeters), asked straight after GetTargets as the
+ * client's godma.RefreshTargets asks it (2364); the client keeps the answer as its target service's targetedBy, each
+ * one OnTarget('otheradd'). On the game port it is answered from the list kept the same way.
  *
- * The same authority and the same keeping as `readLockedTargetIDs`: on the game
- * port the pilot's target service answers it from the server's own
- * OnTarget('otheradd' / 'otherlost') notices (src/gamePort/pilotTargets.js),
- * which is how the retail client knows what is targeting it. An NPC lock sends
- * them too (`scene/targeting.js`).
- *
- * ⚠ A FAILURE IS null, NEVER A THROW. The lock list beside it is what the
- * Targeting panel reads, and a page must not lose that because this half could
- * not answer.
+ * ⚠ A FAILURE IS UNREADABLE, NEVER A THROW. The lock list beside it is what the Targeting panel reads, and a page
+ * must not lose that because this half could not answer.
  */
 async function readTargeterIDs(held, webSessionID) {
   try {
     const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
     const raw = outcome.result;
-    return raw?.type === "list" && Array.isArray(raw.items) ? decodeTargetIDList(raw) : null;
+    const readable = raw?.type === "list" && Array.isArray(raw.items);
+    return { ids: decodeTargetIDList(raw), readable, notifications: outcome.notifications };
   } catch {
-    return null;
+    return { ids: [], readable: false, notifications: [] };
   }
 }
 
@@ -9537,15 +9540,13 @@ app.get("/api/bridge/targets", requireAuth, async (req, res, next) => {
   }
   try {
     const locked = await readLockedTargetIDs(held, req.webSessionID);
-    // Only when asked: through the gateway it is a second call, and only the
-    // fleet companion's tick needs it.
-    const targeterIDs = req.query.targeters === "1" ? await readTargeterIDs(held, req.webSessionID) : null;
-    // A malformed read cannot prove that the caller has no locked targets.
+    const targeters = await readTargeterIDs(held, req.webSessionID);
+    // A malformed read cannot prove that the caller has no locked targets, nor that nothing has the caller locked.
     res.json({
       ok: true,
       targetIDs: locked.readable ? locked.ids : null,
-      targeterIDs,
-      notifications: locked.notifications,
+      targeterIDs: targeters.readable ? targeters.ids : null,
+      notifications: [...locked.notifications, ...targeters.notifications],
     });
   } catch (error) {
     next(error);

@@ -67,7 +67,17 @@ const vector = (v) => ({ x: v.x, y: v.y, z: v.z });
  * placed itself, an ordinary celestial to a client), and anything in a category
  * not listed, which answers null.
  */
+/**
+ * The client's containers in space, of whatever category (menu/__init__.py CONTAINERGROUPS; inventorycommon/const.py):
+ * cargo, spawn, spew, secure, audit log and freight containers, an overseer's belongings and a mission container,
+ * and a wreck. A spawn container and a mission container are of the Entity category, where the ships nobody flies
+ * are; taken for a ship, one was called a pirate and counted a hostile.
+ */
+const CONTAINER_GROUPS_IN_SPACE = new Set([12, 306, 1207, 340, 448, 649, 496, 952]);
+
 function kindOf(categoryID, groupID) {
+  if (groupID === GROUP.WRECK) return "wreck";
+  if (CONTAINER_GROUPS_IN_SPACE.has(groupID)) return "container";
   switch (categoryID) {
     case CATEGORY.SHIP: return "ship";
     case CATEGORY.STATION: return "station";
@@ -366,6 +376,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       // is the thing the pilot asked to warp to, which the client remembers from its own order.
       warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination, warpBookmark) : null,
       maxVelocity: own.maxVelocity,
+      // The speed the ship was told to make, as a share of its top speed (the ball's speedFraction): what the flight
+      // read says of it too, here as fresh as the reading.
+      speedFraction: egoBall ? egoBall.speedFraction : null,
       radius: own.radius,
       position: own.position,
       velocity: own.velocity,

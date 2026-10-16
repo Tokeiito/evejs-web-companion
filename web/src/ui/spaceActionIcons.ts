@@ -57,6 +57,8 @@ export const SPACE_ACTION_GLYPHS: Readonly<Record<RowActionID, SpaceActionGlyph>
   jump: ["M9 4a6 8 0 1 0 0 16", "M12 12h8", "M17 9l3 3-3 3"],
   // Activate Gate: an arch, and the way on through it.
   activateGate: ["M5 20V10a7 7 0 0 1 14 0v10", "M12 18V10", "M9 13l3-3 3 3"],
+  // Open Cargo: a crate with its lid lifted.
+  openCargo: ["M4 12h16v8H4z", "M4 12l1-3", "M20 12l-1-3", "M5 7l14-3"],
   // Lock: the four target brackets closing on it.
   lock: ["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"],
   // Unlock: the same brackets, struck through. Not a shared glyph — see above.

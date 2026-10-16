@@ -1843,7 +1843,7 @@ const RETAIL_CALLS = Object.freeze({
   "charUnboundMgr.ValidateNameEx": typing(reshaped(
     `${CC_STEPS}/sections/chooseNameSection.py:201`,
     ([name, checked, ...rest], kwargs) => ({ args: [name, checked ?? 0, ...rest], kwargs }),
-    "ValidateNameEx(charName, how many names the screen has checked before this one), the name the name field's, stripped (192), so unicode. The BFF keeps no such screen and checks the one name it is about to create, so it sends 0, as the client does with its first.",
+    "ValidateNameEx(charName, how many names the screen has checked before this one), the name the name field's, stripped (192), so unicode. The page's creation screen keeps the client's count (each name asked once, a rolled name kept as valid) and sends it; the BFF's own check of the one name it is about to create sends 0, as the client does with its first.",
   ), [0]),
   "charUnboundMgr.CreateCharacterWithDoll": typing(differs(
     `${CC_SVC}:97`,

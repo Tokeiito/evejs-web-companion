@@ -288,6 +288,18 @@
     }
   });
 
+  // A can or a wreck opened by Open Cargo (flow.openCargo): its place shown, as the client's Inventory.OpenOrShow
+  // shows it in the primary window; also where this window is drawn for it.
+  // svelte-ignore state_referenced_locally
+  const cargoShown = flow.cargoShown;
+  let servedCargoShown = 0;
+  $effect(() => {
+    const shown = $cargoShown;
+    if (shown === null || shown.n === servedCargoShown) return;
+    servedCargoShown = shown.n;
+    if ($inventory.container?.itemID === shown.itemID) view = "container";
+  });
+
   // The container closed under us (or was never open): fall back rather than
   // sit on a location that no longer exists.
   $effect(() => {
@@ -846,6 +858,12 @@
     });
   });
 
+  /** The room what is in a place takes, as a capacity with no limit; null where a row's volume is not known. */
+  function usedOnly(rows: readonly InventoryItemRow[]): CapacityInfo | null {
+    const used = sumVolume(rows);
+    return used === null ? null : { used, capacity: 0 };
+  }
+
   const containerGroup = $derived.by<Group | null>(() => {
     const open = container;
     if (!open) {
@@ -856,8 +874,10 @@
       title: containerName(),
       place: { kind: "container", itemID: open.itemID },
       rows: open.error ? null : open.rows,
-      capacity: open.capacity,
-      hasLimit: true,
+      // A wreck has no capacity in the client (ItemWreck): no gauge, and the volume of what is in it
+      // (container.py UpdateLabel, UI/Inventory/ContainerCapacity); not known where a row's volume is not.
+      capacity: open.hasCapacity === false ? usedOnly(open.rows) : open.capacity,
+      hasLimit: open.hasCapacity !== false,
       error: open.error,
       emptyText: "This container is empty.",
     });

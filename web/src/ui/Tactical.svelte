@@ -161,6 +161,8 @@
   });
   const rings = $derived(width > 0 && height > 0 ? tacticalRings() : []);
   const labelled = $derived(labelledBracketIDs(brackets, $selected));
+  // The ships that have the pilot's locked, marked as the client's space brackets mark them.
+  const lockedBy = $derived(new Set($targeting.lockedByIDs ?? []));
 
   /** A bracket's name as the player reads it: its own, else its type's (R7d). */
   function bracketName(bracket: TacticalBracket): string {
@@ -230,6 +232,7 @@
       palette: readPalette(element),
       nameOf: bracketName,
       say,
+      lockedBy,
     });
   }
 
@@ -248,6 +251,7 @@
     void brackets;
     void rings;
     void labelled;
+    void lockedBy;
     void $selected;
     void width;
     void height;
@@ -448,6 +452,9 @@
       locked: $targeting.lockedTargetIDs.includes(picked),
       acquiring: $targeting.acquiringTargetIDs.includes(picked),
       gateLink: gateLinkFor($space.gateLinks, picked),
+      // Open Cargo's: the thing's group, and whether the ship warps.
+      groupID: row.groupID ?? null,
+      warping: $space.snapshot?.ship?.mode === "WARP",
       // Passed even though the multi-step filter below drops "Mine this"
       // anyway: the ring and the bar must hand the SAME context to the same
       // decider, or they will one day disagree about a verb neither filters.

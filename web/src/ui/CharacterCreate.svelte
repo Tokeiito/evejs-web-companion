@@ -60,6 +60,11 @@
 
   let nameCode = $state<number | null>(null);
   let nameChecking = $state(false);
+  // chooseNameSection.namesChecked: each name the screen has had an answer for, and the answer, so that a name is
+  // asked about once; a name rolled is kept as valid (RandomizeName, CacheNameValid(name, True)). How many there are
+  // goes with each asking. Not reactive: it is the screen's memory, not something drawn.
+  const VALID = 1;
+  const namesChecked = new Map<string, number>();
   let rollingName = $state(false);
   let creating = $state(false);
   let error = $state("");
@@ -132,8 +137,9 @@
     void load();
   });
 
-  // Debounced name check. The timer is cleared on teardown AND on every keystroke,
-  // so a burst of typing produces one read rather than one per character.
+  // The name checked a second after the last keystroke (chooseNameSection.OnTextEditChange, _CheckNameValidThread:
+  // Sleep(1.0), then CheckAvailability). The timer is cleared on teardown AND on every keystroke, so a burst of
+  // typing produces one read rather than one per character; a name already answered is not asked again.
   $effect(() => {
     const candidate = trimmedName;
     if (!candidate) {
@@ -141,11 +147,18 @@
       nameChecking = false;
       return;
     }
+    const kept = namesChecked.get(candidate);
+    if (kept !== undefined) {
+      nameCode = kept;
+      nameChecking = false;
+      return;
+    }
     nameChecking = true;
     const handle = setTimeout(() => {
       void (async () => {
         try {
-          const code = await validateCharacterName(candidate, flow.requestOptions());
+          const code = await validateCharacterName(candidate, flow.requestOptions(), namesChecked.size);
+          if (code !== null) namesChecked.set(candidate, code);
           // Ignore a verdict for a name the player has already typed past.
           if (candidate === trimmedName) {
             nameCode = code;
@@ -159,7 +172,7 @@
           }
         }
       })();
-    }, 350);
+    }, 1000);
     return () => clearTimeout(handle);
   });
 
@@ -172,6 +185,7 @@
     try {
       const rolled = await rollRandomCharacterName(raceID, flow.requestOptions());
       if (rolled) {
+        namesChecked.set(rolled.trim().replace(/\s+/g, " "), VALID);
         name = rolled;
       }
     } catch (cause) {

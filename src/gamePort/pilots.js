@@ -177,6 +177,8 @@ const WARS_AGAIN_AFTER_MS = WARS_GOOD_FOR_MS + 10 * 1000;
  * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
  */
 const AGGRESSION_SETTINGS = "GetAggressionSettings";
+/** bco_corporations.GetCorporation: the pilot's corporation's own row, asked of its registry with nothing. */
+const CORPORATION_ROW = "GetCorporation";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
  * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None), and all_cso.GetMoniker
@@ -1553,18 +1555,22 @@ function createGamePortPilots({
     if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
     if (characterID === null) throw fail("CALL_INVALID", "SelectCharacterID needs a character.");
 
-    // The account's own connection, if it has one and nothing is being asked on it, is closed first: the retail client
-    // has one connection, and the server closes an account's others as it logs in (closedByServerByCharacter).
+    // The retail client has one connection, logged in once: it chooses its character on the connection its selection
+    // screen asked on. Where the account's own connection is open and nothing is being asked on it, the character is
+    // chosen there, with what its login read (handOver); else one is opened and logged in here, as the account's would
+    // have been. (The server closes an account's other connections as one logs in: closedByServerByCharacter.)
     const line = accountLines.get(accountID);
-    if (line && line.calls === 0) line.hangUp();
+    const handed = line && line.calls === 0 ? await line.handOver() : null;
 
-    let transport;
-    try {
-      transport = await connect();
-    } catch {
-      throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
+    let transport = null;
+    if (!handed) {
+      try {
+        transport = await connect();
+      } catch {
+        throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
+      }
     }
-    const session = createSession(transport);
+    const session = handed ? handed.session : createSession(transport);
     const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
@@ -1760,11 +1766,13 @@ function createGamePortPilots({
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
       lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
-      targets: createPilotTargets(),
+      targets: createPilotTargets({ hasBall: (id) => ballInPark(entry, id) }),
       targetsWork: Promise.resolve(),
       targetsOwed: false,
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
+      /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
+      corporationRow: null,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -1970,6 +1978,8 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
+        // bco_corporations.Reset: another corporation's row is another's to ask for.
+        entry.corporationRow = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
@@ -1990,33 +2000,23 @@ function createGamePortPilots({
     let result;
     let row;
     try {
-      await session.login(userName, passwordFor(userName));
+      if (!handed) await session.login(userName, passwordFor(userName));
       // The login function the server sends has been answered: if it was the one that frees the client's clock, this pilot's is free.
       clock.loggedIn(session.handshakeAnswer);
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
-      // eveCfg's loading, as a client comes onto the server: the planets no colony may be put on are asked for as
-      // its data are loaded, and the old stations' rows by a thread nobody waits on (367, 475 to 477; 701, 741 to
-      // 753). In the retail client's own login, the first two calls after the service info.
-      await cfgLoaded(entry);
-      // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
-      averagePricesThread(entry);
-      // AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): the global config come, and
-      // whether the AIR tutorial is enabled is asked. With no character on the session nothing follows from the
-      // answer (is_air_npe_active, 85 to 88 and 95 to 96). A server that refuses fails no login.
-      await airNpeEnabledAsked(entry).catch(() => {});
-      // raffleSvc.is_available (39 to 53), which the commands' list asks as it is made (eveCommands.py 744): on a
-      // session with a country, whether the user is banned from the raffles. A server that refuses fails no login.
-      await raffleBanAsked(entry).catch(() => {});
-      // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
-      // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
-      await cloneGradeRead(entry).catch(() => {});
+      // What the client reads as it logs in: here, or taken from the account's connection the character is chosen on.
+      if (handed) await loginReadsTaken(entry, handed.read);
+      else await loginReads(entry);
       // The character selection screen, as the retail client fills and leaves it.
-      for (const method of ["GetCharacterSelectionData", "GetCharacterLockType", "SelectCharacterID"]) {
+      // The selection screen's data is what the screen asked on this connection, where it was the account's and asked
+      // it (the client chooses from the screen it filled, and asks no second time); else it is asked here.
+      const selectionKept = handed && handed.selection !== undefined ? handed.selection : undefined;
+      for (const method of [...(selectionKept === undefined ? ["GetCharacterSelectionData"] : []), "GetCharacterLockType", "SelectCharacterID"]) {
         ledger.note("charUnboundMgr", method, shape("charUnboundMgr", method, [], null));
       }
-      const selection = wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", []));
+      const selection = wireToBridgeJson(selectionKept !== undefined ? selectionKept : await session.call("charUnboundMgr", "GetCharacterSelectionData", []));
       row = selectionRow(selection, characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
       entry.selection = selection;
@@ -2451,6 +2451,7 @@ function createGamePortPilots({
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
+      (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -3531,7 +3532,48 @@ function createGamePortPilots({
     ledger.note("config", "GetBlackListedPlanets", PLANET_BLACKLIST_AS_THE_CLIENT_ASKS);
     await entry.session.call("config", "GetBlackListedPlanets", [], null).then((answered) => { entry.planetBlacklist = answered; }, () => {});
     ledger.note("config", "GetOldStationData", OLD_STATIONS_AS_THE_CLIENT_ASKS);
-    Promise.resolve().then(() => entry.session.call("config", "GetOldStationData", [], null)).then((answered) => { entry.oldStations = answered; }, () => {});
+    entry.oldStationsAsking = Promise.resolve().then(() => entry.session.call("config", "GetOldStationData", [], null)).then((answered) => { entry.oldStations = answered; }, () => {});
+  }
+
+  /**
+   * What the client reads as it logs in, before its selection screen: the cfg's two askings as it loads (cfgLoaded),
+   * the price table's thread, whether the AIR tutorial is on (airnpe.py 73), whether the user is banned from the
+   * raffles (raffle_service.py 52), and the clone grade. Each is kept on whatever holds the connection: a pilot's entry,
+   * or the account's connection until a character is chosen on it (loginReadsTaken).
+   */
+  async function loginReads(holder) {
+    // eveCfg's loading, as a client comes onto the server: the planets no colony may be put on are asked for as
+    // its data are loaded, and the old stations' rows by a thread nobody waits on (367, 475 to 477; 701, 741 to
+    // 753). In the retail client's own login, the first two calls after the service info.
+    await cfgLoaded(holder);
+    // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
+    averagePricesThread(holder);
+    // AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): the global config come, and
+    // whether the AIR tutorial is enabled is asked. With no character on the session nothing follows from the
+    // answer (is_air_npe_active, 85 to 88 and 95 to 96). A server that refuses fails no login.
+    await airNpeEnabledAsked(holder).catch(() => {});
+    // raffleSvc.is_available (39 to 53), which the commands' list asks as it is made (eveCommands.py 744): on a
+    // session with a country, whether the user is banned from the raffles. A server that refuses fails no login.
+    await raffleBanAsked(holder).catch(() => {});
+    // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
+    // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
+    await cloneGradeRead(holder).catch(() => {});
+  }
+
+  /**
+   * A character chosen on the account's connection takes what that connection's login read: answered, or once its
+   * asking under way is. The price table's thread, where it has not asked yet, starts again on the pilot (the client's
+   * runs once, two seconds after its cfg loads; here those two seconds are counted again from the choosing).
+   */
+  async function loginReadsTaken(entry, read) {
+    await Promise.all([read.oldStationsAsking, read.averagePricesAsking].map((asking) => (asking ? asking.catch(() => {}) : null)));
+    for (const name of ["planetBlacklist", "oldStations", "airNpeEnabled", "raffleBanned", "cloneGrade", "averagePrices"]) {
+      if (read[name] !== undefined && read[name] !== null) entry[name] = read[name];
+    }
+    if (read.averagePricesTimer) {
+      averagePricesThreadEnded(read);
+      averagePricesThread(entry);
+    }
   }
 
   /**
@@ -3709,7 +3751,7 @@ function createGamePortPilots({
     entry.averagePricesTimer = timers.setTimeout(() => {
       entry.averagePricesTimer = null;
       ledger.note("config", "GetAverageMarketPrices", PRICES_AS_THE_CLIENT_ASKS);
-      Promise.resolve().then(() => entry.session.call("config", "GetAverageMarketPrices", [], null))
+      entry.averagePricesAsking = Promise.resolve().then(() => entry.session.call("config", "GetAverageMarketPrices", [], null))
         .then((answered) => { entry.averagePrices = pricesByType(answered); }, () => {});
     }, averagePricesAfterMs);
     // The timer is not what keeps this process up.
@@ -3924,7 +3966,9 @@ function createGamePortPilots({
   function accountLine(accountID, userName) {
     const have = accountLines.get(accountID);
     if (have) return have;
-    const line = { session: null, opening: null, calls: 0, timer: null };
+    // `read`: what the login read (loginReads), handed to a character chosen on this connection.
+    // `selection`: the selection screen's data as last answered here, undefined while none is.
+    const line = { session: null, opening: null, calls: 0, timer: null, read: null, unlisten: null, selection: undefined };
     const forget = () => {
       if (accountLines.get(accountID) === line) accountLines.delete(accountID);
       timers.clearTimeout(line.timer);
@@ -3932,7 +3976,29 @@ function createGamePortPilots({
     };
     line.hangUp = () => {
       forget();
+      if (line.read) averagePricesThreadEnded(line.read);
       if (line.session) line.session.close();
+    };
+    /**
+     * The connection given to a character chosen on it, logged in and with what its login read: no longer the
+     * account's, and not closed. Null where it is not open (gone, failed, or closed by the server); then nothing of
+     * it is left.
+     */
+    line.handOver = async () => {
+      if (accountLines.get(accountID) !== line) return null;
+      forget();
+      let session = null;
+      try {
+        session = await line.opening;
+      } catch {
+        session = null;
+      }
+      if (!session || session.closed) {
+        line.hangUp();
+        return null;
+      }
+      if (line.unlisten) line.unlisten();
+      return { session, read: line.read ?? {}, selection: line.selection };
     };
     line.opening = (async () => {
       let transport;
@@ -3943,11 +4009,14 @@ function createGamePortPilots({
       }
       line.session = createSession(transport);
       // The server hanging up, or anything else that ends it: the next thing asked opens another.
-      line.session.onClose(forget);
+      line.unlisten = line.session.onClose(forget);
       await line.session.login(userName, passwordFor(userName));
       if (positive(line.session.attributes.userid) !== accountID) {
         throw fail("CALL_REFUSED", "The game server logged that name in as a different account.");
       }
+      // As the client logs in, before its selection screen asks anything (loginReads).
+      line.read = { session: line.session };
+      await loginReads(line.read);
       return line.session;
     })();
     accountLines.set(accountID, line);
@@ -4012,6 +4081,10 @@ function createGamePortPilots({
         const form = shape(service, method, args, kwargs, {});
         ledger.note(service, method, form);
         const result = await byName(session, service, method, form);
+        // The selection screen's data as last answered on this connection: a character chosen on it is chosen from it.
+        if (service === "charUnboundMgr" && method === "GetCharacterSelectionData") line.selection = result;
+        // A character made or deleted, or its deletion begun or let go, and the screen is filled again: asked again.
+        else if (service === "charUnboundMgr" && /^(Create|Delete|Prepare|Cancel)/.test(method)) line.selection = undefined;
         return { service, method, result: wireToBridgeJson(result), notifications: [] };
       } catch (error) {
         // The server saying no is an answer, and the client stays on its screen. Anything else, and the connection is not asked again.
@@ -4166,7 +4239,13 @@ function createGamePortPilots({
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
       entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
-      entry.space.park.onBallsAdded = (slims) => ballsPrimed(entry, slims);
+      entry.space.park.onBallsAdded = (slims) => {
+        ballsPrimed(entry, slims);
+        // targetMgr.DoBallsAdded_: a target held for its ball is one now.
+        entry.targets.ballsAdded(slims.map((slim) => slim.get("itemID")));
+      };
+      // targetMgr.DoBallClear: a whole new state empties both lists.
+      entry.space.park.onBallClear = () => entry.targets.ballClear();
       // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
       // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
       // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
@@ -4435,6 +4514,17 @@ function createGamePortPilots({
   }
 
   /** The tick of the pilot's park, or null when it has none. */
+  /**
+   * Whether the pilot's ballpark has that item now, as the client's target service asks it (GetBallpark().GetInvItem):
+   * no where there is no park, or no state in it yet.
+   */
+  const ballInPark = (entry, id) => {
+    const park = entry.space && entry.space.park;
+    if (!park || !park.validState) return false;
+    const raw = id && typeof id === "object" && !Buffer.isBuffer(id) ? id.value : id;
+    const ball = typeof raw === "bigint" && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : raw;
+    return park.slimItems.has(ball);
+  };
   const parkTick = (entry) => (entry.space && entry.space.park && entry.space.park.validState ? entry.space.park.currentTime : null);
 
   /**
@@ -4630,6 +4720,9 @@ function createGamePortPilots({
     }
     // crimewatchSvc.GetCorpAggressionSettings: the settings as they are kept, asked for where none are.
     if (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) return corporationDoes(entry, () => entry.aggression ?? aggressionRefreshed(entry));
+    // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
+    // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
+    if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -5239,6 +5332,12 @@ function createGamePortPilots({
     return keptCall(entry, entry.monikers, CORP_REGISTRY, CORP_REGISTRY, () => monikerParams(entry, CORP_REGISTRY, undefined), method, [], null);
   }
 
+  /** bco_corporations.GetCorporation: the corporation's row asked for, and kept as answered. */
+  async function corporationRowRead(entry) {
+    entry.corporationRow = await corporationAsk(entry, CORPORATION_ROW);
+    return entry.corporationRow;
+  }
+
   /** crimewatchSvc.RefreshCorpAggressionSettings: the settings asked for, and kept as answered. */
   async function aggressionRefreshed(entry) {
     entry.aggression = await corporationAsk(entry, AGGRESSION_SETTINGS);
@@ -5303,6 +5402,11 @@ function createGamePortPilots({
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
+    // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
+    // keeps; here the row of the pilot's own corporation is let go, and asked for when it is next wanted.
+    if (notification.method === "OnCorporationChanged" && Array.isArray(notification.args) && Number(notification.args[0]) === Number(attribute(entry, "corpid"))) {
+      entry.corporationRow = null;
+    }
   }
 
   // ── the agents' table, and the agents' journal as it is kept ──────────────

@@ -23,7 +23,7 @@
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, objectivesHeading, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjective, type MissionObjectives } from "./missionObjectives.ts";
-import { INTERVAL_WORD_LABELS, intervalWriter } from "./timeInterval.ts";
+import { INTERVAL_WORD_LABELS, intervalWriters } from "./timeInterval.ts";
 import { LOCATION_WORD_LABELS, wrapLocation } from "./locationWrapper.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -174,9 +174,9 @@ const isCharacter = (id: number): boolean => (id >= 3_000_000 && id < 4_000_000)
 export function objectivePane(objectives: MissionObjectives, context: PaneContext): PaneBlock[] {
   const words = (label: string, args: Record<string, string | number> = {}): string | null => {
     const template = context.templates[label];
-    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf, writeInterval })) : null;
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf, ...writers })) : null;
   };
-  const writeInterval = intervalWriter(context.templates);
+  const writers = intervalWriters(context.templates);
   const blocks: PaneBlock[] = [];
 
   const state = objectivesHeading(objectives);

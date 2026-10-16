@@ -2,7 +2,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import * as api from "../app/api.ts";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import { deriveDocked } from "./tabs.ts";
   import { resolvedName } from "../store/names.ts";
   import { createCockpitProvisioningLifecycle, type CockpitProvisioningLease } from "../provisioning/cockpitLifecycle.ts";
@@ -65,7 +65,12 @@
   // before an awaited request settles. Workspace itself is keyed by held pilot.
   const unsubscribe = [cockpitStore.station.subscribe(changedContext), cockpitStore.flight.subscribe(changedContext), cockpitStore.session.subscribe(changedContext)];
   onDestroy(() => { lifecycle.dispose(); unsubscribe.forEach(stop => stop()); clearReviews(); });
-  onMount(() => { if (ready) void run(loadProvider); });
+  // The sources are read as soon as the window is ready for the pilot it is held for: at its opening, or once the
+  // pilot's place and ship are known after (a pilot switched to is mounted before its flight is read), and again after
+  // any change of that context, which lets them go. A read that failed waits for Refresh.
+  $effect(() => {
+    if (ready && options === null && !busy && !error) void run(loadProvider);
+  });
   async function run(action: (lease: CockpitProvisioningLease) => Promise<void>) {
     if (busy) return;
     if (!ready) { error = "Dock the current held pilot and wait for its ship session to be ready."; return; }

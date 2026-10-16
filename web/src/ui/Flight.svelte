@@ -230,11 +230,13 @@
     if (!status.inSpace) {
       return "Docked";
     }
-    const mode = status.shipMode ?? "unknown";
-    const fraction =
-      status.shipSpeedFraction !== null
-        ? ` · speed ${Math.round(status.shipSpeedFraction * 100)}%`
-        : "";
+    // The ship's ball as the space feed last read it, where the feed is of this ship: the flight read's mode and speed
+    // are as old as its last asking (a window left open read "GOTO · speed 100%" at a belt while the ship had stopped).
+    const ship = snapshot?.ship ?? null;
+    const live = ship !== null && ship.itemID !== null && ship.itemID === status.shipID;
+    const mode = (live ? ship.mode : status.shipMode) ?? "unknown";
+    const speedFraction = live && typeof ship.speedFraction === "number" ? ship.speedFraction : status.shipSpeedFraction;
+    const fraction = speedFraction !== null ? ` · speed ${Math.round(speedFraction * 100)}%` : "";
     return `${mode}${fraction}`;
   }
 </script>

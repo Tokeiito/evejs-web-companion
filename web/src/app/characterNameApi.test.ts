@@ -22,10 +22,14 @@ function account(result: unknown) {
   return { sent, options: { token: "the-account's", fetch } };
 }
 
-test("a name is checked by the account's own call: the name alone, by the service's name, and nothing said of a pilot", async () => {
+test("a name is checked by the account's own call: the name and how many the screen checked before, by the service's name, and nothing said of a pilot", async () => {
   const valid = account(1);
   assert.equal(await validateCharacterName("Abel Tasman", valid.options), 1);
-  assert.deepEqual(valid.sent, [["/api/bridge/call", { service: "charUnboundMgr", method: "ValidateNameEx", args: ["Abel Tasman"], kwargs: null }]]);
+  assert.deepEqual(valid.sent, [["/api/bridge/call", { service: "charUnboundMgr", method: "ValidateNameEx", args: ["Abel Tasman", 0], kwargs: null }]]);
+  // The screen's own count goes as the second (chooseNameSection.IsNameValid: len(self.namesChecked)).
+  const third = account(1);
+  await validateCharacterName("Abel Tasman", third.options, 2);
+  assert.deepEqual(third.sent[0]?.[1], { service: "charUnboundMgr", method: "ValidateNameEx", args: ["Abel Tasman", 2], kwargs: null });
   // A refusal's code is handed on as it came; and what is no code is no verdict.
   assert.equal(await validateCharacterName("x", account(-1).options), -1);
   assert.equal(await validateCharacterName("Abel", account(-102.9).options), -102);

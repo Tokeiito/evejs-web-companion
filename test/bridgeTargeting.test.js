@@ -331,17 +331,13 @@ test("the targets read is dogmaIM.GetTargets and answers plain itemIDs", async (
   assert.deepEqual(reads[0].args, [], "GetTargets takes no arguments");
 });
 
-test("what has the ship locked is read only when asked for, as dogmaIM.GetTargeters", async () => {
+test("what has the ship locked is read beside the locks, as dogmaIM.GetTargeters", async () => {
   const { gateway, baseUrl } = await inSpace();
   gateway.state.targeters = [ROCK_ID];
 
-  const plain = await apiRequest(baseUrl, "/api/bridge/targets");
-  assert.equal(plain.payload.targeterIDs, null, "not asked, not read");
-  assert.equal(dogmaCallsOf(gateway, "GetTargeters").length, 0, "and no second call through the gateway");
-
-  const asked = await apiRequest(baseUrl, "/api/bridge/targets?targeters=1");
-  assert.equal(asked.response.status, 200);
-  assert.deepEqual(asked.payload.targeterIDs, [ROCK_ID]);
+  const read = await apiRequest(baseUrl, "/api/bridge/targets");
+  assert.equal(read.response.status, 200);
+  assert.deepEqual(read.payload.targeterIDs, [ROCK_ID]);
   assert.deepEqual(dogmaCallsOf(gateway, "GetTargeters")[0].args, [], "GetTargeters takes no arguments");
 });
 
@@ -352,7 +348,7 @@ test("a targeters read that fails is null and leaves the lock list standing", as
     }
     return { service, method, result: { type: "list", items: [ROCK_ID] }, notifications: [] };
   } });
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/targets?targeters=1");
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/targets");
   assert.equal(response.status, 200);
   assert.deepEqual(payload.targetIDs, [ROCK_ID]);
   assert.equal(payload.targeterIDs, null);
