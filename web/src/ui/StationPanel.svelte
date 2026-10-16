@@ -835,7 +835,10 @@
       title: "Item hangar",
       place: { kind: "hangar" },
       rows: $inventory.hangar.error ? null : hangarThings($inventory),
-      capacity: $inventory.hangar.capacity,
+      // The client's Item hangar has no capacity (invCtrl.StationItems, hasCapacity False): no gauge, and the volume
+      // of what it shows, ships not among it (container.py UpdateLabel over GetItems, IsItemHere).
+      capacity: usedOnly(hangarThings($inventory)),
+      hasLimit: false,
       error: $inventory.hangar.error,
       stackKey: "hangar",
       emptyText: $inventory.loaded ? "Nothing here but your ships." : "Looking through your hangar…",
