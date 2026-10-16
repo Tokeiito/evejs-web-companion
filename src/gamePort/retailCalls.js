@@ -648,6 +648,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A fitting saved, and one of the same name saved over (fittingSvc.PersistFitting, 302 and 304). The gateway's list
   // has the fitting manager's SaveManyFittings and not these.
   "charFittingMgr.SaveFitting", "charFittingMgr.UpdateFitting",
+  // The same, and the name and description changed, on the corporation's and the alliance's fitting managers
+  // (fittingSvc.GetFittingMgr, 85 to 92). The gateway's list has none of them.
+  "corpFittingMgr.SaveFitting", "corpFittingMgr.UpdateFitting", "corpFittingMgr.UpdateNameAndDescription",
+  "allianceFittingMgr.SaveFitting", "allianceFittingMgr.UpdateFitting", "allianceFittingMgr.UpdateNameAndDescription",
   // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
   "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
@@ -1910,6 +1914,12 @@ const RETAIL_CALLS = Object.freeze({
   "charFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description): fittingSvc.ChangeNameAndDescription, from the fitting display's Save (fittingMgmtCont.SaveExistingFitting) where the name or the description changed; the name stripped, both typed in the window's edits. In no recording."), [2, 3]),
   "charFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting): fittingSvc.PersistFitting, from the fitting display's Save of a fitting not saved yet (the fitting window's Save Fit As, fittingSvc.DoSaveFitting); the fitting the KeyVal of five it makes (persistedFitting). Answered the fitting's number. In no recording."),
   "charFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=existingFitting.fittingID): PersistFitting where the owner has a fitting of that name for the ship and the pilot said Yes to UpdateFitPersonal (289 to 299). Answered the fitting's number. In no recording."),
+  "corpFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description), the corporation's fitting manager for a fitting of the corporation's: as the pilot's (fittingMgmtCont.SaveExistingFitting, by one with the fitting manager's role). In no recording."), [2, 3]),
+  "corpFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting), the corporation's fitting manager: as the pilot's (the fitting display's Save for Corporation, fittingMgmtCont.SaveNewFitting). In no recording."),
+  "corpFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=...), the corporation's fitting manager: as the pilot's, where the pilot said Yes to UpdateFitCorp. In no recording."),
+  "allianceFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description), the alliance's fitting manager for a fitting of the alliance's: as the pilot's. In no recording."), [2, 3]),
+  "allianceFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting), the alliance's fitting manager: as the pilot's (the fitting display's Save for Alliance, offered to the executor corporation's). In no recording."),
+  "allianceFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=...), the alliance's fitting manager: as the pilot's, where the pilot said Yes to UpdateFitPersonal (PersistFitting asks UpdateFitCorp of the corporation's alone). In no recording."),
   "corpFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("corporationID", "corporation"), "GetFittingMgr(session.corpid).GetFittings(session.corpid)"),
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 

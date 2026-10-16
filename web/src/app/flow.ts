@@ -490,6 +490,7 @@ import { type HullBrowserData } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
+import { decodeAllianceInfo } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -2346,7 +2347,9 @@ export interface AppFlow {
    * Its Save (fittingMgmtCont.Save, SaveExistingFitting, fittingSvc.ChangeNameAndDescription) for the pilot's own
    * fitting: the name and the description as edited, and the window closed.
    */
-  saveViewFitting(n: number, name: string, description: string): Promise<void>;
+  saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void>;
+  /** Whether the window's Save menu offers Save for Alliance (the pilot's corporation its alliance's executor). */
+  saveForAllianceOffered(): Promise<boolean>;
   /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
   saveFitAs(): Promise<void>;
   /** Of saved fittings, those the pilot has the skills for (fittingSvc.HasSkillForFit), kept until the skills change. */
@@ -7641,30 +7644,57 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  /** appConst.maxCharFittings: the most fittings a pilot may have. */
+  /** appConst.maxCharFittings and maxCorpFittings: the most fittings an owner may have. */
   const MAX_CHAR_FITTINGS = 500;
+  const MAX_CORP_FITTINGS = 600;
+  /** appConst.corpRoleFittingManager. */
+  const CORP_ROLE_FITTING_MANAGER = 576460752303423488n;
+
+  /** session.corprole & corpRoleFittingManager: whether the pilot manages its corporation's fittings. */
+  function hasFittingManagerRole(): boolean {
+    const digits = store.station.get().online?.corpRole ?? null;
+    return digits !== null && /^\d+$/.test(digits) && (BigInt(digits) & CORP_ROLE_FITTING_MANAGER) !== 0n;
+  }
 
   /**
-   * fittingSvc.PersistFitting (268 to 313), the display window's Save of a fitting not saved yet (SaveForOwner of the
-   * pilot, SaveNewFitting, 332 to 337): no name is FittingNeedsToHaveAName; the name trimmed and cut to 50, the
-   * description to 500 (maxLengthFittingName, maxLengthFittingDescription); the pilot's fittings as they are kept
-   * (PrimeFittings), and at 500 OwnerMaxFittings; VerifyFitting ("@@", nothing in it); a fitting of the pilot's of that
-   * name for the ship asked about first (UpdateFitPersonal, Yes to go on, its description kept where the new one is
-   * none) and saved over (UpdateFitting with its number), else SaveFitting; answered the fitting's number, the fitting
-   * then kept and the window closed (saveCallback).
+   * fittingSvc.GetFittingMgr (85 to 92): the pilot's fitting manager for its own fittings, its corporation's for the
+   * corporation's, its alliance's for the alliance's; with the kind of owner, for its name and its fittings' source.
+   */
+  function fittingOwner(ownerID: number): { readonly manager: string; readonly kind: "character" | "corporation" | "alliance"; readonly source: SourcedFitting["source"] } | null {
+    const online = store.station.get().online;
+    if (online === null || !(ownerID > 0)) return null;
+    if (ownerID === online.characterID) return { manager: "charFittingMgr", kind: "character", source: "personal" };
+    if (ownerID === online.corporationID) return { manager: "corpFittingMgr", kind: "corporation", source: "corporation" };
+    if ((online.allianceID ?? null) !== null && ownerID === online.allianceID) return { manager: "allianceFittingMgr", kind: "alliance", source: "alliance" };
+    return null;
+  }
+
+  /**
+   * fittingSvc.PersistFitting (268 to 313), the display window's Save of a fitting as new for an owner (SaveNewFitting,
+   * 332 to 337): no name is FittingNeedsToHaveAName; the name trimmed and cut to 50, the description to 500
+   * (maxLengthFittingName, maxLengthFittingDescription); the owner's fittings as they are kept (PrimeFittings), and at
+   * the most (600 for the corporation, 500 for any other owner) OwnerMaxFittings with the owner's name; VerifyFitting
+   * ("@@", nothing in it); a fitting of the owner's of that name for the ship asked about first (UpdateFitCorp for the
+   * corporation, UpdateFitPersonal for any other; Yes to go on, its description kept where the new one is none) and
+   * saved over (UpdateFitting with its number), else SaveFitting, on the owner's fitting manager; answered the
+   * fitting's number, the fitting then kept and the window closed (saveCallback).
    */
   async function persistFitting(n: number, ownerID: number, name: string, description: string, fit: SourcedFitting): Promise<void> {
     if (name.trim() === "") {
       sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
       return;
     }
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return;
     const newName = name.trim().slice(0, 50);
     let newDescription = description.slice(0, 500);
     if (savedFittingsSignal.get() === null) await loadSavedFittings().catch(() => {});
     const own = (savedFittingsSignal.get() ?? []).filter((each) => each.ownerID === ownerID);
-    if (own.length >= MAX_CHAR_FITTINGS) {
-      const owner = store.station.get().online?.characterName ?? "";
-      sayDialog("OwnerMaxFittings", { type: "dict", entries: [["owner", owner], ["maxFittings", MAX_CHAR_FITTINGS]] }, `${owner} has ${MAX_CHAR_FITTINGS} fittings already.`);
+    const maxFittings = owner.kind === "corporation" ? MAX_CORP_FITTINGS : MAX_CHAR_FITTINGS;
+    if (own.length >= maxFittings) {
+      await resolveNamesNow([{ kind: owner.kind, id: ownerID }]);
+      const ownerName = nameCache.get(nameKey(owner.kind, ownerID)) ?? "";
+      sayDialog("OwnerMaxFittings", { type: "dict", entries: [["owner", ownerName], ["maxFittings", maxFittings]] }, `${ownerName} has ${maxFittings} fittings already.`);
       return;
     }
     if (newName.includes("@@") || newDescription.includes("@@")) {
@@ -7677,15 +7707,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const existing = own.find((each) => each.shipTypeID === fit.shipTypeID && each.name === newName) ?? null;
     if (existing !== null) {
-      if (!(await askDialog("UpdateFitPersonal", { type: "dict", entries: [["fittingName", newName]] }, `You have a fitting named ${newName} already. Save over it?`))) return;
+      const question = owner.kind === "corporation" ? "UpdateFitCorp" : "UpdateFitPersonal";
+      if (!(await askDialog(question, { type: "dict", entries: [["fittingName", newName]] }, `There is a fitting named ${newName} already. Save over it?`))) return;
       if (!newDescription) newDescription = existing.description;
     }
     const fitting = { name: newName, description: newDescription, shipTypeID: fit.shipTypeID, fitData: fit.modules.map((module) => [module.typeID, module.flagID, module.quantity]), ownerID };
     let fittingID: number;
     try {
       const answer = existing !== null
-        ? await bridgeDo("charFittingMgr", "UpdateFitting", [ownerID, fitting], { fittingID: existing.fittingID })
-        : await bridgeDo("charFittingMgr", "SaveFitting", [ownerID, fitting]);
+        ? await bridgeDo(owner.manager, "UpdateFitting", [ownerID, fitting], { fittingID: existing.fittingID })
+        : await bridgeDo(owner.manager, "SaveFitting", [ownerID, fitting]);
       fittingID = Number(answer);
     } catch (error) {
       if (isSessionLost(error)) throw error;
@@ -7693,32 +7724,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (!(Number.isSafeInteger(fittingID) && fittingID > 0)) return;
-    const saved: SourcedFitting = { fittingID, ownerID, name: newName, description: newDescription, shipTypeID: fit.shipTypeID, savedDate: null, modules: fit.modules, source: "personal" };
+    const saved: SourcedFitting = { fittingID, ownerID, name: newName, description: newDescription, shipTypeID: fit.shipTypeID, savedDate: null, modules: fit.modules, source: owner.source };
     savedFittingsSignal.set([...(savedFittingsSignal.get() ?? []).filter((each) => each.fittingID !== fittingID), saved]);
     const now = viewFittingAskedSignal.get();
     if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
   }
 
   /**
-   * The display window's Save (fittingMgmtCont.Save, 281 to 285): SaveForOwner of the pilot (or of its corporation,
-   * for a fitting of the corporation's with its fitting manager's role). For the fitting's own owner that is
-   * SaveExistingFitting (311 to 330), fittingSvc.ChangeNameAndDescription (710 to 724): no name is
-   * FittingNeedsToHaveAName; the name trimmed; where either is changed, "@@" in either is InvalidFittingInvalidCharacter,
-   * and UpdateNameAndDescription(fittingID, ownerID, name, description) on the owner's fitting manager, the kept
-   * fitting changed with it; then the window closed (its saveCallback, CloseByUser). Only the pilot's own fitting is
-   * saved here: another's is saved as a copy (SaveNewFitting, fittingSvc.PersistFitting: SaveFitting), which is no
-   * call the page makes.
+   * The display window's Save (fittingMgmtCont.Save, 281 to 285): SaveForOwner of the corporation for a fitting of the
+   * corporation's with its fitting manager's role, else of the pilot; and its menu's Save for Alliance, for
+   * Corporation and for the pilot (_get_save_sub_menu_data, 123 to 131): SaveForOwner of that owner (289 to 294). A
+   * fitting not saved yet, or saved for another owner, is saved new for this one (SaveNewFitting, PersistFitting: a
+   * copy). For the fitting's own owner it is SaveExistingFitting (311 to 330), fittingSvc.ChangeNameAndDescription (710
+   * to 724): no name is FittingNeedsToHaveAName; the name trimmed; where either is changed, "@@" in either is
+   * InvalidFittingInvalidCharacter, and UpdateNameAndDescription(fittingID, ownerID, name, description) on the owner's
+   * fitting manager, the kept fitting changed with it; then the window closed (its saveCallback, CloseByUser). The
+   * server refuses the corporation's and the alliance's without the role (and the alliance's to any but its executor).
    */
-  async function saveViewFitting(n: number, name: string, description: string): Promise<void> {
+  async function saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void> {
     const open = viewFittingAskedSignal.get();
-    const characterID = store.station.get().online?.characterID ?? null;
-    if (open === null || open.n !== n || characterID === null) return;
-    // SaveForOwner(session.charid): a fitting not saved yet (no owner) is saved new, PersistFitting.
-    if (!open.fitting.ownerID) {
-      await persistFitting(n, characterID, name, description, open.fitting);
+    const online = store.station.get().online;
+    if (open === null || open.n !== n || online === null) return;
+    const corporationID = online.corporationID ?? 0;
+    const ownerID = forOwner === undefined
+      ? (open.fitting.ownerID === corporationID && hasFittingManagerRole() ? corporationID : online.characterID)
+      : forOwner === "corporation" ? corporationID : forOwner === "alliance" ? online.allianceID ?? 0 : online.characterID;
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return;
+    // SaveForOwner: a fitting not saved yet (no owner) is saved new; SaveExistingFitting: for another owner, a copy.
+    if (!open.fitting.ownerID || ownerID !== open.fitting.ownerID) {
+      await persistFitting(n, ownerID, name, description, open.fitting);
       return;
     }
-    if (open.fitting.ownerID !== characterID) return;
     const fitting = open.fitting;
     if (name.trim() === "") {
       sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
@@ -7731,7 +7768,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return;
       }
       try {
-        await bridgeDo("charFittingMgr", "UpdateNameAndDescription", [fitting.fittingID, fitting.ownerID, newName, description]);
+        await bridgeDo(owner.manager, "UpdateNameAndDescription", [fitting.fittingID, fitting.ownerID, newName, description]);
       } catch (error) {
         if (isSessionLost(error)) throw error;
         sayRefusalDialog(error, `The fitting could not be saved: ${errorWords(error)}`);
@@ -7758,6 +7795,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (answer === "multifit") await openMultiFitWith(open.fitting);
     else if (answer === "fit") await fitToActiveShip(open.fitting);
     else await buyFitOf(open.fitting);
+  }
+
+  /**
+   * _get_save_sub_menu_data (123 to 131): whether the Save menu offers Save for Alliance, a pilot in an alliance whose
+   * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
+   * the alliance's moniker).
+   */
+  async function saveForAllianceOffered(): Promise<boolean> {
+    const online = store.station.get().online;
+    const allianceID = online?.allianceID ?? null;
+    if (online === null || allianceID === null || !(allianceID > 0)) return false;
+    const alliance = decodeAllianceInfo(await bridgeAsk("allianceRegistry", "GetAlliance", [allianceID]).catch(() => null));
+    return alliance !== null && alliance.executorCorpID !== null && alliance.executorCorpID === online.corporationID;
   }
 
   /** fittingSvc.ExportFittingToClipboard(fitting) (1145 to 1148): GetFittingEFTString, the English names. */
@@ -21322,6 +21372,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     editMultiFit,
     answerMultiFit,
     saveViewFitting,
+    saveForAllianceOffered,
     saveFitAs,
     fittingsWithSkills,
     hullsWithSkills,

@@ -147,8 +147,10 @@
   // description, and Fit, Save and Buy: the name (40 letters at most, the client's field) and the description (500,
   // maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the install's; the page's
   // own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the fitting as the client's
-  // text, its names English). Not done: Save's menu (for the corporation or the alliance) and another's fitting saved
-  // as a copy, Simulate, the settings, the ship's preview, the truncated mark, and an obsolete module's mark.
+  // text, its names English). Save, for any fitting, has its menu: Save for Alliance (the executor corporation's), for
+  // Corporation and for the pilot; a fitting of another owner's is saved as a copy. Not done: Save's tooltip of the
+  // same three for one with the fitting manager's role, Simulate, the settings, the ship's preview, the truncated mark,
+  // and an obsolete module's mark.
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
     // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
@@ -159,6 +161,10 @@
     "UI/Common/Description": "About it",
     "UI/Fitting/FittingWindow/FittingManagement/Fit": "Fit this ship",
     "UI/Common/Buttons/Save": "Keep the changes",
+    // Save's menu (fittingMgmtCont._get_save_sub_menu_data, 123 to 131).
+    "UI/Fitting/FittingWindow/SaveForAlliance": "Keep it for the alliance",
+    "UI/Fitting/FittingWindow/SaveForCorp": "Keep it for the corporation",
+    "UI/Fitting/FittingWindow/SaveForCharacter": "Keep it for yourself",
     "UI/Fitting/FittingWindow/FittingManagement/FittingName": "Name",
     "UI/Market/MarketQuote/CommandBuy": "Purchase",
     "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
@@ -175,6 +181,8 @@
   };
   let viewFittingTab = $state<"contents" | "description">("contents");
   let viewFittingMenuOpen = $state(false);
+  let viewFittingSaveMenuOpen = $state(false);
+  let viewFittingSaveForAlliance = $state(false);
   // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
   // changes, as its contents arrive, leave what is being typed).
   let viewFittingName = $state("");
@@ -195,6 +203,8 @@
     flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...Object.values($viewFittingAsked.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))]);
     flow.requestNames([
       { kind: "type" as const, id: $viewFittingAsked.fitting.shipTypeID },
+      // SaveForCharacter names the pilot as an owner (charID).
+      ...($station.online ? [{ kind: "owner" as const, id: $station.online.characterID }] : []),
       ...($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID }))),
     ]);
   });
@@ -1050,9 +1060,22 @@
       {/if}
       <span class="answers">
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
-        {#if view.fitting.source === "personal"}
+        <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
+             its alliance's executor, Save for Corporation, and for the pilot. -->
+        <span class="multibuy-export">
           <button type="button" onclick={() => void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
-        {/if}
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSaveMenuOpen}
+            onclick={() => { viewFittingSaveMenuOpen = !viewFittingSaveMenuOpen; if (viewFittingSaveMenuOpen) void flow.saveForAllianceOffered().then((offered) => (viewFittingSaveForAlliance = offered)).catch(() => {}); }}>▾</button>
+          {#if viewFittingSaveMenuOpen}
+            <span class="multibuy-menu" role="menu">
+              {#if viewFittingSaveForAlliance}
+                <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {/if}
+        </span>
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
       </span>
     </div>
