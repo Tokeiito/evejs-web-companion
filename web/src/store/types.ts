@@ -1927,6 +1927,13 @@ export interface SpaceEntity {
    * opened on its refusal. null on every other row, and where the transport did not say (the web gateway's).
    */
   readonly dunObjectID?: number | null;
+  /**
+   * An Abyssal trace's filament, game mode and whether it is open (its slim item's abyssFilamentTypeID, gameModeID and
+   * isAbyssGateOpen), for its jump window. Absent on every other row, and where the transport did not say.
+   */
+  readonly abyssFilamentTypeID?: number | null;
+  readonly gameModeID?: number | null;
+  readonly isAbyssGateOpen?: boolean | null;
   readonly miningResourceFamily?: "ore" | "ice" | "gas" | null;
   readonly beltID: number | null;
   /**

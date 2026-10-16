@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
+import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, activateEntranceGate, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
 import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -314,7 +314,7 @@ import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatc
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
-import { GATE_ACTIVATION_RANGE_M, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
@@ -1680,6 +1680,12 @@ export interface AppFlow {
   readonly shipRestrictions: ReadableSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>;
   /** The Ship Restrictions window closed. */
   closeShipRestrictions(): void;
+  /** A trace's jump window open (Activate Gate on an Abyssal trace): the trace, its filament and its game mode; null where closed. */
+  readonly abyssJump: ReadableSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>;
+  /** The jump window closed. */
+  closeAbyssJump(): void;
+  /** The jump window's button (JumpActivationController._Activate): through the trace into its pocket, a session change. */
+  jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -6412,6 +6418,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         if (step.kind === "arrive") {
           gateNavigation += 1;
+          // An Abyssal trace (movementFunctions.RealActivateEntranceToAbyssalGate): its jump window, and no call.
+          if (typeID === TYPE_ABYSS_ENTRANCE_GATE) {
+            openAbyssJump(itemID);
+            return;
+          }
           try {
             await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
             store.apply({ type: "flight/action", action: "Activate Gate" });
@@ -6439,8 +6450,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await new Promise((resolve) => setTimeout(resolve, GATE_NAVIGATION_TICK_MS));
     }
   }
+  // A trace's jump window (ui/KeyActivationWindow.svelte as AbyssJumpWindow.py's): the trace and what its slim item
+  // says of its filament and game mode, as the space read last had them.
+  const abyssJumpSignal = createSignal<{ readonly itemID: number; readonly filamentTypeID: number; readonly gameModeID: number | null } | null>(null);
+  function openAbyssJump(itemID: number): void {
+    const trace = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+    const filamentTypeID = trace?.abyssFilamentTypeID ?? null;
+    if (filamentTypeID === null) return;
+    abyssJumpSignal.set({ itemID, filamentTypeID, gameModeID: trace?.gameModeID ?? null });
+  }
+  async function jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }> {
+    try {
+      // PerformSessionChange('JumpToAbyss', abyss.activate_entrance_gate, itemID): the BFF answers once the session is in the pocket.
+      await applyFlight(await orderedStep(() => activateEntranceGate(bridgeDo, itemID)));
+      return { deployed: true, errors: [] };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const errors = abyssErrorsOfRefusal(error instanceof BridgeCallError ? error.refusal : null);
+      if (errors !== null) return { deployed: false, errors };
+      if (!sayRefusalDialog(error, error instanceof Error ? error.message : String(error))) {
+        store.apply({ type: "flight/action-error", message: `Activate refused: ${flightRefusalWords(error)}`, said: false });
+      }
+      return { deployed: false, errors: [] };
+    }
+  }
   async function activateGate(itemID: number, typeID: number | null): Promise<void> {
-    if (gateCallFor(typeID, itemID) === null) {
+    if (typeID !== TYPE_ABYSS_ENTRANCE_GATE && gateCallFor(typeID, itemID) === null) {
       store.apply({ type: "flight/action-error", message: "Activate Gate refused: this gate is not activated from here yet.", said: false });
       return;
     }
@@ -19663,6 +19698,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     collapseWarning: readonlySignal(collapseWarningSignal),
     shipRestrictions: readonlySignal(shipRestrictionsSignal),
     closeShipRestrictions: () => shipRestrictionsSignal.set(null),
+    abyssJump: readonlySignal(abyssJumpSignal),
+    closeAbyssJump: () => abyssJumpSignal.set(null),
+    jumpThroughTrace,
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,

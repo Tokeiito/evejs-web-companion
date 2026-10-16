@@ -32,18 +32,33 @@
     abyssErrorLabels,
     isSuspicious,
     validateDeploy,
+    validateJump,
+    JUMP_DESCRIPTION_LABELS,
+    UNKNOWN_GAME_MODE,
+    UNKNOWN_JUMP_DESCRIPTION_LABEL,
     type AbyssErrorEntry,
     type DeployFacts,
+    type GameModeID,
   } from "../bridge/abyssalKeys.ts";
   import { nameKey, resolvedName } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow, item, onClose }: {
+  let { store, flow, item, trace = null, onClose }: {
     store: ClientStore;
     flow: AppFlow;
-    /** The filament, as its row has it: the pilot's own where the page lists it in the pilot's places. */
+    /**
+     * The filament, as its row has it: the pilot's own where the page lists it in the pilot's places. For a trace's
+     * jump window, the trace (its itemID) and its filament (its slim item's abyssFilamentTypeID).
+     */
     item: { readonly itemID: number; readonly typeID: number; readonly groupID: number | null; readonly quantity: number; readonly ownedByPilot: boolean };
+    /**
+     * A trace's jump window (AbyssJumpWindow.py AbyssActivationWindow) in place of a filament's key window: the trace's
+     * game mode (its slim item's gameModeID, or none). Its first line is the mode's jump description, there is no
+     * combo, its button jumps (JumpActivationController: validate_jump, Activate and Jumping), and nothing in it is
+     * suspicious (AbyssEntranceWindowController.isSuspicious).
+     */
+    trace?: { readonly gameModeID: number | null } | null;
     onClose: () => void;
   } = $props();
 
@@ -55,6 +70,8 @@
   const flight = store.flight;
   // svelte-ignore state_referenced_locally
   const fleet = store.fleet;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
 
   // svelte-ignore state_referenced_locally
   let chosen = $state<1 | 2 | 3>(flow.abyssGameModeSetting());
@@ -108,23 +125,33 @@
   });
 
   const option = $derived(GAME_MODE_OPTIONS.find((each) => each.value === chosen) ?? GAME_MODE_OPTIONS[0]!);
-  const mode = $derived(GAME_MODES[option.mode]);
+  // A trace's mode is its own (abyss.get_game_mode(slimItem.gameModeID or UNKNOWN)); the unknown one takes any hull.
+  const mode = $derived(trace !== null
+    ? (trace.gameModeID === 1 || trace.gameModeID === 2 || trace.gameModeID === 3 ? GAME_MODES[trace.gameModeID] : UNKNOWN_GAME_MODE)
+    : GAME_MODES[option.mode]);
+  /** Whether the trace is open (its slim item's isAbyssGateOpen), as the space read last had it. */
+  const entranceOpen = $derived(trace === null
+    ? true
+    : (($space.snapshot?.entities ?? []).find((entity) => entity.itemID === item.itemID)?.isAbyssGateOpen ?? false) === true);
+  const localErrors = $derived(trace !== null ? validateJump(facts, mode, entranceOpen) : validateDeploy(facts, mode));
   /** The button's errors (BaseActivationController.errors): its own checks' and the server's last, once each. */
   const errors = $derived.by(() => {
     const seen = new Set<string>();
-    return [...validateDeploy(facts, mode), ...(remoteErrors[mode.id] ?? [])].filter((entry) => {
+    return [...localErrors, ...(remoteErrors[mode.id] ?? [])].filter((entry) => {
       const key = JSON.stringify(entry);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
   });
-  const localErrors = $derived(validateDeploy(facts, mode));
   const ready = $derived(localErrors.length === 0 && !activating && !finished);
-  const buttonText = $derived(mode.jumpsOnDeploy
+  const buttonText = $derived(trace !== null || mode.jumpsOnDeploy
     ? word(activating ? ABYSS_WINDOW_LABELS.jumping : ABYSS_WINDOW_LABELS.activate)
     : word(activating ? ABYSS_WINDOW_LABELS.deploying : ABYSS_WINDOW_LABELS.fleet));
-  const suspicious = $derived(isSuspicious(security, tier));
+  const suspicious = $derived(trace === null && isSuspicious(security, tier));
+  const firstLine = $derived(trace !== null
+    ? word(JUMP_DESCRIPTION_LABELS[trace.gameModeID ?? 0] ?? UNKNOWN_JUMP_DESCRIPTION_LABEL)
+    : word(ABYSS_WINDOW_LABELS.shortDescription));
   const errorTexts = $derived(errors.map((entry) => {
     const { label, args } = abyssErrorLabel(entry);
     return word(label, args);
@@ -163,7 +190,7 @@
     remoteErrors = { ...remoteErrors, [modeID]: [] };
     activating = true;
     try {
-      const outcome = await flow.deployAbyssalFilament(item.itemID, modeID);
+      const outcome = trace !== null ? await flow.jumpThroughTrace(item.itemID) : await flow.deployAbyssalFilament(item.itemID, modeID as GameModeID);
       if (outcome.deployed) {
         finished = true;
         setTimeout(onClose, 1000);
@@ -181,6 +208,7 @@
       ...Object.values(TIER_DESCRIPTION_BY_TIER),
       ...Object.values(WEATHER_DESCRIPTION_BY_TYPE),
       ...GAME_MODE_OPTIONS.map((each) => each.label),
+      ...Object.values(JUMP_DESCRIPTION_LABELS),
       ...abyssErrorLabels(),
       ...INTERVAL_WORD_LABELS,
       ...DISTANCE_WORD_LABELS,
@@ -206,7 +234,7 @@
   <div class="key-row">
     <TypeIcon typeID={item.typeID} name={filamentName} size="lg" />
     <div class="key-text">
-      <p>{word(ABYSS_WINDOW_LABELS.shortDescription)}</p>
+      <p>{firstLine}</p>
       {#if tier !== null && TIER_DESCRIPTION_BY_TIER[tier]}
         <p>{word(TIER_DESCRIPTION_BY_TIER[tier]!)}</p>
       {/if}
@@ -228,11 +256,13 @@
     <p class="key-warning">{word(ABYSS_WINDOW_LABELS.suspectDescription, { color: "#ffff00", time: fmtInterval(CRIMINAL_TIMER_TIMEOUT) })}</p>
   {/if}
   <div class="key-bottom">
-    <select class="key-mode" aria-label="Game mode" value={chosen} onchange={(event) => chooseMode(Number((event.currentTarget as HTMLSelectElement).value) as 1 | 2 | 3)}>
-      {#each GAME_MODE_OPTIONS as each (each.value)}
-        <option value={each.value}>{word(each.label)}</option>
-      {/each}
-    </select>
+    {#if trace === null}
+      <select class="key-mode" aria-label="Game mode" value={chosen} onchange={(event) => chooseMode(Number((event.currentTarget as HTMLSelectElement).value) as 1 | 2 | 3)}>
+        {#each GAME_MODE_OPTIONS as each (each.value)}
+          <option value={each.value}>{word(each.label)}</option>
+        {/each}
+      </select>
+    {/if}
     <span class="key-activate">
       <button
         type="button"

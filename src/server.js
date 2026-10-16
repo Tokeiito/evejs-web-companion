@@ -4627,6 +4627,9 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *   abyssExit  the last room's conduit out of the pocket (movementFunctions.RealActivateAbyssalEndGate:
  *            PerformSessionChange('abyssToKnownJump', abyssalMgr.AbyssalEndGateActivation, itemID)). Refused for a
  *            pilot not in space and for a conduit that is no number. Kept as a stargate's jump is, out of the pocket.
+ *   abyssEntrance  a trace's jump into its pocket (AbyssJumpWindow.py: PerformSessionChange('JumpToAbyss',
+ *            abyss.activate_entrance_gate, itemID)). Refused as abyssExit is; kept as a stargate's jump is, into the
+ *            pocket.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4717,7 +4720,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
-    } else if (kind === "abyssExit") {
+    } else if (kind === "abyssExit" || kind === "abyssEntrance") {
       if (before.flight.inSpace !== true) {
         res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
         return;
@@ -4744,7 +4747,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     }
     // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
     // system, the park bound again there.)
-    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind;
+    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -4793,7 +4796,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind)) {
+    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);

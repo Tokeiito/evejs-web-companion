@@ -242,6 +242,13 @@ function projectEntity(park, ball, slim, ego, placed) {
   // movementFunctions.py 557 to 560: an acceleration gate's own object in its dungeon, off its slim item, for the
   // Ship Restrictions window the client opens on the gate's refusal (GetDungeonShipRestrictions(dungeonID, gateID)).
   if (groupID === 366) row.dunObjectID = positive(slim.get("dunObjectID"));
+  // AbyssJumpWindow.py AbyssEntranceWindowController and abyss/client/validator.py is_entrance_gate_open: an Abyssal
+  // trace's filament, game mode and whether it is open, off its slim item.
+  if (row.typeID === 48964) {
+    row.abyssFilamentTypeID = positive(slim.get("abyssFilamentTypeID"));
+    row.gameModeID = number(slim.get("gameModeID"));
+    row.isAbyssGateOpen = slim.get("isAbyssGateOpen") === true || number(slim.get("isAbyssGateOpen")) === 1;
+  }
   return row;
 }
 
