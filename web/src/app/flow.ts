@@ -42,7 +42,11 @@ import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
   averagePriceOf,
+  bestAskInRange,
   bestAskInStation,
+  RANGE_REGION,
+  RANGE_SOLAR_SYSTEM,
+  RANGE_STATION,
   decodeEscrow,
   orderDelta,
   priceDelta,
@@ -955,6 +959,15 @@ export interface MultiBuyRow {
   readonly loading: boolean;
   /** The type's average price over the week (the row's averagePrice: marketQuote.GetAveragePrice); null until read. */
   readonly average: number | null;
+  /**
+   * The cheapest single unit at the window's station, in its system and in the region (the row's delta tooltip:
+   * GetBestMatchText, marketQuote.GetBestAskInRange for each range); null where there is none, or nowhere to buy.
+   */
+  readonly bestInStation: number | null;
+  readonly bestInSystem: number | null;
+  readonly bestInRegion: number | null;
+  /** inventorycommon/util.py GetPackagedVolume for the type, in m³ (the total's tooltip); null where it is not known. */
+  readonly packagedVolume: number | null;
 }
 
 /** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
@@ -6288,6 +6301,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const multiBuyBooks = new Map<number, ReturnType<typeof decodeOrderBook>["sells"]>();
   // And each type's average over the week, as its row reads it as it is made.
   const multiBuyAverages = new Map<number, number>();
+  // And each type's packaged volume (GetPackagedVolume), read once for the window.
+  const multiBuyVolumes = new Map<number, number | null>();
 
   /**
    * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
@@ -6609,12 +6624,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (open === null) {
       multiBuyBooks.clear();
       multiBuyAverages.clear();
+      multiBuyVolumes.clear();
     }
     const rows = [...base.rows];
     for (const [typeID, qty] of wanted) {
       const at = rows.findIndex((row) => row.typeID === typeID);
       if (at >= 0) rows[at] = { ...rows[at]!, qty: rows[at]!.qty + qty, loading: true };
-      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null });
+      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume: null });
     }
     multiBuyAskedSignal.set({ ...base, rows });
     await multiBuyPrices();
@@ -6625,7 +6641,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const asked = multiBuyAskedSignal.get();
     if (asked === null) return;
     const priced = await Promise.all(asked.rows.map(async (row) => {
-      if (asked.stationID === null) return { ...row, price: null, numOrders: null, loading: false };
+      const packagedVolume = await multiBuyVolumeOf(row.typeID);
+      if (asked.stationID === null) return { ...row, price: null, numOrders: null, loading: false, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume };
       let sells = multiBuyBooks.get(row.typeID);
       if (sells === undefined) {
         sells = await bridgeAsk("marketProxy", "GetOrders", [row.typeID]).then((answer) => decodeOrderBook(answer).sells).catch(() => []);
@@ -6633,7 +6650,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       const best = bestAskInStation(sells, asked.stationID, row.qty * asked.multiplier);
       const average = row.average ?? await averagePriceFor(row.typeID);
-      return { ...row, price: best.price, numOrders: best.numOrders, loading: false, average };
+      // The window's station is the one the pilot is docked in, in the pilot's system.
+      const system = store.flight.get().status?.solarSystemID ?? null;
+      const cheapest = (range: number): number | null => { const order = bestAskInRange(sells!, asked.stationID!, system, range); return order === null ? null : Number(order.price); };
+      return {
+        ...row, price: best.price, numOrders: best.numOrders, loading: false, average,
+        bestInStation: cheapest(RANGE_STATION), bestInSystem: cheapest(RANGE_SOLAR_SYSTEM), bestInRegion: cheapest(RANGE_REGION), packagedVolume,
+      };
     }));
     const now = multiBuyAskedSignal.get();
     if (now === null || now.n !== asked.n) return;
@@ -6641,6 +6664,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const stale = now.rows.some((row) => { const was = asked.rows.find((each) => each.typeID === row.typeID); return was === undefined || was.qty !== row.qty; }) || now.multiplier !== asked.multiplier;
     multiBuyAskedSignal.set({ ...now, rows: now.rows.map((row) => { const fresh = priced.find((each) => each.typeID === row.typeID); return fresh && fresh.qty === row.qty && !stale ? fresh : row; }) });
     if (stale) await multiBuyPrices();
+  }
+
+  /** A type's packaged volume for the multibuy window, asked once (GET /api/types/volumes); null where it is not known. */
+  async function multiBuyVolumeOf(typeID: number): Promise<number | null> {
+    if (multiBuyVolumes.has(typeID)) return multiBuyVolumes.get(typeID) ?? null;
+    const volume = await api.loadTypeVolumes([typeID], callOptions).then((answer) => answer.packaged[typeID] ?? null).catch(() => null);
+    multiBuyVolumes.set(typeID, volume);
+    return volume;
   }
 
   async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void> {

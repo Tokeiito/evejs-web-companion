@@ -26,7 +26,7 @@
   import { onDestroy, tick } from "svelte";
   import { DO_NOT_ASK_AGAIN_LABEL, DO_NOT_SHOW_AGAIN_LABEL, answerKept, suppressKey } from "../bridge/dialogSuppression.ts";
   import type { Session } from "../app/sessions.ts";
-  import type { SaidDialog } from "../app/flow.ts";
+  import type { MultiBuyAsk, MultiBuyRow, SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -36,7 +36,7 @@
     type ClientWording,
   } from "../bridge/questions.ts";
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
-  import { priceDelta } from "../bridge/market.ts";
+  import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
@@ -82,7 +82,80 @@
     "UI/Market/MarketQuote/MultiBuyTypesAboveAverage": "These cost far above their average:",
     "UI/Market/MarketQuote/MultiBuyAboveAverageConfirmation": "Buy them all the same?",
     "UI/Generic/Warning": "Careful",
+    "UI/Market/Marketbase/PricePerUnit": "Each",
+    "UI/Market/MarketQuote/NoMatchForOrder": "None here for this many",
+    "UI/Market/MarketQuote/FromNumberOfOrders": "across {numOrders} orders",
+    "UI/Market/MarketQuote/RegionalAdverage": "The region's mean",
+    "UI/Market/MarketQuote/BestInStation": "Cheapest here",
+    "UI/Market/MarketQuote/BestInSystem": "Cheapest in the system",
+    "UI/Market/MarketQuote/BestRegional": "Cheapest in the region",
+    "UI/Market/MarketQuote/NumOrders": "Orders",
+    "UI/Market/MarketQuote/PricePerOrder": "Each order",
+    "UI/Market/MarketQuote/TypesAvailableAndTotalInOrder": "{numAvailable} of {numTypes} to be had",
+    "UI/Market/MarketQuote/AboveRegionalAverageWithPercentage": "{percentage} over the region's mean",
+    "UI/Market/MarketQuote/BelowRegionalAverageWithPercentage": "{percentage} under the region's mean",
+    "UI/Common/Volume": "Space",
+    "UI/Inventory/ContainerCapacity": "{[numeric]capacity, decimalPlaces=2} m³",
+    "UI/Contracts/Util/AmountInMillions": "{[numeric]amount, decimalPlaces=2} million",
+    "UI/Contracts/Util/AmountInBillions": "{[numeric]amount, decimalPlaces=2} billion",
+    "UI/Contracts/Util/AmountInTrillions": "{[numeric]amount, decimalPlaces=2} trillion",
   };
+  /** A percentage as FmtAmt(percentage * 100, showFraction=1) writes it: to a tenth. */
+  const tenths = (fraction: number): number => Math.round(fraction * 1000) / 10;
+  /**
+   * contractutils.FmtISKWithDescription(isk, justDesc=True), from a million up (the multibuy window shows it beside its
+   * total and its price per order there): the amount in millions, billions or trillions, its hundredths cut off.
+   */
+  function iskDescription(amount: number): string {
+    const steps: readonly (readonly [number, string])[] = [[1e12, "UI/Contracts/Util/AmountInTrillions"], [1e9, "UI/Contracts/Util/AmountInBillions"], [1e6, "UI/Contracts/Util/AmountInMillions"]];
+    const step = steps.find(([size]) => Math.abs(amount) >= size);
+    return step === undefined ? "" : buyWord(step[1], { amount: Math.trunc(amount / (step[0] / 100)) / 100 });
+  }
+  /**
+   * The row's delta tooltip (buytItemEntry.LoadDeltaTooltip, 264 to 289): the price per unit and how many orders it
+   * is of, or that none here hold the quantity; the regional average with the row's distance from it; the cheapest
+   * single unit at the station, in its system and in the region ("-" where there is none). The global market's words
+   * are for PLEX alone, under an experiment (market/util.py does_global_market_apply): the region's words here.
+   */
+  function rowTooltip(row: MultiBuyRow): string {
+    const best = (price: number | null): string => (price === null ? "-" : isk(price));
+    const delta = row.average !== null && row.average > 0 && row.price !== null ? buyWord("UI/Common/Percentage", { percentage: tenths(priceDelta(row.price, row.average)) }) : "";
+    return [
+      `${buyWord("UI/Market/Marketbase/PricePerUnit")}: ${best(row.price)}`,
+      row.price === null ? buyWord("UI/Market/MarketQuote/NoMatchForOrder") : buyWord("UI/Market/MarketQuote/FromNumberOfOrders", { numOrders: row.numOrders ?? 0 }),
+      "",
+      `${buyWord("UI/Market/MarketQuote/RegionalAdverage")} ${delta}: ${row.average === null ? "-" : isk(row.average)}`,
+      "",
+      `${buyWord("UI/Market/MarketQuote/BestInStation")}: ${best(row.bestInStation)}`,
+      `${buyWord("UI/Market/MarketQuote/BestInSystem")}: ${best(row.bestInSystem)}`,
+      `${buyWord("UI/Market/MarketQuote/BestRegional")}: ${best(row.bestInRegion)}`,
+    ].join("\n");
+  }
+  /**
+   * The total's tooltip (buyMultiFromBase.LoadTotalTooltip, 461 to 487), none where nothing is priced: the number of
+   * orders, the price of one order (and its description from a million), how many of the types are to be had, the
+   * order's distance from the average (GetOrderDeltaText) and the packaged volume of what is to be had
+   * (GetNumTypesAndNumAvailableTypesAndVolume). A volume with a type's not known is left out.
+   */
+  function totalTooltip(buy: MultiBuyAsk, total: number): string {
+    if (!total || !buy.multiplier) return "";
+    const priced = buy.rows.filter((row) => row.price !== null && row.price > 0);
+    const perOrder = total / buy.multiplier;
+    const lines = [
+      `${buyWord("UI/Market/MarketQuote/NumOrders")}: ${groupedNumber(buy.multiplier)}`,
+      `${buyWord("UI/Market/MarketQuote/PricePerOrder")}: ${isk(perOrder)}${perOrder >= 1e6 ? ` =${iskDescription(perOrder)}` : ""}`,
+      buyWord("UI/Market/MarketQuote/TypesAvailableAndTotalInOrder", { numAvailable: priced.length, numTypes: buy.rows.length }),
+    ];
+    const valued = priced.filter((row) => row.average !== null && row.average > 0);
+    const whole = valued.length === 0 ? 0 : orderDelta(valued.map((row) => ({ total: row.price! * row.qty * buy.multiplier, quantity: row.qty * buy.multiplier, average: row.average! })));
+    if (whole !== 0) {
+      const percentage = buyWord("UI/Common/Percentage", { percentage: tenths(Math.abs(whole)) });
+      lines.push("", buyWord(whole < 0 ? "UI/Market/MarketQuote/BelowRegionalAverageWithPercentage" : "UI/Market/MarketQuote/AboveRegionalAverageWithPercentage", { percentage }));
+    }
+    const volume = priced.some((row) => row.packagedVolume === null) ? null : priced.reduce((sum, row) => sum + row.qty * buy.multiplier * row.packagedVolume!, 0);
+    if (volume) lines.push("", `${buyWord("UI/Common/Volume")}: ${buyWord("UI/Inventory/ContainerCapacity", { capacity: volume })}`);
+    return lines.join("\n");
+  }
   /**
    * A row's distance from its average as the client's BuyDeltaContainer shows it (deltaContainer.py): an arrow up
    * above the average, down below it, level at it; the percentage beside it, to a tenth under a hundred in a hundred and
@@ -642,14 +715,17 @@
             </span>
             <span class="multibuy-price">{row.loading ? "…" : row.price === null ? "-" : isk(row.price)}</span>
             <span class="multibuy-total">{row.loading ? "…" : row.price === null ? "-" : isk(row.price * row.qty * buy.multiplier)}</span>
-            <span class="multibuy-delta" class:above={shownDelta !== null && shownDelta.delta > 0} class:below={shownDelta !== null && shownDelta.delta < 0}>
+            <!-- BuyDeltaContainer: its tooltip is the row's (LoadDeltaTooltip), and a click opens the market on the type (OpenMarket). -->
+            <button type="button" class="multibuy-delta" class:above={shownDelta !== null && shownDelta.delta > 0} class:below={shownDelta !== null && shownDelta.delta < 0}
+              title={row.loading ? "" : rowTooltip(row)} onclick={() => showMarketDetails(row.typeID)}>
               {#if shownDelta !== null}{shownDelta.delta > 0 ? "▲" : shownDelta.delta < 0 ? "▼" : "="} {shownDelta.text}{/if}
-            </span>
+            </button>
             <button type="button" class="close" aria-label="Remove" disabled={buy.busy} onclick={() => void flow.editMultiBuy(buy.n, { remove: row.typeID })}>✕</button>
           </li>
         {/each}
       </ul>
-      <span class="multibuy-sum">{isk(sum)}</span>
+      <!-- UpdateNumbers: the total, its description beside it from a million; its tooltip on it and on its info mark, shown where there is a total. -->
+      <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
         <button type="button" disabled={buy.busy || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
@@ -845,7 +921,8 @@
   .multibuy-orders input { width: 5rem; }
   .multibuy-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.3rem; max-height: 50vh; overflow-y: auto; }
   .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem 5.5rem auto; align-items: center; gap: 0.5rem; }
-  .multibuy-delta { text-align: right; font-size: 0.8rem; }
+  .multibuy-delta { text-align: right; font-size: 0.8rem; background: none; border: none; color: inherit; padding: 0; cursor: pointer; }
+  .multibuy-info { font-weight: normal; color: var(--muted, #9aa); }
   .multibuy-delta.above { color: #ff5050; }
   .multibuy-delta.below { color: #00ff00; }
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }

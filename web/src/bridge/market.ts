@@ -268,6 +268,27 @@ export function bestAskInStation(
   return { price: null, numOrders: null };
 }
 
+/**
+ * marketQuote.GetBestAskInRange (marketsvc.py 585 to 601): the first sell order, in the order the server answered
+ * them, within the range of the station with at least `amount` left; null where none is. An order at the station
+ * itself is nearer than its system (-1), one elsewhere in the system none (0), one further off as many jumps away
+ * as the server counted from the pilot's system (the order's `jumps`; the client counts them from the station's own
+ * system, which is the pilot's where it is docked there).
+ */
+export function bestAskInRange(
+  sells: readonly MarketOrderRow[],
+  stationID: number,
+  solarSystemID: number | null,
+  range: number,
+  amount = 1,
+): MarketOrderRow | null {
+  for (const order of sells) {
+    const jumps = order.stationID === stationID ? RANGE_STATION : solarSystemID !== null && order.solarSystemID === solarSystemID ? 0 : Math.max(1, order.jumps);
+    if (jumps <= range && order.volumeRemaining >= amount) return order;
+  }
+  return null;
+}
+
 export function decodeOrderBook(result: JsonValue): {
   readonly sells: readonly MarketOrderRow[];
   readonly buys: readonly MarketOrderRow[];

@@ -3610,6 +3610,8 @@ const TYPE_VOLUMES_PER_REQUEST = 400;
 export interface TypeVolumesResult {
   /** typeID -> m³, or null where the tables have no volume for the type. A type not answered for is absent. */
   readonly volumes: Readonly<Record<number, number | null>>;
+  /** typeID -> its packaged volume in m³ (GetPackagedVolume), or null where it is not known. */
+  readonly packaged: Readonly<Record<number, number | null>>;
 }
 
 export async function loadTypeVolumes(
@@ -3617,6 +3619,7 @@ export async function loadTypeVolumes(
   options: ApiOptions = {},
 ): Promise<TypeVolumesResult> {
   const volumes: Record<number, number | null> = {};
+  const packaged: Record<number, number | null> = {};
   for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
     const data = await getJson(
       `/api/types/volumes?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
@@ -3633,8 +3636,17 @@ export async function loadTypeVolumes(
       }
       volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
     }
+    const packedRaw =
+      typeof data.packaged === "object" && data.packaged !== null && !Array.isArray(data.packaged)
+        ? (data.packaged as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(packedRaw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+      packaged[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    }
   }
-  return { volumes };
+  return { volumes, packaged };
 }
 
 // --- R24 slice C: module cycle times (static reference data) ----------------

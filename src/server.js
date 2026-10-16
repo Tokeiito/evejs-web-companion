@@ -13647,13 +13647,22 @@ app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
       }
     }
     const volumes = {};
+    // And each type's packaged volume (inventorycommon/util.py GetPackagedVolume: the client's own override for the
+    // type, else for its group, else the type's own; src/clientData/holdCapacity.js), where the client's tables can be
+    // read; null where they cannot, or the type is not known. The multibuy window's volume is so reckoned.
+    const packagedTables = await packagedTablesOrNull();
+    const packaged = {};
     for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
       volumes[String(typeID)] = staticTypeVolume(typeID);
+      const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+      const packed = packagedTables && type ? packagedVolume(typeID, Number(type.groupID), staticTypeVolume, packagedTables) : null;
+      packaged[String(typeID)] = typeof packed === "number" && Number.isFinite(packed) ? packed : null;
     }
     res.json({
       ok: true,
       source: "static-data",
       volumes,
+      packaged,
       // Said, not hidden: a type past the limit is not in the answer at all,
       // and a caller that asked for it must not take that for "has none".
       capped: asked.length > TYPE_VOLUME_TYPE_LIMIT,
