@@ -144,6 +144,20 @@ export interface SkillTrainingFacts {
 }
 
 /**
+ * dogma/effects SKILL_ACCELERATOR_EFFECT_IDS (dogma/effects/__init__.py 345 to 350): the five effects that add to an
+ * attribute from a booster (Analytical Mind 306, Empathy 302, Instant Recall 304, Iron Will 308, Spatial Awareness 310).
+ */
+export const SKILL_ACCELERATOR_EFFECT_IDS: ReadonlySet<number> = new Set([306, 302, 304, 308, 310]);
+
+/**
+ * dogma/effects IsBoosterSkillAccelerator (352 to 357): a booster is a skill accelerator where its type's passive
+ * effects (GetPassiveFilteredEffectsByType) hold one of those five.
+ */
+export function isBoosterSkillAccelerator(passiveEffects: readonly number[] | null | undefined): boolean {
+  return Array.isArray(passiveEffects) && passiveEffects.some((effectID) => SKILL_ACCELERATOR_EFFECT_IDS.has(effectID));
+}
+
+/**
  * skillsvc.GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the time, in ticks, to train every skill
  * the type needs to its level; nought where the type's own needs are met. Null where a rank or a rate is not known.
  */

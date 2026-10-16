@@ -3777,6 +3777,26 @@ export async function getGlobalConfig(
   return { available: data.available === true, values };
 }
 
+/**
+ * GET /api/types/passive-effects?typeIDs=...: each type's passive effects as the client's dogma static service
+ * filters them (GetPassiveFilteredEffectsByType), or null where the tables do not know the type.
+ */
+export async function loadPassiveEffects(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, readonly number[] | null>>> {
+  if (typeIDs.length === 0) return {};
+  const data = await getJson(`/api/types/passive-effects?typeIDs=${encodeURIComponent(typeIDs.join(","))}`, options);
+  const raw = typeof data.effects === "object" && data.effects !== null && !Array.isArray(data.effects) ? (data.effects as Record<string, JsonValue>) : {};
+  const effects: Record<number, readonly number[] | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    effects[typeID] = Array.isArray(value) ? value.map(Number).filter((id) => Number.isSafeInteger(id)) : null;
+  }
+  return effects;
+}
+
 export async function fetchTypeDogma(
   typeIDs: readonly number[],
   attributeIDs: readonly number[],

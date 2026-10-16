@@ -180,7 +180,7 @@ import { readStandings, standingComposition, standingHistory } from "../bridge/s
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
-  allLevelsQueued, booksToBuy, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
   requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
@@ -6442,9 +6442,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
    *
    * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
-   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha. A booster
-   * is taken for a skill accelerator by the attribute bonuses its type carries; the client asks its effects
-   * (IsBoosterSkillAccelerator), which the page cannot read. An alpha clone's restricted skills and levels are not
+   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
+   * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
+   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's restricted skills and levels are not
    * read (NeedsOmegaUpgrade, the bar's restricted boxes): the window goes as for a pilot with none.
    */
   async function skillWindowRest(
@@ -6471,7 +6471,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
     const queued = queuedLevels(queue);
     const training = skillInTraining(queue);
-    const boosterTypes = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    // The boosters answer is keyed by the booster's type (attributes.py 93 to 95), and only the skill accelerators count.
+    const boostersHeld = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const boosterEffects = boostersHeld.length === 0 ? {} : await api.loadPassiveEffects(boostersHeld, callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>));
+    const boosterTypes = boostersHeld.filter((booster) => isBoosterSkillAccelerator(boosterEffects[booster]));
     const boosterBonuses = boosterTypes.length === 0 ? {} : await api.fetchTypeDogma(boosterTypes, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
     const attributes = new Map(readDictPairs(attributesAnswer).map(([key, value]) => [Number(key), Number(value)] as const));
     const grade = store.station.get().cloneGrade;

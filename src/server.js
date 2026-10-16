@@ -13720,6 +13720,31 @@ app.get("/api/types/default-effects", requireAuth, async (req, res, next) => {
   }
 });
 
+/**
+ * A type's passive effects, as the client's dogma static service filters them (GetPassiveFilteredEffectsByType), from
+ * static reference data: what the client asks to tell a booster a skill accelerator (dogma/effects IsBoosterSkillAccelerator).
+ * Null for a type the tables do not know. No gateway call and no live session: it cannot vary by player.
+ */
+const PASSIVE_EFFECT_TYPE_LIMIT = 500;
+app.get("/api/types/passive-effects", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const effects = {};
+    for (const typeID of asked.slice(0, PASSIVE_EFFECT_TYPE_LIMIT)) {
+      effects[String(typeID)] = typeof staticData.getPassiveFilteredEffects === "function" ? staticData.getPassiveFilteredEffects(typeID) : null;
+    }
+    res.json({ ok: true, source: "static-data", effects, capped: asked.length > PASSIVE_EFFECT_TYPE_LIMIT, limit: PASSIVE_EFFECT_TYPE_LIMIT });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/types/overload-effects", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
