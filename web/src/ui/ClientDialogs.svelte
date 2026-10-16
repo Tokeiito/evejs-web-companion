@@ -60,6 +60,42 @@
   // svelte-ignore state_referenced_locally
   const skillBooksAsked = flow.skillBooksAsked;
   // svelte-ignore state_referenced_locally
+  const multiBuyAsked = flow.multiBuyAsked;
+  // The client's multibuy window (eve/client/script/ui/shared/market/buyMultiFromBase.py, with its base and rows): its
+  // title with how many rows, where it buys (the station list's current one), the number of orders, each type a row
+  // with its icon and name, its quantity, the total where the orders are more than one, its best price at the station
+  // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel. Its words are
+  // the install's; the page's own stand in. Not done: the other markets of the system in the station list, each row's
+  // distance from the average and its tooltip, the corporation's wallet, the warning above the average, importing and
+  // exporting a list, dropping types in, Buy and Fit, the orders' expiry kept watch on.
+  const MULTIBUY_WORDS: Readonly<Record<string, string>> = {
+    "UI/Inventory/ItemActions/MultiBuy": "Shopping list",
+    "UI/Market/MarketQuote/CurrentStation": "Here: {stationName}",
+    "UI/Market/MarketQuote/NumberOfOrders": "Times over",
+    "UI/Market/MarketQuote/CommandBuy": "Purchase",
+    "UI/Generic/Cancel": "Not now",
+    "UI/Common/Quantity": "How many",
+    "UI/Market/MarketQuote/NoStationSelected": "Nowhere to buy chosen",
+  };
+  $effect(() => {
+    if ($multiBuyAsked === null) return;
+    flow.requestWords([...Object.keys(MULTIBUY_WORDS), ...NUMERIC_WORD_LABELS]);
+    const place = $multiBuyAsked.stationID;
+    flow.requestNames([
+      ...$multiBuyAsked.rows.map((row) => ({ kind: "type" as const, id: row.typeID })),
+      ...(place === null ? [] : [{ kind: (place >= 1_000_000_000_000 ? "structure" : "station") as NameKind, id: place }]),
+    ]);
+  });
+  /** A label of the multibuy window, as plain text, its ISK in the client's words. */
+  function buyWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, MULTIBUY_WORDS[label] ?? ""), args, {
+      nameOf,
+      writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, $words.templates, nameOf),
+    }));
+  }
+  /** eveFormat.FmtISK: the amount in the client's ISK words, two places. */
+  const isk = (amount: number): string => iskWords(amount, 2, $words.templates, nameOf) ?? `${new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount)} ISK`;
+  // svelte-ignore state_referenced_locally
   const applyPointsAsked = flow.applyPointsAsked;
 
   /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
@@ -292,6 +328,8 @@
     "UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectButton": "Buy and inject",
     "UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectTooltip": "Buy each book listed here and inject it now",
     "UI/SkillPlan/MissingSkillbooksWindow/RemoteInjectionTooltip": "Books bought this way are injected where the pilot is, with no book to carry.",
+    "UI/SkillPlan/MissingSkillbooksWindow/CheckMarketButton": "Look on the market",
+    "UI/SkillPlan/MissingSkillbooksWindow/CheckMarketTooltip": "Put these books in a market buy window",
   };
   $effect(() => {
     if ($skillBooksAsked === null) return;
@@ -515,6 +553,11 @@
             title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectTooltip")}
             onclick={() => void flow.answerSkillBooks(books.n, "buy").catch(() => {})}
           >{bookWord("UI/SkillPlan/MissingSkillbooksWindow/BuyAndInjectButton")}</button>
+          {#if books.unavailable.length === 0}
+            <button type="button" title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketTooltip")} onclick={() => void flow.answerSkillBooks(books.n, "market-available").catch(() => {})}>
+              {bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketButton")}
+            </button>
+          {/if}
         </section>
       {/if}
       {#if books.available.length > 0 && books.unavailable.length > 0}<hr class="book-line" />{/if}
@@ -526,8 +569,69 @@
           <ul class="book-list">
             {#each books.unavailable as skill (skill)}<li>- {nameOf("type", skill)}</li>{/each}
           </ul>
+          {#if books.available.length === 0}
+            <button type="button" title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketTooltip")} onclick={() => void flow.answerSkillBooks(books.n, "market-unavailable").catch(() => {})}>
+              {bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketButton")}
+            </button>
+          {/if}
         </section>
       {/if}
+      {#if books.available.length > 0 && books.unavailable.length > 0}
+        <button type="button" title={bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketTooltip")} onclick={() => void flow.answerSkillBooks(books.n, "market-all").catch(() => {})}>
+          {bookWord("UI/SkillPlan/MissingSkillbooksWindow/CheckMarketButton")}
+        </button>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+{#if $multiBuyAsked !== null}
+  {@const buy = $multiBuyAsked}
+  {@const sum = buy.rows.reduce((total, row) => total + (row.price ?? 0) * row.qty * buy.multiplier, 0)}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog multibuy" role="dialog" aria-label={buyWord("UI/Inventory/ItemActions/MultiBuy")} data-dialog="MultiBuy" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title">
+        <strong>{buyWord("UI/Inventory/ItemActions/MultiBuy")} ({buy.rows.length})</strong>
+        <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>✕</button>
+      </span>
+      <span class="multibuy-place">
+        <select disabled>
+          {#if buy.stationID === null}
+            <option>{buyWord("UI/Market/MarketQuote/NoStationSelected")}</option>
+          {:else}
+            <option>{buyWord("UI/Market/MarketQuote/CurrentStation", { stationName: nameOf(buy.stationID >= 1_000_000_000_000 ? "structure" : "station", buy.stationID) })}</option>
+          {/if}
+        </select>
+        <label class="multibuy-orders">
+          <span>{buyWord("UI/Market/MarketQuote/NumberOfOrders")}</span>
+          <input type="number" min="1" max="1000" value={buy.multiplier} disabled={buy.busy}
+            onchange={(event) => void flow.editMultiBuy(buy.n, { multiplier: Number((event.currentTarget as HTMLInputElement).value) })} />
+        </label>
+      </span>
+      <ul class="multibuy-rows">
+        {#each buy.rows as row (row.typeID)}
+          <li class="multibuy-row" class:none={!row.loading && row.price === null}>
+            <TypeIcon typeID={row.typeID} name={nameOf("type", row.typeID)} size="sm" />
+            <span class="multibuy-name">{nameOf("type", row.typeID)}</span>
+            <span class="multibuy-qty">
+              <input type="number" min="1" value={row.qty} title={buyWord("UI/Common/Quantity")} disabled={buy.busy}
+                onchange={(event) => void flow.editMultiBuy(buy.n, { typeID: row.typeID, qty: Number((event.currentTarget as HTMLInputElement).value) })} />
+              {#if buy.multiplier > 1}<span>= {groupedNumber(row.qty * buy.multiplier)}</span>{/if}
+            </span>
+            <span class="multibuy-price">{row.loading ? "…" : row.price === null ? "-" : isk(row.price)}</span>
+            <span class="multibuy-total">{row.loading ? "…" : row.price === null ? "-" : isk(row.price * row.qty * buy.multiplier)}</span>
+            <button type="button" class="close" aria-label="Remove" disabled={buy.busy} onclick={() => void flow.editMultiBuy(buy.n, { remove: row.typeID })}>✕</button>
+          </li>
+        {/each}
+      </ul>
+      <span class="multibuy-sum">{isk(sum)}</span>
+      <span class="answers">
+        <button type="button" disabled={buy.busy || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
+      </span>
     </div>
   </div>
 {/if}
@@ -713,6 +817,17 @@
   .book-heading.unavailable { color: #ff4d4d; }
   .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
   .apply-points { margin-left: 0.6rem; padding: 0 0.5rem; }
+  .multibuy { width: min(40rem, calc(100vw - 2rem)); }
+  .multibuy-place { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.6rem; }
+  .multibuy-orders { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.85rem; }
+  .multibuy-orders input { width: 5rem; }
+  .multibuy-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.3rem; max-height: 50vh; overflow-y: auto; }
+  .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem auto; align-items: center; gap: 0.5rem; }
+  .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
+  .multibuy-qty { display: flex; flex-direction: column; }
+  .multibuy-qty input { width: 6rem; }
+  .multibuy-price, .multibuy-total { text-align: right; }
+  .multibuy-sum { align-self: flex-end; font-weight: bold; color: #ff5050; }
   .apply-window { width: min(37.5rem, calc(100vw - 2rem)); }
   .apply-head { padding: 0.4rem 0.5rem; background: rgba(34, 34, 36, 0.7); }
   .apply-description { text-align: center; }

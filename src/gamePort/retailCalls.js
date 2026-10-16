@@ -2454,6 +2454,33 @@ const RETAIL_CALLS = Object.freeze({
       return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
     },
   }), "fee"),
+  "marketProxy.BuyMultipleItems": needing(Object.freeze({
+    status: "same",
+    source: `${MARKET_QUOTE}:271`,
+    note: "GetMarketProxy().BuyMultipleItems(stationID, itemList, useCorp) (marketsvc.BuyMulti, from the multibuy window's Buy, buyMultiFromBase.py 296 to 311): the station, a list of the items, each a util.KeyVal of six fields (marketutil/orderInfo.py GetBuyItemInfo: stationID, typeID, the price rounded to cents, quantity, minVolume 1, and delta, how far the price is from the type's average), and whether it is for the corporation. It answers the orders made. In no recording.",
+    shape: (args, kwargs, context) => {
+      const [stationID, given, useCorp] = args;
+      const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+      if (args.length !== 3 || !wholeAndPositive(stationID) || listed === null || listed.length === 0) {
+        return { args, kwargs, status: "differs", note: "The client sends three: the station, a list of the items, and whether it is for the corporation." };
+      }
+      if (listed.every((item) => item && typeof item === "object" && item.type === "object")) return { args, kwargs };
+      const items = listed.map((item) => {
+        if (!item || typeof item !== "object" || item.type !== undefined) return null;
+        if (!wholeAndPositive(item.typeID) || !wholeAndPositive(item.quantity) || typeof item.price !== "number" || !(item.price > 0)) return null;
+        const price = Math.round(item.price * 100) / 100;
+        const delta = item.delta !== undefined ? item.delta : deltaFrom(price, averagePriceOf(context, item.typeID));
+        return keyVal([
+          ["stationID", item.stationID ?? stationID], ["typeID", item.typeID], ["price", asFloat(price)], ["quantity", item.quantity],
+          ["minVolume", item.minVolume ?? 1], ["delta", asFloat(delta ?? 0)],
+        ]);
+      });
+      if (items.includes(null)) {
+        return { args, kwargs, status: "differs", note: "Each item the client sends has its type, a price above nought and how many; one of these has not." };
+      }
+      return { args: [stationID, { type: "list", items }, useCorp === true], kwargs: {}, status: "reshaped" };
+    },
+  }), "buy"),
   "marketProxy.PlaceMultiSellOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:276`,

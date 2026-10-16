@@ -199,6 +199,27 @@ function toFiletime(value: JsonValue | undefined): bigint | null {
  * Every row already carries `bid`, so the tuple position is cross-checked
  * against it rather than trusted.
  */
+/**
+ * marketQuote.GetBestAskPriceInStationAndNumberOrders (marketsvc.py 603 to 616): the sell orders at the station,
+ * cheapest first, taken until they hold the amount; the price of the last one taken, and how many were taken. Nulls
+ * where the station's orders do not hold it.
+ */
+export function bestAskInStation(
+  sells: readonly MarketOrderRow[],
+  stationID: number,
+  amount: number,
+): { readonly price: number | null; readonly numOrders: number | null } {
+  const atStation = sells.filter((order) => order.stationID === stationID).sort((left, right) => Number(left.price) - Number(right.price));
+  let held = 0;
+  let taken = 0;
+  for (const order of atStation) {
+    held += order.volumeRemaining;
+    taken += 1;
+    if (held >= amount) return { price: Number(order.price), numOrders: taken };
+  }
+  return { price: null, numOrders: null };
+}
+
 export function decodeOrderBook(result: JsonValue): {
   readonly sells: readonly MarketOrderRow[];
   readonly buys: readonly MarketOrderRow[];

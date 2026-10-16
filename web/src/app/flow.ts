@@ -41,6 +41,7 @@ import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInv
 import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
+  bestAskInStation,
   decodeEscrow,
   decodeOrderBook,
   decodeOwnOrders,
@@ -452,6 +453,7 @@ import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall,
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
+  buyMultipleItems,
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
   placeBuyOrder as placeBuyOrderCall,
@@ -937,6 +939,30 @@ export interface ApplyPointsAsk {
  * The client's books window open now (MissingSkillbooksWnd): the books it lists as sold (Buy and Inject) and as not,
  * and what those sold cost (its price label). The sold ones are gone from it once bought.
  */
+/** A row of the client's multibuy window (buytItemEntry.BuyItemContainer): a type, how many, and its best price. */
+export interface MultiBuyRow {
+  readonly typeID: number;
+  /** How many in each order (the row's quantity field). */
+  readonly qty: number;
+  /** GetBestAskPriceInStationAndNumberOrders for qty times the orders: the price, null where the station's orders do not hold it. */
+  readonly price: number | null;
+  readonly numOrders: number | null;
+  /** The price being read again (isUpdating). */
+  readonly loading: boolean;
+}
+
+/** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
+export interface MultiBuyAsk {
+  readonly n: number;
+  /** Where it buys: the station or structure the pilot is docked in (its station list's current one); null with none. */
+  readonly stationID: number | null;
+  /** The number of orders (orderMultiplierEdit): each row's quantity is bought this many times over. */
+  readonly multiplier: number;
+  readonly rows: readonly MultiBuyRow[];
+  /** A buy under way. */
+  readonly busy: boolean;
+}
+
 export interface SkillBooksAsk {
   readonly n: number;
   readonly available: readonly number[];
@@ -2152,7 +2178,15 @@ export interface AppFlow {
   /** The client's books window open now (ClientDialogs.svelte shows it); null with none. */
   readonly skillBooksAsked: ReadableSignal<SkillBooksAsk | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
-  answerSkillBooks(n: number, answer: "buy" | "close"): Promise<void>;
+  answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
+  /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly multiBuyAsked: ReadableSignal<MultiBuyAsk | null>;
+  /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
+  openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
+  /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
+  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void>;
+  /** Its Buy, or Cancel. */
+  answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void>;
   /**
    * The requirement window's apply-points button where the pilot has free points (ApplySkillPointsButton.ClickFunc):
    * the window put away and the Apply Skill Points window opened for its levels.
@@ -6242,6 +6276,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
   let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
   let skillBooksPurchased: number[] = [];
+  // The client's multibuy window, one at a time, and the sell orders read for its types (the quote service's order
+  // cache), kept for as long as it is open.
+  const multiBuyAskedSignal = createSignal<MultiBuyAsk | null>(null);
+  const multiBuyBooks = new Map<number, ReturnType<typeof decodeOrderBook>["sells"]>();
   // The client's Apply Skill Points window, one at a time, and its levels.
   const applyPointsAskedSignal = createSignal<ApplyPointsAsk | null>(null);
   let applyPointsLevels: readonly SkillLevel[] = [];
@@ -6508,6 +6546,115 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * the points asked again and spread where any, then the rows at their new progress and the buttons one Close.
    * Cancel and Close: put away. The Skills window's sheet read again after the spreading.
    */
+  /**
+   * multiBuyUtil.BuyMultipleTypesWithQty: the multibuy window opened with these types and quantities, or, where it is
+   * open, each added to it (AddToOrder: a type already in it has the quantity added to its row). Where the window
+   * opens it buys at the station or structure the pilot is docked in (LoadStationOptions: session.stationid first).
+   * Each row's price is then read (GetBestPrice).
+   */
+  async function openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void> {
+    const open = multiBuyAskedSignal.get();
+    const inventory = store.inventory.get();
+    const base: MultiBuyAsk = open ?? {
+      n: (dialogsSaidCount += 1),
+      stationID: inventory.stationID ?? inventory.structureID ?? null,
+      multiplier: 1,
+      rows: [],
+      busy: false,
+    };
+    if (open === null) multiBuyBooks.clear();
+    const rows = [...base.rows];
+    for (const [typeID, qty] of wanted) {
+      const at = rows.findIndex((row) => row.typeID === typeID);
+      if (at >= 0) rows[at] = { ...rows[at]!, qty: rows[at]!.qty + qty, loading: true };
+      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true });
+    }
+    multiBuyAskedSignal.set({ ...base, rows });
+    await multiBuyPrices();
+  }
+
+  /** Each row's best price at the window's station for its quantity times the orders (BuyItemContainer.GetBestPrice). */
+  async function multiBuyPrices(): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null) return;
+    const priced = await Promise.all(asked.rows.map(async (row) => {
+      if (asked.stationID === null) return { ...row, price: null, numOrders: null, loading: false };
+      let sells = multiBuyBooks.get(row.typeID);
+      if (sells === undefined) {
+        sells = await bridgeAsk("marketProxy", "GetOrders", [row.typeID]).then((answer) => decodeOrderBook(answer).sells).catch(() => []);
+        multiBuyBooks.set(row.typeID, sells);
+      }
+      const best = bestAskInStation(sells, asked.stationID, row.qty * asked.multiplier);
+      return { ...row, price: best.price, numOrders: best.numOrders, loading: false };
+    }));
+    const now = multiBuyAskedSignal.get();
+    if (now === null || now.n !== asked.n) return;
+    // A row edited while its price was read keeps its own quantity, and is read again with it.
+    const stale = now.rows.some((row) => { const was = asked.rows.find((each) => each.typeID === row.typeID); return was === undefined || was.qty !== row.qty; }) || now.multiplier !== asked.multiplier;
+    multiBuyAskedSignal.set({ ...now, rows: now.rows.map((row) => { const fresh = priced.find((each) => each.typeID === row.typeID); return fresh && fresh.qty === row.qty && !stale ? fresh : row; }) });
+    if (stale) await multiBuyPrices();
+  }
+
+  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n || asked.busy) return;
+    if ("remove" in edit) {
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.filter((row) => row.typeID !== edit.remove) });
+      return;
+    }
+    if ("multiplier" in edit) {
+      // orderMultiplierEdit: a whole number from 1 to 1000.
+      const multiplier = Math.min(1000, Math.max(1, Math.trunc(edit.multiplier) || 1));
+      multiBuyAskedSignal.set({ ...asked, multiplier, rows: asked.rows.map((row) => ({ ...row, loading: true })) });
+    } else {
+      // The row's quantity field: a whole number, 1 at least.
+      const qty = Math.max(1, Math.trunc(edit.qty) || 1);
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.map((row) => (row.typeID === edit.typeID ? { ...row, qty, loading: true } : row)) });
+    }
+    await multiBuyPrices();
+  }
+
+  /**
+   * The multibuy window's Buy (_PerformTrade, 296 to 311): the rows with a price, each at it rounded to cents and its
+   * quantity times the orders (GetValidatedItem); none is the client's uiwarning03. Then
+   * GetMarketProxy().BuyMultipleItems(station, items, useCorp), and the window holds only the rows that had no price
+   * (CreateNewBuyOrder), the orders one again; with none left it is put away. Cancel puts it away.
+   */
+  async function answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    if (answer === "cancel") {
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    if (asked.busy || asked.rows.some((row) => row.loading)) return;
+    const buying = asked.rows.filter((row) => row.price !== null && row.price > 0 && row.qty * asked.multiplier >= 1);
+    if (asked.stationID === null || buying.length === 0) {
+      sayDialog("uiwarning03", null, "There is nothing in the window that can be bought here.");
+      return;
+    }
+    multiBuyAskedSignal.set({ ...asked, busy: true });
+    try {
+      await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })));
+    } catch (error) {
+      const now = multiBuyAskedSignal.get();
+      if (now !== null && now.n === n) multiBuyAskedSignal.set({ ...now, busy: false });
+      if (isSessionLost(error)) throw error;
+      // A refusal is put up as the client puts up a UserError the call raises.
+      sayRefusalDialog(error, `Those items could not be bought: ${errorWords(error)}`);
+      return;
+    }
+    void loadInventory().catch(() => {});
+    const failed = asked.rows.filter((row) => !buying.includes(row));
+    multiBuyBooks.clear();
+    if (failed.length === 0) {
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    multiBuyAskedSignal.set({ ...asked, busy: false, multiplier: 1, rows: failed.map((row) => ({ ...row, qty: row.qty * asked.multiplier, loading: true })) });
+    await multiBuyPrices();
+  }
+
   async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
     const asked = applyPointsAskedSignal.get();
     if (asked === null || asked.n !== n) return;
@@ -6615,11 +6762,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * GetSkillHandler().PurchaseSkills(those books). Bought, and none left that is not sold: the window put away;
    * otherwise kept, without the books bought.
    */
-  async function answerSkillBooks(n: number, answer: "buy" | "close"): Promise<void> {
+  async function answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void> {
     const asked = skillBooksAskedSignal.get();
     if (asked === null || asked.n !== n || skillBooksEnd === null) return;
     if (answer === "close") {
       skillBooksEnd(skillBooksPurchased);
+      return;
+    }
+    // Check on Market (_OnAvailableCheckMarketButton, _OnUnavailableCheckMarketButton, _OnSharedCheckMarketButton):
+    // the books of the section, or of both, one of each, into the multibuy window (the context's multibuy_*), and the
+    // window put away.
+    if (answer !== "buy") {
+      const books = answer === "market-available" ? asked.available : answer === "market-unavailable" ? asked.unavailable : [...asked.available, ...asked.unavailable];
+      skillBooksEnd(skillBooksPurchased);
+      await openMultiBuy(new Map(books.map((skill) => [skill, 1])));
       return;
     }
     if (asked.available.length === 0) return;
@@ -19701,6 +19857,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     applySkillPointsRequired,
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),
     answerApplyPoints,
+    multiBuyAsked: readonlySignal(multiBuyAskedSignal),
+    openMultiBuy,
+    editMultiBuy,
+    answerMultiBuy,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,

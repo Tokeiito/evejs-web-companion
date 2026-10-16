@@ -2305,6 +2305,9 @@ function createGamePortPilots({
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
     if (retailNeeds(service, method) === "fee" || retailNeeds(service, method) === "sale") await feeInputsRead(entry, feePlaces(method, args));
     if (retailNeeds(service, method) === "sale") await saleAveragesRead(entry, args);
+    // The multibuy window's items, each with the type's average its row has (buySellItemContainerBase: the quote
+    // service's GetAveragePrice), for how far each price is from it.
+    if (retailNeeds(service, method) === "buy") await saleAveragesRead(entry, [Array.isArray(args) ? args[1] : null]);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
