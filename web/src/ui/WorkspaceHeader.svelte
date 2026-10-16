@@ -16,6 +16,8 @@
   import { SPEED_WORD_LABELS, shipSpeedText } from "../space/shipSpeed.ts";
   import { crimewatchTimers, safetyBadge, safetyLocks, timerText } from "../space/crimewatch.ts";
   import SafetyChooser from "./SafetyChooser.svelte";
+  import { ABYSS_POCKET_LABELS } from "../bridge/abyssalKeys.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { onMount } from "svelte";
 
   let { store, flow, isDocked }: { store: ClientStore; flow: AppFlow; isDocked: boolean } = $props();
@@ -56,6 +58,19 @@
   const locks = $derived(safetyLocks($station.cloneGrade, systemID === null ? null : ($names.systemSecurity[systemID] ?? null)));
   const safety = $derived(isDocked ? null : safetyBadge(crimewatch?.states ?? null, locks.full));
   const timers = $derived(crimewatch === null ? [] : crimewatchTimers(crimewatch.states, pageNow + crimewatch.clockOffsetMs));
+  // The Abyssal pocket's timer (crimewatchTimers.SetAbyssalTimer, from OnAddExpiryDurationForAbyssalContent): red,
+  // counting down to its end by the server's clock, gone when it runs out (DeleteWhenFinished); its tooltip the
+  // client's AbyssalContentExpiryTooltip.
+  // svelte-ignore state_referenced_locally
+  const abyssalTimer = flow.abyssalTimer;
+  const abyssalLeftMs = $derived($abyssalTimer === null ? null : $abyssalTimer.endMs - (pageNow + $abyssalTimer.clockOffsetMs));
+  const abyssalTooltip = $derived.by(() => {
+    const template = $words.templates[ABYSS_POCKET_LABELS.timerTooltip];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: () => "" })) : "The Abyssal pocket's time";
+  });
+  $effect(() => {
+    if ($abyssalTimer !== null) flow.requestWords([ABYSS_POCKET_LABELS.timerTooltip]);
+  });
 
   let busy = $state(false);
   let error = $state("");
@@ -131,6 +146,9 @@
   {#each timers as timer (timer.kind)}
     <span class="state-badge crime-timer crime-{timer.kind}" title="A combat timer">{timerText(timer)}</span>
   {/each}
+  {#if abyssalLeftMs !== null && abyssalLeftMs > 0}
+    <span class="state-badge crime-timer crime-abyssal" title={abyssalTooltip}>{timerText({ kind: "pvp", word: "Abyssal", phase: "timer", remainingMs: abyssalLeftMs })}</span>
+  {/if}
   <div class="ws-head-where">
     {#if isDocked}
       <strong>{stationName}</strong>

@@ -5021,6 +5021,8 @@
   .state-badge.safety-none { color: var(--color-danger); border-color: var(--color-danger); }
   .state-badge.crime-timer { color: var(--color-warn); border-color: var(--color-warn); font-variant-numeric: tabular-nums; }
   .state-badge.crime-criminal { color: var(--color-danger); border-color: var(--color-danger); }
+  /* The Abyssal pocket's timer is red in the client (crimewatchTimers.py: Colors.Red). */
+  .state-badge.crime-abyssal { color: var(--color-danger); border-color: var(--color-danger); }
   /* In space the safety level is a button, and the selector opens beneath it:
    * three levels, each with what it lets the ship do beside it.
    *

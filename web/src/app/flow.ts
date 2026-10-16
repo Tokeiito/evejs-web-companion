@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, GAME_MODES, abyssErrorsOfRefusal, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
+import { ABYSSAL_COLLAPSE_WARNING_SECONDS, ATTRIBUTE_DIFFICULTY_TIER, ATTRIBUTE_WEATHER_ID, DEFAULT_GAME_MODE_SETTING, EXPIRATION_INDICATION_MS, GAME_MODES, abyssalExpiryMs, abyssErrorsOfRefusal, deployEntranceGate, type AbyssErrorEntry, type GameModeID } from "../bridge/abyssalKeys.ts";
 import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -230,7 +230,7 @@ const CONTACTS_NOTIFICATION_GROUP = 9;
 const OWNER_SYSTEM = 1;
 /** const.UE_LOC (carbon/common/lib/const.py 273): a dialog's value that is one of the client's labels, with its arguments. */
 const UE_LOC = 101;
-import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
+import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
@@ -1668,6 +1668,10 @@ export interface AppFlow {
    */
   readonly walletOverview: ReadableSignal<WalletOverviewRead>;
   loadWalletOverview(): Promise<void>;
+  /** The Abyssal pocket's timer (OnAddExpiryDurationForAbyssalContent): its end by the server's clock; null where none. */
+  readonly abyssalTimer: ReadableSignal<{ readonly endMs: number; readonly clockOffsetMs: number } | null>;
+  /** The pocket's collapse warning the HUD shows for its eight seconds (_display_expiry_message); null where none. */
+  readonly collapseWarning: ReadableSignal<{ readonly seconds: number } | null>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -3410,6 +3414,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scheduleReloadRefresh(chargeLoad.durationMs);
       return;
     }
+    // The Abyssal pocket's timer and its end (bridge/abyssalKeys.ts; abyssal_service.py 128 to 131 and 175 to 181).
+    if (method === "OnAddExpiryDurationForAbyssalContent") {
+      const endMs = abyssalExpiryMs(args[0]);
+      if (endMs !== null) abyssalExpiryNoticed(endMs);
+      return;
+    }
+    if (method === "OnAbyssalContentFinished") {
+      abyssalContentFinished();
+      return;
+    }
     if (method === "OnIndustryMaterials") {
       // industrySvc.OnIndustryMaterials (324 to 327): what a monitored job's place has. It is kept for the window
       // whose job's monitor it names (bridge/industryMaterials.ts); what is no such notice is let go.
@@ -3451,6 +3465,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // not been measured.
       if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
         scheduleDroneRefresh();
+      }
+      // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
+      // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
+      // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
+      // deploy came by this name, and the cargo went on listing it until a Refresh.
+      if (inventoryShowsItemChange(args)) {
+        scheduleInventoryRefresh();
       }
       return;
     }
@@ -3543,6 +3564,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // OnItemsChanged frames back to back. Coalesce them into one re-read.
   const HOLD_REFRESH_COALESCE_MS = 150;
   let holdRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * One item's move that the Inventory panel shows (above, OnItemChange): read again where the panel has been read
+   * (its `loaded`), an item in or from the ship flown, the ship whose bays are open or the station's hangar. A change
+   * that cannot be read is taken for the panel's.
+   */
+  const INVENTORY_REFRESH_COALESCE_MS = 400;
+  let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function inventoryShowsItemChange(args: readonly unknown[]): boolean {
+    const inventory = store.inventory.get();
+    if (!inventory.loaded) return false;
+    const places = itemChangeLocations(args);
+    if (places === null) return true;
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    return places.some((placeID) => shown.includes(placeID));
+  }
+  function scheduleInventoryRefresh(): void {
+    if (inventoryRefreshTimer !== null) return;
+    inventoryRefreshTimer = setTimeout(() => {
+      inventoryRefreshTimer = null;
+      void (async () => {
+        await loadInventory();
+        const open = store.inventory.get().openShip;
+        if (open) await openShipBays(open.itemID);
+      })().catch(() => {});
+    }, INVENTORY_REFRESH_COALESCE_MS);
+  }
   /**
    * Re-read the fit once a queued reload has landed, so the rack's counts show
    * what is in the guns rather than what was there before (and, with 0, once a
@@ -5195,6 +5243,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       custom: filter.custom.filter((each) => each.id !== filterID),
       active: filter.active.filter((id) => id !== filterID),
     });
+  }
+  // The Abyssal pocket's timer, to the server's clock, and the collapse's warning showing (bridge/abyssalKeys.ts): set
+  // by OnAddExpiryDurationForAbyssalContent, the warnings scheduled 300, 120 and 30 seconds before its end (one whose
+  // time is past at once, in that order, as the client's scheduler runs them), each shown for eight seconds; let go
+  // on OnAbyssalContentFinished.
+  const abyssalTimerSignal = createSignal<{ readonly endMs: number; readonly clockOffsetMs: number } | null>(null);
+  const collapseWarningSignal = createSignal<{ readonly seconds: number } | null>(null);
+  let collapseWarningTimers: ReturnType<typeof setTimeout>[] = [];
+  function clearCollapseWarnings(): void {
+    for (const timer of collapseWarningTimers) clearTimeout(timer);
+    collapseWarningTimers = [];
+  }
+  function abyssalExpiryNoticed(endMs: number): void {
+    clearCollapseWarnings();
+    abyssalTimerSignal.set({ endMs, clockOffsetMs: serverNow() - Date.now() });
+    for (const seconds of ABYSSAL_COLLAPSE_WARNING_SECONDS) {
+      collapseWarningTimers.push(setTimeout(() => {
+        collapseWarningSignal.set({ seconds });
+        collapseWarningTimers.push(setTimeout(() => {
+          if (collapseWarningSignal.get()?.seconds === seconds) collapseWarningSignal.set(null);
+        }, EXPIRATION_INDICATION_MS));
+      }, Math.max(0, endMs - seconds * 1000 - serverNow())));
+    }
+  }
+  function abyssalContentFinished(): void {
+    clearCollapseWarnings();
+    abyssalTimerSignal.set(null);
+    collapseWarningSignal.set(null);
   }
   // The key activation window (bridge/abyssalKeys.ts, ui/KeyActivationWindow.svelte): its combo kept for the character,
   // as the client keeps it in settings.char.ui 'abyssGameModeSetting', in this browser.
@@ -19442,6 +19518,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
+    abyssalTimer: readonlySignal(abyssalTimerSignal),
+    collapseWarning: readonlySignal(collapseWarningSignal),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,

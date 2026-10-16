@@ -31,7 +31,7 @@
 // read from its install at run time (the words store).
 
 import type { Ask } from "./ask.ts";
-import { isListValue, readDictEntry, type JsonValue } from "./wire.ts";
+import { isListValue, readDictEntry, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** inventorycommon.const.groupAbyssalKeys. */
 export const GROUP_ABYSSAL_KEYS = 1979;
@@ -323,6 +323,33 @@ export function validateDeploy(facts: DeployFacts, mode: AbyssGameMode): AbyssEr
   if (facts.key.quantity < mode.keyStackSize) add(ABYSS_ERROR.INVALID_KEY_AMOUNT, mode.keyStackSize);
   if (!demo && isSuspicious(facts.security, facts.keyTier) && facts.safetyLevel === SHIP_SAFETY_LEVEL_FULL) add(ABYSS_ERROR.SAFETY_ENGAGED);
   return errors;
+}
+
+// THE POCKET'S TIMER (abyss/client/abyssal_service.py): the server's OnAddExpiryDurationForAbyssalContent(end_time)
+// sets the combat timers' Abyssal one (crimewatchTimers.SetAbyssalTimer: red, its tooltip
+// AbyssalContentExpiryTooltip, deleted when it runs out) and schedules the collapse's warnings 300, 120 and 30
+// seconds before the end, each the HUD's passing indication for eight seconds (ABYSSAL_COLLAPSE_NOTIFICATION_TIMERS_
+// SECONDS, EXPIRATION_INDICATION_DURATION, _display_expiry_message); OnAbyssalContentFinished clears the warnings,
+// and the timers' own OnAbyssalContentFinished deletes the timer (crimewatchTimers.py 515 to 520).
+
+/** ABYSSAL_COLLAPSE_NOTIFICATION_TIMERS_SECONDS, in the order the client schedules them. */
+export const ABYSSAL_COLLAPSE_WARNING_SECONDS: readonly number[] = Object.freeze([300, 120, 30]);
+/** EXPIRATION_INDICATION_DURATION: eight seconds. */
+export const EXPIRATION_INDICATION_MS = 8_000;
+export const ABYSS_POCKET_LABELS = Object.freeze({
+  collapseHeader: "UI/Abyss/AbyssalCollapseWarningHeader",
+  collapseSubject: "UI/Abyss/AbyssalCollapseWarningSubject",
+  timerTooltip: "UI/Crimewatch/Timers/AbyssalContentExpiryTooltip",
+});
+
+/** The clock's 100 ns ticks at the start of Unix time. */
+const FILETIME_OF_UNIX_EPOCH = 116_444_736_000_000_000n;
+
+/** OnAddExpiryDurationForAbyssalContent's end_time (the game's clock, 100 ns ticks) in Unix milliseconds; null for none. */
+export function abyssalExpiryMs(value: unknown): number | null {
+  const ticks = typeof value === "number" && Number.isSafeInteger(value) ? BigInt(value) : unwrapLong(value);
+  if (ticks === null || ticks <= FILETIME_OF_UNIX_EPOCH) return null;
+  return Number((ticks - FILETIME_OF_UNIX_EPOCH) / 10_000n);
 }
 
 /** An entry's parts, from a tuple or a list as the wire carries either. */
