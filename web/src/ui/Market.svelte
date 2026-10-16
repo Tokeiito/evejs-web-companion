@@ -443,6 +443,8 @@
     // market load: it is a different panel's read, and failing it must cost the
     // player only the ability to sell, not the whole market page.
     void flow.loadInventory().catch(() => {});
+    // The escrow the window shows, as the client's market progression keeps it (asked at most each twelve hours).
+    return flow.watchMarketProgression();
   });
 </script>
 

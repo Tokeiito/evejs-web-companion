@@ -251,6 +251,7 @@ import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneB
 import * as api from "./api.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
+import type { MarketEscrow } from "../store/types.ts";
 import type {
   ActivityRead,
   AgentAction,
@@ -1260,6 +1261,11 @@ export interface AppFlow {
    * escrow, their price history and their ISK — plus every NAME those need.
    */
   loadMarket(typeID: number | null): Promise<void>;
+  /**
+   * The pilot's escrow watched as the client's market progression is (MarketProgressionNotifier.register_subscriber):
+   * the kept value said, asked again where due and every twelve hours while watched. Answers the watch's end.
+   */
+  watchMarketProgression(): () => void;
   /**
    * Search tradable items by NAME — how the player picks what to look at.
    * Static reference data, so it answers even when the market daemon does not.
@@ -3580,6 +3586,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // MarketProgressionNotifier.OnMarketEscrowChanged: the kept escrow is to be asked again (once its last asking is
+    // twelve hours old).
+    if (method === "OnMarketEscrowChanged") {
+      keepMarketProgression("requires_update", true);
+      return;
+    }
     // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus) (598 to 600): the pilot's own status is what the
     // server says, with nothing asked.
     if (method === "OnSecurityStatusUpdate") {
@@ -5342,7 +5354,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       orderHistory,
       // The pilot's trades are the market service's, read once and kept (loadMarketTransactions), not the market read's.
       transactions: [],
-      escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
+      // The escrow as the client's market progression keeps it (watchMarketProgression), not the market read's: what is
+      // kept, or nought as the client's value is before its first asking.
+      escrow: marketProgressionKeptValue() ?? { isk: "0", items: 0 },
       // marketsvc.GetPriceHistory: the two halves joined, as the client joins them. A read with no old half at
       // all (nothing asked, or an older BFF) is the new half as it came.
       priceHistory: reads.priceHistoryOld.result === null
@@ -5674,6 +5688,102 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssalTimerSignal.set(null);
     collapseWarningSignal.set(null);
   }
+  // The client's market progression (playerprogression/marketprogressionnotifier.py, a TimedPlayerProgressionNotifier,
+  // marketsvc.py 108 to 110): the pilot's escrow kept in the character's settings (settings.char.ui 'market_value',
+  // 'market_last_update', 'market_requires_update'), here in this browser. It is asked again (GetMyMarketEscrow:
+  // marketProxy.GetCharEscrow) only where none is kept, or its last asking is twelve hours old and
+  // OnMarketEscrowChanged has said it changed (should_update_calculation); as a watcher begins, and every twelve hours
+  // while one watches (register_subscriber, _get_calculation_timed). The client's watcher is the character sheet's
+  // total net worth; the page's is its market window, which shows the escrow.
+  const MARKET_PROGRESSION_KEPT = "evejs.market";
+  const MARKET_UPDATE_NOT_RECENT_AFTER_MS = 12 * 60 * 60 * 1000;
+  function marketProgressionKept(name: "value" | "last_update" | "requires_update"): unknown {
+    const characterID = store.station.get().online?.characterID ?? null;
+    try {
+      const kept = characterID === null ? null : settingsStorage?.getItem(`${MARKET_PROGRESSION_KEPT}_${name}.${characterID}`) ?? null;
+      return kept === null ? undefined : JSON.parse(kept);
+    } catch {
+      return undefined;
+    }
+  }
+  function keepMarketProgression(name: "value" | "last_update" | "requires_update", value: unknown): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`${MARKET_PROGRESSION_KEPT}_${name}.${characterID}`, JSON.stringify(value));
+    } catch {
+      // Storage full or refused: asked again when next watched.
+    }
+  }
+  /** The kept escrow as it is, or null where none is (or it is not one). */
+  function marketProgressionKeptValue(): MarketEscrow | null {
+    const value = marketProgressionKept("value") as { isk_escrow?: unknown; items_escrow?: unknown } | undefined;
+    if (value === undefined || value === null || typeof value !== "object" || !("isk_escrow" in value) || !("items_escrow" in value)) return null;
+    const isk = Number(value.isk_escrow);
+    const items = Number(value.items_escrow);
+    return { isk: toAmountString(Number.isFinite(isk) ? isk : 0) ?? "0", items: Number.isFinite(items) ? items : 0 };
+  }
+  /** MarketProgressionNotifier.get_value: the kept escrow; where none is (or it is not one), nought, and an asking required. */
+  function marketProgressionValue(): MarketEscrow {
+    const kept = marketProgressionKeptValue();
+    if (kept !== null) return kept;
+    keepMarketProgression("requires_update", true);
+    return { isk: "0", items: 0 };
+  }
+  /** should_update_calculation: none asked yet; not if asked within twelve hours; else as OnMarketEscrowChanged left it. */
+  function marketProgressionDue(): boolean {
+    marketProgressionValue();
+    const last = marketProgressionKept("last_update");
+    if (typeof last !== "number") return true;
+    if (last + MARKET_UPDATE_NOT_RECENT_AFTER_MS > Date.now()) return false;
+    const required = marketProgressionKept("requires_update");
+    return required === undefined ? true : required === true;
+  }
+  /** _get_calculation: asked again where due (calculate_progression, GetMyMarketEscrow), and the kept value said. */
+  async function marketProgressionCalculation(): Promise<void> {
+    if (marketProgressionDue()) {
+      keepMarketProgression("last_update", Date.now());
+      keepMarketProgression("requires_update", false);
+      // GetMyMarketEscrow: each part a float of the answer's, nought where the asking fails.
+      let isk = 0;
+      let items = 0;
+      try {
+        const answer = await bridgeAsk("marketProxy", "GetCharEscrow", []);
+        const escrow = decodeEscrow(answer);
+        isk = Number(escrow.isk) || 0;
+        items = Number(escrow.items) || 0;
+      } catch (error) {
+        if (isSessionLost(error)) throw error;
+      }
+      keepMarketProgression("value", { isk_escrow: isk, items_escrow: items });
+    }
+    store.apply({ type: "market/escrow", escrow: marketProgressionValue() });
+  }
+  let marketProgressionTimer: ReturnType<typeof setInterval> | null = null;
+  let marketProgressionWatchers = 0;
+  /**
+   * A watcher of the market progression begun (register_subscriber): the kept value said at once, the reckoning made,
+   * and made again every twelve hours while any watches. Answers its end (unregister_subscriber).
+   */
+  function watchMarketProgression(): () => void {
+    marketProgressionWatchers += 1;
+    store.apply({ type: "market/escrow", escrow: marketProgressionValue() });
+    if (marketProgressionTimer === null) {
+      void marketProgressionCalculation().catch(() => {});
+      marketProgressionTimer = setInterval(() => void marketProgressionCalculation().catch(() => {}), MARKET_UPDATE_NOT_RECENT_AFTER_MS);
+    }
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      marketProgressionWatchers -= 1;
+      if (marketProgressionWatchers === 0 && marketProgressionTimer !== null) {
+        clearInterval(marketProgressionTimer);
+        marketProgressionTimer = null;
+      }
+    };
+  }
+
   // The key activation window (bridge/abyssalKeys.ts, ui/KeyActivationWindow.svelte): its combo kept for the character,
   // as the client keeps it in settings.char.ui 'abyssGameModeSetting', in this browser.
   const ABYSS_GAME_MODE_KEPT = "evejs.abyss.gameModeSetting";
@@ -20910,6 +21020,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runIndustryAction(() => cancelIndustryJobCall(bridgeDo, jobAsRead(jobID)));
     },
     loadMarket,
+    watchMarketProgression,
     findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),
     listOreFamilies: () => api.listOreFamilies(callOptions),
     loadMarketGroups: (parentGroupID: number) => api.loadMarketGroups(parentGroupID, callOptions),

@@ -1516,6 +1516,9 @@ export function createClientStore(): ClientStore {
       case "market/outcome":
         market.set({ ...market.get(), lastOutcome: event.outcome });
         break;
+      case "market/escrow":
+        market.set({ ...market.get(), escrow: event.escrow });
+        break;
       case "market/cleared":
         market.set(INITIAL_MARKET);
         break;

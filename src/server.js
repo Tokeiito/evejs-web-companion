@@ -4181,14 +4181,16 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // (flow.loadMarketTransactions). Asked with every market read, they went twice where the client asks once.
     // Nor the pilot's ISK: the client's wallet service asks it once and keeps it as OnAccountChange says (walletSvc.py
     // 41 to 49, 81 to 100); the page keeps it so (walletReads.wealth) and the market window shows that.
-    const [book, ownOrders, history, escrow, priceHistory, priceHistoryOld] =
+    // Nor its escrow: the client asks GetCharEscrow only for its market progression, kept in the character's settings
+    // and asked again at most each twelve hours (playerprogression/marketprogressionnotifier.py); the page keeps it so
+    // (flow.watchMarketProgression).
+    const [book, ownOrders, history, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
           : Promise.resolve({ result: null }),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
-        heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
@@ -4199,7 +4201,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
           : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, escrow, priceHistory, priceHistoryOld];
+    const settled = [book, ownOrders, history, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -4239,7 +4241,6 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },
-      escrow: { result: valueOf(escrow), error: codeOf(escrow) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
       priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage

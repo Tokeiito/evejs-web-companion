@@ -371,6 +371,8 @@ export type FeedEvent =
   // What the last write ACTUALLY did, assembled from re-reads (never a
   // prediction, and never the estimated fee shown at confirm time).
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
+  // The pilot's escrow as the client's market progression keeps it (flow.watchMarketProgression).
+  | { readonly type: "market/escrow"; readonly escrow: MarketEscrow | null }
   // Drop the market state (character offline / logged out).
   | { readonly type: "market/cleared" }
   // Read-only Activity Center. Each bridge arm keeps its own ready / empty /

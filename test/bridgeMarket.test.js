@@ -435,11 +435,8 @@ test("GET /api/bridge/market issues the eight top-level reads and NO bind", asyn
     "marketProxy.GetOrders",
     "marketProxy.GetCharOrders",
     "marketProxy.GetMarketOrderHistory",
-    "marketProxy.CharGetTransactions",
-    "marketProxy.GetCharEscrow",
     "marketProxy.GetOldPriceHistory",
     "marketProxy.GetNewPriceHistory",
-    "account.GetCashBalance",
   ]) {
     assert.ok(issued.includes(pair), `expected ${pair} to be issued`);
   }
@@ -465,9 +462,6 @@ test("the ONLY argument any read takes is the typeID — no owner, no location",
   assert.deepEqual(by("GetOrders").args, [TYPE_ID]);
   assert.deepEqual(by("GetCharOrders").args, []);
   assert.deepEqual(by("GetMarketOrderHistory").args, []);
-  assert.deepEqual(by("GetCharEscrow").args, []);
-  // fromDate 0 = everything the server still keeps.
-  assert.deepEqual(by("CharGetTransactions").args, [0]);
   // Positional only, every time.
   for (const call of gateway.calls.topLevel) {
     assert.equal(call.kwargs, null, `${call.service}.${call.method} must be positional`);
