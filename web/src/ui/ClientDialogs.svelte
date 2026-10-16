@@ -29,6 +29,8 @@
   import type { SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { romanLevel } from "../bridge/skills.ts";
   import {
     DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
@@ -47,6 +49,8 @@
   const said = flow.dialogsSaid;
   // svelte-ignore state_referenced_locally
   const asked = flow.quantityAsked;
+  // svelte-ignore state_referenced_locally
+  const skillsRequired = flow.skillsRequired;
 
   /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
   const QUANTITY_WORDS: Readonly<Record<string, string>> = {
@@ -213,6 +217,29 @@
     // Selected once its number is in it.
     void tick().then(() => field?.select());
   });
+  // The client's skill requirement window (skillRequirementDialog.py): the type's name, what it would be used for,
+  // how many skills and levels are missing and how many books, each skill at its level, and its one button. Its words
+  // are the install's; the page's own stand in where they are not to hand. Not done: the type's icon, the training
+  // time (AddTrainingTimeForType) and the skill actions (AddSkillAction).
+  const SKILL_WINDOW_WORDS: Readonly<Record<string, string>> = {
+    "UI/Generic/Information": "Information",
+    "Tooltips/SkillPlanner/SkillsRequiredToPerformActivity": "Skills needed to {doActivity}",
+    "Tooltips/SkillPlanner/ActivityFlyShip": "fly it",
+    "Tooltips/SkillPlanner/SkillsAndSkillLevels": "{numSkills} skills to train, {numLevels} levels in all",
+    "Tooltips/SkillPlanner/MissingSkillBooks": "({numMissingBooks} not owned)",
+    "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
+    "Achievements/AuraText/laterButton": "Not now",
+  };
+  $effect(() => {
+    const open = $skillsRequired;
+    if (open === null) return;
+    flow.requestWords(Object.keys(SKILL_WINDOW_WORDS));
+    flow.requestNames([{ kind: "type", id: open.typeID }, ...open.skills.map(([skill]) => ({ kind: "type" as const, id: skill }))]);
+  });
+  /** A label of the window filled with `args`, as plain text. */
+  function skillWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, SKILL_WINDOW_WORDS[label] ?? ""), args, { nameOf }));
+  }
   const hintText = $derived($asked === null ? "" : $asked.hintLabel === null ? $asked.hint ?? "" : wordOf($asked.hintLabel, $asked.hint ?? ""));
   function focusAll(node: HTMLInputElement): void {
     node.focus();
@@ -260,6 +287,32 @@
   </div>
 {/if}
 
+{#if $skillsRequired !== null}
+  {@const open = $skillsRequired}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={skillWord("UI/Generic/Information")} data-dialog="SkillRequirementDialog" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <strong>{skillWord("UI/Generic/Information")}</strong>
+      <span class="skill-type">{nameOf("type", open.typeID)}</span>
+      <p class="body">{skillWord("Tooltips/SkillPlanner/SkillsRequiredToPerformActivity", { doActivity: skillWord("Tooltips/SkillPlanner/ActivityFlyShip") })}</p>
+      <p class="body">
+        {skillWord("Tooltips/SkillPlanner/SkillsAndSkillLevels", { numSkills: open.skills.length, numLevels: open.totalMissingLevels })}
+        {#if open.missingBooks > 0}{" "}{skillWord("Tooltips/SkillPlanner/MissingSkillBooks", { numMissingBooks: open.missingBooks })}{/if}
+      </p>
+      <ul class="skill-rows">
+        {#each open.skills as [skill, level] (skill)}
+          <li>{skillWord("UI/InfoWindow/RequiredSkillNameAndLevel", { skill, level: romanLevel(level), levelColor: "#ffffff" })}</li>
+        {/each}
+      </ul>
+      <span class="answers">
+        <button type="button" onclick={() => flow.dismissSkillsRequired()}>{skillWord("Achievements/AuraText/laterButton")}</button>
+      </span>
+    </div>
+  </div>
+{/if}
+
 {#if box !== null}
   <div class="client-dialog-shade" class:modal={inFront}>
     <div class="client-dialog" role="alertdialog" aria-label={box.title} data-dialog={box.said.dialog} data-in-front={inFront}>
@@ -293,6 +346,8 @@
 {/if}
 
 <style>
+  .skill-type { font-size: 1.05rem; }
+  .skill-rows { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.25rem; }
   .client-dialog-shade { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }
   .client-dialog-shade.modal { pointer-events: auto; background: rgba(0, 0, 0, 0.25); }

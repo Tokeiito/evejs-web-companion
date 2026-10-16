@@ -130,6 +130,28 @@ export function effectiveSkillLevel(skills: unknown, typeID: number): number {
   return 0;
 }
 
+/**
+ * Each skill's trained level and points, and its effective level (the larger of the level trained and the level lent,
+ * as effectiveSkillLevel above), out of skillHandler.GetSkills or GetAllSkills as answered, by type.
+ */
+export function skillLevelsOf(
+  skills: unknown,
+): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number }> {
+  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number }>();
+  for (const [key, entry] of entriesOf(skills)) {
+    const typeID = number(key);
+    const fields = skillFields(entry);
+    if (typeID === null || fields === null) continue;
+    const trained = number(fields[1]) ?? 0;
+    levels.set(typeID, {
+      trainedSkillLevel: trained,
+      trainedSkillPoints: number(fields[2]) ?? 0,
+      effectiveSkillLevel: Math.max(trained, number(fields[4]) ?? 0),
+    });
+  }
+  return levels;
+}
+
 /** The types of the skills a list of them names, as answered: those that are a skill's entry at a level. */
 export function skillTypeIDs(skills: unknown): readonly number[] {
   const types: number[] = [];

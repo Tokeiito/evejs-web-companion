@@ -13151,6 +13151,39 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
   }
 });
 
+// The skills each type needs and at what level, as the client's own data has them (evetypes/skills.py
+// get_dogma_required_skills: the requiredSkillsForTypes table), for the types asked and every skill they lead to, so
+// that whoever asks walks them as the client's skill service walks them (skillsvc.py 534 to 595). A type that needs
+// none has {}. `available` is false when the table could not be read (no client install, or no Python to host the
+// client's loader); `required` is then empty. At most 50 types are asked at once.
+app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = await clientBuiltData.table("requiredSkillsForTypes");
+    const required = {};
+    const walk = (typeID) => {
+      if (Object.prototype.hasOwnProperty.call(required, typeID)) return;
+      const row = table && table[typeID] && typeof table[typeID] === "object" ? table[typeID] : {};
+      const skills = {};
+      for (const [skillID, level] of Object.entries(row)) {
+        const skill = Number(skillID);
+        const atLevel = Number(level);
+        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) skills[skill] = atLevel;
+      }
+      required[typeID] = skills;
+      for (const skillID of Object.keys(skills)) walk(Number(skillID));
+    };
+    if (table) for (const typeID of asked.slice(0, 50)) walk(typeID);
+    res.json({ ok: true, available: Boolean(table), required });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could

@@ -3759,6 +3759,34 @@ export async function loadBaseCycleTimes(
 // EMPTY object for a typeID is a real answer ("the static tables do not know
 // this type") and is cached the same way a null from resolveNames is.
 
+/**
+ * The skills each of these types needs and at what level, and every skill those lead to, as the client's own data has
+ * them (GET /api/client-data/required-skills; evetypes/skills.py get_dogma_required_skills). `available` is false where
+ * the BFF could not read the client's table.
+ */
+export async function getRequiredSkills(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly required: Readonly<Record<number, Readonly<Record<number, number>>>> }> {
+  const data = await getJson(`/api/client-data/required-skills?typeIDs=${typeIDs.join(",")}`, options);
+  const raw =
+    typeof data.required === "object" && data.required !== null && !Array.isArray(data.required)
+      ? (data.required as Record<string, JsonValue>)
+      : {};
+  const required: Record<number, Record<number, number>> = {};
+  for (const [typeKey, skills] of Object.entries(raw)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeof skills !== "object" || skills === null || Array.isArray(skills)) continue;
+    const bySkill: Record<number, number> = {};
+    for (const [skillKey, level] of Object.entries(skills as Record<string, JsonValue>)) {
+      const skillID = Number(skillKey);
+      if (Number.isSafeInteger(skillID) && skillID > 0 && typeof level === "number" && Number.isSafeInteger(level)) bySkill[skillID] = level;
+    }
+    required[typeID] = bySkill;
+  }
+  return { available: data.available === true, required };
+}
+
 export async function fetchTypeDogma(
   typeIDs: readonly number[],
   attributeIDs: readonly number[],

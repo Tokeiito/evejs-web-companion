@@ -170,6 +170,8 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { skillLevelsOf } from "../bridge/skillSheet.ts";
+import { missingSkillBooks, missingSkills, missingSkillsRecursive, totalMissingLevels } from "../bridge/missingSkills.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
 import { applyFreePoints, pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
@@ -848,6 +850,17 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+}
+
+/** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
+export interface SkillsRequired {
+  readonly typeID: number;
+  /** [skill, level], as the window lists them (skillsvc.GetSkillsMissingToUseItemRecursive). */
+  readonly skills: readonly (readonly [number, number])[];
+  /** skillsvc.GetTotalMissingSkillLevelsToUseItem. */
+  readonly totalMissingLevels: number;
+  /** How many of the skills listed the pilot has not even lapsed (GetSkillBooksMissingFromList). */
+  readonly missingBooks: number;
 }
 
 /** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
@@ -2035,6 +2048,10 @@ export interface AppFlow {
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
   answerQuantity(n: number, quantity: number | null): void;
+  /** The client's skill requirement window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly skillsRequired: ReadableSignal<SkillsRequired | null>;
+  /** The window put away (its button). */
+  dismissSkillsRequired(): void;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -6085,6 +6102,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function answerQuantity(n: number, quantity: number | null): void {
     if (quantityAskedSignal.get()?.n !== n || quantityAnswer === null) return;
     quantityAnswer(quantity);
+  }
+
+  // The client's skill requirement window (skillRequirementDialog.py), one at a time.
+  const skillsRequiredSignal = createSignal<SkillsRequired | null>(null);
+
+  /**
+   * What the pilot is missing to fly a ship of this type, as the client's dogma location reckons it before it boards
+   * (GetMissingSkills), with what its window lists (bridge/missingSkills.ts). Null where nothing is missing, and where
+   * the client's table could not be read: then the server is asked, as before.
+   */
+  async function skillsMissingFor(typeID: number): Promise<SkillsRequired | null> {
+    const [needs, skills, allSkills] = await Promise.all([
+      api.getRequiredSkills([typeID], callOptions),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    if (!needs.available) return null;
+    const mine = skillLevelsOf(skills);
+    if (missingSkills(typeID, needs.required, mine).size === 0) return null;
+    const lapsed = skillLevelsOf(allSkills);
+    const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
+    return {
+      typeID,
+      skills: listed,
+      totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
+      missingBooks: missingSkillBooks(listed, lapsed).length,
+    };
   }
 
   async function runFleetAction(
@@ -19112,6 +19156,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
+    skillsRequired: readonlySignal(skillsRequiredSignal),
+    dismissSkillsRequired: () => skillsRequiredSignal.set(null),
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -19254,6 +19300,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async boardShip(shipID) {
+      // station.TryActivateShip (base.py 221 to 223): a ship whose skills the pilot lacks is not boarded, nothing is
+      // asked of the server, and the skill requirement window says what is missing (prompt_missing_skill_requirements).
+      const typeID = store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null;
+      if (typeID !== null) {
+        const missing = await skillsMissingFor(typeID).catch(() => null);
+        if (missing !== null) {
+          skillsRequiredSignal.set(missing);
+          return;
+        }
+      }
       await runMutation(() => boardShipNow(shipID));
       await refreshActiveShipViews();
     },
