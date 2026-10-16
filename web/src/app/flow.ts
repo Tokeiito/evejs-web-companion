@@ -2350,6 +2350,9 @@ export interface AppFlow {
   saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void>;
   /** Whether the window's Save menu offers Save for Alliance (the pilot's corporation its alliance's executor). */
   saveForAllianceOffered(): Promise<boolean>;
+  /** The window's setting useFittingNameForShips: a ship named after a fitting loaded on it. */
+  readonly useFittingNameForShips: ReadableSignal<boolean>;
+  setUseFittingNameForShips(on: boolean): void;
   /** Which owners' fittings the browser offers Delete Fitting for (fittingUtil.CanDeleteFit), besides the pilot's own. */
   readonly fittingsDeletable: ReadableSignal<{ readonly corporation: boolean; readonly alliance: boolean }>;
   /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
@@ -7397,8 +7400,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * (ShipTypeInFittingNotSameAsShip). A fitting with rigs: the ship's own fitted if they are the same or it is a
    * strategic cruiser, the ship's left with a word if they differ, else asked (FitRigs), the rigs going to the cargo on
    * No. Subsystems are checked as the client checks them. Then the hangar's stacks named and FitFitting asked of the
-   * ship's own inventory. Answers what failed to load, or null where it was refused before the call. (The ship is not
-   * renamed after the fitting: the client's setting for it, off unless set, is not the page's.)
+   * ship's own inventory, and where useFittingNameForShips is set the ship named after the fitting (622 to 625). Answers
+   * what failed to load, or null where it was refused before the call.
    */
   async function loadSavedFitting(fitting: SourcedFitting | null): Promise<{ typeID: number; qty: number }[] | null> {
     if (busyFitting) {
@@ -7485,6 +7488,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         chargesByType: fit.chargesByType, dronesByType: fit.dronesByType, fightersByTypeID: fit.fightersByType,
         iceByType: fit.iceByType, modulesByFlag: fit.modulesByFlag, implantsByTypeID: fit.implantsByType,
       }, cargoItemsByType, fitRigs);
+      // LoadFitting (622 to 625): where useFittingNameForShips is set, the ship named the fitting's name, its markup taken
+      // out (StripTags), 20 letters at most, by SetLabel on the inventory manager.
+      if (useFittingNameForShipsSignal.get()) {
+        await setLabelCall(bridgeDo, shipID, fitting.name.split(/<.*?>/).join("").slice(0, 20)).catch(() => {});
+      }
       void loadInventory().catch(() => {});
       void loadFitting().catch(() => {});
       return failed;
@@ -13758,6 +13766,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The autopilot's settings, as the client keeps them: with the character, on this machine. Read when the
   // pilot at the helm is first asked about, and kept here from then on.
   const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
+  // settings.user.ui useFittingNameForShips (the fitting display window's settings, fittingMgmtCont.SettingMenu): a ship
+  // named after a fitting loaded on it, off until set. Kept in this browser, as the client keeps it for the account.
+  const USE_FITTING_NAME_KEPT = "evejs.useFittingNameForShips";
+  const useFittingNameForShipsSignal = createSignal<boolean>(((): boolean => {
+    try {
+      return settingsStorage?.getItem(USE_FITTING_NAME_KEPT) === "1";
+    } catch {
+      return false;
+    }
+  })());
+  function setUseFittingNameForShips(on: boolean): void {
+    useFittingNameForShipsSignal.set(on);
+    try {
+      settingsStorage?.setItem(USE_FITTING_NAME_KEPT, on ? "1" : "0");
+    } catch {
+      // Storage refused: the setting holds while the page is open.
+    }
+  }
   let autopilotKept: { readonly characterID: number | null; readonly stored: StoredAutopilotSettings } = { characterID: null, stored: {} };
   const routeSettingsSignal = createSignal<StoredAutopilotSettings>({});
   function autopilotSettings(): StoredAutopilotSettings {
@@ -21402,6 +21428,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerMultiFit,
     saveViewFitting,
     saveForAllianceOffered,
+    useFittingNameForShips: readonlySignal(useFittingNameForShipsSignal),
+    setUseFittingNameForShips,
     fittingsDeletable: readonlySignal(fittingsDeletableSignal),
     saveFitAs,
     fittingsWithSkills,

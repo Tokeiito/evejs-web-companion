@@ -69,6 +69,8 @@
   // svelte-ignore state_referenced_locally
   const multiFitAsked = flow.multiFitAsked;
   // svelte-ignore state_referenced_locally
+  const useFittingNameForShips = flow.useFittingNameForShips;
+  // svelte-ignore state_referenced_locally
   const inventory = session.store.inventory;
   // The client's multifit window (fitting/multiFitWnd.py MultiFitWnd): its caption, the hull's icon (the fitting shown
   // on a click), the ships' name (20 letters at most), the hull's name, the equipment's place (the item hangar or one of
@@ -148,9 +150,9 @@
   // maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the install's; the page's
   // own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the fitting as the client's
   // text, its names English). Save, for any fitting, has its menu: Save for Alliance (the executor corporation's), for
-  // Corporation and for the pilot; a fitting of another owner's is saved as a copy. Not done: Save's tooltip of the
-  // same three for one with the fitting manager's role, Simulate, the settings, the ship's preview, the truncated mark,
-  // and an obsolete module's mark.
+  // Corporation and for the pilot; a fitting of another owner's is saved as a copy. Its settings have Use Fitting Name
+  // for Ship (the ship named after a fitting loaded on it). Not done: Save's tooltip of the same three for one with the
+  // fitting manager's role, Simulate, the ship's preview, the truncated mark, and an obsolete module's mark.
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
     // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
@@ -165,6 +167,9 @@
     "UI/Fitting/FittingWindow/SaveForAlliance": "Keep it for the alliance",
     "UI/Fitting/FittingWindow/SaveForCorp": "Keep it for the corporation",
     "UI/Fitting/FittingWindow/SaveForCharacter": "Keep it for yourself",
+    // Its settings (fittingMgmtCont.AddFittingNameElements, SettingMenu, 65 to 74 and 152 to 155).
+    "UI/Common/Settings": "Settings",
+    "UI/Fitting/FittingWindow/FittingManagement/UseFittingNameForShip": "Name the ship after the fitting loaded",
     "UI/Fitting/FittingWindow/FittingManagement/FittingName": "Name",
     "UI/Market/MarketQuote/CommandBuy": "Purchase",
     "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
@@ -181,6 +186,7 @@
   };
   let viewFittingTab = $state<"contents" | "description">("contents");
   let viewFittingMenuOpen = $state(false);
+  let viewFittingSettingsOpen = $state(false);
   let viewFittingSaveMenuOpen = $state(false);
   let viewFittingSaveForAlliance = $state(false);
   // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
@@ -1034,6 +1040,19 @@
         <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
         <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
           title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
+        <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship. -->
+        <span class="multibuy-export">
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSettingsOpen} title={viewWord("UI/Common/Settings")}
+            onclick={() => (viewFittingSettingsOpen = !viewFittingSettingsOpen)}>⚙</button>
+          {#if viewFittingSettingsOpen}
+            <span class="multibuy-menu" role="menu">
+              <label class="keep">
+                <input type="checkbox" checked={$useFittingNameForShips} onchange={(event) => flow.setUseFittingNameForShips(event.currentTarget.checked)} />
+                {viewWord("UI/Fitting/FittingWindow/FittingManagement/UseFittingNameForShip")}
+              </label>
+            </span>
+          {/if}
+        </span>
       </span>
       <span class="answers">
         <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
