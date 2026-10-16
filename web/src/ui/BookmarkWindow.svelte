@@ -30,10 +30,16 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow, place = null, editing = null, onDone, onCreateFolder = null }: {
+  let { store, flow, place = null, scanResult = null, editing = null, onDone, onCreateFolder = null }: {
     store: ClientStore;
     flow: AppFlow;
     place?: BookmarkPlace | null;
+    /**
+     * A probe result's Bookmark Location (scanSvc.GetScannedDownMenu): the popup's scannerInfo, the result's own ID
+     * and the name "id name" (bookmarkData, its default label: GetDefaultLocationName, 423 to 427). The pilot's
+     * system is the place, so nothing is asked of a bookmark already there (BookmarkLocationPopup, 408 to 412).
+     */
+    scanResult?: { readonly resultID: string; readonly name: string } | null;
     editing?: Bookmark | null;
     onDone: (made: boolean) => void;
     /** The folder window for a new folder, which CreateBookmarkFolderAsNoneValid's Yes opens, where the caller has one. */
@@ -201,7 +207,7 @@
     const keptKey = Array.isArray(kept) ? `${kept[0]}:${kept[1] ?? ""}` : "";
     chosen = options.some((option) => option.key === keptKey) ? keptKey : (options[0]?.key ?? "");
     expiry = expiryFor(options.find((option) => option.key === chosen) ?? null);
-    label = (place?.name() ?? "").slice(0, MAX_NAME);
+    label = (scanResult?.name ?? place?.name() ?? "").slice(0, MAX_NAME);
     note = "";
     phase = "form";
   }
@@ -256,6 +262,21 @@
           newFolderID: option.folderID,
           expiryCancel,
         });
+        keep(keptFolderKey(), [option.folderID, option.subfolderID]);
+        onDone(true);
+        return;
+      }
+      if (scanResult !== null) {
+        // _ConfirmAclBookmark (222 to 224): with scannerInfo, bookmarkSvc.ACLBookmarkScanResult.
+        await flow.bookmarkProbeResult({
+          resultID: scanResult.resultID,
+          folderID: option.folderID,
+          subfolderID: option.subfolderID,
+          label: label.replace(/\t/g, " "),
+          note,
+          expiry,
+        });
+        keep(keptExpiryKey(option.folderID, option.subfolderID), expiry);
         keep(keptFolderKey(), [option.folderID, option.subfolderID]);
         onDone(true);
         return;

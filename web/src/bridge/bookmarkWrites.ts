@@ -50,6 +50,37 @@ export async function bookmarkLocation(act: Ask, itemID: number, folderID: numbe
 }
 
 /**
+ * Bookmarks a probe result the sensor suite has no site of, as bookmarkSvc.ACLBookmarkScanResult does (623 to 631):
+ * bp.BookmarkScanResult(locationID, name, comment, resultID, folderID, expiry, subfolderID=subfolderID), the system
+ * the pilot is in and the result by its own ID, its label. Answers the new bookmark's number, or null where the answer
+ * names none. Fails as the call fails, and before it for what the call could not be.
+ */
+export async function bookmarkScanResult(act: Ask, solarSystemID: number, resultID: string, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null = null): Promise<number | null> {
+  if (!anID(solarSystemID)) {
+    throw new Error("The pilot is in no system to bookmark a result of.");
+  }
+  if (resultID.trim() === "") {
+    throw new Error("That is no scan result.");
+  }
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  const label = name.replace(/\t/g, " ");
+  if (label.trim() === "") {
+    throw new Error("A bookmark needs a name.");
+  }
+  if (!(Object.values(BOOKMARK_EXPIRY) as number[]).includes(expiry)) {
+    throw new Error("That is no time to keep a bookmark for.");
+  }
+  if (subfolderID !== null && !anID(subfolderID)) {
+    throw new Error("That is no bookmark subfolder.");
+  }
+  const answer = await act("beyonce", "BookmarkScanResult", [solarSystemID, label, comment, resultID, folderID, expiry], { subfolderID });
+  const made = Array.isArray(answer) ? unwrapLong(answer[0]) : null;
+  return made !== null && made > 0n && made <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(made) : null;
+}
+
+/**
  * Bookmarks the place `itemID` (a region, a constellation, a system or a station) as bookmarkSvc.ACLBookmarkLocation
  * asks for one (609 to 613): accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID, name, comment, expiry,
  * subfolderID=subfolderID). Answers the new bookmark's number, or null where the answer names none. Fails as the

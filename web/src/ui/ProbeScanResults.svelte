@@ -14,6 +14,7 @@
   import { MIN_WARP_DISTANCE, PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, isAccurate, resultRows, type Vec3 } from "../bridge/probeResults.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { flyingDistances, WARP_RANGES } from "./flyingDistances.ts";
+  import BookmarkWindow from "./BookmarkWindow.svelte";
   import { fmtDist } from "../space/overview.ts";
   import { nameKey, type NameKind } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -93,6 +94,9 @@
   const accurateIDs = $derived(new Set((held?.results ?? []).filter(isAccurate).map((result) => result.id)));
   const defaultWarp = $derived(Number($flyingDistances.warp) || 0);
   let warpListFor = $state<string | null>(null);
+  // Bookmark Location (GetScannedDownMenu): the bookmark window for the result, its default name "id name"
+  // (bookmarkData.name, '%s %s' % (targetID, scanResultName)).
+  let bookmarking = $state<{ readonly resultID: string; readonly name: string } | null>(null);
   let actionError = $state<string | null>(null);
   // Align To, in any accurate result's menu (GetAlignToMenu, whatever the distance).
   async function alignTo(resultID: string): Promise<void> {
@@ -189,6 +193,9 @@
                       <button type="button" class="minor" onclick={() => alignTo(row.id)}>
                         {word(PROBE_RESULT_LABELS.alignTo) ?? "Align To"}
                       </button>
+                      <button type="button" class="minor" onclick={() => { menuFor = null; bookmarking = { resultID: row.id, name: `${row.id} ${row.name}` }; }}>
+                        {word(PROBE_RESULT_LABELS.bookmarkLocation) ?? "Save Location"}
+                      </button>
                     {/if}
                     <button type="button" class="minor" onclick={() => { flow.ignoreProbeResults([row.id]); menuFor = null; }}>
                       {word(PROBE_RESULT_LABELS.ignoreResult) ?? "Ignore Result"}
@@ -206,6 +213,9 @@
     {/if}
     {#if actionError !== null}
       <p class="error">{actionError}</p>
+    {/if}
+    {#if bookmarking !== null}
+      <BookmarkWindow {store} {flow} scanResult={bookmarking} onDone={() => (bookmarking = null)} />
     {/if}
   </section>
 {/if}

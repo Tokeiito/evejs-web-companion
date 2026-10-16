@@ -3383,15 +3383,18 @@ function createGamePortPilots({
    * into, and the next reading asks.
    */
   function afterBookmarkCall(entry, service, method, form, result) {
-    if (service !== "beyonce" || method !== BOOKMARK_LOCATION) return;
+    if (service !== "beyonce" || (method !== BOOKMARK_LOCATION && method !== "BookmarkScanResult")) return;
     const answered = Array.isArray(result) || isAList(result) ? itemsOf(result) : [];
     if (form.status === "differs" || answered.length !== 8) {
       entry.kept[BOOKMARK_MGR].forget();
       return;
     }
-    const [bookmarkID, itemID, typeID, x, y, z, locationID, expiry] = answered;
+    // A scan result's (bookmarkSvc.ACLBookmarkScanResult, 629 to 631): the same eight, and the client keeps no thing.
+    const scanResult = method === "BookmarkScanResult";
+    const [bookmarkID, answeredItemID, typeID, x, y, z, locationID, expiry] = answered;
+    const itemID = scanResult ? null : answeredItemID;
     if (!bookmarkID) return;
-    const [, folderID, name, comment] = form.args;
+    const [folderID, name, comment] = scanResult ? [form.args[4], form.args[1], form.args[2]] : [form.args[1], form.args[2], form.args[3]];
     const made = bookmarkMade({
       bookmarkID, folderID, itemID, typeID, name, comment, expiry, x, y, z, locationID,
       created: BigInt(Math.trunc(entry.session.serverNow())) * 10000n + FILETIME_OF_UNIX_EPOCH,

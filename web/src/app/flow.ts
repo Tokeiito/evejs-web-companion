@@ -483,7 +483,7 @@ export interface WalletSharesRead {
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -2112,6 +2112,19 @@ export interface AppFlow {
    */
   bookmarkPlace(place: {
     readonly itemID: number;
+    readonly folderID: number;
+    readonly subfolderID: number | null;
+    readonly label: string;
+    readonly note: string;
+    readonly expiry: number;
+  }): Promise<number | null>;
+  /**
+   * The bookmark window's Submit for a probe result (bookmarkLocationWindow.py 226; bookmarkSvc.ACLBookmarkScanResult,
+   * 623 to 631): a result the sensor suite has a site of as that thing (BookmarkLocation), any other by the park's
+   * BookmarkScanResult, by its label. Answers the new bookmark's number, or null. Fails as the call fails.
+   */
+  bookmarkProbeResult(result: {
+    readonly resultID: string;
     readonly folderID: number;
     readonly subfolderID: number | null;
     readonly label: string;
@@ -19548,6 +19561,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const isPlace = (place.itemID >= 10_000_000 && place.itemID <= 39_999_999) || (place.itemID >= 60_000_000 && place.itemID <= 63_999_999);
       const call = isPlace ? bookmarkStaticLocationCall : bookmarkLocationCall;
       return call(bridgeDo, place.itemID, place.folderID, place.label, place.note, place.expiry, place.subfolderID);
+    },
+
+    async bookmarkProbeResult(result) {
+      // sensorSuiteService.GetPositionalSiteItemIDFromTargetID (799 to 804): the site among its anomalies and
+      // structures that goes by the result's label, as the page's warp to a result finds it.
+      const now = await readFlightNow();
+      if (!now.inSpace || now.solarSystemID === null) throw new Error("The ship is not in space; undock first.");
+      const sites = sitesLastRead !== null && sitesLastRead.solarSystemID === now.solarSystemID ? sitesLastRead : await readScanFullState(bridgeAsk);
+      const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === result.resultID)?.siteID;
+      if (typeof siteID === "number" && Number.isSafeInteger(siteID) && siteID > 0) {
+        return bookmarkLocationCall(bridgeDo, siteID, result.folderID, result.label, result.note, result.expiry, result.subfolderID);
+      }
+      return bookmarkScanResultCall(bridgeDo, now.solarSystemID, result.resultID, result.folderID, result.label, result.note, result.expiry, result.subfolderID);
     },
 
     async listBookmarks() {

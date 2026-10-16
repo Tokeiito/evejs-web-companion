@@ -801,7 +801,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // bp.CmdGotoBookmark, on the ballpark's object.)
 // (CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon and CmdBridgeToFleetModuleBeacon on 2026-10-15, the fleet
 // menu's Jump To, Conduit Jump To and Bridge To: cynoTravelSvc.py's bp.Cmd..., on the ballpark's object.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoDirection", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoDirection", "BookmarkScanResult", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -1250,6 +1250,26 @@ const bookmarking = (args, kwargs) => {
  * by keyword every time, None where there is none; put in where a call came without it. A thing in space is the
  * park's. No Tranquility recording has a bookmark made.
  */
+/**
+ * bookmarkSvc.ACLBookmarkScanResult (623 to 631), for a scan result the sensor suite has no site of (one it has is
+ * bookmarked as a thing, BookmarkLocation): bp.BookmarkScanResult(locationID, name, comment, resultID, folderID,
+ * expiry, subfolderID=subfolderID), on the ballpark's object. The system, the label (unicode, the window's) and the
+ * note, the result's own ID (its label, scanSvc.GetScannedDownMenu's bookmarkData.id), the folder, one of the four
+ * times, and the subfolder or None by keyword. No recording has one.
+ */
+const bookmarkingScanResult = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const keywords = Object.keys(kwargs);
+  const [system, name, comment, resultID, folder, expiry] = args;
+  const formed = args.length === 6 && anID(system) && typeof name === "string" && name.trim() !== "" && typeof comment === "string"
+    && typeof resultID === "string" && resultID.trim() !== "" && anID(folder) && [0, 1, 2, 3].includes(expiry)
+    && (keywords.length === 0 || (keywords.length === 1 && (kwargs.subfolderID === null || anID(kwargs.subfolderID))));
+  if (!formed) {
+    return { args, kwargs, status: "differs", note: "The client sends the system, a name, a note, the result's own ID, a folder and one of its four times to keep it, and the subfolder or None by keyword." };
+  }
+  return keywords.length === 0 ? { args, kwargs: { subfolderID: null } } : { args, kwargs, status: "same" };
+};
+
 const bookmarkingStatic = (args, kwargs) => {
   const anID = (value) => Number.isSafeInteger(value) && value > 0;
   const keywords = Object.keys(kwargs);
@@ -2288,6 +2308,8 @@ const RETAIL_CALLS = Object.freeze({
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
     "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one. The name the label field's, unicode (bookmarkLocationWindow.py Confirm, 212 to 219), and the note the editor's, the empty byte string where it holds nothing."), [2, 3]),
+  "beyonce.BookmarkScanResult": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:629", bookmarkingScanResult,
+    "bp.BookmarkScanResult(locationID, name, comment, resultID, folderID, expiry, subfolderID=subfolderID), on the ballpark's object: a probe result's Bookmark Location where the sensor suite has no site of it, the result by its own ID, its label. No recording has one. It answers the eight the client keeps (bookmarkID, itemID, typeID, x, y, z, locationID, expiry)."), [1, 2]),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
   "beyonce.CmdGotoDirection": reshaped("eve/client/script/parklife/scanSvc.py:465", goingInDirection,
