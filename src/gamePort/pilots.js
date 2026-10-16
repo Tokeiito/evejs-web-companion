@@ -2524,8 +2524,8 @@ function createGamePortPilots({
     // The selection screen's data: the client's character service keeps what it was answered at the choosing
     // (ccSvc.GetCharacterSelectionData), and whoever asks it again, as its queue service does to count the
     // account's characters in training, has that. Asked for by name with nothing, it is what was kept: nothing
-    // is sent, and nothing is counted.
-    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null) {
+    // is sent, and nothing is counted. (Where it was let go, at a character made or deleted, it is asked.)
+    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null && entry.selection !== undefined) {
       return { service, method, result: entry.selection, notifications: drain(entry) };
     }
     // The home station service's read: asked once and kept, until the server says the home station is another.
@@ -4266,9 +4266,17 @@ function createGamePortPilots({
     const pilot = [...sessions.values()].find((candidate) => candidate.accountID === accountID && !candidate.ended);
     if (pilot) {
       const form = shape(service, method, args, kwargs, {});
+      // The selection screen's data is what the client's character service kept at the choosing, and whoever asks it
+      // again has that (ccSvc.GetCharacterSelectionData; the pilot's own asking of it, call): nothing is sent. A
+      // character made or deleted, or its deletion begun or let go, and it is let go, and asked when next wanted.
+      const selectionRead = service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null;
+      if (selectionRead && pilot.selection !== undefined) return { service, method, result: pilot.selection, notifications: [] };
       ledger.note(service, method, form);
       try {
-        return { service, method, result: wireToBridgeJson(await byName(pilot.session, service, method, form)), notifications: [] };
+        const result = wireToBridgeJson(await byName(pilot.session, service, method, form));
+        if (selectionRead) pilot.selection = result;
+        else if (service === "charUnboundMgr" && /^(Create|Delete|Prepare|Cancel)/.test(method)) pilot.selection = undefined;
+        return { service, method, result, notifications: [] };
       } catch (error) {
         throw failed(error);
       }
