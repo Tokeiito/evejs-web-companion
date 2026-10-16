@@ -1990,6 +1990,8 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "TrashItems([itemIDs], locationID)",
   ),
+  "invbroker.DestroyFitting": same("eve/client/script/ui/shared/fitting/fittingSlotController.py:262",
+    "parentInv.DestroyFitting(moduleID), on the ship's own inventory (invCache.GetInventoryFromId(the ship)): a rig taken off the ship from the Fitting window, after the RigUnFittingInfo dialog's OK, where the rig cannot be unfitted whole (Unfit, 245 to 266). In no recording."),
   "invbroker.SetLabel": typing(same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:343", "invCache.GetInventoryMgr().SetLabel(itemID, name), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr): an item named, from a ship's Change Name or a container's Set Name, the name the window answered with its line breaks made spaces. Recorded on Tranquility (SetLabel(itemID, u'LittleLittle')), the server's OnCfgDataChanged('evelocations', ...) after it."), [1]),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
@@ -2099,6 +2101,8 @@ const RETAIL_CALLS = Object.freeze({
   // ── the reprocessing plant (the reprocessing service's Moniker) ───────────
   "reprocessingSvc.GetQuotes": judged("reprocessing/ui/quotes.py:20", quotingReprocessing,
     "GetReprocessingSvc().GetQuotes(itemIDs, activeShipID): the window's own dict of its items, each row by its item's ID, and the ship the pilot is in. Answers the place's tax, its efficiency by type, and each item's quote."),
+  "inSpaceCompressionMgr.CompressItemInSpace": same("itemcompression/client/itemCompression.py:9",
+    "sm.RemoteSvc('inSpaceCompressionMgr').CompressItemInSpace(compressibleItem.itemID, compressionFacilityBallID): from the compression window (compression_window.py 99) and the menu's Compress; answered (sourceItemID, sourceTypeID, sourceQuantity, outputItemID, outputTypeID, outputQuantity), or None, after which the client says nothing. In no recording."),
   "reprocessingSvc.Reprocess": judged("reprocessing/ui/itemReprocessor.py:71", reprocessingItems,
     "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
   "structureSettings.CharacterGetService": judged("eve/client/script/ui/services/marketsvc.py:239", ofAStructuresMarket,
@@ -2285,6 +2289,8 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdReturnBay(droneIDs): the drones a list. Recorded on Tranquility so eleven times, each riding its own bind."),
   "entity.CmdMineRepeatedly": reshaped(`${DRONE_FUNCTIONS}:151`, dronesListed,
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
+  "entity.CmdReconnectToDrones": reshaped(`${DRONE_FUNCTIONS}:254`, dronesListed,
+    "eveMoniker.GetEntityAccess().CmdReconnectToDrones(droneCandidates), on a Moniker made for the order: the candidates a list of the balls in the park that are the pilot's drones and not under its control (ReconnectToDrones, 215 to 233, at most MAX_DRONE_RECONNECTS), from Reconnect to Lost Drones. It answers each failure as a UserError's name and values, which the client raises five seconds apart (256 to 258). In no recording."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
   "accessGroupBookmarkMgr.BookmarkStaticLocation": typing(Object.freeze({
