@@ -462,6 +462,7 @@ import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   buyMultipleItems,
+  ordersListed,
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
   placeBuyOrder as placeBuyOrderCall,
@@ -982,6 +983,11 @@ export interface MultiBuyAsk {
   readonly rows: readonly MultiBuyRow[];
   /** A buy under way. */
   readonly busy: boolean;
+  /**
+   * The window greyed after a buy, until every order it made has run out (ChangeOrderUIState, orderDisabled): its
+   * Buy is not offered meanwhile.
+   */
+  readonly disabled: boolean;
 }
 
 export interface SkillBooksAsk {
@@ -3547,8 +3553,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       planetLaunchesChanged();
     }
     // marketSvc.OnOwnOrdersChanged (33 to 35): the trades kept are let go, and read again when the tab is next chosen.
+    // And the multibuy window's orders that ran out (buyMultiFromBase.OnOwnOrdersChanged).
     if (method === "OnOwnOrdersChanged") {
       marketTransactionsFor = null;
+      void multiBuyOrdersChanged(args[0], args[1]).catch(() => {});
     }
     // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
     // corporation, once the tab has been chosen.
@@ -6307,6 +6315,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const multiBuyAverages = new Map<number, number>();
   // And each type's packaged volume (GetPackagedVolume), read once for the window.
   const multiBuyVolumes = new Map<number, number | null>();
+  // The orders its buys made, still to run out (activeOrders), and those the server has said ran out, with what was
+  // left of each (expiredOrders).
+  const multiBuyActiveOrders = new Set<string>();
+  const multiBuyExpiredOrders = new Map<string, { readonly typeID: number | null; readonly volRemaining: number | null }>();
 
   /**
    * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
@@ -6630,11 +6642,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       multiplier: 1,
       rows: [],
       busy: false,
+      disabled: false,
     };
     if (open === null) {
       multiBuyBooks.clear();
       multiBuyAverages.clear();
       multiBuyVolumes.clear();
+      multiBuyActiveOrders.clear();
+      multiBuyExpiredOrders.clear();
     }
     const rows = [...base.rows];
     for (const [typeID, qty] of wanted) {
@@ -6737,7 +6752,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       multiBuyAskedSignal.set(null);
       return;
     }
-    if (asked.busy || asked.rows.some((row) => row.loading)) return;
+    if (asked.busy || asked.disabled || asked.rows.some((row) => row.loading)) return;
     const buying = asked.rows.filter((row) => row.price !== null && row.price > 0 && row.qty * asked.multiplier >= 1);
     if (asked.stationID === null || buying.length === 0) {
       sayDialog("uiwarning03", null, "There is nothing in the window that can be bought here.");
@@ -6769,8 +6784,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (!yes) return;
     }
     multiBuyAskedSignal.set({ ...asked, busy: true });
+    let ordersMade: readonly { readonly orderID: string }[];
     try {
-      await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })));
+      ordersMade = await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })));
     } catch (error) {
       const now = multiBuyAskedSignal.get();
       if (now !== null && now.n === n) multiBuyAskedSignal.set({ ...now, busy: false });
@@ -6780,14 +6796,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     void loadInventory().catch(() => {});
+    // _PerformTrade (307 to 311): the orders made kept, and CreateNewBuyOrder (362 to 370): the window greyed and
+    // emptied, the orders one again, the rows that had no price put back; then any of the orders already said to
+    // have run out are taken (VerifyExpiredOrders).
+    for (const order of ordersMade) multiBuyActiveOrders.add(order.orderID);
     const failed = asked.rows.filter((row) => !buying.includes(row));
     multiBuyBooks.clear();
-    if (failed.length === 0) {
+    multiBuyAskedSignal.set({ ...asked, busy: false, disabled: true, multiplier: 1, rows: failed.map((row) => ({ ...row, qty: row.qty * asked.multiplier, loading: true })) });
+    if (failed.length > 0) await multiBuyPrices();
+    await multiBuyOrdersRunOut([...multiBuyExpiredOrders.keys()].filter((orderID) => multiBuyActiveOrders.has(orderID)));
+  }
+
+  /**
+   * buyMultiFromBase.OnOwnOrdersChanged (558 to 567): orders the server says ran out ('Expiry') kept with what was left
+   * of each, and those the window's buys made taken (_ProccessExpiredOrders).
+   */
+  async function multiBuyOrdersChanged(orders: unknown, reason: unknown): Promise<void> {
+    if (reason !== "Expiry" || multiBuyAskedSignal.get() === null) return;
+    const listed = ordersListed(orders);
+    for (const order of listed) multiBuyExpiredOrders.set(order.orderID, { typeID: order.typeID, volRemaining: order.volRemaining });
+    await multiBuyOrdersRunOut(listed.map((order) => order.orderID));
+  }
+
+  /**
+   * _ProccessExpiredOrders (569 to 590): each of the window's orders that ran out is no longer waited for, and what was
+   * left of it unbought is put back in the window (AddItems). With nothing put back and nothing in the window or
+   * waited for, the window is put away (CloseWnd); otherwise, once nothing is waited for, it is no longer greyed.
+   */
+  async function multiBuyOrdersRunOut(orderIDs: readonly string[]): Promise<void> {
+    const failed = new Map<number, number>();
+    for (const orderID of orderIDs) {
+      if (!multiBuyActiveOrders.has(orderID)) continue;
+      const order = multiBuyExpiredOrders.get(orderID);
+      if (order && order.typeID !== null && order.volRemaining !== null && order.volRemaining !== 0) failed.set(order.typeID, (failed.get(order.typeID) ?? 0) + order.volRemaining);
+      multiBuyActiveOrders.delete(orderID);
+    }
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null) return;
+    if (failed.size === 0 && asked.rows.length === 0 && multiBuyActiveOrders.size === 0) {
       multiBuyAskedSignal.set(null);
       return;
     }
-    multiBuyAskedSignal.set({ ...asked, busy: false, multiplier: 1, rows: failed.map((row) => ({ ...row, qty: row.qty * asked.multiplier, loading: true })) });
-    await multiBuyPrices();
+    if (asked.disabled && multiBuyActiveOrders.size === 0) multiBuyAskedSignal.set({ ...asked, disabled: false });
+    if (failed.size > 0) await openMultiBuy(failed);
   }
 
   async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {

@@ -730,7 +730,7 @@
   {@const buy = $multiBuyAsked}
   {@const sum = buy.rows.reduce((total, row) => total + (row.price ?? 0) * row.qty * buy.multiplier, 0)}
   <div class="client-dialog-shade" class:modal={inFront}>
-    <div class="client-dialog multibuy" role="dialog" aria-label={buyWord("UI/Inventory/ItemActions/MultiBuy")} data-dialog="MultiBuy" data-in-front={inFront}>
+    <div class="client-dialog multibuy" class:disabled={buy.disabled} role="dialog" aria-label={buyWord("UI/Inventory/ItemActions/MultiBuy")} data-dialog="MultiBuy" data-in-front={inFront}>
       {#if !inFront && pilotName !== null}
         <span class="for-pilot">For {pilotName}</span>
       {/if}
@@ -793,7 +793,7 @@
       <!-- UpdateNumbers: the total, its description beside it from a million; its tooltip on it and on its info mark, shown where there is a total. -->
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
-        <button type="button" disabled={buy.busy || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
       </span>
     </div>
@@ -990,6 +990,8 @@
   .multibuy-delta { text-align: right; font-size: 0.8rem; background: none; border: none; color: inherit; padding: 0; cursor: pointer; }
   .multibuy-info { font-weight: normal; color: var(--muted, #9aa); }
   .multibuy-tools { display: flex; justify-content: space-between; align-items: center; }
+  /* ChangeOrderUIState(disable=True): the main area at half opacity until the orders made have run out. */
+  .multibuy.disabled .multibuy-rows, .multibuy.disabled .multibuy-place, .multibuy.disabled .multibuy-sum { opacity: 0.5; }
   .multibuy-export { position: relative; }
   .multibuy-menu { position: absolute; right: 0; top: 100%; z-index: 2; display: flex; flex-direction: column; background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; white-space: nowrap; }
   .multibuy-delta.above { color: #ff5050; }
