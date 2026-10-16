@@ -276,6 +276,11 @@ export interface OpenContainerState {
   readonly typeID: number;
   readonly rows: readonly InventoryItemRow[];
   readonly capacity: CapacityInfo | null;
+  /**
+   * False for a container the client keeps no capacity for (a wreck: invControllers.py ItemWreck, hasCapacity
+   * False), drawn with no gauge and the volume of what is in it. Absent or true otherwise.
+   */
+  readonly hasCapacity?: boolean;
   readonly error: string | null;
 }
 

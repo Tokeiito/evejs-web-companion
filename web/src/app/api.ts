@@ -662,6 +662,8 @@ export interface RawContainerReads {
   readonly containerID: number;
   readonly list: JsonValue;
   readonly capacity: JsonValue;
+  /** False where the client's controller for it has no capacity (a wreck); a capacity unread is still true. */
+  readonly hasCapacity: boolean;
   /** Per-type m³ for the rows above, so a caller can work out what FITS. */
   readonly volumes: Readonly<Record<string, number>>;
 }
@@ -686,6 +688,7 @@ export async function openContainer(
     containerID: asNumberOrNull(data.containerID) ?? containerID,
     list: data.list ?? null,
     capacity: data.capacity ?? null,
+    hasCapacity: data.hasCapacity !== false,
     // Normalised here, exactly as the inventory panel's read does it: a bridge
     // that does not send the field yields an empty map, which reads downstream
     // as "no volume known for this type" rather than as zero.

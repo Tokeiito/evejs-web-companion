@@ -4384,8 +4384,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         itemID: containerID,
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
-        rows: decodeInventoryRows(reads.list),
+        rows: decodeInventoryRows(reads.list, reads.volumes),
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
+        hasCapacity: reads.hasCapacity,
         error: null,
       },
     });

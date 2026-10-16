@@ -3244,6 +3244,10 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // A container that reports no capacity is still browsable; the panel
       // simply omits the gauge.
       capacity: capacity.status === "fulfilled" ? capacity.value.result : null,
+      // Whether the client's controller for it has a capacity at all (invControllers.py hasCapacity): a wreck's
+      // (ItemWreck) has none, and the client draws it with no gauge and the volume of what is in it
+      // (container.py UpdateLabel, UI/Inventory/ContainerCapacity). Not a capacity unread.
+      hasCapacity: !wreck,
       // Per-type VOLUME, from static reference data — the same lookup the
       // inventory and asset routes already use, so no bridge call and no new
       // allowlist pair. Volume is a property of the TYPE, never of the stack.
