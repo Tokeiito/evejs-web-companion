@@ -3,6 +3,12 @@
   // keeps them from OnSystemScanStopped, listed as its results scroll lists them (scanResults.py, ScanResultNew):
   // distance from the ship, ID, name, group and signal strength, by ID; the client's words for "no results" where
   // there are none. Plain text: no icon, no colour by certainty, no Warp To button for a perfect result yet.
+  //
+  // A row's menu has the client's two orders of its own (scanResults.result_menu, 188 and 189): Ignore Result and
+  // Ignore Other Results, the row the menu is on (the client's selected rows, or that one). The ignored are left out
+  // of the list and counted in the ignored box, shown where there is one (scannerToolsUIComponents.IgnoredBox, 121 to
+  // 129), which lists each by "id (name)" to be shown again, and Clear All Ignored Results where there are two or
+  // more (probeScannerPalette.LoadIgnoredTooltipPanel, 492 to 537). None of it is asked of the server.
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, resultRows, type Vec3 } from "../bridge/probeResults.ts";
   import { fmtDist } from "../space/overview.ts";
@@ -53,16 +59,49 @@
     const position = $space.snapshot?.ship?.position ?? null;
     return position === null ? null : [position.x, position.y, position.z];
   });
-  const rows = $derived(held === null ? [] : resultRows(held.results, myPosition, {
+  const wording = {
     words: word,
-    typeName: (typeID) => nameOf("type", typeID),
-    groupName: (groupID) => nameOf("group", groupID),
-    messageText: (messageID) => word(`#${messageID}`),
-  }));
+    typeName: (typeID: number) => nameOf("type", typeID),
+    groupName: (groupID: number) => nameOf("group", groupID),
+    messageText: (messageID: number) => word(`#${messageID}`),
+  };
+  const ignoredIDs = $derived(new Set((held?.ignored ?? []).map((result) => result.id)));
+  // scanHandler.GetResults: the ignored left out, and counted.
+  const rows = $derived(held === null ? [] : resultRows(held.results.filter((result) => !ignoredIDs.has(result.id)), myPosition, wording));
+  const ignoredCount = $derived(held === null ? 0 : held.results.filter((result) => ignoredIDs.has(result.id)).length);
+  // scanSvc.GetIgnoredResultsDesc: each ignored one held, by ID, with its name.
+  const ignoredRows = $derived(held === null ? [] : resultRows(held.ignored, myPosition, wording));
+
+  let menuFor = $state<string | null>(null);
+  let ignoredOpen = $state(false);
 </script>
 
 {#if held !== null}
   <section class="probe-results">
+    {#if ignoredCount > 0 || ignoredRows.length > 0}
+      <div class="ignored-box">
+        <button type="button" class="minor" title={word(PROBE_RESULT_LABELS.resetIgnored) ?? "Show ignored results again"}
+          aria-expanded={ignoredOpen} onclick={() => (ignoredOpen = !ignoredOpen)}>
+          {word(PROBE_RESULT_LABELS.ignored, { noIgnored: ignoredCount }) ?? `${ignoredCount} Ignored`}
+        </button>
+        {#if ignoredOpen}
+          <ul class="ignored-list">
+            {#if ignoredRows.length > 1}
+              <li><button type="button" class="minor" onclick={() => { flow.clearIgnoredProbeResults(); ignoredOpen = false; }}>
+                {word(PROBE_RESULT_LABELS.clearAllIgnored) ?? "Clear All Ignored Results"}
+              </button></li>
+            {/if}
+            {#each ignoredRows as ignoredRow (ignoredRow.id)}
+              <li><button type="button" class="minor" onclick={() => flow.showIgnoredProbeResult(ignoredRow.id)}>
+                {ignoredRow.name
+                  ? word(PROBE_RESULT_LABELS.resultIdAndDesc, { id: ignoredRow.id, desc: ignoredRow.name }) ?? `${ignoredRow.id} (${ignoredRow.name})`
+                  : ignoredRow.id}
+              </button></li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
     {#if rows.length === 0}
       <p class="note">{word(PROBE_RESULT_LABELS.noResults) ?? "No signatures or anomalies in current system"}</p>
     {:else}
@@ -74,6 +113,7 @@
             <th>{word(PROBE_RESULT_LABELS.name) ?? "Name"}</th>
             <th>{word(PROBE_RESULT_LABELS.group) ?? "Group"}</th>
             <th class="num">{word(PROBE_RESULT_LABELS.signalStrength) ?? "Signal"}</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -84,6 +124,20 @@
               <td>{row.name}</td>
               <td>{row.group}</td>
               <td class="num">{row.signal}</td>
+              <td>
+                <button type="button" class="minor" aria-label="Result menu" aria-expanded={menuFor === row.id}
+                  onclick={() => (menuFor = menuFor === row.id ? null : row.id)}>⋯</button>
+                {#if menuFor === row.id}
+                  <span class="result-menu">
+                    <button type="button" class="minor" onclick={() => { flow.ignoreProbeResults([row.id]); menuFor = null; }}>
+                      {word(PROBE_RESULT_LABELS.ignoreResult) ?? "Ignore Result"}
+                    </button>
+                    <button type="button" class="minor" onclick={() => { flow.ignoreOtherProbeResults([row.id]); menuFor = null; }}>
+                      {word(PROBE_RESULT_LABELS.ignoreOtherResults) ?? "Ignore Other Results"}
+                    </button>
+                  </span>
+                {/if}
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -91,3 +145,19 @@
     {/if}
   </section>
 {/if}
+
+<style>
+  .ignored-box {
+    margin-bottom: 0.4rem;
+  }
+  .ignored-list {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+  }
+  .result-menu {
+    display: inline-flex;
+    gap: 0.3rem;
+    margin-left: 0.3rem;
+  }
+</style>

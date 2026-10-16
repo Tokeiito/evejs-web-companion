@@ -1062,6 +1062,11 @@ export interface ScannerCenterState {
     readonly solarSystemID: number;
     readonly scanNumber: number;
     readonly results: readonly import("../bridge/probeResults.ts").ShownResult[];
+    /**
+     * The results the pilot has ignored in this system (scanHandler.resultsIgnored), each as held, by ID: left out of
+     * the list, counted in the ignored box and listed in it (scanSvc.GetIgnoredResultsDesc).
+     */
+    readonly ignored: readonly import("../bridge/probeResults.ts").ShownResult[];
   } | null;
 }
 

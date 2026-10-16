@@ -81,6 +81,16 @@ export const PROBE_RESULT_LABELS = Object.freeze({
   /** Takes percentage. */
   percentage: "UI/Common/Percentage",
   noResults: "UI/Inflight/Scanner/NoScanResults",
+  // The results' own menu and the ignored box (scanResults.result_menu, 188 and 189; probeScannerPalette.py 215 and
+  // 492 to 537; scannerToolsUIComponents.IgnoredBox, 121 to 129). The first is spelt as the client spells it.
+  ignoreResult: "UI/Inflight/Scanner/IngoreResult",
+  ignoreOtherResults: "UI/Inflight/Scanner/IgnoreOtherResults",
+  /** Takes noIgnored. */
+  ignored: "UI/Inflight/Scanner/Ignored",
+  resetIgnored: "UI/Inflight/Scanner/ResetIgnoredResults",
+  clearAllIgnored: "UI/Inflight/Scanner/ClearAllIgnoredResults",
+  /** Takes id and desc. */
+  resultIdAndDesc: "UI/Inflight/Scanner/ResultIdAndDesc",
 });
 export const PROBE_RESULT_WORD_LABELS: readonly string[] = [
   ...new Set([...Object.values(PROBE_RESULT_LABELS), ...Object.values(SCAN_GROUP_LABELS), ...Object.values(SITE_TYPE_LABELS), ...Object.values(COMBAT_GROUP_LABELS)]),
@@ -261,6 +271,17 @@ export interface ShownResult extends ProbeResultEntry {
 }
 
 const certaintyAt = (held: HeldResult, scanNumber: number): number => held.certainties.find(([scan]) => scan === scanNumber)?.[1] ?? 0;
+
+/**
+ * A held result as the list would show it, still valid or not: ResultsHistory.GetResult, as
+ * scanSvc.GetIgnoredResultsDesc reads an ignored one for its name. Null for one not held.
+ */
+export function heldResult(history: ResultsHistory, id: string): ShownResult | null {
+  const held = history.results.get(id);
+  if (held === undefined) return null;
+  const certainty = held.scanNumberPerfect !== null ? PROBE_RESULT_PERFECT : held.certainties.at(-1)?.[1] ?? 0;
+  return { ...held.entry, certainty, prevCertainty: certainty, pos: held.pos, isPerfect: held.isPerfect, isIdentified: held.isIdentified };
+}
 
 /** ResultsHistory.LastResultIterator: the results still valid, as the list has them. */
 export function lastResults(history: ResultsHistory): ShownResult[] {

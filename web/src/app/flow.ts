@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, lastResults, registerResults, type ResultsHistory } from "../bridge/probeResults.ts";
+import { EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -1100,6 +1100,14 @@ export interface AppFlow {
   recoverChosenProbes(probeIDs: readonly number[]): Promise<void>;
   /** A formation's button (Pinpoint -2, Spread -1): the probes held sent to its places, the shortfall launched. */
   launchProbeFormation(formationID: number): Promise<void>;
+  /** A result's Ignore Result (scanHandler.IgnoreResult): the client's own; nothing is asked of the server. */
+  ignoreProbeResults(resultIDs: readonly string[]): void;
+  /** A result's Ignore Other Results (scanHandler.IgnoreOtherResults): every other result now listed is ignored. */
+  ignoreOtherProbeResults(resultIDs: readonly string[]): void;
+  /** The ignored box's row for one (scanHandler.ShowIgnoredResult): listed again. */
+  showIgnoredProbeResult(resultID: string): void;
+  /** The ignored box's Clear All Ignored Results (scanHandler.ClearIgnoredResults). */
+  clearIgnoredProbeResults(): void;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5082,11 +5090,54 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // history (bridge/probeResults.ts), for the session's life (scanSvc's OnSessionReset makes them afresh). The
   // scanner's window shows the session's system's.
   const probeResultsBySystem = new Map<number, ResultsHistory>();
+  // Each scan handler's resultsIgnored: the results the pilot has ignored in that system, the client's own (no call
+  // is made of them), kept as long as the handler.
+  const probeResultsIgnoredBySystem = new Map<number, Set<string>>();
+  function ignoredInSystem(solarSystemID: number): Set<string> {
+    let ignored = probeResultsIgnoredBySystem.get(solarSystemID);
+    if (ignored === undefined) {
+      ignored = new Set();
+      probeResultsIgnoredBySystem.set(solarSystemID, ignored);
+    }
+    return ignored;
+  }
   function publishProbeResults(): void {
     const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
     if (solarSystemID === null) return;
     const history = probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY;
-    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history) } });
+    const ignored = [...ignoredInSystem(solarSystemID)].sort()
+      .map((id) => heldResult(history, id))
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history), ignored } });
+  }
+  /** The session's system's ignored results, changed, and the list said again (scanHandler's OnRefreshScanResults). */
+  function changeIgnoredProbeResults(change: (ignored: Set<string>, history: ResultsHistory) => void): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    change(ignoredInSystem(solarSystemID), probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY);
+    publishProbeResults();
+  }
+  // scanHandler.IgnoreResult, IgnoreOtherResults (every result LastResultIterator gives but these), ShowIgnoredResult
+  // and ClearIgnoredResults (65 to 97).
+  function ignoreProbeResults(resultIDs: readonly string[]): void {
+    changeIgnoredProbeResults((ignored) => {
+      for (const id of resultIDs) ignored.add(id);
+    });
+  }
+  function ignoreOtherProbeResults(resultIDs: readonly string[]): void {
+    changeIgnoredProbeResults((ignored, history) => {
+      for (const result of lastResults(history)) if (!resultIDs.includes(result.id)) ignored.add(result.id);
+    });
+  }
+  function showIgnoredProbeResult(resultID: string): void {
+    changeIgnoredProbeResults((ignored) => {
+      ignored.delete(resultID);
+    });
+  }
+  function clearIgnoredProbeResults(): void {
+    changeIgnoredProbeResults((ignored) => {
+      ignored.clear();
+    });
   }
   /** scanHandler.OnSystemScanStopped (46 to 58), in the session's system: RegisterResults, then ClearResults of the absent. */
   function probeScanStopped(args: readonly JsonValue[]): void {
@@ -5098,6 +5149,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (stopped.results.length === 0) sayDialog("ScnNoResults", null, "The scan found no signatures.");
     const history = clearResults(registerResults(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, stopped.results), stopped.absentTargets);
     probeResultsBySystem.set(solarSystemID, history);
+    // scanHandler.ClearResults (65 to 72): a result cleared is no longer ignored either.
+    const ignored = ignoredInSystem(solarSystemID);
+    for (const id of stopped.absentTargets) ignored.delete(id);
     publishProbeResults();
   }
 
@@ -18844,6 +18898,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     setProbeRangeStep,
     recoverChosenProbes,
     launchProbeFormation,
+    ignoreProbeResults,
+    ignoreOtherProbeResults,
+    showIgnoredProbeResult,
+    clearIgnoredProbeResults,
     loadFleet,
     formFleet,
     inviteFleetMember,
