@@ -777,6 +777,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // And its asking after missions, which the server answers by OnMissionsUpdated (UpdateMissionStatusData, 216 to 220):
   // at its start, for a mission accepted, as an awaited item comes aboard and as an awaited place is reached.
   "missionTrackerMgr.UpdateAllMissions",
+  // The ship turned toward a direction: a probe result's Align To (scanSvc.AlignToPosition, 459 to 465), and the
+  // double click in space. The gateway's list has it not.
+  "beyonce.CmdGotoDirection",
 ]);
 
 /**
@@ -798,7 +801,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // bp.CmdGotoBookmark, on the ballpark's object.)
 // (CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon and CmdBridgeToFleetModuleBeacon on 2026-10-15, the fleet
 // menu's Jump To, Conduit Jump To and Bridge To: cynoTravelSvc.py's bp.Cmd..., on the ballpark's object.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoDirection", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -1174,6 +1177,15 @@ const salvaging = ([drones, target, ...rest], kwargs) => ({ args: [list(drones),
 const goingToPoint = (args, kwargs) => (args.length === 3 && args.every((each) => typeof each === "number" && Number.isFinite(each)) && Object.keys(kwargs).length === 0
   ? { args: args.map((each) => ({ type: "real", value: each })), kwargs }
   : { args, kwargs, status: "differs", note: "The client sends a point's three numbers and nothing else." });
+
+/**
+ * scanSvc.AlignToPosition (459 to 465): rbp.CmdGotoDirection(*directionalVector), on the ballpark's object: the three
+ * of the place less the ship's own position, each a float. (The double click in space sends a direction of length
+ * one, eveCommands.py 1092 and 1127; Tranquility has it so in six recordings, three floats and nothing else.)
+ */
+const goingInDirection = (args, kwargs) => (args.length === 3 && args.every((each) => typeof each === "number" && Number.isFinite(each)) && Object.keys(kwargs).length === 0
+  ? { args: args.map((each) => ({ type: "real", value: each })), kwargs }
+  : { args, kwargs, status: "differs", note: "The client sends a direction's three numbers and nothing else." });
 
 /** movementFunctions.ApproachLocation (405): bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object, the bookmark's number and nothing else. */
 const goingToBookmark = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
@@ -2278,6 +2290,8 @@ const RETAIL_CALLS = Object.freeze({
     "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one. The name the label field's, unicode (bookmarkLocationWindow.py Confirm, 212 to 219), and the note the editor's, the empty byte string where it holds nothing."), [2, 3]),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
+  "beyonce.CmdGotoDirection": reshaped("eve/client/script/parklife/scanSvc.py:465", goingInDirection,
+    "rbp.CmdGotoDirection(x, y, z), on the ballpark's object: a probe result's Align To sends the place less the ship's own position, each a float; the double click in space a direction of length one. It answers nothing. Recorded on Tranquility in six sessions, three floats and nothing else."),
   "beyonce.CmdGotoBookmark": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:405", goingToBookmark,
     "bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object: a bookmark's Approach Location, once the menu has forgotten what was aligned to (StoreAlignTarget). An agent's bookmark is asked of the agent (GotoLocation). It answers nothing. In no recording."),
   "beyonce.CmdAlignTo": judged("eve/client/script/ui/services/menusvc.py:2790", aligning,

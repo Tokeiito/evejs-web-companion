@@ -96,6 +96,8 @@ export const PROBE_RESULT_LABELS = Object.freeze({
   warpToWithinDistance: "UI/Inflight/WarpToWithinDistance",
   warpToWithinMenu: "UI/Inflight/Submenus/WarpToWithin",
   warpToWithin: "UI/Inflight/WarpToWithin",
+  /** scanSvc.GetAlignToMenu (704 to 707). */
+  alignTo: "UI/Inflight/AlignTo",
 });
 export const PROBE_RESULT_WORD_LABELS: readonly string[] = [
   ...new Set([...Object.values(PROBE_RESULT_LABELS), ...Object.values(SCAN_GROUP_LABELS), ...Object.values(SITE_TYPE_LABELS), ...Object.values(COMBAT_GROUP_LABELS)]),

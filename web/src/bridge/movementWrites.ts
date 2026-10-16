@@ -102,6 +102,17 @@
 // autopilot up before it asks (flow.stopShip), and so does the fleet companion's stop; a script bot's and a
 // support ship's stop is one step of a program that carries on, and gives nothing up.
 //
+// TURNED TOWARD A PLACE. scanSvc.AlignToPosition (459 to 465), a probe result's Align To (GetAlignToMenu, 704 to
+// 707, in an accurate result's menu):
+//
+//   directionalVector = geo2.Vec3SubtractD(position, myPosition)
+//   rbp.CmdGotoDirection(directionalVector[0], directionalVector[1], directionalVector[2])
+//
+// the place less the ship's own ball's position, on the ballpark's object. It answers nothing. Tranquility has the
+// call in six recordings, three floats and nothing else (the double click in space's, of length one). The server
+// (beyonceService.Handle_CmdGotoDirection) turns the session's own ship toward the direction. The page's "own
+// position" is its space read's of the ship, as the results' distances are.
+//
 // SENT INTO WARP, TO A SCAN RESULT. menusvc._WarpXToScanResult (1418 to 1428), which the scanner's list calls with
 // no range (scannerListEntries.py 276). With a park, the sensor suite is asked for the site that goes by the
 // result's label among its anomalies and its structures (sensorSuiteService.py 799), and the warp is
@@ -324,6 +335,28 @@ export async function goToPoint(act: Ask, flightNow: () => Promise<FlightNow>, p
     throw new Error("The measured movement system changed.");
   }
   await act("beyonce", "CmdGotoPoint", [point.x, point.y, point.z]);
+}
+
+/**
+ * Turns the pilot's ship toward a place, as a probe result's Align To does: the place less the ship's own position.
+ * Fails as the call fails, and before it where either is no position or the pilot is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP TURNED.
+ */
+export async function alignToPosition(
+  act: Ask,
+  flightNow: () => Promise<FlightNow>,
+  place: readonly [number, number, number],
+  shipPosition: readonly [number, number, number],
+): Promise<void> {
+  if (![...place, ...shipPosition].every(Number.isFinite)) {
+    throw new Error("Unknown place or ship position.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("beyonce", "CmdGotoDirection", [place[0] - shipPosition[0], place[1] - shipPosition[1], place[2] - shipPosition[2]]);
 }
 
 /**

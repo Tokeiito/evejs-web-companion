@@ -94,6 +94,16 @@
   const defaultWarp = $derived(Number($flyingDistances.warp) || 0);
   let warpListFor = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+  // Align To, in any accurate result's menu (GetAlignToMenu, whatever the distance).
+  async function alignTo(resultID: string): Promise<void> {
+    menuFor = null;
+    actionError = null;
+    try {
+      await flow.alignToProbeResult(resultID);
+    } catch (cause) {
+      actionError = panelErrorWords(cause);
+    }
+  }
   async function warpTo(resultID: string, range: number): Promise<void> {
     menuFor = null;
     warpListFor = null;
@@ -174,6 +184,11 @@
                           </button>
                         {/each}
                       {/if}
+                    {/if}
+                    {#if accurateIDs.has(row.id)}
+                      <button type="button" class="minor" onclick={() => alignTo(row.id)}>
+                        {word(PROBE_RESULT_LABELS.alignTo) ?? "Align To"}
+                      </button>
                     {/if}
                     <button type="button" class="minor" onclick={() => { flow.ignoreProbeResults([row.id]); menuFor = null; }}>
                       {word(PROBE_RESULT_LABELS.ignoreResult) ?? "Ignore Result"}

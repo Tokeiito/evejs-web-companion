@@ -497,7 +497,7 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
@@ -1110,6 +1110,8 @@ export interface AppFlow {
   clearIgnoredProbeResults(): void;
   /** An accurate result's Warp To or Warp to Within (menusvc.SolarsystemScanMenu): to stop `range` metres short. */
   warpToProbeResult(resultID: string, range: number): Promise<void>;
+  /** An accurate result's Align To (scanSvc.AlignToPosition): the ship turned toward the result's place. */
+  alignToProbeResult(resultID: string): Promise<void>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -6069,6 +6071,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function warpToProbeResult(resultID: string, range: number): Promise<void> {
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), resultID, range);
+  }
+
+  /**
+   * An accurate probe result's Align To (scanSvc.AlignToPosition, 459 to 465): the ship turned toward the result's
+   * place from its own position, as the space read has it (read first where there is none), by the page's own call.
+   */
+  async function alignToProbeResult(resultID: string): Promise<void> {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    const result = solarSystemID === null ? null : heldResult(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, resultID);
+    if (result === null || result.pos === null) throw new Error("That result has no place to align to.");
+    if ((store.space.get().snapshot?.ship ?? null) === null) await loadSpaceSnapshot();
+    const position = store.space.get().snapshot?.ship?.position ?? null;
+    if (position === null) throw new Error("Your ship's position is not known yet.");
+    await alignToPositionCall(bridgeDo, readFlightNow, result.pos, [position.x, position.y, position.z]);
   }
 
   /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the mining bot and the script bots. */
@@ -18913,6 +18929,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showIgnoredProbeResult,
     clearIgnoredProbeResults,
     warpToProbeResult,
+    alignToProbeResult,
     loadFleet,
     formFleet,
     inviteFleetMember,
