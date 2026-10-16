@@ -7,13 +7,21 @@
   // (ProgressBarTaskWidget); a target's hull, armour and shield bars in red (EnemyTargetWidget). What it shows is the
   // flow's (bridge/abyssObjectives.ts); the space feed is claimed while it is shown.
   //
+  // A target's row (TargetTask: the gate to jump through, a lootable) is its thing's: the mouse pressed on it selects
+  // the thing (mouse_down: stateSvc.SetState(selected), and the action menu, which here is the overview's action bar
+  // for the selected thing), and a double click activates it (double_click: menu.Activate, flow.activateSpaceThing).
+  // The other tasks' rows do nothing (ObjectiveTask's own mouse_down and double_click).
+  //
   // Floating, it sits at the top left of the work area, where the client stacks its info panels; else it is a block
   // of the phone's in-space column.
   //
-  // Not as the client has it yet: the icons (eveicon's); a task's click, double click and menu; the header's menu.
+  // Not as the client has it yet: the icons (eveicon's); a target's click (the camera tracking it), its menu
+  // (CelestialMenu: the page has no context menus) and its highlight in space on hover; a locked target made the
+  // active one on the mouse down (TacticalItemClicked); the header's menu.
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { ABYSS_PANEL_LABEL, type AbyssTaskRow } from "../bridge/abyssObjectives.ts";
   import { isAbyssalSystem } from "../bridge/scannerWrites.ts";
+  import { spaceSelection } from "../space/selection.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -43,6 +51,13 @@
   function title(row: AbyssTaskRow): string {
     if (row.titleLabel !== null) return word(row.titleLabel);
     return row.typeID !== null ? nameOf("type", row.typeID) : "";
+  }
+  // TargetTask.mouse_down and double_click, for a row with a thing.
+  function selectThing(row: AbyssTaskRow): void {
+    if (row.itemID !== null) spaceSelection.select(row.itemID);
+  }
+  function activateThing(row: AbyssTaskRow): void {
+    if (row.itemID !== null) void flow.activateSpaceThing(row.itemID).catch(() => {});
   }
 
   $effect(() => {
@@ -74,7 +89,13 @@
       <div class="abyss-objective" class:completed={objective.completed}>
         {#if objective.titleLabel !== null}<h4 class="abyss-objective-title">{word(objective.titleLabel)}</h4>{/if}
         {#each objective.rows as row (row.key)}
-          <div class="abyss-task">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="abyss-task"
+            class:thing={row.itemID !== null}
+            onmousedown={() => selectThing(row)}
+            ondblclick={() => activateThing(row)}
+          >
             <div class="abyss-task-line">
               <span class="abyss-icon" class:check={row.completed} aria-hidden="true">{row.completed ? "✓" : (row.icon !== null ? (ICONS[row.icon] ?? "") : "")}</span>
               <span class="abyss-task-title">{title(row)}</span>
@@ -132,6 +153,14 @@
   }
   .abyss-task {
     padding: 2px 0;
+  }
+  /* ObjectiveTaskWidget.OnMouseEnter: a faint light over the row. */
+  .abyss-task.thing {
+    cursor: pointer;
+    user-select: none;
+  }
+  .abyss-task:hover {
+    background: rgba(255, 255, 255, 0.05);
   }
   .abyss-task-line {
     display: flex;

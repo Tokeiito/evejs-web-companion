@@ -325,6 +325,7 @@ import {
   type AbyssObjectiveRow,
   type ObjectiveChainData,
 } from "../bridge/abyssObjectives.ts";
+import { activateStep } from "../bridge/spaceActivate.ts";
 import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
@@ -1702,6 +1703,8 @@ export interface AppFlow {
   jumpThroughTrace(itemID: number): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** The Abyssal info panel's objectives (bridge/abyssObjectives.ts), as drawn now; null where the abyss service has no chain. */
   readonly abyssObjectives: ReadableSignal<readonly AbyssObjectiveRow[] | null>;
+  /** A thing in space activated as the client's menu.Activate does (bridge/spaceActivate.ts): an objective target's double click. */
+  activateSpaceThing(itemID: number): Promise<void>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -6594,6 +6597,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssChain.observe(abyssEntities());
     publishAbyssObjectives();
   });
+
+  async function stopShip(): Promise<void> {
+    // Retail's Stop cancels the client-side navigation BEFORE the command and
+    // switches the autopilot off after it. Ours is the same order: abort the
+    // browser decide-loop first so it cannot issue another move into the stop,
+    // then tell the server to cut the engines.
+    autopilot?.abort();
+    // (And an Activate Gate's navigation, which is the client's too.)
+    gateNavigation += 1;
+    await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
+  }
+
+  /**
+   * A thing in space activated as the client's menu service activates one (bridge/spaceActivate.ts): stopped,
+   * docked at, its cargo opened, approached or aligned to. Opening the ship's own cargo hold and a control bunker's
+   * infrastructure hub are not made here (the objectives' targets are neither).
+   */
+  async function activateSpaceThing(itemID: number): Promise<void> {
+    const entities = store.space.get().snapshot?.entities ?? [];
+    const thing = entities.find((entity) => entity.itemID === itemID);
+    if (thing === undefined) return;
+    const self = entities.find((entity) => entity.isSelf) ?? null;
+    const measured = self !== null && self.geometryAvailable !== false && thing.geometryAvailable !== false;
+    const distance = measured ? surfaceDistanceMeters(self.position, self.radius, thing.position, thing.radius) : null;
+    switch (activateStep(thing, self?.groupID ?? null, distance)) {
+      case "stop":
+        await stopShip();
+        return;
+      case "dock":
+        await runFlightStep("Dock", () => dockStep(itemID));
+        await settleUntilDocked();
+        return;
+      case "openCargo":
+        await openContainer(itemID);
+        return;
+      case "approach":
+        await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, itemID, null)));
+        return;
+      case "alignTo":
+        await runFlightStep("Align", () => orderedStep((flightNow) => alignToCall(bridgeDo, flightNow, itemID)));
+        return;
+      default:
+    }
+  }
 
   async function activateGate(itemID: number, typeID: number | null): Promise<void> {
     if (typeID !== TYPE_ABYSS_ENTRANCE_GATE && gateCallFor(typeID, itemID) === null) {
@@ -19828,6 +19875,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeAbyssJump: () => abyssJumpSignal.set(null),
     jumpThroughTrace,
     abyssObjectives: readonlySignal(abyssObjectivesSignal),
+    activateSpaceThing,
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,
@@ -19845,16 +19893,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     removePlanetLaunch,
 
-    async stopShip() {
-      // Retail's Stop cancels the client-side navigation BEFORE the command and
-      // switches the autopilot off after it. Ours is the same order: abort the
-      // browser decide-loop first so it cannot issue another move into the stop,
-      // then tell the server to cut the engines.
-      autopilot?.abort();
-      // (And an Activate Gate's navigation, which is the client's too.)
-      gateNavigation += 1;
-      await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
-    },
+    stopShip,
 
     loadSpaceSnapshot,
     loadTargets,
