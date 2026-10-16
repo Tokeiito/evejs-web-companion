@@ -471,12 +471,16 @@ export async function createCharacter(
  * so uniqueness (which no client-side rule can know) is checked against the real
  * roster. A null code means the read itself did not answer; that is not a
  * verdict, and the screen must not treat it as one.
+ *
+ * `namesChecked` is the client's second argument (chooseNameSection.IsNameValid: ValidateNameEx(charName,
+ * len(self.namesChecked))), how many names the screen has checked before this one.
  */
 export async function validateCharacterName(
   name: string,
   options: ApiOptions = {},
+  namesChecked = 0,
 ): Promise<number | null> {
-  const outcome = await callMethod("charUnboundMgr", "ValidateNameEx", [name], null, options);
+  const outcome = await callMethod("charUnboundMgr", "ValidateNameEx", [name, namesChecked], null, options);
   return decodeNameValidation(outcome.result);
 }
 
