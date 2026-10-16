@@ -96,7 +96,7 @@ test("salvager: a bookmark made while it works a site never takes it off that si
   const wreck = { itemID: 4201, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x: 1_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
   const t = salvager(step, obs({ bookmarks: newer, myCharacterID: 90000001, snapshot: { ship: SHIP, entities: [wreck] } as never }), working, NB);
   assert.equal(t.nextMem["site"], NEAR_SITE);
-  assert.deepEqual(t.action, { kind: "lootWreck", wreckID: 4201 });
+  assert.deepEqual(t.action, { kind: "lock", targetID: 4201 });
 });
 
 test("salvager: a site in another system is travelled to first", () => {
@@ -145,6 +145,28 @@ test("salvager: no site left in space flies home; docked there it waits, and aft
   assert.equal(waiting.outcome.kind, "acting");
   const long = salvager(step, obs({ bookmarks: [sites[2]!], flightStatus: dockedHome }), { ...ready, idle: 749 }, NB);
   assert.equal(long.outcome.kind, "done");
+});
+
+test("salvager: a site bookmarked while it flies home with nothing to do turns it round; a trip home to unload does not", () => {
+  // Seen live 2026-10-16: a bookmark made seconds after the salvager left was flown home, docked, and only then gone back for.
+  const none = obs({ bookmarks: [sites[2]!] });
+  const leaving = salvager(step, none, ready, NB);
+  assert.deepEqual(leaving.action, { kind: "startRoute", stationID: HOME });
+  assert.equal(leaving.nextMem["idleHome"], true);
+  const homeward = { status: "running", destinationStationID: HOME, destinationSystemID: null, failureReason: null };
+  // The autopilot still has it: stopped first, the site in this system then warped to from here.
+  const turn = salvager(step, obs({ bookmarks: [sites[1]!], travel: homeward as never }), leaving.nextMem, NB);
+  assert.deepEqual(turn.action, { kind: "stopRoute" });
+  assert.equal(turn.nextMem["returning"], false);
+  const onward = salvager(step, obs({ bookmarks: [sites[1]!] }), turn.nextMem, NB);
+  assert.notDeepEqual(onward.action, { kind: "startRoute", stationID: HOME });
+  assert.equal(onward.nextMem["site"], NEAR_SITE);
+  // Full: home it goes, whatever is bookmarked meanwhile.
+  const full = obs({ holds: [{ key: "cargo", present: true, capacity: { capacity: 100, used: 100 } }] as never });
+  const unloadTrip = salvager(step, full, { ...ready, site: NEAR_SITE, stage: "site" }, NB);
+  const stillHome = salvager(step, obs({ ...full, travel: homeward as never }), salvager(step, full, unloadTrip.nextMem, NB).nextMem, NB);
+  assert.deepEqual(stillHome.action.kind === "stopRoute", false);
+  assert.equal(stillHome.nextMem["returning"], true);
 });
 
 test("salvager: docked at its station it empties the hold first, then leaves for a site", () => {
@@ -200,7 +222,7 @@ test("salvager: a bookmark made just now is set out for at once; only the warp t
   assert.deepEqual(opened.action, { kind: "warpBookmark", bookmarkID: NEAR_SITE });
 });
 
-test("on site: a far wreck of ours gets a tractor beam (no lock); one in loot range is looted first; a looted one is locked, then salvaged", () => {
+test("on site: a far wreck of ours gets a tractor beam (no lock); one in reach is locked, looted while the lock lands, then salvaged", () => {
   const TRACTOR = 601;
   const SALVAGER = 602;
   const onSite = { ...ready, site: NEAR_SITE, stage: "site" };
@@ -213,14 +235,13 @@ test("on site: a far wreck of ours gets a tractor beam (no lock); one in loot ra
   const far = salvager(step, grid([wreck(4101, 15_000)]), onSite, NB);
   assert.deepEqual(far.action, { kind: "activate", moduleID: TRACTOR, targetID: 4101 });
 
-  const close = salvager(step, grid([wreck(4102, 1_500)]), onSite, NB);
-  assert.deepEqual(close.action, { kind: "lootWreck", wreckID: 4102 });
-
-  // Looted (the attempt was not refused): locked, then the salvager goes on it.
-  const looted = { ...onSite, work: { looted: [4102] } };
-  const lock = salvager(step, grid([wreck(4102, 1_500)]), looted, NB);
+  const lock = salvager(step, grid([wreck(4102, 1_500)]), onSite, NB);
   assert.deepEqual(lock.action, { kind: "lock", targetID: 4102 });
-  const salvage = salvager(step, grid([wreck(4102, 1_500)], SHIP, { lockedTargetIDs: [4102] }), lock.nextMem, NB);
+  // The lock on its way: looted meanwhile.
+  const loot = salvager(step, grid([wreck(4102, 1_500)]), lock.nextMem, NB);
+  assert.deepEqual(loot.action, { kind: "lootWreck", wreckID: 4102 });
+  // Locked: the salvager goes on it (a wreck still holding loot leaves a can with it).
+  const salvage = salvager(step, grid([wreck(4102, 1_500)], SHIP, { lockedTargetIDs: [4102] }), loot.nextMem, NB);
   assert.deepEqual(salvage.action, { kind: "activate", moduleID: SALVAGER, targetID: 4102 });
 });
 
@@ -236,12 +257,14 @@ test("on site: a tractor beam whose wreck has arrived is switched off, so it can
   assert.deepEqual(t.action, { kind: "salvageBatch", steps: [{ kind: "deactivate", moduleID: TRACTOR }, { kind: "lock", targetID: 4103 }] });
 });
 
-test("on site: a corp-mate's wreck, ours by its loot rights with no fleet, is looted before it is salvaged", () => {
+test("on site: a corp-mate's wreck, ours by its loot rights with no fleet, is looted while its lock lands", () => {
   const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
   const mates = { itemID: 4301, kind: "wreck", ownerID: 90000002, corporationID: 98999901, lootRights: { ownerID: 90000002, corpID: 98999901, fleetID: null, abandoned: false },
     position: { x: 1_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
-  const t = salvager(step, obs({ myCharacterID: 90000001, myCorporationID: 98999901, snapshot: { ship: SHIP, entities: [mates] } as never }), onSite, NB);
-  assert.deepEqual(t.action, { kind: "lootWreck", wreckID: 4301 });
+  const mine = obs({ myCharacterID: 90000001, myCorporationID: 98999901, snapshot: { ship: SHIP, entities: [mates] } as never });
+  const t = salvager(step, mine, onSite, NB);
+  assert.deepEqual(t.action, { kind: "lock", targetID: 4301 });
+  assert.deepEqual(salvager(step, mine, t.nextMem, NB).action, { kind: "lootWreck", wreckID: 4301 });
   // A stranger's (another player corporation's) is salvaged, never opened.
   const strangers = { ...mates, itemID: 4302, ownerID: 90000777, corporationID: 98999977, lootRights: { ownerID: 90000777, corpID: 98999977, fleetID: null, abandoned: false } };
   const s = salvager(step, obs({ myCharacterID: 90000001, myCorporationID: 98999901, lockedTargetIDs: [], snapshot: { ship: SHIP, entities: [strangers] } as never }), onSite, NB);

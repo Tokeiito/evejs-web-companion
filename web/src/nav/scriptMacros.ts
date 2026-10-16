@@ -5716,6 +5716,16 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
 
   const docked = obs.flightStatus?.docked === true;
   const atHome = dockedAt(obs.flightStatus, homeRef);
+  // Heading home only because the folder was empty: a site bookmarked meanwhile turns the salvager round at once (seen
+  // live 2026-10-16: a bookmark made seventeen seconds after it left was flown home, docked and only then gone back
+  // for). A trip home to unload is kept to.
+  if (flag(mem, "returning") && flag(mem, "idleHome") && !docked && sites.length > 0) {
+    // The autopilot is still flying it home: stopped here, so a site in this system is warped to from where it is
+    // (one in another system gets its own route, which replaces this one).
+    const running = obs.travel?.status === "running";
+    mem = { ...mem, returning: false, idleHome: false };
+    if (running) return tick({ kind: "stopRoute" }, "A site came up on the way home; turning round for it.", SALVAGER_PHASE, ACTING, false, mem);
+  }
   const returning = flag(mem, "returning");
 
   // 2. At the station: empty the hold first, then out to a site or wait.
@@ -5726,7 +5736,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     const unload = unloadCargo({ ...step, args: { ...(step.args["into"] ? { into: step.args["into"] } : {}), ...(step.args["keepItems"] ? { keepItems: step.args["keepItems"] } : {}) } },
       obs, sub("unload"), board);
     if (unload.outcome.kind !== "done") return through(unload, "unload");
-    mem = { ...mem, unloading: false, unloadChecked: true, returning: false, unload: null };
+    mem = { ...mem, unloading: false, unloadChecked: true, returning: false, idleHome: false, unload: null };
   }
   if (docked) {
     if (sites.length === 0 || (returning && !atHome)) {
@@ -5751,7 +5761,9 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     const recall = recallBeforeLeaving(obs, mem, SALVAGER_PHASE, null);
     if (recall !== null) return recall;
     const ride = rideAutopilotTo(obs, homeRef.id, SALVAGER_PHASE, homeRef.kind);
-    if (ride !== null) return { ...ride, nextMem: { ...mem, returning: true, site: null, stage: null, warp: null, work: null, salvage: null } };
+    if (ride !== null) {
+      return { ...ride, nextMem: { ...mem, returning: true, idleHome: !returning || flag(mem, "idleHome"), site: null, stage: null, warp: null, work: null, salvage: null } };
+    }
     return tick(WAIT, "Docked at the station.", SALVAGER_PHASE, ACTING, false, mem);
   }
 
@@ -5800,7 +5812,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     const site = workSalvageSite(step, obs, sub("work"));
     if ("full" in site) {
       return tick(WAIT, "The hold is full; going home to unload, and coming back to this site after.", SALVAGER_PHASE, ACTING, false,
-        { ...mem, returning: true, site: null, stage: null, work: null });
+        { ...mem, returning: true, idleHome: false, site: null, stage: null, work: null });
     }
     if ("tick" in site) return through(site.tick, "work");
     // The modules have done what they can. A hull with no salvager may still have salvage drones for the rest.

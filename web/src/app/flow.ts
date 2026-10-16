@@ -26157,6 +26157,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetApplication = { fleetID: action.fleetID, outcome, ...(action.supportOrder ? { supportOrder: action.supportOrder } : {}) };
             return;
           }
+          case "stopRoute":
+            autopilot?.abort();
+            return;
           case "startSystemRoute":
             // The SHARED autopilot again — resolveDestination answers a system id
             // with kind "system", so the plan carries no final dock and the ride

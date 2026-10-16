@@ -38,27 +38,35 @@
 //     by itself only if the target vanishes or leaves range.
 //   * A SALVAGER NEEDS A LOCK, and a salvage that succeeds stops the module and
 //     removes the wreck (or, if it held loot, swaps it for a new container).
-//     So locks are a budget for SALVAGERS ONLY, and a lootable wreck is looted
-//     before it is salvaged.
+//     So locks are a budget for SALVAGERS ONLY. A wreck still holding loot is
+//     salvaged as soon as it is locked, not after it is looted: its loot goes
+//     into the can that takes its place, with the wreck's own loot rights
+//     (salvagerRuntime.js, buildReplacementContainerLootCustomInfo), and the
+//     can is looted in the ticks between like any other. Waiting for the loot
+//     first made the wrecks ready one at a time, and every salvager piled onto
+//     the one that was (seen live 2026-10-16).
 //
 // ─── THE DECISION RULES, IN PRIORITY ORDER ───────────────────────────────────
 //
 //   D. DONE: nothing left that needs work -> `{ done: true }`.
-//   1. LOOT FIRST: any lootable, unlooted wreck/can within `lootRangeM` is
-//      looted (needs no lock, no module). A lootable wreck is never handed to a
-//      salvager until `looted` (it would only turn into a can we then chase);
-//      a wreck we may not loot goes straight to a salvager.
+//   1. LOOT IN THE GAPS: any lootable, unlooted wreck/can within `lootRangeM`
+//      is looted (needs no lock, no module) once the modules have their work.
+//      Every wreck goes to a salvager, looted or not.
 //   2. FREE TRACTORS: a tractor on a settled target is deactivated.
 //   3. SALVAGERS: each idle salvager gets a DISTINCT locked salvageable wreck
-//      within salvage range (already-locked first, then nearest). Doubling up
-//      is never planned.
+//      within salvage range (already-locked first, then nearest).
 //   4. TRACTORS: each idle tractor gets a DISTINCT tractorable item within
 //      tractor range that is not yet where it is wanted (a lootable beyond loot
 //      range, or a salvageable wreck beyond salvage range), nearest first. No
 //      lock, no budget.
-//   5. LOCKS: a salvager's wanted wreck that is not locked is locked (one
-//      action). `maxLockedTargets` counts pending locks. At the cap, ONE lock
-//      no module is using or about to use is released; if all are useful, wait.
+//   5. LOCKS, AHEAD: every salvageable wreck in salvage reach is locked, nearest
+//      first, whether or not a salvager is free for it yet, so a salvager that
+//      finishes has its next wreck already locked. `maxLockedTargets` counts
+//      pending locks. At the cap, ONE lock on nothing in reach is released for
+//      a wreck an idle salvager wants; if all are useful, wait.
+//   5b. DOUBLING UP: a salvager still idle goes on the locked wreck with the
+//      fewest salvagers on it, but only once no wreck in reach is waiting for a
+//      lock: spreading over wrecks beats piling onto one.
 //   6. POSITIONING (the user: "one needs to position ship just right"). Only
 //      when NOTHING servable is in reach from here and no module is active,
 //      pending, or being pulled in. The rule is the wiki's "most wrecks within
@@ -218,7 +226,7 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
   for (const w of input.wrecks) {
     const d = dist(ship.position, w.position);
     const needsLoot = !w.setAside && w.lootable && !w.looted;
-    const it: Item = { id: w.itemID, isCan: false, pos: w.position, needsLoot, salvageNow: !w.setAside && haveSalvagers && !needsLoot, tractorable: w.tractorable && !w.setAside, d, towardShip: towardShip(w.position, w.velocity, d) };
+    const it: Item = { id: w.itemID, isCan: false, pos: w.position, needsLoot, salvageNow: !w.setAside && haveSalvagers, tractorable: w.tractorable && !w.setAside, d, towardShip: towardShip(w.position, w.velocity, d) };
     all.push(it);
     // A wreck with nothing for us to loot and no salvager fitted is not work for this ship.
     if (!w.setAside && (needsLoot || haveSalvagers)) outstanding.push(it);
@@ -310,14 +318,34 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
     return { action: { kind: "activate", moduleID: idleTractors[k]!.moduleID, targetID: it.id }, why: `Tractor beam on ${it.isCan ? "a can" : "a wreck"} ${Math.round(it.d)} m away, to bring it in.` };
   }
 
-  // 4b. Spare salvagers double up. Once every salvageable wreck in reach has a
-  // salvager (or one reserved for it above), a salvager left idle goes on the
-  // locked wreck in reach with the FEWEST salvagers on it, nearest first: five
-  // salvagers on three wrecks run 2/2/1. Each salvager rolls its own chance a
-  // cycle, so a wreck worked twice goes about twice as fast; when one succeeds
-  // the wreck is gone and the others on it stop by themselves (salvagerRuntime).
-  const spareSalvagers = idleSalvagers.slice(salvWants.length);
-  if (spareSalvagers.length > 0) {
+  // 5. locks (salvagers only), AHEAD: every salvageable wreck in reach, not only the ones an idle salvager wants now.
+  const inReach = outstanding
+    .filter((i) => i.salvageNow && !i.isCan && i.d <= salvReach && !claimedSalv.has(i.id))
+    .sort(order);
+  const used = locked.size + pending.size;
+  const lockAhead = inReach.filter((i) => !locked.has(i.id) && !pending.has(i.id));
+  if (lockAhead.length > 0 && used < input.maxLockedTargets) {
+    const target = lockAhead[0]!;
+    return { action: { kind: "lock", targetID: target.id }, why: `Locking a wreck ${Math.round(target.d)} m away for the salvagers (${used + 1} of ${input.maxLockedTargets} locks).` };
+  }
+  const needLock = salvWants.filter((i) => !locked.has(i.id) && !pending.has(i.id));
+  if (needLock.length > 0) {
+    const keep = new Set<number>([...claimedSalv, ...inReach.map((i) => i.id)]);
+    const spare = input.lockedTargetIDs.find((id) => !keep.has(id));
+    if (spare !== undefined) {
+      return { action: { kind: "unlock", targetID: spare }, why: "At the lock cap with a lock on nothing in reach; freeing it for a wanted wreck." };
+    }
+  }
+
+  // 5b. Spare salvagers double up, once no wreck in reach is waiting for a lock (spreading beats piling onto one):
+  // a salvager left idle goes on the locked wreck in reach with the FEWEST salvagers on it, nearest first, so five
+  // salvagers on three wrecks run 2/2/1. Each salvager rolls its own chance a cycle, so a wreck worked twice goes
+  // about twice as fast; when one succeeds the wreck is gone and the others on it stop by themselves
+  // (salvagerRuntime).
+  // (A lock on its way, that is. At the cap with more wrecks than locks, none is coming, and doubling is the best left.)
+  const waitingForLock = inReach.some((i) => pending.has(i.id));
+  const spareSalvagers = idleSalvagers.slice(salvWants.filter((i) => locked.has(i.id)).length);
+  if (spareSalvagers.length > 0 && !waitingForLock) {
     const onWreck = new Map<number, number>();
     for (const m of input.salvagers) if (m.active && m.targetID !== null) onWreck.set(m.targetID, (onWreck.get(m.targetID) ?? 0) + 1);
     const doubled = outstanding
@@ -329,23 +357,7 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
         why: `A spare salvager onto a wreck ${Math.round(doubled.d)} m away (${already + 1} on it now).` };
     }
   }
-
-  // 5. locks (salvagers only)
-  const needLock = salvWants.filter((i) => !locked.has(i.id) && !pending.has(i.id));
-  if (needLock.length > 0) {
-    const used = locked.size + pending.size;
-    const target = needLock[0]!;
-    if (used < input.maxLockedTargets) {
-      return { action: { kind: "lock", targetID: target.id }, why: `Locking a wreck ${Math.round(target.d)} m away for an idle salvager (${used + 1} of ${input.maxLockedTargets} locks).` };
-    }
-    const keep = new Set<number>([...claimedSalv]);
-    for (const m of input.salvagers) if (m.active && m.targetID !== null) keep.add(m.targetID);
-    for (const it of salvWants) keep.add(it.id);
-    const spare = input.lockedTargetIDs.find((id) => !keep.has(id));
-    if (spare !== undefined) {
-      return { action: { kind: "unlock", targetID: spare }, why: "At the lock cap with a lock no salvager is using or about to use; freeing it for a wanted wreck." };
-    }
-    if (lootNow !== null) return lootIt(lootNow);
+  if (needLock.length > 0 && lootNow === null) {
     return { wait: true, why: `Every one of the ${input.maxLockedTargets} locks is in use or wanted; waiting for a salvager to finish.` };
   }
 
