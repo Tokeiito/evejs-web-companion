@@ -35,7 +35,8 @@
     DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
   } from "../bridge/questions.ts";
-  import { SHORT_INTERVAL_WORD_LABELS, shortWrittenInterval } from "../bridge/timeInterval.ts";
+  import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
+  import { showMarketDetails } from "./marketDetails.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
 
@@ -58,6 +59,8 @@
   const shipNameAsked = flow.shipNameAsked;
   // svelte-ignore state_referenced_locally
   const skillBooksAsked = flow.skillBooksAsked;
+  // svelte-ignore state_referenced_locally
+  const applyPointsAsked = flow.applyPointsAsked;
 
   /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
   const QUANTITY_WORDS: Readonly<Record<string, string>> = {
@@ -302,6 +305,58 @@
       writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, $words.templates, nameOf),
     }));
   }
+  /** inventorycommon.const typeSkillInjector: what the apply-points button's market details are of, without free points. */
+  const TYPE_SKILL_INJECTOR = 40520;
+  // The skill requirement window's apply-points button (skillBtns.ApplySkillPointsButton) and the client's Apply Skill
+  // Points window it opens where the pilot has free points (skilltrading/applySkillPointsWindow.py): its title and
+  // words, each level a row with its gauges (trained, and with the points), the time saved and the percentages, and
+  // Confirm and Cancel, then Close. Its words are the install's; the page's own stand in. Not done: the rows' group
+  // icons and their book marks, the gauges' animation, and the button for an alpha clone with no free points (the
+  // client's store, which this server has not).
+  const APPLY_WORDS: Readonly<Record<string, string>> = {
+    "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
+    "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
+    "UI/SkillTrading/ApplySkillPointsWindowCaption": "Free skill points",
+    "UI/SkillTrading/ApplySkillPointsDescription": "{[numeric]points, useGrouping, decimalPlaces=0} free points go to {amount} levels.",
+    "UI/SkillTrading/ConfirmInjectionLabel": "Apply",
+    "UI/SkillTrading/CancelInjectionLabel": "Not now",
+    "UI/SkillTrading/CloseInjectionLabel": "Done",
+    "UI/SkillTrading/EstimatedSkillTimeSaved": "About {[timeinterval]timeSaved.shortWrittenForm, from=\"day\", to=\"minute\"} less to train",
+    "UI/SkillTrading/SkillProgressLabel": "{progress}% to {progressWithFreePoints}%",
+  };
+  $effect(() => {
+    if ($skillsRequired === null && $applyPointsAsked === null) return;
+    flow.requestWords([...Object.keys(APPLY_WORDS), ...SHORT_INTERVAL_WORD_LABELS]);
+    if ($applyPointsAsked !== null) flow.requestNames($applyPointsAsked.entries.map((entry) => ({ kind: "type" as const, id: entry.skill })));
+    else flow.requestNames([{ kind: "type", id: TYPE_SKILL_INJECTOR }]);
+  });
+  /** A label of the apply-points button or its window, filled with `args`, as plain text. */
+  function applyWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, APPLY_WORDS[label] ?? ""), args, {
+      nameOf,
+      ...intervalWriters($words.templates),
+    }));
+  }
+  /** round(x * 100, 1), as the window's percentages are. */
+  const percent = (fraction: number): number => Math.round(fraction * 1000) / 10;
+  /**
+   * The apply-points button (ApplySkillPointsButton.UpdateState and ClickFunc): with free points it puts them into the
+   * levels, offered where no book is missing; without, an omega clone's opens the Skill Injector's market details.
+   */
+  function applyPointsButton(open: { readonly freeSkillPoints: number; readonly offerInjection: boolean; readonly omega: boolean }): { readonly hint: string; readonly enabled: boolean; readonly use: () => void } | null {
+    if (open.freeSkillPoints > 0) {
+      return { hint: applyWord("UI/SkillQueue/ApplySkillPoints"), enabled: open.offerInjection, use: () => void flow.applySkillPointsRequired().catch(() => {}) };
+    }
+    if (!open.omega) return null;
+    return {
+      hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_SKILL_INJECTOR }),
+      enabled: true,
+      use: () => {
+        flow.dismissSkillsRequired();
+        showMarketDetails(TYPE_SKILL_INJECTOR);
+      },
+    };
+  }
   /** eveformat.number: whole, grouped by thousands. */
   const groupedNumber = (value: number): string => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
   /** A label of the window filled with `args`, as plain text. */
@@ -393,6 +448,42 @@
           <button type="button" onclick={() => answerQuantity(false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
         </span>
       </form>
+    </div>
+  </div>
+{/if}
+
+{#if $applyPointsAsked !== null}
+  {@const apply = $applyPointsAsked}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog apply-window" role="dialog" aria-label={applyWord("UI/SkillTrading/ApplySkillPointsWindowCaption")} data-dialog="ApplySkillPointsWindow" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <strong class="apply-head">{applyWord("UI/SkillTrading/ApplySkillPointsWindowCaption")}</strong>
+      <p class="body apply-description">{applyWord("UI/SkillTrading/ApplySkillPointsDescription", { color: "#3ea8d9", points: apply.points, amount: apply.entries.length })}</p>
+      <ul class="apply-rows">
+        {#each apply.entries as entry (`${entry.skill}:${entry.level}`)}
+          <li class="apply-row">
+            <span class="apply-gauge">
+              <span class="apply-fill with-points" style:width={`${entry.progressWithFreePoints * 100}%`}></span>
+              <span class="apply-fill trained" class:complete={apply.finished && entry.progressWithFreePoints === 1} style:width={`${entry.progress * 100}%`}></span>
+              <span class="apply-name">{nameOf("type", entry.skill)} {romanLevel(entry.level)}</span>
+            </span>
+            <span class="apply-saved">
+              <span class="dim">{entry.timeSavedTicks === null ? "" : applyWord("UI/SkillTrading/EstimatedSkillTimeSaved", { timeSaved: Math.max(0, Math.trunc(entry.timeSavedTicks)) })}</span>
+              <span>{applyWord("UI/SkillTrading/SkillProgressLabel", { progress: percent(entry.progress), progressWithFreePoints: percent(entry.progressWithFreePoints) })}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <span class="answers">
+        {#if apply.finished}
+          <button type="button" onclick={() => void flow.answerApplyPoints(apply.n, "close")}>{applyWord("UI/SkillTrading/CloseInjectionLabel")}</button>
+        {:else}
+          <button type="button" disabled={!apply.canConfirm} onclick={() => void flow.answerApplyPoints(apply.n, "confirm").catch(() => {})}>{applyWord("UI/SkillTrading/ConfirmInjectionLabel")}</button>
+          <button type="button" onclick={() => void flow.answerApplyPoints(apply.n, "close")}>{applyWord("UI/SkillTrading/CancelInjectionLabel")}</button>
+        {/if}
+      </span>
     </div>
   </div>
 {/if}
@@ -527,6 +618,10 @@
         <div class="skill-points">
           <span class="dim">{skillWord("UI/Skills/SkillPointsRequired")}</span>
           <span>{open.skillPointsRequired === null ? "" : groupedNumber(open.skillPointsRequired)}</span>
+          {#if applyPointsButton(open) !== null}
+            {@const button = applyPointsButton(open)!}
+            <button type="button" class="apply-points" title={button.hint} aria-label={button.hint} disabled={!button.enabled} onclick={button.use}>+</button>
+          {/if}
         </div>
         {#if open.action.kind === "train"}
           <span class="answers">
@@ -617,6 +712,19 @@
   .book-heading { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.3rem; background: rgba(51, 51, 51, 0.5); font-size: 1.05rem; }
   .book-heading.unavailable { color: #ff4d4d; }
   .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
+  .apply-points { margin-left: 0.6rem; padding: 0 0.5rem; }
+  .apply-window { width: min(37.5rem, calc(100vw - 2rem)); }
+  .apply-head { padding: 0.4rem 0.5rem; background: rgba(34, 34, 36, 0.7); }
+  .apply-description { text-align: center; }
+  .apply-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; max-height: 50vh; overflow-y: auto; }
+  .apply-row { display: flex; flex-direction: column; gap: 0.2rem; }
+  .apply-gauge { position: relative; height: 1.9rem; border: 1px solid rgba(255, 255, 255, 0.25); display: flex; align-items: center; justify-content: center; }
+  .apply-fill { position: absolute; left: 0; top: 0; bottom: 0; }
+  .apply-fill.with-points { background: rgba(54, 102, 140, 0.6); }
+  .apply-fill.trained { background: rgba(62, 168, 217, 0.7); }
+  .apply-fill.trained.complete { background: rgba(61, 165, 71, 0.7); }
+  .apply-name { position: relative; }
+  .apply-saved { display: flex; justify-content: space-between; font-size: 0.8rem; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.1rem 0.4rem; }
   .book-line { width: 100%; border: none; border-top: 1px solid rgba(240, 248, 255, 0.5); margin: 0.3rem 0; }
   .client-dialog-shade { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }

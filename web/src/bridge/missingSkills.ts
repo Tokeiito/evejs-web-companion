@@ -201,6 +201,27 @@ export function skillPointsRequired(
   return sum;
 }
 
+/** characterskills.util.DIVCONSTANT */
+const DIVCONSTANT = Math.log(2) * 2.5;
+/** characterskills.SKILL_POINT_MULTIPLIER */
+const SKILL_POINT_MULTIPLIER = 250;
+
+/** characterskills.util.GetSkillLevelRaw: the level a skill of a rank is at with so many points. */
+export function skillLevelRaw(skillPoints: number, rank: number): number {
+  const base = rank * SKILL_POINT_MULTIPLIER;
+  if (base > skillPoints || base === 0) return 0;
+  return Math.min(1 + Math.trunc(Math.log(skillPoints / base) / DIVCONSTANT), MAX_SKILL_LEVEL);
+}
+
+/** characterskills.util.GetLevelProgress: how far into its next level a skill with so many points is, nought to one. */
+export function levelProgress(skillPoints: number, rank: number): number {
+  const level = skillLevelRaw(skillPoints, rank);
+  if (level >= MAX_SKILL_LEVEL) return 0.0;
+  const base = skillPointsForLevel(rank, level);
+  const next = skillPointsForLevel(rank, level + 1);
+  return (skillPoints - base) / (next - base);
+}
+
 /** characterskills/common/purchase.py DIRECT_PURCHASE_TAX_RATE */
 const DIRECT_PURCHASE_TAX_RATE = 0.3;
 

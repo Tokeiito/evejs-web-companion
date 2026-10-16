@@ -170,15 +170,17 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
-import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsPerMinute } from "../bridge/skillSheet.ts";
+import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
-  allLevelsQueued, booksToBuy, directPurchasePrice, isSkillRequirementMet, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  allLevelsQueued, booksToBuy, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
   requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
-import { applyFreePoints, pauseTraining, purchaseSkills, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
+import {
+  applyFreePoints, applyFreePointsToSkills, freePointsAppliedToSkills, pauseTraining, purchaseSkills, saveQueue, type QueuePlace, type SkillLevel,
+} from "../bridge/skillWrites.ts";
 import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { setSafetyLevel as setSafetyLevelCall } from "../bridge/crimewatchWrites.ts";
 import { acceptContract as acceptContractCall } from "../bridge/contractWrites.ts";
@@ -897,6 +899,38 @@ export interface SkillsRequired {
     | null;
   /** Each skill listed: whether its book is sold (evetypes.IsSkillAvailableForPurchase) and its base price (or null). */
   readonly books: Readonly<Record<number, { readonly sold: boolean; readonly basePrice: number | null }>>;
+  /** The pilot's free points, as the skill service has them (GetFreeSkillPoints), when the window opened. */
+  readonly freeSkillPoints: number;
+  /**
+   * The apply-points button's levels (SkillActionContainer: each level to train of the skills held), and whether it
+   * offers them where the pilot has free points (offer_injection: no book is missing).
+   */
+  readonly applyLevels: readonly SkillLevel[];
+  readonly offerInjection: boolean;
+}
+
+/** One row of the Apply Skill Points window (ApplySkillPointsListEntry): a skill at a level and its two gauges. */
+export interface ApplyPointsEntry {
+  readonly skill: number;
+  readonly level: number;
+  /** How far toward the level it is trained now (GetProgress), nought to one. */
+  readonly progress: number;
+  /** How far toward it with the free points (AdjustProgressWithFreePoints), nought to one. */
+  readonly progressWithFreePoints: number;
+  /** The training time the points save, in ticks (GetTimeSaved); null where it could not be reckoned. */
+  readonly timeSavedTicks: number | null;
+}
+
+/** The client's Apply Skill Points window open now (applySkillPointsWindow.py). */
+export interface ApplyPointsAsk {
+  readonly n: number;
+  readonly entries: readonly ApplyPointsEntry[];
+  /** The points the window would use (skillPointsToBeUsed). */
+  readonly points: number;
+  /** Whether Confirm is offered (the asking answered any points). */
+  readonly canConfirm: boolean;
+  /** Spent: the points applied, the buttons one Close. */
+  readonly finished: boolean;
 }
 
 /**
@@ -2119,6 +2153,15 @@ export interface AppFlow {
   readonly skillBooksAsked: ReadableSignal<SkillBooksAsk | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
   answerSkillBooks(n: number, answer: "buy" | "close"): Promise<void>;
+  /**
+   * The requirement window's apply-points button where the pilot has free points (ApplySkillPointsButton.ClickFunc):
+   * the window put away and the Apply Skill Points window opened for its levels.
+   */
+  applySkillPointsRequired(): Promise<void>;
+  /** The client's Apply Skill Points window open now; null with none. */
+  readonly applyPointsAsked: ReadableSignal<ApplyPointsAsk | null>;
+  /** Its answers: Confirm (the points spread), or Cancel and Close (put away). */
+  answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void>;
   /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
   readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
   /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
@@ -6199,6 +6242,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
   let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
   let skillBooksPurchased: number[] = [];
+  // The client's Apply Skill Points window, one at a time, and its levels.
+  const applyPointsAskedSignal = createSignal<ApplyPointsAsk | null>(null);
+  let applyPointsLevels: readonly SkillLevel[] = [];
+  /** What the requirement window last read of the pilot's skills, which its apply-points button's window goes by. */
+  let skillWindowFacts: {
+    readonly rank: (skill: number) => number | null;
+    readonly pointsNow: (skill: number) => number;
+    readonly trainingRate: (skill: number) => number | null;
+    readonly mine: ReturnType<typeof skillLevelsOf>;
+    readonly queued: readonly { readonly typeID: number; readonly toLevel: number }[];
+  } | null = null;
   let shipNameAnswer: ((name: string | null) => void) | null = null;
   /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
   const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
@@ -6269,6 +6323,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       skillPointsRequired: rest?.skillPointsRequired ?? null,
       action: rest?.action ?? null,
       books: rest?.books ?? {},
+      freeSkillPoints: rest?.freeSkillPoints ?? 0,
+      applyLevels: rest?.applyLevels ?? [],
+      offerInjection: rest?.offerInjection ?? false,
     };
   }
 
@@ -6299,7 +6356,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillsAnswer: JsonValue,
     allSkillsAnswer: JsonValue,
     listed: readonly (readonly [number, number])[],
-  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books">> {
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection">> {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
@@ -6369,6 +6426,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }]));
     let action: SkillsRequired["action"] = null;
     let points: number | null = null;
+    let applyLevels: readonly SkillLevel[] = [];
+    let offerInjection = false;
     if (!isSkillRequirementMet(typeID, required, mine)) {
       const notHeld = skillsNotHeld(listed, mine);
       const levels = levelsToTrain(listed, mine);
@@ -6377,8 +6436,96 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       action = notHeld.length > 0
         ? { kind: "buy", levels, missing: notHeld }
         : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, queued) };
+      applyLevels = trainable;
+      offerInjection = notHeld.length === 0;
     }
-    return { rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books };
+    // What the Apply Skill Points window goes by: the training at the pilot's own rate, boosters and all (the skill
+    // service's training time calculator), for the time its points save.
+    const trainingRate = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        const value = attributeID === undefined ? undefined : attributes.get(attributeID);
+        return value === undefined || !Number.isFinite(value) ? null : graded(value);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    skillWindowFacts = { rank, pointsNow, trainingRate, mine, queued };
+    const free = Number(Array.isArray(queueAnswer) ? queueAnswer[1] : 0);
+    return {
+      rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books,
+      freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0, applyLevels, offerInjection,
+    };
+  }
+
+  /**
+   * The requirement window's apply-points button, with free points (ApplySkillPointsButton.ClickFunc): the window put
+   * away (its on_click), and the Apply Skill Points window opened for the button's levels
+   * (ApplySkillPointsWindow.Open(skillTypeIDsAndLevels=...)), as it reckons its rows: the points the handler would
+   * spread (GetFreeSkillPointsAppliedToSkills), each skill's level and progress with them
+   * (skillQueueSvc.GetSkillLevelAndProgressWithFreePoints), each row's progress now (GetProgress: of the level in
+   * training, the points trained of it so far), and the time saved (GetTimeSaved: the gain times the level's
+   * training time from its start at the pilot's rate).
+   */
+  async function applySkillPointsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    const facts = skillWindowFacts;
+    if (open === null || facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
+    const levels = open.applyLevels;
+    const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, levels);
+    const reached = new Map<number, readonly [number, number]>();
+    for (const [skill, points] of pointsBySkill) {
+      const rank = facts.rank(skill);
+      if (rank === null) continue;
+      const total = (facts.mine.get(skill)?.trainedSkillPoints ?? 0) + points;
+      reached.set(skill, [skillLevelRaw(total, rank), levelProgress(total, rank)]);
+    }
+    const entries: ApplyPointsEntry[] = [];
+    for (const [skill, level] of levels) {
+      if (entries.some((entry) => entry.skill === skill && entry.level === level)) continue;
+      const [levelReached, withPoints] = reached.get(skill) ?? [0, 0];
+      // AdjustProgressWithFreePoints: the level reached is whole; one below it, the progress made toward it.
+      const progressWithFreePoints = levelReached >= level ? 1.0 : levelReached + 1 < level ? 0.0 : withPoints;
+      const rank = facts.rank(skill);
+      // GetProgress: the level in training (one above the level trained, first in the queue), how far it is.
+      const inTraining = (facts.mine.get(skill)?.trainedSkillLevel ?? 0) === level - 1
+        && facts.queued[0]?.typeID === skill && facts.queued[0]?.toLevel === level;
+      const progress = inTraining && rank !== null ? levelProgress(facts.pointsNow(skill), rank) : 0;
+      const rate = facts.trainingRate(skill);
+      const levelTicks = rank === null || rate === null || !(rate > 0)
+        ? null
+        : ((skillPointsForLevel(rank, level) - skillPointsForLevel(rank, level - 1)) / rate) * 600_000_000;
+      entries.push({ skill, level, progress, progressWithFreePoints, timeSavedTicks: levelTicks === null ? null : (progressWithFreePoints - progress) * levelTicks });
+    }
+    applyPointsLevels = levels;
+    dialogsSaidCount += 1;
+    const points = [...pointsBySkill.values()].reduce((sum, each) => sum + each, 0);
+    applyPointsAskedSignal.set({ n: dialogsSaidCount, entries, points, canConfirm: pointsBySkill.size > 0, finished: false });
+  }
+
+  /**
+   * The Apply Skill Points window's answers. Confirm (ApplySkillPoints): skillQueueSvc.ApplyFreeSkillPointsToSkills,
+   * the points asked again and spread where any, then the rows at their new progress and the buttons one Close.
+   * Cancel and Close: put away. The Skills window's sheet read again after the spreading.
+   */
+  async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
+    const asked = applyPointsAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    if (answer === "close") {
+      applyPointsAskedSignal.set(null);
+      return;
+    }
+    if (asked.finished || !asked.canConfirm) return;
+    try {
+      const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, applyPointsLevels);
+      if (pointsBySkill.size > 0) await applyFreePointsToSkills(bridgeDo, applyPointsLevels);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `Those points could not be applied: ${errorWords(error)}`);
+      return;
+    }
+    applyPointsAskedSignal.set({ ...asked, finished: true, entries: asked.entries.map((entry) => ({ ...entry, progress: entry.progressWithFreePoints })) });
+    await loadSkills().catch(() => {});
   }
 
   /** globalConfig/const.py SKILL_PURCHASE_ENABLED_CONFIG, and its default. */
@@ -19551,6 +19698,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buySkillsRequired,
     skillBooksAsked: readonlySignal(skillBooksAskedSignal),
     answerSkillBooks,
+    applySkillPointsRequired,
+    applyPointsAsked: readonlySignal(applyPointsAskedSignal),
+    answerApplyPoints,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,

@@ -210,6 +210,11 @@ const queueByPlace = (args, kwargs) => {
 const pointsForOneSkill = (args, kwargs) => (args.length === 2 && args.every((value) => Number.isSafeInteger(value) && value > 0) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client names one skill and how many points to put into it, more than none, and nothing else." });
+/** The Apply Skill Points window's levels (applySkillPointsWindow.py, skillTypeIDsAndLevels): one list of (typeID, level) pairs, and nothing else. */
+const levelsListed = (args) => ({
+  args: [list((Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : []).map((pair) => (Array.isArray(pair) ? pair : pair && Array.isArray(pair.items) ? pair.items : pair)))],
+  kwargs: {},
+});
 /** crimewatchSvc.SetSafetyLevel (343): one of the ship's three safety levels (crimewatch/const.py), and nothing else. */
 const oneSafetyLevel = (args, kwargs) => (args.length === 1 && [0, 1, 2].includes(args[0]) && Object.keys(kwargs).length === 0
   ? {}
@@ -707,6 +712,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // Skill books bought as the client's books window buys them, on the handler (characterskills/client/purchase.py
   // 100). The page makes it by name. The gateway's list has not got it.
   "skillHandler.PurchaseSkills",
+  // Free points spread over the levels of skills, as the client's Apply Skill Points window spreads them: what they
+  // would come to, and the spreading (skillQueueSvc.py 608 to 613). The page makes them by name. The gateway's list
+  // has neither.
+  "skillHandler.GetFreeSkillPointsAppliedToSkills", "skillHandler.ApplyFreeSkillPointsToSkills",
   // The account's extra training slots, which the client's queue service asks for to tell whether a change of
   // the queue may start it (skillQueueSvc.py 851). The gateway's list has nothing of the user service's.
   "userSvc.GetMultiCharactersTrainingSlots",
@@ -2383,6 +2392,16 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
   "skillHandler.ApplyFreeSkillPoints": judged(`${SKILL_SVC}:886`, pointsForOneSkill,
     "GetSkillHandler().ApplyFreeSkillPoints(skillTypeID, pointsToApply): free points put into one skill, from the skill's own menu (skillQueueSvc.UseFreeSkillPoints, 926). The service has the free points first, sends nothing for a skill in training, one not known, or no points, and takes what the handler answers for the free points left."),
+  "skillHandler.GetFreeSkillPointsAppliedToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:610",
+    levelsListed,
+    "GetSkillHandler().GetFreeSkillPointsAppliedToSkills(skillTypeIDsAndLevels): the levels as one list of (typeID, level). It answers the points each skill would take. Asked by the Apply Skill Points window as it opens (applySkillPointsWindow.py 123) and before the spreading. In no recording.",
+  ),
+  "skillHandler.ApplyFreeSkillPointsToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:612",
+    levelsListed,
+    "GetSkillHandler().ApplyFreeSkillPointsToSkills(skillTypeIDsAndLevels), where the asking before it answered any points: the levels as one list of (typeID, level). It answers the free points left. In no recording.",
+  ),
   "skillHandler.PurchaseSkills": reshaped(
     "characterskills/client/purchase.py:100",
     // GetSkillHandler().PurchaseSkills(skill_type_ids): the skills as one list, and nothing else.

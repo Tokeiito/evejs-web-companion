@@ -25,6 +25,7 @@
   import DroneRecoveryNotice from "./DroneRecoveryNotice.svelte";
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
+  import { marketDetailsTarget } from "./marketDetails.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -281,6 +282,19 @@
     // Skip the initial reading: a restored session must not pop an info window
     // nobody asked for.
     if (count > 0) open("showInfo");
+  });
+
+  // A type's market details asked for from outside the market window (marketDetails.ts: marketutils.ShowMarketDetails,
+  // as the skill windows ask for the Skill Injector's): the market window opened, which takes the type and reads its
+  // market. It watches the request counter, as the Show Info effect above does, and starts at the count it finds, so
+  // that a workspace mounted later does not answer a request made before it.
+  let servedMarketRequests = marketDetailsTarget.requests.get();
+  const marketRequests = marketDetailsTarget.requests;
+  $effect(() => {
+    const count = $marketRequests;
+    if (count === servedMarketRequests) return;
+    servedMarketRequests = count;
+    open("market");
   });
 
   // A panel App asked to be opened on THIS desktop — today, the Bot Builder,
