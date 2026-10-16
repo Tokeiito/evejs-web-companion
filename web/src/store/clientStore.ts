@@ -411,6 +411,7 @@ const INITIAL_SCANNER: ScannerCenterState = Object.freeze({
   scan: Object.freeze({ status: "loading" }),
   operations: Object.freeze({ status: "loading" }),
   refreshedAtMs: null,
+  probeResults: null,
 });
 
 // R17 contracts. READS ONLY — every mutator is refused at the gateway, so
@@ -1659,7 +1660,8 @@ export function createClientStore(): ClientStore {
         // Keep the last known sites visible while a manual refresh runs.
         scanner.set({ ...scanner.get(), loading: true });
         break;
-      case "scanner/loaded":
+      case "scanner/loaded": {
+        const probeResults = scanner.get().probeResults;
         scanner.set({
           loaded: true,
           loading: false,
@@ -1667,7 +1669,12 @@ export function createClientStore(): ClientStore {
           scan: event.scan,
           operations: event.operations,
           refreshedAtMs: event.refreshedAtMs,
+          probeResults: probeResults !== null && probeResults.solarSystemID === event.solarSystemID ? probeResults : null,
         });
+        break;
+      }
+      case "scanner/probe-results":
+        scanner.set({ ...scanner.get(), probeResults: event.probeResults });
         break;
       case "scanner/cleared":
         scanner.set(INITIAL_SCANNER);

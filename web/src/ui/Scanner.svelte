@@ -6,6 +6,7 @@
   // client's call itself.
   import { onMount } from "svelte";
   import ScannerCenter from "./ScannerCenter.svelte";
+  import ProbeScanResults from "./ProbeScanResults.svelte";
   import { SCAN_IN_PROGRESS, launchOf, recallOf, scanOf } from "../bridge/scannerWrites.ts";
   import { nameKey } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -105,3 +106,4 @@
   {actions}
   onRefresh={() => flow.loadScanner()}
 />
+<ProbeScanResults {store} {flow} />

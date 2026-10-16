@@ -151,6 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
+import { EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, lastResults, registerResults, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -3290,6 +3291,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (method !== null && scannerSnapshotNotifications.has(method)) {
+      // scanHandler.OnSystemScanStopped: the scan's results registered, and the absent targets' cleared.
+      if (method === "OnSystemScanStopped") probeScanStopped(args as readonly JsonValue[]);
       scheduleScannerRefresh();
       return;
     }
@@ -5041,6 +5044,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let scannerRefreshDirty = false;
   let scannerRefreshScheduled = false;
 
+  // scanSvc.scanHandlerBySystem: a scan handler for each solar system the session has been in, each with its results
+  // history (bridge/probeResults.ts), for the session's life (scanSvc's OnSessionReset makes them afresh). The
+  // scanner's window shows the session's system's.
+  const probeResultsBySystem = new Map<number, ResultsHistory>();
+  function publishProbeResults(): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    const history = probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY;
+    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history) } });
+  }
+  /** scanHandler.OnSystemScanStopped (46 to 58), in the session's system: RegisterResults, then ClearResults of the absent. */
+  function probeScanStopped(args: readonly JsonValue[]): void {
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
+    if (solarSystemID === null) return;
+    const stopped = decodeScanStopped(args);
+    const history = clearResults(registerResults(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, stopped.results), stopped.absentTargets);
+    probeResultsBySystem.set(solarSystemID, history);
+    publishProbeResults();
+  }
+
   function scheduleScannerRefresh(): void {
     if (scannerRefreshPromise !== null) {
       scannerRefreshDirty = true;
@@ -5134,6 +5157,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       operations,
       refreshedAtMs: Date.now(),
     });
+    // And the probe results the session's system's scan handler keeps (a change of system shows that system's).
+    publishProbeResults();
 
     if (scan.status === "ready") {
       const refs: NameRef[] = [];
@@ -18222,6 +18247,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
+      // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's.
+      probeResultsBySystem.clear();
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;

@@ -42,6 +42,8 @@ export type NameKind =
    */
   | "propulsionEffect"
   | "category"
+  /** An inventory group by its own ID (evetypes.GetGroupNameByGroup): a probe scanner result's group. */
+  | "group"
   | "corporation"
   | "alliance"
   | "faction"

@@ -1,0 +1,93 @@
+<script lang="ts">
+  // The probe scanner's results (bridge/probeResults.ts): the session's system's results as the client's scan handler
+  // keeps them from OnSystemScanStopped, listed as its results scroll lists them (scanResults.py, ScanResultNew):
+  // distance from the ship, ID, name, group and signal strength, by ID; the client's words for "no results" where
+  // there are none. Plain text: no icon, no colour by certainty, no Warp To button for a perfect result yet.
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, resultRows, type Vec3 } from "../bridge/probeResults.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { nameKey, type NameKind } from "../store/names.ts";
+  import type { ClientStore } from "../store/clientStore.ts";
+  import type { AppFlow } from "../app/flow.ts";
+
+  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const scanner = store.scanner;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
+
+  const held = $derived($scanner.probeResults);
+
+  $effect(() => {
+    flow.requestWords(PROBE_RESULT_WORD_LABELS);
+  });
+  // What the rows are named with: a type's name, a group's name, an exploration site's dungeon name.
+  $effect(() => {
+    const results = held?.results ?? [];
+    const refs: Array<{ kind: NameKind; id: number }> = [];
+    const messages: string[] = [];
+    for (const result of results) {
+      const site = result.scanGroupID === SCAN_GROUP.signatures || result.scanGroupID === SCAN_GROUP.anomalies;
+      if (site && result.dungeonNameID !== null) messages.push(`#${result.dungeonNameID}`);
+      if (!site && result.typeID !== null) refs.push({ kind: "type", id: result.typeID });
+      if (!site && result.groupID !== null) refs.push({ kind: "group", id: result.groupID });
+    }
+    if (refs.length > 0) flow.requestNames(refs);
+    if (messages.length > 0) flow.requestWords(messages);
+  });
+
+  const word = (label: string, args: Record<string, string | number> = {}): string | null => {
+    const template = $words.templates[label];
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })).trim() : null;
+  };
+  const nameOf = (kind: NameKind, id: number): string | null => {
+    const name = $names.resolved[nameKey(kind, id)];
+    return typeof name === "string" && name.trim() !== "" ? name : null;
+  };
+  // michelle.GetMyPosition: the ship's own ball, as the page's space read has it.
+  const myPosition = $derived.by((): Vec3 | null => {
+    const position = $space.snapshot?.ship?.position ?? null;
+    return position === null ? null : [position.x, position.y, position.z];
+  });
+  const rows = $derived(held === null ? [] : resultRows(held.results, myPosition, {
+    words: word,
+    typeName: (typeID) => nameOf("type", typeID),
+    groupName: (groupID) => nameOf("group", groupID),
+    messageText: (messageID) => word(`#${messageID}`),
+  }));
+</script>
+
+{#if held !== null}
+  <section class="probe-results">
+    {#if rows.length === 0}
+      <p class="note">{word(PROBE_RESULT_LABELS.noResults) ?? "No signatures or anomalies in current system"}</p>
+    {:else}
+      <table class="guests">
+        <thead>
+          <tr>
+            <th>{word(PROBE_RESULT_LABELS.distance) ?? "Distance"}</th>
+            <th>{word(PROBE_RESULT_LABELS.id) ?? "ID"}</th>
+            <th>{word(PROBE_RESULT_LABELS.name) ?? "Name"}</th>
+            <th>{word(PROBE_RESULT_LABELS.group) ?? "Group"}</th>
+            <th class="num">{word(PROBE_RESULT_LABELS.signalStrength) ?? "Signal"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each rows as row (row.id)}
+            <tr>
+              <td class="num">{row.distance === null ? "" : fmtDist(row.distance)}</td>
+              <td>{row.id}</td>
+              <td>{row.name}</td>
+              <td>{row.group}</td>
+              <td class="num">{row.signal}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </section>
+{/if}

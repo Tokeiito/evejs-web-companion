@@ -130,6 +130,22 @@ function getCategoryName(categoryID) {
   );
 }
 
+function getGroup(groupID) {
+  return buildJsonlIndex("groups.jsonl").get(Number(groupID) || 0) || null;
+}
+
+function getGroupName(groupID) {
+  const entry = getGroup(groupID);
+  if (!entry) {
+    return groupID ? `Group ${groupID}` : "Unknown";
+  }
+  return String(
+    (entry.name && (entry.name.en || entry.name.en_us)) ||
+    entry.name ||
+    `Group ${groupID}`,
+  );
+}
+
 function getLocalizedValue(value) {
   if (!value) {
     return null;
@@ -1814,6 +1830,9 @@ function resolveOneName(kind, id) {
       return getPropulsionEffectName(numericID);
     case "category":
       return getCategory(numericID) ? getCategoryName(numericID) : null;
+    // An inventory group by its own ID (evetypes.GetGroupNameByGroup): the probe scanner's result's group.
+    case "group":
+      return getGroup(numericID) ? getGroupName(numericID) : null;
     case "corporation":
       return getCorporation(numericID) ? getCorporationName(numericID) : null;
     case "alliance":

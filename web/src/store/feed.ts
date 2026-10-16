@@ -414,6 +414,8 @@ export type FeedEvent =
       readonly refreshedAtMs: number;
     }
   | { readonly type: "scanner/cleared" }
+  // The probe scanner's results for the session's system, as its scan handler keeps them (bridge/probeResults.ts).
+  | { readonly type: "scanner/probe-results"; readonly probeResults: ScannerCenterState["probeResults"] }
   // Goal R17 (Slice A) — the Mail page. The inbox is a DELTA SYNC cold-started
   // by the BFF, so `messages` is always the WHOLE mailbox rather than a page of
   // it: the browser caches nothing across a page load and therefore holds no

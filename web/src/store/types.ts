@@ -1054,6 +1054,15 @@ export interface ScannerCenterState {
   readonly scan: ScannerDataState<ScanFullState>;
   readonly operations: ScannerDataState<ScannerOperationsSnapshot>;
   readonly refreshedAtMs: number | null;
+  /**
+   * The probe scanner's results in the session's solar system, as the client's scan handler for that system keeps
+   * them from OnSystemScanStopped (bridge/probeResults.ts); null before the flow has said them for this system.
+   */
+  readonly probeResults: {
+    readonly solarSystemID: number;
+    readonly scanNumber: number;
+    readonly results: readonly import("../bridge/probeResults.ts").ShownResult[];
+  } | null;
 }
 
 /** The verdict on a completed send, assembled from a RE-READ. */
