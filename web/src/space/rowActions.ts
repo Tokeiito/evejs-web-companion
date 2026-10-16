@@ -30,6 +30,7 @@
 import type { GateLink } from "./gateLinks.ts";
 import { jumpBlockedReason, jumpLabel } from "./gateLinks.ts";
 import { isWarpGate } from "../bridge/gateActivation.ts";
+import { isContainerGroup } from "../bridge/spaceActivate.ts";
 
 /**
  * The per-concern busy channel an action belongs to.
@@ -50,6 +51,7 @@ export type RowActionID =
   | "dock"
   | "jump"
   | "activateGate"
+  | "openCargo"
   | "lock"
   | "unlock"
   | "mine"
@@ -211,6 +213,12 @@ export function actionsForRow(ctx: RowActionContext): readonly RowAction[] {
       concern: "move",
       unavailable: ctx.warping === true ? "You are in warp" : null,
     });
+  }
+
+  // Open Cargo (menusvc.OpenCargo): on a thing of the client's container groups, not while the ship warps
+  // (celestialCheckers.OfferOpenCargo, 989 to 1000, which leaves it off the menu then).
+  if (isContainerGroup(ctx.groupID) && ctx.warping !== true) {
+    actions.push({ id: "openCargo", label: "Open Cargo", concern: "hold", unavailable: null });
   }
 
   if (isLootableKind(ctx.kind)) {

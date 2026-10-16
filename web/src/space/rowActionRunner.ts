@@ -46,6 +46,7 @@ export interface RowActionFlow {
   dockAt(itemID: number): Promise<unknown>;
   jumpThrough(link: GateLink): Promise<unknown>;
   activateGate(itemID: number, typeID: number | null): Promise<unknown>;
+  openCargo(itemID: number): Promise<unknown>;
   lockTarget(itemID: number): Promise<unknown>;
   unlockTarget(itemID: number): Promise<unknown>;
 }
@@ -119,6 +120,9 @@ export async function dispatchRowAction(
     case "activateGate":
       // GetCloseAndTryCommand: the system navigation to within 2,500 m, then the gate's own call.
       await flow.activateGate(subject.itemID, subject.typeID ?? null);
+      return true;
+    case "openCargo":
+      await flow.openCargo(subject.itemID);
       return true;
     case "lock":
       await flow.lockTarget(subject.itemID);

@@ -36,7 +36,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { MarketTypeMatch } from "../app/api.ts";
   import type { MarketOrderRow, MarketOwnOrderRow, MarketSide } from "../store/types.ts";
-  import { resolvedName } from "../store/names.ts";
+  import { resolvedName, type NameRef } from "../store/names.ts";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
@@ -61,6 +61,23 @@
 
   /** Which of the four views is showing. */
   let tab = $state<"book" | "orders" | "trades" | "escrow">("book");
+
+  // The pilot's trades, as the client's market service keeps them (marketSvc.GetPersonalMarketTransactions): read
+  // once as this view is chosen, the same read the wallet's Market Transactions shows, and let go when the pilot's
+  // own orders change.
+  // svelte-ignore state_referenced_locally
+  const trades = flow.marketTransactions;
+  $effect(() => {
+    if (tab === "trades") void flow.loadMarketTransactions().catch(() => undefined);
+  });
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const row of $trades.transactions) {
+      refs.push({ kind: "type", id: row.typeID });
+      refs.push({ kind: "station", id: row.stationID });
+    }
+    if (refs.length > 0) flow.requestNames(refs);
+  });
 
   // --- Item search ---------------------------------------------------------
   let query = $state("");
@@ -1013,10 +1030,12 @@
 {#if $market.loaded && tab === "trades"}
   <section>
     <h2>Trades you have made</h2>
-    {#if $market.transactionsError}
-      <p class="error">Your trades could not be read: {$market.transactionsError}</p>
+    {#if $trades.error}
+      <p class="error">Your trades could not be read: {$trades.error}</p>
     {/if}
-    {#if $market.transactions.length === 0}
+    {#if !$trades.loaded}
+      <p class="empty">Reading your trades…</p>
+    {:else if $trades.transactions.length === 0}
       <p class="empty">You have not traded anything yet.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
@@ -1032,7 +1051,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each $market.transactions as trade (trade.transactionID)}
+            {#each $trades.transactions as trade (trade.transactionID)}
               <tr>
                 <td data-label="Item">
                   <span class="cell-item">
@@ -1041,16 +1060,12 @@
                   </span>
                 </td>
                 <td data-label="Bought or sold">
-                  {trade.side === "bought"
-                    ? "You bought"
-                    : trade.side === "sold"
-                      ? "You sold"
-                      : "—"}
+                  {trade.isBuyTransaction ? "You bought" : "You sold"}
                 </td>
                 <td class="num" data-label="How many">{trade.quantity}</td>
-                <td class="num" data-label="Price each">{formatIsk(trade.price)}</td>
+                <td class="num" data-label="Price each">{formatIsk(String(trade.price))}</td>
                 <td data-label="Where">{stationName(trade.stationID)}</td>
-                <td data-label="When">{dateText(trade.transactedAt)}</td>
+                <td data-label="When">{dateText(trade.transactionDate)}</td>
               </tr>
             {/each}
           </tbody>

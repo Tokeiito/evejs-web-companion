@@ -111,6 +111,8 @@ class Park {
    * are being destroyed rather than going out of sight.
    * `onBallsAdded(slims)` is given the slim items of the balls a state or an
    * add brought, those michelle's ProcessBallAdd takes (1208 to 1220).
+   * `onBallClear()` is told a whole new state is coming, before the park is
+   * emptied for it: michelle's DoBallClear (SetState, 971).
    */
   constructor({ ballpark = new Ballpark(), onEvent = null, requestState = null, onMultiEvent = null, onBallsRemoved = null, onBallsAdded = null, pilot = null } = {}) {
     this.ballpark = ballpark;
@@ -138,6 +140,8 @@ class Park {
      * goes to michelle's dispatcher (QueueBallData, 1007), which primes their owners and tickers.
      */
     this.onBallsAdded = onBallsAdded;
+    /** Told a whole new state is coming: the client's DoBallClear, sent before the park is emptied and refilled. */
+    this.onBallClear = null;
     this.lastStamp = -1;
     /** Snapshots of the park to go back to: [bytes, tick, midTick]. */
     this.states = [];
@@ -552,6 +556,8 @@ class Park {
       const droneID = ballId(row.droneID);
       this.stateByDroneID.set(droneID, { droneID, ownerID: ballId(row.ownerID), controllerID: ballId(row.controllerID), activityState: number(row.activityState), typeID: number(row.typeID), controllerOwnerID: ballId(row.controllerOwnerID), targetID: row.targetID === null || row.targetID === undefined ? null : ballId(row.targetID) });
     }
+    // michelle.SetState (971): DoBallClear is sent before the park is emptied (ClearAll) and its balls added again.
+    if (typeof this.onBallClear === "function") this.onBallClear();
     this.ballpark.clearAll();
     this.ballpark.readState(fields.get("state"), 0);
     this.ego = ballId(fields.get("ego"));

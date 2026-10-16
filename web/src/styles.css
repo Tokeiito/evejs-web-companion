@@ -3932,6 +3932,45 @@
   }
   .hud-head-state.stopped { color: var(--color-muted); }
   .hud-head-state.error { color: var(--color-danger); }
+  /* The bar the client fills while the ship lines up for a warp (indication_message_standard: 200 by 3, its ground
+   * at a fifth and its fill at half, the fill eased to each value over a quarter second), along the foot of the row
+   * under the state's words: placed by the row, so that the words' ellipsis does not clip it. */
+  .hud-head:has(.hud-warp-progress) { position: relative; }
+  /* The mission page's bonus countdown (TimerCont): a small round gauge of the time left, then the time. */
+  .mission-bonus-timer {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: 0.75rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .mission-bonus-timer.expired { opacity: 0.5; }
+  /* A contract search's jumps and route (contractentry.py): beneath the stations; no route in the client's red. */
+  .contract-jumps { display: block; font-size: 0.85em; color: var(--color-muted); }
+  .contract-unreachable { color: #ff6666; }
+  .mission-bonus-gauge {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: conic-gradient(var(--color-accent) calc(var(--left) * 360deg), color-mix(in srgb, var(--color-accent) 20%, transparent) 0);
+  }
+  .hud-warp-progress {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 3px;
+    /* No wider than the state's own column, the right of the row's three. */
+    width: min(200px, 40%);
+    height: 3px;
+    background: color-mix(in srgb, var(--color-text-bright) 20%, transparent);
+  }
+  .hud-warp-progress-fill {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--color-text-bright) 50%, transparent);
+    transition: width 0.25s linear;
+  }
   /* ⚠ A WRAPPING ROW, NOT A FIXED SET OF COLUMNS. READ THIS BEFORE ADDING ONE.
    *
    * The three clusters — cargo, the gauge, the racks — sit centred as a group
@@ -9501,6 +9540,25 @@
   }
   .spc-cell-icon { display: flex; }
   .spc-cell-icon .type-icon { width: 20px; height: 20px; }
+  /* A ship that has the pilot's locked: the client's hostile bracket round the icon, yellow (1, 0.8, 0), blinking
+   * from 0.3 to 0.6 and back in half a second (spaceObjectIcon.SetHostileState, blinkingSpriteOnSharedCurve). */
+  .spc-cell-icon.locked-by { position: relative; }
+  .spc-cell-icon.locked-by::after {
+    content: "";
+    position: absolute;
+    left: -2px;
+    top: -2px;
+    width: 24px;
+    height: 24px;
+    box-sizing: border-box;
+    border: 2px solid rgb(255, 204, 0);
+    pointer-events: none;
+    animation: spc-locked-by-blink 0.5s linear infinite;
+  }
+  @keyframes spc-locked-by-blink {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.6; }
+  }
   .spc-cell-name { display: flex; flex-direction: column; min-width: 0; }
   .spc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* ⚠ A hostile's name is tinted AND the threat strip names it above the list.

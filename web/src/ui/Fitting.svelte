@@ -219,6 +219,9 @@
       refs.push({ kind: "type", id: activeShipTypeID });
       refs.push({ kind: "typeGroup", id: activeShipTypeID });
     }
+    if ($fitting.activeShipID) {
+      refs.push({ kind: "evelocation", id: $fitting.activeShipID });
+    }
     for (const slot of $fitting.slots) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
@@ -351,6 +354,12 @@
   });
 
   const activeShipName = $derived.by<string>(() => {
+    // The ship's own name, as the client's fitting window names it (cfg.evelocations); its type's where it has none.
+    const shipID = $fitting.activeShipID;
+    const own = shipID === null ? null : $names.resolved[nameKey("evelocation", shipID)];
+    if (typeof own === "string" && own !== "") {
+      return own;
+    }
     if (activeShipTypeID === null) {
       return "your ship";
     }

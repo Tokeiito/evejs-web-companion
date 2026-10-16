@@ -30,6 +30,7 @@
   import { AGENT_HEADER_WORD_LABELS, agentHeader, agentLocationNameRef } from "../bridge/agentHeader.ts";
   import { PAGE_WORD_LABELS, missionPage, pageAgentToLocate, pageMessageIDs, pageNameRefs, pageSystemIDs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
+  import { showInfo } from "./showInfo.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -429,6 +430,7 @@
       missionTitle: held.missionTitle,
       objectives: held.objectives,
       record: held.record,
+      acceptTime: typeof held.acceptTime === "string" && /^\d+$/.test(held.acceptTime) ? BigInt(held.acceptTime) : null,
       agent: $agents.agentRecords[held.agentID] ?? null,
       agentSolarSystemID: $agents.agentSolarSystems[held.agentID] ?? null,
       standings: $standings.char === null ? null : new Map($standings.char.map((row) => [row.fromID, row.standing])),
@@ -461,7 +463,8 @@
       return;
     }
     pageClock = Date.now();
-    const ticking = setInterval(() => { pageClock = Date.now(); }, 10_000);
+    // Each second, as the bonus's countdown counts seconds (TimerCont looks twice a second).
+    const ticking = setInterval(() => { pageClock = Date.now(); }, 1_000);
     return () => clearInterval(ticking);
   });
   const pageShown = $derived.by<{ readonly agentID: number; readonly page: MissionPage } | null>(() => {
@@ -624,7 +627,7 @@
     </label>
   </div>
   {#if $agents.agents.length === 0}
-    <p class="empty">{$agents.loaded ? "No agents at this station." : "Loading agents…"}</p>
+    <p class="empty">{!$agents.loaded ? "Loading agents…" : $agents.stationID === null ? "Not docked at a station." : "No agents at this station."}</p>
   {:else}
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching
@@ -814,7 +817,23 @@
           <span class="mission-mark {step.state}" title={STEP_MARKS[step.state][1]}>{STEP_MARKS[step.state][0]}</span>
           {#if step.title}<span class="mission-row-label">{step.title}</span>{/if}
           {#if step.where}<span class="mission-step-where">{step.where}</span>{/if}
-          <span class="mission-row-text">{step.text}</span>
+          {#if step.place && step.place.length > 0}
+            <!-- LocationWrapper: the rating in its colour, the name a link to the place's information, the warning in red. -->
+            <span class="mission-row-text mission-place">
+              {#each step.place as run}
+                {#if run.link}
+                  {@const link = run.link}
+                  <button type="button" class="linkish" onclick={() => showInfo({ kind: "spaceObject", itemID: link.itemID, typeID: link.typeID })}>{run.text}</button>
+                {:else if run.color}
+                  <span style:color={run.color}>{run.text}</span>
+                {:else}
+                  {run.text}
+                {/if}
+              {/each}
+            </span>
+          {:else}
+            <span class="mission-row-text">{step.text}</span>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -834,7 +853,19 @@
 {#snippet pageRewards(kind: string, group: PageRewards | null)}
   {#if group}
     <div class="mission-page-rewards {kind}">
-      {#if group.title}<h3 class="mission-block-title">{group.title}</h3>{/if}
+      {#if group.title}
+        <h3 class="mission-block-title">
+          {group.title}
+          {#if group.timer}
+            <!-- TimerCont: a gauge of the bonus's time left and the time, the bonus's line as its hint. -->
+            <span class="mission-bonus-timer" class:expired={group.timer.expired} title={group.hint ?? undefined}>
+              <span class="mission-bonus-gauge" style="--left: {group.timer.left}" aria-hidden="true"></span>
+              {group.timer.text}
+            </span>
+          {/if}
+        </h3>
+      {/if}
+      {#if group.hint && !group.timer}<p class="mission-block-text">{group.hint}</p>{/if}
       <ul class="mission-rows">
         {#each group.rewards as reward}
           <li><span class="mission-row-text">{reward}</span></li>

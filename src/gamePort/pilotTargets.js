@@ -35,11 +35,20 @@
 // emptied, and what the server says of one that is unknown is not kept: there
 // is nothing to work it into.
 //
-// Not kept here: a target the server names before its ball has come is held by
-// the client until the ball does (pendingTargets); here it is a target at once.
-// A ship that blew up is kept by the client until its explosion is over; here
-// it goes when the server says it is lost. The client empties both lists when
-// its ballpark is given a whole new state (DoBallClear); here they stand.
+// And as the client's (2026-10-16):
+//
+//   a target named before its ball has come is held until the ball does
+//       (OnTargetAdded 600 to 616: pendingTargets; DoBallsAdded_ 533 to 539), and
+//       so is one in the server's answer to GetTargets, which the client takes as
+//       OnTarget('add') each. One that is lost or let go while held is dropped.
+//       A ship that has the pilot's locked is one at once, ball or none
+//       (OnTargetByOther 1162: AddTargetedBy, whatever pendingTargeters holds).
+//   a whole new state (michelle SetState: DoBallClear, CleanUp 504): nothing
+//       locked, and locked by nothing; what is held stays held, for its ball.
+//
+// A ship that blew up goes at once: OnTargetLost with 'Exploding' plays the
+// target's leaving and lets it go in the same breath (ClearDeadTarget, finally
+// ClearTarget, 1146 to 1160).
 
 const TARGETS = "targets";
 const TARGETERS = "targeters";
@@ -54,9 +63,15 @@ function keyOf(value) {
   return typeof number === "number" && Number.isSafeInteger(number) && number > 0 ? String(number) : null;
 }
 
-function createPilotTargets() {
+/**
+ * `hasBall(id)` answers whether the pilot's ballpark has that item's ball now: a target named without one is held
+ * until it comes. With none given every ball is taken as there.
+ */
+function createPilotTargets({ hasBall = () => true } = {}) {
   /** Each list by its name: a Map of key to the ID as it came, in the order they came; null while it is unknown. */
   const kept = { [TARGETS]: null, [TARGETERS]: null };
+  /** targetMgr.pendingTargets: the targets named whose balls have not come, by key. */
+  const pending = new Map();
   /** Counts everything that could have changed a list, so that an answer asked for before it is not kept after it. */
   let changes = 0;
 
@@ -70,11 +85,27 @@ function createPilotTargets() {
     if (kept[which] && key !== null) kept[which].delete(key);
   };
 
+  /** targetMgr.OnTargetAdded: a target, or held until its ball comes. */
+  const added = (id) => {
+    const key = keyOf(id);
+    if (key === null) return;
+    if (hasBall(id)) {
+      pending.delete(key);
+      add(TARGETS, id);
+    } else {
+      pending.set(key, id);
+    }
+  };
+
   /** targetMgr.OnTarget. */
   function onTarget(what, id) {
     changes += 1;
-    if (what === "add") add(TARGETS, id);
-    else if (what === "lost") drop(TARGETS, id);
+    if (what === "add") added(id);
+    else if (what === "lost") {
+      const key = keyOf(id);
+      if (key !== null) pending.delete(key);
+      drop(TARGETS, id);
+    }
     else if (what === "clear") kept[TARGETS] &&= new Map();
     else if (what === "otheradd") add(TARGETERS, id);
     else if (what === "otherlost") drop(TARGETERS, id);
@@ -104,30 +135,59 @@ function createPilotTargets() {
     keep(which, answer, asked) {
       if (asked !== changes || !answer || !Array.isArray(answer.items)) return false;
       kept[which] = new Map();
-      for (const id of answer.items) add(which, id);
+      // GetTargets' answer is scattered as OnTarget('add') each (godma RefreshTargets): one with no ball is held.
+      for (const id of answer.items) {
+        if (which === TARGETS) added(id);
+        else add(which, id);
+      }
       return true;
     },
-    /** AddTarget answered that the lock is made: the client adds the target itself. */
+    /** AddTarget answered that the lock is made: the client adds the target itself (_LockTarget, as OnTargetAdded). */
     added(id) {
       changes += 1;
-      add(TARGETS, id);
+      added(id);
+    },
+    /** Balls come into the ballpark: a target held for one of them is a target now (DoBallsAdded_). */
+    ballsAdded(ids) {
+      if (pending.size === 0) return;
+      changes += 1;
+      for (const id of ids) {
+        const key = keyOf(id);
+        if (key === null || !pending.has(key)) continue;
+        const named = pending.get(key);
+        pending.delete(key);
+        add(TARGETS, named);
+      }
+    },
+    /** A whole new state (DoBallClear, CleanUp): nothing locked and locked by nothing; what is held stays held. */
+    ballClear() {
+      changes += 1;
+      if (kept[TARGETS]) kept[TARGETS] = new Map();
+      if (kept[TARGETERS]) kept[TARGETERS] = new Map();
     },
     /** Balls gone from the ballpark, by their IDs: none of them is a target any more. */
     ballsRemoved(ids) {
       changes += 1;
-      for (const id of ids) drop(TARGETS, id);
+      for (const id of ids) {
+        const key = keyOf(id);
+        if (key !== null) pending.delete(key);
+        drop(TARGETS, id);
+      }
     },
     /** Docked, or the ballpark let go: nothing locked, and locked by nothing. */
     emptied() {
       changes += 1;
       kept[TARGETS] = new Map();
       kept[TARGETERS] = new Map();
+      // DoBallsRemove with the ballpark released: what was held goes too (555).
+      pending.clear();
     },
     /** Neither list is known any more: each is asked for when it is next wanted. */
     forget() {
       changes += 1;
       kept[TARGETS] = null;
       kept[TARGETERS] = null;
+      pending.clear();
     },
   };
 }

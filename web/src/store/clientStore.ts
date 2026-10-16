@@ -106,7 +106,7 @@ import type { CloneGrade } from "../bridge/cloneGrade.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 import { EMPTY_RECIPE_BOOK } from "../bridge/piRecipes.ts";
-import { applyTargetEvent } from "../bridge/targetNotifications.ts";
+import { applyTargetEvent, applyTargeterEvent } from "../bridge/targetNotifications.ts";
 import { applyChargeQuantityChanges } from "../bridge/reloadNotifications.ts";
 
 // --- Typed state slices ----------------------------------------------------
@@ -578,6 +578,7 @@ const INITIAL_SPACE: SpaceState = Object.freeze({
 const INITIAL_TARGETING: TargetingState = Object.freeze({
   lockedTargetIDs: Object.freeze([]) as readonly number[],
   acquiringTargetIDs: Object.freeze([]) as readonly number[],
+  lockedByIDs: Object.freeze([]) as readonly number[],
   loaded: false,
   lastAction: null,
   actionError: null,
@@ -1365,6 +1366,7 @@ export function createClientStore(): ClientStore {
           chargeFits: event.chargeFits ?? {},
           slots: [...event.slots],
           resources: event.resources,
+          shipAttributes: event.shipAttributes,
           stats: event.stats,
           // The dogma snapshot rides a separate read that lands just after this
           // one; carry the previous one through so a refresh never blanks the
@@ -1380,6 +1382,13 @@ export function createClientStore(): ClientStore {
           reloads: fitting.get().reloads,
         });
         break;
+      // The ship's attributes as the server's notices keep them: only for the ship the fit was read for.
+      case "fitting/ship-attributes": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        fitting.set({ ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        break;
+      }
       case "fitting/charge-quantity": {
         const current = fitting.get();
         const slots = applyChargeQuantityChanges(current.slots, current.activeShipID, event.changes);
@@ -2154,6 +2163,7 @@ export function createClientStore(): ClientStore {
           ...prev,
           lockedTargetIDs: locked,
           acquiringTargetIDs: prev.acquiringTargetIDs.filter((id) => !locked.includes(id)),
+          ...(Array.isArray(event.targeterIDs) ? { lockedByIDs: event.targeterIDs } : {}),
           loaded: true,
         });
         break;
@@ -2215,6 +2225,17 @@ export function createClientStore(): ClientStore {
           break;
         }
         targeting.set({ ...prev, lockedTargetIDs: locked, acquiringTargetIDs: acquiring });
+        break;
+      }
+      // A ship locking this one, or letting it go (targetMgr.OnTargetByOther and its loss). An `OnTarget('clear')` of
+      // the pilot's own locks leaves this list alone, as the client's OnTargetClear does.
+      case "targeting/targeter-event": {
+        const prev = targeting.get();
+        const before = prev.lockedByIDs ?? [];
+        const after = applyTargeterEvent(before, event.event);
+        if (after !== before) {
+          targeting.set({ ...prev, lockedByIDs: after });
+        }
         break;
       }
       // --- R24 slice C: module cycle times ---------------------------------

@@ -21,16 +21,21 @@
 // words store). What cannot be said is left out.
 //
 // Not done: "Objectives Complete" as the state (the client
-// has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
-// bonus's countdown; a blueprint's properties; what an alpha clone is paid.
-// The bonus's countdown is the one time on the client's page that is not written here.
+// has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; a
+// blueprint's properties; what an alpha clone is paid.
+//
+// The bonus's countdown (agentinteraction/rewardcont.py, BonusRewardTypeCont and TimerCont): the time
+// left to earn the bonus, from when the mission was accepted (the job board takes that from the first of
+// the mission's bookmarks that says when it was made: AgentMissionJob._update_objective_info) and the
+// bonus's minutes; "Expired" once it has run out; and the line that says what the bonus is for, as the
+// timer's hint, or as text where there is no timer.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import { AGENT_TYPE_CAREER, type AgentRecord } from "./agents.ts";
 import { SECURITY_CLASS, securityClass } from "./systemSecurity.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
-import { SHORT_INTERVAL_WORD_LABELS, shortIntervalWriter } from "./timeInterval.ts";
-import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation } from "./locationWrapper.ts";
+import { BLUE_TIME, INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "./timeInterval.ts";
+import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation, wrapLocationRuns, type PlaceRun } from "./locationWrapper.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -77,6 +82,9 @@ export const PAGE_LABELS = Object.freeze({
   grantedText: `${FOLDER}GrantedItemText`,
   rewardsTitle: `${FOLDER}RewardsTitle`,
   bonusTitle: `${FOLDER}BonusRewardsTitle`,
+  /** {[timeinterval]timeRemaining.writtenForm, to=minute}: what the bonus is for, the shortest time to earn one in. */
+  bonusHeader: `${FOLDER}BonusRewardsHeader2`,
+  bonusExpired: `${FOLDER}BonusRewardsAreExpired`,
   /** The banner about reduced rewards where the agent's system is of the safest class. */
   securityTax: `${FOLDER}SecurityTaxMessage`,
   /** Takes lpAmount. */
@@ -94,7 +102,13 @@ export const PAGE_LABELS = Object.freeze({
 });
 
 /** Every label the page may need, for asking the words store: its own, and those its time left is written with. */
-export const PAGE_WORD_LABELS: readonly string[] = [...Object.values(PAGE_LABELS), ...SHORT_INTERVAL_WORD_LABELS, ...LOCATION_WORD_LABELS];
+export const PAGE_WORD_LABELS: readonly string[] = [
+  ...Object.values(PAGE_LABELS),
+  ...SHORT_INTERVAL_WORD_LABELS,
+  // A label's interval in its written forms and the clock's (the bonus's line is written).
+  ...INTERVAL_WORD_LABELS,
+  ...LOCATION_WORD_LABELS,
+];
 
 /** The keys of a mission's messages in the client's record that the page reads (job.py 143 to 157). */
 export const PAGE_MESSAGES = Object.freeze({
@@ -145,6 +159,8 @@ export interface PageStep {
   /** How far away its place is, beside the title: only "this station" and "this solar system" are known here. */
   readonly where: string | null;
   readonly text: string;
+  /** The place in runs, its rating coloured and its name a link (wrapLocationRuns); absent where `text` is all there is. */
+  readonly place?: readonly PlaceRun[] | null;
 }
 
 /** One group of steps, under the line the client writes above them. */
@@ -180,6 +196,13 @@ export interface PageCorporation {
 export interface PageRewards {
   readonly title: string | null;
   readonly rewards: readonly string[];
+  /** The bonus's line: what it is for, within how long. The timer's hint where there is a timer, else shown. */
+  readonly hint?: string | null;
+  /**
+   * The bonus's countdown (TimerCont): the time left, the short way from days to seconds (FmtDate(diff, 'ss')), or
+   * the client's "Expired"; and how much of the bonus's time is left, 0 to 1, for its gauge.
+   */
+  readonly timer?: { readonly text: string; readonly left: number; readonly expired: boolean } | null;
 }
 
 export interface MissionPage {
@@ -224,6 +247,8 @@ export interface MissionPageInput {
   /** The level the pilot has in a skill, nought for one it has not; null before its skills have been read. */
   readonly skillLevel: ((typeID: number) => number) | null;
   readonly record: ClientMission | null;
+  /** When the mission was accepted, on the server's clock: its first bookmark's making; null for an offer, or none known. */
+  readonly acceptTime?: bigint | null;
 }
 
 export interface PageContext {
@@ -375,10 +400,10 @@ export function pageNameRefs(input: MissionPageInput): Array<{ kind: NameKind; i
 export function missionPage(input: MissionPageInput, context: PageContext): MissionPage {
   const words = (label: string, args: Record<string, string | number> = {}): string | null => {
     const template = context.templates[label];
-    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf, writeShortInterval })) : null;
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf, ...writers })) : null;
   };
-  // The time left is a label's short written interval.
-  const writeShortInterval = shortIntervalWriter(context.templates);
+  // The time left is a label's short written interval; a label's interval in any of its forms is the client's.
+  const writers = intervalWriters(context.templates);
   const record = input.record;
   const objectives = input.objectives;
   const missionState = pageMissionState(input);
@@ -445,6 +470,14 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
     return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus);
   };
+  // The same in runs, the name a link to the place's own information (LocationWrapper's linkdata).
+  const placeRuns = (location: MissionLocation | null): readonly PlaceRun[] | null => {
+    if (location === null || location.locationID === null) return null;
+    const ship = location.shipTypeID === null ? null : words(PAGE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
+    const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
+    const link = location.typeID === null ? null : { typeID: location.typeID, itemID: location.locationID };
+    return wrapLocationRuns(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus, link);
+  };
   // ObjectiveSteps._get_location_info: a station is the pilot's own, or stands for its system; a system is the pilot's own, or so many jumps away.
   const whereText = (location: MissionLocation | null): string | null => {
     if (location === null || location.locationID === null) return null;
@@ -469,7 +502,7 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   const at = (location: MissionLocation | null): boolean => location !== null && location.locationID !== null && location.locationID === context.locationID;
   const marked = (done: boolean): StepState => (done ? "done" : "open");
   const located = (kind: PageStep["kind"], state: StepState, label: string, location: MissionLocation | null): PageStep =>
-    ({ kind, state, title: words(label), where: whereText(location), text: placeText(location) });
+    ({ kind, state, title: words(label), where: whereText(location), text: placeText(location), place: placeRuns(location) });
 
   // mission._build_objective_entries, and ObjectiveSteps for each step's words. The line above a group is its LAST step's.
   const general: PageStep[] = [];
@@ -538,6 +571,22 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   // The page builds its rewards only when the mission pays something; the bonus is drawn inside them.
   const paid = objectives !== null && (objectives.normalRewards.length > 0 || objectives.loyaltyPoints > 0 || Math.round(objectives.researchPoints) > 0);
   const bonus = paid ? texts(objectives?.bonusRewards ?? []) : [];
+  // BonusRewardTypeCont.update_expiry_time: the first bonus with a time to earn it in, from an accepted time known,
+  // is the timer's; the line is the shortest time any bonus has (_get_hint_text).
+  const bonusRewards = paid ? objectives?.bonusRewards ?? [] : [];
+  const bonusMinutes = bonusRewards.map((reward) => reward.timeBonusIntervalMin).filter((minutes): minutes is number => typeof minutes === "number" && minutes > 0);
+  const bonusHint = bonusMinutes.length > 0 ? words(PAGE_LABELS.bonusHeader, { timeRemaining: Math.min(...bonusMinutes) * Number(BLUE_TIME.MIN) }) : null;
+  const acceptTime = input.acceptTime ?? null;
+  const timed = acceptTime === null ? undefined : bonusRewards.find((reward) => typeof reward.timeBonusIntervalMin === "number" && reward.timeBonusIntervalMin > 0);
+  let bonusTimer: PageRewards["timer"] = null;
+  if (acceptTime !== null && timed !== undefined && typeof timed.timeBonusIntervalMin === "number") {
+    const span = BigInt(timed.timeBonusIntervalMin) * BLUE_TIME.MIN;
+    const diff = acceptTime + span - context.now;
+    const left = diff <= 0n ? 0 : Math.min(1, Number(diff) / Number(span));
+    // TimerCont.update_expiry_elements_thread: past it, "Expired"; else FmtDate(diff, 'ss').
+    const text = diff < 0n ? words(PAGE_LABELS.bonusExpired) : shortWrittenInterval(diff, context.templates, "day", "second");
+    if (text !== null) bonusTimer = { text, left, expired: diff < 0n };
+  }
 
   const grantedTexts = (objectives?.agentGift ?? []).map((item) => itemText(item, true)).filter((text): text is string => text !== null);
   const collateralFirst = objectives?.collateral[0];
@@ -572,7 +621,7 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     collateral: collateralAmount !== null && offered ? { title: words(PAGE_LABELS.collateralTitle), text: words(PAGE_LABELS.collateralText), items: collateralAmount } : null,
     granted: grantedTexts.length === 0 ? null : { title: words(PAGE_LABELS.grantedItems), text: words(PAGE_LABELS.grantedText), items: grantedTexts.join(", ") },
     rewards: paid && normal.length > 0 ? { title: words(PAGE_LABELS.rewardsTitle), rewards: normal } : null,
-    bonusRewards: bonus.length > 0 ? { title: words(PAGE_LABELS.bonusTitle), rewards: bonus } : null,
+    bonusRewards: bonus.length > 0 ? { title: words(PAGE_LABELS.bonusTitle), rewards: bonus, hint: bonusHint, timer: bonusTimer } : null,
     reducedRewards: taxed ? words(PAGE_LABELS.securityTax) : null,
     extra: extraBody === "" ? null : { title: message(PAGE_MESSAGES.extraHeader), text: extraBody },
     talk: words(PAGE_LABELS.startConversation),

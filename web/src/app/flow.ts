@@ -26,7 +26,8 @@ import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/trave
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
-import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, slotFlagOf } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
+import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -44,7 +45,6 @@ import {
   decodeOrderBook,
   decodeOwnOrders,
   decodePriceHistory,
-  decodeTransactions,
   joinPriceHistory,
   marketRefusalMessage,
   toAmountString,
@@ -170,6 +170,8 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { skillLevelsOf } from "../bridge/skillSheet.ts";
+import { missingSkillBooks, missingSkills, missingSkillsRecursive, totalMissingLevels } from "../bridge/missingSkills.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
 import { applyFreePoints, pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
@@ -526,7 +528,7 @@ import {
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
-import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
+import { assembleShip as assembleShipCall, boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
@@ -551,7 +553,7 @@ import {
   scrammedByWarpScrambler,
   tacklersHolding,
 } from "../bridge/jamNotifications.ts";
-import { decodeTargetNotification } from "../bridge/targetNotifications.ts";
+import { decodeTargetNotification, decodeTargeterNotification } from "../bridge/targetNotifications.ts";
 import {
   decodeChargeLoadNotification,
   decodeChargeQuantityChanges,
@@ -850,6 +852,24 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+}
+
+/** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
+export interface ShipNameAsk {
+  readonly n: number;
+  /** The ship's type: the window's hint is its name and the pilot's (UI/Inflight/OwnerAndShip). */
+  readonly typeID: number;
+}
+
+/** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
+export interface SkillsRequired {
+  readonly typeID: number;
+  /** [skill, level], as the window lists them (skillsvc.GetSkillsMissingToUseItemRecursive). */
+  readonly skills: readonly (readonly [number, number])[];
+  /** skillsvc.GetTotalMissingSkillLevelsToUseItem. */
+  readonly totalMissingLevels: number;
+  /** How many of the skills listed the pilot has not even lapsed (GetSkillBooksMissingFromList). */
+  readonly missingBooks: number;
 }
 
 /** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
@@ -1724,6 +1744,10 @@ export interface AppFlow {
   readonly abyssObjectives: ReadableSignal<readonly AbyssObjectiveRow[] | null>;
   /** A thing in space activated as the client's menu.Activate does (bridge/spaceActivate.ts): an objective target's double click. */
   activateSpaceThing(itemID: number): Promise<void>;
+  /** Open Cargo on a can or a wreck in space (menusvc.OpenCargo): flown to within 2,500 m, then opened. */
+  openCargo(itemID: number): Promise<void>;
+  /** Each can or wreck opened by Open Cargo, counted, for the inventory window to open on it (Inventory.OpenOrShow). */
+  readonly cargoShown: ReadableSignal<{ readonly n: number; readonly itemID: number } | null>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -2033,6 +2057,16 @@ export interface AppFlow {
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
   answerQuantity(n: number, quantity: number | null): void;
+  /** The client's skill requirement window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly skillsRequired: ReadableSignal<SkillsRequired | null>;
+  /** The window put away (its button). */
+  dismissSkillsRequired(): void;
+  /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
+  /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
+  answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
+  /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
+  assembleShip(shipID: number, board: boolean): Promise<void>;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -3141,6 +3175,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // godma.OnModuleAttributeChange and its batch, and those riding an OnMultiEvent: the active ship's attributes
+    // as the server tells of each change, and the Fitting window's figures made of them again. A module put online
+    // is told of at the server's next tick, after the re-read of the fit on the call's answer
+    // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
+    applyShipAttributeChanges(method, args);
+    // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a named item's or a place's row as it is now, its
+    // name the second column: the names kept of named items follow it (the panel's ships, the Fitting window's title).
+    if (method === "OnCfgDataChanged" && args[0] === "evelocations") {
+      const row = Array.isArray(args[1]) ? (args[1] as readonly unknown[]) : isListValue(args[1]) ? args[1].items : [];
+      const itemID = Number(unwrapLong(row[0]) ?? NaN);
+      if (Number.isSafeInteger(itemID) && itemID > 0 && typeof row[1] === "string") {
+        const key = nameKey("evelocation", itemID);
+        nameCache.set(key, row[1]);
+        store.apply({ type: "names/resolved", entries: { [key]: row[1] } });
+      }
+    }
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
       // fleetSvc.OnFleetInvite (1179): from a session in a fleet the client turns the invitation down at once,
@@ -3210,6 +3260,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (targetEvent.kind === "locked") {
         wakeFleetCompanion();
       }
+      return;
+    }
+    // `OnTarget('otheradd' | 'otherlost')` — a ship locking this one, or letting it go: the client's targetedBy, shown
+    // on the overview's row as the client's threatTargetsMe state.
+    const targeterEvent = decodeTargeterNotification(method, args);
+    if (targeterEvent !== null) {
+      store.apply({ type: "targeting/targeter-event", event: targeterEvent });
       return;
     }
     // Fleet-companion phase 7 — `OnJamStart` / `OnJamEnd`, the ONLY read
@@ -3366,9 +3423,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // session is now (_HandleSessionChangeInStation, InStructure, InSpace), whoever changed it: the pilot's own undock,
     // dock or jump, or the server's own move (a capsule sent to its clone's station, a GM's move). The page reads its
     // place again, from what the pilot's transport has of the session.
-    if (sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name))) {
-      void loadFlightStatus().catch(() => {});
-    }
+    const placeRead = sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name)) ? loadFlightStatus().catch(() => {}) : null;
     // dungeonTracking.ProcessSessionChange (56 to 61): another location, and the dungeon tracked is let go.
     if (sessionNames?.some((name) => name === "locationid" || name === "solarsystemid" || name === "stationid" || name === "structureid")) {
       currentDungeon = null;
@@ -3387,6 +3442,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // again, since what an agent will do depends on where the pilot is.
     if (sessionNames?.includes("stationid")) {
       talkToOpenAgentAgain();
+      // The docked agents panel lists the agents of the session's station, none where there is none
+      // (dockedUI/agents.py get_agents_in_current_station). Where the page's list was read, it follows the pilot's
+      // station: read again once the page has its new place, or emptied in space.
+      if (store.agents.get().loaded) void (placeRead ?? Promise.resolve()).then(() => loadAgents()).catch(() => {});
       return;
     }
     if (method === "OnCharNowInStation" || method === "OnCharNoLongerInStation") {
@@ -4347,9 +4406,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
+    // A thing in space (a can, a wreck), opened from the overview or its brackets: its type as the space feed has it,
+    // as the client knows the slim item of what it opens (menusvc._OpenCargo).
+    const inSpace = store.space.get().snapshot?.entities.find((entity) => entity.itemID === containerID) ?? null;
     const knownTypeID = owningRow
       ? owningRow.typeID
-      : current.container && current.container.itemID === containerID ? current.container.typeID : 0;
+      : current.container && current.container.itemID === containerID
+        ? current.container.typeID
+        : inSpace?.typeID ?? 0;
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -4363,7 +4427,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         type: "inventory/container",
         container: {
           itemID: containerID,
-          typeID: owningRow ? owningRow.typeID : 0,
+          typeID: knownTypeID,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -4375,11 +4439,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "inventory/container",
       container: {
         itemID: containerID,
-        typeID: owningRow
-          ? owningRow.typeID
-          : (store.get().inventory.container?.typeID ?? 0),
-        rows: decodeInventoryRows(reads.list),
+        // What it was opened as: its row's type, the type it was open with, or its type in space.
+        typeID: knownTypeID,
+        rows: decodeInventoryRows(reads.list, reads.volumes),
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
+        hasCapacity: reads.hasCapacity,
         error: null,
       },
     });
@@ -4613,6 +4677,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R12 Ship fitting ----------------------------------------------------
 
+  /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
+  function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
+    const current = store.fitting.get();
+    if (current.activeShipID === null || current.shipAttributes === undefined) return;
+    const changed = decodeItemAttributeChanges(method, args, current.activeShipID);
+    if (changed === null) return;
+    const attributes = new Map<number, number | null>(
+      Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
+    );
+    for (const [attributeID, value] of changed) attributes.set(attributeID, value);
+    store.apply({
+      type: "fitting/ship-attributes",
+      shipID: current.activeShipID,
+      shipAttributes: Object.fromEntries(attributes),
+      resources: resourcesOf(attributes),
+      stats: deriveShipStats(attributes),
+    });
+  }
+
   // Load the Fitting panel. The slot read and the resource read are
   // INDEPENDENT on the BFF, so each keeps its own error and a failed resource
   // read still shows the fit (and vice versa). A lost session unwinds to
@@ -4634,6 +4717,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
       chargeFits: decodeChargeFits(reads.chargeFits),
       resources: decodeResources(reads.shipInfo),
+      shipAttributes: Object.fromEntries(decodeShipAttributes(reads.shipInfo)),
       // R21 — the derived statistics come off the SAME ShipGetInfo attribute
       // map as the resource bars. No extra read, and nothing re-simulated:
       // the server already applied the ship's active-module effects before it
@@ -5031,16 +5115,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
+    // The pilot's ISK as the wallet service keeps it (walletSvc.wealth): asked once, then what OnAccountChange says.
+    const wealth = await walletReads.wealth().catch(() => null);
     const book = decodeOrderBook(reads.book.result);
     const ownOrders = decodeOwnOrders(reads.ownOrders.result);
     const orderHistory = decodeOwnOrders(reads.orderHistory.result);
-    // ⚠ The transaction decoder needs the character's OWN id: a trade row names
-    // a buyer and a seller and nothing else, so which side the player was on is
-    // derived by comparison, never guessed.
-    const transactions = decodeTransactions(
-      reads.transactions.result,
-      reads.characterID ?? 0,
-    );
     store.apply({
       type: "market/loaded",
       typeID: reads.typeID,
@@ -5052,19 +5131,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       buys: book.buys,
       ownOrders,
       orderHistory,
-      transactions,
+      // The pilot's trades are the market service's, read once and kept (loadMarketTransactions), not the market read's.
+      transactions: [],
       escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
       // marketsvc.GetPriceHistory: the two halves joined, as the client joins them. A read with no old half at
       // all (nothing asked, or an older BFF) is the new half as it came.
       priceHistory: reads.priceHistoryOld.result === null
         ? decodePriceHistory(reads.priceHistory.result)
         : joinPriceHistory(decodePriceHistory(reads.priceHistoryOld.result), decodePriceHistory(reads.priceHistory.result), BigInt(Date.now()) * 10000n + 116444736000000000n),
-      cashBalance: toAmountString(reads.cashBalance.result),
+      cashBalance: wealth === null ? null : toAmountString(wealth),
       bookError: reads.book.error,
       // The own-orders picture is one thing to the player, so a failure in
       // either half is an own-orders failure.
       ownOrdersError: reads.ownOrders.error || reads.orderHistory.error,
-      transactionsError: reads.transactions.error,
+      transactionsError: null,
       marketUnavailable: reads.marketUnavailable,
     });
 
@@ -5082,10 +5162,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       refs.push({ kind: "type", id: row.typeID });
       refs.push({ kind: "station", id: row.stationID });
       refs.push({ kind: "system", id: row.solarSystemID });
-    }
-    for (const row of transactions) {
-      refs.push({ kind: "type", id: row.typeID });
-      refs.push({ kind: "station", id: row.stationID });
     }
     requestNames(refs);
   }
@@ -6056,6 +6132,77 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     quantityAnswer(quantity);
   }
 
+  // The client's skill requirement window (skillRequirementDialog.py), one at a time.
+  const skillsRequiredSignal = createSignal<SkillsRequired | null>(null);
+
+  // The client's ship naming window (shipNameDialog.py, prompt_rename_ship), one at a time; a newer one ends it.
+  const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
+  let shipNameAnswer: ((name: string | null) => void) | null = null;
+  /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
+  const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
+
+  /** Asks the client's ship naming window: the name on Confirm, null on Later. */
+  function askShipName(typeID: number): Promise<string | null> {
+    shipNameAnswer?.(null);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      shipNameAnswer = (name) => {
+        shipNameAnswer = null;
+        shipNameAskedSignal.set(null);
+        resolve(name);
+      };
+      shipNameAskedSignal.set({ n, typeID });
+    });
+  }
+
+  function answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void {
+    if (shipNameAskedSignal.get()?.n !== n || shipNameAnswer === null) return;
+    // The window's checkbox is the pilot's setting from the moment it is ticked (SuppressSettingBool).
+    if (doNotAskAgain) keepQuestionAnswer(SHIP_NAME_SUPPRESS, "yes");
+    shipNameAnswer(name);
+  }
+
+  /**
+   * A ship boarded as the client boards one (station.TryActivateShip, base.py 214 to 235): where the pilot lacks a
+   * skill its type needs, nothing is asked of the server and the skill requirement window says which.
+   */
+  async function boardShipChecked(shipID: number, typeID: number | null): Promise<void> {
+    if (typeID !== null) {
+      const missing = await skillsMissingFor(typeID).catch(() => null);
+      if (missing !== null) {
+        skillsRequiredSignal.set(missing);
+        return;
+      }
+    }
+    await runMutation(() => boardShipNow(shipID));
+    await refreshActiveShipViews();
+  }
+
+  /**
+   * What the pilot is missing to fly a ship of this type, as the client's dogma location reckons it before it boards
+   * (GetMissingSkills), with what its window lists (bridge/missingSkills.ts). Null where nothing is missing, and where
+   * the client's table could not be read: then the server is asked, as before.
+   */
+  async function skillsMissingFor(typeID: number): Promise<SkillsRequired | null> {
+    const [needs, skills, allSkills] = await Promise.all([
+      api.getRequiredSkills([typeID], callOptions),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    if (!needs.available) return null;
+    const mine = skillLevelsOf(skills);
+    if (missingSkills(typeID, needs.required, mine).size === 0) return null;
+    const lapsed = skillLevelsOf(allSkills);
+    const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
+    return {
+      typeID,
+      skills: listed,
+      totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
+      missingBooks: missingSkillBooks(listed, lapsed).length,
+    };
+  }
+
   async function runFleetAction(
     action: Exclude<FleetAction, "decline">,
     mutate: () => Promise<void>,
@@ -6452,15 +6599,62 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Activate Gate (bridge/gateActivation.ts), as the client's GetCloseAndTryCommand makes it: its system navigation
-   * (autopilot.py __NavigateSystemTo), re-armed every two seconds over the shared rungs (nav/autopilotLoop.ts
-   * decideCloseIn): in warp it waits; within 2,500 m it makes the gate's call, once, and is done; too close for a warp
-   * the menu's approach; farther the menu's warp at nought. One navigation at a time: the autopilot is stopped for
-   * it, and another Activate Gate or the pilot's Stop ends it. Like the client's it has no time limit, and it ends
-   * without a word where it cannot tell what to do (a gate the ship cannot see: autopilot.py 523 to 525).
+   * The client's system navigation (autopilot.py NavigateSystemTo and __NavigateSystemTo, 488 to 534), which its menu's
+   * GetCloseAndTryCommand starts for Activate Gate (bridge/gateActivation.ts) and Open Cargo: re-armed every two
+   * seconds over the shared rungs (nav/autopilotLoop.ts decideCloseIn): in warp it waits; within `interactionRange` of
+   * the thing (by the surface) it does what it was started for, once, and is done; too close for a warp the menu's
+   * approach; farther the menu's warp at nought (const.minWarpEndDistance). One at a time: the autopilot is stopped
+   * for it, a new one ends the last, and so do the pilot's Stop and its own commands that the client's end it with
+   * (CancelSystemNavigation: approach, orbit, keep at range, align, a warp to a thing or to a bookmark of its own;
+   * not Approach Location, nor an agent's location warped to). Like the client's it has no time limit, and it ends
+   * without a word where it cannot tell what to do (a thing the ship cannot see: autopilot.py 523 to 525).
    */
-  const GATE_NAVIGATION_TICK_MS = 2_000;
-  let gateNavigation = 0;
+  const SYSTEM_NAVIGATION_TICK_MS = 2_000;
+  let systemNavigation = 0;
+  function cancelSystemNavigation(): void {
+    systemNavigation += 1;
+  }
+  async function navigateSystemTo(itemID: number, interactionRange: number, arrive: () => Promise<void>): Promise<void> {
+    autopilot?.abort();
+    const token = ++systemNavigation;
+    let approaching: number | null = null;
+    while (token === systemNavigation) {
+      const status = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+      if (token !== systemNavigation || !status.inSpace) return;
+      if (status.shipMode === null || !/warp/i.test(status.shipMode)) {
+        await loadSpaceSnapshot().catch(() => undefined);
+        if (token !== systemNavigation) return;
+        const step = decideCloseIn(itemID, interactionRange, measureSpace(store.space.get().snapshot ?? null), approaching, MENU_WARP_RANGE_M);
+        if (step === null) {
+          systemNavigation += 1;
+          return;
+        }
+        if (step.kind === "arrive") {
+          systemNavigation += 1;
+          await arrive();
+          return;
+        }
+        if (step.kind === "approach") {
+          await approachShip(itemID, null);
+          approaching = itemID;
+        } else if (step.kind === "warp") {
+          await warpToThing(itemID, MENU_WARP_RANGE_M);
+          approaching = null;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, SYSTEM_NAVIGATION_TICK_MS));
+    }
+  }
+  /**
+   * Whether the system navigation to a thing has nothing left to do (autopilot.py IsSystemNavigationComplete, 500 and
+   * 501): not in warp, and within `interactionRange` of it by the surface, as the space read last had them. Where the
+   * thing is not in the read, no (InInteractionRange with no ball). Cloaking is not read.
+   */
+  function systemNavigationComplete(itemID: number, interactionRange: number): boolean {
+    const measurement = measureSpace(store.space.get().snapshot ?? null);
+    const distance = measurement?.distances.get(itemID);
+    return measurement !== null && distance !== undefined && distance < interactionRange && !/warp/i.test(measurement.shipMode ?? "");
+  }
 
   // The dungeon the pilot is in, as the client's dungeon tracking keeps it (bridge/dungeonTracking.ts): from the
   // server's OnEnteringDungeonRoom and OnExitingDungeon, let go at a change of location, and asked of the keeper once
@@ -6492,53 +6686,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
   async function navigateToGate(itemID: number, typeID: number | null): Promise<void> {
-    autopilot?.abort();
-    const token = ++gateNavigation;
-    let approaching: number | null = null;
-    while (token === gateNavigation) {
-      const status = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
-      if (token !== gateNavigation || !status.inSpace) return;
-      if (status.shipMode === null || !/warp/i.test(status.shipMode)) {
-        await loadSpaceSnapshot().catch(() => undefined);
-        if (token !== gateNavigation) return;
-        const step = decideCloseIn(itemID, GATE_ACTIVATION_RANGE_M, measureSpace(store.space.get().snapshot ?? null), approaching, MENU_WARP_RANGE_M);
-        if (step === null) {
-          gateNavigation += 1;
-          return;
-        }
-        if (step.kind === "arrive") {
-          gateNavigation += 1;
-          // An Abyssal trace (movementFunctions.RealActivateEntranceToAbyssalGate): its jump window, and no call.
-          if (typeID === TYPE_ABYSS_ENTRANCE_GATE) {
-            openAbyssJump(itemID);
-            return;
-          }
-          try {
-            await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
-            store.apply({ type: "flight/action", action: "Activate Gate" });
-          } catch (error) {
-            // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
-            // Restrictions window for it and the gate's own object, and nothing else said.
-            const refusal = error instanceof BridgeCallError ? error.refusal : null;
-            if (refusal !== null && SHIP_RESTRICTION_REFUSALS.has(refusal.key) && currentDungeon !== null) {
-              const gate = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
-              openShipRestrictions(currentDungeon.dungeonID, gate?.dunObjectID ?? null);
-              return;
-            }
-            throw error;
-          }
-          return;
-        }
-        if (step.kind === "approach") {
-          await approachShip(itemID, null);
-          approaching = itemID;
-        } else if (step.kind === "warp") {
-          await warpToThing(itemID, MENU_WARP_RANGE_M);
-          approaching = null;
-        }
+    await navigateSystemTo(itemID, GATE_ACTIVATION_RANGE_M, async () => {
+      // An Abyssal trace (movementFunctions.RealActivateEntranceToAbyssalGate): its jump window, and no call.
+      if (typeID === TYPE_ABYSS_ENTRANCE_GATE) {
+        openAbyssJump(itemID);
+        return;
       }
-      await new Promise((resolve) => setTimeout(resolve, GATE_NAVIGATION_TICK_MS));
-    }
+      try {
+        await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+        store.apply({ type: "flight/action", action: "Activate Gate" });
+      } catch (error) {
+        // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
+        // Restrictions window for it and the gate's own object, and nothing else said.
+        const refusal = error instanceof BridgeCallError ? error.refusal : null;
+        if (refusal !== null && SHIP_RESTRICTION_REFUSALS.has(refusal.key) && currentDungeon !== null) {
+          const gate = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+          openShipRestrictions(currentDungeon.dungeonID, gate?.dunObjectID ?? null);
+          return;
+        }
+        throw error;
+      }
+    });
   }
   // A trace's jump window (ui/KeyActivationWindow.svelte as AbyssJumpWindow.py's): the trace and what its slim item
   // says of its filament and game mode, as the space read last had them.
@@ -6634,8 +6802,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // browser decide-loop first so it cannot issue another move into the stop,
     // then tell the server to cut the engines.
     autopilot?.abort();
-    // (And an Activate Gate's navigation, which is the client's too.)
-    gateNavigation += 1;
+    // (And the system navigation, an Activate Gate's or an Open Cargo's, which is the client's too.)
+    cancelSystemNavigation();
     await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
   }
 
@@ -6660,7 +6828,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await settleUntilDocked();
         return;
       case "openCargo":
-        await openContainer(itemID);
+        await openCargo(itemID);
         return;
       case "approach":
         await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, itemID, null)));
@@ -6681,6 +6849,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void navigateToGate(itemID, typeID).catch((error: unknown) => {
       if (isSessionLost(error)) return;
       store.apply({ type: "flight/action-error", message: `Activate Gate refused: ${flightRefusalWords(error)}`, said: sayRefusalDialog(error, flightRefusalWords(error)) });
+    });
+  }
+
+  /**
+   * Open Cargo on a can or a wreck in space, as the client's menu opens one (menusvc.OpenCargo, 3084 to 3091, and its
+   * Activate of one): the system navigation to within 2,500 m of it (GetCloseAndTryCommand at
+   * DEFAULT_INTERACTION_RANGE), and there its cargo opened (RealOpenCargo, _OpenCargo) and the inventory window
+   * opened or raised on it (Inventory.OpenOrShow: the primary window, the can a place in it); and where it is not
+   * that near now (IsTooFarToExecuteCommand), the install's OpenCargoTooFar said as the command is given.
+   */
+  const CARGO_INTERACTION_RANGE_M = 2_500;
+  const cargoShownSignal = createSignal<{ readonly n: number; readonly itemID: number } | null>(null);
+  async function openCargo(itemID: number): Promise<void> {
+    const navigation = navigateSystemTo(itemID, CARGO_INTERACTION_RANGE_M, async () => {
+      await openContainer(itemID);
+      cargoShownSignal.set({ n: (cargoShownSignal.get()?.n ?? 0) + 1, itemID });
+    });
+    if (!systemNavigationComplete(itemID, CARGO_INTERACTION_RANGE_M)) {
+      sayDialog("OpenCargoTooFar", null, "That cargo is out of reach. Your ship is flying to it.");
+    }
+    void navigation.catch((error: unknown) => {
+      if (isSessionLost(error)) return;
+      store.apply({ type: "flight/action-error", message: `Open Cargo refused: ${flightRefusalWords(error)}`, said: sayRefusalDialog(error, flightRefusalWords(error)) });
     });
   }
 
@@ -8942,6 +9133,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         missionTitle: row.missionTitle ?? null,
         objectives: null,
         record: null,
+        // AgentMissionJob._update_objective_info: a mission that is not an offer was accepted when the first of its
+        // bookmarks that says when it was made was made.
+        acceptTime: journal !== null && journal.active.includes(row)
+          ? (() => { const made = (row.bookmarks ?? []).find((spot) => spot.created !== undefined && spot.created !== null)?.created; return made === undefined || made === null ? null : made.toString(); })()
+          : null,
       },
     });
     // The agent's own card, and its corporation's (page.py _construct_agent_section).
@@ -9354,7 +9550,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the R6b docked-station-change refresh can call it.
   async function loadAgents(): Promise<void> {
     await runAgentAction(async () => {
-      const dockedAt = (): number | null => store.station.get().online?.stationID ?? null;
+      // The session's station (session.stationid): where the page has read its place, from that read, which follows
+      // each undock and dock; else from the pilot as it came online.
+      const dockedAt = (): number | null => {
+        const status = store.flight.get().status;
+        if (status) return status.docked ? status.stationID : null;
+        return store.station.get().online?.stationID ?? null;
+      };
       // A pilot at no station has no station's agents, and the table is not asked for to say so.
       if (dockedAt() === null) {
         store.apply({ type: "agents/list", stationID: null, agents: [] });
@@ -9894,7 +10096,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
-    store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
+    store.apply({
+      type: "targeting/targets",
+      targetIDs: decodeTargetIDs(result.targetIDs),
+      // An unreadable answer is no news: the list stays as it was.
+      targeterIDs: Array.isArray(result.targeterIDs) ? decodeTargetIDs(result.targeterIDs) : null,
+    });
   }
 
   /**
@@ -19101,6 +19308,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
+    skillsRequired: readonlySignal(skillsRequiredSignal),
+    dismissSkillsRequired: () => skillsRequiredSignal.set(null),
+    shipNameAsked: readonlySignal(shipNameAskedSignal),
+    answerShipName,
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -19243,8 +19454,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async boardShip(shipID) {
-      await runMutation(() => boardShipNow(shipID));
-      await refreshActiveShipViews();
+      // station.TryActivateShip (base.py 221 to 223): a ship whose skills the pilot lacks is not boarded, nothing is
+      // asked of the server, and the skill requirement window says what is missing (prompt_missing_skill_requirements).
+      await boardShipChecked(shipID, store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null);
+    },
+
+    async assembleShip(shipID, board) {
+      // invItemFunctions.AssembleShip (164 to 210): one ship, the name asked first unless the pilot said not to, then
+      // the call on the ship's object (bridge/shipWrites.ts). Later is no name, and the ship is assembled all the same.
+      const row = store.inventory.get().hangar.rows.find((each) => each.itemID === shipID) ?? null;
+      if (row === null || row.singleton) return;
+      const name = questionAnswerKept(SHIP_NAME_SUPPRESS) === null ? await askShipName(row.typeID) : null;
+      let assembled: number | null = null;
+      await runMutation(async () => {
+        assembled = await assembleShipCall(bridgeDo, shipID, name);
+      });
+      // AssembleAndBoardShip (213 to 240): the first ship assembled boarded, as any ship is (TryActivateShip).
+      if (board && assembled !== null) await boardShipChecked(assembled, row.typeID);
     },
 
     askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
@@ -19994,28 +20220,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async warpTo(destinationID, minRange = null) {
+      cancelSystemNavigation();
       // The page's own calls (bridge/movementWrites.ts): the autopilot's with no range said, the menu's with one.
       await runFlightStep("Warp", () => orderedStep((flightNow) => (
         minRange === null ? autopilotWarpCall(bridgeDo, flightNow, destinationID) : warpToItemCall(bridgeDo, flightNow, destinationID, minRange))));
     },
 
     async approach(destinationID, range = null) {
+      cancelSystemNavigation();
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, destinationID, range)));
     },
 
     async keepAtRange(targetID, range = null) {
+      cancelSystemNavigation();
       await runFlightStep("Keep at range", () => orderedStep((flightNow) => keepAtRangeCall(bridgeDo, flightNow, targetID, range)));
     },
 
     async orbit(targetID, range = null) {
+      cancelSystemNavigation();
       await runFlightStep("Orbit", () => orderedStep((flightNow) => orbitCall(bridgeDo, flightNow, targetID, range)));
     },
 
     async alignTo(targetID) {
+      cancelSystemNavigation();
       await runFlightStep("Align", () => orderedStep((flightNow) => alignToCall(bridgeDo, flightNow, targetID)));
     },
 
     async warpToBookmark(bookmarkID, range) {
+      cancelSystemNavigation();
       await runFlightStep("Warp", () => orderedStep((flightNow) => warpToBookmarkCall(bridgeDo, flightNow, bookmarkID, range)));
     },
 
@@ -20024,6 +20256,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async alignToBookmark(bookmarkID) {
+      cancelSystemNavigation();
       await runFlightStep("Align", () => orderedStep((flightNow) => alignToBookmarkCall(bridgeDo, flightNow, bookmarkID)));
     },
 
@@ -20052,6 +20285,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     jumpThroughTrace,
     abyssObjectives: readonlySignal(abyssObjectivesSignal),
     activateSpaceThing,
+    openCargo,
+    cargoShown: readonlySignal(cargoShownSignal),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,

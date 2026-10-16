@@ -215,6 +215,20 @@ const fieldsOf = (value) => {
   return new Map((dict && Array.isArray(dict.entries) ? dict.entries : []).map(([name, entry]) => [text(name) ?? name, entry]));
 };
 const items = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+/** A KeyVal (or a dict) with one field given in place of its own, its name kept as it came; added where it has none. */
+const withField = (value, name, given) => {
+  const dict = value && value.type === "object" ? value.args : value;
+  if (!dict || !Array.isArray(dict.entries)) return value;
+  let found = false;
+  const entries = dict.entries.map(([field, old]) => {
+    if ((text(field) ?? field) !== name) return [field, old];
+    found = true;
+    return [field, given];
+  });
+  if (!found) entries.push([name, given]);
+  const replaced = { ...dict, entries };
+  return value && value.type === "object" ? { ...value, args: replaced } : replaced;
+};
 
 /** A reading of the server's clock (100 ns since 1601) from this machine's. */
 const filetimeNow = (nowMs = Date.now()) => (BigInt(Math.trunc(nowMs)) + FILETIME_EPOCH_MS) * BigInt(DGM_TAU_CONSTANT);
@@ -252,6 +266,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const effects = new Map();
   /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
   const identity = new Map();
+  /** item key -> { itemID, row }: each held item's GET-INFO row as GetAllInfo, OnGodmaPrimeItem or ItemGetInfo last gave it. */
+  const rows = new Map();
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
   /** item key -> Map(heatID -> { value, at, sources: Set(moduleID) }): the item's HeatAttributes. */
@@ -391,6 +407,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
 
   /** godma.UpdateItem: one item's row, as GetAllInfo lists it and as OnGodmaPrimeItem sends it. */
   function loadRow(itemID, row) {
+    rows.set(key(itemID), { itemID, row });
     const fields = fieldsOf(row);
     const values = new Map();
     const given = fields.get("attributes");
@@ -451,6 +468,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       identity.delete(id);
       attributes.delete(id);
       effects.delete(id);
+      rows.delete(id);
       return;
     }
     if (!is) return;
@@ -466,6 +484,35 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     if (within(SLOTS, flagID) && (categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM)) onSlotted(here);
     // FitItem.
     if (!was) onFitted(here);
+  }
+
+  /**
+   * An item's GET-INFO row as godma holds it now: the row last given, its attributes each as godma has it now
+   * (godma.GetAttribute of each). Null for an item whose row was not given.
+   */
+  function infoNow(itemID, at = now()) {
+    const kept = rows.get(key(itemID));
+    if (!kept) return null;
+    const nowAttributes = { type: "dict", entries: attributesOf(itemID, at) };
+    return withField(kept.row, "attributes", nowAttributes);
+  }
+
+  /**
+   * godma's GetAllInfo answered from what godma holds: `allInfo` the priming's answer, with its ship's items as godma
+   * holds them now (the ship and what is in its slots, each its row with its attributes now) and the ship its active
+   * one. Each item's active effects are as its row gave them.
+   */
+  function allInfoNow(allInfo, shipID) {
+    const ship = key(shipID);
+    // The character is in the ship, and is charInfo's, never shipInfo's.
+    const mine = characterID === null ? null : key(characterID);
+    const entries = [];
+    for (const [id, kept] of rows) {
+      if (id === mine || (id !== ship && identity.get(id)?.locationID !== ship)) continue;
+      const info = infoNow(id);
+      if (info) entries.push([kept.itemID, info]);
+    }
+    return withField(withField(allInfo, "shipInfo", { type: "dict", entries }), "activeShipID", shipID);
   }
 
   /** godma.UpdateItem with what the server answered ItemGetInfo: the row of an item that is still held, in place of what was known of it. */
@@ -849,6 +896,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     /** What a held item is and where: { typeID, groupID, categoryID, flagID, locationID }, or null for one godma was not told of. */
     item: (itemID) => identity.get(key(itemID)) ?? null,
     attributesOf,
+    infoNow,
+    allInfoNow,
     setEffect,
     updateItem,
     setWeaponBanks,
@@ -883,7 +932,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       const mine = characterID === null ? null : key(characterID);
       const kept = new Set();
       if (mine !== null) for (const id of attributes.keys()) if (id === mine || identity.get(id)?.locationID === mine) kept.add(id);
-      for (const held of [attributes, charged, effects, identity]) for (const id of [...held.keys()]) if (!kept.has(id)) held.delete(id);
+      for (const held of [attributes, charged, effects, identity, rows]) for (const id of [...held.keys()]) if (!kept.has(id)) held.delete(id);
       lastChange.clear();
     },
     clear() {
@@ -896,6 +945,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       lastChange.clear();
       effects.clear();
       identity.clear();
+      rows.clear();
       banks.clear();
       characterPrimed = false;
     },

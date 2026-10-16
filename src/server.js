@@ -14,7 +14,7 @@ const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
-const { STATION_CAPACITY, capacityAnswer, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
+const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -2281,6 +2281,8 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     const askedOf = (spec, flag) => (spec ? boundCall(held, req.webSessionID, spec, "GetCapacity", [flag], null) : noShip());
     const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
     const packaged = onGamePort ? await clientConstants.packagedVolumes() : null;
+    // A packaged stack's volume, the client's, for the rows (readTypeVolumes): read on either transport where it can be.
+    const packagedForVolumes = packaged ?? await packagedTablesOrNull();
     let hangarList;
     let hangarCap;
     let cargoList;
@@ -2344,13 +2346,13 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
       // Per-type VOLUME (m³) for every type in the hangar/cargo, from static
       // reference data — the SAME read the assets route does, no bridge call and
-      // no new allowlist pair. Volume is a property of the TYPE, not the stack,
-      // so it cannot vary by player. The browser needs it to work out how much of
+      // no new allowlist pair — and a packaged stack's own, the client's
+      // (readTypeVolumes). The browser needs it to work out how much of
       // a stack fits in a hold before it tries the move; absent for a type the
       // static tables do not know (handled as "unknown", never zero).
       volumes: {
-        ...readTypeVolumes(settledValue(hangarList)),
-        ...readTypeVolumes(settledValue(cargoList)),
+        ...readTypeVolumes(settledValue(hangarList), packagedForVolumes),
+        ...readTypeVolumes(settledValue(cargoList), packagedForVolumes),
       },
     });
   } catch (error) {
@@ -3160,6 +3162,9 @@ function sendPlaceError(res, error) {
   return false;
 }
 
+/** const.groupWreck: a wreck's group, which the client opens with no capacity (menusvc._OpenCargo, ItemWreck). */
+const GROUP_WRECK = 186;
+
 /**
  * A container's capacity as the retail client reckons it (invCache.py 1224 on,
  * asked with no flag): the capacity of the container's TYPE
@@ -3205,6 +3210,11 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
   // cannot be reckoned, and on the gateway, GetCapacity is asked as before.
   const containerTypeID = nonNegativeIntQuery(req.query.typeID, 0);
   const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+  // menusvc._OpenCargo: a wreck (const.groupWreck, 186) is opened as an ItemWreck, which has no capacity
+  // (invControllers.py 1634 to 1636: hasCapacity False). For one, nothing is reckoned and nothing asked, on either
+  // transport; its type's own capacity (27,500 m³ in the static tables) is not what the client shows.
+  const containerType = containerTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(containerTypeID) : null;
+  const wreck = Boolean(containerType) && Number(containerType.groupID) === GROUP_WRECK;
   try {
     const asked = () => boundCall(held, req.webSessionID, spec, "GetCapacity", [], null);
     const listed = boundCall(held, req.webSessionID, spec, "List", [], null);
@@ -3217,7 +3227,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
     };
     const [list, capacity] = await Promise.allSettled([
       listed,
-      !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
+      wreck ? { result: null } : !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
     ]);
     for (const settled of [list, capacity]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
@@ -3236,6 +3246,10 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // A container that reports no capacity is still browsable; the panel
       // simply omits the gauge.
       capacity: capacity.status === "fulfilled" ? capacity.value.result : null,
+      // Whether the client's controller for it has a capacity at all (invControllers.py hasCapacity): a wreck's
+      // (ItemWreck) has none, and the client draws it with no gauge and the volume of what is in it
+      // (container.py UpdateLabel, UI/Inventory/ContainerCapacity). Not a capacity unread.
+      hasCapacity: !wreck,
       // Per-type VOLUME, from static reference data — the same lookup the
       // inventory and asset routes already use, so no bridge call and no new
       // allowlist pair. Volume is a property of the TYPE, never of the stack.
@@ -3245,7 +3259,7 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
       // to hand the WHOLE stack over and let the server judge — and a can
       // holding more than the free space was refused outright, over and over,
       // rather than being drained a load at a time.
-      volumes: readTypeVolumes(list.value.result),
+      volumes: readTypeVolumes(list.value.result, await packagedTablesOrNull()),
     });
   } catch (error) {
     next(error);
@@ -3631,6 +3645,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
         return;
       }
     }
+    const packagedForVolumes = await packagedTablesOrNull();
     res.json({
       ok: true,
       available: true,
@@ -3643,7 +3658,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
           // when a corporation never renamed it. A flag number is never shown.
           name: divisionNames[division] || null,
           list: settled.status === "fulfilled" ? settled.value.result : null,
-          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result) : {},
+          volumes: settled.status === "fulfilled" ? readTypeVolumes(settled.value.result, packagedForVolumes) : {},
           error:
             settled.status === "rejected"
               ? String((settled.reason && settled.reason.code) || "READ_FAILED")
@@ -4134,7 +4149,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
   if (!held) {
     return;
   }
-  // A typeID is OPTIONAL: the player's own orders, transactions and escrow are
+  // A typeID is OPTIONAL: the player's own orders and escrow are
   // worth showing before they have picked an item to look at.
   const typeID = Number(req.query.typeID) || 0;
   try {
@@ -4145,19 +4160,19 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // Six INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
     // player whose order book fails to load still sees their own orders and
     // their ISK.
-    const [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld] =
+    // The pilot's trades are not asked here: the client keeps them in its market service, asked once and let go
+    // when its own orders change (marketSvc.GetPersonalMarketTransactions, 20 to 35), and the page reads them so
+    // (flow.loadMarketTransactions). Asked with every market read, they went twice where the client asks once.
+    // Nor the pilot's ISK: the client's wallet service asks it once and keeps it as OnAccountChange says (walletSvc.py
+    // 41 to 49, 81 to 100); the page keeps it so (walletReads.wealth) and the market window shows that.
+    const [book, ownOrders, history, escrow, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
           : Promise.resolve({ result: null }),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
-        // fromDate 0 = everything the server still keeps.
-        heldTopLevelCall(held, req.webSessionID, "marketProxy", "CharGetTransactions", [0], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
-        // Already allowlisted since R6. The wallet sits beside the order book
-        // so the player can see what they have before they spend it.
-        heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
@@ -4168,7 +4183,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
           : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld];
+    const settled = [book, ownOrders, history, escrow, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -4208,9 +4223,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },
-      transactions: { result: valueOf(transactions), error: codeOf(transactions) },
       escrow: { result: valueOf(escrow), error: codeOf(escrow) },
-      cashBalance: { result: valueOf(balance), error: codeOf(balance) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
       priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage
@@ -6512,21 +6525,37 @@ function readModuleChargeFits(result) {
  * tables do not know are simply absent from the map — never zero, which the
  * page would have to render as a real measurement.
  */
-function readTypeVolumes(result) {
-  const rows = result && Array.isArray(result.items) ? result.items : [];
+function readTypeVolumes(result, packaged = null) {
   const volumes = {};
-  for (const row of rows) {
+  for (const row of inventoryListItems(result)) {
     const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
     const typeID = Number(fields && fields.typeID) || 0;
-    if (typeID <= 0 || Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+    if (typeID <= 0) {
       continue;
     }
-    const volume = staticTypeVolume(typeID);
-    if (volume !== null) {
-      volumes[typeID] = volume;
+    if (!Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+      const volume = staticTypeVolume(typeID);
+      if (volume !== null) {
+        volumes[typeID] = volume;
+      }
+    }
+    // A packaged stack takes the client's packaged volume, not its type's own (inventorycommon/util.py GetItemVolume,
+    // GetPackagedVolume): a packaged Rifter 2,500 m³ where an assembled one is 27,289. Given as "p" and the type where
+    // it is another than the type's own, from the client's tables where they could be read.
+    const key = `p${typeID}`;
+    if (packaged && !Number(fields.singleton) && !Object.prototype.hasOwnProperty.call(volumes, key)) {
+      const packed = packagedVolume(typeID, Number(fields.groupID), staticTypeVolume, packaged);
+      if (packed !== null && packed !== undefined && packed > 0 && packed !== volumes[typeID]) {
+        volumes[key] = packed;
+      }
     }
   }
   return volumes;
+}
+
+/** The client's packaged volumes (src/clientData/clientConstants.js), or null where they cannot be read. */
+function packagedTablesOrNull() {
+  return clientConstants.packagedVolumes().catch(() => null);
 }
 
 /**
@@ -7496,15 +7525,16 @@ function stringQuery(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// GET /api/bridge/presence?targetID= — the onlineStatus reads, as THREE
-// independent reads (Promise.allSettled). All scope off the SESSION observer:
+// GET /api/bridge/presence?targetID= — the onlineStatus reads, as TWO
+// independent reads (Promise.allSettled). Both scope off the SESSION observer:
 //   • GetOnlineStatus(targetID) -> a BARE BOOLEAN (is that character online).
 //     targetID from ?targetID= (default 0 -> false; no contact named).
 //   • GetInitialState()         -> a Rowset[contactID, online] (the observer's
 //     whole contact-presence snapshot; empty for a character with no contacts).
-//   • Prime()                   -> ⚠ NOT void here: delegates to GetInitialState,
-//     so it returns the SAME Rowset. Wired for completeness; the decoder treats
-//     it identically. ⚠ contactID stays as data for later name resolution (R7d).
+//     ⚠ contactID stays as data for later name resolution (R7d).
+// Not Prime(): the client never asks the server for it. Prime is its online
+// status service's own method, which asks GetInitialState() once and keeps it
+// (comtool/onlineStatus.py 74 to 82).
 app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -7512,12 +7542,11 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
   }
   const targetID = nonNegativeIntQuery(req.query.targetID, 0);
   try {
-    const [onlineStatus, initialState, prime] = await Promise.allSettled([
+    const [onlineStatus, initialState] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetOnlineStatus", [targetID], null),
       heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetInitialState", [], null),
-      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "Prime", [], null),
     ]);
-    for (const outcome of [onlineStatus, initialState, prime]) {
+    for (const outcome of [onlineStatus, initialState]) {
       if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
         next(outcome.reason);
         return;
@@ -7534,11 +7563,9 @@ app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
       requested: { targetID },
       onlineStatus: settledValue(onlineStatus),
       initialState: settledValue(initialState),
-      prime: settledValue(prime),
       errors: {
         onlineStatus: settledCode(onlineStatus),
         initialState: settledCode(initialState),
-        prime: settledCode(prime),
       },
     });
   } catch (error) {
@@ -9476,6 +9503,18 @@ async function readLockedTargetIDs(held, webSessionID) {
 }
 
 /**
+ * The ships that have the pilot's locked RIGHT NOW (dogmaIM.GetTargeters), asked straight after GetTargets as the
+ * client's godma.RefreshTargets asks it (2364); the client keeps the answer as its target service's targetedBy, each
+ * one OnTarget('otheradd'). On the game port it is answered from the list kept the same way.
+ */
+async function readTargeterIDs(held, webSessionID) {
+  const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
+  const raw = outcome.result;
+  const readable = raw?.type === "list" && Array.isArray(raw.items);
+  return { ids: decodeTargetIDList(raw), readable, notifications: outcome.notifications };
+}
+
+/**
  * Confirm the requested module, including an authoritative bank-master mapping.
  * Unrelated growth in the active set is not proof. Missing bank authority is
  * unknown rather than a guessed confirmation of a slave weapon.
@@ -9513,8 +9552,14 @@ app.get("/api/bridge/targets", requireAuth, async (req, res, next) => {
   }
   try {
     const locked = await readLockedTargetIDs(held, req.webSessionID);
-    // A malformed read cannot prove that the caller has no locked targets.
-    res.json({ ok: true, targetIDs: locked.readable ? locked.ids : null, notifications: locked.notifications });
+    const targeters = await readTargeterIDs(held, req.webSessionID);
+    // A malformed read cannot prove that the caller has no locked targets, nor that nothing has the caller locked.
+    res.json({
+      ok: true,
+      targetIDs: locked.readable ? locked.ids : null,
+      targeterIDs: targeters.readable ? targeters.ids : null,
+      notifications: [...locked.notifications, ...targeters.notifications],
+    });
   } catch (error) {
     next(error);
   }
@@ -13106,6 +13151,39 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
   }
 });
 
+// The skills each type needs and at what level, as the client's own data has them (evetypes/skills.py
+// get_dogma_required_skills: the requiredSkillsForTypes table), for the types asked and every skill they lead to, so
+// that whoever asks walks them as the client's skill service walks them (skillsvc.py 534 to 595). A type that needs
+// none has {}. `available` is false when the table could not be read (no client install, or no Python to host the
+// client's loader); `required` is then empty. At most 50 types are asked at once.
+app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = await clientBuiltData.table("requiredSkillsForTypes");
+    const required = {};
+    const walk = (typeID) => {
+      if (Object.prototype.hasOwnProperty.call(required, typeID)) return;
+      const row = table && table[typeID] && typeof table[typeID] === "object" ? table[typeID] : {};
+      const skills = {};
+      for (const [skillID, level] of Object.entries(row)) {
+        const skill = Number(skillID);
+        const atLevel = Number(level);
+        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) skills[skill] = atLevel;
+      }
+      required[typeID] = skills;
+      for (const skillID of Object.keys(skills)) walk(Number(skillID));
+    };
+    if (table) for (const typeID of asked.slice(0, 50)) walk(typeID);
+    res.json({ ok: true, available: Boolean(table), required });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -13186,6 +13264,35 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
         owners.push({ key, kind, id });
       }
     }
+    // A named item's own name (the client's cfg.evelocations: a ship, a container, uix.GetItemName): the static
+    // tables have none, and it is asked of the game server as the client asks it, config.GetMultiLocationsEx, by the
+    // game-port transport, which keeps each row it is answered or told of (pilots.js locationsNamed). Off the game
+    // port, or with no pilot on, it is not known, and the page asks again.
+    const namedItems = [];
+    for (const [key, value] of Object.entries(names)) {
+      const separator = key.indexOf(":");
+      if (value === null && key.slice(0, separator) === "evelocation") namedItems.push({ key, id: Number(key.slice(separator + 1)) || 0 });
+    }
+    let locationsAsked = false;
+    if (namedItems.length > 0) {
+      const held = gamePortPilots ? bridgeSessions.get(req.webSessionID) || null : null;
+      if (!held || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...namedItems.map((item) => item.key));
+      } else {
+        locationsAsked = true;
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.locationsNamed(
+            namedItems.map((item) => item.id), { userid: held.accountID }, held.bridgeSessionID));
+          for (const item of namedItems) {
+            const name = named.get(item.id);
+            if (typeof name === "string" && name !== "") names[item.key] = name;
+          }
+        } catch (_error) {
+          unresolved.push(...namedItems.map((item) => item.key));
+        }
+      }
+    }
+
     let ownersAsked = false;
     if (owners.length > 0 && gamePortPilots) {
       const held = bridgeSessions.get(req.webSessionID) || null;
@@ -13213,7 +13320,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       ok: true,
       // Named on the wire so a consumer can see whether a live session was
       // involved at all, rather than inferring it.
-      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : [])].join("+"),
+      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : []), ...(locationsAsked ? ["game-server-locations"] : [])].join("+"),
       count: Object.keys(names).length,
       capped: result.capped,
       limit: result.limit,

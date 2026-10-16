@@ -77,6 +77,7 @@ const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cache
 const { brokersFeeRate, brokersFeeRateInStructure } = require("./brokerFee");
 const { averagePrice, historyRows } = require("./priceHistory");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
+const { createPilotInventory, rowsOf: listingRows, CONTAINER_HANGAR: INVENTORY_HANGAR } = require("./pilotInventory");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -177,6 +178,8 @@ const WARS_AGAIN_AFTER_MS = WARS_GOOD_FOR_MS + 10 * 1000;
  * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
  */
 const AGGRESSION_SETTINGS = "GetAggressionSettings";
+/** bco_corporations.GetCorporation: the pilot's corporation's own row, asked of its registry with nothing. */
+const CORPORATION_ROW = "GetCorporation";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
  * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None), and all_cso.GetMoniker
@@ -559,11 +562,10 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
 /**
  * A container's two listings, which the client's inventory cache keeps (invCacheContainer.List, ListByFlags, in
  * invCache.py): a flag's items are asked for once, and from then on the cache goes by the server's word of each
- * item that changes. Here a listing is kept as the server answered it, by the handle it was asked on and what
- * was asked, and every listing is forgotten when anything may have changed one: at either of the server's two
- * notices of an item, in another place or ship, and at any write of the pilot's own, done or refused. What is
- * forgotten is asked for when it is next wanted. (The client works each change into what it holds, and asks
- * again for nothing.)
+ * item that changes. A container bound through GetInventory or GetInventoryFromId is kept so, as the client keeps
+ * it (pilotInventory.js). A listing on any other handle is kept as the server answered it, by the handle and what
+ * was asked, and forgotten when anything may have changed one: at either of the server's two notices of an item,
+ * in another place or ship, and at any write of the pilot's own, done or refused.
  */
 const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
 const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
@@ -1190,6 +1192,8 @@ function createGamePortPilots({
   const LOAD_SLOT_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/login/charSelection/characterSelection.py:750", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.evelocations' priming: config.GetMultiLocationsEx(list(keysToGet)), the Recordset's Prime (cfg.py 579), as Get makes it (630 to 645). */
+  const LOCATIONS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
   const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /** cfg.allianceshortnames' priming: config.GetMultiAllianceShortNamesEx(list(keysToGet)), the Recordset's Prime (eveCfg.py 379). */
@@ -1543,6 +1547,39 @@ function createGamePortPilots({
 
   const attribute = (entry, name) => positive(entry.session.attributes[name]);
 
+  /** The session as the client's inventory cache reads it; corprole whole, as roles go past what a number holds. */
+  const inventorySession = (entry) => {
+    const roles = entry.session.attributes.corprole;
+    return {
+      stationid: attribute(entry, "stationid"),
+      charid: entry.characterID,
+      corpid: attribute(entry, "corpid"),
+      shipid: attribute(entry, "shipid"),
+      corprole: typeof roles === "bigint" ? roles : typeof roles === "number" && Number.isSafeInteger(roles) ? BigInt(roles) : 0n,
+    };
+  };
+
+  /**
+   * The container an inventory bind is for, as the client's inventory cache keys it, or null for none it keeps:
+   * GetInventory of where the pilot is docked, the station's hangar (containerHangar, None), or in a structure the
+   * structure itself (invCache.GetInventory 502 to 504); GetInventoryFromId(itemID), the item (553).
+   */
+  function inventoryContainerOf(entry, method, args) {
+    if (method === "GetInventory") {
+      const structureID = attribute(entry, "structureid");
+      if (positive(args[0]) === null || positive(args[0]) !== (structureID ?? attribute(entry, "stationid"))) return null;
+      return entry.inventory.keyOf(structureID ?? INVENTORY_HANGAR, null);
+    }
+    if (method === "GetInventoryFromId") {
+      const itemID = positive(args[0]);
+      return itemID === null ? null : entry.inventory.keyOf(itemID, null);
+    }
+    return null;
+  }
+
+  /** A listing's flag as the client has it: a number, or None. */
+  const flagOf = (value) => (value === null || value === undefined ? null : positive(value) ?? (value === 0 || value === 0n ? 0 : null));
+
   // ── the nine ──────────────────────────────────────────────────────────────
 
   async function selectCharacter(args = [], kwargs = null, sessionFields = {}) {
@@ -1553,18 +1590,22 @@ function createGamePortPilots({
     if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
     if (characterID === null) throw fail("CALL_INVALID", "SelectCharacterID needs a character.");
 
-    // The account's own connection, if it has one and nothing is being asked on it, is closed first: the retail client
-    // has one connection, and the server closes an account's others as it logs in (closedByServerByCharacter).
+    // The retail client has one connection, logged in once: it chooses its character on the connection its selection
+    // screen asked on. Where the account's own connection is open and nothing is being asked on it, the character is
+    // chosen there, with what its login read (handOver); else one is opened and logged in here, as the account's would
+    // have been. (The server closes an account's other connections as one logs in: closedByServerByCharacter.)
     const line = accountLines.get(accountID);
-    if (line && line.calls === 0) line.hangUp();
+    const handed = line && line.calls === 0 ? await line.handOver() : null;
 
-    let transport;
-    try {
-      transport = await connect();
-    } catch {
-      throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
+    let transport = null;
+    if (!handed) {
+      try {
+        transport = await connect();
+      } catch {
+        throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
+      }
     }
-    const session = createSession(transport);
+    const session = handed ? handed.session : createSession(transport);
     const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
@@ -1647,6 +1688,9 @@ function createGamePortPilots({
       /** cfg.eveowners: each owner the server has been asked about, as { name, typeID }, or null for one it had no row for; and the askings, one after another. */
       owners: new Map(),
       ownersWork: Promise.resolve(),
+      /** cfg.evelocations, for the items the server has been asked about: each one's name, or null for one it had no row for; and the askings, one after another. */
+      locations: new Map(),
+      locationsWork: Promise.resolve(),
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
       tickersWork: Promise.resolve(),
@@ -1750,9 +1794,13 @@ function createGamePortPilots({
       selection: null,
       /** godma's priming that is out now, and the ship in a place it is for: whoever wants the ship's readings meanwhile waits for it. */
       dogmaPriming: null,
+      /** What the last priming's GetAllInfo answered, as it came: what the page's asking of it is answered from (allInfoKept). */
+      allInfo: null,
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
+      /** The client's inventory cache: each container bound, by its key, with what it has listed (pilotInventory.js). */
+      inventory: createPilotInventory({ rowFields, session: () => inventorySession(entry) }),
       /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
       saleAverages: new Map(),
       /** beyonce.GetFormations as the server answered it, or the asking of it under way; null before it is asked (formationsKnown). */
@@ -1760,11 +1808,13 @@ function createGamePortPilots({
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
       lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
-      targets: createPilotTargets(),
+      targets: createPilotTargets({ hasBall: (id) => ballInPark(entry, id) }),
       targetsWork: Promise.resolve(),
       targetsOwed: false,
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
+      /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
+      corporationRow: null,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -1843,6 +1893,18 @@ function createGamePortPilots({
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a place's or a named item's row as it is now,
+      // kept as cfg.evelocations keeps it, by its first column, the name its second.
+      if (notification.method === "OnCfgDataChanged" && textOf((notification.args ?? [])[0]) === "evelocations") {
+        const row = itemsOf((notification.args ?? [])[1]);
+        const itemID = positive(row[0]);
+        if (itemID !== null) entry.locations.set(itemID, textOf(row[1]));
+      }
+      // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
+      if (notification.method === "OnItemChange") entry.inventory.itemChanged((notification.args ?? [])[0], (notification.args ?? [])[1]);
+      if (notification.method === "OnItemsChanged") {
+        for (const row of itemsOf((notification.args ?? [])[0])) entry.inventory.itemChanged(row, (notification.args ?? [])[1]);
+      }
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
@@ -1867,6 +1929,17 @@ function createGamePortPilots({
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
         entry.listings.forget();
+      }
+      // invCache.ProcessSessionChange (143 to 168) and OnSessionChanged (173 to 181): the corporation's containers let
+      // go at new roles, docked; the ship left behind in space let go alone; everything in another station, structure
+      // or solar system.
+      if ("corprole" in changes && (attribute(entry, "stationid") !== null || attribute(entry, "structureid") !== null)) {
+        entry.inventory.dropOwnedBy(attribute(entry, "corpid"));
+      }
+      if ("shipid" in changes && attribute(entry, "solarsystemid") !== null) {
+        entry.inventory.drop(entry.inventory.keyOf(changes.shipid[0], null));
+      } else if ("stationid" in changes || "structureid" in changes || "solarsystemid" in changes) {
+        entry.inventory.forget();
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
@@ -1970,6 +2043,8 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
+        // bco_corporations.Reset: another corporation's row is another's to ask for.
+        entry.corporationRow = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
@@ -1990,33 +2065,23 @@ function createGamePortPilots({
     let result;
     let row;
     try {
-      await session.login(userName, passwordFor(userName));
+      if (!handed) await session.login(userName, passwordFor(userName));
       // The login function the server sends has been answered: if it was the one that frees the client's clock, this pilot's is free.
       clock.loggedIn(session.handshakeAnswer);
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
-      // eveCfg's loading, as a client comes onto the server: the planets no colony may be put on are asked for as
-      // its data are loaded, and the old stations' rows by a thread nobody waits on (367, 475 to 477; 701, 741 to
-      // 753). In the retail client's own login, the first two calls after the service info.
-      await cfgLoaded(entry);
-      // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
-      averagePricesThread(entry);
-      // AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): the global config come, and
-      // whether the AIR tutorial is enabled is asked. With no character on the session nothing follows from the
-      // answer (is_air_npe_active, 85 to 88 and 95 to 96). A server that refuses fails no login.
-      await airNpeEnabledAsked(entry).catch(() => {});
-      // raffleSvc.is_available (39 to 53), which the commands' list asks as it is made (eveCommands.py 744): on a
-      // session with a country, whether the user is banned from the raffles. A server that refuses fails no login.
-      await raffleBanAsked(entry).catch(() => {});
-      // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
-      // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
-      await cloneGradeRead(entry).catch(() => {});
+      // What the client reads as it logs in: here, or taken from the account's connection the character is chosen on.
+      if (handed) await loginReadsTaken(entry, handed.read);
+      else await loginReads(entry);
       // The character selection screen, as the retail client fills and leaves it.
-      for (const method of ["GetCharacterSelectionData", "GetCharacterLockType", "SelectCharacterID"]) {
+      // The selection screen's data is what the screen asked on this connection, where it was the account's and asked
+      // it (the client chooses from the screen it filled, and asks no second time); else it is asked here.
+      const selectionKept = handed && handed.selection !== undefined ? handed.selection : undefined;
+      for (const method of [...(selectionKept === undefined ? ["GetCharacterSelectionData"] : []), "GetCharacterLockType", "SelectCharacterID"]) {
         ledger.note("charUnboundMgr", method, shape("charUnboundMgr", method, [], null));
       }
-      const selection = wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", []));
+      const selection = wireToBridgeJson(selectionKept !== undefined ? selectionKept : await session.call("charUnboundMgr", "GetCharacterSelectionData", []));
       row = selectionRow(selection, characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
       entry.selection = selection;
@@ -2261,6 +2326,11 @@ function createGamePortPilots({
       const known = await run(entry, service, method, () => formationsKnown(entry));
       return { service, method, result: wireToBridgeJson(known === undefined ? null : known), notifications: drain(entry) };
     }
+    // GetAllInfo is godma's priming, asked once for a ship in a place: anyone's asking after is answered from godma.
+    if (service === "dogmaIM" && method === "GetAllInfo") {
+      const kept = await allInfoKept(entry);
+      if (kept !== undefined) return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
+    }
     // An attribute's value is the client's own dogma location's to answer, where godma holds the item.
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
       const held = attributeHeld(entry, form.args);
@@ -2451,6 +2521,7 @@ function createGamePortPilots({
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
+      (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -2762,6 +2833,36 @@ function createGamePortPilots({
       return new Map(wanted.map((each) => [each, entry.owners.get(each)]));
     }));
     entry.ownersWork = priming.catch(() => {});
+    return priming;
+  }
+
+  /**
+   * cfg.evelocations.Prime(keys) (cfg.py 501 to 600; the Recordset of eveCfg.py 666 over GetLocationsEx and
+   * GetMultiLocationsEx), for a named item's own name, which the client shows for a ship or a container it names
+   * (uix.GetItemName, IsValidNamedItem, 274 to 311): of the items asked about, those not known yet are asked for in
+   * one call, config.GetMultiLocationsEx(a list of their IDs). Each row answered is kept for as long as the pilot is
+   * on, and so is each the server tells of (OnCfgDataChanged('evelocations', row), cfg.py 146 to 161); an item the
+   * server answers no row for is not asked about again (knownLuzers). One asking after another.
+   *
+   * Answers a Map of each item asked about to its name, or to null for one with no row. Fails as the call fails,
+   * with nothing kept of it.
+   */
+  async function locationsNamed(itemIDs, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const wanted = [...new Set((Array.isArray(itemIDs) ? itemIDs : []).map(positive).filter((itemID) => itemID !== null))];
+    const priming = entry.locationsWork.then(() => run(entry, "config", "GetMultiLocationsEx", async () => {
+      const unknown = wanted.filter((itemID) => !entry.locations.has(itemID));
+      if (unknown.length > 0) {
+        ledger.note("config", "GetMultiLocationsEx", LOCATIONS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiLocationsEx", [{ type: "list", items: unknown }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [locationID, locationName] = ["locationID", "locationName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.locations.set(positive(row[locationID]), textOf(row[locationName]));
+        for (const each of unknown) if (!entry.locations.has(each)) entry.locations.set(each, null);
+      }
+      return new Map(wanted.map((each) => [each, entry.locations.get(each) ?? null]));
+    }));
+    entry.locationsWork = priming.catch(() => {});
     return priming;
   }
 
@@ -3531,7 +3632,48 @@ function createGamePortPilots({
     ledger.note("config", "GetBlackListedPlanets", PLANET_BLACKLIST_AS_THE_CLIENT_ASKS);
     await entry.session.call("config", "GetBlackListedPlanets", [], null).then((answered) => { entry.planetBlacklist = answered; }, () => {});
     ledger.note("config", "GetOldStationData", OLD_STATIONS_AS_THE_CLIENT_ASKS);
-    Promise.resolve().then(() => entry.session.call("config", "GetOldStationData", [], null)).then((answered) => { entry.oldStations = answered; }, () => {});
+    entry.oldStationsAsking = Promise.resolve().then(() => entry.session.call("config", "GetOldStationData", [], null)).then((answered) => { entry.oldStations = answered; }, () => {});
+  }
+
+  /**
+   * What the client reads as it logs in, before its selection screen: the cfg's two askings as it loads (cfgLoaded),
+   * the price table's thread, whether the AIR tutorial is on (airnpe.py 73), whether the user is banned from the
+   * raffles (raffle_service.py 52), and the clone grade. Each is kept on whatever holds the connection: a pilot's entry,
+   * or the account's connection until a character is chosen on it (loginReadsTaken).
+   */
+  async function loginReads(holder) {
+    // eveCfg's loading, as a client comes onto the server: the planets no colony may be put on are asked for as
+    // its data are loaded, and the old stations' rows by a thread nobody waits on (367, 475 to 477; 701, 741 to
+    // 753). In the retail client's own login, the first two calls after the service info.
+    await cfgLoaded(holder);
+    // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
+    averagePricesThread(holder);
+    // AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): the global config come, and
+    // whether the AIR tutorial is enabled is asked. With no character on the session nothing follows from the
+    // answer (is_air_npe_active, 85 to 88 and 95 to 96). A server that refuses fails no login.
+    await airNpeEnabledAsked(holder).catch(() => {});
+    // raffleSvc.is_available (39 to 53), which the commands' list asks as it is made (eveCommands.py 744): on a
+    // session with a country, whether the user is banned from the raffles. A server that refuses fails no login.
+    await raffleBanAsked(holder).catch(() => {});
+    // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
+    // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
+    await cloneGradeRead(holder).catch(() => {});
+  }
+
+  /**
+   * A character chosen on the account's connection takes what that connection's login read: answered, or once its
+   * asking under way is. The price table's thread, where it has not asked yet, starts again on the pilot (the client's
+   * runs once, two seconds after its cfg loads; here those two seconds are counted again from the choosing).
+   */
+  async function loginReadsTaken(entry, read) {
+    await Promise.all([read.oldStationsAsking, read.averagePricesAsking].map((asking) => (asking ? asking.catch(() => {}) : null)));
+    for (const name of ["planetBlacklist", "oldStations", "airNpeEnabled", "raffleBanned", "cloneGrade", "averagePrices"]) {
+      if (read[name] !== undefined && read[name] !== null) entry[name] = read[name];
+    }
+    if (read.averagePricesTimer) {
+      averagePricesThreadEnded(read);
+      averagePricesThread(entry);
+    }
   }
 
   /**
@@ -3709,7 +3851,7 @@ function createGamePortPilots({
     entry.averagePricesTimer = timers.setTimeout(() => {
       entry.averagePricesTimer = null;
       ledger.note("config", "GetAverageMarketPrices", PRICES_AS_THE_CLIENT_ASKS);
-      Promise.resolve().then(() => entry.session.call("config", "GetAverageMarketPrices", [], null))
+      entry.averagePricesAsking = Promise.resolve().then(() => entry.session.call("config", "GetAverageMarketPrices", [], null))
         .then((answered) => { entry.averagePrices = pricesByType(answered); }, () => {});
     }, averagePricesAfterMs);
     // The timer is not what keeps this process up.
@@ -3924,7 +4066,9 @@ function createGamePortPilots({
   function accountLine(accountID, userName) {
     const have = accountLines.get(accountID);
     if (have) return have;
-    const line = { session: null, opening: null, calls: 0, timer: null };
+    // `read`: what the login read (loginReads), handed to a character chosen on this connection.
+    // `selection`: the selection screen's data as last answered here, undefined while none is.
+    const line = { session: null, opening: null, calls: 0, timer: null, read: null, unlisten: null, selection: undefined };
     const forget = () => {
       if (accountLines.get(accountID) === line) accountLines.delete(accountID);
       timers.clearTimeout(line.timer);
@@ -3932,7 +4076,29 @@ function createGamePortPilots({
     };
     line.hangUp = () => {
       forget();
+      if (line.read) averagePricesThreadEnded(line.read);
       if (line.session) line.session.close();
+    };
+    /**
+     * The connection given to a character chosen on it, logged in and with what its login read: no longer the
+     * account's, and not closed. Null where it is not open (gone, failed, or closed by the server); then nothing of
+     * it is left.
+     */
+    line.handOver = async () => {
+      if (accountLines.get(accountID) !== line) return null;
+      forget();
+      let session = null;
+      try {
+        session = await line.opening;
+      } catch {
+        session = null;
+      }
+      if (!session || session.closed) {
+        line.hangUp();
+        return null;
+      }
+      if (line.unlisten) line.unlisten();
+      return { session, read: line.read ?? {}, selection: line.selection };
     };
     line.opening = (async () => {
       let transport;
@@ -3943,11 +4109,14 @@ function createGamePortPilots({
       }
       line.session = createSession(transport);
       // The server hanging up, or anything else that ends it: the next thing asked opens another.
-      line.session.onClose(forget);
+      line.unlisten = line.session.onClose(forget);
       await line.session.login(userName, passwordFor(userName));
       if (positive(line.session.attributes.userid) !== accountID) {
         throw fail("CALL_REFUSED", "The game server logged that name in as a different account.");
       }
+      // As the client logs in, before its selection screen asks anything (loginReads).
+      line.read = { session: line.session };
+      await loginReads(line.read);
       return line.session;
     })();
     accountLines.set(accountID, line);
@@ -4012,6 +4181,10 @@ function createGamePortPilots({
         const form = shape(service, method, args, kwargs, {});
         ledger.note(service, method, form);
         const result = await byName(session, service, method, form);
+        // The selection screen's data as last answered on this connection: a character chosen on it is chosen from it.
+        if (service === "charUnboundMgr" && method === "GetCharacterSelectionData") line.selection = result;
+        // A character made or deleted, or its deletion begun or let go, and the screen is filled again: asked again.
+        else if (service === "charUnboundMgr" && /^(Create|Delete|Prepare|Cancel)/.test(method)) line.selection = undefined;
         return { service, method, result: wireToBridgeJson(result), notifications: [] };
       } catch (error) {
         // The server saying no is an answer, and the client stays on its screen. Anything else, and the connection is not asked again.
@@ -4098,6 +4271,21 @@ function createGamePortPilots({
     return entry.dogma.shipReadings(place.shipID);
   }
 
+  /**
+   * GetAllInfo answered from what godma holds, as the client's godma has it for its windows: primed once for a ship in a
+   * place (godma.Prime, 2405 to 2409) and kept by the server's notices since. The priming's answer with the ship's
+   * items as godma holds them now (pilotDogma.allInfoNow). Undefined where godma is not primed for where the pilot is,
+   * or the pilot has no ship: then it is asked.
+   */
+  async function allInfoKept(entry) {
+    const place = whereabouts(entry);
+    await shipReadings(entry, place);
+    // A module just fitted is as the server has answered of it, once it has.
+    await entry.itemWork;
+    if (!place.shipID || entry.dogmaLoaded !== primedFor(entry, place) || !entry.allInfo) return undefined;
+    return entry.dogma.allInfoNow(entry.allInfo, place.shipID);
+  }
+
   /** The asking itself. True where godma is primed for the ship in the place; false where dogma could not be asked; fails where the session is lost. */
   async function primeGodma(entry, place, loadedFor) {
     try {
@@ -4114,6 +4302,7 @@ function createGamePortPilots({
       // What godma let go before it asked: every inventory but the character's.
       entry.dogma.purge();
       entry.dogma.loadAllInfo(allInfo);
+      entry.allInfo = allInfo;
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
       // The achievements' eventHandler.OnHighSlotFittingChanged: godma has the ship now, and its turret slots were owed.
@@ -4164,9 +4353,18 @@ function createGamePortPilots({
       });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
-      // targetMgr.DoBallsRemove: a ball that goes is no target any more.
-      entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
-      entry.space.park.onBallsAdded = (slims) => ballsPrimed(entry, slims);
+      // targetMgr.DoBallsRemove: a ball that goes is no target any more; invCache.DoBallRemove: nor a container held.
+      entry.space.park.onBallsRemoved = (gone) => {
+        entry.targets.ballsRemoved(gone.map((each) => each.id));
+        for (const each of gone) entry.inventory.drop(entry.inventory.keyOf(each.id, null));
+      };
+      entry.space.park.onBallsAdded = (slims) => {
+        ballsPrimed(entry, slims);
+        // targetMgr.DoBallsAdded_: a target held for its ball is one now.
+        entry.targets.ballsAdded(slims.map((slim) => slim.get("itemID")));
+      };
+      // targetMgr.DoBallClear: a whole new state empties both lists.
+      entry.space.park.onBallClear = () => entry.targets.ballClear();
       // subwaySvc.OnSpecialFX (417 to 438): a travel effect (IsTravelEffect) played on the pilot's own ship begins its
       // jump through the effect's target (StartJump, PreJumpServiceCalls: OnJumpStarted(gateID, destinationID)). The
       // entry is the ballpark's, which the page is not given: that one is handed on as the server sent it, in order
@@ -4230,7 +4428,7 @@ function createGamePortPilots({
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
+          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, warpBookmark: entry.warpBookmark ? entry.warpBookmark.row : null, alignTarget: alignTargetOf(entry, park), simTime: entry.space.simTime() }), timeDilation }
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null, timeDilation },
         notifications: drain(entry),
       };
@@ -4347,8 +4545,14 @@ function createGamePortPilots({
     if (method.startsWith("Cmd") && method !== "CmdFleetTagTarget") entry.lastMove = { method, targetID: positive(args[0]), range: typeof sent(args[1]) === "number" ? sent(args[1]) : null };
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
+      entry.warpBookmark = null;
     } else if (method === "CmdWarpToStuff") {
       entry.warpDestination = args[0] === "item" ? positive(args[1]) : null;
+      // movementFunctions.WarpToBookmark: space.WarpDestination(bookmarkID=...), and the HUD words the warp from the
+      // bookmark as the client keeps it (spaceMgr.StartWarpIndication: addressbook.GetBookmark). A fleet member's
+      // (menusvc.WarpToMember: WarpDestination(fleetMemberID=...)) is named by nothing there.
+      entry.warpBookmark = args[0] === "bookmark" && positive(args[1]) !== null ? { bookmarkID: positive(args[1]), row: null } : null;
+      if (entry.warpBookmark) warpBookmarkKept(entry, entry.warpBookmark);
     } else if (method === "CmdAlignTo") {
       // menusvc._AlignTo: what was aligned to is kept (StoreAlignTarget), a thing or a bookmark, and the HUD
       // names it for as long as the ship flies that course. `since` is the park's tick at the order.
@@ -4364,6 +4568,30 @@ function createGamePortPilots({
       // (StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)).
       entry.alignTarget = null;
     }
+  }
+
+  /**
+   * The bookmark a warp was ordered at, as the client keeps it (bookmarkSvc.GetBookmark: bookmarkCache[bookmarkID]):
+   * read from the bookmark manager's three lists as they are kept (asked for where none are), its memo, its item and
+   * its place (none where it is a thing's bookmark, x None). Where it is not among them the client's lookup fails
+   * and its HUD names nothing; so here, the row is left none.
+   */
+  function warpBookmarkKept(entry, wanted) {
+    bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry)))
+      .then((lists) => {
+        if (!isTheThreeLists(lists) || entry.warpBookmark !== wanted) return;
+        const row = itemsOf(lists[1])
+          .map((each) => (each && each.type === "object" && each.args ? each.args : null))
+          .find((args) => args !== null && positive(dictValue(args, "bookmarkID")) === wanted.bookmarkID);
+        if (!row) return;
+        const [x, y, z] = ["x", "y", "z"].map((name) => finite(dictValue(row, name)));
+        wanted.row = {
+          memo: textOf(dictValue(row, "memo")) ?? "",
+          itemID: positive(dictValue(row, "itemID")),
+          point: x === null || y === null || z === null ? null : { x, y, z },
+        };
+      })
+      .catch(() => {});
   }
 
   /**
@@ -4405,6 +4633,17 @@ function createGamePortPilots({
   }
 
   /** The tick of the pilot's park, or null when it has none. */
+  /**
+   * Whether the pilot's ballpark has that item now, as the client's target service asks it (GetBallpark().GetInvItem):
+   * no where there is no park, or no state in it yet.
+   */
+  const ballInPark = (entry, id) => {
+    const park = entry.space && entry.space.park;
+    if (!park || !park.validState) return false;
+    const raw = id && typeof id === "object" && !Buffer.isBuffer(id) ? id.value : id;
+    const ball = typeof raw === "bigint" && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : raw;
+    return park.slimItems.has(ball);
+  };
   const parkTick = (entry) => (entry.space && entry.space.park && entry.space.park.validState ? entry.space.park.currentTime : null);
 
   /**
@@ -4600,6 +4839,9 @@ function createGamePortPilots({
     }
     // crimewatchSvc.GetCorpAggressionSettings: the settings as they are kept, asked for where none are.
     if (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) return corporationDoes(entry, () => entry.aggression ?? aggressionRefreshed(entry));
+    // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
+    // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
+    if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -4856,13 +5098,11 @@ function createGamePortPilots({
   function stackSizeOf(entry, itemID) {
     const wanted = positive(itemID);
     if (wanted === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        const [size, quantity] = [fields.stacksize, fields.quantity].map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
-        return size !== null ? size : quantity === null ? null : quantity < 0 ? 1 : quantity;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      const [size, quantity] = [fields.stacksize, fields.quantity].map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
+      return size !== null ? size : quantity === null ? null : quantity < 0 ? 1 : quantity;
     }
     return null;
   }
@@ -4876,12 +5116,10 @@ function createGamePortPilots({
     const wanted = positive(itemID);
     const shipID = positive(attribute(entry, "shipid"));
     if (wanted === null || shipID === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        return positive(fields.locationID) === shipID && inASlot(fields.flagID) ? fields.flagID : null;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      return positive(fields.locationID) === shipID && inASlot(fields.flagID) ? fields.flagID : null;
     }
     return null;
   }
@@ -4894,15 +5132,31 @@ function createGamePortPilots({
   function rowOfItem(entry, itemID) {
     const wanted = positive(itemID);
     if (wanted === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        return row && row.type === "packedrow" ? wireToBridgeJson(row) : null;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      return row && row.type === "packedrow" ? wireToBridgeJson(row) : null;
     }
     return null;
   }
+
+  /**
+   * A container's listing as the client's inventory cache answers it: from the container held for what the handle
+   * was bound to, asked only for what it has not listed (pilotInventory.js); a handle bound to no container held, as
+   * the listing it asked was answered (INVENTORY_LISTINGS).
+   */
+  function listedRead(entry, object, boundHandle, method, form, sent) {
+    if (object.container === undefined) return entry.listings.read(listingKeptAs(boundHandle, form), sent);
+    const kwargs = form.kwargs ?? {};
+    const typeID = kwargs.typeID === undefined ? null : positive(kwargs.typeID);
+    if (method === "List") return entry.inventory.list(object.container, flagOf(kwargs.flag), () => sent(), typeID);
+    const flags = itemsOf(kwargs.flags).map(flagOf).filter((flag) => flag !== null);
+    // self.moniker.ListByFlags(flags=uncachedFlags): only the flags not listed are asked.
+    return entry.inventory.listByFlags(object.container, flags, (unlisted) => sent({ ...form, kwargs: { ...kwargs, flags: { type: "list", items: unlisted } } }), typeID);
+  }
+
+  /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
+  const listedRows = (entry) => [...entry.inventory.rows(), ...entry.listings.answers().flatMap((listing) => listingRows(listing))];
 
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
@@ -5209,6 +5463,12 @@ function createGamePortPilots({
     return keptCall(entry, entry.monikers, CORP_REGISTRY, CORP_REGISTRY, () => monikerParams(entry, CORP_REGISTRY, undefined), method, [], null);
   }
 
+  /** bco_corporations.GetCorporation: the corporation's row asked for, and kept as answered. */
+  async function corporationRowRead(entry) {
+    entry.corporationRow = await corporationAsk(entry, CORPORATION_ROW);
+    return entry.corporationRow;
+  }
+
   /** crimewatchSvc.RefreshCorpAggressionSettings: the settings asked for, and kept as answered. */
   async function aggressionRefreshed(entry) {
     entry.aggression = await corporationAsk(entry, AGGRESSION_SETTINGS);
@@ -5273,6 +5533,11 @@ function createGamePortPilots({
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
+    // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
+    // keeps; here the row of the pilot's own corporation is let go, and asked for when it is next wanted.
+    if (notification.method === "OnCorporationChanged" && Array.isArray(notification.args) && Number(notification.args[0]) === Number(attribute(entry, "corpid"))) {
+      entry.corporationRow = null;
+    }
   }
 
   // ── the agents' table, and the agents' journal as it is kept ──────────────
@@ -5343,6 +5608,15 @@ function createGamePortPilots({
     // fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked. So
     // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
+    // invCache.GetInventory and GetInventoryFromId: a container already held is the one given, and nothing is asked
+    // (GetInventoryFromId 553 to 556, GetInventory 527 to 531); one being bound is waited for, and given.
+    const container = service === "invbroker" ? inventoryContainerOf(entry, method, Array.isArray(args) ? args : []) : null;
+    const heldObject = container === null ? null : await (entry.inventory.boundObject(container) ?? null);
+    if (heldObject) {
+      const handle = randomBytes(24).toString("base64url");
+      entry.bound.set(handle, { objectID: heldObject, service, container });
+      return { boundHandle: handle, service, method, notifications: drain(entry) };
+    }
     ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
@@ -5362,7 +5636,10 @@ function createGamePortPilots({
     }
     let objectID;
     try {
-      objectID = await run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      // The container is being bound: held once it is, and given meanwhile to whoever asks for it (pilotInventory.js).
+      if (container !== null) entry.inventory.binding(container, making);
+      objectID = await making;
     } catch (error) {
       // The session's own word for a bind the server answered without an object.
       if (error.code === "CALL_FAILED" && / did not return a bound object\.| could not say where its object lives\./.test(error.message)) objectID = null;
@@ -5370,7 +5647,7 @@ function createGamePortPilots({
     }
     if (!objectID) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
     const boundHandle = randomBytes(24).toString("base64url");
-    const object = { objectID, service };
+    const object = container === null ? { objectID, service } : { objectID, service, container };
     entry.bound.set(boundHandle, object);
     // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), from the answer on.
     if (method === "CreateFleet") entry.fleet = object;
@@ -5397,6 +5674,11 @@ function createGamePortPilots({
     }
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
+    // GetAllInfo is godma's priming, asked once for a ship in a place: anyone's asking after is answered from godma.
+    if (service === "dogmaIM" && method === "GetAllInfo") {
+      const kept = await allInfoKept(entry);
+      if (kept !== undefined) return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
+    }
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
       const held = attributeHeld(entry, form.args);
       if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
@@ -5413,9 +5695,9 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
-    /** The call itself, noted as it is sent. */
-    const sent = async () => {
-      ledger.note(service, method, form);
+    /** The call itself, noted as it is sent; `asSent` where it goes otherwise than it came (a listing of only what is not listed). */
+    const sent = async (asSent = form) => {
+      ledger.note(service, method, asSent);
       // fittingSvc.LoadFitting: the fitting is applied on the ship's own inventory, invCache.GetInventoryFromId(ship),
       // which the location's manager is asked for. Where the call comes on the manager's handle, the ship's inventory
       // is had first; where it comes on the ship's own inventory (the page's call), it goes there as it is.
@@ -5426,8 +5708,8 @@ function createGamePortPilots({
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
-        ? entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs)
-        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(form.args), form.kwargs);
+        ? entry.session.callBound(object.objectID, method, argumentsToWire(asSent.args), asSent.kwargs)
+        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(asSent.args), asSent.kwargs);
     };
     // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
     const listing = service === "invbroker" && INVENTORY_LISTINGS.has(method);
@@ -5435,7 +5717,7 @@ function createGamePortPilots({
     const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
     try {
-      result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
+      result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
       if (mayChangeContents(service, method)) entry.listings.forget();
       forgetKeptAfter(entry, service, method);
@@ -5562,6 +5844,7 @@ function createGamePortPilots({
     saveSkillQueue,
     journalKept,
     ownersNamed,
+    locationsNamed,
     corpTickersNamed,
     allianceTickersNamed,
     shipInfo,

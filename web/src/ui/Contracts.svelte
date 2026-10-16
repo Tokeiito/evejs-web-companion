@@ -28,6 +28,7 @@
   import { onMount } from "svelte";
   import {
     CONTRACT_STATUS_OUTSTANDING,
+    CONTRACT_TYPE_COURIER,
     CONTRACT_TYPE_ITEM_EXCHANGE,
     contractStatusLabel,
     contractTypeLabel,
@@ -35,6 +36,7 @@
     formatVolume,
   } from "../bridge/contracts.ts";
   import { isSessionLost } from "../app/flow.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ContractRow } from "../store/types.ts";
@@ -47,6 +49,72 @@
   const contracts = store.contracts;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
+
+  // A search's row says how far away the contract is and, for a courier, how long its route is, both by the
+  // autopilot's route with the pilot's settings (contractsearch.py 1402 to 1419: GetAutopilotJumpCount; the words,
+  // contractentry.py 476 to 487 and 740 to 748).
+  const JUMP_WORDS = {
+    currentStation: "UI/Generic/CurrentStation",
+    currentSystem: "UI/Generic/CurrentSystem",
+    oneJumpAway: "UI/Contracts/OneJumpAway",
+    jumpsAway: "UI/Contracts/ContractEntry/NumJumpsAway",
+    noRoute: "UI/Generic/NoGateToGateRoute",
+    sameSystem: "UI/Contracts/ContractEntry/SameSystem",
+    nextSystem: "UI/Contracts/ContractEntry/NextSystem",
+    jumps: "UI/Contracts/ContractEntry/NumJumps",
+  } as const;
+  function jumpWords(label: string, own: string, args: Record<string, number> = {}): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })) : own;
+  }
+  const hereSystem = $derived($flight.status?.solarSystemID ?? null);
+  const hereStation = $derived($flight.status?.stationID ?? $flight.status?.structureID ?? null);
+  type JumpLine = { readonly text: string; readonly unreachable: boolean };
+  const noRouteLine = (): JumpLine => ({ text: jumpWords(JUMP_WORDS.noRoute, "No route").toUpperCase(), unreachable: true });
+  /** numJumpsTxt: from where the pilot is to where the contract starts; null where nothing is said, or not known yet. */
+  function jumpsAway(row: ContractRow): JumpLine | null {
+    if (hereStation !== null && row.startStationID === hereStation) return { text: jumpWords(JUMP_WORDS.currentStation, "Here"), unreachable: false };
+    if (hereSystem !== null && row.startSolarSystemID === hereSystem) return { text: jumpWords(JUMP_WORDS.currentSystem, "In this system"), unreachable: false };
+    if (hereSystem === null) return null;
+    const count = $names.autopilotJumps[`${hereSystem}:${row.startSolarSystemID}`];
+    if (count === undefined || count === 0) return null;
+    if (count === null) return noRouteLine();
+    return count === 1
+      ? { text: jumpWords(JUMP_WORDS.oneJumpAway, "1 jump off"), unreachable: false }
+      : { text: jumpWords(JUMP_WORDS.jumpsAway, `${count} jumps off`, { numJumps: count }), unreachable: false };
+  }
+  /** A courier's route length, from where it starts to where it ends; null for any other contract, or not known yet. */
+  function routeLength(row: ContractRow): JumpLine | null {
+    if (row.type !== CONTRACT_TYPE_COURIER || row.startSolarSystemID <= 0 || row.endSolarSystemID <= 0) return null;
+    const count = row.startSolarSystemID === row.endSolarSystemID ? 0 : $names.autopilotJumps[`${row.startSolarSystemID}:${row.endSolarSystemID}`];
+    if (count === undefined) return null;
+    if (count === null) return noRouteLine();
+    if (count === 0) return { text: jumpWords(JUMP_WORDS.sameSystem, "Same system"), unreachable: false };
+    return count === 1
+      ? { text: jumpWords(JUMP_WORDS.nextSystem, "Next system"), unreachable: false }
+      : { text: jumpWords(JUMP_WORDS.jumps, `${count} jumps`, { numJumps: count }), unreachable: false };
+  }
+  $effect(() => {
+    flow.requestWords(Object.values(JUMP_WORDS));
+  });
+  // The counts are asked for again when the autopilot's settings change, which lets them go.
+  $effect(() => {
+    void $names.autopilotJumps;
+    const rows = $contracts.browse;
+    if (hereSystem !== null) {
+      const starts = [...new Set(rows.map((row) => row.startSolarSystemID).filter((id) => id > 0 && id !== hereSystem))];
+      if (starts.length > 0) flow.requestAutopilotJumps(hereSystem, starts);
+    }
+    for (const row of rows) {
+      if (row.type === CONTRACT_TYPE_COURIER && row.startSolarSystemID > 0 && row.endSolarSystemID > 0 && row.startSolarSystemID !== row.endSolarSystemID) {
+        flow.requestAutopilotJumps(row.startSolarSystemID, [row.endSolarSystemID]);
+      }
+    }
+  });
 
   let busy = $state(false);
   let error = $state("");
@@ -203,13 +271,25 @@
 <!-- Where a contract runs, in words: its station, and the drop-off where it has one. Each has its route entries under
      the heading the client's row menu gives it (contractentry.py 76 to 81): the pick-up where there is one, the
      drop-off where it is another station. -->
-{#snippet routeCell(row: ContractRow)}
+{#snippet routeCell(row: ContractRow, searched = false)}
   <td data-label="Route">
     {stationName(row.startStationID)}
     {#if row.startStationID > 0}<PlaceRouteMenu {store} {flow} placeID={row.startStationID} heading={PICK_UP_HEADING} />{/if}
     {#if row.endStationID > 0}
       → {stationName(row.endStationID)}
       {#if row.endStationID !== row.startStationID}<PlaceRouteMenu {store} {flow} placeID={row.endStationID} heading={DROP_OFF_HEADING} />{/if}
+    {/if}
+    {#if searched}
+      {@const away = jumpsAway(row)}
+      {@const length = routeLength(row)}
+      {#if away || length}
+        <!-- The search's jumps (how far off it starts) and route (how far it goes), the autopilot's way. -->
+        <span class="contract-jumps">
+          {#if away}<span class:contract-unreachable={away.unreachable}>{away.text}</span>{/if}
+          {#if away && length} · {/if}
+          {#if length}<span class:contract-unreachable={length.unreachable}>{length.text}</span>{/if}
+        </span>
+      {/if}
     {/if}
   </td>
 {/snippet}
@@ -288,7 +368,7 @@
             {#each $contracts.browse as row (row.contractID)}
               <tr>
                 <td data-label="Issued by">{personName(row.issuerID)}</td>
-                {@render routeCell(row)}
+                {@render routeCell(row, true)}
                 <td class="num" data-label="Pays">{formatIsk(row.reward)}</td>
                 <td class="num" data-label="You must cover">{formatIsk(row.collateral)}</td>
                 <td class="num" data-label="Cargo">{formatVolume(row.volume)}</td>
