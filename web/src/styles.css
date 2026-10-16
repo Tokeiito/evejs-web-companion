@@ -3947,6 +3947,9 @@
     letter-spacing: 0;
   }
   .mission-bonus-timer.expired { opacity: 0.5; }
+  /* A contract search's jumps and route (contractentry.py): beneath the stations; no route in the client's red. */
+  .contract-jumps { display: block; font-size: 0.85em; color: var(--color-muted); }
+  .contract-unreachable { color: #ff6666; }
   .mission-bonus-gauge {
     width: 12px;
     height: 12px;
