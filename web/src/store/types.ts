@@ -70,6 +70,8 @@ export interface OnlineCharacterState {
    * 1006 the second to the seventh); null where the session has none or the transport does not say it.
    */
   readonly corpAccountKey?: number | null;
+  /** session.raceID: the character's race (an alpha clone's skills go by it); null where the transport does not say it. */
+  readonly raceID?: number | null;
 }
 
 /**

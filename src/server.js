@@ -1785,6 +1785,7 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
           ? outcome.session.corpRole
           : null,
         corpAccountKey: Number.isSafeInteger(outcome.session.corpAccountKey) ? outcome.session.corpAccountKey : null,
+        raceID: Number.isSafeInteger(outcome.session.raceID) ? outcome.session.raceID : null,
       },
       station: buildStationStatic(outcome.session.stationID),
       notifications: outcome.notifications,
@@ -13141,6 +13142,24 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
   try {
     if (multibuyImport === null) multibuyImport = createMultibuyImport(staticData.getMarketTypeNames());
     res.json({ ok: true, ...multibuyImport.getTypesAndQty(text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An alpha clone's skills and their highest levels for a race, as the client's clone grade storage has them
+// (clonegrade.CloneGradeStorage()[raceID]; src/clientData/clientBuiltData.js cloneGrades): a skill not listed is 0.
+// The client goes by them for an alpha (clone_grade_svc.get_max_skill_level). `available` false where the client's
+// data could not be read. No session: they do not vary by player.
+app.get("/api/client-data/clone-grade", requireAuth, async (req, res, next) => {
+  const raceID = Number(req.query && req.query.raceID);
+  if (!Number.isSafeInteger(raceID) || raceID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A race is a whole number." });
+    return;
+  }
+  try {
+    const grades = typeof clientBuiltData.cloneGrades === "function" ? await clientBuiltData.cloneGrades() : null;
+    res.json({ ok: true, available: grades !== null, levels: grades ? grades[String(raceID)] ?? {} : {} });
   } catch (error) {
     next(error);
   }

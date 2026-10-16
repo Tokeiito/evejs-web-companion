@@ -281,12 +281,50 @@ export function isRequirementMetIncludingQueue(typeID: number, required: Require
 }
 
 /** A level's box of the skill bar (skillLevel.SkillLevel.Layout), as an omega clone's bar shows it. */
-export type SkillLevelBox = "none" | "training" | "trained" | "queued" | "untrained" | "small";
+export type SkillLevelBox = "none" | "training" | "trained" | "trained-omega" | "queued" | "untrained" | "small" | "small-omega";
+
+/**
+ * An alpha clone's highest level of each skill (clonegrade.CloneGradeStorage()[session.raceID].skillsByTypeID: a
+ * skill not in it is 0). An omega has none: every skill to 5 (clone_grade_svc.get_max_skill_level).
+ */
+export type AlphaCeilings = ReadonlyMap<number, number>;
+
+/** skillsvc.IsUnlockedWithExpertSystem (502 to 516): every skill the type needs held, and at least one short of its level trained but at it with what an expert system gives. */
+function isUnlockedWithExpertSystem(typeID: number, required: RequiredSkills, skills: PilotSkills): boolean {
+  let unlocked = false;
+  for (const [skill, level] of needsOf(required, typeID)) {
+    const mine = skills.get(skill);
+    if (mine === undefined) return false;
+    if (mine.trainedSkillLevel < level && mine.effectiveSkillLevel >= level) unlocked = true;
+    else if (mine.trainedSkillLevel < level) return false;
+  }
+  return unlocked;
+}
+
+/**
+ * ItemObject.NeedsOmegaUpgrade (tooltip/itemObject.py 18 to 22) for a type that is no skill: an alpha clone's, where a
+ * skill the type needs, at any depth, is needed above the alpha's ceiling for it
+ * (clone_grade_svc.is_requirements_restricted), and an expert system does not unlock the type. Never an omega's.
+ */
+export function needsOmegaUpgrade(typeID: number, required: RequiredSkills, skills: PilotSkills, ceilings: AlphaCeilings | null): boolean {
+  if (ceilings === null) return false;
+  let restricted = false;
+  for (const [skill, level] of requiredSkillsRecursive(typeID, required)) {
+    if ((ceilings.get(skill) ?? 0) < level) {
+      restricted = true;
+      break;
+    }
+  }
+  return restricted && !isUnlockedWithExpertSystem(typeID, required, skills);
+}
 
 /**
  * The skill bar's five boxes for a skill required at a level: past the level none (showEmpty is off); then the level
  * in training, trained, trainable (queued or not, and the next one marked where the pilot has points toward it), or
- * the small box of one that is not. "partial" is that mark. (An alpha clone's restricted levels are not read here.)
+ * the small box of one that is not. "partial" is that mark. For an alpha clone whose ceiling for the skill is under
+ * 5 (`alphaCeiling`, null for an omega: SkillBarController.isRestricted and restrictedLevel), a level above it is
+ * not trainable (IsLevelTrainable), and its box is the omega one: trained in the omega colour, or its small box
+ * (skillLevel.py Layout, 54 to 76).
  */
 export function skillLevelBoxes(
   skill: number,
@@ -297,7 +335,9 @@ export function skillLevelBoxes(
   queue: readonly QueuedLevel[],
   training: number | null,
   rank: number | null,
+  alphaCeiling: number | null = null,
 ): readonly { readonly box: SkillLevelBox; readonly partial: boolean }[] {
+  const restricted = alphaCeiling !== null && alphaCeiling < MAX_SKILL_LEVEL;
   const myLevel = includingLapsed.get(skill)?.trainedSkillLevel ?? 0;
   const injected = includingLapsed.has(skill);
   const points = skills.get(skill)?.trainedSkillPoints ?? 0;
@@ -311,14 +351,15 @@ export function skillLevelBoxes(
       continue;
     }
     const inTraining = training === skill && queue[0]?.typeID === skill && queue[0]?.toLevel === level;
-    const trainable = level > myLevel && injected && (prerequisitesMet || points !== 0);
+    const aboveAlpha = restricted && alphaCeiling! < level;
+    const trainable = level > myLevel && injected && (prerequisitesMet || points !== 0) && !aboveAlpha;
     const box: SkillLevelBox = inTraining
       ? "training"
       : level <= myLevel
-        ? "trained"
+        ? aboveAlpha ? "trained-omega" : "trained"
         : trainable
           ? queue.some((entry) => entry.typeID === skill && entry.toLevel === level) ? "queued" : "untrained"
-          : "small";
+          : aboveAlpha ? "small-omega" : "small";
     boxes.push({ box, partial: trainable && !inTraining && level === myLevel + 1 && partiallyTrained });
   }
   return boxes;

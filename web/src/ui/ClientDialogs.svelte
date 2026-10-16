@@ -431,6 +431,8 @@
     "UI/Generic/Information": "Information",
     "Tooltips/SkillPlanner/SkillsRequiredToPerformActivity": "Skills needed to {doActivity}",
     "Tooltips/SkillPlanner/ActivityFlyShip": "fly it",
+    "Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity": "Only an omega clone can {doActivity}",
+    "UI/CloneState/Upgrade": "Upgrade",
     "Tooltips/SkillPlanner/SkillsAndSkillLevels": "{numSkills} skills to train, {numLevels} levels in all",
     "Tooltips/SkillPlanner/MissingSkillBooks": "({numMissingBooks} not owned)",
     "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
@@ -893,15 +895,24 @@
           </li>
         {/each}
       </ul>
-      {#if open.trainingTicks !== null}
+      <!-- AddTrainingTimeForType: an omega's time, or an alpha's row (its time and an omega's), which an alpha whose
+           need is above its clone (NeedsOmegaUpgrade) has even with no time, its warning under it, and the Upgrade
+           button of every alpha row (AlphaTrainingTimeContainer). The page has no clone upgrade window to open. -->
+      {#if open.trainingTicks !== null || (!open.omega && open.omegaRestricted)}
         <div class="skill-time">
           {#if open.omega}
             <span class="dim">{skillWord("Tooltips/SkillPlanner/OmegaTrainingTime")}</span>
-            <span>{trainingTime(open.trainingTicks)}</span>
+            <span>{trainingTime(open.trainingTicks ?? 0)}</span>
           {:else}
-            <span class="dim">{skillWord("Tooltips/SkillPlanner/TrainingTime")}</span>
-            <span>α {trainingTime(open.trainingTicks)}</span>
-            <span class="omega">Ω {trainingTime(Math.floor(open.trainingTicks / 2))}</span>
+            {#if open.trainingTicks !== null}
+              <span class="dim">{skillWord("Tooltips/SkillPlanner/TrainingTime")}</span>
+              <span class:restricted={open.omegaRestricted}>α {trainingTime(open.trainingTicks)}</span>
+              <span class="omega">Ω {trainingTime(Math.floor(open.trainingTicks / 2))}</span>
+            {/if}
+            {#if open.omegaRestricted}
+              <span class="omega-warning">⚠ {skillWord("Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity", { doActivity: skillWord("Tooltips/SkillPlanner/ActivityFlyShip") })}</span>
+            {/if}
+            <button type="button" class="omega-upgrade" disabled title="The page has no clone upgrade window.">Ω {skillWord("UI/CloneState/Upgrade")}</button>
           {/if}
         </div>
       {/if}
@@ -992,6 +1003,10 @@
   .skill-box.queued { background: #3ea8d9; }
   .skill-box.untrained { background: rgba(255, 255, 255, 0.3); }
   .skill-box.small { width: 4px; height: 4px; margin: 2px; background: rgba(255, 255, 255, 0.3); }
+  /* skillLevel.py COLOR_TRAINED_OMEGA and COLOR_REQUIRES_OMEGA: clonegrade.COLOR_OMEGA_ORANGE at 0.8 and 0.6. */
+  .skill-box.trained-omega { background: rgba(252, 194, 7, 0.8); }
+  .skill-box.small-omega { width: 4px; height: 4px; margin: 2px; background: rgba(252, 194, 7, 0.6); }
+  .skill-time .omega-upgrade { align-self: flex-start; margin-top: 0.4rem; }
   .skill-box.partial { outline: 1px solid rgba(204, 204, 204, 1); }
   .skill-time, .skill-points { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0.6rem; background: rgba(25, 25, 25, 0.7); }
   .skill-points { flex-direction: row; justify-content: space-between; }

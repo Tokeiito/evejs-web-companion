@@ -2297,6 +2297,8 @@ function createGamePortPilots({
         // session.corpAccountKey: the corporation wallet division the pilot trades from, 1000 for the master wallet
         // (corporation.GetMyCorpAccountName); none where the session has none.
         corpAccountKey: attribute(entry, "corpAccountKey"),
+        // session.raceID: the character's race, by which an alpha clone's skills go (clonegrade.CloneGradeStorage).
+        raceID: attribute(entry, "raceID"),
         shipID: attribute(entry, "shipid"),
       },
     };

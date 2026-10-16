@@ -180,7 +180,7 @@ import { readStandings, standingComposition, standingHistory } from "../bridge/s
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
-  allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
   requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
@@ -919,6 +919,11 @@ export interface SkillsRequired {
    */
   readonly applyLevels: readonly SkillLevel[];
   readonly offerInjection: boolean;
+  /**
+   * An alpha clone short of what the type needs for want of omega (ItemObject.NeedsOmegaUpgrade): the time row says
+   * so and offers the upgrade, and no action is offered (AddSkillAction).
+   */
+  readonly omegaRestricted: boolean;
 }
 
 /** One row of the Apply Skill Points window (ApplySkillPointsListEntry): a skill at a level and its two gauges. */
@@ -6449,6 +6454,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       freeSkillPoints: rest?.freeSkillPoints ?? 0,
       applyLevels: rest?.applyLevels ?? [],
       offerInjection: rest?.offerInjection ?? false,
+      omegaRestricted: rest?.omegaRestricted ?? false,
     };
   }
 
@@ -6470,8 +6476,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
    * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
    * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
-   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's restricted skills and levels are not
-   * read (NeedsOmegaUpgrade, the bar's restricted boxes): the window goes as for a pilot with none.
+   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's ceilings
+   * (CloneGradeStorage, by race) hold its levels back: the bar's omega boxes, NeedsOmegaUpgrade (no action then).
    */
   async function skillWindowRest(
     typeID: number,
@@ -6479,7 +6485,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillsAnswer: JsonValue,
     allSkillsAnswer: JsonValue,
     listed: readonly (readonly [number, number])[],
-  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection">> {
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">> {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
@@ -6505,6 +6511,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const attributes = new Map(readDictPairs(attributesAnswer).map(([key, value]) => [Number(key), Number(value)] as const));
     const grade = store.station.get().cloneGrade;
     const omega = grade !== CLONE_GRADE_ALPHA;
+    // An alpha's ceilings, by its race (clone_grade_svc.get_max_skill_level: CloneGradeStorage()[session.raceID]); none
+    // for an omega, and none where the client's data or the race could not be had (then nothing is held back).
+    const raceID = store.station.get().online?.raceID ?? null;
+    const ceilings = omega || raceID === null
+      ? null
+      : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
     const graded = (value: number): number => (omega ? value : value * ALPHA_TRAINING_MULTIPLIER);
     /** skillsvc.GetCharacterAttribute(attributeID, includeBoosters=False) */
     const characterAttribute = (attributeID: number): number | null => {
@@ -6543,7 +6555,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       skill,
       level,
       mark: skillRowMark(skill, level, lapsed, lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)),
-      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill)),
+      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill), ceilings === null ? null : ceilings.get(skill) ?? 0),
     }));
     const ticks = trainingTimeLeft(typeID, required, mine, lapsed, { rank, rate, pointsNow });
     const books = Object.fromEntries(listed.map(([skill]) => [skill, {
@@ -6554,7 +6566,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     let points: number | null = null;
     let applyLevels: readonly SkillLevel[] = [];
     let offerInjection = false;
-    if (!isSkillRequirementMet(typeID, required, mine)) {
+    const omegaRestricted = needsOmegaUpgrade(typeID, required, mine, ceilings);
+    // AddSkillAction (skill_requirement.py 279 to 287): none where the type needs omega.
+    if (!omegaRestricted && !isSkillRequirementMet(typeID, required, mine)) {
       const notHeld = skillsNotHeld(listed, mine);
       const levels = levelsToTrain(listed, mine);
       points = skillPointsRequired(levels, mine, rank);
@@ -6579,7 +6593,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const free = Number(Array.isArray(queueAnswer) ? queueAnswer[1] : 0);
     return {
       rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books,
-      freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0, applyLevels, offerInjection,
+      freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0, applyLevels, offerInjection, omegaRestricted,
     };
   }
 

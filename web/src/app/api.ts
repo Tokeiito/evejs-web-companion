@@ -378,6 +378,7 @@ export async function selectCharacter(
       allianceID: asNumberOrNull(character.allianceID),
       corpRole: typeof character.corpRole === "string" && /^\d+$/.test(character.corpRole) ? character.corpRole : null,
       corpAccountKey: asNumberOrNull(character.corpAccountKey),
+      raceID: asNumberOrNull(character.raceID),
     },
     station:
       typeof station === "object" && station !== null && !Array.isArray(station)
@@ -3766,6 +3767,24 @@ export async function getTypePrices(
   const groupID: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.groupID))) groupID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
   return { available: data.available === true, basePrice, published, portionSize, groupID };
+}
+
+/**
+ * An alpha clone's skills and their highest levels for a race (GET /api/client-data/clone-grade): each skill's level, a
+ * skill not listed 0; `available` false where the client's data could not be read.
+ */
+export async function getCloneGrade(
+  raceID: number,
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly levels: ReadonlyMap<number, number> }> {
+  const data = await getJson(`/api/client-data/clone-grade?raceID=${raceID}`, options);
+  const raw = typeof data.levels === "object" && data.levels !== null && !Array.isArray(data.levels) ? (data.levels as Record<string, JsonValue>) : {};
+  const levels = new Map<number, number>();
+  for (const [key, value] of Object.entries(raw)) {
+    const skill = Number(key);
+    if (Number.isSafeInteger(skill) && skill > 0 && typeof value === "number") levels.set(skill, value);
+  }
+  return { available: data.available === true, levels };
 }
 
 /**

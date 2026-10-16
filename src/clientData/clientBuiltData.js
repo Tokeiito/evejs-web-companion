@@ -70,6 +70,10 @@ const TABLES = Object.freeze({
 // a row of JSON for each of its tables; it is read where it is, as it is.
 const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
 
+// An alpha clone's skills and their highest levels, by race (clonegrade/storage.py CloneGradeStorage:
+// fsdlite.EveStorage(data='clonegrades', cache='clonegrades.static')): the same kind of cache, a record by race.
+const CLONE_GRADES = "res:/staticdata/clonegrades.static";
+
 /** Runs the client's loader on a data file and answers what it printed. */
 function runLoader({ python, binFolder, loader, dataFile, attribute = null, timeoutMs = LOAD_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
@@ -183,10 +187,44 @@ function createClientBuiltData({
     return infoBubbleGroupsRead;
   }
 
+  // The alpha clone's skills, once (CLONE_GRADES): {raceID: {skillTypeID: level}}, or null where they cannot be read.
+  let cloneGradesRead = null;
+  function cloneGrades() {
+    if (!available()) return Promise.resolve(null);
+    if (!cloneGradesRead) {
+      cloneGradesRead = Promise.resolve().then(() => {
+        const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
+        const relative = index.get(CLONE_GRADES);
+        if (!relative) throw new Error(`The client's index has no ${CLONE_GRADES}.`);
+        const { DatabaseSync } = require("node:sqlite");
+        const database = new DatabaseSync(path.join(clientRoot, "ResFiles", relative), { readOnly: true });
+        try {
+          const out = {};
+          for (const row of database.prepare("SELECT key, value FROM cache").all()) {
+            const grade = JSON.parse(String(row.value));
+            const levels = {};
+            for (const skill of Array.isArray(grade && grade.skills) ? grade.skills : []) {
+              if (Number(skill.typeID) > 0) levels[String(skill.typeID)] = Number(skill.level) || 0;
+            }
+            if (Number(row.key) > 0) out[String(row.key)] = levels;
+          }
+          return out;
+        } finally {
+          database.close();
+        }
+      }).catch((error) => {
+        onError(error);
+        return null;
+      });
+    }
+    return cloneGradesRead;
+  }
+
   return {
     available,
     table,
     infoBubbleGroups,
+    cloneGrades,
     async lookup(name, key) {
       const loaded = await table(name);
       if (!loaded) return { available: false, row: null };
