@@ -530,6 +530,8 @@ export interface ScriptObservation {
     /** How long ago it was made, by the server's clock; null where it does not say. */
     readonly ageMs?: number | null;
     readonly solarSystemID: number | null;
+    /** Where in its system it is, for a bookmark of a place (an item's bookmark has none). */
+    readonly position?: { readonly x: number; readonly y: number; readonly z: number } | null;
   }[] | null;
   /**
    * The pilot's bookmark folders, read when a folder-using step is active: those it KNOWS (its personal ones and
