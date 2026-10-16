@@ -177,6 +177,8 @@ const WARS_AGAIN_AFTER_MS = WARS_GOOD_FOR_MS + 10 * 1000;
  * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
  */
 const AGGRESSION_SETTINGS = "GetAggressionSettings";
+/** bco_corporations.GetCorporation: the pilot's corporation's own row, asked of its registry with nothing. */
+const CORPORATION_ROW = "GetCorporation";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
  * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None), and all_cso.GetMoniker
@@ -1769,6 +1771,8 @@ function createGamePortPilots({
       targetsOwed: false,
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
+      /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
+      corporationRow: null,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -1974,6 +1978,8 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
+        // bco_corporations.Reset: another corporation's row is another's to ask for.
+        entry.corporationRow = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
@@ -2445,6 +2451,7 @@ function createGamePortPilots({
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
+      (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -4696,6 +4703,9 @@ function createGamePortPilots({
     }
     // crimewatchSvc.GetCorpAggressionSettings: the settings as they are kept, asked for where none are.
     if (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) return corporationDoes(entry, () => entry.aggression ?? aggressionRefreshed(entry));
+    // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
+    // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
+    if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -5305,6 +5315,12 @@ function createGamePortPilots({
     return keptCall(entry, entry.monikers, CORP_REGISTRY, CORP_REGISTRY, () => monikerParams(entry, CORP_REGISTRY, undefined), method, [], null);
   }
 
+  /** bco_corporations.GetCorporation: the corporation's row asked for, and kept as answered. */
+  async function corporationRowRead(entry) {
+    entry.corporationRow = await corporationAsk(entry, CORPORATION_ROW);
+    return entry.corporationRow;
+  }
+
   /** crimewatchSvc.RefreshCorpAggressionSettings: the settings asked for, and kept as answered. */
   async function aggressionRefreshed(entry) {
     entry.aggression = await corporationAsk(entry, AGGRESSION_SETTINGS);
@@ -5369,6 +5385,11 @@ function createGamePortPilots({
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
+    // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
+    // keeps; here the row of the pilot's own corporation is let go, and asked for when it is next wanted.
+    if (notification.method === "OnCorporationChanged" && Array.isArray(notification.args) && Number(notification.args[0]) === Number(attribute(entry, "corpid"))) {
+      entry.corporationRow = null;
+    }
   }
 
   // ── the agents' table, and the agents' journal as it is kept ──────────────
