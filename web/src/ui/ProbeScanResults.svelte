@@ -11,7 +11,17 @@
   // more (probeScannerPalette.LoadIgnoredTooltipPanel, 492 to 537). None of it is asked of the server.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
-  import { MIN_WARP_DISTANCE, PROBE_RESULT_LABELS, PROBE_RESULT_WORD_LABELS, SCAN_GROUP, isAccurate, resultRows, type Vec3 } from "../bridge/probeResults.ts";
+  import {
+    MIN_WARP_DISTANCE,
+    PROBE_RESULT_LABELS,
+    PROBE_RESULT_WORD_LABELS,
+    SCAN_GROUP,
+    STANDARD_RESULT_FILTERS,
+    isAccurate,
+    resultRows,
+    splitResults,
+    type Vec3,
+  } from "../bridge/probeResults.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { flyingDistances, WARP_RANGES } from "./flyingDistances.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
@@ -42,7 +52,7 @@
   });
 
   $effect(() => {
-    flow.requestWords(PROBE_RESULT_WORD_LABELS);
+    flow.requestWords([...PROBE_RESULT_WORD_LABELS, ...STANDARD_RESULT_FILTERS.map((each) => each.label)]);
   });
   // What the rows are named with: a type's name, a group's name, an exploration site's dungeon name.
   $effect(() => {
@@ -80,8 +90,13 @@
   };
   const ignoredIDs = $derived(new Set((held?.ignored ?? []).map((result) => result.id)));
   // scanHandler.GetResults: the ignored left out, and counted.
-  const rows = $derived(held === null ? [] : resultRows(held.results.filter((result) => !ignoredIDs.has(result.id)), myPosition, wording));
-  const ignoredCount = $derived(held === null ? 0 : held.results.filter((result) => ignoredIDs.has(result.id)).length);
+  // scanHandler.GetResults: the ignored and the filtered left out, and counted (bridge/probeResults.ts splitResults).
+  const split = $derived(held === null ? null : splitResults(held.results, ignoredIDs, held.filter));
+  const rows = $derived(split === null ? [] : resultRows(split.shown, myPosition, wording));
+  const ignoredCount = $derived(split?.ignored ?? 0);
+  // The filtered box (ShowFilteredAndIgnored, 816 to 818): the filtered and the anomalies left out, together.
+  const filteredCount = $derived(split === null ? 0 : split.filtered + split.anomaliesFiltered);
+  let filterOpen = $state(false);
   // scanSvc.GetIgnoredResultsDesc: each ignored one held, by ID, with its name.
   const ignoredRows = $derived(held === null ? [] : resultRows(held.ignored, myPosition, wording));
 
@@ -122,6 +137,26 @@
 
 {#if held !== null}
   <section class="probe-results">
+    <!-- The filtered box and its panel, "Show results for" (_LoadFilterTooltipPanel, 445 to 480): the anomalies' box
+         and each standard filter's. -->
+    <div class="ignored-box">
+      <button type="button" class="minor" aria-expanded={filterOpen} onclick={() => (filterOpen = !filterOpen)}>
+        {word(PROBE_RESULT_LABELS.filtered, { noFiltered: filteredCount }) ?? `${filteredCount} Filtered`}
+      </button>
+      {#if filterOpen}
+        <fieldset class="filter-panel">
+          <legend>{word(PROBE_RESULT_LABELS.showResultsFor) ?? "Show results for"}</legend>
+          <label><input type="checkbox" checked={held.filter.showingAnomalies}
+            onchange={(event) => flow.setShowingProbeAnomalies(event.currentTarget.checked)} />
+            {word(PROBE_RESULT_LABELS.anomalies) ?? "Anomalies"}</label>
+          {#each STANDARD_RESULT_FILTERS as standard (standard.id)}
+            <label><input type="checkbox" checked={held.filter.active.includes(standard.id)}
+              onchange={(event) => flow.setProbeResultFilterActive(standard.id, event.currentTarget.checked)} />
+              {word(standard.label) ?? standard.label.split("/").at(-1)}</label>
+          {/each}
+        </fieldset>
+      {/if}
+    </div>
     {#if ignoredCount > 0 || ignoredRows.length > 0}
       <div class="ignored-box">
         <button type="button" class="minor" title={word(PROBE_RESULT_LABELS.resetIgnored) ?? "Show ignored results again"}
@@ -228,6 +263,12 @@
     list-style: none;
     margin: 0.3rem 0 0;
     padding: 0;
+  }
+  .filter-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0.3rem 0 0;
   }
   .result-menu {
     display: inline-flex;

@@ -1067,6 +1067,8 @@ export interface ScannerCenterState {
      * the list, counted in the ignored box and listed in it (scanSvc.GetIgnoredResultsDesc).
      */
     readonly ignored: readonly import("../bridge/probeResults.ts").ShownResult[];
+    /** What the results are filtered by: the active filters and whether anomalies are shown (resultFilter). */
+    readonly filter: import("../bridge/probeResults.ts").ResultFilterSettings;
   } | null;
 }
 

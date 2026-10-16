@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultsHistory } from "../bridge/probeResults.ts";
+import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -1112,6 +1112,10 @@ export interface AppFlow {
   warpToProbeResult(resultID: string, range: number): Promise<void>;
   /** An accurate result's Align To (scanSvc.AlignToPosition): the ship turned toward the result's place. */
   alignToProbeResult(resultID: string): Promise<void>;
+  /** The filter panel's box for a filter (resultFilter.AddToActiveFilterSet / RemoveFromActiveFilterSet). */
+  setProbeResultFilterActive(filterID: number, active: boolean): void;
+  /** The filter panel's Anomalies box (resultFilter.ShowAnomalies / StopShowingAnomalies). */
+  setShowingProbeAnomalies(showing: boolean): void;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5125,7 +5129,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const ignored = [...ignoredInSystem(solarSystemID)].sort()
       .map((id) => heldResult(history, id))
       .filter((result): result is NonNullable<typeof result> => result !== null);
-    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history), ignored } });
+    store.apply({ type: "scanner/probe-results", probeResults: { solarSystemID, scanNumber: history.scanNumber, results: lastResults(history), ignored, filter: probeResultFilter() } });
+  }
+  // resultFilter's active filters and whether anomalies are shown, kept as the client keeps them in the user's settings
+  // (probescanning.resultFilter.activeFilterSet and showingAnomalies), in this browser; the five standard filters and
+  // anomalies shown where nothing is kept.
+  const PROBE_RESULT_FILTER_KEPT = "evejs.probescanning.resultFilter";
+  function probeResultFilter(): ResultFilterSettings {
+    try {
+      const kept = JSON.parse(settingsStorage?.getItem(PROBE_RESULT_FILTER_KEPT) ?? "null") as { active?: unknown; showingAnomalies?: unknown } | null;
+      const active = Array.isArray(kept?.active)
+        ? kept.active.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id))
+        : [...DEFAULT_ACTIVE_RESULT_FILTERS];
+      return { active, showingAnomalies: typeof kept?.showingAnomalies === "boolean" ? kept.showingAnomalies : true };
+    } catch {
+      return { active: [...DEFAULT_ACTIVE_RESULT_FILTERS], showingAnomalies: true };
+    }
+  }
+  function keepProbeResultFilter(filter: ResultFilterSettings): void {
+    try {
+      settingsStorage?.setItem(PROBE_RESULT_FILTER_KEPT, JSON.stringify(filter));
+    } catch {
+      // Storage full or refused: the filter holds for this page only.
+    }
+    publishProbeResults();
+  }
+  // The filter panel's boxes: a filter's (OnFilterCheckBoxChange, 562 to 567: Add/RemoveFromActiveFilterSet) and the
+  // anomalies' (OnShowAnomaliesCheckBoxChange, 540 to 547: ShowAnomalies / StopShowingAnomalies).
+  function setProbeResultFilterActive(filterID: number, active: boolean): void {
+    const filter = probeResultFilter();
+    const others = filter.active.filter((id) => id !== filterID);
+    keepProbeResultFilter({ ...filter, active: active ? [...others, filterID] : others });
+  }
+  function setShowingProbeAnomalies(showing: boolean): void {
+    keepProbeResultFilter({ ...probeResultFilter(), showingAnomalies: showing });
   }
   /** The session's system's ignored results, changed, and the list said again (scanHandler's OnRefreshScanResults). */
   function changeIgnoredProbeResults(change: (ignored: Set<string>, history: ResultsHistory) => void): void {
@@ -18943,6 +18980,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     clearIgnoredProbeResults,
     warpToProbeResult,
     alignToProbeResult,
+    setProbeResultFilterActive,
+    setShowingProbeAnomalies,
     loadFleet,
     formFleet,
     inviteFleetMember,

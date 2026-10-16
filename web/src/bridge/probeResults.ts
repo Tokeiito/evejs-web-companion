@@ -100,6 +100,10 @@ export const PROBE_RESULT_LABELS = Object.freeze({
   alignTo: "UI/Inflight/AlignTo",
   /** scanSvc.GetScannedDownMenu (696 to 701). */
   bookmarkLocation: "UI/Inflight/BookmarkLocation",
+  // The filtered box and its panel (probeScannerPalette.py 217, 445 to 480, 816 to 818). Filtered takes noFiltered.
+  filtered: "UI/Inflight/Scanner/Filtered",
+  showResultsFor: "UI/Inflight/Scanner/ShowResultsFor",
+  anomalies: "UI/Inflight/Scanner/AnomalySiteFilterLabel",
 });
 export const PROBE_RESULT_WORD_LABELS: readonly string[] = [
   ...new Set([...Object.values(PROBE_RESULT_LABELS), ...Object.values(SCAN_GROUP_LABELS), ...Object.values(SITE_TYPE_LABELS), ...Object.values(COMBAT_GROUP_LABELS)]),
@@ -280,6 +284,104 @@ export interface ShownResult extends ProbeResultEntry {
 }
 
 const certaintyAt = (held: HeldResult, scanNumber: number): number => held.certainties.find(([scan]) => scan === scanNumber)?.[1] ?? 0;
+
+// ── The results' filter (probescanning/resultFilter.py; scanHandler.GetResults, 133 to 153) ─────────────────────────
+//
+// ⚠ THE NUMBERS ARE THE COMPILED MODULES', NOT THE DECOMPILED SOURCE'S. probeScanGroups (probescanning/const.py) and
+// the cosmic signature attributes were run out of the client's own .pyc files in its own python27 (inventorycommon,
+// dogma and probescanning const executed in turn); _defaultFilterSet was read from resultFilter.pyc's bytecode: it
+// is built of the constants -1 to -5, where the decompiled source has [0, 6, 8, 10, 12] (the constants' places).
+
+/** probescanning/const.py probeScanGroups: each scan group's inventory groups. */
+export const PROBE_SCAN_GROUPS: Readonly<Record<number, readonly number[]>> = Object.freeze({
+  0: [311, 363, 365, 397, 404, 413, 416, 417, 426, 430, 438, 439, 440, 441, 443, 444, 449, 471, 707, 709, 837, 838, 839, 1212, 1282],
+  1: [12, 14, 186, 340, 448, 649],
+  2: [1537, 1652, 1653, 4777, 4778, 4779],
+  3: [502],
+  4: [25, 26, 27, 28, 29, 30, 31, 237, 324, 358, 380, 381, 419, 420, 463, 485, 513, 540, 541, 543, 547, 659, 830, 831, 832, 833, 834, 883, 893, 894, 898, 900, 902, 906, 941, 963, 1022, 1201, 1202, 1283, 1305, 1527, 1534, 1538, 1972, 4594, 4902, 5087, 5120],
+  5: [1404, 1406, 1408, 1657, 1924, 2016, 2017, 4744],
+  6: [100, 101, 544, 639, 640, 641, 1159],
+  7: [6, 7, 8, 9, 10, 15, 411],
+  8: [885],
+  9: [479, 492, 548],
+  10: [1530, 1764, 1765, 1766, 1767, 1803, 1813, 1814, 1878, 1879, 1880, 4028, 4034, 4035, 4036, 4037, 4053, 4637, 4638, 4909, 4917, 4949, 5032],
+  11: [1025, 1106, 4736],
+  12: [361, 364, 1246, 1247, 1249, 1250, 1275, 1276, 4093, 4107, 4810, 4913],
+  13: [1003, 1012],
+  14: [1991],
+});
+/** inventorycommon.const.groupCosmicSignature. */
+const GROUP_COSMIC_SIGNATURE = 502;
+/** probescanning/const.py probeScanCosmicSignatureAttributes: a signature's strengths. */
+const COSMIC_SIGNATURE_ATTRIBUTES: readonly number[] = [208, 209, 210, 211, 1136, 1908];
+/** A filter's group, as the filter holds it: a group's number, or a cosmic signature's group and strength. */
+const groupKey = (groupID: number, strengthAttributeID: number | null = null): string =>
+  strengthAttributeID === null ? String(groupID) : `${groupID}:${strengthAttributeID}`;
+const groupsOf = (...scanGroups: number[]): readonly string[] => scanGroups.flatMap((scanGroup) => (PROBE_SCAN_GROUPS[scanGroup] ?? []).map((groupID) => groupKey(groupID)));
+
+/**
+ * resultFilter._defaultFilters, less Show all (the panel has no box for it, filterID 0): each standard filter's ID,
+ * its label and its groups (GetCosmicSignatureGroups, GetDroneFighterAndChargeGroups, GetShipGroups,
+ * GetStructureGroups, GetDeployableGroups; probescanning/const.py 260 to 277).
+ */
+export const STANDARD_RESULT_FILTERS: ReadonlyArray<{ readonly id: number; readonly label: string; readonly groups: readonly string[] }> = Object.freeze([
+  { id: -1, label: "UI/Inflight/Scanner/CosmicSignatures", groups: COSMIC_SIGNATURE_ATTRIBUTES.map((attributeID) => groupKey(GROUP_COSMIC_SIGNATURE, attributeID)) },
+  { id: -2, label: "UI/Inflight/Scanner/DronesAndCharges", groups: groupsOf(6, 2, 9) },
+  { id: -3, label: "UI/Inflight/Scanner/Ships", groups: groupsOf(4, 10) },
+  { id: -4, label: "UI/Inflight/Scanner/Structures", groups: groupsOf(5, 13, 0, 11) },
+  { id: -5, label: "UI/Inflight/Scanner/Deployables", groups: groupsOf(12) },
+]);
+/** resultFilter._defaultFilterSet: the five standard filters. */
+export const DEFAULT_ACTIVE_RESULT_FILTERS: readonly number[] = Object.freeze([-1, -2, -3, -4, -5]);
+
+/** What the pilot's results are filtered by: the active filters, and whether anomalies are shown (resultFilter). */
+export interface ResultFilterSettings {
+  readonly active: readonly number[];
+  readonly showingAnomalies: boolean;
+}
+
+/** The results the list shows, and what it leaves out: scanHandler.GetResults (133 to 153). */
+export interface SplitResults {
+  readonly shown: readonly ShownResult[];
+  readonly ignored: number;
+  readonly filtered: number;
+  readonly anomaliesFiltered: number;
+}
+
+/**
+ * scanHandler.GetResults with resultFilter.IsFilteredOut (127 to 142): an ignored result left out and counted; an
+ * anomaly left out where anomalies are not shown; any other filtered out where no filter is active, where it is
+ * identified and its group (a cosmic signature's, with its strength) is in no active filter, or where it is not
+ * identified and its scan group holds none of their groups (GetMasterGroupsForActiveFilterSet).
+ */
+export function splitResults(results: readonly ShownResult[], ignoredIDs: ReadonlySet<string>, filter: ResultFilterSettings): SplitResults {
+  const current = new Set(STANDARD_RESULT_FILTERS.filter((each) => filter.active.includes(each.id)).flatMap((each) => each.groups));
+  const masterGroups = new Set<number>();
+  for (const key of current) {
+    const groupID = Number(key.split(":")[0]);
+    for (const [scanGroup, groups] of Object.entries(PROBE_SCAN_GROUPS)) if (groups.includes(groupID)) masterGroups.add(Number(scanGroup));
+  }
+  const filteredOut = (result: ShownResult): boolean => {
+    if (current.size === 0) return true;
+    if (result.isIdentified) {
+      return result.groupID === GROUP_COSMIC_SIGNATURE
+        ? !current.has(groupKey(GROUP_COSMIC_SIGNATURE, result.strengthAttributeID))
+        : !current.has(groupKey(result.groupID ?? -1));
+    }
+    return result.scanGroupID === null || !masterGroups.has(result.scanGroupID);
+  };
+  const shown: ShownResult[] = [];
+  let ignored = 0;
+  let filtered = 0;
+  let anomaliesFiltered = 0;
+  for (const result of results) {
+    if (ignoredIDs.has(result.id)) ignored += 1;
+    else if (result.scanGroupID === SCAN_GROUP.anomalies && !filter.showingAnomalies) anomaliesFiltered += 1;
+    else if (result.scanGroupID !== SCAN_GROUP.anomalies && filteredOut(result)) filtered += 1;
+    else shown.push(result);
+  }
+  return { shown, ignored, filtered, anomaliesFiltered };
+}
 
 /** appConst.minWarpDistance (1480): a place farther off than this is within warp distance (michelle.py 705 to 715). */
 export const MIN_WARP_DISTANCE = 150_000;
