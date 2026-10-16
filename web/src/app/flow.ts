@@ -885,6 +885,8 @@ export interface AppFlow {
    * left; on a no nothing is asked of the server.
    */
   boardCorvette(sure: () => boolean | Promise<boolean>): Promise<void>;
+  /** prompt_player_fsd_dialog('AskAreYouSure', {'cons': cons}, uiconst.YESNO): the client's own question, true on Yes. */
+  askAreYouSure(cons: string): Promise<boolean>;
   /**
    * Leave the active ship while docked — the character ends up in their
    * capsule, the ship stays in the hangar — then refresh.
@@ -18904,6 +18906,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runMutation(() => boardShipNow(shipID));
       await refreshActiveShipViews();
     },
+
+    askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
 
     async boardCorvette(sure) {
       // The page's own call (bridge/shipWrites.ts), as the client's lobby makes it (station.CreateNewbieShip): the

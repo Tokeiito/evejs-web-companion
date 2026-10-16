@@ -272,9 +272,13 @@
   const aboardCorvette = $derived($flight.status?.shipGroupID === GROUP_CORVETTE);
   /**
    * station.CreateNewbieShip (608 to 611): the pilot is asked before a hull that is no capsule is left for a
-   * corvette. The words are the page's own.
+   * corvette, in the client's own dialog: AskAreYouSure, its `cons` the client's ConfirmMoveToNewbieShip.
    */
-  const sureOfTheCorvette = (): boolean => window.confirm("Board a new corvette? You will leave the ship you are in.");
+  const CONFIRM_MOVE_TO_NEWBIE_SHIP = "UI/Station/ConfirmMoveToNewbieShip";
+  const sureOfTheCorvette = (): Promise<boolean> => {
+    const template = $words.templates[CONFIRM_MOVE_TO_NEWBIE_SHIP];
+    return flow.askAreYouSure(typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: () => "" })) : "Board a new corvette? You will leave the ship you are in.");
+  };
   const openShip = $derived($inventory.openShip);
   const container = $derived($inventory.container);
 
@@ -378,7 +382,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey]);
+    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey, CONFIRM_MOVE_TO_NEWBIE_SHIP]);
     void run(async () => {
       await flow.loadInventory();
       await flow.loadCorpHangar();
