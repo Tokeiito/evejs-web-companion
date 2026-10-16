@@ -102,7 +102,7 @@ import type { BoundFleet } from "../bridge/boundFleet.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { JamEvent } from "../bridge/jamNotifications.ts";
 import type { PiRecipeBook } from "../bridge/piRecipes.ts";
-import type { TargetEvent } from "../bridge/targetNotifications.ts";
+import type { TargetEvent, TargeterEvent } from "../bridge/targetNotifications.ts";
 import type { FleetAvailability, FleetPendingInvite } from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { CrimewatchReading } from "../space/crimewatch.ts";
@@ -713,7 +713,12 @@ export type FeedEvent =
   // The server's answer to dogmaIM.GetTargets — the ONLY authority on what is
   // locked. Every lock/unlock re-reads and lands here, because a 200 from a
   // lock call is not proof that anything locked.
-  | { readonly type: "targeting/targets"; readonly targetIDs: readonly number[] }
+  | {
+      readonly type: "targeting/targets";
+      readonly targetIDs: readonly number[];
+      /** The ships that have the pilot's locked (GetTargeters), read with it; absent or null leaves the list as it is. */
+      readonly targeterIDs?: readonly number[] | null;
+    }
   // The server ACCEPTED a lock attempt and is still acquiring it. Not a claim
   // about server state — the entry disappears as soon as the target shows up in
   // targeting/targets, or when the lock is abandoned.
@@ -740,6 +745,9 @@ export type FeedEvent =
   // visible in the moment it completes instead of on the next poll. See
   // `applyTargetEvent`.
   | { readonly type: "targeting/lock-event"; readonly event: TargetEvent }
+  // One `OnTarget` push about a ship locking this one (`otheradd`) or letting it go (`otherlost`): the client's
+  // targetedBy, kept from the push as the client keeps it.
+  | { readonly type: "targeting/targeter-event"; readonly event: TargeterEvent }
   // R24 slice C — the BASE cycle length for a module type (attribute 73, off
   // static reference data). Applied to every fitted module of that type that
   // has no better figure; a server-sourced duration is never overwritten by it.

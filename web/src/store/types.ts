@@ -2270,6 +2270,11 @@ export interface LockedTarget {
 export interface TargetingState {
   readonly lockedTargetIDs: readonly number[];
   readonly acquiringTargetIDs: readonly number[];
+  /**
+   * The ships that have the pilot's locked, in the order they did: the client's target service's targetedBy
+   * (GetTargeters' answer, then OnTarget 'otheradd' and 'otherlost'). Absent until first read.
+   */
+  readonly lockedByIDs?: readonly number[];
   /** True once a GetTargets read has populated the slice. */
   readonly loaded: boolean;
   /** The last lock/unlock/activate action issued, for the status readout. */

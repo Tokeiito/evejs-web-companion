@@ -548,7 +548,7 @@ import {
   scrammedByWarpScrambler,
   tacklersHolding,
 } from "../bridge/jamNotifications.ts";
-import { decodeTargetNotification } from "../bridge/targetNotifications.ts";
+import { decodeTargetNotification, decodeTargeterNotification } from "../bridge/targetNotifications.ts";
 import {
   decodeChargeLoadNotification,
   decodeChargeQuantityChanges,
@@ -3209,6 +3209,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (targetEvent.kind === "locked") {
         wakeFleetCompanion();
       }
+      return;
+    }
+    // `OnTarget('otheradd' | 'otherlost')` — a ship locking this one, or letting it go: the client's targetedBy, shown
+    // on the overview's row as the client's threatTargetsMe state.
+    const targeterEvent = decodeTargeterNotification(method, args);
+    if (targeterEvent !== null) {
+      store.apply({ type: "targeting/targeter-event", event: targeterEvent });
       return;
     }
     // Fleet-companion phase 7 — `OnJamStart` / `OnJamEnd`, the ONLY read
@@ -9947,7 +9954,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
-    store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
+    store.apply({
+      type: "targeting/targets",
+      targetIDs: decodeTargetIDs(result.targetIDs),
+      // An unreadable answer is no news: the list stays as it was.
+      targeterIDs: Array.isArray(result.targeterIDs) ? decodeTargetIDs(result.targeterIDs) : null,
+    });
   }
 
   /**

@@ -9540,6 +9540,25 @@
   }
   .spc-cell-icon { display: flex; }
   .spc-cell-icon .type-icon { width: 20px; height: 20px; }
+  /* A ship that has the pilot's locked: the client's hostile bracket round the icon, yellow (1, 0.8, 0), blinking
+   * from 0.3 to 0.6 and back in half a second (spaceObjectIcon.SetHostileState, blinkingSpriteOnSharedCurve). */
+  .spc-cell-icon.locked-by { position: relative; }
+  .spc-cell-icon.locked-by::after {
+    content: "";
+    position: absolute;
+    left: -2px;
+    top: -2px;
+    width: 24px;
+    height: 24px;
+    box-sizing: border-box;
+    border: 2px solid rgb(255, 204, 0);
+    pointer-events: none;
+    animation: spc-locked-by-blink 0.5s linear infinite;
+  }
+  @keyframes spc-locked-by-blink {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.6; }
+  }
   .spc-cell-name { display: flex; flex-direction: column; min-width: 0; }
   .spc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* ⚠ A hostile's name is tinted AND the threat strip names it above the list.

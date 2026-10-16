@@ -2243,6 +2243,8 @@ export async function getSpaceSnapshot(
 /** What the server says is locked right now — the only authority. */
 export interface TargetsResult {
   readonly targetIDs: JsonValue;
+  /** The ships that have the pilot's locked (dogmaIM.GetTargeters); null where the read could not say. */
+  readonly targeterIDs: JsonValue;
   readonly notifications: readonly JsonValue[];
 }
 
@@ -2260,10 +2262,14 @@ function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[
   return Array.isArray(data.notifications) ? data.notifications : [];
 }
 
-/** Read the locked-target list (dogmaIM.GetTargets). */
+/** Read the locked-target list (dogmaIM.GetTargets) and what has the pilot's ship locked (GetTargeters). */
 export async function getTargets(options: ApiOptions = {}): Promise<TargetsResult> {
   const data = await getJson("/api/bridge/targets", options);
-  return { targetIDs: data.targetIDs ?? null, notifications: readNotifications(data) };
+  return {
+    targetIDs: data.targetIDs ?? null,
+    targeterIDs: data.targeterIDs ?? null,
+    notifications: readNotifications(data),
+  };
 }
 
 // A module is switched on and off by the page's own calls since 2026-10-14 (bridge/dogmaWrites.ts: dogmaIM.Activate and

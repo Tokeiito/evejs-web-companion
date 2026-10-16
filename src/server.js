@@ -9484,6 +9484,18 @@ async function readLockedTargetIDs(held, webSessionID) {
 }
 
 /**
+ * The ships that have the pilot's locked RIGHT NOW (dogmaIM.GetTargeters), asked straight after GetTargets as the
+ * client's godma.RefreshTargets asks it (2364); the client keeps the answer as its target service's targetedBy, each
+ * one OnTarget('otheradd'). On the game port it is answered from the list kept the same way.
+ */
+async function readTargeterIDs(held, webSessionID) {
+  const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
+  const raw = outcome.result;
+  const readable = raw?.type === "list" && Array.isArray(raw.items);
+  return { ids: decodeTargetIDList(raw), readable, notifications: outcome.notifications };
+}
+
+/**
  * Confirm the requested module, including an authoritative bank-master mapping.
  * Unrelated growth in the active set is not proof. Missing bank authority is
  * unknown rather than a guessed confirmation of a slave weapon.
@@ -9521,8 +9533,14 @@ app.get("/api/bridge/targets", requireAuth, async (req, res, next) => {
   }
   try {
     const locked = await readLockedTargetIDs(held, req.webSessionID);
-    // A malformed read cannot prove that the caller has no locked targets.
-    res.json({ ok: true, targetIDs: locked.readable ? locked.ids : null, notifications: locked.notifications });
+    const targeters = await readTargeterIDs(held, req.webSessionID);
+    // A malformed read cannot prove that the caller has no locked targets, nor that nothing has the caller locked.
+    res.json({
+      ok: true,
+      targetIDs: locked.readable ? locked.ids : null,
+      targeterIDs: targeters.readable ? targeters.ids : null,
+      notifications: [...locked.notifications, ...targeters.notifications],
+    });
   } catch (error) {
     next(error);
   }
