@@ -5093,6 +5093,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const solarSystemID = store.flight.get().status?.solarSystemID ?? null;
     if (solarSystemID === null) return;
     const stopped = decodeScanStopped(args);
+    // scanSvc.OnSystemScanStopped (253 to 257): a scan that found nothing is told so, ScnNoResults (a notify, on the
+    // passing strip); a scan by the ship alone among them.
+    if (stopped.results.length === 0) sayDialog("ScnNoResults", null, "The scan found no signatures.");
     const history = clearResults(registerResults(probeResultsBySystem.get(solarSystemID) ?? EMPTY_RESULTS_HISTORY, stopped.results), stopped.absentTargets);
     probeResultsBySystem.set(solarSystemID, history);
     publishProbeResults();

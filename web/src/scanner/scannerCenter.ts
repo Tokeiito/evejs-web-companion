@@ -340,6 +340,11 @@ export interface ScannerActionBindings {
   readonly analyze?: {
     /** Exact geometry keyed by owned probe id; the panel never fabricates it. */
     readonly probeMap: ProbeScanMap;
+    /**
+     * In place of a map, the words that the ship scans alone: probes are out and none is idle, and the client sends
+     * None (bridge/scannerWrites.ts scanOf).
+     */
+    readonly shipAlone?: string | undefined;
     readonly blocked?: string | undefined;
     run(probeMap: ProbeScanMap): ScannerActionResult;
   };
@@ -436,14 +441,17 @@ export function scannerActionAvailability(
     case "analyze": {
       const count = actions.analyze ? Object.keys(actions.analyze.probeMap).length : 0;
       const blocked = actions.analyze?.blocked || null;
+      const shipAlone = actions.analyze?.shipAlone || null;
       return {
         id,
         label,
-        enabled: count > 0 && blocked === null,
+        enabled: (count > 0 || shipAlone !== null) && blocked === null,
         detail: actions.analyze === undefined
           ? "Probe geometry is not available to this panel, so it will not invent a scan map."
           : blocked !== null
             ? blocked
+          : shipAlone !== null
+            ? shipAlone
           : count > 0
             ? `${count} probe position${count === 1 ? " is" : "s are"} ready for analysis.`
             : "The supplied probe map is empty, so there is nothing safe to analyze.",

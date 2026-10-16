@@ -74,9 +74,8 @@
 //
 // WHAT THE PAGE DOES NOT DO AS THE CLIENT DOES, and says so:
 //   - It has the Pinpoint and Spread formations only (bridge/probeFormations.ts): no custom ones, no size slider.
-//   - With probes held and none of them idle the client sends None, a scan by the ship alone. The page has one
-//     button for a scan and one for a launch where the client has one for both, and offers no scan with no idle
-//     probe.
+//   - The page has one button for a scan and one for a launch where the client has one for both (Launch with no
+//     probe out, Analyze with probes out).
 //   - The client goes by every probe it holds, the inactive ones too, for whether a formation can be made. The
 //     page is told the active ones, and has no way to make a probe inactive.
 //   - With no probe launcher and no reconnection asked before, the client's own reckoning of the wait fails on a
@@ -131,7 +130,8 @@ export const SCAN_IN_PROGRESS = "A scan is still running. Wait for it to finish,
 export const PROBES_ARE_BUSY = "Your probes are still on the move. Wait until every one of them is idle.";
 export const ALL_PROBES_ARE_OUT = "All eight of your probes are already out.";
 export const NO_PROBES_OUT = "You have no probes out. Launch probes first.";
-export const NO_IDLE_PROBE = "None of your probes is idle to scan with yet.";
+export const NO_IDLE_PROBE = "None of your probes is idle yet, and your probe launcher holds no probes.";
+export const SHIP_SCANS_ALONE = "None of your probes is idle: your ship will scan alone.";
 export const NO_SCANNING_HERE = "Probe scanning is not available in this system.";
 export const NO_PROBES_FOR_A_CAPSULE = "A capsule cannot recover or reconnect to probes. Board a ship first.";
 export const PROBES_TOO_CLOSE_TO_RECOVER =
@@ -227,16 +227,23 @@ export function formationOf(scanner: ScannerRead): { readonly launch: { readonly
 
 /**
  * The probes a scan is asked with, by their numbers: the idle ones (probeTracker.GetProbesForScanning, 256 to
- * 263); or why no scan is asked.
+ * 263); null, the ship alone, where probes are out and none is idle; or why no scan is asked.
+ *
+ * The analyze button is offered where a probe is idle or a probe launcher holds charges
+ * (analyzeButton._update_enabled), and once probes are out it analyzes (on_clicked). With none of them idle,
+ * GetProbesForScanning answers None, and RequestScans sends it: the ship scans alone (scanSvc.RequestScans, 195 to
+ * 197, probeIDs [session.shipid]). With no probe out the button launches instead (the page's launch button).
  */
-export function scanOf(scanner: ScannerRead): { readonly probes: Readonly<Record<string, JsonValue>> } | Refused {
+export function scanOf(scanner: ScannerRead): { readonly probes: Readonly<Record<string, JsonValue>> | null } | Refused {
   const not = standing(scanner);
   if (not) return not;
   const system = scanner.solarSystemID;
   if (system !== null && system >= VOID_SYSTEMS[0] && system <= VOID_SYSTEMS[1]) return { refusal: NO_SCANNING_HERE };
   if (scanner.probes.length === 0) return { refusal: NO_PROBES_OUT };
   const idle = scanner.probes.filter(isIdle);
-  if (idle.length === 0) return { refusal: NO_IDLE_PROBE };
+  if (idle.length === 0) {
+    return scanner.launcher !== null && scanner.launcher.loadedCount > 0 ? { probes: null } : { refusal: NO_IDLE_PROBE };
+  }
   return { probes: Object.fromEntries(idle.map((probe) => [String(probe.probeID), probeSent(probe)])) };
 }
 

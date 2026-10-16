@@ -11,6 +11,7 @@
   import {
     ABYSSAL_SCAN_QUESTION,
     SCAN_IN_PROGRESS,
+    SHIP_SCANS_ALONE,
     isAbyssalSystem,
     launchOf,
     recallOf,
@@ -137,7 +138,8 @@
         run: () => flow.recoverScannerProbes(),
       },
       analyze: {
-        probeMap: "refusal" in scan ? {} : scan.probes,
+        probeMap: "refusal" in scan || scan.probes === null ? {} : scan.probes,
+        shipAlone: !("refusal" in scan) && scan.probes === null ? SHIP_SCANS_ALONE : undefined,
         blocked: "refusal" in scan ? scan.refusal : undefined,
         run: () => analyze(),
       },
