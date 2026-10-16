@@ -72,9 +72,9 @@ test("distinct families expose ore and ice but not gas; Belt revisions and behav
   const miner = buildStandardProfile(def, { role: "MINER", routineMode: "STANDARD" });
   const hauler = buildStandardProfile(def, { role: "HAULER", routineMode: "STANDARD" });
   assert.equal(miner.scriptID, "mcc.belt.hauler-service.miner");
-  assert.equal(miner.rev, 2);
+  assert.equal(miner.rev, 3);
   assert.equal(hauler.scriptID, "mcc.belt.hauler-service.hauler");
-  assert.equal(hauler.rev, 1);
+  assert.equal(hauler.rev, 2);
   assert.deepEqual(miner.doc.program[0].body.map(row => row.macro), ["undock", "mine-at-belt", "jettison-ore"]);
   assert.equal(miner.doc.program[0].body[1].args.drones, undefined, "shared Batch 6 capability controller owns drones");
   assert.equal(hauler.doc.program[0].body[1].args.seconds.value, 3);
