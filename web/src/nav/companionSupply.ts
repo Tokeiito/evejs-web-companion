@@ -172,7 +172,12 @@ export function droneSupply(obs: FleetCompanionObservation): DroneSupply | null 
   if (stacks === null || out === null) {
     return null;
   }
-  return { inBay: stacks.reduce((sum, stack) => sum + stack.quantity, 0), out: out.length };
+  // ⚠ A QUANTITY BELOW NOUGHT IS ONE DRONE. A drone that has been launched and
+  // scooped comes back a singleton, and the bay reports a singleton's quantity
+  // as -1 (the client reads it so: eveMisc.LaunchFromShip). Summed raw, a bay of
+  // eleven recovered drones read "-11 in bay" (seen live 2026-10-16).
+  const inBay = stacks.reduce((sum, stack) => sum + (stack.quantity < 0 ? 1 : stack.quantity), 0);
+  return { inBay, out: out.length };
 }
 
 function ammoLevel(ammo: AmmoSupply | null): SupplyLevel | null {
