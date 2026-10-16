@@ -161,9 +161,36 @@ export interface OverviewRow extends SpaceEntity {
    * overviewNodeUtil). A station's radius is kilometres, so the two are far apart.
    */
   readonly surfaceDistance: number;
+  /**
+   * The thing's own speed in metres a second (overviewNodeUtil.UpdateVelocityData: the length of the ball's
+   * velocity, a vector of single-precision numbers), what the overview's Velocity column, one of its default columns
+   * (overviewConst.DEFAULT_COLUMNS), shows and sorts by; null where the snapshot gives no motion for it.
+   */
+  readonly speed: number | null;
 }
 
-export type OverviewSort = "distance" | "name";
+export type OverviewSort = "distance" | "name" | "velocity";
+
+/**
+ * A velocity's length as the client takes it: of the vector in single precision, in single precision (as
+ * shipSpeed.ts singleLength; kept here so the overview's own module stays clear of the words modules).
+ */
+function speedOf(entity: SpaceEntity): number | null {
+  if (entity.motionAvailable === false) return null;
+  const { x, y, z } = entity.velocity;
+  if (![x, y, z].every(Number.isFinite)) return null;
+  const f = Math.fround;
+  const [vx, vy, vz] = [f(x), f(y), f(z)];
+  return f(Math.sqrt(f(f(f(vx * vx) + f(vy * vy)) + f(vz * vz))));
+}
+
+/**
+ * The Velocity column's figure (overviewScrollEntry._GetColumnValueVelocity: FormatNumeric(int(velocity),
+ * useGrouping=True)): whole metres a second, cut, grouped; "-" where there is none.
+ */
+export function formatOverviewVelocity(speed: number | null): string {
+  return speed === null || !Number.isFinite(speed) ? "-" : Math.trunc(speed).toLocaleString("en-US");
+}
 
 export interface OverviewFilter {
   /** Free-text match over the row's name / type name / group name. */
@@ -267,6 +294,11 @@ export function buildOverviewRows(
   options: {
     readonly filter?: OverviewFilter;
     readonly sort?: OverviewSort;
+    /**
+     * Fastest first where -1, for the Velocity sort only: its order is applied before the cap, so a reversed speed
+     * keeps the fastest things rather than the far end of the slowest (distance and name keep the nearest rows).
+     */
+    readonly direction?: 1 | -1;
     readonly cap?: number;
     readonly names?: OverviewNameLookup;
   } = {},
@@ -305,6 +337,7 @@ export function buildOverviewRows(
       ...entity,
       distance: distanceMeters(origin, entity.position),
       surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+      speed: speedOf(entity),
     });
   }
 
@@ -314,6 +347,13 @@ export function buildOverviewRows(
       const byName = (left.name ?? "").localeCompare(right.name ?? "");
       if (byName !== 0) {
         return byName;
+      }
+    }
+    if (sort === "velocity") {
+      // Slowest first; one with no speed before any (Python 2 orders None below every number).
+      const byVelocity = ((left.speed ?? -1) - (right.speed ?? -1)) * (options.direction ?? 1);
+      if (byVelocity !== 0) {
+        return byVelocity;
       }
     }
     // Distance is the tiebreaker for name sort and the primary key otherwise —
@@ -490,6 +530,7 @@ export function hostileRows(
       ...entity,
       distance: distanceMeters(origin, entity.position),
       surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+      speed: speedOf(entity),
     }))
     .sort((left, right) => left.distance - right.distance);
 }

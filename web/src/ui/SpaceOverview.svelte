@@ -59,6 +59,7 @@
     buildOverviewRows,
     fmtDist,
     formatOverviewDistance,
+    formatOverviewVelocity,
     hostileLabel,
     hostileRows,
     isHostile,
@@ -370,6 +371,7 @@
   const overview = $derived.by(() =>
     buildOverviewRows(presetSnapshot, origin, {
       sort: sortKey,
+      direction: sortDir,
       cap: ROW_CAP,
       filter: { text: search },
       // The search matches what the player SEES, so it searches the resolved
@@ -401,7 +403,8 @@
     // ⚠ Reversed for DISPLAY only. The cap keeps the NEAREST rows, so "farthest
     // first" is the far end of what is on the list, not of what is on the grid —
     // which is why the truncation line below is never hidden.
-    return sortDir === 1 ? built : [...built].reverse();
+    // (The Velocity sort is ordered before its cap, in either direction: buildOverviewRows.)
+    return sortDir === 1 || sortKey === "velocity" ? built : [...built].reverse();
   });
 
   const truncated = $derived(overview.matched > overview.rows.length);
@@ -1620,6 +1623,15 @@
       >
         Distance {sortArrow("distance")}
       </button>
+      <!-- The client's default columns end with Velocity (overviewConst.DEFAULT_COLUMNS). -->
+      <button
+        type="button"
+        class="spc-sort spc-cell-velocity"
+        class:on={sortKey === "velocity"}
+        onclick={() => sortBy("velocity")}
+      >
+        Velocity {sortArrow("velocity")}
+      </button>
     </div>
 
     <ul class="spc-rows">
@@ -1663,6 +1675,7 @@
               <span class="spc-cell-range" class:far={row.surfaceDistance >= 100_000}>
                 {formatOverviewDistance(row.surfaceDistance, say)}
               </span>
+              <span class="spc-cell-velocity">{formatOverviewVelocity(row.speed)}</span>
             </button>
             <!--
               ⚠ NO PER-ROW HIDE CONTROL, AND THAT IS THE POINT. The first pass

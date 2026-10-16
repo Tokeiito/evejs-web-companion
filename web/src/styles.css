@@ -9448,7 +9448,7 @@
   .spc-colhead,
   .spc-row-btn {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) 84px;
+    grid-template-columns: 24px minmax(0, 1fr) 84px 58px;
     column-gap: 8px;
     align-items: center;
     min-width: 0;
@@ -9532,6 +9532,13 @@
   /* Far things are dimmer, so the near ones read first. The figure is still
    * there — this is emphasis, not a hidden reading. */
   .spc-cell-range.far { color: var(--stn-muted); }
+  /* The client's Velocity column: 58 wide (overviewConst.COLUMN_DEFAULTSIZE), its figure to the right. */
+  .spc-cell-velocity {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--stn-secondary);
+    white-space: nowrap;
+  }
 
   .spc-empty { padding: 18px 12px; color: var(--stn-muted); }
   .spc-note {
@@ -9552,7 +9559,7 @@
    */
   @container space (min-width: 560px) {
     .spc-colhead,
-    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px; }
+    .spc-row-btn { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 90px 92px 58px; }
     .spc-cell-type,
     .spc-cell-group { display: block; }
     .spc-meta { display: none; }
