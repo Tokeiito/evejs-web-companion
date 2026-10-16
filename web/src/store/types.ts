@@ -401,6 +401,11 @@ export interface FittingState {
   readonly slots: readonly FittingSlot[];
   readonly resources: FittingResources;
   /**
+   * The active ship's attributes by ID, as the fit's read gave them and the server's notices of each change have
+   * kept them since (godma's way): what `resources` and `stats` are made of. Absent before a read.
+   */
+  readonly shipAttributes?: Readonly<Record<number, number | null>>;
+  /**
    * R21 — the ship's derived statistics (resists, EHP, align time, speed,
    * targeting, bays), promoted from the SAME `ShipGetInfo` attribute map the
    * resource bars already read. Anything that could not be sourced carries

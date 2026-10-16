@@ -1366,6 +1366,7 @@ export function createClientStore(): ClientStore {
           chargeFits: event.chargeFits ?? {},
           slots: [...event.slots],
           resources: event.resources,
+          shipAttributes: event.shipAttributes,
           stats: event.stats,
           // The dogma snapshot rides a separate read that lands just after this
           // one; carry the previous one through so a refresh never blanks the
@@ -1381,6 +1382,13 @@ export function createClientStore(): ClientStore {
           reloads: fitting.get().reloads,
         });
         break;
+      // The ship's attributes as the server's notices keep them: only for the ship the fit was read for.
+      case "fitting/ship-attributes": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        fitting.set({ ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        break;
+      }
       case "fitting/charge-quantity": {
         const current = fitting.get();
         const slots = applyChargeQuantityChanges(current.slots, current.activeShipID, event.changes);

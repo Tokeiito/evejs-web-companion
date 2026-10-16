@@ -26,7 +26,8 @@ import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/trave
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
-import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, slotFlagOf } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
+import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -3140,6 +3141,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // godma.OnModuleAttributeChange and its batch, and those riding an OnMultiEvent: the active ship's attributes
+    // as the server tells of each change, and the Fitting window's figures made of them again. A module put online
+    // is told of at the server's next tick, after the re-read of the fit on the call's answer
+    // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
+    applyShipAttributeChanges(method, args);
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
       // fleetSvc.OnFleetInvite (1179): from a session in a fleet the client turns the invitation down at once,
@@ -4626,6 +4632,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R12 Ship fitting ----------------------------------------------------
 
+  /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
+  function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
+    const current = store.fitting.get();
+    if (current.activeShipID === null || current.shipAttributes === undefined) return;
+    const changed = decodeItemAttributeChanges(method, args, current.activeShipID);
+    if (changed === null) return;
+    const attributes = new Map<number, number | null>(
+      Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
+    );
+    for (const [attributeID, value] of changed) attributes.set(attributeID, value);
+    store.apply({
+      type: "fitting/ship-attributes",
+      shipID: current.activeShipID,
+      shipAttributes: Object.fromEntries(attributes),
+      resources: resourcesOf(attributes),
+      stats: deriveShipStats(attributes),
+    });
+  }
+
   // Load the Fitting panel. The slot read and the resource read are
   // INDEPENDENT on the BFF, so each keeps its own error and a failed resource
   // read still shows the fit (and vice versa). A lost session unwinds to
@@ -4647,6 +4672,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
       chargeFits: decodeChargeFits(reads.chargeFits),
       resources: decodeResources(reads.shipInfo),
+      shipAttributes: Object.fromEntries(decodeShipAttributes(reads.shipInfo)),
       // R21 — the derived statistics come off the SAME ShipGetInfo attribute
       // map as the resource bars. No extra read, and nothing re-simulated:
       // the server already applied the ship's active-module effects before it
