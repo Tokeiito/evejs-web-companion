@@ -151,7 +151,7 @@ import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
-import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
+import { DEFAULT_ACTIVE_RESULT_FILTERS, EMPTY_RESULTS_HISTORY, type CustomResultFilter, clearResults, decodeScanStopped, heldResult, lastResults, registerResults, type ResultFilterSettings, type ResultsHistory } from "../bridge/probeResults.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -1116,6 +1116,12 @@ export interface AppFlow {
   setProbeResultFilterActive(filterID: number, active: boolean): void;
   /** The filter panel's Anomalies box (resultFilter.ShowAnomalies / StopShowingAnomalies). */
   setShowingProbeAnomalies(showing: boolean): void;
+  /** The filter editor's Save for a new filter (scanSvc.CreateResultFilter): its name and groups, not made active. */
+  createProbeResultFilter(name: string, groups: readonly string[]): void;
+  /** The filter editor's Save for one of the pilot's filters (scanSvc.EditResultFilter). */
+  editProbeResultFilter(filterID: number, name: string, groups: readonly string[]): void;
+  /** A filter's delete, once asked (scanSvc.DeleteFilter, RemoveFromActiveFilterSet). */
+  deleteProbeResultFilter(filterID: number): void;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5137,14 +5143,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const PROBE_RESULT_FILTER_KEPT = "evejs.probescanning.resultFilter";
   function probeResultFilter(): ResultFilterSettings {
     try {
-      const kept = JSON.parse(settingsStorage?.getItem(PROBE_RESULT_FILTER_KEPT) ?? "null") as { active?: unknown; showingAnomalies?: unknown } | null;
+      const kept = JSON.parse(settingsStorage?.getItem(PROBE_RESULT_FILTER_KEPT) ?? "null") as { active?: unknown; showingAnomalies?: unknown; custom?: unknown } | null;
       const active = Array.isArray(kept?.active)
         ? kept.active.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id))
         : [...DEFAULT_ACTIVE_RESULT_FILTERS];
-      return { active, showingAnomalies: typeof kept?.showingAnomalies === "boolean" ? kept.showingAnomalies : true };
+      const custom = Array.isArray(kept?.custom)
+        ? kept.custom.flatMap((each): CustomResultFilter[] => {
+          const row = each as { id?: unknown; name?: unknown; groups?: unknown } | null;
+          return row !== null && typeof row === "object" && typeof row.id === "number" && Number.isSafeInteger(row.id) && row.id > 0
+            && typeof row.name === "string" && Array.isArray(row.groups)
+            ? [{ id: row.id, name: row.name, groups: row.groups.filter((key): key is string => typeof key === "string") }]
+            : [];
+        })
+        : [];
+      return { active, showingAnomalies: typeof kept?.showingAnomalies === "boolean" ? kept.showingAnomalies : true, custom };
     } catch {
-      return { active: [...DEFAULT_ACTIVE_RESULT_FILTERS], showingAnomalies: true };
+      return { active: [...DEFAULT_ACTIVE_RESULT_FILTERS], showingAnomalies: true, custom: [] };
     }
+  }
+  // The pilot's own filters (resultFilter.CreateFilter, EditFilter and DeleteFilter, 31 to 55 and 89 to 93): a new
+  // one numbered one past the highest (1 for the first), not made active; one deleted is no longer active either
+  // (probeScannerPalette.DeleteFilter, 553 to 560). The editor's and the panel's checks are theirs.
+  function createProbeResultFilter(name: string, groups: readonly string[]): void {
+    const filter = probeResultFilter();
+    const id = filter.custom.reduce((highest, each) => Math.max(highest, each.id), 0) + 1;
+    keepProbeResultFilter({ ...filter, custom: [...filter.custom, { id, name, groups: [...groups] }] });
+  }
+  function editProbeResultFilter(filterID: number, name: string, groups: readonly string[]): void {
+    const filter = probeResultFilter();
+    keepProbeResultFilter({ ...filter, custom: filter.custom.map((each) => (each.id === filterID ? { id: filterID, name, groups: [...groups] } : each)) });
+  }
+  function deleteProbeResultFilter(filterID: number): void {
+    const filter = probeResultFilter();
+    keepProbeResultFilter({
+      ...filter,
+      custom: filter.custom.filter((each) => each.id !== filterID),
+      active: filter.active.filter((id) => id !== filterID),
+    });
   }
   function keepProbeResultFilter(filter: ResultFilterSettings): void {
     try {
@@ -18982,6 +19017,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     alignToProbeResult,
     setProbeResultFilterActive,
     setShowingProbeAnomalies,
+    createProbeResultFilter,
+    editProbeResultFilter,
+    deleteProbeResultFilter,
     loadFleet,
     formFleet,
     inviteFleetMember,

@@ -104,6 +104,22 @@ export const PROBE_RESULT_LABELS = Object.freeze({
   filtered: "UI/Inflight/Scanner/Filtered",
   showResultsFor: "UI/Inflight/Scanner/ShowResultsFor",
   anomalies: "UI/Inflight/Scanner/AnomalySiteFilterLabel",
+  // The pilot's own filters: the panel's button, and the editor (scannerfiltereditor.py 39 to 113, 169 to 176).
+  createNewFilter: "UI/Inflight/Scanner/CreateNewFilter",
+  filterEditor: "UI/Inflight/Scanner/ScannerFilterEditor",
+  filterName: "UI/Inflight/Scanner/FilterName",
+  selectGroupsToFilter: "UI/Inflight/Scanner/SelectGroupsToFilter",
+  save: "UI/Common/Buttons/Save",
+  cancel: "UI/Common/Buttons/Cancel",
+  yes: "UI/Common/Buttons/Yes",
+  no: "UI/Common/Buttons/No",
+  selectAll: "UI/Common/SelectAll",
+  deselectAll: "UI/Common/DeselectAll",
+  showAll: "UI/Common/Show all",
+  pleaseNameFilter: "UI/Inflight/Scanner/PleaseNameFilter",
+  cannotNameFilter: "UI/Inflight/Scanner/CannotNameFilter",
+  selectGroupsForFilter: "UI/Inflight/Scanner/SelectGroupsForFilter",
+  filterAlreadyExists: "UI/Inflight/Scanner/FilterAlreadyExists",
 });
 export const PROBE_RESULT_WORD_LABELS: readonly string[] = [
   ...new Set([...Object.values(PROBE_RESULT_LABELS), ...Object.values(SCAN_GROUP_LABELS), ...Object.values(SITE_TYPE_LABELS), ...Object.values(COMBAT_GROUP_LABELS)]),
@@ -334,11 +350,62 @@ export const STANDARD_RESULT_FILTERS: ReadonlyArray<{ readonly id: number; reado
 /** resultFilter._defaultFilterSet: the five standard filters. */
 export const DEFAULT_ACTIVE_RESULT_FILTERS: readonly number[] = Object.freeze([-1, -2, -3, -4, -5]);
 
-/** What the pilot's results are filtered by: the active filters, and whether anomalies are shown (resultFilter). */
+/** One of the pilot's own filters (resultFilter.filters): its number (1 and up), its name and its groups. */
+export interface CustomResultFilter {
+  readonly id: number;
+  readonly name: string;
+  readonly groups: readonly string[];
+}
+
+/** What the pilot's results are filtered by: the active filters, whether anomalies are shown, and the pilot's own filters (resultFilter). */
 export interface ResultFilterSettings {
   readonly active: readonly number[];
   readonly showingAnomalies: boolean;
+  readonly custom: readonly CustomResultFilter[];
 }
+
+/** probeScannerPalette.AddFilter (45 to 52): no more of the pilot's own filters than this (TooManyFilters). */
+export const MAX_CUSTOM_RESULT_FILTERS = 25;
+/** scannerfiltereditor: the filter's name field (maxLength, 50). */
+export const RESULT_FILTER_NAME_MAX = 64;
+
+/** scannerfiltereditor.SCAN_GROUP_NAMES (21 to 32): the scan groups the editor lists (not scrap, celestials or anomalies). */
+const EDITOR_SCAN_GROUP_LABELS: Readonly<Record<number, string>> = Object.freeze({
+  [SCAN_GROUP.signatures]: "UI/Inflight/Scanner/CosmicSignature",
+  [SCAN_GROUP.ships]: "UI/Inflight/Scanner/Ship",
+  [SCAN_GROUP.structures]: "UI/Inflight/Scanner/Structure",
+  [SCAN_GROUP.drones]: "UI/Inflight/Scanner/Drone",
+  [SCAN_GROUP.charges]: "UI/Inflight/Scanner/Charge",
+  [SCAN_GROUP.npcs]: "UI/Inflight/Scanner/NPC",
+  [SCAN_GROUP.fighters]: "UI/Inflight/Scanner/Fighter",
+  [SCAN_GROUP.starBase]: "UI/Inflight/Scanner/StarBase",
+  [SCAN_GROUP.orbitals]: "UI/Inflight/Scanner/Orbital",
+  [SCAN_GROUP.deployable]: "UI/Inflight/Scanner/Deployable",
+  [SCAN_GROUP.sovereignty]: "UI/Inflight/Scanner/Sovereignty",
+  [SCAN_GROUP.abyssalTraces]: "UI/Inflight/Scanner/AbyssalTrace",
+});
+
+/** One box of the editor: the filter's group as it holds it, the inventory group, and a signature's site type's label where it is one. */
+export interface FilterEditorItem {
+  readonly key: string;
+  readonly groupID: number;
+  readonly siteTypeLabel: string | null;
+}
+
+/**
+ * The editor's list (scannerfiltereditor.LoadTypes, 116 to 167): each listed scan group, its label and its boxes. A
+ * cosmic signature is a box for each of its six site types (EXPLORATION_SITE_TYPES, by strength); any other group is
+ * a box named by the inventory group's name (evetypes.GetGroupNameByGroup).
+ */
+export const FILTER_EDITOR_CATEGORIES: ReadonlyArray<{ readonly scanGroup: number; readonly label: string; readonly items: readonly FilterEditorItem[] }> =
+  Object.freeze(Object.entries(EDITOR_SCAN_GROUP_LABELS).map(([scanGroup, label]) => ({
+    scanGroup: Number(scanGroup),
+    label,
+    items: (PROBE_SCAN_GROUPS[Number(scanGroup)] ?? []).flatMap((groupID): FilterEditorItem[] =>
+      groupID === GROUP_COSMIC_SIGNATURE
+        ? COSMIC_SIGNATURE_ATTRIBUTES.map((attributeID) => ({ key: groupKey(groupID, attributeID), groupID, siteTypeLabel: SITE_TYPE_LABELS[attributeID] ?? null }))
+        : [{ key: groupKey(groupID), groupID, siteTypeLabel: null }]),
+  })));
 
 /** The results the list shows, and what it leaves out: scanHandler.GetResults (133 to 153). */
 export interface SplitResults {
@@ -355,7 +422,8 @@ export interface SplitResults {
  * identified and its scan group holds none of their groups (GetMasterGroupsForActiveFilterSet).
  */
 export function splitResults(results: readonly ShownResult[], ignoredIDs: ReadonlySet<string>, filter: ResultFilterSettings): SplitResults {
-  const current = new Set(STANDARD_RESULT_FILTERS.filter((each) => filter.active.includes(each.id)).flatMap((each) => each.groups));
+  const filters = [...STANDARD_RESULT_FILTERS, ...filter.custom];
+  const current = new Set(filters.filter((each) => filter.active.includes(each.id)).flatMap((each) => each.groups));
   const masterGroups = new Set<number>();
   for (const key of current) {
     const groupID = Number(key.split(":")[0]);

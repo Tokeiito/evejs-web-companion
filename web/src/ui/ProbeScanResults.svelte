@@ -11,8 +11,12 @@
   // more (probeScannerPalette.LoadIgnoredTooltipPanel, 492 to 537). None of it is asked of the server.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import ProbeFilterEditor from "./ProbeFilterEditor.svelte";
+  import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import {
+    MAX_CUSTOM_RESULT_FILTERS,
     MIN_WARP_DISTANCE,
+    type CustomResultFilter,
     PROBE_RESULT_LABELS,
     PROBE_RESULT_WORD_LABELS,
     SCAN_GROUP,
@@ -52,7 +56,12 @@
   });
 
   $effect(() => {
-    flow.requestWords([...PROBE_RESULT_WORD_LABELS, ...STANDARD_RESULT_FILTERS.map((each) => each.label)]);
+    flow.requestWords([
+      ...PROBE_RESULT_WORD_LABELS,
+      ...STANDARD_RESULT_FILTERS.map((each) => each.label),
+      ...["DeleteFilter", "TooManyFilters"].flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`, suppressableKey(dialog)]),
+      DO_NOT_ASK_AGAIN_LABEL,
+    ]);
   });
   // What the rows are named with: a type's name, a group's name, an exploration site's dungeon name.
   $effect(() => {
@@ -97,6 +106,42 @@
   // The filtered box (ShowFilteredAndIgnored, 816 to 818): the filtered and the anomalies left out, together.
   const filteredCount = $derived(split === null ? 0 : split.filtered + split.anomaliesFiltered);
   let filterOpen = $state(false);
+
+  // The pilot's own filters: the editor (undefined while closed, null for a new filter), the delete asked, and the
+  // panel's refusal (TooManyFilters).
+  let editorFor = $state<CustomResultFilter | null | undefined>(undefined);
+  let deleting = $state<CustomResultFilter | null>(null);
+  let dontAskAgain = $state(false);
+  let filterNotice = $state<string | null>(null);
+  function dialogWord(dialog: string, part: "title" | "body", own: string, args: Record<string, string | number> = {}): string {
+    return word(`dialog:${dialog}/${part}`, args) ?? plainText(formatTemplate(own, args, { nameOf: () => "" }));
+  }
+  // AddFilter (45 to 52): no more than twenty-five of the pilot's own (TooManyFilters).
+  function createFilter(): void {
+    filterNotice = null;
+    if (held !== null && held.filter.custom.length >= MAX_CUSTOM_RESULT_FILTERS) {
+      filterNotice = dialogWord("TooManyFilters", "body", "You have as many filters as you can keep.");
+      return;
+    }
+    editorFor = null;
+  }
+  // DeleteFilter (553 to 560): asked with suppress=ID_YES, Yes kept where the box was ticked.
+  function askDelete(custom: CustomResultFilter): void {
+    filterNotice = null;
+    if (ASKED_KEEPING_YES.has("DeleteFilter") && flow.dialogYesKept("DeleteFilter")) {
+      flow.deleteProbeResultFilter(custom.id);
+      return;
+    }
+    dontAskAgain = false;
+    deleting = custom;
+  }
+  function answerDelete(yes: boolean): void {
+    const asked = deleting;
+    deleting = null;
+    if (asked === null || !yes) return;
+    if (dontAskAgain) flow.keepDialogYes("DeleteFilter");
+    flow.deleteProbeResultFilter(asked.id);
+  }
   // scanSvc.GetIgnoredResultsDesc: each ignored one held, by ID, with its name.
   const ignoredRows = $derived(held === null ? [] : resultRows(held.ignored, myPosition, wording));
 
@@ -154,7 +199,35 @@
               onchange={(event) => flow.setProbeResultFilterActive(standard.id, event.currentTarget.checked)} />
               {word(standard.label) ?? standard.label.split("/").at(-1)}</label>
           {/each}
+          <!-- The pilot's own filters, each with its box, edit and delete (_LoadFilterTooltipPanel, 470 to 477). -->
+          {#each held.filter.custom as custom (custom.id)}
+            <span class="custom-filter">
+              <label><input type="checkbox" checked={held.filter.active.includes(custom.id)}
+                onchange={(event) => flow.setProbeResultFilterActive(custom.id, event.currentTarget.checked)} /> {custom.name}</label>
+              <button type="button" class="minor" onclick={() => { editorFor = custom; filterNotice = null; }}>Edit</button>
+              <button type="button" class="minor" onclick={() => askDelete(custom)}>Delete</button>
+            </span>
+          {/each}
+          <button type="button" class="minor" onclick={createFilter}>{word(PROBE_RESULT_LABELS.createNewFilter) ?? "Create New Filter"}</button>
+          {#if deleting !== null}
+            <!-- DeleteFilter (553 to 560), asked keeping Yes. -->
+            <span class="filter-question" role="alertdialog">
+              <strong>{dialogWord("DeleteFilter", "title", "Delete?")}</strong>
+              <span>{dialogWord("DeleteFilter", "body", "Delete the filter {filterName}?", { filterName: deleting.name })}</span>
+              {#if $words.templates[suppressableKey("DeleteFilter")] === "1"}
+                <label><input type="checkbox" bind:checked={dontAskAgain} /> {word(DO_NOT_ASK_AGAIN_LABEL) ?? "Skip this question from now on"}</label>
+              {/if}
+              <button type="button" onclick={() => answerDelete(true)}>{word(PROBE_RESULT_LABELS.yes) ?? "Yes"}</button>
+              <button type="button" class="minor" onclick={() => answerDelete(false)}>{word(PROBE_RESULT_LABELS.no) ?? "No"}</button>
+            </span>
+          {/if}
+          {#if filterNotice !== null}
+            <span class="error">{filterNotice}</span>
+          {/if}
         </fieldset>
+      {/if}
+      {#if editorFor !== undefined}
+        <ProbeFilterEditor {store} {flow} editing={editorFor} settings={held.filter} onDone={() => (editorFor = undefined)} />
       {/if}
     </div>
     {#if ignoredCount > 0 || ignoredRows.length > 0}
@@ -263,6 +336,13 @@
     list-style: none;
     margin: 0.3rem 0 0;
     padding: 0;
+  }
+  .custom-filter,
+  .filter-question {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: center;
   }
   .filter-panel {
     display: flex;

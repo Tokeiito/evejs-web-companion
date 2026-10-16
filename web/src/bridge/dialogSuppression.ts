@@ -16,7 +16,8 @@
 // the Locations window's folders and subfolders (bookmarksPanel.py DeleteACLFolder, ForgetFolder, DeleteSubfolder and
 // CreateSubfolder, 435 to 487; locations/window.py _create_sub_folder, 152), the folder window's two before a
 // folder is made offline or with a name another has (bookmarkContainerWindow.py Confirm, 231 to 237), and the
-// scanner's warning before a scan in Abyssal space (scanSvc.RequestScans_Check, 183 to 187).
+// scanner's warning before a scan in Abyssal space (scanSvc.RequestScans_Check, 183 to 187), and the probe results'
+// filter's delete (probeScannerPalette.DeleteFilter, 554).
 
 export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "EvemailMailMarkAllRead",
@@ -41,6 +42,7 @@ export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "ConfirmCreateFolderWithDuplicateName",
   "ConfirmForgetFolder",
   "ProbeScannerAbyssalSpaceWarning",
+  "DeleteFilter",
 ]);
 
 /** The checkbox's words on a dialog that asks (messagebox.py 164 to 168). */
