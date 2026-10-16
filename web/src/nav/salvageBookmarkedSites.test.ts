@@ -99,6 +99,17 @@ test("salvager: a bookmark made while it works a site never takes it off that si
   assert.deepEqual(t.action, { kind: "lock", targetID: 4201 });
 });
 
+test("salvager: already at the site (as after a restart on it), it goes straight to work instead of warping", () => {
+  // Seen live 2026-10-16: a restart on the site warped to its own bookmark, refused as too close, over and over.
+  const onIt = [{ ...sites[1]!, position: { x: 20_000, y: 0, z: 0 } }];
+  const t = salvager(step, obs({ bookmarks: onIt }), ready, NB);
+  assert.notEqual(t.action.kind, "warpBookmark");
+  assert.equal(t.nextMem["stage"] === "site" || t.action.kind === "moveBookmarks", true);
+  // From farther than a warp's least distance, it warps.
+  const far = [{ ...sites[1]!, position: { x: 400_000, y: 0, z: 0 } }];
+  assert.deepEqual(salvager(step, obs({ bookmarks: far }), ready, NB).action, { kind: "warpBookmark", bookmarkID: NEAR_SITE });
+});
+
 test("salvager: a site in another system is travelled to first", () => {
   const t = salvager(step, obs({ bookmarks: [sites[0]!] }), ready, NB);
   assert.deepEqual(t.action, { kind: "startSystemRoute", systemID: ELSEWHERE });
@@ -243,6 +254,27 @@ test("on site: a far wreck of ours gets a tractor beam (no lock); one in reach i
   // Locked: the salvager goes on it (a wreck still holding loot leaves a can with it).
   const salvage = salvager(step, grid([wreck(4102, 1_500)], SHIP, { lockedTargetIDs: [4102] }), loot.nextMem, NB);
   assert.deepEqual(salvage.action, { kind: "activate", moduleID: SALVAGER, targetID: 4102 });
+});
+
+test("on site: a wreck whose lock never takes is left after three tries, and the rest of the site goes on", () => {
+  // Seen live 2026-10-16: one wreck's lock refused (TargetingAttemptCancelled) every few seconds for minutes.
+  const wreck = (itemID: number, x: number) => ({ itemID, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } });
+  const stubborn = wreck(4401, 1_000);
+  const grid = (entities: unknown[], locked: number[] = []) => obs({
+    myCharacterID: 90000001, salvageModuleIDs: [602], tractorModuleIDs: [], maxLockedTargets: 3, maxTargetRangeM: 30_000,
+    lockedTargetIDs: locked, snapshot: { ship: SHIP, entities } as never,
+  });
+  let mem: MacroMemory = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [4401] } };
+  for (let k = 0; k < 3; k++) {
+    const t = salvager(step, grid([stubborn]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+    assert.deepEqual(t.action, { kind: "lock", targetID: 4401 }, `try ${k + 1}`);
+    mem = t.nextMem;
+  }
+  // The fourth time it is let be: another wreck is locked instead, and with none the site is finished.
+  const other = salvager(step, grid([stubborn, wreck(4402, 1_200)]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+  assert.deepEqual(other.action, { kind: "lock", targetID: 4402 });
+  const alone = salvager(step, grid([stubborn]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+  assert.deepEqual(alone.action, { kind: "moveBookmarks", fromFolderID: FROM, toFolderID: DONE, bookmarkIDs: [NEAR_SITE] });
 });
 
 test("on site: a tractor beam whose wreck has arrived is switched off, so it can take the next", () => {
