@@ -485,7 +485,7 @@ import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
-import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
@@ -2258,9 +2258,11 @@ export interface AppFlow {
   editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
   /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
-  /** The saved fittings, the pilot's and its corporation's (fittingSvc.GetFittings), as last read; null before. */
+  /** The saved fittings, the pilot's, its corporation's and the community's (fittingSvc.GetFittings), as last read; null before. */
   readonly savedFittings: ReadableSignal<readonly SourcedFitting[] | null>;
-  /** Reads them (fittingSvc.PrimeFittings: each owner's fitting manager's GetFittings). */
+  /** globalConfig.AreCommunityFittingsEnabled, as looked at with the fittings read. */
+  readonly communityFittingsEnabled: ReadableSignal<boolean>;
+  /** Reads them (fittingSvc.GetAllFittingsForCharacter: each owner's fitting manager's GetFittings, and GetCommunityFittings). */
   loadSavedFittings(): Promise<void>;
   /**
    * A saved fitting's Fit to Active Ship (fittingBrowser.FitToActiveShip, fittingSvc
@@ -3620,6 +3622,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // fittingSvc.OnSkillsChanged (1050 to 1052): what is kept of the fittings' skills let go, at the server's word of the
     // skills (skillsvc's OnServerSkillsChanged and OnServerSkillsRemoved scatter it), and at its own.
     if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") hasSkillByFittingID.clear();
+    // fittingSvc.OnCommunityFittingsUpdated and OnGlobalConfigChanged (machoNet's, at OnGlobalConfigUpdated): the
+    // community's fittings let go, and read again.
+    if (method === "OnCommunityFittingsUpdated" || method === "OnGlobalConfigUpdated") {
+      void communityFittingsChanged().catch(() => {});
+      if (method === "OnCommunityFittingsUpdated") return;
+    }
     // fittingSvc.OnFittingDeleted(ownerID, fittingID): the fitting let go from those kept.
     if (method === "OnFittingDeleted") {
       const fittingID = Number(args[1]);
@@ -6518,6 +6526,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let multiBuyFitPending = false;
   // The saved fittings as last read (fittingSvc.fittings), and the Buy All box. A fitting under way (busyFitting).
   const savedFittingsSignal = createSignal<readonly SourcedFitting[] | null>(null);
+  // globalConfig.AreCommunityFittingsEnabled, as last looked at with the fittings read (its default until then).
+  const communityFittingsEnabledSignal = createSignal<boolean>(true);
   const buyAllAskedSignal = createSignal<BuyAllAsk | null>(null);
   const viewFittingAskedSignal = createSignal<ViewFittingAsk | null>(null);
   let busyFitting = false;
@@ -7165,9 +7175,62 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return new Set(fittings.filter((fitting) => hasSkillByFittingID.get(fitting.fittingID) === true).map((fitting) => fitting.fittingID));
   }
 
-  /** fittingSvc.PrimeFittings: the pilot's fittings and its corporation's, read again. */
+  /** globalConfig/const.py SHOW_COMMUNITY_FITTINGS_CONFIG, and its default ('1'). */
+  const SHOW_COMMUNITY_FITTINGS_CONFIG = "show_community_fittings";
+
+  /**
+   * globalConfig.AreCommunityFittingsEnabled (getFunctions.py 56, GetGlobalConfigBooleanValue 14 to 19): the global
+   * config's value as the client keeps it, as a whole number (Python's int), not nought; on by default, where it gives
+   * none, where it is no whole number, or where the pilot's transport does not carry the config.
+   */
+  async function communityFittingsEnabled(): Promise<boolean> {
+    const config = await api.getGlobalConfig([SHOW_COMMUNITY_FITTINGS_CONFIG], callOptions).catch(() => null);
+    const value = config?.values[SHOW_COMMUNITY_FITTINGS_CONFIG];
+    if (value === null || value === undefined) return true;
+    const text = String(value).trim();
+    return /^[+-]?\d+$/.test(text) ? Number.parseInt(text, 10) !== 0 : true;
+  }
+
+  /**
+   * fittingSvc.GetCommunityFittings (400 to 412): none where the global config has them off; else
+   * corpFittingMgr.GetCommunityFittings(), the fittings of the community's corporation (COMMUNITY_FITTING_CORP), none
+   * where the call fails.
+   */
+  async function readCommunityFittings(enabled: boolean): Promise<readonly SourcedFitting[]> {
+    if (!enabled) return [];
+    const rows = await bridgeAsk("corpFittingMgr", "GetCommunityFittings", []).then(decodeCommunityFittings).catch(() => []);
+    return rows.map((row) => ({ ...row, source: "community" as const }));
+  }
+
+  /** The fittings read, with the community's after them (a fitting already had kept once, by its number). */
+  function withCommunityFittings(library: readonly SourcedFitting[], community: readonly SourcedFitting[]): readonly SourcedFitting[] {
+    const seen = new Set(library.map((fitting) => fitting.fittingID));
+    return [...library, ...community.filter((fitting) => !seen.has(fitting.fittingID))];
+  }
+
+  /**
+   * fittingSvc.GetAllFittingsForCharacter (388 to 398): the pilot's fittings, its corporation's and the community's,
+   * read again. (The alliance's are not read here.)
+   */
   async function loadSavedFittings(): Promise<void> {
-    savedFittingsSignal.set(await loadRefitLibrary());
+    const [library, enabled] = await Promise.all([loadRefitLibrary(), communityFittingsEnabled()]);
+    const community = await readCommunityFittings(enabled);
+    communityFittingsEnabledSignal.set(enabled);
+    savedFittingsSignal.set(withCommunityFittings(library, community));
+  }
+
+  /**
+   * fittingSvc.ClearCommunityFittingCache (1274 to 1277), at OnCommunityFittingsUpdated and, where the global config has
+   * turned them off, at OnGlobalConfigChanged (1265 to 1272): the community's fittings let go; the browser reads them
+   * again as it loads, so they are read again here where any fittings are kept.
+   */
+  async function communityFittingsChanged(): Promise<void> {
+    const kept = savedFittingsSignal.get();
+    const enabled = await communityFittingsEnabled();
+    communityFittingsEnabledSignal.set(enabled);
+    if (kept === null) return;
+    const others = kept.filter((fitting) => fitting.source !== "community");
+    savedFittingsSignal.set(withCommunityFittings(others, await readCommunityFittings(enabled)));
   }
 
   /** A saved fitting by its number, from those last read (fittingSvc.fittings[ownerID][fittingID]); null where none. */
@@ -20761,6 +20824,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerMultiBuy,
     importMultiBuy,
     savedFittings: readonlySignal(savedFittingsSignal),
+    communityFittingsEnabled: readonlySignal(communityFittingsEnabledSignal),
     loadSavedFittings,
     fitFittingToActiveShip,
     buyFit,
