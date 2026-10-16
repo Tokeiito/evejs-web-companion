@@ -216,6 +216,32 @@
   });
   const viewWord = (label: string): string => plainText(wordOf(label, VIEW_FITTING_WORDS[label] ?? ""));
   /** A heading of the contents: a slot kind's effect's name (the client's message), or the kind's label. */
+  // Buy and Fit's tooltip (buyMultiFromBase.AddBuyAndFitBtn, fittingInfoTooltip.LoadFittingInfoTooltip, 19 to 42): "Fit
+  // to apply to current ship", the hull's name, the fitting's name where it has one, and its contents by heading as the
+  // display window lists them. As a hint's lines.
+  // Raw: the fitting is kept as the window has it, to be known again by identity (a deep state would proxy it).
+  let buyAndFitInfo = $state.raw<{ readonly fitting: unknown; readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> } | null>(null);
+  $effect(() => {
+    const fitting = $multiBuyAsked?.fitting ?? null;
+    if (fitting === null || buyAndFitInfo?.fitting === fitting) return;
+    flow.requestWords(["UI/Market/MarketQuote/FitToApplyToCurrentShip", ...Object.keys(VIEW_FITTING_WORDS)]);
+    void flow.fittingInfo(fitting).then((info) => {
+      buyAndFitInfo = { fitting, ...info };
+      flow.requestWords(Object.values(info.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])));
+      flow.requestNames([{ kind: "type" as const, id: fitting.shipTypeID }, ...info.contents.flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID })))]);
+    }).catch(() => {});
+  });
+  function buyAndFitTooltip(fitting: NonNullable<NonNullable<typeof $multiBuyAsked>["fitting"]>): string {
+    const lines = [plainText(wordOf("UI/Market/MarketQuote/FitToApplyToCurrentShip", "To be fitted to the ship you are in")), nameOf("type", fitting.shipTypeID)];
+    if (fitting.name) lines.push(plainText(fitting.name));
+    if (buyAndFitInfo !== null && buyAndFitInfo.fitting === fitting) {
+      for (const group of buyAndFitInfo.contents) {
+        lines.push(contentsHeading(group.header, buyAndFitInfo.effectNames));
+        for (const entry of group.entries) lines.push(`  ${groupedNumber(entry.qty)}x ${nameOf("type", entry.typeID)}`);
+      }
+    }
+    return lines.join("\n");
+  }
   function contentsHeading(header: FittingContentsGroup["header"], effectNames: Readonly<Record<number, number | null>>): string {
     if ("label" in header) return viewWord(header.label);
     const messageID = effectNames[header.effectID];
@@ -1004,7 +1030,8 @@
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
         {#if buy.fitting !== null}
-          <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy-and-fit").catch(() => {})}>{buyWord("UI/Market/MarketQuote/BuyAndFit")}</button>
+          <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} title={buyAndFitTooltip(buy.fitting)}
+            onclick={() => void flow.answerMultiBuy(buy.n, "buy-and-fit").catch(() => {})}>{buyWord("UI/Market/MarketQuote/BuyAndFit")}</button>
         {/if}
         <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>

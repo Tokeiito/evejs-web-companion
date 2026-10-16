@@ -302,11 +302,13 @@ function isUnlockedWithExpertSystem(typeID: number, required: RequiredSkills, sk
 }
 
 /**
- * ItemObject.NeedsOmegaUpgrade (tooltip/itemObject.py 18 to 22) for a type that is no skill: an alpha clone's, where a
- * skill the type needs, at any depth, is needed above the alpha's ceiling for it
- * (clone_grade_svc.is_requirements_restricted), and an expert system does not unlock the type. Never an omega's.
+ * ItemObject.NeedsOmegaUpgrade (tooltip/itemObject.py 18 to 31): an alpha clone's, where a skill the type needs, at any
+ * depth, is needed above the alpha's ceiling for it (clone_grade_svc.is_requirements_restricted) and an expert system
+ * does not unlock the type. And for a type that is a skill (`skillLevelIncludingQueued` given: skillsvc
+ * MySkillLevelIncludingQueued, the level trained or queued, nought where the skill is not had), where that level, or
+ * the level after it below V, is above the alpha's ceiling for the skill (is_skill_level_restricted). Never an omega's.
  */
-export function needsOmegaUpgrade(typeID: number, required: RequiredSkills, skills: PilotSkills, ceilings: AlphaCeilings | null): boolean {
+export function needsOmegaUpgrade(typeID: number, required: RequiredSkills, skills: PilotSkills, ceilings: AlphaCeilings | null, skillLevelIncludingQueued: number | null = null): boolean {
   if (ceilings === null) return false;
   let restricted = false;
   for (const [skill, level] of requiredSkillsRecursive(typeID, required)) {
@@ -315,7 +317,11 @@ export function needsOmegaUpgrade(typeID: number, required: RequiredSkills, skil
       break;
     }
   }
-  return restricted && !isUnlockedWithExpertSystem(typeID, required, skills);
+  if (restricted && !isUnlockedWithExpertSystem(typeID, required, skills)) return true;
+  if (skillLevelIncludingQueued === null) return false;
+  const ceiling = ceilings.get(typeID) ?? 0;
+  if (ceiling < skillLevelIncludingQueued) return true;
+  return skillLevelIncludingQueued < 5 && ceiling < skillLevelIncludingQueued + 1;
 }
 
 /**

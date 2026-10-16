@@ -2298,6 +2298,8 @@ export interface AppFlow {
   editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
   /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
+  /** A fitting's contents by heading and its slot kinds' effects' names (GetFittingInfoForScrollList), for a tooltip. */
+  fittingInfo(fitting: SourcedFitting): Promise<{ readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> }>;
   /** The saved fittings, the pilot's, its corporation's, the community's and its alliance's (fittingSvc.GetFittings), as last read; null before. */
   readonly savedFittings: ReadableSignal<readonly SourcedFitting[] | null>;
   /** globalConfig.AreCommunityFittingsEnabled, as looked at with the fittings read. */
@@ -6776,8 +6778,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]);
     // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
     // client's data the list alone goes.
-    const prices = await api.getTypePrices(listed.map(([skill]) => skill), callOptions)
-      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>> }));
+    // The type's own category is asked with them: a skill's is NeedsOmegaUpgrade's second half.
+    const prices = await api.getTypePrices([...new Set([...listed.map(([skill]) => skill), typeID])], callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>>, categoryID: {} as Readonly<Record<number, number | null>> }));
     const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
     const queued = queuedLevels(queue);
     const training = skillInTraining(queue);
@@ -6853,7 +6856,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     let points: number | null = null;
     let applyLevels: readonly SkillLevel[] = [];
     let offerInjection = false;
-    const omegaRestricted = needsOmegaUpgrade(typeID, required, mine, ceilings);
+    /** inventorycommon/const.py categorySkill. */
+    const CATEGORY_SKILL = 16;
+    // MySkillLevelIncludingQueued (skillsvc.py 266 to 272), for a type that is a skill: the level trained, lapsed ones
+    // too, or queued, whichever is more; nought where the skill is not had.
+    const ownLevel = prices.categoryID[typeID] === CATEGORY_SKILL
+      ? (lapsed.has(typeID) ? Math.max(lapsed.get(typeID)?.trainedSkillLevel ?? 0, ...queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel)) : 0)
+      : null;
+    const omegaRestricted = needsOmegaUpgrade(typeID, required, mine, ceilings, ownLevel);
     // AddSkillAction (skill_requirement.py 279 to 287): none where the type needs omega.
     if (!omegaRestricted && !isSkillRequirementMet(typeID, required, mine)) {
       const notHeld = skillsNotHeld(listed, mine);
@@ -7565,16 +7575,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const open = viewFittingAskedSignal.get();
     const n = open?.n ?? (dialogsSaidCount += 1);
     viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {} });
+    const { contents, effectNames } = await fittingInfo(fitting);
+    const now = viewFittingAskedSignal.get();
+    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+  }
+
+  // The rack effects' names, as the numbers of their messages, read once.
+  let rackEffectNames: Readonly<Record<number, number | null>> | null = null;
+
+  /**
+   * fittingSvc.GetFittingInfoForScrollList: a fitting's contents by heading (fittingContents), with the names of the
+   * slot kinds' effects as their messages' numbers; what the display window and the fitting info tooltip
+   * (fittingInfoTooltip.LoadFittingInfoTooltip) list.
+   */
+  async function fittingInfo(fitting: SourcedFitting): Promise<{ readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> }> {
     const facts = await fittingTypeFacts([...new Set(fitting.modules.map((module) => module.typeID))]);
     const contents = fittingContents(
       fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
       (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
     );
-    const effectNames = Object.keys(open?.effectNames ?? {}).length > 0
-      ? open!.effectNames
-      : await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
-    const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+    if (rackEffectNames === null || Object.keys(rackEffectNames).length === 0) {
+      rackEffectNames = await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
+    }
+    return { contents, effectNames: rackEffectNames };
   }
 
   /**
@@ -21407,6 +21430,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openMultiBuy: (wanted: ReadonlyMap<number, number>) => openMultiBuy(wanted),
     editMultiBuy,
     answerMultiBuy,
+    fittingInfo,
     importMultiBuy,
     savedFittings: readonlySignal(savedFittingsSignal),
     communityFittingsEnabled: readonlySignal(communityFittingsEnabledSignal),
