@@ -3081,8 +3081,35 @@ function asLastAlert(value: JsonValue | undefined): { message: string; atMs: num
   return { message, atMs: asNumberOrNull(row.atMs) ?? 0 };
 }
 
+/**
+ * The bot rosters several of the page's windows poll at once: the hangar's and the landing's markers every five
+ * seconds (GET /api/bots/active), the Bot Manager's, the Companions' and the server list's rosters every three
+ * (GET /api/bots, each account's own). Measured with the four windows open on the hangar page: 38 rosters and 6
+ * marker reads in 30 seconds, of the same few answers. Here one asking per roster, account and BFF is shared:
+ * whoever asks while it is on its way, or within ROSTER_SHARE_MS of its asking, is given the same answer. A start or
+ * stop of a bot lets every answer go, so that a window reading after its own press sees the press. A call with its
+ * own fetch (a test's) is never shared.
+ */
+const ROSTER_SHARE_MS = 2_000;
+const rosterReads = new Map<string, { readonly at: number; readonly answer: Promise<unknown> }>();
+
+function sharedRosterRead<T>(path: string, options: ApiOptions, read: () => Promise<T>): Promise<T> {
+  if (options.fetch) return read();
+  const key = `${options.baseUrl ?? ""} ${path} ${"token" in options ? `token:${options.token ?? ""}` : "tab"}`;
+  const now = Date.now();
+  const kept = rosterReads.get(key);
+  if (kept && now - kept.at < ROSTER_SHARE_MS) return kept.answer as Promise<T>;
+  const answer = read();
+  rosterReads.set(key, { at: now, answer });
+  // A failed asking is not handed on to the next asker: it asks for itself.
+  answer.catch(() => {
+    if (rosterReads.get(key)?.answer === answer) rosterReads.delete(key);
+  });
+  return answer;
+}
+
 export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
-  const data = await getJson("/api/bots", options);
+  const data = await sharedRosterRead("/api/bots", options, () => getJson("/api/bots", options));
   return Array.isArray(data.bots) ? data.bots.map(asServerBot) : [];
 }
 
@@ -3154,7 +3181,7 @@ function asActiveServerBot(value: JsonValue): ActiveServerBot {
  * ship vitals before any sign-in exists.
  */
 export async function listActiveServerBots(options: ApiOptions = {}): Promise<ActiveServerBot[]> {
-  const data = await getJson("/api/bots/active", options);
+  const data = await sharedRosterRead("/api/bots/active", options, () => getJson("/api/bots/active", options));
   return Array.isArray(data.bots) ? data.bots.map(asActiveServerBot) : [];
 }
 
@@ -3164,11 +3191,12 @@ export async function startServerBot(
   grant: BotLaunchGrant,
   options: ApiOptions = {},
 ): Promise<ServerBot> {
+  rosterReads.clear();
   const data = await postJson(
     "/api/bots/start",
     { characterID, scriptID, grant: grant as unknown as JsonValue },
     options,
-  );
+  ).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 
@@ -3191,6 +3219,7 @@ export async function startServerCompanion(
   grant: BotLaunchGrant,
   options: ApiOptions = {},
 ): Promise<ServerBot> {
+  rosterReads.clear();
   const data = await postJson(
     "/api/bots/start",
     {
@@ -3200,12 +3229,13 @@ export async function startServerCompanion(
       grant: grant as unknown as JsonValue,
     },
     options,
-  );
+  ).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 
 export async function stopServerBot(botID: string, options: ApiOptions = {}): Promise<ServerBot> {
-  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options);
+  rosterReads.clear();
+  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options).finally(() => rosterReads.clear());
   return asServerBot(data.bot ?? null);
 }
 
