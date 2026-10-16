@@ -60,6 +60,9 @@ const TABLES = Object.freeze({
   // (evetypes.IsSkillAvailableForPurchase). One attribute of the types each, as typeShipGroups is.
   typeBasePrices: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "basePrice" }),
   typePublished: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "published" }),
+  // A type's portion size (evetypes.GetPortionSize), by which the market's average falls back to the base price where
+  // nothing traded in the week (marketsvc.GetAveragePrice).
+  typePortionSizes: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "portionSize" }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),

@@ -200,6 +200,54 @@ function toFiletime(value: JsonValue | undefined): bigint | null {
  * against it rather than trusted.
  */
 /**
+ * marketsvc.GetAveragePrice(typeID, days=7) (368 to 386): over the joined history's rows of the last `days` days, the
+ * sum of each day's average times its quantity over the sum of the quantities; with nothing traded, the type's base
+ * price over its portion size, or 1.0 where that is nothing; rounded to the hundredth. `now` is the clock in 100 ns
+ * ticks.
+ */
+export function averagePriceOf(
+  history: readonly MarketPriceHistoryRow[],
+  now: bigint,
+  fallback: { readonly basePrice: number | null; readonly portionSize: number | null },
+  days = 7,
+): number {
+  let volume = 0;
+  let priceVolume = 0.0;
+  for (const entry of history) {
+    if (entry.day === null || entry.day < now - BigInt(days) * DAY_OF_FILETIME) continue;
+    priceVolume += Number(entry.average) * entry.volume;
+    volume += entry.volume;
+  }
+  let average: number;
+  if (volume > 0) {
+    average = priceVolume / volume;
+  } else {
+    average = (fallback.basePrice ?? 0) / (fallback.portionSize || 1);
+    if (!(average > 0.0)) average = 1.0;
+  }
+  return Number(average.toFixed(2));
+}
+
+/** buySellItemContainerBase.GetDelta (57 to 63): how far a price is from the average, a fraction of it; nought with no price. */
+export function priceDelta(price: number | null, average: number): number {
+  return price === null ? 0 : (price - average) / average;
+}
+
+/**
+ * MultiBuy.GetOrderDelta (489 to 498): over the rows with a price, each row's distance from its average weighted by
+ * its share of the whole.
+ */
+export function orderDelta(rows: readonly { readonly total: number; readonly quantity: number; readonly average: number }[]): number {
+  const totalPrice = rows.reduce((sum, row) => sum + row.total, 0);
+  let change = 0;
+  for (const row of rows) {
+    const atAverage = row.quantity * row.average;
+    change += ((row.total - atAverage) / atAverage) * row.total / totalPrice;
+  }
+  return change;
+}
+
+/**
  * marketQuote.GetBestAskPriceInStationAndNumberOrders (marketsvc.py 603 to 616): the sell orders at the station,
  * cheapest first, taken until they hold the amount; the price of the last one taken, and how many were taken. Nulls
  * where the station's orders do not hold it.

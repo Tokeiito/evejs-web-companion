@@ -36,6 +36,7 @@
     type ClientWording,
   } from "../bridge/questions.ts";
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
+  import { priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
@@ -76,7 +77,24 @@
     "UI/Generic/Cancel": "Not now",
     "UI/Common/Quantity": "How many",
     "UI/Market/MarketQuote/NoStationSelected": "Nowhere to buy chosen",
+    "UI/Common/Percentage": "{[numeric]percentage, decimalPlaces=1}%",
+    "UI/Market/MarketQuote/MultiBuyAboveAverage": "Altogether these cost {percentage} above their average.",
+    "UI/Market/MarketQuote/MultiBuyTypesAboveAverage": "These cost far above their average:",
+    "UI/Market/MarketQuote/MultiBuyAboveAverageConfirmation": "Buy them all the same?",
+    "UI/Generic/Warning": "Careful",
   };
+  /**
+   * A row's distance from its average as the client's BuyDeltaContainer shows it (deltaContainer.py): an arrow up
+   * above the average, down below it, level at it; the percentage beside it, to a tenth under a hundred in a hundred and
+   * whole above, red above the average and green below for a buy.
+   */
+  function rowDelta(row: { readonly price: number | null; readonly average: number | null }): { readonly delta: number; readonly text: string } | null {
+    if (row.average === null || !(row.average > 0)) return null;
+    const delta = priceDelta(row.price, row.average);
+    if (delta === 0) return { delta, text: "" };
+    const percentage = Math.abs(delta) < 1.0 ? Math.round(delta * 1000) / 10 : Math.round(delta * 100);
+    return { delta, text: buyWord("UI/Common/Percentage", { percentage }) };
+  }
   $effect(() => {
     if ($multiBuyAsked === null) return;
     flow.requestWords([...Object.keys(MULTIBUY_WORDS), ...NUMERIC_WORD_LABELS]);
@@ -613,6 +631,7 @@
       </span>
       <ul class="multibuy-rows">
         {#each buy.rows as row (row.typeID)}
+          {@const shownDelta = row.loading ? null : rowDelta(row)}
           <li class="multibuy-row" class:none={!row.loading && row.price === null}>
             <TypeIcon typeID={row.typeID} name={nameOf("type", row.typeID)} size="sm" />
             <span class="multibuy-name">{nameOf("type", row.typeID)}</span>
@@ -623,6 +642,9 @@
             </span>
             <span class="multibuy-price">{row.loading ? "…" : row.price === null ? "-" : isk(row.price)}</span>
             <span class="multibuy-total">{row.loading ? "…" : row.price === null ? "-" : isk(row.price * row.qty * buy.multiplier)}</span>
+            <span class="multibuy-delta" class:above={shownDelta !== null && shownDelta.delta > 0} class:below={shownDelta !== null && shownDelta.delta < 0}>
+              {#if shownDelta !== null}{shownDelta.delta > 0 ? "▲" : shownDelta.delta < 0 ? "▼" : "="} {shownDelta.text}{/if}
+            </span>
             <button type="button" class="close" aria-label="Remove" disabled={buy.busy} onclick={() => void flow.editMultiBuy(buy.n, { remove: row.typeID })}>✕</button>
           </li>
         {/each}
@@ -822,7 +844,10 @@
   .multibuy-orders { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.85rem; }
   .multibuy-orders input { width: 5rem; }
   .multibuy-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.3rem; max-height: 50vh; overflow-y: auto; }
-  .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem auto; align-items: center; gap: 0.5rem; }
+  .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem 5.5rem auto; align-items: center; gap: 0.5rem; }
+  .multibuy-delta { text-align: right; font-size: 0.8rem; }
+  .multibuy-delta.above { color: #ff5050; }
+  .multibuy-delta.below { color: #00ff00; }
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
   .multibuy-qty { display: flex; flex-direction: column; }
   .multibuy-qty input { width: 6rem; }

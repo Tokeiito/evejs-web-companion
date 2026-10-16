@@ -3795,7 +3795,13 @@ export async function getRequiredSkills(
 export async function getTypePrices(
   typeIDs: readonly number[],
   options: ApiOptions = {},
-): Promise<{ readonly available: boolean; readonly basePrice: Readonly<Record<number, number | null>>; readonly published: Readonly<Record<number, boolean | null>> }> {
+): Promise<{
+  readonly available: boolean;
+  readonly basePrice: Readonly<Record<number, number | null>>;
+  readonly published: Readonly<Record<number, boolean | null>>;
+  /** Each type's portion size (evetypes.GetPortionSize), or null. */
+  readonly portionSize: Readonly<Record<number, number | null>>;
+}> {
   const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
     typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
@@ -3803,7 +3809,9 @@ export async function getTypePrices(
   const published: Record<number, boolean | null> = {};
   for (const [key, value] of Object.entries(record(data.basePrice))) basePrice[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
   for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
-  return { available: data.available === true, basePrice, published };
+  const portionSize: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.portionSize))) portionSize[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize };
 }
 
 /**

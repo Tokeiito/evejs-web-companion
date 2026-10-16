@@ -13185,7 +13185,8 @@ app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) 
 });
 
 // A type's base price and whether it is published, as the client's own data has them (evetypes.GetBasePrice and
-// IsPublished: the typeBasePrices and typePublished tables), for the types asked: what a skill book bought directly
+// IsPublished: the typeBasePrices and typePublished tables; and GetPortionSize, typePortionSizes, by which the
+// market's average falls back to the base price), for the types asked: what a skill book bought directly
 // costs (characterskills/common/purchase.py get_direct_purchase_price: the base price and 30 in a hundred more) and
 // whether it is sold so (evetypes.IsSkillAvailableForPurchase, with the type list of books for sale). A type the
 // client's data lacks has null. `available` is false when a table could not be read. At most 50 types at once.
@@ -13196,15 +13197,20 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
       const typeID = Number(part);
       if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
     }
-    const [prices, published] = await Promise.all([clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished")]);
+    const [prices, published, portions] = await Promise.all([
+      clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished"), clientBuiltData.table("typePortionSizes"),
+    ]);
     const basePrice = {};
     const isPublished = {};
+    const portionSize = {};
     for (const typeID of asked.slice(0, 50)) {
       const price = prices ? Number(prices[typeID]) : NaN;
       basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
       isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
+      const portion = portions ? Number(portions[typeID]) : NaN;
+      portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
-    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished });
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize });
   } catch (error) {
     next(error);
   }

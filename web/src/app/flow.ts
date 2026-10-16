@@ -41,8 +41,11 @@ import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInv
 import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
+  averagePriceOf,
   bestAskInStation,
   decodeEscrow,
+  orderDelta,
+  priceDelta,
   decodeOrderBook,
   decodeOwnOrders,
   decodePriceHistory,
@@ -230,6 +233,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -949,6 +953,8 @@ export interface MultiBuyRow {
   readonly numOrders: number | null;
   /** The price being read again (isUpdating). */
   readonly loading: boolean;
+  /** The type's average price over the week (the row's averagePrice: marketQuote.GetAveragePrice); null until read. */
+  readonly average: number | null;
 }
 
 /** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
@@ -6280,6 +6286,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // cache), kept for as long as it is open.
   const multiBuyAskedSignal = createSignal<MultiBuyAsk | null>(null);
   const multiBuyBooks = new Map<number, ReturnType<typeof decodeOrderBook>["sells"]>();
+  // And each type's average over the week, as its row reads it as it is made.
+  const multiBuyAverages = new Map<number, number>();
+
+  /**
+   * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
+   * with its arguments and made plain; the page's own words where it has none.
+   */
+  function templateWords(label: string, args: Readonly<Record<string, string | number>>, own: string): string {
+    const template = store.words.get().templates[label];
+    if (typeof template !== "string" || template === "") return own;
+    return plainText(formatTemplate(template, args, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) }));
+  }
+
+  /**
+   * The type's average price over the week as the client's row has it (buySellItemContainerBase: marketQuote
+   * .GetAveragePrice): its price history's two halves joined (GetHistoryRowList) and averaged; the base price over
+   * the portion size where nothing traded. Null where the history could not be read.
+   */
+  async function averagePriceFor(typeID: number): Promise<number | null> {
+    const kept = multiBuyAverages.get(typeID);
+    if (kept !== undefined) return kept;
+    try {
+      const [old, fresh, facts] = await Promise.all([
+        bridgeAsk("marketProxy", "GetOldPriceHistory", [typeID]),
+        bridgeAsk("marketProxy", "GetNewPriceHistory", [typeID]),
+        api.getTypePrices([typeID], callOptions).catch(() => null),
+      ]);
+      const now = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      const average = averagePriceOf(joinPriceHistory(decodePriceHistory(old), decodePriceHistory(fresh), now), now, {
+        basePrice: facts?.basePrice[typeID] ?? null,
+        portionSize: facts?.portionSize[typeID] ?? null,
+      });
+      multiBuyAverages.set(typeID, average);
+      return average;
+    } catch {
+      return null;
+    }
+  }
   // The client's Apply Skill Points window, one at a time, and its levels.
   const applyPointsAskedSignal = createSignal<ApplyPointsAsk | null>(null);
   let applyPointsLevels: readonly SkillLevel[] = [];
@@ -6562,12 +6606,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       rows: [],
       busy: false,
     };
-    if (open === null) multiBuyBooks.clear();
+    if (open === null) {
+      multiBuyBooks.clear();
+      multiBuyAverages.clear();
+    }
     const rows = [...base.rows];
     for (const [typeID, qty] of wanted) {
       const at = rows.findIndex((row) => row.typeID === typeID);
       if (at >= 0) rows[at] = { ...rows[at]!, qty: rows[at]!.qty + qty, loading: true };
-      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true });
+      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null });
     }
     multiBuyAskedSignal.set({ ...base, rows });
     await multiBuyPrices();
@@ -6585,7 +6632,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         multiBuyBooks.set(row.typeID, sells);
       }
       const best = bestAskInStation(sells, asked.stationID, row.qty * asked.multiplier);
-      return { ...row, price: best.price, numOrders: best.numOrders, loading: false };
+      const average = row.average ?? await averagePriceFor(row.typeID);
+      return { ...row, price: best.price, numOrders: best.numOrders, loading: false, average };
     }));
     const now = multiBuyAskedSignal.get();
     if (now === null || now.n !== asked.n) return;
@@ -6632,6 +6680,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (asked.stationID === null || buying.length === 0) {
       sayDialog("uiwarning03", null, "There is nothing in the window that can be bought here.");
       return;
+    }
+    // ContinueAfterWarning (buySellMultiBase.py 336 to 362): where any row's price is more than its average again
+    // over (GetItemsWithBadDelta), or the whole order's is (GetOrderDeltaTextForWarning), the client asks first,
+    // its CustomQuestion under Warning, No the default.
+    const valued = buying.filter((row) => row.average !== null && row.average > 0);
+    const high = valued
+      .map((row) => ({ row, delta: priceDelta(row.price, row.average!) }))
+      .filter((each) => each.delta > 1.0)
+      .sort((left, right) => right.delta - left.delta);
+    const whole = valued.length === 0 ? 0 : orderDelta(valued.map((row) => ({
+      total: row.price! * row.qty * asked.multiplier, quantity: row.qty * asked.multiplier, average: row.average!,
+    })));
+    if (high.length > 0 || whole > 1.0) {
+      const percent = (delta: number): string => templateWords("UI/Common/Percentage", { percentage: Math.round(delta * 100) }, `${Math.round(delta * 100)}%`);
+      const lines: string[] = [];
+      if (whole > 1.0) lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverage", { percentage: percent(whole) }, `These are ${percent(whole)} above the average.`), "");
+      if (high.length > 0) {
+        lines.push(templateWords("UI/Market/MarketQuote/MultiBuyTypesAboveAverage", {}, "These are well above their average:"));
+        for (const { row, delta } of high) lines.push(`- ${nameCache.get(nameKey("type", row.typeID)) ?? `Type ${row.typeID}`} (${percent(delta)})`);
+        lines.push("");
+      }
+      lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverageConfirmation", {}, "Buy them all the same?"));
+      const header = templateWords("UI/Generic/Warning", {}, "Warning");
+      const yes = await askDialog("CustomQuestion", { type: "dict", entries: [["header", header], ["question", lines.join("<br>")]] }, lines.join("\n"));
+      if (!yes) return;
     }
     multiBuyAskedSignal.set({ ...asked, busy: true });
     try {
