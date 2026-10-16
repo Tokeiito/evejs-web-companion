@@ -101,6 +101,8 @@ function decodeQueueEntry(value: JsonValue): SkillQueueEntry | null {
     startTimeMs: asInstant(record.startTimeMs),
     endTimeMs: asInstant(record.endTimeMs),
     skillPointsPerMinute: Math.max(0, asNumber(record.skillPointsPerMinute)),
+    lengthMs: typeof record.lengthMs === "number" && Number.isFinite(record.lengthMs) ? record.lengthMs : null,
+    accelerated: record.accelerated === true,
   };
 }
 
@@ -120,6 +122,7 @@ function decodeQueue(value: JsonValue | undefined): SkillQueueState | null {
     active: record.active === true,
     entries,
     endTimeMs: asInstant(record.endTimeMs),
+    reckonedEndMs: asInstant(record.reckonedEndMs),
     maxEntries: Math.max(0, asNumber(record.maxEntries)),
   };
 }

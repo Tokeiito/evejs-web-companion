@@ -3123,12 +3123,21 @@ export interface SkillQueueEntry {
   readonly endTimeMs: number | null;
   /** Non-zero only for the head: a later entry's rate is not knowable yet. */
   readonly skillPointsPerMinute: number;
+  /**
+   * The level's own training time as the client reckons it (skillQueueSvc.GetAllTrainingLengths), a booster running
+   * out on the way; null or absent where it is not reckoned (the web gateway's sheet).
+   */
+  readonly lengthMs?: number | null;
+  /** A skill accelerator runs as the level begins (its isAccelerated). */
+  readonly accelerated?: boolean;
 }
 
 export interface SkillQueueState {
   readonly active: boolean;
   readonly entries: readonly SkillQueueEntry[];
   readonly endTimeMs: number | null;
+  /** When the queue ends as the client reckons it (GetTrainingEndTimeOfQueue); null or absent where not reckoned. */
+  readonly reckonedEndMs?: number | null;
   /** The server's own cap on queue length, shown rather than enforced here. */
   readonly maxEntries: number;
 }

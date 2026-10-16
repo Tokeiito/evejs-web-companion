@@ -39,11 +39,25 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { SkillRow } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { plainText } from "../bridge/clientWords.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const skills = store.skills;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // A queued level a skill accelerator runs as it begins is marked (skillQueueSkillEntry.UpdateAcceleratedMarker): the
+  // booster picture, its hint the install's words.
+  const ACCELERATED_LABEL = "UI/SkillQueue/Skills/AcceleratedTraining";
+  $effect(() => {
+    flow.requestWords([ACCELERATED_LABEL]);
+  });
+  const acceleratedWord = $derived.by(() => {
+    const template = $words.templates[ACCELERATED_LABEL];
+    return plainText(typeof template === "string" && template !== "" ? template : "A booster speeds this");
+  });
 
   let busy = $state(false);
   let error = $state("");
@@ -359,7 +373,7 @@
       {#if paused}
         Nothing on the queue is training while it is paused.
       {:else}
-        Everything on the queue finishes {finishText(queue.endTimeMs)}.
+        Everything on the queue finishes {finishText(queue.reckonedEndMs ?? queue.endTimeMs)}.
       {/if}
     </p>
     <div class="table-wrap overflow-x-auto">
@@ -368,7 +382,7 @@
           <tr>
             <th>Skill</th>
             <th>To</th>
-            <th class="num">Finishes</th>
+            <th class="num">Time</th>
             <th>Order</th>
           </tr>
         </thead>
@@ -382,7 +396,22 @@
                 </span>
               </td>
               <td data-label="To">{romanLevel(entry.toLevel)}</td>
-              <td data-label="Finishes" class="num">{paused ? "paused" : finishText(entry.endTimeMs)}</td>
+              <!-- Each level's time as the client's queue shows it: the level in training counts down to its end, every other
+                   its own length (GetAllTrainingLengths); and the booster's mark. Where it was not reckoned, its end. -->
+              <td data-label="Time" class="num">
+                {#if paused}
+                  paused
+                {:else if index === 0 && queue.active && entry.endTimeMs !== null}
+                  {formatDuration(Math.max(0, entry.endTimeMs - serverNowMs))}
+                {:else if entry.lengthMs !== null && entry.lengthMs !== undefined}
+                  {formatDuration(entry.lengthMs)}
+                {:else}
+                  {finishText(entry.endTimeMs)}
+                {/if}
+                {#if entry.accelerated}
+                  <img class="accelerated" src={clientTexture("res:/UI/Texture/Crimewatch/booster.png")} alt={acceleratedWord} title={acceleratedWord} width="16" height="16" />
+                {/if}
+              </td>
               <td data-label="Order">
                 <span class="queue-controls">
                   <button

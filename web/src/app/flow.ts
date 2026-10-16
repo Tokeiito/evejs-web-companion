@@ -177,7 +177,7 @@ import {
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
-import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
   allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
@@ -6571,12 +6571,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
     };
     // The points each skill has now, the one in training at its true rate since it began (the Skills window's sheet).
+    // The accelerators with their expiries, for the points in training (GetEstimatedSkillPointsTrained).
+    const accelerators = boostersAnswered(boostersAnswer)
+      .filter((booster) => boosterTypes.includes(booster.typeID))
+      .map((booster) => ({
+        expiryMs: booster.expiryMs,
+        bonus: new Map([...ATTRIBUTE_BONUS_BY_ATTRIBUTE].map(([attributeID, bonusID]) => [attributeID, boosterBonuses[booster.typeID]?.[bonusID] ?? 0])),
+      }));
     const sheet = buildSkillSheet({
       characterID: 0,
       characterName: "",
       skills: skillsAnswer,
       allSkills: allSkillsAnswer,
       queue,
+      boosters: accelerators,
+      alpha: !omega,
       freeSkillPoints: 0,
       attributes: attributesAnswer,
       now: serverNow,
@@ -12362,8 +12371,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const online = store.station.get().online;
     const made = online === null
       ? null
-      : await readSkillSheet(bridgeAsk, { characterID: online.characterID, characterName: online.characterName, typeFacts: skillTypeFacts, now: serverNow });
+      : await readSkillSheet(bridgeAsk, {
+        characterID: online.characterID, characterName: online.characterName, typeFacts: skillTypeFacts, now: serverNow,
+        accelerators: skillAccelerators, alpha: store.station.get().cloneGrade === CLONE_GRADE_ALPHA,
+      });
     return made ?? (await api.getSkills(callOptions)).skills;
+  }
+
+  /**
+   * Of boosters' types, the skill accelerators and each one's bonus to each attribute (skillsvc._GetSkillAcceleratorBoosters:
+   * IsBoosterSkillAccelerator, by the type's passive effects; add_booster: the type's bonus attribute for each).
+   */
+  async function skillAccelerators(boosterTypeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, number>>> {
+    const effects = await api.loadPassiveEffects(boosterTypeIDs, callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>));
+    const accelerators = boosterTypeIDs.filter((booster) => isBoosterSkillAccelerator(effects[booster]));
+    if (accelerators.length === 0) return new Map();
+    const bonuses = await api.fetchTypeDogma(accelerators, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
+    return new Map(accelerators.map((booster) => [
+      booster,
+      new Map([...ATTRIBUTE_BONUS_BY_ATTRIBUTE].map(([attributeID, bonusID]) => [attributeID, bonuses[booster]?.[bonusID] ?? 0])),
+    ]));
   }
 
   async function loadSkills(): Promise<void> {
