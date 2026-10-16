@@ -77,6 +77,7 @@ const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cache
 const { brokersFeeRate, brokersFeeRateInStructure } = require("./brokerFee");
 const { averagePrice, historyRows } = require("./priceHistory");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
+const { createPilotInventory, CONTAINER_HANGAR: INVENTORY_HANGAR } = require("./pilotInventory");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -561,11 +562,10 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
 /**
  * A container's two listings, which the client's inventory cache keeps (invCacheContainer.List, ListByFlags, in
  * invCache.py): a flag's items are asked for once, and from then on the cache goes by the server's word of each
- * item that changes. Here a listing is kept as the server answered it, by the handle it was asked on and what
- * was asked, and every listing is forgotten when anything may have changed one: at either of the server's two
- * notices of an item, in another place or ship, and at any write of the pilot's own, done or refused. What is
- * forgotten is asked for when it is next wanted. (The client works each change into what it holds, and asks
- * again for nothing.)
+ * item that changes. A container bound through GetInventory or GetInventoryFromId is kept so, as the client keeps
+ * it (pilotInventory.js). A listing on any other handle is kept as the server answered it, by the handle and what
+ * was asked, and forgotten when anything may have changed one: at either of the server's two notices of an item,
+ * in another place or ship, and at any write of the pilot's own, done or refused.
  */
 const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
 const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
@@ -1545,6 +1545,39 @@ function createGamePortPilots({
 
   const attribute = (entry, name) => positive(entry.session.attributes[name]);
 
+  /** The session as the client's inventory cache reads it; corprole whole, as roles go past what a number holds. */
+  const inventorySession = (entry) => {
+    const roles = entry.session.attributes.corprole;
+    return {
+      stationid: attribute(entry, "stationid"),
+      charid: entry.characterID,
+      corpid: attribute(entry, "corpid"),
+      shipid: attribute(entry, "shipid"),
+      corprole: typeof roles === "bigint" ? roles : typeof roles === "number" && Number.isSafeInteger(roles) ? BigInt(roles) : 0n,
+    };
+  };
+
+  /**
+   * The container an inventory bind is for, as the client's inventory cache keys it, or null for none it keeps:
+   * GetInventory of where the pilot is docked, the station's hangar (containerHangar, None), or in a structure the
+   * structure itself (invCache.GetInventory 502 to 504); GetInventoryFromId(itemID), the item (553).
+   */
+  function inventoryContainerOf(entry, method, args) {
+    if (method === "GetInventory") {
+      const structureID = attribute(entry, "structureid");
+      if (positive(args[0]) === null || positive(args[0]) !== (structureID ?? attribute(entry, "stationid"))) return null;
+      return entry.inventory.keyOf(structureID ?? INVENTORY_HANGAR, null);
+    }
+    if (method === "GetInventoryFromId") {
+      const itemID = positive(args[0]);
+      return itemID === null ? null : entry.inventory.keyOf(itemID, null);
+    }
+    return null;
+  }
+
+  /** A listing's flag as the client has it: a number, or None. */
+  const flagOf = (value) => (value === null || value === undefined ? null : positive(value) ?? (value === 0 || value === 0n ? 0 : null));
+
   // ── the nine ──────────────────────────────────────────────────────────────
 
   async function selectCharacter(args = [], kwargs = null, sessionFields = {}) {
@@ -1759,6 +1792,8 @@ function createGamePortPilots({
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
+      /** The client's inventory cache: each container bound, by its key, with what it has listed (pilotInventory.js). */
+      inventory: createPilotInventory({ rowFields, session: () => inventorySession(entry) }),
       /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
       saleAverages: new Map(),
       /** beyonce.GetFormations as the server answered it, or the asking of it under way; null before it is asked (formationsKnown). */
@@ -1851,6 +1886,11 @@ function createGamePortPilots({
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
+      if (notification.method === "OnItemChange") entry.inventory.itemChanged((notification.args ?? [])[0], (notification.args ?? [])[1]);
+      if (notification.method === "OnItemsChanged") {
+        for (const row of itemsOf((notification.args ?? [])[0])) entry.inventory.itemChanged(row, (notification.args ?? [])[1]);
+      }
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
@@ -1875,6 +1915,17 @@ function createGamePortPilots({
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
         entry.listings.forget();
+      }
+      // invCache.ProcessSessionChange (143 to 168) and OnSessionChanged (173 to 181): the corporation's containers let
+      // go at new roles, docked; the ship left behind in space let go alone; everything in another station, structure
+      // or solar system.
+      if ("corprole" in changes && (attribute(entry, "stationid") !== null || attribute(entry, "structureid") !== null)) {
+        entry.inventory.dropOwnedBy(attribute(entry, "corpid"));
+      }
+      if ("shipid" in changes && attribute(entry, "solarsystemid") !== null) {
+        entry.inventory.drop(entry.inventory.keyOf(changes.shipid[0], null));
+      } else if ("stationid" in changes || "structureid" in changes || "solarsystemid" in changes) {
+        entry.inventory.forget();
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
@@ -4237,8 +4288,11 @@ function createGamePortPilots({
       });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
-      // targetMgr.DoBallsRemove: a ball that goes is no target any more.
-      entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
+      // targetMgr.DoBallsRemove: a ball that goes is no target any more; invCache.DoBallRemove: nor a container held.
+      entry.space.park.onBallsRemoved = (gone) => {
+        entry.targets.ballsRemoved(gone.map((each) => each.id));
+        for (const each of gone) entry.inventory.drop(entry.inventory.keyOf(each.id, null));
+      };
       entry.space.park.onBallsAdded = (slims) => {
         ballsPrimed(entry, slims);
         // targetMgr.DoBallsAdded_: a target held for its ball is one now.
@@ -4979,13 +5033,11 @@ function createGamePortPilots({
   function stackSizeOf(entry, itemID) {
     const wanted = positive(itemID);
     if (wanted === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        const [size, quantity] = [fields.stacksize, fields.quantity].map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
-        return size !== null ? size : quantity === null ? null : quantity < 0 ? 1 : quantity;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      const [size, quantity] = [fields.stacksize, fields.quantity].map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
+      return size !== null ? size : quantity === null ? null : quantity < 0 ? 1 : quantity;
     }
     return null;
   }
@@ -4999,12 +5051,10 @@ function createGamePortPilots({
     const wanted = positive(itemID);
     const shipID = positive(attribute(entry, "shipid"));
     if (wanted === null || shipID === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        return positive(fields.locationID) === shipID && inASlot(fields.flagID) ? fields.flagID : null;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      return positive(fields.locationID) === shipID && inASlot(fields.flagID) ? fields.flagID : null;
     }
     return null;
   }
@@ -5017,15 +5067,31 @@ function createGamePortPilots({
   function rowOfItem(entry, itemID) {
     const wanted = positive(itemID);
     if (wanted === null) return null;
-    for (const listing of entry.listings.answers()) {
-      for (const row of itemsOf(listing)) {
-        const fields = rowFields(row);
-        if (fields === null || positive(fields.itemID) !== wanted) continue;
-        return row && row.type === "packedrow" ? wireToBridgeJson(row) : null;
-      }
+    for (const row of listedRows(entry)) {
+      const fields = rowFields(row);
+      if (fields === null || positive(fields.itemID) !== wanted) continue;
+      return row && row.type === "packedrow" ? wireToBridgeJson(row) : null;
     }
     return null;
   }
+
+  /**
+   * A container's listing as the client's inventory cache answers it: from the container held for what the handle
+   * was bound to, asked only for what it has not listed (pilotInventory.js); a handle bound to no container held, as
+   * the listing it asked was answered (INVENTORY_LISTINGS).
+   */
+  function listedRead(entry, object, boundHandle, method, form, sent) {
+    if (object.container === undefined) return entry.listings.read(listingKeptAs(boundHandle, form), sent);
+    const kwargs = form.kwargs ?? {};
+    const typeID = kwargs.typeID === undefined ? null : positive(kwargs.typeID);
+    if (method === "List") return entry.inventory.list(object.container, flagOf(kwargs.flag), () => sent(), typeID);
+    const flags = itemsOf(kwargs.flags).map(flagOf).filter((flag) => flag !== null);
+    // self.moniker.ListByFlags(flags=uncachedFlags): only the flags not listed are asked.
+    return entry.inventory.listByFlags(object.container, flags, (unlisted) => sent({ ...form, kwargs: { ...kwargs, flags: { type: "list", items: unlisted } } }), typeID);
+  }
+
+  /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
+  const listedRows = (entry) => [...entry.inventory.rows(), ...entry.listings.answers().flatMap((listing) => itemsOf(listing))];
 
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
@@ -5477,6 +5543,15 @@ function createGamePortPilots({
     // fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked. So
     // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
+    // invCache.GetInventory and GetInventoryFromId: a container already held is the one given, and nothing is asked
+    // (GetInventoryFromId 553 to 556, GetInventory 527 to 531).
+    const container = service === "invbroker" ? inventoryContainerOf(entry, method, Array.isArray(args) ? args : []) : null;
+    const heldObject = container === null ? null : entry.inventory.boundObject(container);
+    if (heldObject !== null) {
+      const handle = randomBytes(24).toString("base64url");
+      entry.bound.set(handle, { objectID: heldObject, service, container });
+      return { boundHandle: handle, service, method, notifications: drain(entry) };
+    }
     ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
@@ -5504,8 +5579,10 @@ function createGamePortPilots({
     }
     if (!objectID) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
     const boundHandle = randomBytes(24).toString("base64url");
-    const object = { objectID, service };
+    const object = container === null ? { objectID, service } : { objectID, service, container };
     entry.bound.set(boundHandle, object);
+    // The container held from now on, for what it lists and to be given again (pilotInventory.js).
+    if (container !== null) entry.inventory.hold(container, objectID);
     // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), from the answer on.
     if (method === "CreateFleet") entry.fleet = object;
     return { boundHandle, service, method, notifications: drain(entry) };
@@ -5547,9 +5624,9 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
-    /** The call itself, noted as it is sent. */
-    const sent = async () => {
-      ledger.note(service, method, form);
+    /** The call itself, noted as it is sent; `asSent` where it goes otherwise than it came (a listing of only what is not listed). */
+    const sent = async (asSent = form) => {
+      ledger.note(service, method, asSent);
       // fittingSvc.LoadFitting: the fitting is applied on the ship's own inventory, invCache.GetInventoryFromId(ship),
       // which the location's manager is asked for. Where the call comes on the manager's handle, the ship's inventory
       // is had first; where it comes on the ship's own inventory (the page's call), it goes there as it is.
@@ -5560,8 +5637,8 @@ function createGamePortPilots({
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
-        ? entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs)
-        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(form.args), form.kwargs);
+        ? entry.session.callBound(object.objectID, method, argumentsToWire(asSent.args), asSent.kwargs)
+        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(asSent.args), asSent.kwargs);
     };
     // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
     const listing = service === "invbroker" && INVENTORY_LISTINGS.has(method);
@@ -5569,7 +5646,7 @@ function createGamePortPilots({
     const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
     try {
-      result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
+      result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
       if (mayChangeContents(service, method)) entry.listings.forget();
       forgetKeptAfter(entry, service, method);
