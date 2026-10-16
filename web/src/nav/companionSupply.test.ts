@@ -209,6 +209,15 @@ test("losing drones below a full flight is said; launching them is not", () => {
   assert.deepEqual(said, ["Low on drones: 3 left (0 in bay, 3 out)."]);
 });
 
+test("a recovered drone, a singleton the bay reports as -1, counts as one", () => {
+  const recovered = obs({ combatDroneStacks: [
+    { itemID: 8001, typeID: 2488, quantity: -1 },
+    { itemID: 8002, typeID: 2488, quantity: -1 },
+    { itemID: 8003, typeID: 2488, quantity: 3 },
+  ] });
+  assert.match(statusLine(REQUEST, recovered, FRESH_COMPANION_SUPPLY), /Drones: 5 in bay, 0 out\.$/);
+});
+
 test("every drone gone is said as out of drones", () => {
   const none = obs({ combatDroneStacks: [], combatDroneIDs: [] });
   const { said } = supervise([
