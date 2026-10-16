@@ -277,6 +277,36 @@ test("on site: a wreck whose lock never takes is left after three tries, and the
   assert.deepEqual(alone.action, { kind: "moveBookmarks", fromFolderID: FROM, toFolderID: DONE, bookmarkIDs: [NEAR_SITE] });
 });
 
+test("on site: a beam whose can never comes nearer is switched off and taken again; after a second stall the ship goes to the can", () => {
+  // Seen live 2026-10-16: a beam cycled on a can for five minutes, the can never moved, and the salvager held position.
+  const TRACTOR = 601;
+  const can = { itemID: 4501, kind: "container", ownerID: 90000001, corporationID: null, position: { x: 3_300, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const grid = (beamOn: boolean) => obs({
+    myCharacterID: 90000001, tractorModuleIDs: [TRACTOR], salvageModuleIDs: [], maxLockedTargets: 3, maxTargetRangeM: 30_000, lockedTargetIDs: [],
+    snapshot: { ship: { ...SHIP, activeModuleIDs: beamOn ? [TRACTOR] : [], activeModuleTargets: beamOn ? [{ moduleID: TRACTOR, targetID: 4501 }] : [],
+      moduleRanges: [{ moduleID: TRACTOR, rangeM: 40_000 }] }, entities: [can] } as never,
+  });
+  let mem: MacroMemory = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
+  const run = (beamOn: boolean) => { const t = salvager(step, grid(beamOn), mem, NB); mem = t.nextMem; return t; };
+  assert.deepEqual(run(false).action, { kind: "activate", moduleID: TRACTOR, targetID: 4501 });
+  // Running, the can not moving: a few ticks of patience, then off and on again.
+  const untilActs = () => {
+    for (let k = 0; k < 10; k++) {
+      const t = run(true);
+      if (t.action.kind !== "wait") return { t, waited: k };
+    }
+    throw new Error("the beam was never switched off");
+  };
+  const first = untilActs();
+  assert.equal(first.waited, 5);
+  assert.deepEqual(first.t.action, { kind: "salvageBatch", steps: [{ kind: "deactivate", moduleID: TRACTOR }, { kind: "activate", moduleID: TRACTOR, targetID: 4501 }] });
+  // A second stall: the can is not tractored again, and the ship goes to it.
+  const second = untilActs();
+  assert.deepEqual(second.t.action, { kind: "deactivate", moduleID: TRACTOR });
+  const after = run(false);
+  assert.equal(after.action.kind, "gotoPoint");
+});
+
 test("on site: a tractor beam whose wreck has arrived is switched off, so it can take the next", () => {
   const TRACTOR = 601;
   const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [4103] } };

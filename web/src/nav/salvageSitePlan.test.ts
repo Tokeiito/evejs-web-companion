@@ -228,3 +228,9 @@ test("spare salvagers double up: five salvagers on three wrecks run 2/2/1, the l
   plan = planSalvageTick(input({ wrecks: free, tractors: [], salvagers: [mod(11, true, 100), mod(12, true, 101), mod(13, true, 102), mod(14)], lockedTargetIDs: locks }));
   assert.deepEqual(act(plan), { kind: "lock", targetID: 103 });
 });
+
+test("a tractor whose pull has stalled is switched off, to be taken again", () => {
+  const w = [wreck(100, 8_000, { lootable: true })];
+  const plan = planSalvageTick(input({ wrecks: w, tractors: [mod(1, true, 100)], salvagers: [], stalledTractorIDs: [1] }));
+  assert.deepEqual(act(plan), { kind: "deactivate", moduleID: 1 });
+});

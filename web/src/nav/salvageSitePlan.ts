@@ -160,6 +160,11 @@ export interface SalvagePlanInput {
   readonly standOffM?: number;
   /** The station the planner last sent the ship to, echoed back by the coordinator; null/absent when none. */
   readonly committedAnchor?: SalvageVec | null;
+  /**
+   * Tractor beams whose target has not come any closer for a while (the coordinator watches the distance). Each is
+   * switched off, to be taken again: a beam that runs and never pulls was seen live, and a fresh one pulled at once.
+   */
+  readonly stalledTractorIDs?: readonly number[];
   /** Within this of the committed station counts as arrived. Default 400. */
   readonly anchorArrivalM?: number;
 }
@@ -267,6 +272,14 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
     if (it !== undefined && settled(it)) {
       return { action: { kind: "deactivate", moduleID: m.moduleID }, why: `Tractor target ${Math.round(it.d)} m away has arrived; freeing the beam for the next wreck.` };
     }
+  }
+
+  // 2b. a tractor whose pull has stalled is freed, to be taken again (or, once the coordinator gives the item up as
+  // not tractorable, for another)
+  const stalled = new Set(input.stalledTractorIDs ?? []);
+  for (const m of input.tractors) {
+    if (!m.active || !stalled.has(m.moduleID)) continue;
+    return { action: { kind: "deactivate", moduleID: m.moduleID }, why: "A tractor beam has not brought its target any closer; switching it off to take it again." };
   }
 
   // ── Module bookkeeping ─────────────────────────────────────────────────────
