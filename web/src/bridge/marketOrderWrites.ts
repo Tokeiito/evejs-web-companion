@@ -208,11 +208,13 @@ export interface MultiBuyItem {
  * (src/gamePort/retailCalls.js); not for the corporation. Answers how many orders the server made. Fails as the call
  * fails.
  */
-export async function buyMultipleItems(act: Ask, stationID: number, items: readonly MultiBuyItem[]): Promise<readonly ListedOrder[]> {
+export async function buyMultipleItems(act: Ask, stationID: number, items: readonly MultiBuyItem[], useCorp = false): Promise<readonly ListedOrder[]> {
+  // marketsvc.BuyMulti(stationID, itemList, useCorp): the corporation's wallet where the window's box is ticked
+  // (buySellMultiBase.TradingForCorp).
   const answered = await act("marketProxy", "BuyMultipleItems", [
     stationID,
     items.map((item) => ({ stationID, typeID: item.typeID, price: roundPrice(item.price), quantity: item.quantity, minVolume: 1 })),
-    false,
+    useCorp,
   ]);
   // marketsvc.BuyMulti: the orders made, which the window keeps the numbers of (_PerformTrade, 307 to 308).
   return ordersListed(answered);

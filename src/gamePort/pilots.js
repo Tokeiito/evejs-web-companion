@@ -2294,6 +2294,9 @@ function createGamePortPilots({
         // none, and the roles a 64-bit mask, so as its digits. The page keeps them as the session's changes say.
         allianceID: attribute(entry, "allianceid"),
         corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
+        // session.corpAccountKey: the corporation wallet division the pilot trades from, 1000 for the master wallet
+        // (corporation.GetMyCorpAccountName); none where the session has none.
+        corpAccountKey: attribute(entry, "corpAccountKey"),
         shipID: attribute(entry, "shipid"),
       },
     };

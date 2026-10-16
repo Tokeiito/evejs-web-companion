@@ -65,6 +65,11 @@ export interface OnlineCharacterState {
    * does not say them.
    */
   readonly corpRole?: string | null;
+  /**
+   * session.corpAccountKey: the corporation wallet division the pilot trades from (1000 the master wallet, 1001 to
+   * 1006 the second to the seventh); null where the session has none or the transport does not say it.
+   */
+  readonly corpAccountKey?: number | null;
 }
 
 /**

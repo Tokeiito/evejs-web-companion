@@ -106,7 +106,22 @@
     "UI/Market/MarketQuote/TotalPrice": "Total",
     // The import's lines not read (ImportShoppingList, CustomInfo): asked here, said by the flow.
     "UI/SkillQueue/CouldNotReadLines": "These lines were not understood:",
+    "UI/Market/MarketQuote/UseCorpAccount": "Pay from {accountName}",
+    "UI/Corporations/Common/CorporateDivisionMasterWallet": "Master wallet",
+    "UI/Corporations/Common/CorporateDivisionWalletSecond": "Wallet division 2",
+    "UI/Corporations/Common/CorporateDivisionWalletThird": "Wallet division 3",
+    "UI/Corporations/Common/CorporateDivisionWalletFourth": "Wallet division 4",
+    "UI/Corporations/Common/CorporateDivisionWalletFifth": "Wallet division 5",
+    "UI/Corporations/Common/CorporateDivisionWalletSixth": "Wallet division 6",
+    "UI/Corporations/Common/CorporateDivisionWalletSeventh": "Wallet division 7",
   };
+  /** The words for each wallet division where the corporation named it none (bco_corporations.GetDivisionNames, 8 to 14). */
+  const WALLET_DIVISION_WORDS = ["UI/Corporations/Common/CorporateDivisionMasterWallet", "UI/Corporations/Common/CorporateDivisionWalletSecond",
+    "UI/Corporations/Common/CorporateDivisionWalletThird", "UI/Corporations/Common/CorporateDivisionWalletFourth", "UI/Corporations/Common/CorporateDivisionWalletFifth",
+    "UI/Corporations/Common/CorporateDivisionWalletSixth", "UI/Corporations/Common/CorporateDivisionWalletSeventh"] as const;
+  /** corporation.GetCorpAccountName: the division's name, the corporation's own or the client's word for it. */
+  const corpAccountName = (account: { readonly division: number; readonly name: string | null }): string =>
+    account.name ?? buyWord(WALLET_DIVISION_WORDS[account.division - 1] ?? WALLET_DIVISION_WORDS[0]);
   /** eveFormat.FmtAmt(amount, showFraction=2), as the export writes a price: grouped by thousands, two places. */
   const twoPlaces = (amount: number): string => new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
   /**
@@ -791,6 +806,14 @@
         {/each}
       </ul>
       <!-- UpdateNumbers: the total, its description beside it from a million; its tooltip on it and on its info mark, shown where there is a total. -->
+      <!-- buySellMultiBase.DrawCheckBox: "use the corporation's account", for a pilot who may trade for it. -->
+      {#if buy.corpAccount !== null}
+        <label class="multibuy-corp">
+          <input type="checkbox" checked={buy.useCorp} disabled={buy.busy || buy.disabled}
+            onchange={(event) => void flow.editMultiBuy(buy.n, { useCorp: (event.currentTarget as HTMLInputElement).checked })} />
+          {buyWord("UI/Market/MarketQuote/UseCorpAccount", { accountName: corpAccountName(buy.corpAccount) })}
+        </label>
+      {/if}
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
         <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>

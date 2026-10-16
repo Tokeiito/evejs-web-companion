@@ -1784,6 +1784,7 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
         corpRole: typeof outcome.session.corpRole === "string" && /^\d+$/.test(outcome.session.corpRole)
           ? outcome.session.corpRole
           : null,
+        corpAccountKey: Number.isSafeInteger(outcome.session.corpAccountKey) ? outcome.session.corpAccountKey : null,
       },
       station: buildStationStatic(outcome.session.stationID),
       notifications: outcome.notifications,

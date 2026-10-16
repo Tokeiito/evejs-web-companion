@@ -157,6 +157,7 @@ export type FeedEvent =
       readonly corporationID?: number | null;
       readonly allianceID?: number | null;
       readonly corpRole?: string | null;
+      readonly corpAccountKey?: number | null;
     }
   // Goal R6b — the docked station changed on the SAME live session (autopilot
   // arrival / manual dock), learned from a flight-status snapshot. Re-points the

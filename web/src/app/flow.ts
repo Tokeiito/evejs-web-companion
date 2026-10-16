@@ -175,7 +175,7 @@ import {
   decodeTransactions as decodeWalletTransactions,
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
-import { createWalletReads } from "../bridge/walletReads.ts";
+import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
@@ -249,6 +249,7 @@ const OWNER_SYSTEM = 1;
 const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
+import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
   ActivityRead,
@@ -988,6 +989,14 @@ export interface MultiBuyAsk {
    * Buy is not offered meanwhile.
    */
   readonly disabled: boolean;
+  /**
+   * The corporation wallet the window offers to buy from (buySellMultiBase._CanTradeForCorp, 148 to 153): its
+   * division, 1 the master wallet to 7, and the name the corporation gave it (none for the master wallet, which has
+   * the client's word); null where the pilot may not trade for its corporation or the session names no account.
+   */
+  readonly corpAccount: { readonly division: number; readonly name: string | null } | null;
+  /** The box ticked (TradingForCorp): the buy is paid from the corporation's wallet. */
+  readonly useCorp: boolean;
 }
 
 export interface SkillBooksAsk {
@@ -2211,7 +2220,7 @@ export interface AppFlow {
   /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
   openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
   /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
-  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void>;
+  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
   /** Its Buy, or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "cancel"): Promise<void>;
   /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
@@ -3568,7 +3577,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
-    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole")) {
+    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey")) {
       const ownerOf = (value: unknown): number | null => {
         const id = Number(wholeDigits(value) ?? Number.NaN);
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -3578,6 +3587,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpid") ? { corporationID: ownerOf(sessionChangeValue(method, args, "corpid")) } : {}),
         ...(sessionNames.includes("allianceid") ? { allianceID: ownerOf(sessionChangeValue(method, args, "allianceid")) } : {}),
         ...(sessionNames.includes("corprole") ? { corpRole: wholeDigits(sessionChangeValue(method, args, "corprole")) } : {}),
+        ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
       });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
@@ -6643,6 +6653,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       rows: [],
       busy: false,
       disabled: false,
+      corpAccount: null,
+      useCorp: buyUseCorp(),
     };
     if (open === null) {
       multiBuyBooks.clear();
@@ -6658,7 +6670,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume: null });
     }
     multiBuyAskedSignal.set({ ...base, rows });
+    if (open === null) {
+      // The box is drawn as the window is made (buySellMultiBase.ApplyAttributes, 87 to 89).
+      void multiBuyCorpAccount().then((corpAccount) => {
+        const now = multiBuyAskedSignal.get();
+        if (now !== null && now.n === base.n) multiBuyAskedSignal.set({ ...now, corpAccount });
+      }).catch(() => {});
+    }
     await multiBuyPrices();
+  }
+
+  /** appConst.corpRoleAccountant and corpRoleTrader: the roles that may buy for the corporation. */
+  const CORP_ROLES_THAT_TRADE = 256n | 18014398509481984n;
+  /**
+   * buySellMultiBase._CanTradeForCorp (148 to 153): with the accountant's or the trader's role, the account the session
+   * names (corporation.GetMyCorpAccountName: session.corpAccountKey, the division names' entry for it, 175 to 176 and
+   * 169 to 173), its name the corporation's own for it (bco_corporations.GetDivisionNames, the row's walletDivision2
+   * to walletDivision7; the master wallet the client's word). Null where the box is not drawn.
+   */
+  async function multiBuyCorpAccount(): Promise<MultiBuyAsk["corpAccount"]> {
+    const online = store.station.get().online;
+    const roles = online?.corpRole ?? null;
+    const key = online?.corpAccountKey ?? null;
+    if (roles === null || !/^\d+$/.test(roles) || (BigInt(roles) & CORP_ROLES_THAT_TRADE) === 0n || key === null) return null;
+    const division = key - 1000 + 1;
+    if (division < 1 || division > 7) return null;
+    const row = await bridgeAsk("corpRegistry", "GetCorporation", []).catch(() => null);
+    return { division, name: row === null ? null : divisionNamesOf(row)[String(division)] ?? null };
   }
 
   /** Each row's best price at the window's station for its quantity times the orders (BuyItemContainer.GetBestPrice). */
@@ -6720,9 +6758,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number }): Promise<void> {
+  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void> {
     const asked = multiBuyAskedSignal.get();
     if (asked === null || asked.n !== n || asked.busy) return;
+    if ("useCorp" in edit) {
+      // OnUseCorp (155 to 162): the box kept as it is ticked.
+      setBuyUseCorp(edit.useCorp);
+      multiBuyAskedSignal.set({ ...asked, useCorp: edit.useCorp });
+      return;
+    }
     if ("remove" in edit) {
       multiBuyAskedSignal.set({ ...asked, rows: asked.rows.filter((row) => row.typeID !== edit.remove) });
       return;
@@ -6786,7 +6830,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     multiBuyAskedSignal.set({ ...asked, busy: true });
     let ordersMade: readonly { readonly orderID: string }[];
     try {
-      ordersMade = await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })));
+      ordersMade = await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })), asked.corpAccount !== null && asked.useCorp);
     } catch (error) {
       const now = multiBuyAskedSignal.get();
       if (now !== null && now.n === n) multiBuyAskedSignal.set({ ...now, busy: false });
