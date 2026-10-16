@@ -256,6 +256,27 @@ test("on site: a far wreck of ours gets a tractor beam (no lock); one in reach i
   assert.deepEqual(salvage.action, { kind: "activate", moduleID: SALVAGER, targetID: 4102 });
 });
 
+test("on site: a wreck whose lock never takes is left after three tries, and the rest of the site goes on", () => {
+  // Seen live 2026-10-16: one wreck's lock refused (TargetingAttemptCancelled) every few seconds for minutes.
+  const wreck = (itemID: number, x: number) => ({ itemID, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } });
+  const stubborn = wreck(4401, 1_000);
+  const grid = (entities: unknown[], locked: number[] = []) => obs({
+    myCharacterID: 90000001, salvageModuleIDs: [602], tractorModuleIDs: [], maxLockedTargets: 3, maxTargetRangeM: 30_000,
+    lockedTargetIDs: locked, snapshot: { ship: SHIP, entities } as never,
+  });
+  let mem: MacroMemory = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [4401] } };
+  for (let k = 0; k < 3; k++) {
+    const t = salvager(step, grid([stubborn]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+    assert.deepEqual(t.action, { kind: "lock", targetID: 4401 }, `try ${k + 1}`);
+    mem = t.nextMem;
+  }
+  // The fourth time it is let be: another wreck is locked instead, and with none the site is finished.
+  const other = salvager(step, grid([stubborn, wreck(4402, 1_200)]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+  assert.deepEqual(other.action, { kind: "lock", targetID: 4402 });
+  const alone = salvager(step, grid([stubborn]), { ...mem, work: { ...(mem["work"] as MacroMemory), pending: {} } }, NB);
+  assert.deepEqual(alone.action, { kind: "moveBookmarks", fromFolderID: FROM, toFolderID: DONE, bookmarkIDs: [NEAR_SITE] });
+});
+
 test("on site: a tractor beam whose wreck has arrived is switched off, so it can take the next", () => {
   const TRACTOR = 601;
   const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [4103] } };
