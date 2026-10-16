@@ -624,7 +624,7 @@
     </label>
   </div>
   {#if $agents.agents.length === 0}
-    <p class="empty">{$agents.loaded ? "No agents at this station." : "Loading agents…"}</p>
+    <p class="empty">{!$agents.loaded ? "Loading agents…" : $agents.stationID === null ? "Not docked at a station." : "No agents at this station."}</p>
   {:else}
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching

@@ -3362,9 +3362,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // session is now (_HandleSessionChangeInStation, InStructure, InSpace), whoever changed it: the pilot's own undock,
     // dock or jump, or the server's own move (a capsule sent to its clone's station, a GM's move). The page reads its
     // place again, from what the pilot's transport has of the session.
-    if (sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name))) {
-      void loadFlightStatus().catch(() => {});
-    }
+    const placeRead = sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name)) ? loadFlightStatus().catch(() => {}) : null;
     // dungeonTracking.ProcessSessionChange (56 to 61): another location, and the dungeon tracked is let go.
     if (sessionNames?.some((name) => name === "locationid" || name === "solarsystemid" || name === "stationid" || name === "structureid")) {
       currentDungeon = null;
@@ -3383,6 +3381,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // again, since what an agent will do depends on where the pilot is.
     if (sessionNames?.includes("stationid")) {
       talkToOpenAgentAgain();
+      // The docked agents panel lists the agents of the session's station, none where there is none
+      // (dockedUI/agents.py get_agents_in_current_station). Where the page's list was read, it follows the pilot's
+      // station: read again once the page has its new place, or emptied in space.
+      if (store.agents.get().loaded) void (placeRead ?? Promise.resolve()).then(() => loadAgents()).catch(() => {});
       return;
     }
     if (method === "OnCharNowInStation" || method === "OnCharNoLongerInStation") {
@@ -9350,7 +9352,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the R6b docked-station-change refresh can call it.
   async function loadAgents(): Promise<void> {
     await runAgentAction(async () => {
-      const dockedAt = (): number | null => store.station.get().online?.stationID ?? null;
+      // The session's station (session.stationid): where the page has read its place, from that read, which follows
+      // each undock and dock; else from the pilot as it came online.
+      const dockedAt = (): number | null => {
+        const status = store.flight.get().status;
+        if (status) return status.docked ? status.stationID : null;
+        return store.station.get().online?.stationID ?? null;
+      };
       // A pilot at no station has no station's agents, and the table is not asked for to say so.
       if (dockedAt() === null) {
         store.apply({ type: "agents/list", stationID: null, agents: [] });
