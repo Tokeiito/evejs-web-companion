@@ -451,6 +451,9 @@ const FACILITY_PLACES_KEPT_MS = 60_000;
  */
 const FACILITIES_KEPT_AS = Object.freeze({ GetFacilities: "region", GetMaxActivityModifiers: "largest" });
 const facilitiesKeptAs = (method, form) => (Object.hasOwn(FACILITIES_KEPT_AS, method) && form.args.length === 0 && form.kwargs === null ? FACILITIES_KEPT_AS[method] : null);
+const CONTRACT_PROXY = "contractProxy";
+/** contracts.NeocomBlink (190 to 206): GetLoginInfo(), nothing sent, asked once as the notifications are ready. */
+const loginInfoKeptAs = (method, form) => (method === "GetLoginInfo" && form.args.length === 0 && form.kwargs === null ? "loginInfo" : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -556,6 +559,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   [ONLINE_STATUS]: Object.freeze({
     keptAs: onlineKeptAs,
     notices: new Set(["OnContactLoggedOn", "OnContactLoggedOff"]),
+    writes: Object.freeze({}),
+  }),
+  // contracts (contracts.py 186 to 206): what of the pilot's contracts wants attention, asked once as its
+  // notifications are ready (OnNotificationUiReady, NeocomBlink) and never again in the session; the client keeps
+  // what it makes of it (contractsInProgress) and its windows ask by other calls. Here the answer is kept for the
+  // session, and an asking after (the page's contracts window) is answered from it.
+  [CONTRACT_PROXY]: Object.freeze({
+    keptAs: loginInfoKeptAs,
+    notices: new Set(),
     writes: Object.freeze({}),
   }),
 });
@@ -2234,8 +2246,9 @@ function createGamePortPilots({
       // project is enabled, which its client service asks once. In the retail client's own login, behind the pilot's
       // applications as the neocom is set up. A service that refuses fails no choosing.
       await discoveryEnabledRead(entry).catch(() => {});
-      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
-      await asks(entry, "contractProxy", "GetLoginInfo").catch(() => {});
+      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready,
+      // and kept (KEPT_UNTIL_CHANGED).
+      await keptRead(entry, CONTRACT_PROXY, "GetLoginInfo", shape(CONTRACT_PROXY, "GetLoginInfo", [], null, contextFor(entry))).catch(() => {});
       // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
       await keptRead(entry, NOTIFICATION_MGR, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
       // calendar.GetEventsNextXMonths: this month's events and the next's, by the server's clock, a month at a time.

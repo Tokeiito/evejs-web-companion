@@ -2374,7 +2374,7 @@ const RETAIL_CALLS = Object.freeze({
       return whole ? { args: [], kwargs: sent } : { args: [], kwargs: sent, status: "reshaped" };
     },
   }),
-  "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the page asks with every opening of its panel."),
+  "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the game port keeps that answer for the session (pilots.js KEPT_UNTIL_CHANGED), and the page's contracts panel is answered from it."),
   "contractProxy.GetMyExpiredContractList": same(`${CONTRACTS_SVC}:748`, "ProxySvc('contractProxy').GetMyExpiredContractList(False), and (True) for the corporation's straight after: the client asks the two together and keeps them."),
   "contractProxy.GetContractListForOwner": Object.freeze({
     status: "same",
