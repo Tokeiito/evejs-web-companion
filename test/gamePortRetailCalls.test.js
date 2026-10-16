@@ -1727,6 +1727,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "subscriptionMgr.GetCloneGrade",
     // An acceleration gate's activation, the keeper's. The gateway's list has nothing of the keeper's.
     "keeper.ActivateAccelerationGate",
+    // The dungeon a character is in, the keeper's, asked as its session starts in space.
+    "keeper.GetCurrentDungeonForCharacter",
     // The ship's fighters, asked at every change of the session's ship. The gateway's list has the manager's writes only.
     "fighterMgr.GetFightersForShip",
     // What is left of each accepted mission, asked at every change of the session and as each warp ends. The gateway's list has nothing of the mission tracker's.

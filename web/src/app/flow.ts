@@ -315,6 +315,7 @@ import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
 import { GATE_ACTIVATION_RANGE_M, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
+import { SHIP_RESTRICTION_REFUSALS, decodeShipRestrictions, dungeonEntered, enterDungeonRoom, exitDungeon, readCurrentDungeon, type CurrentDungeon, type ShipRestrictions } from "../bridge/dungeonTracking.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -1675,6 +1676,10 @@ export interface AppFlow {
   readonly abyssalTimer: ReadableSignal<{ readonly endMs: number; readonly clockOffsetMs: number } | null>;
   /** The pocket's collapse warning the HUD shows for its eight seconds (_display_expiry_message); null where none. */
   readonly collapseWarning: ReadableSignal<{ readonly seconds: number } | null>;
+  /** The Ship Restrictions window open (bridge/dungeonTracking.ts): its dungeon, its gate and their restrictions once read; null where closed. */
+  readonly shipRestrictions: ReadableSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>;
+  /** The Ship Restrictions window closed. */
+  closeShipRestrictions(): void;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
@@ -3309,6 +3314,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name))) {
       void loadFlightStatus().catch(() => {});
     }
+    // dungeonTracking.ProcessSessionChange (56 to 61): another location, and the dungeon tracked is let go.
+    if (sessionNames?.some((name) => name === "locationid" || name === "solarsystemid" || name === "stationid" || name === "structureid")) {
+      currentDungeon = null;
+    }
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
@@ -3430,6 +3439,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (method === "OnAbyssalContentFinished") {
       abyssalContentFinished();
+      return;
+    }
+    // The dungeon tracked (bridge/dungeonTracking.ts; dungeonTracking.py 124 to 137).
+    if (method === "OnEnteringDungeonRoom") {
+      const entered = dungeonEntered(args);
+      if (entered !== null) currentDungeon = enterDungeonRoom(currentDungeon, entered);
+      return;
+    }
+    if (method === "OnExitingDungeon") {
+      currentDungeon = exitDungeon(currentDungeon, args);
       return;
     }
     if (method === "OnIndustryMaterials") {
@@ -6346,6 +6365,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const GATE_NAVIGATION_TICK_MS = 2_000;
   let gateNavigation = 0;
+
+  // The dungeon the pilot is in, as the client's dungeon tracking keeps it (bridge/dungeonTracking.ts): from the
+  // server's OnEnteringDungeonRoom and OnExitingDungeon, let go at a change of location, and asked of the keeper once
+  // where the page finds its pilot in space (the client's OnCharacterSessionChanged).
+  let currentDungeon: CurrentDungeon | null = null;
+  let currentDungeonAsked = false;
+  function askCurrentDungeon(): void {
+    if (currentDungeonAsked) return;
+    currentDungeonAsked = true;
+    void readCurrentDungeon(bridgeAsk).then((dungeon) => {
+      if (currentDungeon === null && dungeon !== null) currentDungeon = dungeon;
+    }).catch(() => {
+      currentDungeonAsked = false;
+    });
+  }
+  // The Ship Restrictions window (ui/ShipRestrictionsWindow.svelte; evedungeons/client/ship_restrictions_window.py):
+  // the dungeon and the gate it is opened for, and what the BFF answers of their restrictions.
+  const shipRestrictionsSignal = createSignal<{ readonly dungeonID: number; readonly gateID: number | null; readonly restrictions: ShipRestrictions | null; readonly loaded: boolean } | null>(null);
+  function openShipRestrictions(dungeonID: number, gateID: number | null): void {
+    shipRestrictionsSignal.set({ dungeonID, gateID, restrictions: null, loaded: false });
+    void api.loadShipRestrictions(dungeonID, gateID, callOptions).then((data) => {
+      const open = shipRestrictionsSignal.get();
+      if (open !== null && open.dungeonID === dungeonID && open.gateID === gateID) {
+        shipRestrictionsSignal.set({ ...open, restrictions: decodeShipRestrictions(data), loaded: true });
+      }
+    }).catch(() => {
+      const open = shipRestrictionsSignal.get();
+      if (open !== null && open.dungeonID === dungeonID) shipRestrictionsSignal.set({ ...open, loaded: true });
+    });
+  }
   async function navigateToGate(itemID: number, typeID: number | null): Promise<void> {
     autopilot?.abort();
     const token = ++gateNavigation;
@@ -6363,7 +6412,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         if (step.kind === "arrive") {
           gateNavigation += 1;
-          await runFlightStep("Activate Gate", () => orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+          try {
+            await applyFlight(await orderedStep(() => activateGateCall(bridgeDo, itemID, typeID)));
+            store.apply({ type: "flight/action", action: "Activate Gate" });
+          } catch (error) {
+            // movementFunctions.py 554 to 562: refused for the ship in a dungeon the client knows, the Ship
+            // Restrictions window for it and the gate's own object, and nothing else said.
+            const refusal = error instanceof BridgeCallError ? error.refusal : null;
+            if (refusal !== null && SHIP_RESTRICTION_REFUSALS.has(refusal.key) && currentDungeon !== null) {
+              const gate = (store.space.get().snapshot?.entities ?? []).find((entity) => entity.itemID === itemID);
+              openShipRestrictions(currentDungeon.dungeonID, gate?.dunObjectID ?? null);
+              return;
+            }
+            throw error;
+          }
           return;
         }
         if (step.kind === "approach") {
@@ -9222,6 +9284,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The pocket's timer where the page finds its pilot already in a pocket (a browser drawing it afresh): the
     // client keeps it from the pocket's entry, so the BFF is asked what the pilot was last told, once for the system.
     askPocketTimer(status.solarSystemID);
+    // The dungeon the pilot is in, asked once where the page finds it in space (dungeonTracking.OnCharacterSessionChanged).
+    if (status.inSpace) askCurrentDungeon();
     // Its GetWaypoints with the pilot in another system: the kept waypoints checked again as destinations.
     if (flightSystemChanged) void recheckWaypoints();
     // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off. And an
@@ -19597,6 +19661,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     walletOverview: readonlySignal(walletOverviewSignal),
     abyssalTimer: readonlySignal(abyssalTimerSignal),
     collapseWarning: readonlySignal(collapseWarningSignal),
+    shipRestrictions: readonlySignal(shipRestrictionsSignal),
+    closeShipRestrictions: () => shipRestrictionsSignal.set(null),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,

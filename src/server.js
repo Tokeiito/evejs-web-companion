@@ -13416,6 +13416,39 @@ app.get("/api/types/type-lists", requireAuth, (req, res, next) => {
   }
 });
 
+// A dungeon's ship restrictions, from a gate of it or all of it, as the client's Ship Restrictions window shows them
+// (evedungeons/client/ship_restrictions_window.py set_dungeon; staticData.getDungeonShipRestrictions, the client's
+// GetDungeonShipRestrictions): the dungeon's name's message, the gate's type list, the published ship types let
+// through with their groups, and the published ones of those groups that are not (the window's restricted ones).
+app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
+  const dungeonID = Number(req.query.dungeonID);
+  const gateID = req.query.gateID === undefined || req.query.gateID === "" ? null : Number(req.query.gateID);
+  if (!Number.isSafeInteger(dungeonID) || dungeonID <= 0 || (gateID !== null && (!Number.isSafeInteger(gateID) || gateID <= 0))) {
+    res.status(400).json({ ok: false, error: "INVALID_DUNGEON", message: "A dungeon is asked for by its number, and a gate of it by its own." });
+    return;
+  }
+  try {
+    const restrictions = typeof staticData.getDungeonShipRestrictions === "function" ? staticData.getDungeonShipRestrictions(dungeonID, gateID) : null;
+    if (!restrictions) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const shown = (typeID) => {
+      const type = staticData.getType(typeID);
+      return type && type.published === true && Number(type.groupID) > 0 ? { typeID: Number(typeID), groupID: Number(type.groupID) } : null;
+    };
+    const allowed = restrictions.allowedShipTypes.map(shown).filter(Boolean);
+    const allowedIDs = new Set(allowed.map((entry) => entry.typeID));
+    const groups = new Set(allowed.map((entry) => entry.groupID));
+    const restricted = typeof staticData.getTypesInGroup === "function"
+      ? [...groups].flatMap((groupID) => staticData.getTypesInGroup(groupID)).map((type) => shown(type.typeID)).filter((entry) => entry && !allowedIDs.has(entry.typeID))
+      : [];
+    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, allowed, restricted });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

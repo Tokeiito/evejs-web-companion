@@ -13,6 +13,7 @@
   import CharacterBar from "./CharacterBar.svelte";
   import FleetInvitation from "./FleetInvitation.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
+  import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -727,6 +728,13 @@
   <ErrorBoundary name="Client dialogs">
     {#each sessions as session (session.id)}
       <ClientDialogs {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
+  <!-- The Ship Restrictions window an acceleration gate's refusal opens (ShipRestrictionsWindow.svelte), the pilot in
+       front's. -->
+  <ErrorBoundary name="Ship restrictions">
+    {#each sessions as session (session.id)}
+      <ShipRestrictionsWindow {session} inFront={session.id === activeId} />
     {/each}
   </ErrorBoundary>
 {:else if restoring}

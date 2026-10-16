@@ -281,6 +281,11 @@ export async function readPocketTimer(options: ApiOptions = {}): Promise<{ reado
   return { known: data.known === true, endTime: (data.endTime ?? null) as JsonValue | null };
 }
 
+/** GET /api/dungeons/ship-restrictions: a dungeon's ship restrictions from a gate of it, as the BFF answers them. */
+export async function loadShipRestrictions(dungeonID: number, gateID: number | null, options: ApiOptions = {}): Promise<Readonly<Record<string, JsonValue>>> {
+  return await getJson(`/api/dungeons/ship-restrictions?dungeonID=${dungeonID}${gateID !== null ? `&gateID=${gateID}` : ""}`, options);
+}
+
 export async function provisioningOptions(providerCharacterID: number | null, options: ApiOptions = {}): Promise<import("../bridge/provisioning.ts").ProvisioningOptions> {
   const data = await getJson(`/api/bridge/provisioning/options${providerCharacterID ? `?providerCharacterID=${providerCharacterID}` : ""}`, options);
   return data as unknown as import("../bridge/provisioning.ts").ProvisioningOptions;

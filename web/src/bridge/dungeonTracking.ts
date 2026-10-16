@@ -1,0 +1,85 @@
+// The dungeon the pilot is in, as the client's dungeon tracking keeps it, and a gate's ship restrictions.
+//
+// TRACKED (eve/client/script/parklife/dungeonTracking.py): set by the server's OnEnteringDungeonRoom(dungeon_id,
+// room_id, room_position, instance_id, dungeon_values), a room of the same dungeon only moving it on (124 to 133); let
+// go by OnExitingDungeon(dungeon_id) where it is that dungeon or none is named (_clear_dungeon, 138 to 147), and by any
+// change of the session's location (ProcessSessionChange, 56 to 61); asked of the keeper when a character's session
+// starts in space (OnCharacterSessionChanged, 63 to 69: keeper.GetCurrentDungeonForCharacter(), a tuple of the
+// dungeon, the room, the instance and the values, or None).
+//
+// USED by Activate Gate's refusal (movementFunctions.RealActivateAccelerationGate, 554 to 562): a DunShipCannotWarp or
+// DunBlacklistCannotWarp, with a dungeon tracked, opens the Ship Restrictions window for that dungeon and the gate's
+// own object (its slim item's dunObjectID), and says nothing else; with none tracked the refusal is raised as any
+// UserError is.
+
+import type { Ask } from "./ask.ts";
+import { isListValue, type JsonValue } from "./wire.ts";
+
+export interface CurrentDungeon {
+  readonly dungeonID: number;
+  readonly roomID: number | null;
+  readonly instanceID: number | null;
+}
+
+/** The refusals the client answers with the Ship Restrictions window where it knows the dungeon. */
+export const SHIP_RESTRICTION_REFUSALS: ReadonlySet<string> = new Set(["DunShipCannotWarp", "DunBlacklistCannotWarp"]);
+
+const whole = (value: unknown): number | null => {
+  const number = typeof value === "number" ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+
+/** OnEnteringDungeonRoom's arguments: the dungeon, the room and the instance; null where they cannot be read. */
+export function dungeonEntered(args: readonly unknown[]): CurrentDungeon | null {
+  const dungeonID = whole(args[0]);
+  return dungeonID === null ? null : { dungeonID, roomID: whole(args[1]), instanceID: whole(args[3]) };
+}
+
+/** The next tracked dungeon on OnEnteringDungeonRoom (OnEnteringDungeonRoom, 124 to 133). */
+export function enterDungeonRoom(current: CurrentDungeon | null, entered: CurrentDungeon): CurrentDungeon {
+  return current !== null && current.dungeonID === entered.dungeonID ? { ...current, roomID: entered.roomID } : entered;
+}
+
+/** The tracked dungeon after OnExitingDungeon(dungeon_id) (_clear_dungeon): let go where it is that one or none is named. */
+export function exitDungeon(current: CurrentDungeon | null, args: readonly unknown[]): CurrentDungeon | null {
+  const dungeonID = whole(args[0]);
+  return current === null || dungeonID === null || current.dungeonID === dungeonID ? null : current;
+}
+
+/** keeper.GetCurrentDungeonForCharacter(): (dungeon_id, room_id, instance_id, dungeon_values), or None. */
+export async function readCurrentDungeon(ask: Ask): Promise<CurrentDungeon | null> {
+  const answer = await ask("keeper", "GetCurrentDungeonForCharacter", []);
+  const parts = Array.isArray(answer) ? answer : isListValue(answer) ? answer.items : null;
+  if (parts === null) return null;
+  const dungeonID = whole(parts[0]);
+  return dungeonID === null ? null : { dungeonID, roomID: whole(parts[1]), instanceID: whole(parts[2]) };
+}
+
+/** The Ship Restrictions window's words (ship_restrictions_window.py). */
+export const SHIP_RESTRICTIONS_LABELS = Object.freeze({
+  caption: "UI/Dungeons/ShipRestrictionsWindow",
+  hideRestricted: "UI/Dungeons/ShipRestrictionHideRestricted",
+  showList: "UI/Agents/Dialogue/DungeonShipRestrictionsShowList",
+  notRestricted: "UI/Agents/Dialogue/DungeonShipRestrictionsListShipIsNotRestricted",
+  restricted: "UI/Agents/Dialogue/DungeonShipRestrictionsListShipIsRestricted",
+});
+
+/** What the BFF answers of a dungeon's restrictions (GET /api/dungeons/ship-restrictions). */
+export interface ShipRestrictions {
+  readonly dungeonNameID: number | null;
+  readonly typeListID: number | null;
+  readonly allowed: readonly { readonly typeID: number; readonly groupID: number }[];
+  readonly restricted: readonly { readonly typeID: number; readonly groupID: number }[];
+}
+
+/** Decodes the BFF's answer; null for a dungeon the tables lack. */
+export function decodeShipRestrictions(data: Readonly<Record<string, JsonValue>>): ShipRestrictions | null {
+  if (data.found !== true) return null;
+  const entries = (value: JsonValue | undefined) => (Array.isArray(value) ? value : []).flatMap((entry) => {
+    const row = entry as Record<string, JsonValue> | null;
+    const typeID = whole(row?.typeID);
+    const groupID = whole(row?.groupID);
+    return typeID !== null && groupID !== null ? [{ typeID, groupID }] : [];
+  });
+  return { dungeonNameID: whole(data.dungeonNameID), typeListID: whole(data.typeListID), allowed: entries(data.allowed), restricted: entries(data.restricted) };
+}

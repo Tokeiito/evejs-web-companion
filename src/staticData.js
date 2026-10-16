@@ -2035,6 +2035,67 @@ function getTypeListsHolding(typeID, listIDs) {
   return held;
 }
 
+/**
+ * The client's own dungeon records (evedungeons.client.data.GetDungeon: its dungeonNameID and connections), as EveJS's
+ * dungeon table holds them (dungeonAuthority, clientData.tables.dungeonsByID). Read once; only the dungeons are kept.
+ */
+function getClientDungeon(dungeonID) {
+  const cacheKey = "dungeonAuthority:clientDungeons";
+  if (!caches.has(cacheKey)) {
+    const table = readStaticTable("dungeonAuthority");
+    const dungeons = table && table.clientData && table.clientData.tables && table.clientData.tables.dungeonsByID;
+    const index = new Map();
+    for (const [key, value] of Object.entries(dungeons && typeof dungeons === "object" ? dungeons : {})) {
+      if (Number(key) > 0 && value && typeof value === "object") {
+        index.set(Number(key), { dungeonNameID: Number(value.dungeonNameID) || null, connections: Array.isArray(value.connections) ? value.connections : [] });
+      }
+    }
+    caches.set(cacheKey, index);
+  }
+  return caches.get(cacheKey).get(Number(dungeonID) || 0) || null;
+}
+
+/** evedungeons.common.constants.ACCELERATION_GATE_BLACKLISTED_GROUPS, read through the client's Python. */
+const ACCELERATION_GATE_BLACKLISTED_GROUPS = Object.freeze([29, 485, 659, 30, 513, 547, 4594, 1538, 902, 883, 5120]);
+
+/**
+ * evedungeons.client.util.GetDungeonShipRestrictions(dungeonID, gateID) and GetDungeonShipRestrictionsTypeListID: of
+ * every ship type (category 6), those each connection from the gate (or every connection, with no gate) lets through
+ * by its type list and its races; where none restricts, all but the blacklisted groups. Null for a dungeon the
+ * tables lack.
+ */
+function getDungeonShipRestrictions(dungeonID, gateID = null) {
+  const dungeon = getClientDungeon(dungeonID);
+  if (!dungeon || dungeon.connections.length === 0) return null;
+  const shipTypes = [...buildIndex("itemTypes", "types", "typeID").values()].filter((type) => Number(type.categoryID) === 6);
+  let allowed = new Set(shipTypes.map((type) => Number(type.typeID)));
+  let nonDefault = false;
+  let typeListID = null;
+  for (const connection of dungeon.connections) {
+    if (gateID && Number(gateID) !== Number(connection.fromObjectID)) continue;
+    const listID = Number(connection.allowedShipsList) || 0;
+    const races = Array.isArray(connection.allowedShipRaces) ? connection.allowedShipRaces.map(Number) : [];
+    if (listID > 0 && typeListID === null) typeListID = listID;
+    if (listID > 0 || races.length > 0) {
+      const passing = new Set(shipTypes.filter((type) => {
+        if (listID > 0) {
+          const held = getTypeListsHolding(type.typeID, [listID]);
+          if (!held || !held.includes(listID)) return false;
+        }
+        const raceID = Number(type.raceID) || 0;
+        return !(races.length > 0 && raceID && !races.includes(raceID));
+      }).map((type) => Number(type.typeID)));
+      allowed = new Set([...allowed].filter((typeID) => passing.has(typeID)));
+      nonDefault = true;
+    }
+  }
+  if (!nonDefault) {
+    const blacklisted = new Set(ACCELERATION_GATE_BLACKLISTED_GROUPS);
+    allowed = new Set(shipTypes.filter((type) => allowed.has(Number(type.typeID)) && !blacklisted.has(Number(type.groupID))).map((type) => Number(type.typeID)));
+  }
+  return { dungeonNameID: dungeon.dungeonNameID, typeListID, allowedShipTypes: [...allowed], nonDefaultShipRestrictions: nonDefault };
+}
+
 function getNpcIndustryFacility(facilityID) {
   return buildIndex(
     "industryFacilities",
@@ -2065,6 +2126,8 @@ module.exports = {
   getTypesInGroup,
   getClientTypeList,
   getTypeListsHolding,
+  getClientDungeon,
+  getDungeonShipRestrictions,
   resolveNames,
   getMarketGroup,
   getMarketGroupName,

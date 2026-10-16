@@ -1922,6 +1922,11 @@ export interface SpaceEntity {
    * snapshot does not.
    */
   readonly planetID?: number | null;
+  /**
+   * An acceleration gate's own object in its dungeon (its slim item's dunObjectID), for the Ship Restrictions window
+   * opened on its refusal. null on every other row, and where the transport did not say (the web gateway's).
+   */
+  readonly dunObjectID?: number | null;
   readonly miningResourceFamily?: "ore" | "ice" | "gas" | null;
   readonly beltID: number | null;
   /**
