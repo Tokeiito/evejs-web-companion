@@ -88,6 +88,8 @@
   const communityFittingsEnabled = flow.communityFittingsEnabled;
   // svelte-ignore state_referenced_locally
   const hullBrowser = flow.hullBrowser;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
 
   let busy = $state(false);
   let error = $state("");
@@ -238,6 +240,9 @@
     "UI/Fitting/FittingWindow/FilterCurrentHull": "Only for the ship you are in",
     "UI/Fitting/FittingWindow/FilterSkillsForFitting": "Only those you have the skills for",
     "UI/Fitting/FilterCommunityFittings": "Fittings shared with everyone",
+    "UI/Fitting/FittingWindow/FilterAllianceFittings": "Your alliance's fittings {numFittings}",
+    "UI/Fitting/AllianceFittingHint": "Your alliance's fitting",
+    "UI/Fitting/FittingWindow/SavedAllianceFittings": "Your alliance's fittings",
     // The tree's own groups (fittingBrowser.py 131 to 182, GetNameAndIconIDForRace).
     "UI/Fitting/FittingWindow/NonEmpireFaction": "Other factions",
     "UI/Fitting/FittingWindow/SpecialEditionShips": "Special ships",
@@ -280,17 +285,23 @@
   // (AreCommunityFittingsEnabled) its button is not shown nor its fittings read (GetFittingScrolllist, 66 to 80). With no
   // owner's filter set, every hull the market sells is listed that the search (its name or its group's), the
   // current-hull filter and the skills filter (godma.CheckSkillRequirementsForType: the flow's hullsWithSkills) let
-  // through (GetAllShipGroupsAndShipsByGroupID, 359 to 383). Not done: the alliance's filter.
+  // through (GetAllShipGroupsAndShipsByGroupID, 359 to 383). The alliance's filter is off until set, and with the pilot in
+  // no alliance its button is not shown nor its fittings read (fittings_show_alliance; GetFittingScrolllist, 70).
   const HULL_SETTINGS_KEPT = "evejs.BrowserHullSettings";
   const HULL_FILTER_KEPT = "evejs.lastHullFilterString";
-  const keptHullSettings = ((): { personal: boolean; corp: boolean; community: boolean; currentShip: boolean; skills: boolean } => {
+  const keptHullSettings = ((): { personal: boolean; corp: boolean; alliance: boolean; community: boolean; currentShip: boolean; skills: boolean } => {
     try {
       const kept = JSON.parse(localStorage.getItem(HULL_SETTINGS_KEPT) ?? "null") as Record<string, unknown> | null;
-      return { personal: kept?.personal === true, corp: kept?.corp === true, community: kept?.community !== false, currentShip: kept?.currentShip === true, skills: kept?.skills === true };
+      return { personal: kept?.personal === true, corp: kept?.corp === true, alliance: kept?.alliance === true, community: kept?.community !== false, currentShip: kept?.currentShip === true, skills: kept?.skills === true };
     } catch {
-      return { personal: false, corp: false, community: true, currentShip: false, skills: false };
+      return { personal: false, corp: false, alliance: false, community: true, currentShip: false, skills: false };
     }
   })();
+  let allianceFilterSet = $state(keptHullSettings.alliance);
+  /** session.allianceid, as the page has it: null for none. */
+  const allianceID = $derived(((id) => (id !== null && id !== undefined && id > 0 ? id : null))($station.online?.allianceID));
+  /** showAllianceFittings: the alliance's filter, where the pilot is in one. */
+  const showAllianceFittings = $derived(allianceID !== null && allianceFilterSet);
   let communityFilterSet = $state(keptHullSettings.community);
   /** showCommunityFittings: the community's filter, where the global config has community fittings on. */
   const showCommunityFittings = $derived($communityFittingsEnabled && communityFilterSet);
@@ -331,7 +342,7 @@
   })());
   function keepHullSettings(): void {
     try {
-      localStorage.setItem(HULL_SETTINGS_KEPT, JSON.stringify({ personal: showPersonalFittings, corp: showCorpFittings, community: communityFilterSet, currentShip: onlyCurrentHull, skills: onlyWithSkills }));
+      localStorage.setItem(HULL_SETTINGS_KEPT, JSON.stringify({ personal: showPersonalFittings, corp: showCorpFittings, alliance: allianceFilterSet, community: communityFilterSet, currentShip: onlyCurrentHull, skills: onlyWithSkills }));
       const key = hullFilterKey();
       if (key !== null) localStorage.setItem(key, hullFilterText);
     } catch {
@@ -371,18 +382,18 @@
   const hullGroupName = (typeID: number): string => String($names.resolved[nameKey("typeGroup", typeID)] ?? "");
   /** A hull's fittings of each owner, every one read (fittingBrowser.GetNumShipsByTypeID, 200 to 211). */
   const fittingNumByTypeID = $derived.by(() => {
-    const counts = new Map<number, { personal: number; corporation: number; community: number }>();
+    const counts = new Map<number, { personal: number; corporation: number; community: number; alliance: number }>();
     for (const saved of $savedFittings ?? []) {
-      const count = counts.get(saved.shipTypeID) ?? { personal: 0, corporation: 0, community: 0 };
+      const count = counts.get(saved.shipTypeID) ?? { personal: 0, corporation: 0, community: 0, alliance: 0 };
       counts.set(saved.shipTypeID, { ...count, [saved.source]: count[saved.source] + 1 });
     }
     return counts;
   });
   /** ownerFilterIsSet: an owner's fittings asked for (GetFittingScrolllist, 74). */
-  const ownerFilterIsSet = $derived(showPersonalFittings || showCorpFittings || showCommunityFittings);
+  const ownerFilterIsSet = $derived(showPersonalFittings || showCorpFittings || showAllianceFittings || showCommunityFittings);
   /** The fittings the filters let through (FilterOutFittings, 265 to 296). */
   const shownFittings = $derived.by(() => {
-    const shownOwner = { personal: showPersonalFittings, corporation: showCorpFittings, community: showCommunityFittings };
+    const shownOwner = { personal: showPersonalFittings, corporation: showCorpFittings, community: showCommunityFittings, alliance: showAllianceFittings };
     const text = hullFilterText.toLowerCase();
     const shown = ($savedFittings ?? []).filter((saved) => {
       if (ownerFilterIsSet && !shownOwner[saved.source]) return false;
@@ -1652,6 +1663,11 @@
       <button type="button" class={showCorpFittings ? "active" : "minor"} aria-pressed={showCorpFittings}
         title={filterHint("UI/Fitting/FittingWindow/FilterCorpFittings", ($savedFittings ?? []).filter((saved) => saved.source === "corporation").length, 600)}
         onclick={() => { showCorpFittings = !showCorpFittings; keepHullSettings(); }}>🏢</button>
+      {#if allianceID !== null}
+        <button type="button" class={allianceFilterSet ? "active" : "minor"} aria-pressed={allianceFilterSet}
+          title={filterHint("UI/Fitting/FittingWindow/FilterAllianceFittings", ($savedFittings ?? []).filter((saved) => saved.source === "alliance").length, 600)}
+          onclick={() => { allianceFilterSet = !allianceFilterSet; keepHullSettings(); }}>🛡</button>
+      {/if}
       {#if $communityFittingsEnabled}
         <button type="button" class={communityFilterSet ? "active" : "minor"} aria-pressed={communityFilterSet}
           title={fitWord("UI/Fitting/FilterCommunityFittings")}
@@ -1671,6 +1687,8 @@
             <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
           {:else if saved.source === "community"}
             <span title={fitWord("UI/Fitting/CommunityFittingHint")}>🌐</span>
+          {:else if saved.source === "alliance"}
+            <span title={fitWord("UI/Fitting/AllianceFittingHint")}>🛡</span>
           {/if}
           <span>{saved.name}</span>
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
@@ -1699,6 +1717,9 @@
           {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}
           {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCorpFittings")}>🏢 {count.corporation}</small>{/if}
           {#if count?.community && $communityFittingsEnabled}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCommunityFittings")}>🌐 {count.community}</small>{/if}
+          <!-- HullTypeListGroup.Load (683 to 686) shows the alliance's count where the corporation has any fittings for
+               the hull (allianceCont.display = bool(numCorp)), its number nought where the alliance has none. -->
+          {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedAllianceFittings")}>🛡 {count.alliance}</small>{/if}
         </summary>
         {#if opened[id] === true}
           {#each hull.fittings as saved (saved.fittingID)}

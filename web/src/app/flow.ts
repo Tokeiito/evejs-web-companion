@@ -485,7 +485,7 @@ import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
-import { decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { type HullBrowserData } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
@@ -529,7 +529,7 @@ export interface WalletSharesRead {
   readonly holdings: readonly ShareHolding[];
   readonly error: string | null;
 }
-import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
+import { readAllianceFittings, readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
@@ -2259,7 +2259,7 @@ export interface AppFlow {
   editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
   /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
-  /** The saved fittings, the pilot's, its corporation's and the community's (fittingSvc.GetFittings), as last read; null before. */
+  /** The saved fittings, the pilot's, its corporation's, the community's and its alliance's (fittingSvc.GetFittings), as last read; null before. */
   readonly savedFittings: ReadableSignal<readonly SourcedFitting[] | null>;
   /** globalConfig.AreCommunityFittingsEnabled, as looked at with the fittings read. */
   readonly communityFittingsEnabled: ReadableSignal<boolean>;
@@ -7266,21 +7266,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return rows.map((row) => ({ ...row, source: "community" as const }));
   }
 
-  /** The fittings read, with the community's after them (a fitting already had kept once, by its number). */
-  function withCommunityFittings(library: readonly SourcedFitting[], community: readonly SourcedFitting[]): readonly SourcedFitting[] {
+  /**
+   * fittingSvc.GetAllianceFittings (415 to 418): the alliance's fittings where the pilot is in one (session.allianceid),
+   * none else; none where the call fails.
+   */
+  async function readOwnAllianceFittings(): Promise<readonly SourcedFitting[]> {
+    const allianceID = store.station.get().online?.allianceID ?? null;
+    if (allianceID === null || !(allianceID > 0)) return [];
+    const rows = await readAllianceFittings(bridgeAsk, allianceID).then(decodeAllianceFittings).catch(() => []);
+    return rows.map((row) => ({ ...row, source: "alliance" as const }));
+  }
+
+  /** The fittings read, with more after them (a fitting already had kept once, by its number). */
+  function withFittingsAfter(library: readonly SourcedFitting[], more: readonly SourcedFitting[]): readonly SourcedFitting[] {
     const seen = new Set(library.map((fitting) => fitting.fittingID));
-    return [...library, ...community.filter((fitting) => !seen.has(fitting.fittingID))];
+    return [...library, ...more.filter((fitting) => !seen.has(fitting.fittingID))];
   }
 
   /**
-   * fittingSvc.GetAllFittingsForCharacter (388 to 398): the pilot's fittings, its corporation's and the community's,
-   * read again. (The alliance's are not read here.)
+   * fittingSvc.GetAllFittingsForCharacter (388 to 398): the pilot's fittings, its corporation's, the community's and
+   * its alliance's, read again.
    */
   async function loadSavedFittings(): Promise<void> {
-    const [library, enabled] = await Promise.all([loadRefitLibrary(), communityFittingsEnabled()]);
+    const [library, enabled, alliance] = await Promise.all([loadRefitLibrary(), communityFittingsEnabled(), readOwnAllianceFittings()]);
     const community = await readCommunityFittings(enabled);
     communityFittingsEnabledSignal.set(enabled);
-    savedFittingsSignal.set(withCommunityFittings(library, community));
+    savedFittingsSignal.set(withFittingsAfter(withFittingsAfter(library, community), alliance));
   }
 
   /**
@@ -7294,7 +7305,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     communityFittingsEnabledSignal.set(enabled);
     if (kept === null) return;
     const others = kept.filter((fitting) => fitting.source !== "community");
-    savedFittingsSignal.set(withCommunityFittings(others, await readCommunityFittings(enabled)));
+    savedFittingsSignal.set(withFittingsAfter(others, await readCommunityFittings(enabled)));
   }
 
   /** A saved fitting by its number, from those last read (fittingSvc.fittings[ownerID][fittingID]); null where none. */

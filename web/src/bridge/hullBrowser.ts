@@ -14,7 +14,7 @@
 //   faction's is 1443), so by name alone (GetRacesForGroup, 215 to 243).
 // - **The hulls of a race:** by (meta group, name), a hull without a meta group first, as Python sorts None
 //   (GetShipGroupSubContent, 400 to 423).
-// - **The fittings of a hull:** by owner (the pilot's, the corporation's, the community's) then by name in lower case
+// - **The fittings of a hull:** by owner (the pilot's, the corporation's, the community's, the alliance's) then by name in lower case
 //   (GetFittingEntriesForType's sortBy, 459 to 470).
 // - **Nothing Found:** where an owner's fittings are asked for and none is let through, or where nothing at all is
 //   listed.
@@ -54,7 +54,7 @@ export interface TreeFitting {
   readonly fittingID: number;
   readonly shipTypeID: number;
   readonly name: string;
-  readonly source: "personal" | "corporation" | "community";
+  readonly source: "personal" | "corporation" | "community" | "alliance";
 }
 
 export interface HullNode<F extends TreeFitting> {
@@ -105,7 +105,7 @@ export interface HullTreeInput<F extends TreeFitting> {
 /** Python's ordering of two texts (by code point). */
 const pyCompare = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
 
-const OWNER_ORDER: Readonly<Record<TreeFitting["source"], number>> = { personal: 0, corporation: 1, community: 2 };
+const OWNER_ORDER: Readonly<Record<TreeFitting["source"], number>> = { personal: 0, corporation: 1, community: 2, alliance: 3 };
 
 /** The browser's tree for what the filters let through. */
 export function hullTree<F extends TreeFitting>(input: HullTreeInput<F>): HullTree<F> {

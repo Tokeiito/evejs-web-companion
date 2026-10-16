@@ -931,7 +931,7 @@
       <span class="multibuy-row">
         <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
         <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
-          title={view.fitting.source === "community" ? undefined : viewWord(view.fitting.source === "personal" ? "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting" : "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting")} />
+          title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
       </span>
       <span class="answers">
         <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
