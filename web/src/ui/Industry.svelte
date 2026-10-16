@@ -47,6 +47,7 @@
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import { formatIsk } from "./isk.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -75,6 +76,8 @@
   function facilityName(facilityID: number): string {
     return resolvedName($names.resolved, "station", facilityID, "An unnamed facility");
   }
+  /** The heading a job's or blueprint's row menu gives its facility (jobEntry.py 197, blueprintEntry.py 183). */
+  const FACILITY_HEADING = { label: "UI/Industry/Facility", own: "Facility" } as const;
 
   function systemName(solarSystemID: number): string {
     return resolvedName($names.resolved, "system", solarSystemID, "an unknown system");
@@ -555,7 +558,8 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  {#if $industry.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $industry.actionError && !$industry.actionErrorSaid}
     <p class="error">Last change failed: {$industry.actionError}</p>
   {/if}
   {#if !$industry.loaded}
@@ -601,7 +605,10 @@
                   {job.activity ? ACTIVITY_LABELS[job.activity] : "Unknown work"}
                 </td>
                 <td class="num" data-label="Runs">{job.runs}</td>
-                <td data-label="Where">{facilityName(job.facilityID)}</td>
+                <td data-label="Where">
+                  {facilityName(job.facilityID)}
+                  <PlaceRouteMenu {store} {flow} placeID={job.facilityID} heading={FACILITY_HEADING} />
+                </td>
                 <td data-label="Status">{STATUS_LABELS[job.status]}</td>
                 <td class="num" data-label="Time left">{jobTimeText(job)}</td>
                 <td data-label="Action">
@@ -679,7 +686,10 @@
                 <td class="num" data-label="Runs">
                   {job.status === "cancelled" ? "—" : job.successfulRuns || job.runs}
                 </td>
-                <td data-label="Where">{facilityName(job.facilityID)}</td>
+                <td data-label="Where">
+                  {facilityName(job.facilityID)}
+                  <PlaceRouteMenu {store} {flow} placeID={job.facilityID} heading={FACILITY_HEADING} />
+                </td>
                 <td data-label="Outcome">{STATUS_LABELS[job.status]}</td>
               </tr>
             {/each}
@@ -706,6 +716,7 @@
               <th class="num">Runs</th>
               <th class="num">Material efficiency</th>
               <th class="num">Time efficiency</th>
+              <th>Where</th>
               <th>Can be used for</th>
               <th>Action</th>
             </tr>
@@ -729,6 +740,16 @@
                   {blueprint.materialEfficiency}% saved
                 </td>
                 <td class="num" data-label="Time efficiency">{blueprint.timeEfficiency}% faster</td>
+                <!-- Its facility, as the client's blueprint list has it (blueprintEntry.py, the Facility column), with its
+                     route entries. -->
+                <td data-label="Where">
+                  {#if blueprint.facilityID !== null}
+                    {facilityName(blueprint.facilityID)}
+                    <PlaceRouteMenu {store} {flow} placeID={blueprint.facilityID} heading={FACILITY_HEADING} />
+                  {:else}
+                    <span class="note">—</span>
+                  {/if}
+                </td>
                 <td data-label="Can be used for">
                   {#if blueprintActivities(blueprint).length === 0}
                     <span class="note">—</span>

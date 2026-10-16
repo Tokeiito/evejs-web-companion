@@ -44,6 +44,19 @@ function changeOf(change: unknown): ReadonlyMap<number, unknown> | null {
 }
 
 /**
+ * The places an OnItemChange's item is in and was in: its locationID now, and the change's ixLocationID where it
+ * moved. Null where the row or the change cannot be read.
+ */
+export function itemChangeLocations(args: readonly unknown[]): readonly number[] | null {
+  const item = fieldsOf(args[0]);
+  const was = changeOf(args[1]);
+  if (item === null || was === null) return null;
+  const places = typeof item.locationID === "number" ? [item.locationID] : [];
+  const before = was.get(IX_LOCATION_ID);
+  return typeof before === "number" ? [...places, before] : places;
+}
+
+/**
  * Whether an OnItemChange with these arguments is one the drones are read again
  * on, for a pilot whose ship (the one whose bay the window shows) is `shipID`.
  */

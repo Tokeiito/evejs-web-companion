@@ -234,6 +234,20 @@ export function actionIndication(mode: string | null | undefined, followID: numb
 }
 
 /**
+ * The ball the snapshot's own ship approaches, as IsApproachingBall reads the
+ * ship's ball (movementFunctions.py 184 to 189): its mode is FOLLOW and this is
+ * what it follows, at any range. Null where it follows nothing so.
+ */
+export function approachedBallID(snapshot: SpaceSnapshot | null | undefined): number | null {
+  const ship = snapshot?.ship ?? null;
+  if (!snapshot || !ship || (ship.mode ?? "").trim().toUpperCase() !== "FOLLOW") {
+    return null;
+  }
+  const followID = snapshot.entities.find((entity) => entity.itemID === ship.itemID)?.targetEntityID ?? null;
+  return followID === null || followID === 0 ? null : followID;
+}
+
+/**
  * The indication for the snapshot's own ship: what it is doing to the thing it
  * follows (and whom: its mode and the range in its order from the ship, whom
  * from the ship's own row), or failing that what it is doing about the point

@@ -28,9 +28,19 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import type { Ask } from "./ask.ts";
+import { decodeSecurityStatus } from "./boundCrimewatch.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** The pilot's crimewatch states as the server answers them (decoded by space/crimewatch.ts). Fails as the call fails. */
 export function readClientStates(ask: Ask): Promise<JsonValue> {
   return ask("crimewatch", "GetClientStates", []);
+}
+
+/**
+ * crimewatchSvc.GetMySecurityStatus (590 to 593): CharGetCrimewatchLocation().GetMySecurityStatus(), with nothing,
+ * the pilot's own security status, a float; null for an answer that is none. The transport on the game port asks it
+ * once, as the client does, and answers from what it keeps.
+ */
+export async function readMySecurityStatus(ask: Ask): Promise<number | null> {
+  return decodeSecurityStatus(await ask("crimewatch", "GetMySecurityStatus", []));
 }

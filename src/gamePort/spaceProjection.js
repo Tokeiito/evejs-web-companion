@@ -239,6 +239,9 @@ function projectEntity(park, ball, slim, ego, placed) {
   }
   // importExportUI.py 94: which planet a customs office is, from the office's own slim item.
   if (kind === "orbital") row.planetID = positive(slim.get("planetID"));
+  // movementFunctions.py 557 to 560: an acceleration gate's own object in its dungeon, off its slim item, for the
+  // Ship Restrictions window the client opens on the gate's refusal (GetDungeonShipRestrictions(dungeonID, gateID)).
+  if (groupID === 366) row.dunObjectID = positive(slim.get("dunObjectID"));
   return row;
 }
 

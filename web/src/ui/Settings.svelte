@@ -18,8 +18,29 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { skipWhileBusy } from "../app/skipWhileBusy.ts";
+  import { autoRejectInvitations, setAutoRejectInvitations } from "../app/autoRejectInvitations.ts";
+  import { plainText } from "../bridge/clientWords.ts";
 
-  let { flow }: { store?: ClientStore; flow?: AppFlow } = $props();
+  let { store, flow }: { store?: ClientStore; flow?: AppFlow } = $props();
+
+  // --- Chat ------------------------------------------------------------------
+  //
+  // The client's system menu's Chat section (systemmenu.py ConstructChatSettings, 1197 to 1208), as far as the page
+  // has its chat: Auto-reject invitations, which turns a fleet's invitation away unasked (app/autoRejectInvitations.ts).
+  const CHAT_WORDS = {
+    header: "UI/SystemMenu/AudioAndChat/Chat/Header",
+    autoReject: "UI/SystemMenu/AudioAndChat/Chat/AutoRejectInvitations",
+  } as const;
+  $effect(() => {
+    flow?.requestWords(Object.values(CHAT_WORDS));
+  });
+  // svelte-ignore state_referenced_locally
+  const words = store?.words ?? null;
+  /** The install's words for a label, the page's own where they are not to hand. */
+  function chatWord(label: string, own: string): string {
+    const template = words === null ? undefined : $words?.templates[label];
+    return typeof template === "string" ? plainText(template) : own;
+  }
 
   // --- The GM console --------------------------------------------------------
   //
@@ -200,6 +221,19 @@
           <option value={String(choice.metres)}>{choice.label}</option>
         {/each}
       </select>
+    </div>
+  </section>
+
+  <section class="settings-group">
+    <h3>{chatWord(CHAT_WORDS.header, "Chat")}</h3>
+    <div class="settings-field">
+      <label for="chat-auto-reject">{chatWord(CHAT_WORDS.autoReject, "Turn invitations away unasked")}</label>
+      <input
+        id="chat-auto-reject"
+        type="checkbox"
+        checked={$autoRejectInvitations}
+        onchange={(e) => setAutoRejectInvitations(e.currentTarget.checked)}
+      />
     </div>
   </section>
 

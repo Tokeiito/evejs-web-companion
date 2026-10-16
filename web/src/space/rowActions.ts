@@ -29,6 +29,7 @@
 
 import type { GateLink } from "./gateLinks.ts";
 import { jumpBlockedReason, jumpLabel } from "./gateLinks.ts";
+import { isWarpGate } from "../bridge/gateActivation.ts";
 
 /**
  * The per-concern busy channel an action belongs to.
@@ -48,6 +49,7 @@ export type RowActionID =
   | "align"
   | "dock"
   | "jump"
+  | "activateGate"
   | "lock"
   | "unlock"
   | "mine"
@@ -75,6 +77,11 @@ export interface RowActionContext {
   readonly acquiring: boolean;
   /** The gate link for this row, or null when it is not a stargate. */
   readonly gateLink: GateLink | null;
+  /** The thing's inventory group and type, for Activate Gate (bridge/gateActivation.ts isWarpGate); null where unread. */
+  readonly groupID?: number | null;
+  readonly typeID?: number | null;
+  /** Whether the pilot's ship is in warp: Activate Gate is then shown disabled, as the client's menu shows it. */
+  readonly warping?: boolean;
   /**
    * The game's own inventory CATEGORY for the thing, exactly as the server
    * stamped it, or null when it could not be read. Decides whether "Mine this"
@@ -195,6 +202,17 @@ export function actionsForRow(ctx: RowActionContext): readonly RowAction[] {
   //
   // Offered on the two kinds the runtime models as an inventory in space, and
   // never carrying a reason this side invented — see `isLootableKind`.
+  // Activate Gate (bridge/gateActivation.ts): an acceleration gate or an Abyssal trace, disabled while the ship warps
+  // (menusvc.py 1767 to 1780: OfferActivateGate, AddDisabledEntryForWarp).
+  if (isWarpGate(ctx.groupID ?? null, ctx.typeID ?? null)) {
+    actions.push({
+      id: "activateGate",
+      label: "Activate Gate",
+      concern: "move",
+      unavailable: ctx.warping === true ? "You are in warp" : null,
+    });
+  }
+
   if (isLootableKind(ctx.kind)) {
     actions.push({ id: "loot", label: "Take everything", concern: "hold", unavailable: null });
   }

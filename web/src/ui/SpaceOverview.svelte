@@ -455,6 +455,10 @@
       locked: lockedIDs.has(row.itemID),
       acquiring: acquiringIDs.has(row.itemID),
       gateLink: row.gateLink,
+      // Activate Gate's: the thing's group and type, and whether the ship warps.
+      groupID: row.groupID ?? null,
+      typeID: row.typeID ?? null,
+      warping: snapshot?.ship?.mode === "WARP",
       // What decides whether "Mine this" is offered at all. A stargate used to
       // get it, greyed out and blaming your equipment for a thing no equipment
       // could ever fix — space/rowActions.ts, isMineableCategory.
@@ -1048,7 +1052,7 @@
       await dispatchRowAction(
         flow as never,
         action.id,
-        { itemID: row.itemID, gateLink: row.gateLink },
+        { itemID: row.itemID, gateLink: row.gateLink, typeID: row.typeID ?? null },
         ranges,
       );
     });

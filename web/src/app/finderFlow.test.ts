@@ -162,13 +162,12 @@ test("findAgents surfaces a read failure through the finder slice (not a throw)"
   assert.match(finder.error ?? "", /Could not find agents/i);
 });
 
-test("setDestinationToAgent records the target and starts the autopilot route", async () => {
+test("setDestinationToAgent records the target and makes its station the destination", async () => {
   const store = onlineStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
 
   await flow.findAgents({ kind: "courier" });
   await flow.setDestinationToAgent(3003); // Charlie Agent, station 60000003 in system 3
-  flow.abortRoute(); // stop the background loop
 
   const target = store.finder.get().target;
   assert.equal(target?.agentID, 3003);
@@ -176,10 +175,10 @@ test("setDestinationToAgent records the target and starts the autopilot route", 
   assert.equal(target?.stationID, 60000003);
   assert.equal(target?.jumps, 2);
 
-  const travel = store.travel.get();
-  assert.equal(travel.destinationStationID, 60000003);
-  assert.equal(travel.destinationSystemID, CHARLIE);
-  assert.equal(travel.totalJumps, 2);
+  // Set Destination (starMapSvc.SetWaypoint(id, True)): the station the only waypoint, and nothing planned or flown
+  // until the autopilot is switched on.
+  assert.deepEqual(flow.waypoints.get(), [60000003]);
+  assert.equal(store.travel.get().status, "idle");
 });
 
 test("setDestinationToAgent on an unknown agent surfaces a finder error", async () => {

@@ -60,6 +60,10 @@
 //   a scan                                 not in void space, systems 34,000,000 to 34,999,999
 //                                          (ProbeScannerVoidSpaceHint, 188 to 189; inventorycommon/const.py 48
 //                                          and 49)
+//   a scan in Abyssal space                asked of the pilot first, systems 32,000,000 to 32,999,999
+//                                          (ProbeScannerAbyssalSpaceWarning, Yes or No, Yes kept where the box is
+//                                          ticked, 183 to 187; const.py 46 and 47): the Scanner window asks it
+//                                          (Scanner.svelte), and a bot's scan there goes only on a kept Yes
 //   a reconnection                         needs an online probe launcher, and a minute since the last one
 //                                          asked (CanClaimProbes, 299 to 302; RECONNECT_DELAY_MINUTES, 24;
 //                                          ScannerProbeReconnectWait, 284 to 285). The time is noted before the
@@ -69,12 +73,9 @@
 // compiled modules through the client's own Python, which bore out the decompiled source.
 //
 // WHAT THE PAGE DOES NOT DO AS THE CLIENT DOES, and says so:
-//   - It has no formations: a probe launched stays where it came out, and is sent to scan from there.
-//   - In Abyssal space the client asks its pilot before it scans (ProbeScannerAbyssalSpaceWarning, 183 to 187).
-//     The page asks nothing.
-//   - With probes held and none of them idle the client sends None, a scan by the ship alone. The page has one
-//     button for a scan and one for a launch where the client has one for both, and offers no scan with no idle
-//     probe.
+//   - It has the Pinpoint and Spread formations only (bridge/probeFormations.ts): no custom ones, no size slider.
+//   - The page has one button for a scan and one for a launch where the client has one for both (Launch with no
+//     probe out, Analyze with probes out).
 //   - The client goes by every probe it holds, the inactive ones too, for whether a formation can be made. The
 //     page is told the active ones, and has no way to make a probe inactive.
 //   - With no probe launcher and no reconnection asked before, the client's own reckoning of the wait fails on a
@@ -94,6 +95,7 @@
 
 import type { ScannerOperationsSnapshot, ScannerProbeOperation } from "../scanner/scannerCenter.ts";
 import type { Ask } from "./ask.ts";
+import { rangeStepFor, type Placement } from "./probeFormations.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** probescanning/const.py: a probe's states. */
@@ -102,10 +104,25 @@ export const PROBE_STATE = Object.freeze({ INACTIVE: 0, IDLE: 1, MOVING: 2, WARP
 export const PROBES_IN_A_FORMATION = 8;
 /** scanSvc.py 25: MIN_PROBE_RECOVER_DISTANCE, in metres from the ship's surface. */
 export const MIN_PROBE_RECOVER_DISTANCE = 2000;
+/** probescanning/const.py scanProbeNumberOfRangeSteps. */
+export const SCAN_RANGE_STEPS = 8;
 /** scanSvc.py 24: RECONNECT_DELAY_MINUTES = 1. */
 export const RECONNECT_DELAY_MS = 60_000;
 /** inventorycommon/const.py 48 and 49: mapVoidSystemMin and mapVoidSystemMax (idCheckers.IsVoidSpaceSystem, 129). */
 const VOID_SYSTEMS: readonly [number, number] = [34_000_000, 34_999_999];
+/** inventorycommon/const.py 46 and 47: mapAbyssalSystemMin and mapAbyssalSystemMax (idCheckers.IsAbyssalSpaceSystem, 101). */
+const ABYSSAL_SYSTEMS: readonly [number, number] = [32_000_000, 32_999_999];
+
+/**
+ * The client's question before a scan in Abyssal space (scanSvc.RequestScans_Check, 183 to 187): the dialog it puts
+ * up, Yes and No, with suppress=uiconst.ID_YES (so Yes alone may be kept); a No and nothing is asked of the server.
+ */
+export const ABYSSAL_SCAN_QUESTION = "ProbeScannerAbyssalSpaceWarning";
+
+/** Whether a system is an Abyssal pocket (idCheckers.IsAbyssalSpaceSystem). */
+export function isAbyssalSystem(systemID: number | null): boolean {
+  return systemID !== null && systemID >= ABYSSAL_SYSTEMS[0] && systemID <= ABYSSAL_SYSTEMS[1];
+}
 
 // The page's own words for what the client refuses. (The client's are its own text, and are not copied.)
 export const SCANNER_NEEDS_SPACE = "Your ship must be in space to use the scanner.";
@@ -113,7 +130,8 @@ export const SCAN_IN_PROGRESS = "A scan is still running. Wait for it to finish,
 export const PROBES_ARE_BUSY = "Your probes are still on the move. Wait until every one of them is idle.";
 export const ALL_PROBES_ARE_OUT = "All eight of your probes are already out.";
 export const NO_PROBES_OUT = "You have no probes out. Launch probes first.";
-export const NO_IDLE_PROBE = "None of your probes is idle to scan with yet.";
+export const NO_IDLE_PROBE = "None of your probes is idle yet, and your probe launcher holds no probes.";
+export const SHIP_SCANS_ALONE = "None of your probes is idle: your ship will scan alone.";
 export const NO_SCANNING_HERE = "Probe scanning is not available in this system.";
 export const NO_PROBES_FOR_A_CAPSULE = "A capsule cannot recover or reconnect to probes. Board a ship first.";
 export const PROBES_TOO_CLOSE_TO_RECOVER =
@@ -121,6 +139,8 @@ export const PROBES_TOO_CLOSE_TO_RECOVER =
 export const NOT_ALL_PROBES_RETURNED =
   "Not every probe could be recalled. Refresh the scanner to see which are still out.";
 export const RECONNECT_NEEDS_A_LAUNCHER = "Reconnecting to probes takes an online probe launcher on your ship.";
+export const ABYSSAL_SCAN_UNANSWERED =
+  "A scan in an Abyssal pocket waits for the pilot's answer to the scanner's warning, which a bot cannot give.";
 
 /** A formation cannot be made of the probes out and the probes loaded. */
 export function notEnoughProbesForAFormation(held: number, loaded: number): string {
@@ -190,17 +210,40 @@ function probeSent(probe: ScannerProbeOperation): JsonValue {
 }
 
 /**
- * The probes a scan is asked with, by their numbers: the idle ones (probeTracker.GetProbesForScanning, 256 to
- * 263); or why no scan is asked.
+ * A formation's button (probeScannerPalette.CheckButtonStates 636 to 649; probeTracker.MoveProbesToFormation 169 to
+ * 182): offered where the probes held and the charges loaded make the formation and every probe is idle. What it
+ * launches: the active probes' shortfall from eight, or nothing where eight are held (they are moved into it).
  */
-export function scanOf(scanner: ScannerRead): { readonly probes: Readonly<Record<string, JsonValue>> } | Refused {
+export function formationOf(scanner: ScannerRead): { readonly launch: { readonly moduleID: number; readonly count: number } | null } | Refused {
+  const not = standing(scanner);
+  if (not) return not;
+  const held = scanner.probes.length;
+  const launcher = scanner.launcher !== null && scanner.launcher.online ? scanner.launcher : null;
+  const loaded = launcher === null ? 0 : launcher.loadedCount;
+  if (held + loaded < PROBES_IN_A_FORMATION) return { refusal: notEnoughProbesForAFormation(held, loaded) };
+  if (!scanner.probes.every(isIdle)) return { refusal: PROBES_ARE_BUSY };
+  return { launch: held < PROBES_IN_A_FORMATION && launcher !== null ? { moduleID: launcher.moduleID, count: PROBES_IN_A_FORMATION - held } : null };
+}
+
+/**
+ * The probes a scan is asked with, by their numbers: the idle ones (probeTracker.GetProbesForScanning, 256 to
+ * 263); null, the ship alone, where probes are out and none is idle; or why no scan is asked.
+ *
+ * The analyze button is offered where a probe is idle or a probe launcher holds charges
+ * (analyzeButton._update_enabled), and once probes are out it analyzes (on_clicked). With none of them idle,
+ * GetProbesForScanning answers None, and RequestScans sends it: the ship scans alone (scanSvc.RequestScans, 195 to
+ * 197, probeIDs [session.shipid]). With no probe out the button launches instead (the page's launch button).
+ */
+export function scanOf(scanner: ScannerRead): { readonly probes: Readonly<Record<string, JsonValue>> | null } | Refused {
   const not = standing(scanner);
   if (not) return not;
   const system = scanner.solarSystemID;
   if (system !== null && system >= VOID_SYSTEMS[0] && system <= VOID_SYSTEMS[1]) return { refusal: NO_SCANNING_HERE };
   if (scanner.probes.length === 0) return { refusal: NO_PROBES_OUT };
   const idle = scanner.probes.filter(isIdle);
-  if (idle.length === 0) return { refusal: NO_IDLE_PROBE };
+  if (idle.length === 0) {
+    return scanner.launcher !== null && scanner.launcher.loadedCount > 0 ? { probes: null } : { refusal: NO_IDLE_PROBE };
+  }
   return { probes: Object.fromEntries(idle.map((probe) => [String(probe.probeID), probeSent(probe)])) };
 }
 
@@ -257,6 +300,55 @@ export function createScannerWrites(act: Ask, now: () => number = Date.now) {
       }
       const recalled = countOf(await act("scanMgr", "RecoverProbes", [[...recall.probeIDs]]));
       if (recalled !== null && recalled < recall.probeIDs.length) throw new Error(NOT_ALL_PROBES_RETURNED);
+    },
+
+    /** scanSvc.FindModuleAndLaunchProbes (487 to 498): LaunchProbes(module, count), as a formation's button wants. */
+    async launchCount(moduleID: number, count: number): Promise<void> {
+      await act("dogmaIM", "LaunchProbes", [moduleID, count]);
+    },
+
+    /**
+     * probeTracker.ProbeGoToPoint (148 to 157): an idle probe given its place as its destination, and the range step
+     * whose range is nearest the place's size. Both are the client's own list's; the game port's transport keeps
+     * them and sends nothing. (The client sets the step on the probe itself; SetProbeRangeStep also makes it the
+     * step a new probe starts on, which the next placement overrides.)
+     */
+    async sendToPlace(probe: ScannerProbeOperation, placement: Placement): Promise<void> {
+      if (probe.state !== PROBE_STATE.IDLE) return;
+      await act("scanMgr", "SetProbeDestination", [probe.probeID, [...placement.destination]]);
+      const step = rangeStepFor(placement.size, probe.rangeSteps ?? []);
+      if (step !== null && step !== probe.rangeStep) await act("scanMgr", "SetProbeRangeStep", [probe.probeID, step]);
+    },
+
+    /**
+     * The probe menu's Scan Range (scanSvc.GetProbeMenu 398 to 401, SetScanRange_Check 409 to 413): each chosen probe
+     * given the step, refused while a scan is under way (UserErrorIfScanning). SetProbeRangeStep is the client's own
+     * list's (probeTracker.SetProbeRangeStep, which changes nothing for a step outside the eight); on the game port
+     * the transport keeps it and sends nothing, and the next RequestScans carries it.
+     */
+    async setRangeStep(scanner: ScannerRead, probeIDs: readonly number[], rangeStep: number): Promise<void> {
+      if (scanner.scanning === true) throw new Error(SCAN_IN_PROGRESS);
+      if (!Number.isInteger(rangeStep) || rangeStep < 1 || rangeStep > SCAN_RANGE_STEPS) return;
+      const held = new Set(scanner.probes.map((probe) => probe.probeID));
+      for (const probeID of probeIDs) {
+        if (held.has(probeID)) await act("scanMgr", "SetProbeRangeStep", [probeID, rangeStep]);
+      }
+    },
+
+    /**
+     * The probe menu's Recover Probe (RecoverProbe_Check, 416 to 420; scanSvc.RecoverProbes 324 to 337): the chosen
+     * probes recalled, refused while a scan is under way, from a capsule, or with one of them within 2,000 metres.
+     * Fails where the server recalled fewer than were asked for (probeTracker.RecoverProbes).
+     */
+    async recoverSome(scanner: ScannerRead, ship: ScannerShip, probeIDs: readonly number[]): Promise<void> {
+      if (scanner.scanning === true) throw new Error(SCAN_IN_PROGRESS);
+      if (ship.isCapsule === true) throw new Error(NO_PROBES_FOR_A_CAPSULE);
+      for (const probeID of probeIDs) {
+        const distance = ship.surfaceDistanceTo(probeID);
+        if (distance !== null && distance < MIN_PROBE_RECOVER_DISTANCE) throw new Error(PROBES_TOO_CLOSE_TO_RECOVER);
+      }
+      const recalled = countOf(await act("scanMgr", "RecoverProbes", [[...probeIDs]]));
+      if (recalled !== null && recalled < probeIDs.length) throw new Error(NOT_ALL_PROBES_RETURNED);
     },
 
     /** Asks the server to tell of the pilot's probes again. Refuses as the client does; fails as the call fails. */

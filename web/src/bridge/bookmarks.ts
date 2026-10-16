@@ -251,6 +251,40 @@ export function decodeFolderInfo(result: JsonValue): BookmarkFolder | null {
   return decodeFolderRow(result);
 }
 
+/** An access list of the pilot's (ownerGroupManager.GetMyGroups): its number, who made it, and its name. */
+export interface AccessGroup {
+  readonly groupID: number;
+  readonly creatorID: number | null;
+  readonly name: string;
+}
+
+/**
+ * Decode ownerGroupManager.GetMyGroups (accessGroupsController.GetMyGroups, 102 to 109): the groups' KeyVals, each
+ * with groupID, creatorID, name, description, membershipType and admins. A row with no number is none.
+ */
+export function decodeAccessGroups(result: JsonValue): AccessGroup[] {
+  const groups: AccessGroup[] = [];
+  for (const item of listItems(result)) {
+    const group = decodeAccessGroup(item);
+    if (group !== null) {
+      groups.push(group);
+    }
+  }
+  return groups;
+}
+
+/** Decode one access list's KeyVal (ownerGroupManager.GetGroup), or null where it is none. */
+export function decodeAccessGroup(result: JsonValue): AccessGroup | null {
+  if (result === null || result === undefined || !isRow(result)) {
+    return null;
+  }
+  const groupID = toNumber(readRowField(result, "groupID"));
+  if (groupID <= 0) {
+    return null;
+  }
+  return { groupID, creatorID: toOptionalID(readRowField(result, "creatorID")), name: toText(readRowField(result, "name")) };
+}
+
 // --- R87 write acks ---------------------------------------------------------
 //
 // The Phase-3 accessGroupBookmarkMgr WRITES (folder + bookmark CRUD; reads were

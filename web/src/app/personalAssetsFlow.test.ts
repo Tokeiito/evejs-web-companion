@@ -414,73 +414,24 @@ test("expanding a station asks for its item types by name", async () => {
 
 // --- setting a destination --------------------------------------------------
 
-test("setting a destination from an asset location plans a real route", async () => {
-  // The map graph the route solver reads, plus the resolve of the station.
-  // Three systems in a line: the character is in 30000140, the assets are in
-  // Jita (30000142), and 30000141 sits between them.
-  const graph = {
-    ok: true,
-    source: "static-data",
-    systemCount: 3,
-    edgeCount: 2,
-    systems: [
-      { solarSystemID: 30000140, solarSystemName: "Origin", regionID: 10000002, security: 0.9 },
-      { solarSystemID: 30000141, solarSystemName: "Middle", regionID: 10000002, security: 0.9 },
-      { solarSystemID: SYSTEM_ID, solarSystemName: "Jita", regionID: 10000002, security: 0.9 },
-    ],
-    edges: [
-      [30000140, 30000141, 50001, 50002],
-      [30000141, SYSTEM_ID, 50003, 50004],
-    ],
-    // Each system's security, as the map is served: the route is the client's autopilot's, which goes by it.
-    security: { 30000140: 0.9, 30000141: 0.9, [SYSTEM_ID]: 0.9 },
-  };
-
-  const { store, flow } = makeFlow((path: string, body: Record<string, unknown> = {}) => {
-    if (path === "/api/map/graph") {
-      return { status: 200, body: graph };
-    }
-    if (path.startsWith("/api/map/resolve/")) {
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          kind: "station",
-          stationID: STATION_ID,
-          stationName: "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
-          solarSystemID: SYSTEM_ID,
-          systemName: "Jita",
-        },
-      };
-    }
-    if (path === "/api/bridge/flight/status") {
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          flight: { docked: false, solarSystemID: 30000140, stationID: null, shipID: 1 },
-        },
-      };
-    }
-    return respondOk()(path, body);
+test("setting a destination from an asset location makes the station the destination, and flies nothing", async () => {
+  // Set Destination, as the client's map menu sets it (starMapSvc.SetWaypoint(id, True)): the station the only
+  // waypoint, kept for the pilot; nothing is planned or flown until the autopilot is switched on. It is a station of
+  // the map, in known space and of no deprecated type (_IsDestinationValid, 2301 to 2318), as the BFF's map answers.
+  const { store, flow } = makeFlow(respondOk((path) => (path === `/api/map/resolve/${STATION_ID}`
+    ? { status: 200, body: { ok: true, id: STATION_ID, kind: "station", stationID: STATION_ID, stationName: "A station", solarSystemID: SYSTEM_ID, systemName: "A system", stationTypeID: STATION_TYPE_ID } }
+    : null)));
+  store.apply({
+    type: "character/online",
+    character: { characterID: 140000001, characterName: "Pilot", stationID: 60000001, structureID: null, solarSystemID: 30000140, corporationID: 1000001 },
+    station: null,
   });
 
-  await flow.loadPersonalAssets();
   await flow.setDestinationToAssetStation(STATION_ID);
-  const travel = store.get().travel;
-  // ⚠ STOP THE LOOP. startRoute hands the plan to the shared autopilot
-  // controller and lets it run on a 2 s cadence; without this the test process
-  // never exits. Read the state FIRST, then abort.
-  flow.abortRoute();
 
-  // The route was actually SOLVED — the destination is the asset station, and
-  // it is two jumps away through the graph above.
-  assert.equal(travel.destinationStationID, STATION_ID);
-  assert.equal(travel.destinationSystemID, SYSTEM_ID);
-  assert.equal(travel.totalJumps, 2);
-  assert.equal(travel.failureReason, null);
-  // R7d: what the panel shows is the NAME, never the id.
-  assert.match(String(travel.destinationName), /Jita/);
+  assert.deepEqual(flow.waypoints.get(), [STATION_ID]);
+  assert.equal(store.get().travel.status, "idle");
+  assert.equal(store.get().travel.destinationStationID, null);
 });
 
 // --- the list of stations, as the page's own read -----------------------------

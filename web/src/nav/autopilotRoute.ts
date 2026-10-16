@@ -68,11 +68,21 @@ export interface AutopilotSettings {
 /**
  * The pathfinder's map from the page's own: every jump there is, and each system at the level the client
  * works with (clientPathfinderService.CreatePathfinderCore gives it securitySvc's level, which is
- * pseudoSecurity for a system the server has not changed).
+ * pseudoSecurity for a system the server has not changed). With it the jump gates the pilot may take, each a
+ * jump one way (add_one_way_jumps; nav/jumpGates.ts).
  */
-export function autopilotMap(graph: Pick<SystemGraph, "neighbors" | "security">): AutopilotMap {
+export function autopilotMap(
+  graph: Pick<SystemGraph, "neighbors" | "security">,
+  oneWayJumps: readonly { readonly fromSystemID: number; readonly toSystemID: number }[] = [],
+): AutopilotMap {
+  const oneWay = new Map<number, number[]>();
+  for (const jump of oneWayJumps) {
+    const list = oneWay.get(jump.fromSystemID);
+    if (list) list.push(jump.toSystemID);
+    else oneWay.set(jump.fromSystemID, [jump.toSystemID]);
+  }
   return {
-    neighbors: (systemID) => graph.neighbors(systemID).map((edge) => edge.toSystemID),
+    neighbors: (systemID) => [...graph.neighbors(systemID).map((edge) => edge.toSystemID), ...(oneWay.get(systemID) ?? [])],
     security: (systemID) => {
       const level = graph.security(systemID);
       return level === null ? null : pseudoSecurity(level);

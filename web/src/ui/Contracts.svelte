@@ -39,6 +39,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ContractRow } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
+  import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -106,13 +107,9 @@
     return new Date(unixMs).toLocaleDateString();
   }
 
-  /** Where a delivery runs, in words. */
-  function routeText(row: ContractRow): string {
-    if (row.endStationID <= 0) {
-      return stationName(row.startStationID);
-    }
-    return `${stationName(row.startStationID)} → ${stationName(row.endStationID)}`;
-  }
+  /** The headings a contract row's menu gives its stations (contractentry.py 76 to 81). */
+  const PICK_UP_HEADING = { label: "UI/Contracts/ContractEntry/PickupStation", own: "Collect from" } as const;
+  const DROP_OFF_HEADING = { label: "UI/Contracts/ContractEntry/DropOffStation", own: "Deliver to" } as const;
 
   const mineRows = $derived(
     mineView === "assigned"
@@ -203,6 +200,20 @@
   });
 </script>
 
+<!-- Where a contract runs, in words: its station, and the drop-off where it has one. Each has its route entries under
+     the heading the client's row menu gives it (contractentry.py 76 to 81): the pick-up where there is one, the
+     drop-off where it is another station. -->
+{#snippet routeCell(row: ContractRow)}
+  <td data-label="Route">
+    {stationName(row.startStationID)}
+    {#if row.startStationID > 0}<PlaceRouteMenu {store} {flow} placeID={row.startStationID} heading={PICK_UP_HEADING} />{/if}
+    {#if row.endStationID > 0}
+      → {stationName(row.endStationID)}
+      {#if row.endStationID !== row.startStationID}<PlaceRouteMenu {store} {flow} placeID={row.endStationID} heading={DROP_OFF_HEADING} />{/if}
+    {/if}
+  </td>
+{/snippet}
+
 <section class="panel">
   <header class="panel-head">
     <h2 class="panel-title">Contracts</h2>
@@ -277,7 +288,7 @@
             {#each $contracts.browse as row (row.contractID)}
               <tr>
                 <td data-label="Issued by">{personName(row.issuerID)}</td>
-                <td data-label="Route">{routeText(row)}</td>
+                {@render routeCell(row)}
                 <td class="num" data-label="Pays">{formatIsk(row.reward)}</td>
                 <td class="num" data-label="You must cover">{formatIsk(row.collateral)}</td>
                 <td class="num" data-label="Cargo">{formatVolume(row.volume)}</td>
@@ -401,7 +412,7 @@
                 {#if mineView === "assigned"}
                   <td data-label="Issued by">{personName(row.issuerID)}</td>
                 {/if}
-                <td data-label="Route">{routeText(row)}</td>
+                {@render routeCell(row)}
                 <td class="num" data-label="Pays">{formatIsk(row.reward ?? row.price)}</td>
                 {#if mineView === "assigned"}
                   <td class="num" data-label="You must cover">{formatIsk(row.collateral)}</td>

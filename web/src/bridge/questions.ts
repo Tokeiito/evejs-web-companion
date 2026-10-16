@@ -36,6 +36,8 @@ import {
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
+import { fmtDist } from "../space/overview.ts";
+import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
 
 /**
  * The retail client's own text, when the page has it: its templates by label
@@ -227,11 +229,12 @@ const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 const DIALOG_NAME = /^\w{1,100}$/;
 
 /** The dialog and the part a words key names, or null when the key is a label or a message's number. */
-export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" } | null {
+export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" | "suppress" | "type" } | null {
   // "suppressable": whether the install lets the dialog's answer be kept ("1"), for "do not ask again"
-  // (dialogSuppression.ts).
-  const match = /^dialog:(\w{1,100})\/(title|body|suppressable)$/.exec(key);
-  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" } : null;
+  // (dialogSuppression.ts). "suppress": which answer it lets be kept ("any", "yes" or "no"; eveCfg.py
+  // GetSuppressValueForMessage). "type": the dialog's type, which says how the client puts it up (ClientDialogs.svelte).
+  const match = /^dialog:(\w{1,100})\/(title|body|suppressable|suppress|type)$/.exec(key);
+  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" | "suppress" | "type" } : null;
 }
 
 /**
@@ -282,8 +285,27 @@ export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: Cli
         playerID: client.playerID ?? null,
         writeInterval: intervalWriter(client.templates),
         writeShortInterval: shortIntervalWriter(client.templates),
+        // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
+        writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
+        writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
       })
     : null;
+}
+
+/** The labels a dialog's numeric values are written with: a distance's units, and ISK's (ISK_LABELS). */
+export const NUMERIC_WORD_LABELS: readonly string[] = [...DISTANCE_WORD_LABELS, "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"];
+
+/**
+ * eveFormat.FmtISK(value, showFractionsAlways) by FmtCurrency: the label of ISK with fractions or without
+ * (UI/Util/FmtIsk, UI/Util/FmtIskNoDecimal), the amount rounded half away from nought where without; null where the
+ * label is not to hand.
+ */
+function iskWords(amount: number, decimalPlaces: number, templates: ClientWording["templates"], nameOf: NameOf): string | null {
+  const fractions = decimalPlaces > 0;
+  const template = templates[fractions ? "UI/Util/FmtIsk" : "UI/Util/FmtIskNoDecimal"];
+  if (typeof template !== "string") return null;
+  const shown = fractions ? amount : Math.sign(amount) * Math.round(Math.abs(amount));
+  return plainText(formatTemplate(template, { amount: shown }, { nameOf }));
 }
 
 /**
@@ -346,7 +368,7 @@ export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefine
       refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording, nameByID), { playerID: client?.playerID ?? null }));
       if (typeof words.dialog === "string") {
         // What the dialog's typed values name: they are text by the time the template is filled.
-        refs.push(...typedNameRefs(parametersOf(words.parameters)));
+        refs.push(...typedNameRefs(parametersOf(words.parameters), client?.templates));
       }
       continue;
     }

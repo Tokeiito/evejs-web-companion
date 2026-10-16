@@ -380,6 +380,10 @@ const botHost =
     // live web session is flying. (Direction 2 — a tab may not take a bot's
     // character — is the guard in /api/bridge/select.)
     isCharacterHeld,
+    // What the game server closed a pilot's connection with, where it said (another login of its account): such a
+    // pilot is not logged in again by a run's recovery (gamePort/pilots.js closedByServer).
+    closedByServer: (characterID) =>
+      gamePortPilots && typeof gamePortPilots.closedByServer === "function" ? gamePortPilots.closedByServer(characterID) : null,
     disconnectOwnedSession: async ({ webSessionID, characterID, accountID, claimSecret, previousSecret }) => {
       const held = bridgeSessions.get(webSessionID);
       if (!held || held.characterID !== characterID || Number(held.accountID) !== accountID ||
@@ -999,7 +1003,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // which that gate lets through, is CmdStop. So was every change of place the page makes (the undock, a flight
   // route until 2026-10-14).
   const ordersTheShip = body.service === "beyonce" && body.method !== "CmdStop";
-  if (write && (ordersTheShip || placeChangeOf(body.service, body.method) !== null) && heldBackForDroneRecovery(req, res)) {
+  if (write && (ordersTheShip || placeChangeOf(body.service, body.method, body.args) !== null) && heldBackForDroneRecovery(req, res)) {
     return;
   }
   // A call the client makes on an object of the service's for a thing it names (its Moniker(service, what)) says
@@ -1046,7 +1050,8 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     return;
   }
   // (The fleet an invitation is to, where the call says one: a fleet's number as above. And the pilot invited
-  // is a pilot's number, the call's first argument: nothing else of what it came with is taken.)
+  // is a pilot's number, the call's first argument; its place, the next three, a wing's, a squad's and a role's
+  // number or nothing each: nothing else of what it came with is taken.)
   if (objectKind === "fleetExpected" && saysWhich && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
     return;
@@ -1055,14 +1060,19 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A positive characterID is required." });
     return;
   }
+  if (objectKind === "fleetExpected" && invitedPlaceOf(body.args) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_FLEET_PLACE", message: "A wing, a squad and a role are each a positive number or nothing." });
+    return;
+  }
   if (objectKind !== null && body.pilot !== true) {
     res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A call on an object is a pilot's." });
     return;
   }
   // A warp of the page's is one the client's menus make: to a thing, a fleet member, a bookmark, a scan result or
-  // a launch, with a range and fleet=False at most. The server's handler takes more of a caller than that (a point
-  // to fly to, a fleet's warp, subjects no menu of the page's has): what is none of a client's is refused here,
-  // on either transport, and nothing is sent.
+  // a launch, with a range and fleet=False at most, and a fleet's warp to a member with the formation's settings.
+  // The server's handler takes more of a caller than that (a point to fly to, a fleet's warp to anything else,
+  // subjects no menu of the page's has): what is none of a client's is refused here, on either transport, and
+  // nothing is sent.
   if (body.service === "beyonce" && body.method === "CmdWarpToStuff") {
     const why = notAClientsWarp(body.args, body.kwargs ?? null);
     if (why !== null) {
@@ -1094,7 +1104,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // A write that takes the pilot to another place is made under the BFF's keeping of the session change, as the
   // client's session manager makes it and as its route made it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS): it
   // is answered as any call here is, once the pilot is usable in its new place.
-  const placeChange = placeChangeOf(body.service, body.method);
+  const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (placeChange !== null) {
     await dispatchPlaceChangeWrite(req, res, next, placeChange, body.service, body.method,
       Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
@@ -1147,9 +1157,13 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       // held. Answered as the call that was asked.)
       // (Or a fleet formed, as its route forms one: bound through the call, and Init asked on what it answered.)
       : objectKind === "fleet"
+      // (Or a member kicked, or the boss handed on, on the session's own fleet's object: fleetSvc.KickMember and
+      // MakeLeader, 601 to 612.)
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "CreateFleet"
         ? createFleetCall(heldBridgeSession, req.webSessionID)
-        : leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
+        : body.method === "LeaveFleet"
+        ? leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)
+        : boundCall(heldBridgeSession, req.webSessionID, fleetBindSpec(), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
       // (An invitation accepted, as its route accepts one: on the fleet the page names, bound by its number,
       // with no type of ship said whatever the call came with.)
       : objectKind === "fleetByNumber"
@@ -1158,11 +1172,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         ? rejectFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of), decliningWordOf(body.args))
         : acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of)))),
         service: body.service, method: body.method }
-      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and
-      // nothing of a wing, a squad or a role whatever the call came with.)
+      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and the
+      // place the call says, a wing, a squad and a role or nothing of them.)
       : objectKind === "fleetExpected"
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => inviteToFleetCall(
-        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null)), service: body.service, method: body.method }
+        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null, invitedPlaceOf(body.args))), service: body.service, method: body.method }
       // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
       // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
       : ordersAFollow(body.service, body.method)
@@ -2678,12 +2692,27 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
       });
       return;
     }
+    // fleetSvc.InitFleet (254 to 258): without its fleet's object the client asks nothing of its fleet, whatever the
+    // session says, and it has that object only from CreateFleet or an invitation it accepted (334, 1195); the game
+    // port holds one the same way (pilots.js afterFleetCall). Where none is held the session's fleet is said and
+    // nothing is asked (until 2026-10-15 the BFF bound one afresh here and asked all five reads).
+    if (own.holdsObject !== true) {
+      held.fleetID = String(own.fleetID);
+      res.json({
+        ok: true,
+        characterID: held.characterID,
+        fleetID: held.fleetID,
+        reads: Object.fromEntries(FLEET_READ_METHODS.map((method) => [method, { error: "NOT_ASKED", message: null }])),
+        notifications: [],
+      });
+      return;
+    }
   }
   // fleetSvc.py reads a fleet's state once and keeps it right from the server's notices, its wings and its message
   // with it. Where the game port holds the fleet's object it keeps the fleet the same way (pilots.js fleetKept),
-  // and those reads are answered from what is kept. With nothing kept they are asked, as before.
+  // and those reads are answered from what is kept. With nothing kept they are asked of that object.
   let kept = null;
-  if (own && own.holdsObject === true) {
+  if (own) {
     try {
       kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
     } catch (error) {
@@ -4588,6 +4617,16 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            work out from the gate itself. Waited for in full and latched on a timeout, and the park bound again in
  *            the new system before the answer, as its route did (reparkAfterArrival: the barrier answers while the
  *            hull is still inert).
+ *   cyno     by the ship's jump drive into a fleet member's cyno's system (cynoTravelSvc.py: CmdJumpToFleetModuleBeacon
+ *            and CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID)). Refused for a pilot not in space and
+ *            for a member, a beacon or a system that is no number. Kept as a stargate's jump is (its keeping, latch
+ *            and repark), into the beacon's system.
+ *   abyss    a filament's solo deploy into its pocket (keyActivationWindow.py 49 to 51: PerformSessionChange('JumpToAbyss',
+ *            abyss.deploy_entrance_gate, itemID, gameModeID)). Refused for a pilot not in space and for a filament
+ *            that is no number. Kept as a stargate's jump is (its keeping, latch and repark), into the pocket.
+ *   abyssExit  the last room's conduit out of the pocket (movementFunctions.RealActivateAbyssalEndGate:
+ *            PerformSessionChange('abyssToKnownJump', abyssalMgr.AbyssalEndGateActivation, itemID)). Refused for a
+ *            pilot not in space and for a conduit that is no number. Kept as a stargate's jump is, out of the pocket.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4656,10 +4695,57 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
+    } else if (kind === "cyno") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const [memberID, beaconID, beaconSystemID] = args.map(Number);
+      if (![memberID, beaconID, beaconSystemID].every((id) => Number.isSafeInteger(id) && id > 0)) {
+        res.status(400).json({ ok: false, error: "INVALID_BEACON", message: "A member, its beacon and the beacon's system are each a positive number." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, toSolarSystemID: beaconSystemID, shipID };
+    } else if (kind === "abyss") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const itemID = Number(args[0]);
+      if (!Number.isSafeInteger(itemID) || itemID <= 0 || args.length !== 2) {
+        res.status(400).json({ ok: false, error: "INVALID_ITEM", message: "A filament is deployed by its number and the game mode's." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
+    } else if (kind === "abyssExit") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const conduitID = Number(args[0]);
+      if (!Number.isSafeInteger(conduitID) || conduitID <= 0 || args.length !== 1) {
+        res.status(400).json({ ok: false, error: "INVALID_GATE", message: "A conduit is activated by its number, and nothing else." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
+    } else if (kind === "bridge") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const structureID = Number(args[0]);
+      if (!isPlayerStructureID(structureID) || args.length !== 1) {
+        res.status(400).json({ ok: false, error: "INVALID_STRUCTURE", message: "A jump gate is jumped through by its number, and nothing else." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
-    if (!await acquireRouteTransition(res, held, kind, expected)) {
+    // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
+    // system, the park bound again there.)
+    const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind;
+    if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
     // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
@@ -4672,7 +4758,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
         : await heldTopLevelCall(held, req.webSessionID, "ship", "Undock", [shipID, Boolean(kwargs && kwargs.ignoreContraband)], null);
     markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
+    const after = await awaitRouteTransition(held, req.webSessionID, keeping, expected, waiting);
     if (!after.ok && kind === "dock") {
       // The server's silent decline, as the route took it: released (unless another change took its place) and
       // answered, the page reading the flight after.
@@ -4695,7 +4781,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     }
     // Arrived through a gate: the park bound again in the new system before the answer, so that the ship can move
     // the moment the page acts on it (reparkAfterArrival).
-    if (kind === "stargate") {
+    if (keeping === "stargate") {
       await reparkAfterArrival(held, after.flight && after.flight.solarSystemID);
     }
     res.json({
@@ -4707,7 +4793,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === kind) {
+    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);
@@ -5385,7 +5471,9 @@ app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
 
 // --- abyssalMgr WRITES (5) — server-side rejection/no-op stubs
 // Its 5 write routes, made for no screen of the page's, went on 2026-10-14 (the loop's item 62): nothing
-// asked them. The pairs stay writes (bridgeCallPolicy.js), so the generic call refuses them.
+// asked them. The pairs stay writes (bridgeCallPolicy.js), so the generic call refuses them. A filament's deploy,
+// AbyssalEntranceDeployment, is the page's own write since 2026-10-15 (web/src/bridge/abyssalKeys.ts), solo's a
+// session change (dispatchPlaceChangeWrite, "abyss").
 
 // --- pvpFilamentMgr WRITES (3) — server-side rejection/no-op stubs
 // Its 3 write routes, made for no screen of the page's, went on 2026-10-14 (the loop's item 62): nothing
@@ -5553,17 +5641,41 @@ function inviteeOf(args) {
 }
 
 /**
- * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
- * 363): self.fleet.Invite(charID, None, None, None), on the fleet's own object. The page names the invitee alone:
- * a wing, a squad and a role are None here whatever the call came with, since the server seats an invitee in
- * whatever role it is told. `expectedFleetID` is the fleet the caller expects its pilot to be in, where it says
- * one: the call is then made on the object bound by that number, so that the server's check of the inviter runs
- * against that fleet and a held-back invitation cannot follow its pilot into another. Whatever comes of it, none
- * of the BFF's handles for a fleet is kept, as after its route.
+ * The place a call of the page's invites a pilot to: its second, third and fourth arguments, a wing's, a squad's and
+ * a role's number, each nothing where the call says none (the invite menu's first entry says none of them). Null
+ * where one is neither.
  */
-async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID) {
+function invitedPlaceOf(args) {
+  if (!Array.isArray(args)) {
+    return null;
+  }
+  const place = [];
+  for (const value of [args[1], args[2], args[3]]) {
+    if (value === undefined || value === null) {
+      place.push(null);
+      continue;
+    }
+    const id = strictPositiveID(value);
+    if (id === null) {
+      return null;
+    }
+    place.push(id);
+  }
+  return { wingID: place[0], squadID: place[1], role: place[2] };
+}
+
+/**
+ * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
+ * 363): self.fleet.Invite(charID, wingID, squadID, role), on the fleet's own object. `place` is the invite menu's
+ * (menusvc.FleetInviteMenu, MemberMenu's places), None for each it does not say; the server holds a placed
+ * invitation to the inviter's command, as it holds a member's move. `expectedFleetID` is the fleet the caller
+ * expects its pilot to be in, where it says one: the call is then made on the object bound by that number, so that
+ * the server's check of the inviter runs against that fleet and a held-back invitation cannot follow its pilot into
+ * another. Whatever comes of it, none of the BFF's handles for a fleet is kept, as after its route.
+ */
+async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID, place = null) {
   try {
-    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, null, null, null], null);
+    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, place?.wingID ?? null, place?.squadID ?? null, place?.role ?? null], null);
   } finally {
     invalidateFleetBoundHandles(held);
   }
@@ -10264,6 +10376,43 @@ function requireExpectedInventoryFlight(res, expected, flight) {
   return true;
 }
 
+// The Abyssal pocket's timer as the pilot was last told it (gamePort/pilots.js keepPocketTimer): the end_time of
+// OnAddExpiryDurationForAbyssalContent, as the notice had it, or null. The client is told it once, at the pocket's
+// entry; a browser drawing the pilot afresh asks this instead. Through the web gateway nothing is kept: known false.
+app.get("/api/bridge/pocket-timer", requireAuth, (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.pocketTimer !== "function") {
+      res.json({ ok: true, known: false, endTime: null });
+      return;
+    }
+    res.json({ ok: true, known: true, endTime: gamePortPilots.pocketTimer({ userid: held.accountID }, held.bridgeSessionID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Why a pilot of this account went offline, where the game server closed its connection with a reason of its own
+// (another login of the account: gamePort/pilots.js closedByServer). The page asks as it lets the pilot go, and says
+// so, as the retail client puts up its connection-lost notice. Null where the server closed nothing.
+app.get("/api/bridge/closed-by-server", requireAuth, (req, res) => {
+  const characterID = Number(req.query.characterID);
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A character is required." });
+    return;
+  }
+  const closed = gamePortPilots && typeof gamePortPilots.closedByServer === "function"
+    ? gamePortPilots.closedByServer(characterID)
+    : null;
+  res.json({
+    ok: true,
+    closed: closed && Number(closed.accountID) === Number(req.account.accountID)
+      ? { reasonCode: closed.reasonCode, reason: closed.reason, at: closed.at }
+      : null,
+  });
+});
+
 app.get("/api/mining/compression-compatibility", requireAuth, (req, res, next) => {
   const ids = value => typeof value === "string" && /^\d+(?:,\d+)*$/.test(value)
     ? value.split(",").map(Number) : [];
@@ -10976,6 +11125,27 @@ function rosterCharacterIDs(value) {
   }
   return characterIDs;
 }
+
+// An account's characters for the Pilot Hangar, as the selection screen lists them (charUnboundMgr.
+// GetCharacterSelectionData), read without logging the account in on the game port. A launcher lists an account's
+// characters without a game login; a login closes the account's other client (EveJS's accountLoginClose.js, after
+// sessionMgr.CloseUserSessions), so the hangar opening would put off a retail client playing on the account. Asked of
+// the gateway as the account and no character, as the roster's training read below is.
+app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
+  try {
+    const outcome = await gateway.callMethod(
+      "charUnboundMgr",
+      "GetCharacterSelectionData",
+      [],
+      null,
+      { userid: Number(req.account.accountID) },
+      undefined,
+    );
+    res.json({ ok: true, result: outcome ? outcome.result ?? null : null });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/roster/training", requireAuth, async (req, res, next) => {
   const characterIDs = rosterCharacterIDs(req.query.characterIDs);
@@ -12325,16 +12495,31 @@ app.post("/api/roster/stock", requireAuth, async (req, res, next) => {
 // (like station names), served here from src/staticData.js. This is NOT a
 // gateway/bridge call and NOT a server-side travel job — no live bridge session
 // is touched. Requires the web login session (as every /api route does).
+/** appConst.factionTriglavian. */
+const FACTION_TRIGLAVIAN = 500026;
 app.get("/api/map/graph", requireAuth, async (req, res, next) => {
   try {
     const graph = staticData.getSolarSystemGraph();
     // Each system's security as it was made, for the route the client's autopilot plots, which goes by it
     // (web/src/nav/autopilotRoute.ts). A system with none in the data is left out.
     const security = {};
+    // And the systems of the Triglavian Collective, which the client's star map takes for no destination from outside
+    // them (idCheckers.IsTriglavianSystem: the system's factionID, appConst.factionTriglavian 500026).
+    const triglavian = [];
+    // And each system's constellation and region, by which the client's pathfinder takes a constellation or a region
+    // on the avoidance list for its systems, and its route window names where each place is (mapSvc.ExpandItems and
+    // GetParent, from cfg.mapSystemCache).
+    const within = {};
     for (const id of Object.keys(graph.systems)) {
       const system = staticData.getSolarSystem(Number(id));
       if (system && typeof system.security === "number") {
         security[id] = system.security;
+      }
+      if (system && Number(system.factionID) === FACTION_TRIGLAVIAN) {
+        triglavian.push(Number(id));
+      }
+      if (system && Number(system.constellationID) > 0 && Number(system.regionID) > 0) {
+        within[id] = [Number(system.constellationID), Number(system.regionID)];
       }
     }
     res.json({
@@ -12345,6 +12530,8 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
       systems: graph.systems,
       edges: graph.edges,
       security,
+      triglavian,
+      within,
     });
   } catch (error) {
     next(error);
@@ -12386,6 +12573,9 @@ app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
         kind: "station",
         stationID: id,
         stationName: String(station.stationName || `Station ${id}`),
+        // (Its type, which the client's star map takes for no destination where it is a deprecated station's:
+        // idCheckers.IsDeprecatedStation.)
+        stationTypeID: Number(station.stationTypeID) || null,
         solarSystemID,
         systemName: solarSystemID ? staticData.getSolarSystemName(solarSystemID) : null,
       });
@@ -12900,6 +13090,25 @@ app.get("/api/client-data/missions/:missionID", requireAuth, async (req, res, ne
   }
 });
 
+// Each kind of a wallet journal's entries with the message its line is worded by, as the client's own data has it
+// (eveaccounting/data.py get_entry_format_localization_id: the entry type's entryJournalMessageID). The client's
+// FmtWalletEntry words a line by it, unless the kind has none or is worded by hand (walletEntryFormat.py 22 to 26).
+// `available` is false when the table could not be read (no client install, or no Python to host the client's
+// loader); `journalMessageIDs` is then empty.
+app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("accountingEntryTypes");
+    const journalMessageIDs = {};
+    for (const [entryTypeID, row] of Object.entries(table || {})) {
+      const messageID = row && Number(row.entryJournalMessageID);
+      if (Number.isSafeInteger(messageID) && messageID > 0) journalMessageIDs[entryTypeID] = messageID;
+    }
+    res.json({ ok: true, available: Boolean(table), journalMessageIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -13014,6 +13223,47 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       names,
       unresolved,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Corporations' tickers, as the client's cfg.corptickernames has them: an NPC corporation's from the static tables
+// (the client fills those from its own data and asks for none), a player corporation's asked of the game server by
+// the game-port transport, which keeps each it is answered (pilots.js corpTickersNamed): in one call, or in one for
+// each where `each` is said, as the client's own askings go. A ticker that could not be asked (no pilot on the game
+// port, or the call refused) is named in `unresolved`; null is the server's answer of none.
+app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];
+    const corpIDs = [...new Set(asked.filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0))].slice(0, 200);
+    const each = Boolean(req.body && req.body.each === true);
+    const tickers = {};
+    const unresolved = [];
+    const players = [];
+    for (const corpID of corpIDs) {
+      if (corpID >= 1000000 && corpID < 2000000) {
+        const corporation = staticData.getCorporation(corpID);
+        tickers[corpID] = corporation && corporation.tickerName ? String(corporation.tickerName) : null;
+      } else {
+        players.push(corpID);
+      }
+    }
+    if (players.length > 0) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...players);
+      } else {
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corpTickersNamed(
+            players, each, { userid: held.accountID }, held.bridgeSessionID));
+          for (const corpID of players) tickers[corpID] = named.get(corpID) ?? null;
+        } catch (_error) {
+          unresolved.push(...players);
+        }
+      }
+    }
+    res.json({ ok: true, tickers, unresolved });
   } catch (error) {
     next(error);
   }
@@ -13170,6 +13420,62 @@ app.get("/api/types/compressed", requireAuth, (req, res, next) => {
       }
     }
     res.json({ ok: true, source: "static-data", compressedTypeIDs, capped: asked.length > TYPE_VOLUME_TYPE_LIMIT, limit: TYPE_VOLUME_TYPE_LIMIT });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The client type lists that hold each of some types, of those asked (staticData.getTypeListsHolding: the client's
+// evetypes.GetTypeIDsByListID), for a check the client makes against a list: a filament's game mode's hulls
+// (abyss/game_mode.py is_ship_allowed). A type or a list the tables lack answers null.
+app.get("/api/types/type-lists", requireAuth, (req, res, next) => {
+  const ids = (value) => typeof value === "string" && /^\d+(?:,\d+)*$/.test(value) ? [...new Set(value.split(",").map(Number))] : [];
+  const typeIDs = ids(req.query.typeIDs);
+  const listIDs = ids(req.query.listIDs);
+  if (!typeIDs.length || typeIDs.length > 32 || !listIDs.length || listIDs.length > 16 ||
+    [...typeIDs, ...listIDs].some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    res.status(400).json({ ok: false, error: "INVALID_TYPE_LIST_QUERY", message: "Bounded type and type list IDs are required." });
+    return;
+  }
+  try {
+    const lists = {};
+    for (const typeID of typeIDs) {
+      lists[String(typeID)] = typeof staticData.getTypeListsHolding === "function" ? staticData.getTypeListsHolding(typeID, listIDs) : null;
+    }
+    res.json({ ok: true, source: "static-data", lists });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A dungeon's ship restrictions, from a gate of it or all of it, as the client's Ship Restrictions window shows them
+// (evedungeons/client/ship_restrictions_window.py set_dungeon; staticData.getDungeonShipRestrictions, the client's
+// GetDungeonShipRestrictions): the dungeon's name's message, the gate's type list, the published ship types let
+// through with their groups, and the published ones of those groups that are not (the window's restricted ones).
+app.get("/api/dungeons/ship-restrictions", requireAuth, (req, res, next) => {
+  const dungeonID = Number(req.query.dungeonID);
+  const gateID = req.query.gateID === undefined || req.query.gateID === "" ? null : Number(req.query.gateID);
+  if (!Number.isSafeInteger(dungeonID) || dungeonID <= 0 || (gateID !== null && (!Number.isSafeInteger(gateID) || gateID <= 0))) {
+    res.status(400).json({ ok: false, error: "INVALID_DUNGEON", message: "A dungeon is asked for by its number, and a gate of it by its own." });
+    return;
+  }
+  try {
+    const restrictions = typeof staticData.getDungeonShipRestrictions === "function" ? staticData.getDungeonShipRestrictions(dungeonID, gateID) : null;
+    if (!restrictions) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const shown = (typeID) => {
+      const type = staticData.getType(typeID);
+      return type && type.published === true && Number(type.groupID) > 0 ? { typeID: Number(typeID), groupID: Number(type.groupID) } : null;
+    };
+    const allowed = restrictions.allowedShipTypes.map(shown).filter(Boolean);
+    const allowedIDs = new Set(allowed.map((entry) => entry.typeID));
+    const groups = new Set(allowed.map((entry) => entry.groupID));
+    const restricted = typeof staticData.getTypesInGroup === "function"
+      ? [...groups].flatMap((groupID) => staticData.getTypesInGroup(groupID)).map((type) => shown(type.typeID)).filter((entry) => entry && !allowedIDs.has(entry.typeID))
+      : [];
+    res.json({ ok: true, found: true, dungeonNameID: restrictions.dungeonNameID, typeListID: restrictions.typeListID, allowed, restricted });
   } catch (error) {
     next(error);
   }
@@ -15476,12 +15782,25 @@ app.use((error, req, res, next) => {
     Number.isFinite(error && error.statusCode) && error.statusCode >= 400
       ? error.statusCode
       : 500;
+  const refusal = dialogRefusalOf(error);
   res.status(statusCode).json({
     ok: false,
     error: error && error.code ? error.code : error.message || "SERVER_ERROR",
     message: error && error.message ? error.message : "Server error",
+    ...(refusal ? { refusal } : {}),
   });
 });
+
+/**
+ * What the server refused a pilot's call with, where it said (a game-port pilot's UserError): its message key, the
+ * name of the dialog the client puts up for it, and the values for that dialog (exc.msg and exc.dict, which the
+ * client hands to prompt_player_fsd_dialog: eve_exception_handler.handle_exception). Null for any other failure.
+ */
+function dialogRefusalOf(error) {
+  const refusal = error && error.refusal;
+  if (!refusal || typeof refusal.key !== "string" || !/^\w{1,100}$/.test(refusal.key)) return null;
+  return { key: refusal.key, values: refusal.values ?? null };
+}
 
 return app;
 }

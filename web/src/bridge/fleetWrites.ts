@@ -150,8 +150,31 @@ export async function applyToJoinFleet(act: Ask, fleetID: number, autoAccept: bo
   return applyOutcome(await act("fleetProxy", "ApplyToJoinFleet", [fleetID, autoAccept]));
 }
 
+// ── The watchlist ───────────────────────────────────────────────────────────
+//
+// fleetSvc keeps a watchlist of members, self.favorites (a set), and tells fleetMgr of it whenever it changes:
+//
+//   fleetMgr.AddToWatchlist(newCharsAdded, favorites)     AddFavorite (640 to 682)
+//   fleetMgr.RemoveFromWatchlist(charID, favorites)       RemoveFavorite (715 to 723)
+//
+// the favourites every one after the change, the client's set (the transport makes the page's list one). Neither is
+// in a Tranquility recording.
+
+/** Tells the server of pilots added to the watchlist, and of every favourite with them. Fails as the call fails. */
+export async function addToWatchlist(act: Ask, added: readonly number[], favorites: readonly number[]): Promise<void> {
+  await act("fleetMgr", "AddToWatchlist", [[...added], [...favorites]]);
+}
+
+/** Tells the server of a pilot taken off the watchlist, and of every favourite left. Fails as the call fails. */
+export async function removeFromWatchlist(act: Ask, characterID: number, favorites: readonly number[]): Promise<void> {
+  await act("fleetMgr", "RemoveFromWatchlist", [characterID, [...favorites]]);
+}
+
 /** The broadcasts the client sends to its bubble, by the names it sends them with (evefleet/const.py). */
 export type BubbleBroadcast = "HealArmor" | "HealShield" | "HealCapacitor" | "Target" | "HealTarget";
+
+/** The broadcasts the client sends to the whole fleet (fleetSvc.SendGlobalBroadcast's callers, 1010 to 1035 and 1128). */
+export type GlobalBroadcast = "EnemySpotted" | "NeedBackup" | "HoldPosition" | "TravelTo" | "InPosition" | "JumpBeacon" | "Location";
 
 /** fleetSvc.py 58, MIN_BROADCAST_TIME: what the client waits between two broadcasts of one name. */
 const MIN_BROADCAST_MS = 2000;
@@ -162,19 +185,34 @@ export interface FleetBroadcasts {
    * client's own wait was not over, and nothing was asked; or the server answered that it sent nothing.
    */
   toBubble(name: BubbleBroadcast, scope: number, itemID: number): Promise<boolean>;
+  /**
+   * One broadcast to the whole fleet (fleetSvc.SendGlobalBroadcast, 983 to 990): self.fleet.SendBroadcast(name,
+   * scope, itemID, typeID), on the fleet's object, after the same wait. False where nothing reached the fleet, as
+   * toBubble. No recording has one: its form is from the client's code alone.
+   */
+  toFleet(name: GlobalBroadcast, scope: number, itemID: number, typeID?: number | null): Promise<boolean>;
 }
 
 /** A pilot's broadcasts, with the wait the client's fleet service keeps between them: one wait for them all. */
 export function createFleetBroadcasts(act: Ask, now: () => number = Date.now): FleetBroadcasts {
-  let last: { readonly name: BubbleBroadcast; readonly atMs: number } | null = null;
+  let last: { readonly name: BubbleBroadcast | GlobalBroadcast; readonly atMs: number } | null = null;
+  /** BroadcastTimeRestriction (962 to 981), the one wait for every broadcast: true where it is not over. */
+  const waiting = (name: BubbleBroadcast | GlobalBroadcast): boolean => {
+    const atMs = now();
+    // 975 to 978: the whole wait after the same name, a third of it after another.
+    if (last !== null && last.atMs + (last.name === name ? MIN_BROADCAST_MS : MIN_BROADCAST_MS / 3) > atMs) return true;
+    // 967: kept before the call is made, whatever comes of it.
+    last = { name, atMs };
+    return false;
+  };
   return {
     async toBubble(name, scope, itemID) {
-      const atMs = now();
-      // 975 to 978: the whole wait after the same name, a third of it after another.
-      if (last !== null && last.atMs + (last.name === name ? MIN_BROADCAST_MS : MIN_BROADCAST_MS / 3) > atMs) return false;
-      // 967: kept before the call is made, whatever comes of it.
-      last = { name, atMs };
+      if (waiting(name)) return false;
       return (await act("fleetMgr", "BroadcastToBubble", [name, scope, itemID, null])) !== false;
+    },
+    async toFleet(name, scope, itemID, typeID = null) {
+      if (waiting(name)) return false;
+      return (await act("fleetObjectHandler", "SendBroadcast", [name, scope, itemID, typeID])) !== false;
     },
   };
 }
@@ -232,6 +270,45 @@ export async function tagFleetTarget(act: Ask, itemID: number, tag: string | nul
 /** Leaves the fleet the pilot is in. Fails as the call fails. */
 export async function leaveFleet(act: Ask): Promise<void> {
   await act("fleetObjectHandler", "LeaveFleet", []);
+}
+
+// --- A member kicked, and the boss handed on ------------------------------------------
+//
+// THE CALLS, as the client makes them from the fleet's menu for a member (menusvc.py FleetMenu): fleetSvc.KickMember
+// (607 to 612), self.fleet.KickMember(charID), once its Confirm is chosen, LeaveFleet instead for the pilot's own;
+// fleetSvc.MakeLeader (601 to 605), self.fleet.MakeLeader(charID), once ConfirmMakeFleetBoss is answered yes. Both
+// on the fleet's own object, which the BFF holds.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the member. It refuses a kick from a pilot who commands nothing over that
+// member, and a boss handed on by a pilot who is not the boss.
+//
+// ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
+
+/**
+ * Gives a member of the pilot's fleet another place (fleetSvc.MoveMember, 513 to 520): self.fleet.MoveMember(charID,
+ * wingID, squadID, role), None for what the place does not say (evefleet.client.MemberMenu). Fails as the call fails.
+ */
+export async function moveFleetMember(act: Ask, characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "MoveMember", [characterID, wingID, squadID, role]);
+}
+
+/** Kicks a member of the pilot's fleet (not the pilot's own, which is leaving). Fails as the call fails. */
+export async function kickFleetMember(act: Ask, characterID: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "KickMember", [characterID]);
+}
+
+/** Hands the boss of the pilot's fleet on to a member. Fails as the call fails. */
+export async function makeFleetLeader(act: Ask, characterID: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "MakeLeader", [characterID]);
 }
 
 // --- A fleet formed (the plan's Phase 6b) -------------------------------------
@@ -351,9 +428,11 @@ const couldBeAPilot = (characterID: number): boolean => Number.isSafeInteger(cha
  * Invites the pilot `inviteeCharID` to the pilot's own fleet. `ownCharacterID` is the pilot's own character as
  * the caller knows it (null where it does not): the client asks nothing for that one, and nor does this.
  * `expectedFleetID`, where the caller says one, is the fleet the invitation is to: the call is made on that
- * fleet's object and no other. Fails as the call fails.
+ * fleet's object and no other. `place` is where in the fleet (menusvc.FleetInviteMenu, MemberMenu's places: a wing,
+ * a squad and a role, None for each not given); none, as the menu's first entry, a squad member with no place said.
+ * Fails as the call fails.
  */
-export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacterID: number | null, expectedFleetID?: number): Promise<void> {
+export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacterID: number | null, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
   if (!couldBeAPilot(inviteeCharID)) {
     throw new Error("That is no pilot to invite.");
   }
@@ -364,7 +443,7 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
   if (expectedFleetID !== undefined && !(Number.isSafeInteger(expectedFleetID) && expectedFleetID > 0)) {
     throw new Error("That is no fleet to invite a pilot to.");
   }
-  await act("fleetObjectHandler", "Invite", [inviteeCharID, null, null, null], undefined, expectedFleetID);
+  await act("fleetObjectHandler", "Invite", [inviteeCharID, place?.wingID ?? null, place?.squadID ?? null, place?.role ?? null], undefined, expectedFleetID);
 }
 
 // --- An invitation turned down (the plan's Phase 6b) --------------------------
@@ -379,8 +458,9 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
 //   __fleetMoniker.RejectInvite(False)   where the pilot's setting turns invitations away, or the window is blocked (1184, 1187)
 //   __fleetMoniker.RejectInvite()        on the pilot's no (1198)
 //
-// and nothing is read after any of them. No Tranquility recording has one. The page has no such setting and no
-// blocked window, so it says True or nothing.
+// and nothing is read after any of them. No Tranquility recording has one. The page has the setting (its Settings
+// window's Auto-reject invitations, app/autoRejectInvitations.ts) and no blocked window, so it says True, False for
+// the setting, or nothing.
 //
 // THE FLEET IS THE PAGE'S TO NAME (`of`), as its invitation named it, and the word is the page's to say: it is
 // the page that knows whether its pilot is in a fleet (src/server.js, rejectFleetInviteCall).
@@ -392,11 +472,12 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
 
 /**
  * Turns down the invitation of the fleet `fleetID`. `inAFleet` is whether the pilot is in a fleet, as the caller
- * knows it: from there the client says True with it, and so does this. Fails as the call fails.
+ * knows it: from there the client says True with it, and so does this. `bySetting` is the pilot's setting turning
+ * it away, where the client says False. Fails as the call fails.
  */
-export async function declineFleetInvite(act: Ask, fleetID: number, inAFleet: boolean): Promise<void> {
+export async function declineFleetInvite(act: Ask, fleetID: number, inAFleet: boolean, bySetting = false): Promise<void> {
   if (!Number.isSafeInteger(fleetID) || fleetID <= 0) {
     throw new Error("That invitation names no fleet.");
   }
-  await act("fleetObjectHandler", "RejectInvite", inAFleet ? [true] : [], undefined, fleetID);
+  await act("fleetObjectHandler", "RejectInvite", inAFleet ? [true] : bySetting ? [false] : [], undefined, fleetID);
 }

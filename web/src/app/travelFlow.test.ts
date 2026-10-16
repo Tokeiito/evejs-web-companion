@@ -246,12 +246,13 @@ test("searchDestinations ignores a too-short query without a request", async () 
   assert.equal(results.length, 0);
 });
 
-test("a searched destination Set via startRoute plans the route (R7a)", async () => {
+test("startRoute plans the route to a station (R7a)", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
 
-  // Picking a result hands its id to startRoute (the search box → Set destination
-  // wiring). The station in Charlie(3) plans a 2-hop route from Alpha(1).
+  // The autopilot hands its first waypoint to startRoute (a search result is Set as
+  // the destination, nav/waypoints.ts). The station in Charlie(3) plans a 2-hop
+  // route from Alpha(1).
   await flow.startRoute(60000003);
   flow.abortRoute();
 

@@ -11,6 +11,9 @@
   // switching is instant and safe. Login/select and all fetch/decode live
   // elsewhere; this file is pure orchestration.
   import CharacterBar from "./CharacterBar.svelte";
+  import FleetInvitation from "./FleetInvitation.svelte";
+  import ClientDialogs from "./ClientDialogs.svelte";
+  import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -323,13 +326,43 @@
   function removeSession(id: string): void {
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === sessions.length) return;
+    const gone = sessions.find((s) => s.id === id) ?? null;
     sessions = remaining;
+    sayWhyOffline(gone, lastOnline.get(id) ?? null);
+    lastOnline.delete(id);
     if (activeId === id) {
       activeId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     }
     if (remaining.length === 0 && onboarding === null) {
       hangarOpen = true;
     }
+  }
+
+  // Each pilot's character while it was online, to say who went and to ask why (sayWhyOffline). Not state: nothing
+  // is drawn from it.
+  const lastOnline = new Map<string, { characterID: number; characterName: string }>();
+
+  // A pilot the game server logged off with a reason of its own (another login of its account: one client for each
+  // account, as on Tranquility), said as the retail client puts up its connection-lost notice (disconnectNotice.py),
+  // until it is put away. A pilot released, logged out or lost for no reason the server gave goes without a word.
+  let offlineNotes = $state<{ id: number; text: string }[]>([]);
+  let offlineNoteSeq = 0;
+  function sayWhyOffline(gone: Session | null, last: { characterID: number; characterName: string } | null): void {
+    if (!gone || !last || typeof gone.flow.readClosedByServer !== "function") return;
+    gone.flow
+      .readClosedByServer(last.characterID)
+      .then((closed) => {
+        if (!closed) return;
+        offlineNoteSeq += 1;
+        offlineNotes = [
+          ...offlineNotes,
+          {
+            id: offlineNoteSeq,
+            text: `${last.characterName || `Character ${last.characterID}`} was logged off by the game server: ${closed.reason} (${closed.reasonCode}).`,
+          },
+        ];
+      })
+      .catch(() => {});
   }
 
   // Watch every online pilot's station slice; when one goes offline, prune it.
@@ -339,6 +372,9 @@
   $effect(() => {
     const unsubs = sessions.map((s) =>
       s.store.station.subscribe((slice) => {
+        if (slice.online !== null) {
+          lastOnline.set(s.id, { characterID: slice.online.characterID, characterName: slice.online.characterName });
+        }
         if (slice.online === null) removeSession(s.id);
         recomputeOnline();
       }),
@@ -389,6 +425,22 @@
       s.flow.setLivePush(isActive);
       s.flow.setForeground(isActive);
     }
+  });
+
+  // What the server sends a pilot not in front waits at the BFF for that pilot's next read, and a docked, idle
+  // pilot makes none: it heard nothing until it was switched to (seen 2026-10-15, a fleet invitation 54 seconds
+  // unheard). The retail client each pilot stands for hears at once, and puts some of it to its pilot (a fleet
+  // invitation, FleetInvitation.svelte). So each pilot not in front hears what waits for it every few seconds, by
+  // a read that asks the server nothing (flow.hearInBackground), each guarded as every beat here is.
+  const BACKGROUND_HEARING_MS = 4000;
+  $effect(() => {
+    const behind = sessions.filter((s) => s.id !== activeId);
+    if (behind.length === 0) return;
+    const beats = behind.map((s) => skipWhileBusy(() => s.flow.hearInBackground().catch(() => {})));
+    const handle = setInterval(() => {
+      for (const beat of beats) void beat();
+    }, BACKGROUND_HEARING_MS);
+    return () => clearInterval(handle);
   });
 
   // R107 — mirror the ACTIVE pilot's token into the per-tab global. A few panels
@@ -662,10 +714,46 @@
       />
     </ErrorBoundary>
   {/key}
+  <!-- A fleet invitation is asked of its own pilot whichever pilot is in front (fleetSvc.OnFleetInvite: the
+       client's own window for that pilot), so the questions are the tab's, above every pilot's cockpit. -->
+  <ErrorBoundary name="Fleet invitations">
+    <div class="fleet-invitations">
+      {#each sessions as session (session.id)}
+        <FleetInvitation {session} inFront={session.id === activeId} />
+      {/each}
+    </div>
+  </ErrorBoundary>
+  <!-- A refusal the server names a dialog for, put up as the client puts up a UserError: each pilot's, whichever is in
+       front, as the invitations are. -->
+  <ErrorBoundary name="Client dialogs">
+    {#each sessions as session (session.id)}
+      <ClientDialogs {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
+  <!-- The Ship Restrictions window an acceleration gate's refusal opens (ShipRestrictionsWindow.svelte), the pilot in
+       front's. -->
+  <ErrorBoundary name="Ship restrictions">
+    {#each sessions as session (session.id)}
+      <ShipRestrictionsWindow {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
 {:else if restoring}
   <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->
   <h1>EveJS Web</h1>
   <p class="restoring-note">Restoring your pilots…</p>
+{/if}
+
+{#if offlineNotes.length > 0}
+  <div class="offline-notes" role="status">
+    {#each offlineNotes as note (note.id)}
+      <div class="offline-note">
+        <p>{note.text}</p>
+        <button type="button" class="minor" onclick={() => (offlineNotes = offlineNotes.filter((n) => n.id !== note.id))}>
+          OK
+        </button>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 {#if hangarOpen}

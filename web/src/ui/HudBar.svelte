@@ -26,6 +26,8 @@
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
   import { fmtDist, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
+  import { ABYSS_POCKET_LABELS } from "../bridge/abyssalKeys.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
     INDICATION_WORD_LABELS,
     SHIP_STOPPING_MS,
@@ -56,6 +58,17 @@
   // svelte-ignore state_referenced_locally
   const words = store.words;
   const say = $derived(distanceSay($words.templates));
+  // The Abyssal pocket's collapse warning, the client's passing indication for its eight seconds
+  // (abyssal_service._display_expiry_message: AbyssalCollapseWarningHeader, and the subject with the seconds left).
+  // svelte-ignore state_referenced_locally
+  const collapseWarning = flow.collapseWarning;
+  function collapseWords(seconds: number): string {
+    const header = $words.templates[ABYSS_POCKET_LABELS.collapseHeader];
+    const subject = $words.templates[ABYSS_POCKET_LABELS.collapseSubject];
+    if (typeof header !== "string" || typeof subject !== "string") return `Abyssal pocket collapsing in ${seconds} s`;
+    const said = (template: string) => plainText(formatTemplate(template, { time: seconds }, { nameOf: () => "" }));
+    return `${said(header)} ${said(subject)}`;
+  }
 
   // The module rack needs the ship's fit; Fitting is a docked-only tab, so pull
   // it once here. Fire-and-forget; $effect never runs under SSR.
@@ -175,6 +188,10 @@
   // the page's own sentence stands.
   const indication = $derived(actionIndication(ship?.mode, actedOn.id, ship?.followRange));
   const stateText = $derived.by(() => {
+    // The pocket's collapse warning, for its eight seconds, over everything else.
+    if ($collapseWarning !== null) {
+      return collapseWords($collapseWarning.seconds);
+    }
     // For two seconds after the pilot orders a stop, the client's HUD says so over everything else.
     if (stopping) {
       return shipStoppingText($words.templates);
@@ -208,6 +225,7 @@
   });
   $effect(() => {
     flow.requestWords(INDICATION_WORD_LABELS);
+    flow.requestWords([ABYSS_POCKET_LABELS.collapseHeader, ABYSS_POCKET_LABELS.collapseSubject]);
   });
 
   /**

@@ -1304,6 +1304,17 @@
     background: rgb(127 180 217 / 0.08);
     border-color: var(--color-accent-dim);
   }
+  /* A row and its Location menu (PlaceRouteMenu) beside it: the row takes the room, the menu wraps below when open. */
+  .book-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .book-line > .book-row {
+    flex: 1 1 0;
+    min-width: 0;
+  }
   /* The number the whole row exists for. Tabular so a column of prices lines up
    * under itself, which is how "which of these is cheapest" becomes a glance. */
   .book-price {
@@ -3718,6 +3729,51 @@
     top: 52px;
     z-index: 35;
   }
+  /* The tab's fleet invitations (FleetInvitation.svelte), one for each pilot asked: over every cockpit and the
+   * global windows, below the character bar and the hangar's dialogs, and eating no click but its own. */
+  .fleet-invitations {
+    position: fixed;
+    top: calc(var(--char-bar-h) + 0.5rem);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(46rem, calc(100vw - 2rem));
+    z-index: 38;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    pointer-events: none;
+  }
+  .fleet-invitations > * {
+    pointer-events: auto;
+  }
+  /* A pilot the game server logged off with a reason of its own (another login of its account), said over every
+   * screen as the retail client puts up its connection-lost notice: above the hangar, until it is put away. */
+  .offline-notes {
+    position: fixed;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(40rem, calc(100vw - 2rem));
+    z-index: 700;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    pointer-events: none;
+  }
+  .offline-note {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    background: #3a1f1f;
+    border: 1px solid #a05050;
+    border-radius: 4px;
+  }
+  .offline-note p {
+    flex: 1;
+    margin: 0;
+  }
   /* ⚠ THERE IS NO SECOND STRIP ANY MORE, and its absence is the fix. This layer
    * used to put its own chips bottom-RIGHT, opposite the desktop's own strip, on
    * the reasoning that two layers deserved two strips. What a player sees is one
@@ -4965,6 +5021,8 @@
   .state-badge.safety-none { color: var(--color-danger); border-color: var(--color-danger); }
   .state-badge.crime-timer { color: var(--color-warn); border-color: var(--color-warn); font-variant-numeric: tabular-nums; }
   .state-badge.crime-criminal { color: var(--color-danger); border-color: var(--color-danger); }
+  /* The Abyssal pocket's timer is red in the client (crimewatchTimers.py: Colors.Red). */
+  .state-badge.crime-abyssal { color: var(--color-danger); border-color: var(--color-danger); }
   /* In space the safety level is a button, and the selector opens beneath it:
    * three levels, each with what it lets the ship do beside it.
    *

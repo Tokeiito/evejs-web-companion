@@ -91,6 +91,7 @@ import type {
   StandingTransaction,
   CharacterIdentity,
   CloneSummary,
+  FleetJumpBeacon,
 } from "./types.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
@@ -191,7 +192,7 @@ export type FeedEvent =
       readonly cargo: InventoryContainerState;
     }
   // A mutation (move/stack/board) failed; null clears the error after success.
-  | { readonly type: "inventory/action-error"; readonly message: string | null }
+  | { readonly type: "inventory/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the inventory state (character offline / logged out).
   | { readonly type: "inventory/cleared" }
   // Goal R14 — the items ticked for a bulk move or trash. Replaces the whole
@@ -267,7 +268,7 @@ export type FeedEvent =
     }
   // A fitting action (fit/unfit/online/offline/destroy) failed or was declined;
   // null clears the error after a clean action.
-  | { readonly type: "fitting/action-error"; readonly message: string | null }
+  | { readonly type: "fitting/action-error"; readonly message: string | null; readonly said?: boolean }
   // Round counts the server pushed as guns fired (`OnModuleAttributeChanges`).
   | {
       readonly type: "fitting/charge-quantity";
@@ -318,7 +319,7 @@ export type FeedEvent =
     }
   // An industry action (install/deliver/cancel) failed or was declined; null
   // clears the error after a clean action.
-  | { readonly type: "industry/action-error"; readonly message: string | null }
+  | { readonly type: "industry/action-error"; readonly message: string | null; readonly said?: boolean }
   // The server's word of what a monitored job's place has (OnIndustryMaterials).
   | {
       readonly type: "industry/materials-said";
@@ -354,7 +355,7 @@ export type FeedEvent =
       readonly marketUnavailable: string | null;
     }
   // A market write failed or was declined; null clears the error.
-  | { readonly type: "market/action-error"; readonly message: string | null }
+  | { readonly type: "market/action-error"; readonly message: string | null; readonly said?: boolean }
   // What the last write ACTUALLY did, assembled from re-reads (never a
   // prediction, and never the estimated fee shown at confirm time).
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
@@ -387,12 +388,13 @@ export type FeedEvent =
       readonly refreshedAtMs: number;
     }
   | { readonly type: "fleet/action-started"; readonly action: FleetAction }
-  | { readonly type: "fleet/action-finished"; readonly error: string | null }
+  | { readonly type: "fleet/action-finished"; readonly error: string | null; readonly said?: boolean }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
+  | { readonly type: "fleet/watchlist"; readonly members: readonly number[] }
+  | { readonly type: "fleet/jump-beacon"; readonly characterID: number; readonly beacon: FleetJumpBeacon | null }
+  | { readonly type: "fleet/broadcast-history-cleared" }
   // An invitation answered or turned down: the window's no longer, where it is the one held.
   | { readonly type: "fleet/invite-settled"; readonly fleetID: number }
-  // What the inviter was told of an invitation it sent, or null to say it no longer.
-  | { readonly type: "fleet/invite-answered"; readonly words: string | null }
   // A one-shot fleet call (OnFleetBroadcast). Pure push-to-store, same shape
   // as fleet/pending-invite: last-write-wins, no reducer-side interpretation.
   | { readonly type: "fleet/broadcast"; readonly broadcast: FleetBroadcast }
@@ -412,6 +414,8 @@ export type FeedEvent =
       readonly refreshedAtMs: number;
     }
   | { readonly type: "scanner/cleared" }
+  // The probe scanner's results for the session's system, as its scan handler keeps them (bridge/probeResults.ts).
+  | { readonly type: "scanner/probe-results"; readonly probeResults: ScannerCenterState["probeResults"] }
   // Goal R17 (Slice A) — the Mail page. The inbox is a DELTA SYNC cold-started
   // by the BFF, so `messages` is always the WHOLE mailbox rather than a page of
   // it: the browser caches nothing across a page load and therefore holds no
@@ -427,7 +431,7 @@ export type FeedEvent =
   // zlib buffer mailMgr.GetBody answers.
   | { readonly type: "mail/opened"; readonly open: MailOpenMessage | null }
   // A mail action failed or was declined; null clears the error.
-  | { readonly type: "mail/action-error"; readonly message: string | null }
+  | { readonly type: "mail/action-error"; readonly message: string | null; readonly said?: boolean }
   // What a send ACTUALLY did, from a re-read of the sender's own mailbox.
   | { readonly type: "mail/outcome"; readonly outcome: MailActionOutcome | null }
   // Drop the mail state (character offline / logged out).
@@ -523,6 +527,8 @@ export type FeedEvent =
   | { readonly type: "agents/objectives"; readonly objectives: import("../bridge/missionObjectives.ts").MissionObjectives | null }
   // What the briefing read for this layout says of the mission's time (null with no briefing).
   | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
+  // Where the agent is, as GetAgentLocationWrap answered it for this layout (null: no place named).
+  | { readonly type: "agents/agent-location"; readonly location: import("../bridge/agentHeader.ts").AgentLocationWrap | null }
   /** What the client's agents service knows of one agent, as answered (null: the server lists no such agent). */
   | { readonly type: "agents/record"; readonly agentID: number; readonly record: import("../bridge/agents.ts").AgentRecord | null }
   /** The solar system the server says an agent is in (null: none). */
@@ -532,7 +538,7 @@ export type FeedEvent =
   // The mission journal (active + offered missions).
   | { readonly type: "agents/journal"; readonly journal: JournalState }
   // An agent action/read failed; null clears the error after success.
-  | { readonly type: "agents/action-error"; readonly message: string | null }
+  | { readonly type: "agents/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the agents state (character offline / logged out).
   | { readonly type: "agents/cleared" }
   // Goal R6 — the post-completion reward readout (inventory Step 12). The
@@ -670,13 +676,15 @@ export type FeedEvent =
   // status readout. A successful step clears any stale action error.
   | { readonly type: "flight/action"; readonly action: string }
   // A movement step failed (the handler's own refusal reason); null clears it.
-  | { readonly type: "flight/action-error"; readonly message: string | null }
+  | { readonly type: "flight/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the flight state (character offline / logged out).
   | { readonly type: "flight/cleared" }
   // crimewatchSvc's client states, read again at each of the server's notices of them.
   | { readonly type: "flight/crimewatch"; readonly crimewatch: CrimewatchReading }
   // The account's clone grade, as read when the pilot came online or as the server's notice said it.
   | { readonly type: "character/clone-grade"; readonly cloneGrade: CloneGrade | null }
+  // The pilot's own security status, as read (crimewatch.GetMySecurityStatus) or as OnSecurityStatusUpdate said it.
+  | { readonly type: "character/security-status"; readonly securityStatus: number | null }
   // Goal R11 — the Overview panel. A space snapshot read completed: everything
   // the ship can see right now plus the active ship's shield/armor/hull/cap.
   // The flow polls this ~1s while in space with the panel open; the panel is a
@@ -715,7 +723,7 @@ export type FeedEvent =
   | { readonly type: "targeting/action"; readonly action: string }
   // An action was REFUSED, carrying the server's own reason verbatim; null
   // clears it.
-  | { readonly type: "targeting/action-error"; readonly message: string | null }
+  | { readonly type: "targeting/action-error"; readonly message: string | null; readonly said?: boolean }
   // An action returned 200, the re-read showed nothing changed, and the server
   // gave no reason. Deliberately separate from action-error: "refused, here is
   // why" and "quietly did nothing" are different and the page says which.
@@ -812,7 +820,7 @@ export type FeedEvent =
   // return values prove nothing, so this always carries a fresh re-read.
   | { readonly type: "drones/in-space"; readonly inSpace: readonly DroneInSpace[] | null }
   | { readonly type: "drones/action"; readonly action: string }
-  | { readonly type: "drones/action-error"; readonly message: string | null }
+  | { readonly type: "drones/action-error"; readonly message: string | null; readonly said?: boolean }
   // A drone call that answered success and changed nothing — the ONLY way a
   // refused launch can surface, because the handler returns an empty dict.
   | { readonly type: "drones/silent-decline"; readonly message: string | null }
@@ -844,7 +852,7 @@ export type FeedEvent =
   // A queue edit the server ACCEPTED — landed only after the re-read confirmed
   // it, never on the strength of the call returning.
   | { readonly type: "skills/action"; readonly action: string }
-  | { readonly type: "skills/action-error"; readonly message: string | null }
+  | { readonly type: "skills/action-error"; readonly message: string | null; readonly said?: boolean }
   | { readonly type: "skills/cleared" }
   // Goal R41 — the character's planetary colonies.
   //

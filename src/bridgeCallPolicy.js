@@ -77,7 +77,7 @@ const EARLIER_WRITE_METHODS = freezeMethodMap({
   dogmaIM: ["SetModuleOnline", "TakeModuleOffline", "AddTarget", "RemoveTarget", "CancelAddTarget", "Activate", "Deactivate", "LoadAmmo", "UnloadAmmo", "CreateNewbieShip"],
   ship: ["Board", "Undock", "LaunchDrones", "ScoopDrone"],
   agentMgr: ["DoAction"],
-  beyonce: ["CmdWarpToStuffAutopilot", "CmdWarpToStuff", "CmdSetSpeedFraction", "CmdFollowBall", "CmdStargateJump", "CmdDock", "CmdOrbit", "CmdAlignTo", "CmdStop"],
+  beyonce: ["CmdWarpToStuffAutopilot", "CmdWarpToStuff", "CmdSetSpeedFraction", "CmdFollowBall", "CmdStargateJump", "CmdDock", "CmdOrbit", "CmdAlignTo", "CmdStop", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"],
   structureJumpBridgeMgr: ["CmdJumpThroughStructureStargate"],
   industryManager: ["InstallJob", "CompleteJob", "CancelJob"],
   industryMonitor: ["ConnectJob", "DisconnectJob"],
@@ -100,6 +100,9 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // SaveNewQueue is the client's own saving of a queue, on its skill handler (skillQueueSvc.py 153). The game
   // port carries it; the web gateway's list has skillMgr's and not this.
   skillHandler: ["PurchaseSkills", "SaveNewQueue"],
+  // A character setting saved and deleted at the server, by the client's character settings service
+  // (characterSettingsSvc.py 44 to 58). The game port carries both; the web gateway's list has neither.
+  charMgr: ["SaveCharacterSetting", "DeleteCharacterSetting"],
   // ⚠⚠ THE GM CONSOLE. slash.SlashCmd runs any of this world's ~150 chat
   // commands — /giveitem, /gmships, /giveskill, /npc, /suicide. It is a WRITE by
   // any measure, and listing it here is what keeps the generic /api/bridge/call
@@ -113,6 +116,17 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // port carries both; through the web gateway, whose list has neither, the
   // park's CmdDock and the ship's Undock are asked in their place.
   structureDocking: ["Dock", "Undock"],
+  // A bookmark folder's subfolders made, renamed and deleted, a folder put online or offline for the pilot, a
+  // shared folder disconnected from, bookmarks copied into a folder, and a folder added to those the pilot knows, by
+  // the client's bookmark service (bookmarkSvc.py 565, 572, 589, 483, 460, 701 and 357). The game port carries them;
+  // the web gateway's list has none of the seven.
+  accessGroupBookmarkMgr: ["CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder", "UpdateKnownFolderState", "RemoveFromKnownFolders", "CopyBookmarksToFolderAndSubfolder", "AddToKnownFolders"],
+  // The ship turned toward a direction: a probe result's Align To (scanSvc.AlignToPosition, 459 to 465), on the
+  // ballpark's object. The game port carries it; the web gateway's list has it not.
+  beyonce: ["CmdGotoDirection"],
+  // An acceleration gate activated (movementFunctions.RealActivateAccelerationGate, 553): the keeper's, by its
+  // name. The game port carries it; the web gateway's list has nothing of the keeper's.
+  keeper: ["ActivateAccelerationGate"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -182,6 +196,11 @@ function isBridgeWritePair(service, method) {
  *                                session's own character in its own fleet, takes only a name it knows, holds
  *                                the scope to a number, and hands the item and the type on to the members
  *                                as they came, as it does a client's. Carried by either transport.
+ *   fleetMgr.AddToWatchlist,     the pilot's watchlist added to and taken from (fleetSvc.AddFavorite, 669, and
+ *   fleetMgr.RemoveFromWatchlist RemoveFavorite, 719), from the fleet's menu for a member since 2026-10-15: the
+ *                                pilots added or the one taken, and every favourite after it, the client's set.
+ *                                The handler keeps the list for the session's own character in its own fleet,
+ *                                and of that fleet's members only. Carried by either transport.
  *   dogmaIM.Overload,            a module overloaded, and cooled. Each route confirmed and called, on a dogma
  *   dogmaIM.StopOverload         object the BFF bound for itself, with the module and an effect's ID made
  *                                numbers (the page named no effect). The handler acts on the ship the session
@@ -217,6 +236,10 @@ function isBridgeWritePair(service, method) {
  *                                ship and on drones that ship controls, and answers for each drone that could
  *                                not. Asked of entity by its name; the game port makes it on a Moniker made
  *                                for the order, as a client does.
+ *   beyonce.CmdGotoDirection     the ship turned toward a probe result's place (scanSvc.AlignToPosition, 459 to
+ *                                465): the place less the ship's own position. The page reads its pilot's flight
+ *                                first and sends nothing for a pilot not in space. The handler turns the session's
+ *                                own ship. The game port makes it on the ballpark's own object.
  *   beyonce.CmdGotoPoint         the ship sent to a point. The route checked `confirm`, that the point was three
  *                                finite numbers, that the pilot was in space, and that its ship and system were
  *                                the ones the point was measured in, and made the call on a ballpark handle. The
@@ -301,6 +324,13 @@ function isBridgeWritePair(service, method) {
  *                                ship in space, and refuses nothing. The page reads its pilot's flight before
  *                                and after, and makes the route's two refusals. Asked of beyonce by its name;
  *                                the game port makes it on the ballpark's own object.
+ *   beyonce.CmdGotoBookmark      the ship sent to a bookmark of the pilot's: Approach Location, from a
+ *                                bookmark's menu in the Locations window (bridge/movementWrites.ts). No route
+ *                                made it. The handler takes one number of the caller: a bookmark of the session's
+ *                                own character, refused where it is none (BookmarkNotAvailable), and flies the
+ *                                session's own ship after the thing it is of, in its scene, or to its point. The
+ *                                page reads its pilot's flight first. Asked of beyonce by its name; the game port
+ *                                makes it on the ballpark's own object.
  *   beyonce.CmdFollowBall        the ship sent after a thing, to stop at a range of it: the menu's approach and
  *                                keep at range, and the autopilot's approach with no range. Its two routes
  *                                asked no `confirm`. They checked that the thing was a number above nought,
@@ -328,6 +358,20 @@ function isBridgeWritePair(service, method) {
  *                                reads the flight before and after itself. The handler stops the session's own
  *                                ship, tells one stopped in warp that it is in warp, and refuses a second
  *                                stop within a second (ThrottleGeneric).
+ *   beyonce.CmdJumpToFleetModuleBeacon  the ship jumped to a fleet member's cyno: the fleet menu's Jump To
+ *                                (menusvc.JumpToMember, 2643 to 2650; cynoTravelSvc.py 30 to 37:
+ *                                bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID) through
+ *                                sessionMgr.PerformSessionChange('jump')), the member, its beacon and its system as
+ *                                the fleet told them (OnFleetJumpBeaconModuleChange). No route made it. A change of
+ *                                place (PAGE_PLACE_CHANGE_CALLS). The handler checks the beacon, the drive, the
+ *                                range and the fuel.
+ *   beyonce.CmdGroupJumpToFleetModuleBeacon  the same jump taking the fleet's members in range along: the fleet
+ *                                menu's Conduit Jump To (menusvc.GroupJumpToMember; cynoTravelSvc.py 97 to 104).
+ *                                A change of place.
+ *   beyonce.CmdBridgeToFleetModuleBeacon  a bridge opened to a fleet member's cyno for the fleet to jump through:
+ *                                the fleet menu's Bridge To (menusvc.BridgeToMember; cynoTravelSvc.py 57 to 63:
+ *                                bp.CmdBridgeToFleetModuleBeacon(charID, beaconID, solarsystemID), no change of
+ *                                session: the ship opening it stays).
  *   fleetObjectHandler.CreateFleet  a fleet formed, the pilot its boss. The route checked `confirm`, bound
  *                                through the call (it answers the fleet's own object), asked Init on what was
  *                                bound, with nothing said, and kept none of the BFF's handles for a fleet
@@ -361,6 +405,12 @@ function isBridgeWritePair(service, method) {
  *                                character's invitation where it names that fleet, and tells the inviter;
  *                                with none it answers false. The word decides only which reason the inviter
  *                                is told. The page says which fleet (PAGE_OBJECT_CALLS, "fleetByNumber").
+ *   beyonce.BookmarkScanResult   a probe result bookmarked where the sensor suite has no site of it
+ *                                (bookmarkSvc.ACLBookmarkScanResult, 623 to 631): the system, the label and the
+ *                                note, the result's own ID, the folder and the time, the subfolder by keyword.
+ *                                The handler finds the result's site by its label in the session's system, and
+ *                                holds the folder to what the session's own character may write to. The game port
+ *                                makes it on the ballpark's own object.
  *   beyonce.BookmarkLocation     a place in space bookmarked. The route checked `confirm`, read the pilot's
  *                                flight before and after and refused a pilot not in space, made the thing, the
  *                                folder and the time numbers and the name and the note text, and asked it on
@@ -426,6 +476,14 @@ function isBridgeWritePair(service, method) {
  *                                numbers. The handler takes back the session's own character's among them and
  *                                answers which.
  *   scanMgr.ReconnectToLostProbes scanSvc.ReconnectToLostProbes (269 to 285), on the same object, with nothing.
+ *   scanMgr.SetProbeDestination  scanSvc.SetProbeDestination (169 to 171), since 2026-10-15: a probe sent to its
+ *                                place in a formation (probeTracker.ProbeGoToPoint). The client's own list's, kept
+ *                                and not sent on the game port, as the range step below.
+ *   scanMgr.SetProbeRangeStep    scanSvc.SetProbeRangeStep (173 to 175), since 2026-10-15: the probe's menu's Scan
+ *                                Range (SetScanRange_Check, 410). The client's own list's, never the server's: on
+ *                                the game port the transport keeps it as the client's scan service does and sends
+ *                                nothing (src/gamePort/pilots.js, callBoundMethod); through the web gateway it goes
+ *                                to the server's handler, which keeps it for the session's own probes.
  *
  * And a module put online and taken offline, since 2026-10-13. The route (POST /api/bridge/fitting/state) sent
  * the module with the ship the BFF held the pilot to be flying; the page sends the ship its own read of the
@@ -587,6 +645,15 @@ function isBridgeWritePair(service, method) {
  *   inSpaceCompressionMgr.CompressItemInSpace   itemCompression.CompressItemInSpace (9): CompressItemInSpace(
  *                                    itemID, compressionFacilityBallID), answered None or the six of what was made.
  *
+ * And a character setting, since 2026-10-15: the wallet's Auto Payment tab (personalPaySettingsPanel.py
+ * SubmitPersonalAutomaticPaymentSettings) saves its own, by the character settings service; the game port works
+ * each into the settings it keeps, as the service does:
+ *
+ *   charMgr.SaveCharacterSetting     characterSettingsSvc.Save (44 to 50): SaveCharacterSetting(settingKey, value),
+ *                                    the value a string of at most 102400; an empty one is deleted instead.
+ *   charMgr.DeleteCharacterSetting   characterSettingsSvc.Delete (52 to 58): DeleteCharacterSetting(settingKey), for
+ *                                    a setting the service keeps.
+ *
  * And Give Money, since 2026-10-15: the transfer window of an owner's menu in the People & Places window
  * (web/src/bridge/giveMoney.ts). The ISK given is the session's own character's; the game port gives the amount as
  * a float and the reason as the client's edit gives it (retailCalls.js):
@@ -594,8 +661,96 @@ function isBridgeWritePair(service, method) {
  *   account.GiveCash             transferMoneyWnd.py Confirm (148): GiveCash(toID, amount, reason,
  *                                toAccountKey=None) for a character; answered None, or the two balances for a
  *                                corporation.
+ *
+ * And a place bookmarked, since 2026-10-15: the bookmark window (web/src/ui/BookmarkWindow.svelte) from the Locations
+ * window's Add Location and an agent's Save Location... A thing in space goes by the park (beyonce.BookmarkLocation,
+ * a page write already); a region, a constellation, a system or a station by the bookmark manager:
+ *
+ *   accessGroupBookmarkMgr.BookmarkStaticLocation   bookmarkSvc.ACLBookmarkLocation (612): BookmarkStaticLocation(
+ *                                itemID, folderID, name, comment, expiry, subfolderID=subfolderID), into a folder the
+ *                                session's character may use.
+ *
+ * And a bookmark's menu in the Locations window, since 2026-10-15: Edit Location and Remove Location.
+ *
+ *   accessGroupBookmarkMgr.UpdateBookmark    bookmarkSvc.UpdateACLBookmark (646): UpdateBookmark(bookmarkID, folderID,
+ *                                name, note, subfolderID, newFolderID, expiryCancel).
+ *   accessGroupBookmarkMgr.DeleteBookmarks   bookmarkSvc.DeleteBookmarks (664): DeleteBookmarks(folderID, bookmarks),
+ *                                the bookmarks a set; answered the ones deleted.
+ *                                Both act for the session's character in a folder it may use.
+ *
+ * And the Locations window's folders and subfolders, since 2026-10-15: a folder's and a subfolder's menus
+ * (bookmarksPanel.py BookmarkACLFolderMenu, 320 to 338, and BookmarkSubfolderMenu, 408 to 417), and Create Subfolder
+ * at the window's bottom, with the subfolder window (web/src/ui/SubfolderWindow.svelte):
+ *
+ *   accessGroupBookmarkMgr.CreateSubfolder   bookmarkSvc.CreateSubfolder (565): CreateSubfolder(folderID,
+ *                                subfolderName); answered the subfolder.
+ *   accessGroupBookmarkMgr.UpdateSubfolder   bookmarkSvc.UpdateSubfolder (572): UpdateSubfolder(folderID,
+ *                                subfolderID, subfolderName); answered whether it was there.
+ *   accessGroupBookmarkMgr.DeleteSubfolder   bookmarkSvc.DeleteSubfolder (589): DeleteSubfolder(folderID,
+ *                                subfolderID), the bookmarks in it with it; answered the ones deleted.
+ *   accessGroupBookmarkMgr.UpdateKnownFolderState   bookmarkSvc.UpdateFolderActiveState (483):
+ *                                UpdateKnownFolderState(folderID, isActive), Online Folder and Offline Folder;
+ *                                answered the folder, its bookmarks and its subfolders.
+ *   accessGroupBookmarkMgr.DeleteFolder      bookmarkSvc.DeleteBookmarkFolder (453): DeleteFolder(folderID), the
+ *                                folder and all in it.
+ *                                Each acts for the session's character, in a folder it may write to (a subfolder's),
+ *                                knows (its state) or administers (its deletion).
+ *
+ * And the folder window, since 2026-10-15 (web/src/ui/FolderWindow.svelte, after bookmarkContainerWindow.py): Create
+ * Folder at the Locations window's bottom, and a folder's Edit Folder.
+ *
+ *   accessGroupBookmarkMgr.AddFolder         bookmarkSvc.CreateBookmarkFolder (426): AddFolder(isPersonal,
+ *                                folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID);
+ *                                answered the folder, made the session's character's.
+ *   accessGroupBookmarkMgr.UpdateFolder      bookmarkSvc.UpdateBookmarkFolder (441): UpdateFolder(folderID,
+ *                                folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID), a
+ *                                personal folder of the session's character's or one it administers; answered its
+ *                                access after.
+ *
+ * And a shared folder's Disconnect from Folder, since 2026-10-15 (bookmarksPanel.py ForgetFolder, after
+ * ConfirmForgetFolder):
+ *
+ *   accessGroupBookmarkMgr.RemoveFromKnownFolders   bookmarkSvc.RemoveFromKnownFolders (460):
+ *                                RemoveFromKnownFolders(folderID), the folder taken off those the session's
+ *                                character knows; the folder itself stays.
+ *
+ * And bookmarks moved or copied into a folder or a subfolder, since 2026-10-15: dropped there in the Locations window
+ * (bookmarksPanel.py DropInPlacesFolder; bookmarkSvc.MoveOrCopyBookmarks, 678 to 711), each source folder's at once:
+ *
+ *   accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder   (690): (oldFolderID, folderID, subfolderID,
+ *                                bookmarks), the bookmarks a set; answered the rows moved and a message or None.
+ *   accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder   (701): the same, for a copy (Shift held at the drop,
+ *                                or a source folder the pilot may not move from); answered the new bookmarks by
+ *                                number and a message or None.
+ *                                Both for the session's character, from a folder it may read into one it may use.
+ *
+ * And a folder the pilot does not know added to those it knows, since 2026-10-15: Add Folder in the Locations
+ * window's Folders with Admin Access (bookmarksPanel.py ShowMenuAdminFolders, then LinkedBookmarkFolderWindow's Add
+ * Folder):
+ *
+ *   accessGroupBookmarkMgr.AddToKnownFolders   bookmarkSvc.AddToKnownFolders (357): AddToKnownFolders(folderID,
+ *                                isActive), online or offline; answered the folder, its bookmarks and its subfolders,
+ *                                for the session's character and a folder it may see.
+ *
+ * And an Abyssal filament used, since 2026-10-15 (web/src/ui/KeyActivationWindow.svelte, after keyActivationWindow.py):
+ *
+ *   abyssalMgr.AbyssalEntranceDeployment   abyssal_service.deploy_entrance_gate (51 to 54):
+ *                                AbyssalEntranceDeployment(item_id, game_mode_id), by the service's name, the
+ *                                filament and the game mode; the server takes only a filament of the session's
+ *                                character's, in its ship (INVALID_OWNER, KEY_NOT_FOUND). Solo's is a session change
+ *                                (PAGE_PLACE_CHANGE_CALLS, below).
+ *
+ * And a gate activated, since 2026-10-16 (web/src/bridge/gateActivation.ts, the menu's Activate Gate):
+ *
+ *   abyssalMgr.AbyssalGateActivation   movementFunctions.RealActivateAbyssalGate (569): (itemID,
+ *                                violateSafetyTimer=True), a pocket's Transfer Conduit, the session's ship to the next
+ *                                room; the server takes only a conduit of the session's own run.
+ *   abyssalMgr.AbyssalEndGateActivation   RealActivateAbyssalEndGate (579): (itemID), the last room's conduit out, the
+ *                                session back into known space (PAGE_PLACE_CHANGE_CALLS, below).
+ *   keeper.ActivateAccelerationGate   RealActivateAccelerationGate (553): (itemID, violateSafetyTimer=1), an
+ *                                acceleration gate within 2,500 m of the session's ship, which it warps on.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll", "mailMgr.MarkAsRead", "mailMgr.MarkAsUnread", "mailMgr.MoveToTrash", "mailMgr.MoveFromTrash", "mailMgr.DeleteMail", "mailMgr.MarkAllAsRead", "mailMgr.MarkAsReadByLabel", "mailMgr.MoveAllToTrash", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash", "mailMgr.EmptyTrash", "mailMgr.CreateLabel", "mailMgr.EditLabel", "mailMgr.DeleteLabel", "mailMgr.AssignLabels", "mailMgr.RemoveLabels", "mailingListsMgr.Create", "mailingListsMgr.Join", "mailingListsMgr.Leave", "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete", "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers", "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail", "charMgr.AddContact", "charMgr.EditContact", "charMgr.DeleteContacts", "charMgr.BlockOwners", "charMgr.UnblockOwners", "charMgr.EditContactsRelationshipID", "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels", "notificationMgr.DeleteNotifications", "notificationMgr.MarkAsProcessed", "notificationMgr.MarkGroupAsProcessed", "notificationMgr.MarkAllAsProcessed", "notificationMgr.DeleteGroupNotifications", "notificationMgr.DeleteAllNotifications", "account.GiveCash"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "fleetMgr.AddToWatchlist", "fleetMgr.RemoveFromWatchlist", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "beyonce.CmdGotoDirection", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "beyonce.BookmarkScanResult", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll", "mailMgr.MarkAsRead", "mailMgr.MarkAsUnread", "mailMgr.MoveToTrash", "mailMgr.MoveFromTrash", "mailMgr.DeleteMail", "mailMgr.MarkAllAsRead", "mailMgr.MarkAsReadByLabel", "mailMgr.MoveAllToTrash", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash", "mailMgr.EmptyTrash", "mailMgr.CreateLabel", "mailMgr.EditLabel", "mailMgr.DeleteLabel", "mailMgr.AssignLabels", "mailMgr.RemoveLabels", "mailingListsMgr.Create", "mailingListsMgr.Join", "mailingListsMgr.Leave", "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete", "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers", "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail", "charMgr.AddContact", "charMgr.EditContact", "charMgr.DeleteContacts", "charMgr.BlockOwners", "charMgr.UnblockOwners", "charMgr.EditContactsRelationshipID", "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels", "notificationMgr.DeleteNotifications", "notificationMgr.MarkAsProcessed", "notificationMgr.MarkGroupAsProcessed", "notificationMgr.MarkAllAsProcessed", "notificationMgr.DeleteGroupNotifications", "notificationMgr.DeleteAllNotifications", "account.GiveCash", "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting", "accessGroupBookmarkMgr.BookmarkStaticLocation", "accessGroupBookmarkMgr.UpdateBookmark", "accessGroupBookmarkMgr.DeleteBookmarks", "beyonce.CmdGotoBookmark", "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.DeleteFolder", "accessGroupBookmarkMgr.AddFolder", "accessGroupBookmarkMgr.UpdateFolder", "accessGroupBookmarkMgr.RemoveFromKnownFolders", "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.AddToKnownFolders", "agentMgr.GotoLocation", "fleetObjectHandler.KickMember", "fleetObjectHandler.MakeLeader", "fleetObjectHandler.SendBroadcast", "fleetObjectHandler.MoveMember", "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon", "structureJumpBridgeMgr.CmdJumpThroughStructureStargate", "abyssalMgr.AbyssalEntranceDeployment", "abyssalMgr.AbyssalGateActivation", "abyssalMgr.AbyssalEndGateActivation", "keeper.ActivateAccelerationGate"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -665,16 +820,34 @@ function swapTargetOf(service, method, args) {
  *   beyonce.CmdStargateJump  gateJumpSvc.JumpThroughGate (98 to 127) and autopilot.py 358: the session from one
  *                    system into the next through a stargate. Its keeping binds the park again in the new system
  *                    before it answers, as its route's did (reparkAfterArrival).
+ *   beyonce.CmdJumpToFleetModuleBeacon, beyonce.CmdGroupJumpToFleetModuleBeacon  cynoTravelSvc.py 30 to 37 and 97 to
+ *                    104: the session from one system into a fleet member's cyno's, by the ship's jump drive. Kept
+ *                    as a stargate's jump is, into the beacon's system (a cyno).
+ *   structureJumpBridgeMgr.CmdJumpThroughStructureStargate  autopilot.py 349 and menusvc.py 2106: the session from one
+ *                    system into the next through an Ansiblex jump gate, by the service's name with the Ansiblex. Kept
+ *                    as a stargate's jump is (a bridge).
+ *   abyssalMgr.AbyssalEntranceDeployment  keyActivationWindow.py 49 to 54: a filament's deploy, through
+ *                    sessionMgr.PerformSessionChange('JumpToAbyss', ...) where its game mode jumps on deploy, which is
+ *                    solo's alone (abyss/game_mode.py: should_jump_on_deploy); the others deploy a trace and the pilot
+ *                    stays, no session change. Solo's is kept as a stargate's jump is, into the pocket (an abyss).
+ *   abyssalMgr.AbyssalEndGateActivation  movementFunctions.RealActivateAbyssalEndGate (578 to 580): the last room's
+ *                    conduit out, through PerformSessionChange('abyssToKnownJump', ...), the session from the pocket
+ *                    back into known space. Kept as a stargate's jump is (an abyss exit).
  */
-const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["structureDocking.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["structureDocking.Dock", "dock"], ["beyonce.CmdStargateJump", "stargate"]]));
+const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["structureDocking.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["structureDocking.Dock", "dock"], ["beyonce.CmdStargateJump", "stargate"], ["beyonce.CmdJumpToFleetModuleBeacon", "cyno"], ["beyonce.CmdGroupJumpToFleetModuleBeacon", "cyno"], ["structureJumpBridgeMgr.CmdJumpThroughStructureStargate", "bridge"], ["abyssalMgr.AbyssalEntranceDeployment", "abyss"], ["abyssalMgr.AbyssalEndGateActivation", "abyssExit"]]));
 for (const pair of PAGE_PLACE_CHANGE_CALLS.keys()) {
   if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's changes of place and is none of its writes.`);
 }
 
-/** The kind of session change this write of the page's is ("undock", "dock", "stargate"), or null for one that changes no place. */
-function placeChangeOf(service, method) {
+/**
+ * The kind of session change this write of the page's is ("undock", "dock", "stargate"), or null for one that changes
+ * no place. A filament's deploy is one for solo's game mode alone (GameModeID.SOLO, 1), which jumps on deploy.
+ */
+function placeChangeOf(service, method, args) {
   if (typeof service !== "string" || typeof method !== "string") return null;
-  return PAGE_PLACE_CHANGE_CALLS.get(`${service}.${method}`) ?? null;
+  const kind = PAGE_PLACE_CHANGE_CALLS.get(`${service}.${method}`) ?? null;
+  if (kind === "abyss") return Array.isArray(args) && Number(args[1]) === 1 ? kind : null;
+  return kind;
 }
 
 /**
@@ -727,6 +900,8 @@ function ordersAFollow(service, method) {
  *   scanMgr.RecoverProbes,          341 and 279), each one of the page's own writes (above). Through the web
  *   scanMgr.ReconnectToLostProbes   gateway they go by the bind their routes went by (src/server.js,
  *                                   systemScanCall).
+ *   scanMgr.SetProbeDestination,    "scanManager" too, the same way; the game port's transport answers them itself.
+ *   scanMgr.SetProbeRangeStep
  *   charMgr.ListStations            "assets": a READ, the stations that hold something of the pilot's
  *                                   (invCache.py 833, for the assets window). The object is the pilot's own
  *                                   global container, Moniker('charMgr', (session.charid, const.containerGlobal)),
@@ -745,6 +920,27 @@ function ordersAFollow(service, method) {
  *                                   fleetMgr's ForceLeaveFleet by name instead, and so does the BFF in this
  *                                   call's place: only it knows which the connection holds (src/server.js,
  *                                   leaveFleetCall).
+ *   fleetObjectHandler.KickMember   "fleet": a WRITE, a member kicked (fleetSvc.KickMember, 607 to 612:
+ *                                   self.fleet.KickMember(charID), from the fleet's menu for a member,
+ *                                   menusvc.py FleetMenu, once its Confirm is chosen), on the fleet's own
+ *                                   object, from the address book's character menu since 2026-10-15. The server
+ *                                   takes the session's fleet and the member named, and refuses a pilot who is no
+ *                                   commander over that member (FleetNotCommanderOrBoss).
+ *   fleetObjectHandler.MakeLeader   "fleet": a WRITE, the fleet's boss handed on (fleetSvc.MakeLeader, 601 to
+ *                                   605: self.fleet.MakeLeader(charID), once ConfirmMakeFleetBoss is answered
+ *                                   yes), on the same object. The server refuses a pilot who is not the fleet's
+ *                                   boss (FleetNotCreator).
+ *   fleetObjectHandler.MoveMember   "fleet": a WRITE, a member given another place (fleetSvc.MoveMember, 513 to 520:
+ *                                   self.fleet.MoveMember(charID, wingID, squadID, role), from the fleet's menu for
+ *                                   a member, Move Fleet Member, evefleet.client.MemberMenu), on the same object,
+ *                                   since 2026-10-15. The server takes the session's fleet and refuses a move the
+ *                                   pilot's command does not allow.
+ *   fleetObjectHandler.SendBroadcast  "fleet": a WRITE, a broadcast to the whole fleet (fleetSvc.SendGlobalBroadcast,
+ *                                   983 to 990: self.fleet.SendBroadcast(name, self.broadcastScope, itemID,
+ *                                   typeID), after the client's own checks and wait), on the same object: from
+ *                                   the fleet's menu for the pilot's own, Broadcast Travel To Me, since
+ *                                   2026-10-15. The server takes the session's fleet and sends OnFleetBroadcast to
+ *                                   the members the scope reaches; it keeps the same wait itself.
  *   fleetObjectHandler.CreateFleet  "fleet": a WRITE, a fleet formed (fleetSvc.CreateFleet, 331 to 342). The
  *                                   client asks it of the handler by name, with nothing, and what it answers is
  *                                   the fleet's own object, on which it then asks Init and reads the fleet. The
@@ -787,6 +983,14 @@ function ordersAFollow(service, method) {
  *                                   agent of the caller, and the agent the object was bound for: it finds the
  *                                   session's own character's mission with that agent, or that agent's base,
  *                                   and flies the session's own ship there. It answers nothing either way.
+ *   agentMgr.GotoLocation           "agent": a WRITE, the ship sent to a mission's marked spot (Approach Location,
+ *                                   movementFunctions.ApproachLocation, 397 to 407):
+ *                                   GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber,
+ *                                   referringAgentID), from the Locations window's Agent Missions since
+ *                                   2026-10-15. The server's handler (agentMgrService.Handle_GotoLocation) takes
+ *                                   the type and the other agent of the caller and the agent the object was bound
+ *                                   for, finds the session's own character's mission's spot, and flies the
+ *                                   session's own ship after it or to its point. It answers nothing.
  *   agentMgr.DoAction               "agent": a WRITE, what is said to an agent (agentDialogueWindow.py 427 to
  *                                   428): GetAgentMoniker(agentID).DoAction(actionID). The handler answers for
  *                                   the session's own character with the agent the object was bound for, and
@@ -845,7 +1049,7 @@ function ordersAFollow(service, method) {
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.DestroyFitting": "inventory", "reprocessingSvc.Reprocess": "refinery", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "scanMgr.SetProbeDestination": "scanManager", "scanMgr.SetProbeRangeStep": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.GotoLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.DestroyFitting": "inventory", "reprocessingSvc.Reprocess": "refinery", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.KickMember": "fleet", "fleetObjectHandler.MakeLeader": "fleet", "fleetObjectHandler.SendBroadcast": "fleet", "fleetObjectHandler.MoveMember": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, a fleet that is not the
  * session's own (the one an invitation names), an agent, and an inventory (a thing's own, or the hangar's). A

@@ -130,6 +130,22 @@ function getCategoryName(categoryID) {
   );
 }
 
+function getGroup(groupID) {
+  return buildJsonlIndex("groups.jsonl").get(Number(groupID) || 0) || null;
+}
+
+function getGroupName(groupID) {
+  const entry = getGroup(groupID);
+  if (!entry) {
+    return groupID ? `Group ${groupID}` : "Unknown";
+  }
+  return String(
+    (entry.name && (entry.name.en || entry.name.en_us)) ||
+    entry.name ||
+    `Group ${groupID}`,
+  );
+}
+
 function getLocalizedValue(value) {
   if (!value) {
     return null;
@@ -166,6 +182,16 @@ function getLocalizedName(entry, fallback) {
 
 function getRegion(regionID) {
   return buildJsonlIndex("mapRegions.jsonl").get(Number(regionID) || 0) || null;
+}
+
+/** A constellation's row (the SDE's mapConstellations). */
+function getConstellation(constellationID) {
+  return buildJsonlIndex("mapConstellations.jsonl").get(Number(constellationID) || 0) || null;
+}
+
+function getConstellationName(constellationID) {
+  const entry = getConstellation(constellationID);
+  return entry ? getLocalizedName(entry, `Constellation ${constellationID}`) : null;
 }
 
 function getRegionName(regionID) {
@@ -1847,6 +1873,9 @@ function resolveOneName(kind, id) {
       return getPropulsionEffectName(numericID);
     case "category":
       return getCategory(numericID) ? getCategoryName(numericID) : null;
+    // An inventory group by its own ID (evetypes.GetGroupNameByGroup): the probe scanner's result's group.
+    case "group":
+      return getGroup(numericID) ? getGroupName(numericID) : null;
     case "corporation":
       return getCorporation(numericID) ? getCorporationName(numericID) : null;
     case "alliance":
@@ -1863,6 +1892,27 @@ function resolveOneName(kind, id) {
       return getSolarSystem(numericID) ? getSolarSystemName(numericID) : null;
     case "region":
       return getRegion(numericID) ? getRegionName(numericID) : null;
+    // A planet, as cfg.evelocations names one: the planets window's launches (planetWindow.py 88 to 92).
+    case "planet":
+      return getPlanetName(numericID);
+    case "constellation":
+      return getConstellationName(numericID);
+    // A station -> its type's name: the group of a station's default bookmark name (addressbookService.py
+    // GetDefaultLocationName, 430 to 434: NewBookmarkLocationLabel with the map item's type, the station's type).
+    case "stationType": {
+      const station = getStation(numericID);
+      return station && station.stationTypeID && getType(station.stationTypeID) ? getTypeName(station.stationTypeID) : null;
+    }
+    // A solar system's constellation and region by the system's number: the Locations window's CON and REG
+    // (addressbookService.py GetSolConReg, 354 to 374, by GetSolarSystemDetails).
+    case "systemConstellation": {
+      const system = getSolarSystem(numericID);
+      return system && system.constellationID ? getConstellationName(system.constellationID) : null;
+    }
+    case "systemRegion": {
+      const system = getSolarSystem(numericID);
+      return system && system.regionID && getRegion(system.regionID) ? getRegionName(system.regionID) : null;
+    }
     case "owner":
       return resolveOwnerName(numericID);
     case "ownerGroup":
@@ -2006,6 +2056,89 @@ function getClientTypeList(listID) {
   return buildIndex("clientTypeLists", "typeLists", "listID").get(Number(listID) || 0) || null;
 }
 
+/**
+ * The client type lists among `listIDs` that hold a type (evetypes.GetTypeIDsByListID: the list's types and those of
+ * its groups and categories, less those it leaves out), as the server matches them
+ * (server/src/services/inventory/typeListAuthority.js). Null for a type the tables do not know or a list they lack.
+ */
+function getTypeListsHolding(typeID, listIDs) {
+  const type = getType(typeID);
+  if (!type) return null;
+  const groupID = Number(type.groupID);
+  const categoryID = Number(type.categoryID);
+  const held = [];
+  for (const listID of listIDs) {
+    const list = getClientTypeList(listID);
+    if (!list) return null;
+    const has = (key, id) => Array.isArray(list[key]) && list[key].map(Number).includes(id);
+    const included = has("includedTypeIDs", Number(typeID)) || has("includedGroupIDs", groupID) || has("includedCategoryIDs", categoryID);
+    const excluded = has("excludedTypeIDs", Number(typeID)) || has("excludedGroupIDs", groupID) || has("excludedCategoryIDs", categoryID);
+    if (included && !excluded) held.push(listID);
+  }
+  return held;
+}
+
+/**
+ * The client's own dungeon records (evedungeons.client.data.GetDungeon: its dungeonNameID and connections), as EveJS's
+ * dungeon table holds them (dungeonAuthority, clientData.tables.dungeonsByID). Read once; only the dungeons are kept.
+ */
+function getClientDungeon(dungeonID) {
+  const cacheKey = "dungeonAuthority:clientDungeons";
+  if (!caches.has(cacheKey)) {
+    const table = readStaticTable("dungeonAuthority");
+    const dungeons = table && table.clientData && table.clientData.tables && table.clientData.tables.dungeonsByID;
+    const index = new Map();
+    for (const [key, value] of Object.entries(dungeons && typeof dungeons === "object" ? dungeons : {})) {
+      if (Number(key) > 0 && value && typeof value === "object") {
+        index.set(Number(key), { dungeonNameID: Number(value.dungeonNameID) || null, connections: Array.isArray(value.connections) ? value.connections : [] });
+      }
+    }
+    caches.set(cacheKey, index);
+  }
+  return caches.get(cacheKey).get(Number(dungeonID) || 0) || null;
+}
+
+/** evedungeons.common.constants.ACCELERATION_GATE_BLACKLISTED_GROUPS, read through the client's Python. */
+const ACCELERATION_GATE_BLACKLISTED_GROUPS = Object.freeze([29, 485, 659, 30, 513, 547, 4594, 1538, 902, 883, 5120]);
+
+/**
+ * evedungeons.client.util.GetDungeonShipRestrictions(dungeonID, gateID) and GetDungeonShipRestrictionsTypeListID: of
+ * every ship type (category 6), those each connection from the gate (or every connection, with no gate) lets through
+ * by its type list and its races; where none restricts, all but the blacklisted groups. Null for a dungeon the
+ * tables lack.
+ */
+function getDungeonShipRestrictions(dungeonID, gateID = null) {
+  const dungeon = getClientDungeon(dungeonID);
+  if (!dungeon || dungeon.connections.length === 0) return null;
+  const shipTypes = [...buildIndex("itemTypes", "types", "typeID").values()].filter((type) => Number(type.categoryID) === 6);
+  let allowed = new Set(shipTypes.map((type) => Number(type.typeID)));
+  let nonDefault = false;
+  let typeListID = null;
+  for (const connection of dungeon.connections) {
+    if (gateID && Number(gateID) !== Number(connection.fromObjectID)) continue;
+    const listID = Number(connection.allowedShipsList) || 0;
+    const races = Array.isArray(connection.allowedShipRaces) ? connection.allowedShipRaces.map(Number) : [];
+    if (listID > 0 && typeListID === null) typeListID = listID;
+    if (listID > 0 || races.length > 0) {
+      const passing = new Set(shipTypes.filter((type) => {
+        if (listID > 0) {
+          const held = getTypeListsHolding(type.typeID, [listID]);
+          if (!held || !held.includes(listID)) return false;
+        }
+        const raceID = Number(type.raceID) || 0;
+        return !(races.length > 0 && raceID && !races.includes(raceID));
+      }).map((type) => Number(type.typeID)));
+      allowed = new Set([...allowed].filter((typeID) => passing.has(typeID)));
+      nonDefault = true;
+    }
+  }
+  if (!nonDefault) {
+    const blacklisted = new Set(ACCELERATION_GATE_BLACKLISTED_GROUPS);
+    allowed = new Set(shipTypes.filter((type) => allowed.has(Number(type.typeID)) && !blacklisted.has(Number(type.groupID))).map((type) => Number(type.typeID)));
+  }
+  return { dungeonNameID: dungeon.dungeonNameID, typeListID, allowedShipTypes: [...allowed], nonDefaultShipRestrictions: nonDefault };
+}
+
 function getNpcIndustryFacility(facilityID) {
   return buildIndex(
     "industryFacilities",
@@ -2035,6 +2168,9 @@ module.exports = {
   getAllIndustryBlueprints,
   getTypesInGroup,
   getClientTypeList,
+  getTypeListsHolding,
+  getClientDungeon,
+  getDungeonShipRestrictions,
   resolveNames,
   getMarketGroup,
   getMarketGroupName,
@@ -2066,6 +2202,8 @@ module.exports = {
   getCommodityTier,
   getRegion,
   getRegionName,
+  getConstellation,
+  getConstellationName,
   getSolarSystem,
   getSolarSystemGraph,
   getSolarSystemName,

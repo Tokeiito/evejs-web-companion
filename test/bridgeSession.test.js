@@ -2469,8 +2469,10 @@ test("on the game port a pilot whose session has no fleet is asked nothing of on
 });
 
 test("with a fleet in the session, and on the gateway, the fleet is asked as before", async () => {
-  // In a fleet: the five reads, on the fleet's object, and nothing said of the session having none.
-  const member = await fleetRoute({ own: { fleetID: 654500010000 } });
+  // In a fleet, its object held and nothing kept: the five reads, on the fleet's object, and nothing said of the
+  // session having none. (Mended 2026-10-15 by reading: the object is said to be held, as pilots.js fleet says it;
+  // with none held nothing is asked, the test after the next.)
+  const member = await fleetRoute({ own: { fleetID: 654500010000, holdsObject: true } });
   assert.deepEqual([member.asked.slice().sort(), member.payload.membership, member.payload.fleetID], [ALL_FIVE.slice().sort(), undefined, "654500010000"]);
   assert.deepEqual(member.payload.reads.GetInitState, { result: fleetState(654500010000) });
   // A transport that cannot say, and the gateway, whose held session does not know: asked, and refused five times.
@@ -2596,8 +2598,8 @@ test("on the game port a fleet whose object is held is read from what is kept, a
 
 test("with nothing kept the fleet is asked all five, as before", async () => {
   const fleetID = 654500010000;
+  // (Mended 2026-10-15 by reading: "no object is held" went to the test after this one, which asks nothing.)
   for (const [why, options] of [
-    ["no object is held", { own: { fleetID, holdsObject: false, kept: () => keptFleet(fleetID) } }],
     ["nothing could be read", { own: { fleetID, holdsObject: true, kept: () => null } }],
     ["the reading failed", { own: { fleetID, holdsObject: true, kept: () => { throw Object.assign(new Error("lost"), { code: "CALL_FAILED" }); } } }],
     ["the transport keeps none", { own: { fleetID, holdsObject: true } }],
@@ -2609,6 +2611,18 @@ test("with nothing kept the fleet is asked all five, as before", async () => {
     // Kept or not is asked only where an object is held, and only of the game port.
     assert.equal(keptAsked.length, why === "nothing could be read" || why === "the reading failed" ? 1 : 0, why);
   }
+});
+
+test("on the game port a fleet whose object is not held is said, and nothing is asked of it", async () => {
+  // fleetSvc.InitFleet (254 to 258) asks nothing without its fleet's object, which the client has only from
+  // CreateFleet or an invitation it accepted (334, 1195), whatever the session says.
+  const fleetID = 654500010000;
+  const { payload, asked, keptAsked, baseUrl } = await fleetRoute({ own: { fleetID, holdsObject: false, kept: () => keptFleet(fleetID) } });
+  assert.deepEqual([asked, keptAsked], [[], []]);
+  assert.deepEqual([payload.fleetID, payload.membership, payload.notifications], ["654500010000", undefined, []]);
+  assert.deepEqual(payload.reads, Object.fromEntries(FLEET_READ_NAMES.map((name) => [name, { error: "NOT_ASKED", message: null }])));
+  // The fleet the BFF holds for the session is the session's own.
+  assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.fleetID, "654500010000");
 });
 
 test("a session the game port has lost while the kept fleet is read is forgotten, and the route says so", async () => {
@@ -3977,16 +3991,18 @@ test("none of the BFF's handles for a fleet is kept across the page's own accept
 // ── a pilot invited by the page itself ───────────────────────────────────────
 //
 // fleetSvc.Invite (351 to 363): self.fleet.Invite(charID, wingID, squadID, role), on the pilot's own fleet's
-// object; the menus' plain invitation names the pilot and three Nones. The page names the invitee alone. The BFF
-// makes the call as its route made it: on the session's own fleet, or, where the call says the number of the fleet
-// it expects to be in, on the object bound by that number, so that the server's check of the inviter runs against
-// that fleet; and keeps none of its handles for a fleet after. A wing, a squad and a role are not the page's to
-// name here: the server seats an invitee in whatever role it is told.
+// object; the menus' plain invitation names the pilot and three Nones, the invite menu's places (menusvc
+// FleetInviteMenu, MemberMenu with isMove False) a wing, a squad and a role. The page names the invitee and the
+// place, each of the place a positive number or nothing; the server holds a placed invitation to the inviter's
+// command (eve.js fleetRuntime.js assertPlacementInCommand). The BFF makes the call as its route made it: on the
+// session's own fleet, or, where the call says the number of the fleet it expects to be in, on the object bound by
+// that number, so that the server's check of the inviter runs against that fleet; and keeps none of its handles for
+// a fleet after.
 
 const THE_INVITING = { service: "fleetObjectHandler", method: "Invite", args: [43, null, null, null], kwargs: null };
-const THROUGH_THE_INVITING = (handle, bound = [], invitee = 43) => [["bind", "fleetObjectHandler", "MachoBindObject", bound, null], [`on ${handle}`, "fleetObjectHandler", "Invite", [invitee, null, null, null], null]];
+const THROUGH_THE_INVITING = (handle, bound = [], invitee = 43, place = [null, null, null]) => [["bind", "fleetObjectHandler", "MachoBindObject", bound, null], [`on ${handle}`, "fleetObjectHandler", "Invite", [invitee, ...place], null]];
 
-test("an invitation is a write the page means, made on the pilot's own fleet or the one the call expects, with the invitee and nothing of a place", async () => {
+test("an invitation is a write the page means, made on the pilot's own fleet or the one the call expects, with the invitee and the place it says", async () => {
   for (const transport of ["gameport", "gateway"]) {
     const { asked, byName, baseUrl } = await formFleetByCall({ transport });
     const invite = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_INVITING, ...more } });
@@ -3998,6 +4014,11 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
     for (const args of [[], [0, null, null, null], [-43], [1.5], ["a pilot"], [null], "43", undefined, [[43]]]) {
       const nobody = await invite({ pilot: true, confirm: true, args });
       assert.deepEqual([nobody.response.status, nobody.payload.error, asked], [400, "INVALID_CHARACTER", []], `${transport} ${JSON.stringify(args)}`);
+    }
+    // A place's wing, squad and role are each a positive number or nothing.
+    for (const args of [[43, -1, null, null], [43, null, 0, null], [43, null, null, 1.5], [43, "a wing", null, null], [43, null, [6], null], [43, null, null, true]]) {
+      const nowhere = await invite({ pilot: true, confirm: true, args });
+      assert.deepEqual([nowhere.response.status, nowhere.payload.error, asked], [400, "INVALID_FLEET_PLACE", []], `${transport} ${JSON.stringify(args)}`);
     }
     // And a fleet expected is a fleet's number.
     for (const of of [0, -1, 1.5, "", "a fleet", [INVITING], true]) {
@@ -4016,10 +4037,11 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
       const expected = await invite({ pilot: true, confirm: true, of });
       assert.deepEqual([expected.response.status, asked], [200, THROUGH_THE_INVITING(handle, bound)], `${transport} ${JSON.stringify(of)}`);
     }
-    // A wing, a squad, a role and anything by keyword are not taken from the page; the pilot named as text is that pilot.
+    // A wing, a squad and a role are taken as the page says them, a number or the text of one; anything past them
+    // and anything by keyword are not; the pilot named as text is that pilot.
     asked.length = 0;
-    const placed = await invite({ pilot: true, confirm: true, args: ["44", 5, 6, 1, true], kwargs: { approvedCost: 1 } });
-    assert.deepEqual([placed.response.status, asked], [200, THROUGH_THE_INVITING("made 5", [], 44)], transport);
+    const placed = await invite({ pilot: true, confirm: true, args: ["44", 5, "6", 3, true], kwargs: { approvedCost: 1 } });
+    assert.deepEqual([placed.response.status, asked], [200, THROUGH_THE_INVITING("made 5", [], 44, [5, 6, 3])], transport);
   }
 });
 

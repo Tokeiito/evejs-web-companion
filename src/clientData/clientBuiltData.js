@@ -38,6 +38,9 @@ const TABLES = Object.freeze({
   npcCorporations: Object.freeze({ loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" }),
   // The divisions agents work in, each with the message its name is (npcs/divisions.py).
   npcCorporationDivisions: Object.freeze({ loader: "npcCorporationDivisionsLoader", resource: "res:/staticdata/npccorporationdivisions.fsdbinary" }),
+  // The kinds of a wallet journal's entries, each with the message its line is worded by (eveaccounting/data.py
+  // get_entry_format_localization_id: entryJournalMessageID), which the client's FmtWalletEntry words it with.
+  accountingEntryTypes: Object.freeze({ loader: "accountingEntryTypesLoader", resource: "res:/staticdata/accountingentrytypes.fsdbinary" }),
 });
 
 /** Runs the client's loader on a data file and answers what it printed. */

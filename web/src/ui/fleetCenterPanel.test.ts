@@ -268,14 +268,5 @@ test("Fleet Center shows a member's ship and place from the fleet's composition,
   for (const stale of ["Capsule", "Jita IV", "Ship unavailable", "Location unavailable"]) assert.equal(body.includes(stale), false, stale);
 });
 
-test("the Fleet window says what the pilot was told of an invitation it sent", () => {
-  const store = createClientStore();
-  loadSnapshot(store, populatedFleet());
-  const words = "Test Three is already in a fleet, so your invitation was turned down.";
-  const before = render(FleetCenter as never, { props: { store, flow: fakeFlow() } } as never).body;
-  assert.equal(before.includes(words), false);
-  store.apply({ type: "fleet/invite-answered", words });
-  const after = render(FleetCenter as never, { props: { store, flow: fakeFlow() } } as never).body;
-  assert.match(after, /Invite a pilot/);
-  assert.ok(after.includes(words), "the answer is not in the window");
-});
+// (The Fleet window said what the pilot was told of an invitation it sent until 2026-10-15. The client's fleet window
+// says nothing of it: the client puts it up as a strip (fleetSvc.OnFleetJoinReject, 1217 to 1223).)

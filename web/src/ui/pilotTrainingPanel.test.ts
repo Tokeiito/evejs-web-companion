@@ -8,15 +8,9 @@ import type { MinerTrainingRead, StageFittingSelection } from "../training/types
 register("./svelteSsrHook.ts", import.meta.url);
 
 const { render } = await import("svelte/server");
-const PilotTraining = (await import("./PilotTraining.svelte")).default;
 const GoblinFactory = (await import("./GoblinFactory.svelte")).default;
 const MinerQualification = (await import("./MinerQualification.svelte")).default;
 
-test("old pilot panel is only a discoverable standalone shortcut", () => {
-  const html = render(PilotTraining).body;
-  assert.match(html, /Pilot Training/);
-  assert.match(html, /href="\/pilot-training"/);
-});
 
 test("stage details render review identity, skill distinctions and only the selected preview", () => {
   const selections: Record<string, StageFittingSelection> = { VENTURE: { scope: "CORPORATION", ownerID: 98000001,

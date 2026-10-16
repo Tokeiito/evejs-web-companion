@@ -223,6 +223,19 @@ function refusalsOf(answer: JsonValue): readonly string[] {
 }
 
 /**
+ * The refusals TrashItems answered, each the name of a dialog the client puts up (invItemFunctions.TrashInvItems:
+ * `for e in errors: prompt_player_fsd_dialog(e)`).
+ */
+export class TrashRefusedError extends Error {
+  readonly dialogs: readonly string[];
+
+  constructor(dialogs: readonly string[]) {
+    super(`The server would not destroy those items (${dialogs.join(", ")}).`);
+    this.dialogs = dialogs;
+  }
+}
+
+/**
  * Destroys items that lie in one place, on the inventory manager of where the pilot is, naming the place as the
  * client names it (`locationID`). Fails where the server answers refusals, with the server's own words.
  */
@@ -230,5 +243,5 @@ export async function trashItems(act: Ask, itemIDs: readonly number[], locationI
   if (itemIDs.length === 0 || !itemIDs.every(whole)) throw new Error("At least one item is required.");
   if (!whole(locationID)) throw new Error("Where those items lie is not known.");
   const refusals = refusalsOf(await act("invbroker", "TrashItems", [[...itemIDs], locationID]));
-  if (refusals.length > 0) throw new Error(`The server would not destroy those items (${refusals.join(", ")}).`);
+  if (refusals.length > 0) throw new TrashRefusedError(refusals);
 }

@@ -23,9 +23,10 @@ import {
   login as apiLogin,
   logout as apiLogout,
   loadRosterTraining,
+  readRosterCharacters,
   resolveNames,
 } from "./api.ts";
-import { getCharacterSelectionData } from "../bridge/characterSelection.ts";
+import { decodeCharacterSelectionData } from "../bridge/characterSelection.ts";
 import {
   rememberCharacters,
   type ResolvedRosterNames,
@@ -179,7 +180,8 @@ async function readAccountInto(
       throw new Error("The server did not return a session token.");
     }
     const asOwner = { token, priority: "poll" as const };
-    const selection = await getCharacterSelectionData(asOwner);
+    // Listed as a launcher lists them, with no game login: one would close a client playing on the account.
+    const selection = decodeCharacterSelectionData(await readRosterCharacters(asOwner));
     const [resolved, live] = await Promise.all([
       resolveRosterNames(selection.characters, token),
       readTraining(selection.characters, token),

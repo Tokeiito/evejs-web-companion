@@ -39,9 +39,9 @@
 // nothing. Either transport carries it, asked of beyonce by its name; the game port makes it on the ballpark's
 // object.
 //
-// The page aligns to things only: it has no align to a bookmark. What the client keeps of an align for itself
-// (StoreAlignTarget, for the HUD's words) the BFF keeps for a pilot on the game port (pilots.js,
-// afterMovementCall).
+// The page aligns to things, and to bookmarks from a bookmark's menu in the Locations window (AlignToBookmark,
+// 2804: the bookmark by name, and no thing). What the client keeps of an align for itself (StoreAlignTarget, for
+// the HUD's words) the BFF keeps for a pilot on the game port (pilots.js, afterMovementCall).
 //
 // ⚠ AND NOTHING IS CANCELLED HERE EITHER. After the call the client forgets its own navigation in the system
 // (autoPilot.CancelSystemNavigation, autopilot.py 494: a destination in the system it was flying to by steps of
@@ -102,6 +102,17 @@
 // autopilot up before it asks (flow.stopShip), and so does the fleet companion's stop; a script bot's and a
 // support ship's stop is one step of a program that carries on, and gives nothing up.
 //
+// TURNED TOWARD A PLACE. scanSvc.AlignToPosition (459 to 465), a probe result's Align To (GetAlignToMenu, 704 to
+// 707, in an accurate result's menu):
+//
+//   directionalVector = geo2.Vec3SubtractD(position, myPosition)
+//   rbp.CmdGotoDirection(directionalVector[0], directionalVector[1], directionalVector[2])
+//
+// the place less the ship's own ball's position, on the ballpark's object. It answers nothing. Tranquility has the
+// call in six recordings, three floats and nothing else (the double click in space's, of length one). The server
+// (beyonceService.Handle_CmdGotoDirection) turns the session's own ship toward the direction. The page's "own
+// position" is its space read's of the ship, as the results' distances are.
+//
 // SENT INTO WARP, TO A SCAN RESULT. menusvc._WarpXToScanResult (1418 to 1428), which the scanner's list calls with
 // no range (scannerListEntries.py 276). With a park, the sensor suite is asked for the site that goes by the
 // result's label among its anomalies and its structures (sensorSuiteService.py 799), and the warp is
@@ -110,7 +121,9 @@
 //   michelle.CmdWarpToStuff('scan', label, minRange=None, fleet=False)      where it has none
 //
 // on the ballpark's object (michelle.py 737). It answers nothing. Two of Tranquility's recordings have the item's
-// form, with fleet=False beside the range; none has a warp by a label.
+// form, with fleet=False beside the range; none has a warp by a label. The probe results' menu makes the same warp
+// with a range (menusvc.SolarsystemScanMenu, 1403 to 1407: Warp To at the pilot's own warp distance, Warp to Within
+// at one of the seven, GetWarpOptions 1369 to 1381 and WarpToMenu 2254 to 2270), the range a float.
 //
 // The server (beyonceService.Handle_CmdWarpToStuff) flies the session's own ship in the session's own system: an
 // item is a thing of the session's scene, a site the server seeded is given its contents on the way, and a label
@@ -137,12 +150,26 @@
 // that is not there (BookmarkNotAvailable), and flies the session's own ship to the thing the bookmark is of, or
 // to its point.
 //
-// The page says a range of nought and fleet=False. Its JSON has one kind of number: on the game port the range is
-// made the client's float where the call is sent (retailCalls.js, warping), as a follow's nought is.
+// The page says fleet=False, and the range the pilot chose from a bookmark's menu in the Locations window (Warp to
+// Within: the pilot's own warp distance, or one of the menu's seven), or nought for the script bots. Its JSON has
+// one kind of number: on the game port the range is made the client's float where the call is sent
+// (retailCalls.js, warping), as a follow's nought is.
 //
 // ⚠ A MISSION'S BOOKMARK IS NOT WARPED TO SO BY A CLIENT. One that has an agent and a location's number is asked
 // of the agent (GetAgentMoniker(agentID).WarpToLocation, 416), and never of the ballpark. The page's mission
 // block asks the agent so too, since 2026-10-11 (warpToMissionLocation, below), and reads no folder of bookmarks.
+//
+// SENT TO A BOOKMARK: APPROACH LOCATION. movementFunctions.ApproachLocation (397 to 407), with a park:
+//
+//   sm.GetService('menu').StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)
+//   bp.CmdGotoBookmark(bookmark.bookmarkID)
+//
+// The bookmark's number alone, on the ballpark's object. It answers nothing. No recording has one. The server
+// (beyonceService.Handle_CmdGotoBookmark) looks the bookmark up among the session's own character's, refuses one
+// that is not there (BookmarkNotAvailable), and flies the session's own ship after the thing the bookmark is of
+// where its scene holds it, else to its point. What the client forgets of an align the BFF forgets for a pilot on
+// the game port (pilots.js, afterMovementCall). An agent's bookmark is the agent's to go to (GotoLocation, 402):
+// the Locations window lists none.
 //
 // SENT INTO WARP, TO A LAUNCH. journal.py 452 to 453, the journal's "warp to" on a launch in the pilot's system
 // that is farther off than a warp's least distance (433 to 440):
@@ -212,6 +239,7 @@
 // other agent, and the three settings of a pilot who has chosen none.
 
 import type { Ask } from "./ask.ts";
+import type { JsonValue } from "./wire.ts";
 import type { MissionSpot } from "../store/types.ts";
 
 /** A point in a solar system, in metres. */
@@ -310,6 +338,28 @@ export async function goToPoint(act: Ask, flightNow: () => Promise<FlightNow>, p
 }
 
 /**
+ * Turns the pilot's ship toward a place, as a probe result's Align To does: the place less the ship's own position.
+ * Fails as the call fails, and before it where either is no position or the pilot is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP TURNED.
+ */
+export async function alignToPosition(
+  act: Ask,
+  flightNow: () => Promise<FlightNow>,
+  place: readonly [number, number, number],
+  shipPosition: readonly [number, number, number],
+): Promise<void> {
+  if (![...place, ...shipPosition].every(Number.isFinite)) {
+    throw new Error("Unknown place or ship position.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("beyonce", "CmdGotoDirection", [place[0] - shipPosition[0], place[1] - shipPosition[1], place[2] - shipPosition[2]]);
+}
+
+/**
  * Aligns the pilot's ship to a thing in space. Fails as the call fails, and before it where the client sends
  * nothing: for what is no thing, for a pilot that is not in space, and for the pilot's own ship.
  *
@@ -392,7 +442,7 @@ export async function stopShip(act: Ask, flightNow: () => Promise<FlightNow>): P
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. A ship already in warp is answered the same.
  */
-export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string): Promise<void> {
+export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string, minRange: number | null = null): Promise<void> {
   if (label === "") {
     throw new Error("A scan-site label is required.");
   }
@@ -402,7 +452,10 @@ export async function warpToScanResult(act: Ask, flightNow: () => Promise<Flight
   }
   const sites = kept !== null && kept.solarSystemID !== null && kept.solarSystemID === now.solarSystemID ? kept : await readSites();
   const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === label)?.siteID;
-  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange: null, fleet: false });
+  if (minRange !== null && !(Number.isFinite(minRange) && minRange >= 0)) {
+    throw new Error("A warp's range is a distance of nought or more.");
+  }
+  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange, fleet: false });
 }
 
 /** What a warp to a place of the pilot's own looks to before it is asked: that the place has a number, and that the pilot is in space. */
@@ -417,15 +470,43 @@ async function aPlaceToWarpTo(flightNow: () => Promise<FlightNow>, id: number, n
 }
 
 /**
- * Warps the pilot's ship to one of its bookmarks, as the bookmark's menu does: by the bookmark's number, with a
- * range of nought and the fleet's word False. Fails as the call fails, and before it for what is no bookmark's
- * number and for a pilot that is not in space.
+ * Warps the pilot's ship to one of its bookmarks, as the bookmark's menu does: by the bookmark's number, to stop
+ * `range` metres short of it (nought where none is said, one of the seven the menu offers), and the fleet's word
+ * False. Fails as the call fails, and before it where the range is none of those, for what is no bookmark's number
+ * and for a pilot that is not in space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
  */
-export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
   await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
-  await act("beyonce", "CmdWarpToStuff", ["bookmark", bookmarkID], { minRange: 0, fleet: false });
+  await act("beyonce", "CmdWarpToStuff", ["bookmark", bookmarkID], { minRange: range, fleet: false });
+}
+
+/**
+ * Sends the pilot's ship to one of its bookmarks, as the bookmark's Approach Location does: by the bookmark's number
+ * alone. Fails as the call fails, and before it for what is no bookmark's number and for a pilot that is not in
+ * space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function approachBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
+  await act("beyonce", "CmdGotoBookmark", [bookmarkID]);
+}
+
+/**
+ * Aligns the pilot's ship to one of its bookmarks, as the bookmark's Align to does: the bookmark by name and no
+ * thing. Fails as the call fails, and before it for what is no bookmark's number and for a pilot that is not in
+ * space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP ALIGNED.
+ */
+export async function alignToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
+  await act("beyonce", "CmdAlignTo", [], { dstID: null, bookmarkID });
 }
 
 /**
@@ -470,14 +551,63 @@ export async function autopilotWarp(act: Ask, flightNow: () => Promise<FlightNow
 
 /**
  * Warps the pilot's ship to a member of its fleet, as the fleet's menu does: by the member's own number (a pilot's,
- * not a ship's), with a range of nought and nothing else. Fails as the call fails, and before it for what is no
- * pilot's number and for a pilot that is not in space.
+ * not a ship's), at the range chosen (Warp to Member at the pilot's default, its submenu at one of the seven: menusvc.py
+ * FleetMenu; nought where none is said) and nothing else; the transport sends the range as the float the client's
+ * menu makes it. Fails as the call fails, and before it where the range is none of those, for what is no pilot's
+ * number and for a pilot that is not in space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. The member need not be on this grid.
  */
-export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number): Promise<void> {
+export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
   await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
-  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: 0 });
+  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range });
+}
+
+/**
+ * Warps the pilot's fleet, wing or squad to a member of it, as the fleet's menu does for a commander
+ * (menusvc.WarpFleetToMember, 2753 to 2760: michelle.CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True),
+ * to which michelle adds the pilot's formation, SetFleetFormationSettings 755 to 760): the member's number, the range
+ * chosen, fleet=True, and the formation a pilot has who has chosen none. Warp Fleet, Warp Wing and Warp Squad to
+ * Member are the one call: which of the fleet goes with the pilot is the server's, by the pilot's command. Fails as
+ * Warp to Member fails.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function warpFleetToMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
+  await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
+  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range, fleet: true, fleetFormationSettings: { ...FORMATION_OF_NO_CHOICE } });
+}
+
+/** A fleet member's cyno as fleetSvc keeps it (OnFleetJumpBeaconModuleChange): its system, the beacon and its type. */
+export interface MemberBeacon {
+  readonly solarSystemID: number;
+  readonly beaconID: number;
+  readonly typeID: number | null;
+}
+
+/**
+ * Jumps the pilot's ship to a fleet member's cyno, as the fleet menu's Jump To does (menusvc.JumpToMember, 2643 to 2650;
+ * cynoTravelSvc.JumpToFleetModuleBeacon, 30 to 37: bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), a
+ * change of session), `group` the Conduit Jump To that takes the fleet's members in range along
+ * (GroupJumpToFleetModuleBeacon, 97 to 104), and Bridge To (BridgeToFleetModuleBeacon, 57 to 63:
+ * bp.CmdBridgeToFleetModuleBeacon, the same three, no change of session) where `bridge`. Fails as the call fails,
+ * and before it for a member that is no character's number, a beacon the page has none of, and a ship not in space.
+ *
+ * ⚠ A JUMP'S CALL COMING BACK IS THE SESSION IN THE BEACON'S SYSTEM: the BFF answers once the ship is usable there.
+ */
+export async function toMemberBeacon(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, beacon: MemberBeacon | null, how: "jump" | "group" | "bridge"): Promise<void> {
+  await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
+  if (beacon === null || !isAnID(beacon.beaconID) || !isAnID(beacon.solarSystemID)) {
+    throw new Error("That member has no cyno lit.");
+  }
+  const method = how === "jump" ? "CmdJumpToFleetModuleBeacon" : how === "group" ? "CmdGroupJumpToFleetModuleBeacon" : "CmdBridgeToFleetModuleBeacon";
+  await act("beyonce", method, [characterID, beacon.beaconID, beacon.solarSystemID]);
 }
 
 /** The fleet formation a pilot has who has chosen none: a point, the first spacing and the first size (evefleet: POINT, FLEET_FORMATION_SPACING[0], FLEET_FORMATION_SIZE[0]). */
@@ -485,13 +615,41 @@ const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacin
 
 /**
  * Warps the pilot's ship to a mission's marked spot, as the client's menu does: by asking the spot's agent, on
- * that agent's own object, with the spot's type and number as the journal has them, a range of nought, no fleet's
- * word, no other agent, and a fleet's formation settings as a pilot has them who has chosen none. Fails as the call
- * fails, and before it for what is no spot of a mission's and for a pilot that is not in space.
+ * that agent's own object, with the spot's type and number as the journal has them, the range chosen (nought where
+ * none is), no fleet's word, the other agent the bookmark names or none, and a fleet's formation settings as a pilot
+ * has them who has chosen none. The range goes as a float where the warp is the bookmark's menu's (menusvc 1481 to
+ * 1483: float(defaultWarpDist), and WarpToMenu's float(ranges[i])), and as a whole number else, as the surroundings'
+ * and bookmarkUtil's entries send their nought (listSurroundingsBtn 336, bookmarkUtil 38); Tranquility's recordings
+ * have both. Fails as the call fails, and before it for what is no spot of a mission's and for a pilot that is not in
+ * space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN OR NOT, AND NEVER AN ARRIVAL. The server answers nothing either way.
  */
-export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber">): Promise<void> {
+export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">, range = 0, fromBookmarkMenu = false): Promise<void> {
+  if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
+    throw new Error("That is no spot of a mission's.");
+  }
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  const warpRange: JsonValue = fromBookmarkMenu ? { type: "real", value: range } : range;
+  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, warpRange, false, spot.referringAgentID ?? null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
+}
+
+/**
+ * Sends the pilot's ship to a mission's marked spot, as Approach Location does for a mission's bookmark
+ * (movementFunctions.ApproachLocation, 397 to 407): GetAgentMoniker(agentID).GotoLocation(locationType,
+ * locationNumber, referringAgentID), on the agent's own object, with the other agent the bookmark names or none. Fails
+ * as the call fails, and
+ * before it for what is no spot of a mission's and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function approachMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">): Promise<void> {
   if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
     throw new Error("That is no spot of a mission's.");
   }
@@ -499,5 +657,5 @@ export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<F
   if (!now.inSpace) {
     throw new Error("The ship is not in space; undock first.");
   }
-  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, 0, false, null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
+  await act("agentMgr", "GotoLocation", [spot.locationType, spot.locationNumber, spot.referringAgentID ?? null], undefined, spot.agentID);
 }

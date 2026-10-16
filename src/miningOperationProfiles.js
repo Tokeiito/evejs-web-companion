@@ -6,8 +6,8 @@ const BELT_MINER_ID = "mcc.belt.hauler-service.miner";
 const BELT_HAULER_ID = "mcc.belt.hauler-service.hauler";
 const DEFENDER_PROFILE = Object.freeze({ scriptID: "mcc.standard.defender", name: "Standard Defender", rev: 1 });
 const PROFILES = Object.freeze({
-  MINER: { scriptID: BELT_MINER_ID, name: "Belt Miner / Hauler Service", rev: 2 },
-  HAULER: { scriptID: BELT_HAULER_ID, name: "Belt Hauler", rev: 1 },
+  MINER: { scriptID: BELT_MINER_ID, name: "Belt Miner / Hauler Service", rev: 3 },
+  HAULER: { scriptID: BELT_HAULER_ID, name: "Belt Hauler", rev: 2 },
 });
 // Families own distinct implementations. Future families cannot route through
 // a belt routine merely because they share a member role.
@@ -20,13 +20,13 @@ const PROFILE_FAMILIES = Object.freeze({
 const familyCapabilities = () => Object.values(PROFILE_FAMILIES).map(({ build, ...metadata }) => metadata);
 
 function selfUnloadProfile(id, name) {
-  return Object.freeze({ scriptID: `mcc.${id}.self-unload.miner`, name: `${name} Miner / Self Unload`, rev: 1 });
+  return Object.freeze({ scriptID: `mcc.${id}.self-unload.miner`, name: `${name} Miner / Self Unload`, rev: 2 });
 }
 
 function siteProfiles(id, name) {
   return Object.freeze({
-    MINER: { scriptID: `mcc.${id}.hauler-service.miner`, name: `${name} Miner / Hauler Service`, rev: 1 },
-    HAULER: { scriptID: `mcc.${id}.hauler-service.hauler`, name: `${name} Hauler`, rev: 1 },
+    MINER: { scriptID: `mcc.${id}.hauler-service.miner`, name: `${name} Miner / Hauler Service`, rev: 2 },
+    HAULER: { scriptID: `mcc.${id}.hauler-service.hauler`, name: `${name} Hauler`, rev: 2 },
   });
 }
 
@@ -59,7 +59,7 @@ function standardProfileFor(definition, member) {
   }
   if (member.role === "MINER" && definition.support) {
     const base = definition.unloadPolicy === "SELF_UNLOAD" ? family.selfUnload : family.profiles.MINER;
-    return { ...base, scriptID: `${base.scriptID}.support-bound`, name: `${base.name} / Fleet Miner`, rev: 1 };
+    return { ...base, scriptID: `${base.scriptID}.support-bound`, name: `${base.name} / Fleet Miner`, rev: 2 };
   }
   if (definition.unloadPolicy === "SELF_UNLOAD") return member.role === "MINER" ? family.selfUnload : null;
   return definition.unloadPolicy === "HAULER_SERVICE" ? family.profiles[member.role] || null : null;
@@ -125,7 +125,9 @@ function buildMiningServiceDocument(definition, member) {
   const doc = {
     format: "evejs-bot-script", version: 1, name: profile.name,
     notes: "MCC standard BELT profile. Resource target comes only from operation.currentTarget.",
-    home: station, interrupts: [],
+    // The operator's word of 2026-10-15: a miner or hauler leaves when rats bring its shield to a floor. The watch
+    // is the Bot Builder's own for a new bot (web/src/bots/editorDoc.ts): shield below 30%, dock at home and pause.
+    home: station, interrupts: [{ id: "shield-floor", when: { kind: "shield-below", fraction: 0.3 }, respond: "dock-and-pause" }],
     program: member.role === "MINER" ? [{
       id: "loop", kind: "loop", repeat: { kind: "forever" }, body: [
         { id: "undock", kind: "macro", macro: "undock", args: {} },

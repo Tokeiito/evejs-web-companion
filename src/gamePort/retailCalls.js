@@ -255,25 +255,28 @@ const rangeOf = (value) => (value !== null && typeof value === "object" && value
  * (the scanner's None) of one that was not, a float where the client's is one; and fleet=False where the client
  * says it. The transport puts them in a client's order (py27.js).
  *
- * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755), which
- * nothing here sends: it differs, as does any keyword else, a range that is no distance, and a warp to what the
- * routes do not warp to.
+ * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755 to 760:
+ * fleetFormationSettings, a dict of the formation's type, spacing and size). The page makes one to a fleet member
+ * (menusvc.WarpFleetToMember, 2753 to 2760: the fleet's menu for a member, Warp Fleet, Wing or Squad to Member), with
+ * the range and the three settings; it goes with minRange as a float, fleet=True and the settings as a dict in the
+ * client's order. No recording has one. A fleet's warp to anything else differs, as does any keyword else, a range
+ * that is no distance, and a warp to what the routes do not warp to.
  */
 const warping = (args, kwargs, context) => {
   const notAClients = (note) => ({ status: "differs", note });
   const [subject, which] = args;
   const said = Object.keys(kwargs);
-  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet")) {
+  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet" && name !== "fleetFormationSettings")) {
     return notAClients("The client warps to one thing by what it is and its number, with a range and a fleet's word at most.");
   }
   const range = rangeOf(kwargs.minRange ?? null);
   if (range !== null && !(Number.isFinite(range) && range >= 0)) {
     return notAClients("A warp's range is a distance: a number, nought or more.");
   }
-  if (kwargs.fleet === true) {
-    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends.");
+  if ((kwargs.fleet === true || kwargs.fleetFormationSettings !== undefined) && subject !== "char") {
+    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends but to a fleet member.");
   }
-  if (kwargs.fleet !== undefined && kwargs.fleet !== false) {
+  if (kwargs.fleet !== undefined && kwargs.fleet !== false && kwargs.fleet !== true) {
     return notAClients("A warp's fleet keyword is True or False.");
   }
   // What a caller that cannot say a float said: each keyword, with a float read as its number.
@@ -290,9 +293,22 @@ const warping = (args, kwargs, context) => {
       // (A ship that is not known is no number an item's ID can be: the item is above nought.)
       if (Number(context.shipID) === which) return notAClients("The client does not warp to the pilot's own ship: it sends nothing.");
       return made(kwargs.fleet === false ? { minRange: kwargs.minRange ?? null, fleet: false } : { minRange: kwargs.minRange ?? 0 });
-    case "char":
-      if (!aThingsID(which) || kwargs.fleet !== undefined) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
-      return made({ minRange: asReal(range ?? 0) });
+    case "char": {
+      if (!aThingsID(which)) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
+      if (kwargs.fleet === undefined && kwargs.fleetFormationSettings === undefined) return made({ minRange: asReal(range ?? 0) });
+      // menusvc.WarpFleetToMember: fleet=True, and the formation's three settings beside it.
+      const given = kwargs.fleetFormationSettings;
+      const settings = given !== null && typeof given === "object" && !Array.isArray(given) ? given : {};
+      if (kwargs.fleet !== true || Object.keys(settings).length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(settings[name]))) {
+        return notAClients("The client warps its fleet to a member with fleet=True and the formation's three settings: CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True, fleetFormationSettings={formationType, formationSpacing, formationSize}).");
+      }
+      // The settings go as a dict, in the client's order, whatever order they were written in: that is the
+      // transport's making, as a page's JSON has no dict, and is no reshaping of what was said.
+      const wanted = { minRange: asReal(range ?? 0), fleet: true, fleetFormationSettings: dict(FORMATION_NAMES.map((name) => [name, settings[name]])) };
+      return isDeepStrictEqual(asSaid({ minRange: wanted.minRange, fleet: true }), asSaid({ minRange: kwargs.minRange, fleet: kwargs.fleet }))
+        ? { kwargs: wanted }
+        : { kwargs: wanted, status: "reshaped", note: "The fleet's warp was given the range the client's menu sends, a float." };
+    }
     case "bookmark":
       if (!aThingsID(which)) return notAClients("The client warps to a bookmark by its number.");
       return made({ minRange: asReal(range ?? 0), fleet: false });
@@ -335,6 +351,18 @@ const agentWarping = (args, kwargs) => {
   if (named.length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(given[name]))) return notAClients;
   return { args: [locationType, locationNumber, range, fleet, referringAgentID, dict(FORMATION_NAMES.map((name) => [name, given[name]]))] };
 };
+/**
+ * movementFunctions.ApproachLocation (402): GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber,
+ * referringAgentID), on the agent's own object: the location's type and number as the journal has them, and another
+ * agent or None. Three, and no keyword.
+ */
+const agentGoing = (args, kwargs) => {
+  const [locationType, locationNumber, referringAgentID] = args;
+  return args.length === 3 && typeof locationType === "string" && locationType !== "" && Number.isSafeInteger(locationNumber)
+    && (referringAgentID === null || aThingsID(referringAgentID)) && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends the location's type and number and another agent or None: GotoLocation(locationType, locationNumber, referringAgentID)." };
+};
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 /**
  * transferMoneyWnd.py Confirm (148): GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the one given to,
@@ -344,6 +372,11 @@ const agentWarping = (args, kwargs) => {
 const givingCash = (args, kwargs) => {
   const [toID, amount, reason] = args;
   const said = Object.keys(kwargs);
+  // The wallet's Give ISK tab (giveIskPanel.py TransferISK): GiveCash(selectedCharacterID, amount), and nothing else.
+  if (args.length === 2 && said.length === 0 && Number.isSafeInteger(toID) && toID > 0 && typeof amount === "number" && amount > 0) {
+    const clients = [toID, asFloat(amount)];
+    return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
+  }
   if (args.length !== 3 || !(Number.isSafeInteger(toID) && toID > 0) || typeof amount !== "number" || !(amount > 0)
     || typeof reason !== "string" || said.some((name) => name !== "toAccountKey")) {
     return { args, kwargs, status: "differs", note: "The client sends the one given to, the amount, the reason, and the account key by keyword. This is not that." };
@@ -579,7 +612,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the
@@ -602,6 +635,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
   // The account's clone grade, which the client asks as it logs in. The gateway's list has nothing of the subscription manager's.
   "subscriptionMgr.GetCloneGrade",
+  // An acceleration gate's activation, the keeper's (movementFunctions.py 553). The gateway's list has nothing of the keeper's.
+  "keeper.ActivateAccelerationGate",
+  // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
+  "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
   // gateway's list has the fighter manager's writes and not this read.
   "fighterMgr.GetFightersForShip",
@@ -624,6 +661,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The character's settings, which the client's character settings service asks once and keeps. The gateway's
   // list has the character manager's GetSettingsInfo, which is another thing, and not this.
   "charMgr.GetCharacterSettings",
+  // The same service's Save and Delete (characterSettingsSvc.py 44 to 58), which the gateway's list has neither of.
+  "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting",
   // What the character has completed of the client's achievements and how often its client's events have come,
   // which the client's achievement service asks once. The gateway's list has nothing of the achievement tracker's.
   "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
@@ -715,6 +754,36 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's contact labels made, renamed and deleted, and given to contacts or taken off them
   // (addressbookService.py 1001 to 1147). The gateway's list has none of them.
   "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+  // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline for the pilot
+  // (bookmarkSvc.py 483 to 589). The gateway's list has its folders' and bookmarks' writes and none of these.
+  "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
+  "accessGroupBookmarkMgr.UpdateKnownFolderState",
+  // The pilot's access lists, which the folder window offers a shared folder's access levels from
+  // (accessGroupsController.py 105). The gateway's list has nothing of the owner group manager's.
+  "ownerGroupManager.GetMyGroups",
+  // A shared folder disconnected from (bookmarkSvc.py 460), and an access list the pilot has not got asked by its
+  // number (accessGroupsController.py 184). The gateway's list has neither.
+  "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
+  // Bookmarks copied into a folder (bookmarkSvc.py 701). The gateway's list has their moving and not this.
+  "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
+  // A folder added to those the pilot knows (bookmarkSvc.py 357). The gateway's list has not got it.
+  "accessGroupBookmarkMgr.AddToKnownFolders",
+  // A jump to a fleet member's lit cyno, the fleet's jump with the pilot's own, and a bridge opened to it
+  // (cynoTravelSvc.py 36, 103 and 62), on the ballpark's object. The gateway's list has none of them.
+  "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
+  // The systems of the Triglavians' and EDENCOM's minor victories and EDENCOM's fortresses, which the client's map
+  // service asks for the autopilot's avoidance ticks (mapSvc.py 501 to 513) and which a Tranquility client asks as it
+  // logs in. The gateway's list has the map service's history and none of these.
+  "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
+  // A mission's objectives and whether the pilot is in its site, which the client's mission objectives tracker asks
+  // for each accepted mission (missionObjectivesTracker.py 312 and 320). The gateway's list has none of them.
+  "missionTrackerMgr.GetAllMissionObjectives", "missionTrackerMgr.IsInActiveDungeonID",
+  // And its asking after missions, which the server answers by OnMissionsUpdated (UpdateMissionStatusData, 216 to 220):
+  // at its start, for a mission accepted, as an awaited item comes aboard and as an awaited place is reached.
+  "missionTrackerMgr.UpdateAllMissions",
+  // The ship turned toward a direction: a probe result's Align To (scanSvc.AlignToPosition, 459 to 465), and the
+  // double click in space. The gateway's list has it not.
+  "beyonce.CmdGotoDirection",
 ]);
 
 /**
@@ -732,7 +801,11 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // (CmdDock since 2026-10-14, when the page made the dock at a station itself: movementFunctions.RealDock's bp.CmdDock,
 // made on the ballpark's bound object as Tranquility's recordings have it. Its route bound the park for itself. And
 // CmdStargateJump the same day, the page's own jump: gateJumpSvc.JumpThroughGate's remoteBallpark.CmdStargateJump.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
+// (CmdGotoBookmark on 2026-10-15, the page's Approach Location of a bookmark: movementFunctions.ApproachLocation's
+// bp.CmdGotoBookmark, on the ballpark's object.)
+// (CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon and CmdBridgeToFleetModuleBeacon on 2026-10-15, the fleet
+// menu's Jump To, Conduit Jump To and Bridge To: cynoTravelSvc.py's bp.Cmd..., on the ballpark's object.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoDirection", "BookmarkScanResult", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -884,6 +957,20 @@ const applyingToOneFleet = (args, kwargs, context) => {
 /** The broadcasts fleetSvc sends to its bubble, by name (1039 to 1055), and the scopes a client can be set to (evefleet/const.py 33 to 35). */
 const BUBBLE_BROADCASTS = Object.freeze(new Set(["HealArmor", "HealShield", "HealCapacitor", "Target", "HealTarget"]));
 const BROADCAST_SCOPES = Object.freeze(new Set([1, 2, 3]));
+/** The broadcasts fleetSvc sends to the whole fleet, by name (SendGlobalBroadcast's callers, 1010 to 1035 and 1128). */
+const GLOBAL_BROADCASTS = Object.freeze(new Set(["EnemySpotted", "NeedBackup", "HoldPosition", "TravelTo", "InPosition", "JumpBeacon", "Location"]));
+/**
+ * fleetSvc.SendGlobalBroadcast (983 to 990): self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on
+ * the fleet's object: one of those names, the scope, the item (a solar system for TravelTo), and a type where InPosition
+ * and JumpBeacon give one, None else; and only from a session in a fleet (CheckIsInFleet, 984). No recording has one.
+ */
+const aGlobalBroadcast = (args, kwargs, context) => {
+  if (!(args.length === 4 && GLOBAL_BROADCASTS.has(args[0]) && BROADCAST_SCOPES.has(args[1]) && Number.isSafeInteger(args[2]) && args[2] > 0
+    && (args[3] === null || (Number.isSafeInteger(args[3]) && args[3] > 0)) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client sends one of its seven names for the fleet, its scope, the item and a type or None, and nothing else: SendBroadcast(name, scope, itemID, typeID)." };
+  }
+  return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
+};
 /**
  * fleetSvc.SendBubbleBroadcast (992 to 998): one of those names, the scope, the item, and None for the type, which
  * no caller of it gives; and only from a session in a fleet (CheckIsInFleet, 993).
@@ -893,6 +980,56 @@ const oneBubbleBroadcast = (args, kwargs, context) => {
     return { status: "differs", note: "The client sends one of its five names for the bubble, its scope, the item and None for the type, and nothing else: BroadcastToBubble(name, scope, itemID, None)." };
   }
   return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
+};
+
+/**
+ * fleetSvc's watchlist, self.favorites: a set, which blue writes by the reduce protocol, (set, ([...],)) (blue's
+ * src/Marshal.cpp WriteObjectReduce; set.__reduce_ex__(2) in the client's Python), its items in the set's own order.
+ * The page says a list, of pilots' numbers. Null where what was given is no such list.
+ */
+const watchlistSet = (given) => {
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  if (listed === null || !listed.every((id) => Number.isSafeInteger(id) && id > 0)) return null;
+  return { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(listed) }]], list: [], dict: [] };
+};
+/**
+ * fleetSvc.AddFavorite (640 to 682): fleetMgr.AddToWatchlist(newCharsAdded, fav), the pilots just added (a list) and
+ * every favourite with them (GetWatchlistMembers, 788: the set; None with damage updates off, which the page never is);
+ * from a session in a fleet (CheckIsInFleet, 641). No recording has one.
+ */
+const addingToWatchlist = (args, kwargs, context) => {
+  const [added, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Array.isArray(added) && added.length > 0 && added.every((id) => Number.isSafeInteger(id) && id > 0) && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilots it added, as a list, and every favourite, as its set: AddToWatchlist(newCharsAdded, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  // newCharsAdded is a list the client appends to (659 to 663); an array of the page's goes as a tuple else.
+  return { args: [{ type: "list", items: added }, set], kwargs };
+};
+/** fleetSvc.RemoveFavorite (715 to 723): fleetMgr.RemoveFromWatchlist(charID, favs), the pilot taken off and every favourite left (the set). */
+const removingFromWatchlist = (args, kwargs, context) => {
+  const [taken, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Number.isSafeInteger(taken) && taken > 0 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilot it took off and every favourite left, as its set: RemoveFromWatchlist(charID, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  return { args: [taken, set], kwargs };
+};
+
+/**
+ * fleetSvc.RegisterForDamageUpdates (793 to 796): fleetMgr.RegisterForDamageUpdates(fav), every favourite (the set),
+ * at a change of system in space in a fleet (ProcessSessionChange, 1688 to 1691); the client's own, which the game
+ * port makes as it keeps the watchlist. No recording has one.
+ */
+const registeringForDamage = (args, kwargs, context) => {
+  const set = watchlistSet(args[0]);
+  if (!(args.length === 1 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends every favourite, as its set: RegisterForDamageUpdates(favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client registers only in a fleet." };
+  return { args: [set], kwargs };
 };
 
 /** droneFunctions.RealScoopToDroneBay (195): ship.ScoopDrone(objectIDs), the drones as one list of their IDs and nothing else. */
@@ -1046,6 +1183,20 @@ const goingToPoint = (args, kwargs) => (args.length === 3 && args.every((each) =
   : { args, kwargs, status: "differs", note: "The client sends a point's three numbers and nothing else." });
 
 /**
+ * scanSvc.AlignToPosition (459 to 465): rbp.CmdGotoDirection(*directionalVector), on the ballpark's object: the three
+ * of the place less the ship's own position, each a float. (The double click in space sends a direction of length
+ * one, eveCommands.py 1092 and 1127; Tranquility has it so in six recordings, three floats and nothing else.)
+ */
+const goingInDirection = (args, kwargs) => (args.length === 3 && args.every((each) => typeof each === "number" && Number.isFinite(each)) && Object.keys(kwargs).length === 0
+  ? { args: args.map((each) => ({ type: "real", value: each })), kwargs }
+  : { args, kwargs, status: "differs", note: "The client sends a direction's three numbers and nothing else." });
+
+/** movementFunctions.ApproachLocation (405): bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object, the bookmark's number and nothing else. */
+const goingToBookmark = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends a bookmark's number and nothing else." });
+
+/**
  * menusvc._AlignTo (2778 to 2793): bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object,
  * and the only place the client makes the call. Nothing goes by position. Of the two by name one is an ID and the
  * other None: a thing (AlignTo, 2770, which does nothing for session.shipid) or a bookmark (AlignToBookmark, 2804).
@@ -1097,6 +1248,142 @@ const bookmarking = (args, kwargs) => {
  * Tranquility's recordings (168): the menu's ranges whole numbers, the autopilot's a float of nought. A whole
  * number goes as one from here, so a range of nought is made the float; any other goes as it stands.
  */
+/**
+ * bookmarkSvc.ACLBookmarkLocation (609 to 613): self.accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID,
+ * name, comment, expiry, subfolderID=subfolderID) for a region, a constellation, a system or a station, the subfolder
+ * by keyword every time, None where there is none; put in where a call came without it. A thing in space is the
+ * park's. No Tranquility recording has a bookmark made.
+ */
+/**
+ * bookmarkSvc.ACLBookmarkScanResult (623 to 631), for a scan result the sensor suite has no site of (one it has is
+ * bookmarked as a thing, BookmarkLocation): bp.BookmarkScanResult(locationID, name, comment, resultID, folderID,
+ * expiry, subfolderID=subfolderID), on the ballpark's object. The system, the label (unicode, the window's) and the
+ * note, the result's own ID (its label, scanSvc.GetScannedDownMenu's bookmarkData.id), the folder, one of the four
+ * times, and the subfolder or None by keyword. No recording has one.
+ */
+const bookmarkingScanResult = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const keywords = Object.keys(kwargs);
+  const [system, name, comment, resultID, folder, expiry] = args;
+  const formed = args.length === 6 && anID(system) && typeof name === "string" && name.trim() !== "" && typeof comment === "string"
+    && typeof resultID === "string" && resultID.trim() !== "" && anID(folder) && [0, 1, 2, 3].includes(expiry)
+    && (keywords.length === 0 || (keywords.length === 1 && (kwargs.subfolderID === null || anID(kwargs.subfolderID))));
+  if (!formed) {
+    return { args, kwargs, status: "differs", note: "The client sends the system, a name, a note, the result's own ID, a folder and one of its four times to keep it, and the subfolder or None by keyword." };
+  }
+  return keywords.length === 0 ? { args, kwargs: { subfolderID: null } } : { args, kwargs, status: "same" };
+};
+
+const bookmarkingStatic = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const keywords = Object.keys(kwargs);
+  const [thing, folder, name, comment, expiry] = args;
+  const formed = args.length === 5 && anID(thing) && anID(folder) && typeof name === "string" && name.trim() !== "" && typeof comment === "string"
+    && [0, 1, 2, 3].includes(expiry)
+    && (keywords.length === 0 || (keywords.length === 1 && (kwargs.subfolderID === null || anID(kwargs.subfolderID))));
+  if (!formed) {
+    return { args, kwargs, status: "differs", note: "The client sends a place, a folder, a name, a note and one of its four times to keep it, and the subfolder or None by keyword." };
+  }
+  if (!isStaticPlace(thing)) {
+    return { args, kwargs, status: "differs", note: "The client asks the bookmark manager for a region, a constellation, a system or a station, and the park for a thing in space." };
+  }
+  return keywords.length === 0 ? { args, kwargs: { subfolderID: null }, status: "reshaped" } : { args, kwargs };
+};
+
+/**
+ * bookmarkSvc.UpdateACLBookmark (642 to 646): UpdateBookmark(bookmarkID, folderID, name, note, subfolderID,
+ * newFolderID, expiryCancel), the last the window's 0 until its Cancel automated expiry box is ticked
+ * (bookmarkLocationWindow.py 55, 180 to 182), then the box's True or False.
+ */
+const updatingBookmark = (args, kwargs) => {
+  if (args.length !== 7 || Object.keys(kwargs).length > 0) {
+    return { args, kwargs, status: "differs", note: "The client sends seven: the bookmark, its folder, the name, the note, the subfolder, the folder chosen and whether its expiry is cancelled." };
+  }
+  const cancel = args[6];
+  return cancel === true || cancel === 0 ? { args, kwargs } : { args: [...args.slice(0, 6), cancel === false ? 0 : cancel], kwargs, status: "reshaped" };
+};
+
+/**
+ * bookmarkSvc.DeleteBookmarks (656 to 668): DeleteBookmarks(folderID, bookmarks), the bookmarks of the folder a set
+ * (a defaultdict(set)'s, by folder), which Python reduces to (set, ([...],)). A route gives a list.
+ */
+const bookmarksOfFolder = ([folderID, given, ...rest], kwargs) => {
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  if (listed === null) return { args: [folderID, given, ...rest], kwargs };
+  const ids = listed.map(wholeKey).filter((id) => id !== null);
+  return { args: [folderID, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }, ...rest], kwargs };
+};
+
+/** The bookmark service's folder and subfolder calls (bookmarkSvc.py 453 to 589): numbers above nought, and a name that is not nothing. */
+const aBookmarkFolderID = (value) => Number.isSafeInteger(value) && value > 0;
+const aSubfolderName = (value) => typeof value === "string" && value.trim() !== "";
+/** bookmarkSvc.CreateSubfolder (565): CreateSubfolder(folderID, subfolderName), the subfolder window's name stripped (bookmarkSubfolderWindow.Confirm, 104 to 107). */
+const subfolderMade = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && aSubfolderName(args[1]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends a folder's number and the subfolder's name, and nothing else." });
+/** bookmarkSvc.UpdateSubfolder (572): UpdateSubfolder(folderID, subfolderID, subfolderName). */
+const subfolderRenamed = (args, kwargs) => (args.length === 3 && aBookmarkFolderID(args[0]) && aBookmarkFolderID(args[1]) && aSubfolderName(args[2]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number, the subfolder's and its new name, and nothing else." });
+/** bookmarkSvc.DeleteSubfolder (589): DeleteSubfolder(subfolder.folderID, subfolderID). */
+const subfolderDeleted = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && aBookmarkFolderID(args[1]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and the subfolder's, and nothing else." });
+/** bookmarkSvc.UpdateFolderActiveState (483): UpdateKnownFolderState(folderID, isActive), True or False from the folder's menu. */
+const folderStateSet = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && typeof args[1] === "boolean" && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and True or False, and nothing else." });
+/** bookmarkSvc.DeleteBookmarkFolder (453): DeleteFolder(folderID). */
+const folderDeleted = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and nothing else." });
+
+/** An access list's number, or None. */
+const anAccessList = (value) => value === null || aBookmarkFolderID(value);
+/**
+ * bookmarkSvc.CreateBookmarkFolder (426): AddFolder(isPersonal, folderName, description, adminGroupID, manageGroupID,
+ * useGroupID, viewGroupID), the folder window's Confirm (bookmarkContainerWindow.py 197 to 242): a personal folder with
+ * the four None, a shared one with its admins' list and the others or None.
+ */
+const folderMade = (args, kwargs) => {
+  const [isPersonal, name, description, ...groups] = args;
+  const lists = groups.length === 4 && groups.every(anAccessList) && (isPersonal === true ? groups.every((each) => each === null) : groups[0] !== null);
+  return args.length === 7 && typeof isPersonal === "boolean" && aSubfolderName(name) && typeof description === "string" && lists && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends whether the folder is personal, its name, its notes and its four access lists (None for a personal folder, an admins' list for a shared one), and nothing else." };
+};
+/** bookmarkSvc.UpdateBookmarkFolder (441): UpdateFolder(folderID, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID). */
+const folderChanged = (args, kwargs) => {
+  const [folderID, name, description, ...groups] = args;
+  return args.length === 7 && aBookmarkFolderID(folderID) && aSubfolderName(name) && typeof description === "string" && groups.length === 4 && groups.every(anAccessList) && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends the folder's number, its name, its notes and its four access lists, and nothing else." };
+};
+/** accessGroupsController.GetGroupInfoFromID (184): GetGroup(groupID). */
+const listAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the access list's number and nothing else." });
+/** bookmarkSvc.GetBookmarkFolder and GetFolderInfo (519, 528): GetFolderInfo(folderID). */
+const folderAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and nothing else." });
+
+/**
+ * bookmarkSvc.MoveOrCopyBookmarks (678 to 711): MoveBookmarksToFolderAndSubfolder and CopyBookmarksToFolderAndSubfolder,
+ * each (oldFolderID, folderID, subfolderID, bookmarks), the subfolder None for the folder itself and the bookmarks a
+ * source folder's set (a defaultdict(set)'s), which Python reduces to (set, ([...],)). A list given is made the set.
+ */
+const bookmarksMovedOrCopied = (args, kwargs) => {
+  const [oldFolderID, folderID, subfolderID, given] = args;
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  const ids = listed === null ? null : listed.map(wholeKey);
+  if (!(args.length === 4 && aBookmarkFolderID(oldFolderID) && aBookmarkFolderID(folderID) && anAccessList(subfolderID)
+    && ids !== null && ids.length > 0 && ids.every((id) => id !== null) && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the folder the bookmarks are in, the folder and the subfolder (or None) they go to, and the bookmarks, and nothing else." };
+  }
+  return { args: [oldFolderID, folderID, subfolderID, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }], kwargs, status: "reshaped" };
+};
+
 const following = (args, kwargs, context) => {
   const [thing, range] = args;
   if (!(args.length === 2 && Number.isSafeInteger(thing) && thing > 0 && Number.isFinite(range) && range >= 0 && Object.keys(kwargs).length === 0)) {
@@ -1695,6 +1982,8 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens; the job board's page of a mission adds ignoreLocateCheck=True (jobboard/client/features/agent_missions/job.py:413)"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
+  "agentMgr.GotoLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:402", agentGoing,
+    "GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber, referringAgentID): a mission's bookmark's Approach Location, on the agent's own object. It answers nothing. In no recording."),
   "agentMgr.WarpToLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:416", agentWarping,
     "GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet, referringAgentID, GetFormationSettings()), on the agent's own object: a mission's marked spot warped to. Recorded 23 times on Tranquility, each ('dungeon', 0, nought, False, None, the three settings)."),
   "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),
@@ -1724,6 +2013,15 @@ const RETAIL_CALLS = Object.freeze({
   "corporationSvc.GetEmployementRecordAndCharacterTransfers": same("eve/client/script/ui/shared/info/infosvc.py:2842", "RemoteSvc('corporationSvc').GetEmployementRecordAndCharacterTransfers(itemID), CCP's spelling, with the character the History panel's employment tab is of (session.charid). In no recording."),
   "structureDocking.Undock": same("eve/client/script/ui/services/structure/structureDocking.py:36", "RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=...), by the service's name, through sessionMgr.PerformSessionChange('undock', ...), the ship None where it is the structure; no online modules named. Recorded on Tranquility with the two IDs and ignoreContraband False."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
+  "beyonce.CmdJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:36", "bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...): the member whose cyno it is, the beacon and its system as fleetSvc keeps them (menusvc.JumpToMember). In no recording."),
+  "beyonce.CmdGroupJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:103", "bp.CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...) (menusvc.GroupJumpToMember). In no recording."),
+  "beyonce.CmdBridgeToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:62", "bp.CmdBridgeToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, no session change: the ship that opens the bridge stays (menusvc.BridgeToMember). In no recording."),
+  "abyssalMgr.AbyssalEntranceDeployment": same("abyss/client/abyssal_service.py:53", "RemoteSvc('abyssalMgr').AbyssalEntranceDeployment(item_id, game_mode_id), by the service's name, from the key activation window's button (keyActivationWindow.py 49 to 54): the filament and the game mode, 1 solo, 2 co-op, 3 two-player; solo's through sessionMgr.PerformSessionChange('JumpToAbyss', ...), the others' without. In no recording."),
+  "abyssalMgr.AbyssalGateActivation": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:569", "RemoteSvc('abyssalMgr').AbyssalGateActivation(itemID, violateSafetyTimer=True), by the service's name, through sessionMgr.PerformSessionChange('abyssToAbyssJump', ...): a pocket's Transfer Conduit (typeAbyssEncounterGate), from the menu's Activate Gate once the ship is within 2,500 m (menusvc.ActivateAbyssalAccelerationGate). In no recording."),
+  "abyssalMgr.AbyssalEndGateActivation": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:579", "RemoteSvc('abyssalMgr').AbyssalEndGateActivation(itemID), by the service's name, through sessionMgr.PerformSessionChange('abyssToKnownJump', ...): the last room's conduit out (typeAbyssExitGate), from the menu's Activate Gate once within 2,500 m. In no recording."),
+  "keeper.GetCurrentDungeonForCharacter": same("eve/client/script/parklife/dungeonTracking.py:66", "RemoteSvc('keeper').GetCurrentDungeonForCharacter(), no arguments, by the service's name: the dungeon tracking's ask when a character's session starts in space (OnCharacterSessionChanged), answered (dungeon_id, room_id, instance_id, dungeon_values) or None. In no recording."),
+  "keeper.ActivateAccelerationGate": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:553", "RemoteSvc('keeper').ActivateAccelerationGate(itemID, violateSafetyTimer=1), by the service's name, through sessionMgr.PerformSessionChange: an acceleration gate, from the menu's Activate Gate once within 2,500 m and the crimewatch safety check passed. In no recording."),
+  "structureJumpBridgeMgr.CmdJumpThroughStructureStargate": same("eve/client/script/parklife/autopilot.py:349", "RemoteSvc('structureJumpBridgeMgr').CmdJumpThroughStructureStargate(destID), by the service's name, through sessionMgr.PerformSessionChange: the Ansiblex the autopilot's ship is within 2,500 m of (menusvc.ReallyJumpThroughStructureJumpBridge, 2106, the same). In no recording."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),
   "beyonce.CmdStop": judged("eve/client/script/ui/eveCommands.py:1104", stopping, "bp.CmdStop(), no arguments, on the ballpark's object: from the stop command, in a ship in space, and from a double click on the pilot's own capsule (menusvc.py 2432). Recorded on Tranquility so, 24 times."),
@@ -1747,8 +2045,8 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "SetActivityState([probeID, ...], True or False): a list",
   ),
-  "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans."),
-  "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
+  "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans. On the game port the transport keeps it the same way and sends nothing (pilots.js, callBoundMethod)."),
+  "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans. On the game port the transport keeps it the same way and sends nothing (pilots.js, callBoundMethod)."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
   "dogmaIM.GetAllInfo": Object.freeze({
     status: "same",
@@ -1905,7 +2203,7 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.MoveToTrashByList": same(`${MAIL_SERVICES}/mailSvc.py:373`, "self.mailMgr.MoveToTrashByList(listID); a mailing list's Trash All, asked to be sure of. In no recording."),
   "mailMgr.MoveAllFromTrash": same(`${MAIL_SERVICES}/mailSvc.py:450`, "self.mailMgr.MoveAllFromTrash(), no arguments; the trash's Restore All, asked to be sure of. In no recording."),
   "mailMgr.CreateLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:734`, "self.mailMgr.CreateLabel(name, color): from the labels window, the colour None; answered the label's bit. In no recording. The name the labels window's field's, stripped, unicode (evemail.py 1563 to 1578)."), [0]),
-  "mailMgr.EditLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299). In no recording. The name the popup's, stripped, unicode."), [1]),
+  "mailMgr.EditLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299), or Assign Color, the name None and the colour a swatch's number (ChangeLabelColorFromUI, 1301 to 1309). In no recording. The name the popup's, stripped, unicode."), [1]),
   "mailMgr.DeleteLabel": same(`${MAIL_SERVICES}/mailSvc.py:741`, "self.mailMgr.DeleteLabel(labelID), after the DeleteMailLabel dialog (1314 to 1317). In no recording."),
   "mailMgr.AssignLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:765`, recipientsListed, "self.mailMgr.AssignLabels(mailsToGetLabel.keys(), labelID): the messages that lack the label, a list, and the label. In no recording."),
   "mailMgr.RemoveLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:783`, recipientsListed, "self.mailMgr.RemoveLabels(mailsToRemoveLabelFrom.keys(), labelID): the messages that have the label, a list, and the label. In no recording."),
@@ -1954,6 +2252,7 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.MakeLeader": same(`${FLEET_SVC}:604`, "self.fleet.MakeLeader(charID), once the user has agreed"),
   "fleetObjectHandler.SetMotdEx": same(`${FLEET_SVC}:1961`, "self.fleet.SetMotdEx(motd)"),
   "fleetObjectHandler.KickMember": judged(`${FLEET_SVC}:611`, kickingAnother, "self.fleet.KickMember(charID), for any member but the pilot's own"),
+  "fleetObjectHandler.SendBroadcast": judged(`${FLEET_SVC}:989`, aGlobalBroadcast, "self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on the fleet's object, after the client's own checks and wait"),
   "fleetObjectHandler.DisbandFleet": judged(`${FLEET_SVC}:617`, disbandingAsBoss, "self.fleet.DisbandFleet(), no arguments, for the fleet's boss"),
   "fleetObjectHandler.SetOptions": reshaped(`${FLEET_SVC}:449`, fleetOptionsCopy, "self.fleet.SetOptions(options): a copy of the options the client keeps, free move changed"),
   "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),
@@ -1971,16 +2270,68 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
+  "accessGroupBookmarkMgr.BookmarkStaticLocation": typing(Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:612",
+    note: "self.accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID): the bookmark window's Submit (bookmarkLocationWindow.py Confirm, 205 to 225) for a region, a constellation, a system or a station; the name the label's, the comment the notes' editor's, each unicode where it holds text; answered (bookmarkID, itemID, typeID, x, y, z, locationID, expiryDate). In no recording.",
+    shape: bookmarkingStatic,
+  }), [2, 3]),
+  "accessGroupBookmarkMgr.UpdateBookmark": typing(Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:646",
+    note: "self.accessGroupBookmarkMgr.UpdateBookmark(bookmarkID, folderID, name, note, subfolderID, newFolderID, expiryCancel): the bookmark window's Submit in its edit (Edit Location, a bookmark's menu or its double click); the name the label's and the note the editor's, unicode where they hold text. In no recording.",
+    shape: updatingBookmark,
+  }), [2, 3]),
+  "accessGroupBookmarkMgr.DeleteBookmarks": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:664", bookmarksOfFolder, "self.accessGroupBookmarkMgr.DeleteBookmarks(folderID, bookmarks), each folder's bookmarks a set, from Remove Location after RemoveLocation or RemoveMultipleLocation; answered the ones deleted. In no recording."),
+  "accessGroupBookmarkMgr.CreateSubfolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:565", subfolderMade,
+    "self.accessGroupBookmarkMgr.CreateSubfolder(folderID, subfolderName): the subfolder window's Submit (bookmarkSubfolderWindow.py Confirm, 104 to 122), from Create Subfolder at the Locations window's bottom or a folder's menu; the name the edit's, stripped, unicode. Answered the subfolder. In no recording."), [1]),
+  "accessGroupBookmarkMgr.UpdateSubfolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:572", subfolderRenamed,
+    "self.accessGroupBookmarkMgr.UpdateSubfolder(folderID, subfolderID, subfolderName): the subfolder window's Submit in its edit (Edit Subfolder, a subfolder's menu); the name unicode. Answered whether the subfolder was there; the client says BookmarkSubfolderNoLongerThere where it was not. In no recording."), [2]),
+  "accessGroupBookmarkMgr.DeleteSubfolder": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:589", subfolderDeleted,
+    "self.accessGroupBookmarkMgr.DeleteSubfolder(subfolder.folderID, subfolderID): Delete Subfolder, a subfolder's menu, after ConfirmDeleteSubfolder. Answered the bookmarks deleted with it. In no recording."),
+  "accessGroupBookmarkMgr.UpdateKnownFolderState": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:483", folderStateSet,
+    "self.accessGroupBookmarkMgr.UpdateKnownFolderState(folderID, isActive): Online Folder and Offline Folder, a folder's menu; online only where the pilot has fewer than the most online of its kind (ValidateActiveFolderCount). Answered the folder, its bookmarks and its subfolders. In no recording."),
+  "accessGroupBookmarkMgr.DeleteFolder": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:453", folderDeleted,
+    "self.accessGroupBookmarkMgr.DeleteFolder(folderID): Delete Folder, a folder's menu, after ConfirmDeleteFolder; for a personal folder or one the pilot administers. Answered nothing. In no recording."),
+  "accessGroupBookmarkMgr.AddFolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:426", folderMade,
+    "self.accessGroupBookmarkMgr.AddFolder(isPersonal, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID): the folder window's Submit (bookmarkContainerWindow.py Confirm, 197 to 242), from Create Folder; the name the edit's, stripped, and the notes the editor's, each unicode where it holds text. Answered the folder. In no recording."), [1, 2]),
+  "accessGroupBookmarkMgr.UpdateFolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:441", folderChanged,
+    "self.accessGroupBookmarkMgr.UpdateFolder(folderID, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID): the folder window's Submit in its edit (Edit Folder, a folder's menu); the name and the notes unicode where they hold text. Answered the pilot's access to the folder after. In no recording."), [1, 2]),
+  "accessGroupBookmarkMgr.GetFolderInfo": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:519", folderAsked,
+    "self.accessGroupBookmarkMgr.GetFolderInfo(folderID): the folder as the server has it, asked by Edit Folder before its window opens (GetBookmarkFolder with refresh) and for a folder the client does not know (GetFolderInfo, 528). In no recording."),
+  "accessGroupBookmarkMgr.RemoveFromKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:460", folderAsked,
+    "self.accessGroupBookmarkMgr.RemoveFromKnownFolders(folderID): Disconnect from Folder, a shared folder's menu, after ConfirmForgetFolder. Answered nothing. In no recording."),
+  "ownerGroupManager.GetGroup": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:184", listAsked,
+    "self.remoteSvc.GetGroup(groupID), of ownerGroupManager by its name: an access list that is none of the pilot's, asked where its name is wanted (GetGroupInfoFromID with fetchToServer: a folder's lists in the folder window and in Folder Information). Answered the list. In no recording."),
+  "ownerGroupManager.GetMyGroups": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:105", sentWithNothing,
+    "self.remoteSvc.GetMyGroups(), of ownerGroupManager by its name and with nothing: the pilot's access lists, asked once and kept by the client's controller; the folder window offers a shared folder's access levels from them. In no recording."),
+  "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:690", bookmarksMovedOrCopied,
+    "self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): bookmarks dropped on a folder or a subfolder of the Locations window (DropInPlacesFolder), each source folder's a set; answered the rows moved and a message or None. In no recording."),
+  "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:701", bookmarksMovedOrCopied,
+    "self.accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): the same drop with Shift held, or from a folder the pilot may only view or use; answered the new bookmarks by number and a message or None. In no recording."),
+  "accessGroupBookmarkMgr.AddToKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:357", folderStateSet,
+    "self.accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive): Folder Information's Add Folder for a folder the pilot does not know (LinkedBookmarkFolderWindow.AddFolder), online or offline as chosen; answered the folder, its bookmarks and its subfolders. In no recording."),
+  "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,
+    "self.accessGroupBookmarkMgr.SearchFoldersWithAdminAccess(), by name and with nothing, kept two minutes (Memoize(2)): the folders the pilot may administer, for the Locations window's Folders with Admin Access. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
     "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one. The name the label field's, unicode (bookmarkLocationWindow.py Confirm, 212 to 219), and the note the editor's, the empty byte string where it holds nothing."), [2, 3]),
+  "beyonce.BookmarkScanResult": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:629", bookmarkingScanResult,
+    "bp.BookmarkScanResult(locationID, name, comment, resultID, folderID, expiry, subfolderID=subfolderID), on the ballpark's object: a probe result's Bookmark Location where the sensor suite has no site of it, the result by its own ID, its label. No recording has one. It answers the eight the client keeps (bookmarkID, itemID, typeID, x, y, z, locationID, expiry)."), [1, 2]),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
+  "beyonce.CmdGotoDirection": reshaped("eve/client/script/parklife/scanSvc.py:465", goingInDirection,
+    "rbp.CmdGotoDirection(x, y, z), on the ballpark's object: a probe result's Align To sends the place less the ship's own position, each a float; the double click in space a direction of length one. It answers nothing. Recorded on Tranquility in six sessions, three floats and nothing else."),
+  "beyonce.CmdGotoBookmark": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:405", goingToBookmark,
+    "bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object: a bookmark's Approach Location, once the menu has forgotten what was aligned to (StoreAlignTarget). An agent's bookmark is asked of the agent (GotoLocation). It answers nothing. In no recording."),
   "beyonce.CmdAlignTo": judged("eve/client/script/ui/services/menusvc.py:2790", aligning,
     "bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object: a thing or a bookmark by name, the other None, and nothing by position; from the menu, the shortcut and a site's bracket. With no park, and for the pilot's own ship, it sends nothing. It answers nothing. Tranquility's two recordings have it so, the thing a long."),
   "beyonce.CmdFleetTagTarget": judged("eve/client/script/ui/services/menusvc.py:2825", tagging,
     "michelle.GetRemotePark().CmdFleetTagTarget(itemID, tag): a fleet's tag on a thing in space, from the menu and from the shortcuts, on the ballpark's object. It answers nothing, set or not. No recording has one."),
+  "fleetMgr.AddToWatchlist": judged(`${FLEET_SVC}:669`, addingToWatchlist, "sm.RemoteSvc('fleetMgr').AddToWatchlist(newCharsAdded, fav): the pilots added and every favourite, the client's set"),
+  "fleetMgr.RemoveFromWatchlist": judged(`${FLEET_SVC}:719`, removingFromWatchlist, "sm.RemoteSvc('fleetMgr').RemoveFromWatchlist(charID, favs): the pilot taken off and every favourite left, the client's set"),
+  "fleetMgr.RegisterForDamageUpdates": judged(`${FLEET_SVC}:795`, registeringForDamage, "sm.RemoteSvc('fleetMgr').RegisterForDamageUpdates(fav): every favourite, the client's set, at a change of system in space in a fleet"),
   "fleetMgr.BroadcastToBubble": judged(`${FLEET_SVC}:998`, oneBubbleBroadcast,
     "sm.RemoteSvc('fleetMgr').BroadcastToBubble(name, self.broadcastScope, itemID, typeID): the client's broadcasts to its bubble (the three calls for repair, Target and HealTarget), the type left at None, and none sent inside the client's own wait since its last broadcast. No recording has one."),
   "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),
@@ -2152,7 +2503,7 @@ const RETAIL_CALLS = Object.freeze({
   "account.GiveCash": typing(Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
-    note: "sm.RemoteSvc('account').GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the transfer window's OK, from an owner's menu's Give Money; the amount a float of two decimal places, the reason its edit's, and the account key None for a character. Tranquility's recording of a transfer to a corporation: GiveCash(98827279, 100.0, '') with toAccountKey=1000, answered the two balances.",
+    note: "sm.RemoteSvc('account').GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the transfer window's OK, from an owner's menu's Give Money; the amount a float of two decimal places, the reason its edit's, and the account key None for a character. Tranquility's recording of a transfer to a corporation: GiveCash(98827279, 100.0, '') with toAccountKey=1000, answered the two balances. The wallet's Give ISK tab sends GiveCash(selectedCharacterID, amount) and nothing else (giveIskPanel.py TransferISK).",
     shape: givingCash,
   }), [2]),
   "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),
@@ -2187,6 +2538,7 @@ const RETAIL_CALLS = Object.freeze({
     "eveowners = self.GetCorpRegistry().GetEveOwners(), with nothing, on the corporation's moniker: recorded on Tranquility so, seven times. Asked when the session's corporation changes, for its members' names and their numbers, which the client keeps and changes as the server says a member changed (OnCorporationMemberChanged); a pilot is a member to the client where its number is among them (161). The page asks it each time it wants to know that, and the transport keeps nothing of it."),
   "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
+  "corpRegistry.GetSharesByShareholder": same(`${CORP_SVC}/bco_shares.py:30`, "GetCorpRegistry().GetSharesByShareholder(corpShares) on the corporation's moniker: the wallet's Shares tab asks it each time it is chosen with IsCorpWallet(), False for the pilot's own (sharesPanel.py GetScrollList), and the client indexes the rows by corporationID"),
   "officeManager.GetCorporationsWithOffices": judged(`${CORP_SVC}/officeManager.py:34`, sentWithNothing, "Moniker('officeManager', stationID).GetCorporationsWithOffices(), no arguments, while it has none for where the session is docked; let go at any OnOfficeRentalChange (71) and out of the station or structure (58, 66); the transport keeps it so (pilots.js, stationOffices). Recorded on Tranquility after an office was rented and after one was given up."),
   "officeManager.GetEmptyOfficeCount": judged(`${CORP_SVC}/officeManager.py:136`, sentWithNothing, "Moniker('officeManager', stationID).GetEmptyOfficeCount(), no arguments, each time the lobby's offices are listed; not asked in a structure (133). Recorded on Tranquility beside the corporations with offices."),
   "officeManager.GetPriceQuote": judged(`${CORP_SVC}/officeManager.py:114`, priceForOwnCorporation, "Moniker('officeManager', stationID).GetPriceQuote(session.corpid), as the lobby's rent button is pressed (dockedUI/offices.py). Recorded on Tranquility: answered a long."),
@@ -2244,6 +2596,8 @@ const RETAIL_CALLS = Object.freeze({
   "seasonManager.get_character_progress_by_character_id": judged("seasons/client/seasonservice.py:285", sentWithNothing, "sm.RemoteSvc('seasonManager').get_character_progress_by_character_id(), nothing sent: the character's progress in the season it is in. The season service asks it behind get_season_data_for_character where that answered a season of the character's own (281 to 288), and again when the seasons' data changes (98 to 101). No recording has it."),
   "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections": judged("eve/client/script/ui/services/nonDiminishingInjectionService.py:50", sentWithNothing, "sm.RemoteSvc('nonDiminishingInjectionMgr').GetAvailableNonDiminishingInjections(), nothing sent: how many skill injections the character may still take at their full worth, a number. The service asks it at every change of the session's character (23 to 25), keeps it, and counts it up and down at the server's OnNonDiminishingInjectionsAdded, Used and Removed (27 to 42). Tranquility's recordings of a login each have the one call, answered 0."),
   "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount": judged("achievements/client/achievementSvc.py:129", sentWithNothing, "sm.RemoteSvc('achievementTrackerMgr').GetCompletedAchievementsAndClientEventCount(), nothing sent: a dict of 'completedDict' (each achievement the character has completed, with when) and 'eventDict' (how often each of the client's own events has come). The achievement service asks it once, as a character comes onto its session and it has nothing yet (182 to 188), and keeps both (128 to 134). The retail client of this build asks it at every login; Tranquility's recordings, of a later build, have the same call under the service name monolithTaskTrackerMgr."),
+  "charMgr.SaveCharacterSetting": same("eve/client/script/ui/services/characterSettingsSvc.py:49", "session.ConnectToRemoteService('charMgr').SaveCharacterSetting(settingKey, value): the key and the setting's text, at most 102400 (an empty one is deleted instead, 45 to 46); worked into what the service keeps (50). The wallet's Auto Payment tab saves 'personalAutopayment' so (personalPaySettingsPanel.py 66 to 78)."),
+  "charMgr.DeleteCharacterSetting": same("eve/client/script/ui/services/characterSettingsSvc.py:55", "session.ConnectToRemoteService('charMgr').DeleteCharacterSetting(settingKey), for a setting the service keeps, and taken out of what it keeps (56)."),
   "charMgr.GetCharacterSettings": judged("eve/client/script/ui/services/characterSettingsSvc.py:33", sentWithNothing, "session.ConnectToRemoteService('charMgr').GetCharacterSettings(), nothing sent: the settings the client keeps at the server for the character, each under its key (the mail's, the fleet's setups, the inventory's and the chat's filters and others), answered as a utillib.KeyVal of unicode strings. characterSettingsSvc asks once, when something first wants a setting, and keeps them for the session (31 to 34); its Save and Delete call SaveCharacterSetting and DeleteCharacterSetting and work them into what is kept (44 to 58). Tranquility's recordings of a login each have the one call."),
   "securityMgr.get_modified_systems": judged("security/client/securitySvc.py:41", sentWithNothing, "sm.RemoteSvc('securityMgr').get_modified_systems(), nothing sent: the solar systems whose security is other than the map's, each by its ID with a row of (solarSystemID, security, modifiedSecurity). The security service asks it once, as its session first has a solar system (45 to 48), keeps each system's modified level (39 to 43) and takes the server's OnSecurityModified for a system's level from then (50 to 54). Tranquility's recordings of a login each have the one call, answered an indexed rowset with no rows."),
   "dynamicBountyMgr.GetOutputForClientSolarSystem": judged("eve/client/script/ui/shared/dynamicResource/dynamicResourceSvc.py:64", sentWithNothing, "sm.RemoteSvc('dynamicBountyMgr').GetOutputForClientSolarSystem(), nothing sent: (the bounty output of the solar system the session is in, whether the dynamic bounty system is at work there). dynamicResourceSvc keeps it ninety minutes (58 to 65), lets it go at a change of the session's solar system (175 to 182) and takes the server's OnSystemDynamicBountyStateChanged for what it is (160 to 165). The location panel reads it as it is drawn (infoPanelLocationInfo.py 320). Tranquility's recordings have it once at each login and once after each change of solar system, answered (1.0, False)."),

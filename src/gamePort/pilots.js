@@ -1128,6 +1128,14 @@ function createGamePortPilots({
   const sessions = new Map();
   /** The accounts' own connections, by account, each with no character chosen on it. */
   const accountLines = new Map();
+  // Pilots whose connection the game server closed with a code of its own (a GPSTransportClosed's reasonCode): another
+  // login of the account (EveJS's accountLoginClose.js, after sessionMgr.CloseUserSessions, sessions.py 764, with
+  // machoNet.DisconnectUsers' CLIENTDISCONNECTED, machoNet.py 2513), a ban, a shutdown. A retail client so closed puts
+  // up its connection-lost notice and stays closed (disconnectNotice.py): nothing here logs such a pilot in again of
+  // its own accord, and whatever asks after it is told why. Kept by character and by handle; the character's is
+  // forgotten when it is chosen again.
+  const closedByServerByCharacter = new Map();
+  const closedByServerByHandle = new Map();
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
@@ -1162,6 +1170,8 @@ function createGamePortPilots({
   const LOAD_SLOT_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/login/charSelection/characterSelection.py:750", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
+  const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
    * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
    * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
@@ -1229,8 +1239,18 @@ function createGamePortPilots({
   // the pilot's stream as it arrives, and with the next answer, which is what a reader with no stream has.
   // So the copy kept for the answer names the stream frame it also went out in (its cursor), and a reader
   // that has both can tell they are one.
+  // The Abyssal pocket's timer, as the client's abyss service is told it (abyssal_service.py
+  // OnAddExpiryDurationForAbyssalContent, 128 to 131): its end, kept for the pilot until OnAbyssalContentFinished or
+  // the session leaves Abyssal space (the session's change, below), so that a browser drawing the pilot afresh is
+  // answered it (pocketTimer). The client is told it once, at the pocket's entry, and keeps it.
+  function keepPocketTimer(entry, notification) {
+    if (notification.method === "OnAddExpiryDurationForAbyssalContent") entry.pocketTimer = notification.args[0] ?? null;
+    else if (notification.method === "OnAbyssalContentFinished") entry.pocketTimer = null;
+  }
+
   function record(entry, notification) {
     if (SUPPRESSED_NOTIFICATIONS.has(notification.method)) return;
+    keepPocketTimer(entry, notification);
     const frame = publish(entry, { kind: "notification", notification });
     entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
@@ -1422,14 +1442,42 @@ function createGamePortPilots({
 
   // ── sessions ──────────────────────────────────────────────────────────────
 
-  /** The live session a handle names, or SESSION_NOT_FOUND. */
+  /** The live session a handle names, or SESSION_NOT_FOUND: with the server's own reason where it closed it. */
   function held(handle, sessionFields) {
     const entry = sessions.get(String(handle || ""));
     const asked = sessionFields && sessionFields.userid !== undefined ? Number(sessionFields.userid) : undefined;
     if (!entry || entry.ended || (asked !== undefined && asked !== entry.accountID)) {
-      throw fail("SESSION_NOT_FOUND", SESSION_GONE);
+      const closed = closedByServerByHandle.get(String(handle || "")) ?? null;
+      throw closed && (asked === undefined || asked === closed.accountID)
+        ? closedByServerError(closed)
+        : fail("SESSION_NOT_FOUND", SESSION_GONE);
     }
     return entry;
+  }
+
+  /** SESSION_NOT_FOUND, as any lost pilot is, carrying the code and the words the server closed it with. */
+  function closedByServerError(closed) {
+    const error = fail("SESSION_NOT_FOUND", `The game server closed the connection (${closed.reasonCode}): ${closed.reason}`);
+    error.closedByServer = { reasonCode: closed.reasonCode, reason: closed.reason };
+    return error;
+  }
+
+  /** A pilot's connection ended: if the server closed it with a code of its own, that is kept (closedByServerByCharacter). */
+  function noteClosedByServer(entry, error) {
+    const closedBy = error && error.code === "TRANSPORT_CLOSED" ? error.detail : null;
+    if (!closedBy || typeof closedBy.reasonCode !== "string" || !closedBy.reasonCode) return false;
+    const closed = {
+      reasonCode: closedBy.reasonCode,
+      reason: String(closedBy.reason || closedBy.reasonCode),
+      characterID: entry.characterID,
+      accountID: entry.accountID,
+      at: now(),
+    };
+    closedByServerByCharacter.set(entry.characterID, closed);
+    closedByServerByHandle.set(entry.handle, closed);
+    // A handle is asked after for a little while at most; the oldest go first.
+    while (closedByServerByHandle.size > 64) closedByServerByHandle.delete(closedByServerByHandle.keys().next().value);
+    return true;
   }
 
   /** The session is over: forget it, close it, and tell whoever is listening. */
@@ -1478,6 +1526,11 @@ function createGamePortPilots({
     if (accountID === null) throw fail("CALL_INVALID", "Call session requires a positive integer userid.");
     if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
     if (characterID === null) throw fail("CALL_INVALID", "SelectCharacterID needs a character.");
+
+    // The account's own connection, if it has one and nothing is being asked on it, is closed first: the retail client
+    // has one connection, and the server closes an account's others as it logs in (closedByServerByCharacter).
+    const line = accountLines.get(accountID);
+    if (line && line.calls === 0) line.hangUp();
 
     let transport;
     try {
@@ -1531,6 +1584,9 @@ function createGamePortPilots({
       fleetKept: createPilotFleet({ characterID }),
       /** What the client asks of a fleet of its own accord, one thing after another: over when each is answered. */
       fleetWork: Promise.resolve(),
+      // fleetSvc's self.favorites, the watchlist, as the page told the server of it last (AddToWatchlist and
+      // RemoveFromWatchlist): what the client's own RegisterForDamageUpdates sends (damageUpdatesRegistered).
+      watchlist: [],
       /** The pilot's standings as the client's standing service keeps them (pilotStandings.js), and the reading of them that is under way. */
       standings: createPilotStandings({ characterID, corporationID: () => attribute(entry, "corpid") }),
       standingsWork: Promise.resolve(),
@@ -1542,8 +1598,9 @@ function createGamePortPilots({
       /** The pilot's agents' journal as the client's journal service keeps it (pilotJournal.js), and the readings of it, one after another. */
       journal: createPilotJournal(),
       journalWork: Promise.resolve(),
-      /** The askings after each accepted mission, one after another (missionInfoAsked). */
+      /** The askings after each accepted mission, one after another (missionInfoAsked), and their last answers, by the agent. */
       missionInfoWork: Promise.resolve(),
+      missionInfoKept: new Map(),
       /** The askings of the ship's free turret slots, one after another (turretSlotsAsked), and whether one is owed: the ship changed, and godma has not been primed since. */
       turretSlotsWork: Promise.resolve(),
       turretSlotsOwed: false,
@@ -1564,6 +1621,9 @@ function createGamePortPilots({
       /** cfg.eveowners: each owner the server has been asked about, as { name, typeID }, or null for one it had no row for; and the askings, one after another. */
       owners: new Map(),
       ownersWork: Promise.resolve(),
+      /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
+      tickers: new Map(),
+      tickersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
@@ -1767,6 +1827,10 @@ function createGamePortPilots({
     session.onSessionChange((changes) => {
       // What the client's own services tell its object cache to forget on this change.
       forgetNamed(entry, namedOnSessionChange(changes, entry.session.attributes));
+      // Out of Abyssal space (idCheckers.IsAbyssalSpaceSystem: 32,000,000 to 32,999,999) the pocket's timer is no more.
+      if ("solarsystemid2" in changes && !(Number(changes.solarsystemid2[1]) >= 32000000 && Number(changes.solarsystemid2[1]) <= 32999999)) {
+        entry.pocketTimer = null;
+      }
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
@@ -1828,10 +1892,18 @@ function createGamePortPilots({
         entry.structureGuests.left();
         if (sessions.has(entry.handle)) structureServicesRead(entry).then(() => structureGuestsAsked(entry));
       }
-      // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
+      // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object, and no watchlist (favorites.clear()).
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
-        if (changes.fleetid[1] === null) outOfFleet(entry);
+        if (changes.fleetid[1] === null) {
+          outOfFleet(entry);
+          entry.watchlist = [];
+        }
+      }
+      // fleetSvc.ProcessSessionChange (1688 to 1691): at a change of system, in space and in a fleet, the client tells
+      // fleetMgr of its watchlist again (RegisterForDamageUpdates, 793 to 796).
+      if ("solarsystemid" in changes && attribute(entry, "solarsystemid") !== null && attribute(entry, "fleetid") !== null && sessions.has(entry.handle)) {
+        damageUpdatesRegistered(entry);
       }
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
@@ -2066,8 +2138,10 @@ function createGamePortPilots({
     // The readings after the choosing fail quietly, each for itself. A connection lost under them is the choosing lost.
     if (session.closed) throw fail("SESSION_SELECT_FAILED", "The game server closed the connection during character selection.");
 
+    // Chosen again, it is the pilot's own choice: what the server closed before is forgotten.
+    closedByServerByCharacter.delete(characterID);
     sessions.set(entry.handle, entry);
-    session.onClose(() => end(entry, "connection_closed"));
+    session.onClose((error) => end(entry, noteClosedByServer(entry, error) ? "closed_by_server" : "connection_closed"));
     // A pilot that was left in space comes back in space.
     syncSpace(entry);
     return {
@@ -2324,6 +2398,17 @@ function createGamePortPilots({
       }));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
+    // missionObjectivesTracker's currentAgentMissionInfo: what was asked of a mission at the session's last change or
+    // warp's end (missionInfoAsked) is what the client's tracker has of it, and its panel asks nothing more. Asked for
+    // by name with the agent, it is answered from what was kept once the asking is done: nothing is sent, and nothing
+    // is counted. A mission not asked about goes on as any call does.
+    if (service === "missionTrackerMgr" && method === "GetMissionInfoItems" && form.args.length === 1 && form.kwargs === null) {
+      await entry.missionInfoWork;
+      const agentID = positive(form.args[0]);
+      if (agentID !== null && entry.missionInfoKept.has(agentID)) {
+        return { service, method, result: wireToBridgeJson(entry.missionInfoKept.get(agentID) ?? null), notifications: drain(entry) };
+      }
+    }
     // objectCaching.PerformCachedMethodCall: what the server marked as cached is answered from its first answer
     // for as long as the client would keep it. Nothing is sent, and nothing is counted.
     if (!form.moniker && typeof entry.session.cachedMethodCall === "function") {
@@ -2343,6 +2428,12 @@ function createGamePortPilots({
       ledger.note(service, method, ON_AN_ANSWERED_OBJECT.has(`${service}.${method}`)
         ? { ...form, status: "differs", note: "Asked of the service by its name. The client asks the object another call answered." }
         : form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
+    }
+    // fleetSvc.AddFavorite and RemoveFavorite: the watchlist as the client tells the server of it, kept for the
+    // client's own RegisterForDamageUpdates at a change of system (damageUpdatesRegistered).
+    if (service === "fleetMgr" && (method === "AddToWatchlist" || method === "RemoveFromWatchlist") && form.status !== "differs") {
+      const favorites = Array.isArray(args) ? args[1] : null;
+      if (Array.isArray(favorites)) entry.watchlist = favorites.filter((id) => Number.isSafeInteger(id) && id > 0);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
@@ -2370,6 +2461,11 @@ function createGamePortPilots({
     if (service === CRIMEWATCH && method === SET_SAFETY_LEVEL) {
       if (form.status === "differs") entry.clientStates.forget();
       else await safetyLevelSet(entry, form.args[0]);
+    }
+    // characterSettingsSvc.Save and Delete (44 to 58): once the server has taken the call, the setting is the one the
+    // service keeps, or gone from it.
+    if (service === "charMgr" && (method === "SaveCharacterSetting" || method === "DeleteCharacterSetting")) {
+      characterSettingWorkedIn(entry, method, form.args);
     }
     // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
     forgetNamed(entry, namedAfterCall(service, method, argumentsToWire(form.args), entry.session.attributes));
@@ -2637,6 +2733,40 @@ function createGamePortPilots({
     return priming;
   }
 
+  /**
+   * cfg.corptickernames (eveCfg.py LoadCrpTickerNames, 479 to 486: a Recordset by corporationID over
+   * GetCorpTickerNamesEx and GetMultiCorpTickerNamesEx): the NPC corporations' tickers the client fills from its own
+   * data, and asks for none of. Of the others asked about, those not known yet are asked for by the Recordset's Prime
+   * (cfg.py 579), config.GetMultiCorpTickerNamesEx(a list of their IDs): in one call, as the search primes the
+   * corporations it found (searchUtil.py _PrimeCorpTickers, 329 to 333), or in a call for each where `each` is said,
+   * as an entry gets its own (userentry.py User.PreLoad, 139 to 140: Get, which on a client is Prime([key]), cfg.py 630
+   * to 645). Each row answered, (corporationID, tickerName, shapes and colours), is kept for as long as the pilot is
+   * on, and a corporation the server answers no row for is not asked about again (the Recordset's knownLuzers). One
+   * asking after another.
+   *
+   * Answers a Map of each player corporation asked about to its ticker, or to null for one with no row. Fails as a
+   * call fails, with nothing kept of it.
+   */
+  async function corpTickersNamed(corpIDs, each = false, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const isNpcCorporation = (corpID) => corpID >= 1000000 && corpID < 2000000;
+    const wanted = [...new Set((Array.isArray(corpIDs) ? corpIDs : []).map(positive).filter((corpID) => corpID !== null && !isNpcCorporation(corpID)))];
+    const priming = entry.tickersWork.then(() => run(entry, "config", "GetMultiCorpTickerNamesEx", async () => {
+      const unknown = wanted.filter((corpID) => !entry.tickers.has(corpID));
+      for (const asked of each ? unknown.map((corpID) => [corpID]) : unknown.length > 0 ? [unknown] : []) {
+        ledger.note("config", "GetMultiCorpTickerNamesEx", TICKERS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiCorpTickerNamesEx", [{ type: "list", items: asked }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [corporationID, tickerName] = ["corporationID", "tickerName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+        for (const corpID of asked) if (!entry.tickers.has(corpID)) entry.tickers.set(corpID, null);
+      }
+      return new Map(wanted.map((corpID) => [corpID, entry.tickers.get(corpID) ?? null]));
+    }));
+    entry.tickersWork = priming.catch(() => {});
+    return priming;
+  }
+
   // ── the station, as the client's station service keeps it ────────────────
 
   /**
@@ -2743,8 +2873,9 @@ function createGamePortPilots({
    * reads one by its key out of what is kept (36 to 42). Tranquility answers a utillib.KeyVal of them, each a
    * unicode string, and its recordings of a login each have the one call. One asking at a time.
    *
-   * The service's Save and Delete are not made here yet (44 to 58: charMgr.SaveCharacterSetting(key, value) and
-   * charMgr.DeleteCharacterSetting(key), each worked into what is kept): no page sets one.
+   * The service's Save and Delete (44 to 58: charMgr.SaveCharacterSetting(key, value) and
+   * charMgr.DeleteCharacterSetting(key)) are a page's writes, each worked into what is kept once the server has
+   * taken it (characterSettingWorkedIn).
    */
   function characterSettingsRead(entry) {
     const reading = entry.characterSettingsWork.then(async () => {
@@ -2757,6 +2888,25 @@ function createGamePortPilots({
     });
     entry.characterSettingsWork = reading.catch(() => {});
     return reading;
+  }
+
+  /**
+   * characterSettingsSvc.Save (44 to 50) and Delete (52 to 58), once the server has taken the call: the setting is
+   * put under its key in what is kept, or taken out of it. Nothing where the settings were never read: the next
+   * reading asks the server for them all.
+   */
+  function characterSettingWorkedIn(entry, method, args) {
+    const kept = entry.characterSettings;
+    const entries = kept && kept.type === "object" && kept.args && Array.isArray(kept.args.entries) ? kept.args.entries : null;
+    const settingKey = Array.isArray(args) ? args[0] : null;
+    if (entries === null || typeof settingKey !== "string") return;
+    const at = entries.findIndex((candidate) => Array.isArray(candidate) && candidate[0] === settingKey);
+    if (method === "DeleteCharacterSetting") {
+      if (at >= 0) entries.splice(at, 1);
+      return;
+    }
+    if (at >= 0) entries[at] = [settingKey, args[1]];
+    else entries.push([settingKey, args[1]]);
   }
 
   /**
@@ -3247,15 +3397,18 @@ function createGamePortPilots({
    * into, and the next reading asks.
    */
   function afterBookmarkCall(entry, service, method, form, result) {
-    if (service !== "beyonce" || method !== BOOKMARK_LOCATION) return;
+    if (service !== "beyonce" || (method !== BOOKMARK_LOCATION && method !== "BookmarkScanResult")) return;
     const answered = Array.isArray(result) || isAList(result) ? itemsOf(result) : [];
     if (form.status === "differs" || answered.length !== 8) {
       entry.kept[BOOKMARK_MGR].forget();
       return;
     }
-    const [bookmarkID, itemID, typeID, x, y, z, locationID, expiry] = answered;
+    // A scan result's (bookmarkSvc.ACLBookmarkScanResult, 629 to 631): the same eight, and the client keeps no thing.
+    const scanResult = method === "BookmarkScanResult";
+    const [bookmarkID, answeredItemID, typeID, x, y, z, locationID, expiry] = answered;
+    const itemID = scanResult ? null : answeredItemID;
     if (!bookmarkID) return;
-    const [, folderID, name, comment] = form.args;
+    const [folderID, name, comment] = scanResult ? [form.args[4], form.args[1], form.args[2]] : [form.args[1], form.args[2], form.args[3]];
     const made = bookmarkMade({
       bookmarkID, folderID, itemID, typeID, name, comment, expiry, x, y, z, locationID,
       created: BigInt(Math.trunc(entry.session.serverNow())) * 10000n + FILETIME_OF_UNIX_EPOCH,
@@ -3616,16 +3769,18 @@ function createGamePortPilots({
    * 89 to 94, by UpdateMissionStatusForSessionChange, 213) and as each warp ends (OnClientEvent_WarpFinished, 84 to
    * 87). The missions are read from the journal (GetAgentMissions asks the journal service for them, which reads
    * what it has to). With none accepted nothing is asked. Tranquility's recordings have it so: a pilot on three
-   * missions, three calls at each session change and three at each warp's end. No page shows what is answered
-   * yet: it is asked as the client asks it, and nothing is kept of the answer.
+   * missions, three calls at each session change and three at each warp's end. What each answers is kept, as the
+   * tracker keeps it (currentAgentMissionInfo), for the page's mission tracker to be answered from.
    */
   function missionInfoAsked(entry) {
     const asking = entry.missionInfoWork.then(async () => {
       await journalUpToDate(entry);
+      const kept = new Map();
+      entry.missionInfoKept = kept;
       for (const agentID of acceptedMissionAgents(entry.journal.read(), filetime(now()))) {
         const form = shape("missionTrackerMgr", "GetMissionInfoItems", [agentID], null, contextFor(entry));
         ledger.note("missionTrackerMgr", "GetMissionInfoItems", form);
-        await byName(entry.session, "missionTrackerMgr", "GetMissionInfoItems", form);
+        kept.set(agentID, await byName(entry.session, "missionTrackerMgr", "GetMissionInfoItems", form));
       }
     });
     entry.missionInfoWork = asking.catch(() => {});
@@ -3725,15 +3880,28 @@ function createGamePortPilots({
     assertAllowed(service, method);
     // Choosing a character brings it online on the connection it is chosen on, and this one is not kept.
     if (method === "SelectCharacterID") throw fail("CALL_NOT_ALLOWED", "A character is chosen by selecting it, not by a call of the account's.");
-    const line = accountLine(accountID, userName);
-    timers.clearTimeout(line.timer);
-    line.timer = null;
-    line.calls += 1;
     // No session was handed out for this call, so there is none for the caller to have lost.
     const failed = (error) => {
       const mapped = toPilotError(error, service, method);
       return mapped.code === "SESSION_NOT_FOUND" ? fail("CALL_FAILED", `${service}.${method} failed: the game server closed the connection.`) : mapped;
     };
+    // One connection for each account, as the retail client has: a second would close the first (EveJS's
+    // accountLoginClose.js). With a pilot of the account on the game port, its connection is the account's, and the
+    // call is asked there.
+    const pilot = [...sessions.values()].find((candidate) => candidate.accountID === accountID && !candidate.ended);
+    if (pilot) {
+      const form = shape(service, method, args, kwargs, {});
+      ledger.note(service, method, form);
+      try {
+        return { service, method, result: wireToBridgeJson(await byName(pilot.session, service, method, form)), notifications: [] };
+      } catch (error) {
+        throw failed(error);
+      }
+    }
+    const line = accountLine(accountID, userName);
+    timers.clearTimeout(line.timer);
+    line.timer = null;
+    line.calls += 1;
     try {
       let session;
       try {
@@ -4008,6 +4176,9 @@ function createGamePortPilots({
           destination: probe.destination,
           scanRange: probe.scanRange,
           rangeStep: probe.rangeStep,
+          // scanSvc.GetScanRangeStepsByTypeID: the eight ranges the probe's menu offers (GetProbeMenu, 398 to 401);
+          // null where the type's attributes are not known.
+          rangeSteps: entry.scanner.rangeSteps(probe.typeID) ?? null,
           state: probe.state,
           expiry: String(probe.expiry ?? "0"),
         })),
@@ -4029,7 +4200,8 @@ function createGamePortPilots({
    *   SetActivityState(ids, on)   each goes between idle and inactive
    *
    * and, for the two calls the web client makes where the retail client only
-   * changes its own list (SetProbeDestination, SetProbeRangeStep), that change.
+   * changes its own list (SetProbeDestination, SetProbeRangeStep), that change:
+   * those two are not sent at all (callBoundMethod), the change being the whole of them.
    */
   /**
    * What the client's dogma location does to its own weapon banks once a
@@ -4073,6 +4245,10 @@ function createGamePortPilots({
       entry.alignTarget = itemID !== null || bookmark ? { itemID: bookmark ? null : itemID, bookmark, since: parkTick(entry) } : null;
     } else if (method === "CmdGotoDirection") {
       // Steered by hand: the client forgets what it had aligned to (cameraUtil, eveCommands: ClearAlignTargets).
+      entry.alignTarget = null;
+    } else if (method === "CmdGotoBookmark") {
+      // movementFunctions.ApproachLocation: a bookmark approached, the client forgets what it had aligned to
+      // (StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)).
       entry.alignTarget = null;
     }
   }
@@ -4766,6 +4942,17 @@ function createGamePortPilots({
     entry.fleetKept.clear();
   }
 
+  /**
+   * fleetSvc.RegisterForDamageUpdates (793 to 796): sm.RemoteSvc('fleetMgr').RegisterForDamageUpdates(fav), every
+   * favourite as the client's set (GetWatchlistMembers, 788: damage updates on, as the client starts). Of the client's
+   * own accord, in its form and in the ledger; what cannot be done is left undone, as the client's handler leaves it.
+   */
+  function damageUpdatesRegistered(entry) {
+    const form = shape("fleetMgr", "RegisterForDamageUpdates", [[...entry.watchlist]], null, contextFor(entry));
+    ledger.note("fleetMgr", "RegisterForDamageUpdates", form);
+    return byName(entry.session, "fleetMgr", "RegisterForDamageUpdates", form).catch(() => {});
+  }
+
   /** One call the client makes of its own accord on the fleet's object, in the client's form and in the ledger. */
   function ownFleetCall(entry, object, method, args = []) {
     ledger.note("fleetObjectHandler", method, FLEET_OWN[method] ?? shape("fleetObjectHandler", method, args, null, contextFor(entry)));
@@ -5101,6 +5288,13 @@ function createGamePortPilots({
       const held = attributeHeld(entry, form.args);
       if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
     }
+    // scanSvc.SetProbeDestination and SetProbeRangeStep (169 to 175): the client's own list of its probes, never the
+    // server's. The probes are kept here as its scan service keeps them, so the change is made to them and nothing is
+    // sent, and what was not sent is not counted. The next RequestScans carries it, as the client's does.
+    if (service === "scanMgr" && (method === "SetProbeDestination" || method === "SetProbeRangeStep")) {
+      afterScanManagerCall(entry, method, form.args, null);
+      return { service, method, result: null, notifications: drain(entry) };
+    }
     // What crimewatch's service keeps is its to answer on a Moniker's handle too.
     if (keptOfCrimewatch(service, method, form)) {
       const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
@@ -5236,6 +5430,10 @@ function createGamePortPilots({
     readSpaceSnapshot,
     openSessionEventStream,
     accountCall,
+    /** The Abyssal pocket's timer as the pilot was last told it (keepPocketTimer): its end_time, as the notice had it, or null. */
+    pocketTimer: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).pocketTimer ?? null,
+    /** What the game server closed a character's last connection with ({ reasonCode, reason, at }), or null. */
+    closedByServer: (characterID) => closedByServerByCharacter.get(positive(characterID)) ?? null,
     answerClientQuestion,
     ship,
     fleet,
@@ -5249,6 +5447,7 @@ function createGamePortPilots({
     saveSkillQueue,
     journalKept,
     ownersNamed,
+    corpTickersNamed,
     shipInfo,
     shipAttribute,
     chatConnection,

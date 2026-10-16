@@ -17,8 +17,9 @@
   // the last one is claimed ONLY from a successful empty read (`ownsNothing`).
   // Conflating them is the defect this codebase keeps producing.
   //
-  // READS ONLY, plus one already-built action: setting a destination is
-  // flow.startRoute, the same call Travel and the cockpit make.
+  // READS ONLY, plus a station's route entries, as the client's assets window gives them (its location's menu,
+  // assetsWindow.py GetMenuLocationMenu 851 to 862: the station's CelestialMenu): Set Destination, and Add Waypoint
+  // or Remove Waypoint (menusvc.py 2002 to 2007), the flow's waypoints (nav/waypoints.ts).
   import { onMount } from "svelte";
   import {
     formatAssetVolume,
@@ -40,6 +41,33 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const travel = store.travel;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const waypoints = flow.waypoints;
+
+  /** The client's words for the route entries, and the page's own where the install's are not to hand. */
+  const ROUTE_WORDS = {
+    setDestination: "UI/Inflight/SetDestination",
+    addWaypoint: "UI/Inflight/AddWaypoint",
+    removeWaypoint: "UI/Inflight/RemoveWaypoint",
+  } as const;
+
+  function word(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? template : own;
+  }
+
+  /** The station whose menu is open, or none. */
+  let menuFor = $state<number | null>(null);
+
+  /**
+   * CelestialChecker.OfferSetDestination (celestialCheckers.py 1354 to 1362): a station can be a waypoint (it has a
+   * system), and is offered unless it is the route's last waypoint already.
+   */
+  function destinationOffered(stationID: number): boolean {
+    return $waypoints.at(-1) !== stationID;
+  }
 
   let busy = $state(false);
   let error = $state("");
@@ -95,11 +123,16 @@
     void run(() => flow.openAssetStation(next));
   }
 
-  function setDestination(row: AssetStationRow): void {
-    void run(() => flow.setDestinationToAssetStation(row.stationID));
+  /** The menu's route entries (menusvc.py 2002 to 2007): starmap.SetWaypoint(id, True), SetWaypoint(id), ClearWaypoints(id). */
+  function route(row: AssetStationRow, how: "destination" | "add" | "remove"): void {
+    menuFor = null;
+    if (how === "destination") void run(() => flow.setDestinationToAssetStation(row.stationID));
+    else if (how === "add") flow.addWaypoint(row.stationID);
+    else flow.clearWaypoints(row.stationID);
   }
 
   onMount(() => {
+    flow.requestWords(Object.values(ROUTE_WORDS));
     void run(() => flow.loadPersonalAssets());
   });
 </script>
@@ -190,10 +223,22 @@
                       ? "Hide what's here"
                       : "See what's here"}
                   </button>
-                  <button type="button" disabled={busy} onclick={() => setDestination(row)}>
-                    Set destination
-                  </button>
+                  <button type="button" aria-expanded={menuFor === row.stationID} aria-label="The place's menu"
+                    onclick={() => (menuFor = menuFor === row.stationID ? null : row.stationID)}>⋯</button>
                 </div>
+                {#if menuFor === row.stationID}
+                  <!-- The station's menu (assetsWindow.py GetMenuLocationMenu; menusvc.py 2002 to 2007). -->
+                  <p class="controls">
+                    {#if destinationOffered(row.stationID)}
+                      <button type="button" class="minor" disabled={busy} onclick={() => route(row, "destination")}>{word(ROUTE_WORDS.setDestination, "Head there")}</button>
+                    {/if}
+                    {#if $waypoints.includes(row.stationID)}
+                      <button type="button" class="minor" onclick={() => route(row, "remove")}>{word(ROUTE_WORDS.removeWaypoint, "Take off the route")}</button>
+                    {:else}
+                      <button type="button" class="minor" onclick={() => route(row, "add")}>{word(ROUTE_WORDS.addWaypoint, "Put on the route")}</button>
+                    {/if}
+                  </p>
+                {/if}
               </td>
             </tr>
           {/each}

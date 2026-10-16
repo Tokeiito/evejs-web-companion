@@ -120,6 +120,8 @@ export interface PaneContext {
   readonly say: (message: MissionMessage) => string | null;
   /** The security a solar system was made with; null when it is not known. */
   readonly securityOf: (solarSystemID: number) => number | null;
+  /** The pilot's own security status as crimewatchSvc keeps it, asked only where a warning turns on it; null while not known. */
+  readonly ownSecurityStatus?: () => number | null;
 }
 
 /** The names the pane will ask for, so the page can fetch them before it is drawn. */
@@ -197,7 +199,7 @@ export function objectivePane(objectives: MissionObjectives, context: PaneContex
     if (location === null || location.locationID === null) return null;
     const ship = location.shipTypeID === null ? null : words(PANE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
     const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
-    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf);
+    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf, context.ownSecurityStatus);
   };
   const cargoText = (cargo: MissionCargo | null): string | null => {
     if (cargo === null || cargo.typeID === null) return null;

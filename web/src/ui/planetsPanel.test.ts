@@ -98,7 +98,11 @@ function atFrozenBrowserClock<T>(body: () => T): T {
 }
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // The launches the window reads as it is built (planetWindow.py ReconstructWindow; flow.planetLaunches): read, and
+  // none, so the window shows its colonies alone, as the client's does without launches.
+  const none = { loaded: true, launches: [], error: null };
+  const planetLaunches = { get: () => none, subscribe: (listener: (value: typeof none) => void) => (listener(none), () => {}) };
+  return new Proxy({ planetLaunches } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 /** Everything a player can see, with markup stripped and whitespace collapsed. */

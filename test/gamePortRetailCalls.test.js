@@ -1725,6 +1725,10 @@ test("the game port carries the customs office's transfer, the station's offices
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
     "subscriptionMgr.GetCloneGrade",
+    // An acceleration gate's activation, the keeper's. The gateway's list has nothing of the keeper's.
+    "keeper.ActivateAccelerationGate",
+    // The dungeon a character is in, the keeper's, asked as its session starts in space.
+    "keeper.GetCurrentDungeonForCharacter",
     // The ship's fighters, asked at every change of the session's ship. The gateway's list has the manager's writes only.
     "fighterMgr.GetFightersForShip",
     // What is left of each accepted mission, asked at every change of the session and as each warp ends. The gateway's list has nothing of the mission tracker's.
@@ -1739,6 +1743,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "securityMgr.get_modified_systems",
     // The character's settings, asked once by the client's character settings service. The gateway's list has GetSettingsInfo, another thing.
     "charMgr.GetCharacterSettings",
+    // The same service's Save and Delete (characterSettingsSvc.py 44 to 58), neither on the gateway's list.
+    "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting",
     // What the character has completed of the client's achievements, asked once by the client's achievement service. The gateway's list has nothing of the tracker's.
     "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
     // How many non-diminishing skill injections the character has left, asked as a character comes onto the session. The gateway's list has nothing of that manager's.
@@ -1793,6 +1799,26 @@ test("the game port carries the customs office's transfer, the station's offices
     "charMgr.EditContact",
     // The pilot's contact labels made, renamed and deleted, given and taken off. The gateway's list has none of them.
     "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+    // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline. The gateway's list has none of them.
+    "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
+    "accessGroupBookmarkMgr.UpdateKnownFolderState",
+    // The pilot's access lists. The gateway's list has nothing of the owner group manager's.
+    "ownerGroupManager.GetMyGroups",
+    // A shared folder disconnected from, and an access list asked by its number. The gateway's list has neither.
+    "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
+    // Bookmarks copied into a folder. The gateway's list has their moving and not this.
+    "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
+    // A folder added to those the pilot knows. The gateway's list has not got it.
+    "accessGroupBookmarkMgr.AddToKnownFolders",
+    // A jump to a fleet member's lit cyno, the fleet's jump with it, and a bridge opened to it (cynoTravelSvc.py 36,
+    // 103 and 62). The gateway's list has none of them.
+    "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
+    // The map service's lists for the autopilot's avoidance ticks (mapSvc.py 501 to 513). The gateway's list has none of them.
+    "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
+    // The mission tracker's objectives and site reads (missionObjectivesTracker.py 312 and 320). The gateway's list has neither.
+    "missionTrackerMgr.GetAllMissionObjectives", "missionTrackerMgr.IsInActiveDungeonID",
+    // And its asking after missions (UpdateMissionStatusData, 216 to 220). The gateway's list has it not.
+    "missionTrackerMgr.UpdateAllMissions",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.

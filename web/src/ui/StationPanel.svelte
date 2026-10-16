@@ -34,6 +34,9 @@
   // view. That is normal. Unknown renders as "—" / "not known", never 0.
   import { onMount } from "svelte";
   import TypeIcon from "./TypeIcon.svelte";
+  import KeyActivationWindow from "./KeyActivationWindow.svelte";
+  import { ABYSS_WINDOW_LABELS, offersActivateAbyssalKey, type FilamentPlace } from "../bridge/abyssalKeys.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
     canMergeStacks,
     divisionLabel,
@@ -172,6 +175,39 @@
   const fitting = store.fitting;
   // svelte-ignore state_referenced_locally
   const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+
+  // --- a filament's Activate (bridge/abyssalKeys.ts) -------------------------
+  //
+  // An Abyssal filament the pilot owns, where the pilot is, offers "Activate" with the filament named, on its menu and
+  // by a double click on its row (itemCheckers.OfferActivateAbyssalKey; menusvc.py 394 and 395; item.py 850 and 851).
+  // Where the pilot is: the station's item hangar it is docked in, and its ship's bays but not the ship maintenance bay
+  // (baseCheckers.IsInPilotLocation: not flagShipHangar, 90). What the panel lists in those places is the pilot's own;
+  // a corporation's division is the corporation's, and a container's contents are not offered yet.
+  function filamentPlace(place: InventoryPlace): FilamentPlace {
+    if (place.kind === "hangar") return isDocked ? "dockedHangar" : "elsewhere";
+    if (place.kind === "cargo") return "ship";
+    if (place.kind === "shipBay") return place.bay === "shipMaintenance" ? "shipHangar" : "ship";
+    return "elsewhere";
+  }
+  function activatable(row: InventoryItemRow, place: InventoryPlace): boolean {
+    const where = filamentPlace(place);
+    return offersActivateAbyssalKey(row.groupID, where !== "elsewhere", where);
+  }
+  /** The menu's words for it: 'UI/Commands/ActivateAbyssalKey' with the filament's type. */
+  function activateWords(row: InventoryItemRow): string {
+    const template = $words.templates[ABYSS_WINDOW_LABELS.activateKey];
+    return typeof template === "string"
+      ? plainText(formatTemplate(template, { item: row.typeID }, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }))
+      : `Activate ${nameOf(row)}`;
+  }
+  /** The filament whose key activation window is open (KeyActivationWindow.Open: one at a time). */
+  let activatingKey = $state<{ itemID: number; typeID: number; groupID: number | null; quantity: number; ownedByPilot: boolean } | null>(null);
+  function openKeyWindow(row: InventoryItemRow): void {
+    menu = null;
+    activatingKey = { itemID: row.itemID, typeID: row.typeID, groupID: row.groupID, quantity: row.quantity, ownedByPilot: true };
+  }
 
   // ⚠ NOT `class:active`. The app's component layer styles a bare
   // `button.active` as a FILLED ACCENT control, and that selector outranks a
@@ -342,6 +378,7 @@
   }
 
   onMount(() => {
+    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey]);
     void run(async () => {
       await flow.loadInventory();
       await flow.loadCorpHangar();
@@ -605,7 +642,7 @@
     }
     const anchor = button.getBoundingClientRect();
     const frame = panel.getBoundingClientRect();
-    const height = 34 + where.length * 30;
+    const height = 34 + (where.length + (activatable(row, place) ? 1 : 0)) * 30;
     const width = 190;
     // Below the button, flipped above when there is no room, and clamped so the
     // menu is never drawn off the side of a narrow panel.
@@ -934,7 +971,8 @@
     if (outcome) {
       list.push({ text: outcome.message, bad: !outcome.applied });
     }
-    if ($inventory.actionError) {
+    // (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.)
+    if ($inventory.actionError && !$inventory.actionErrorSaid) {
       list.push({ text: `Last action failed: ${$inventory.actionError}`, bad: true });
     }
     if (error) {
@@ -1148,6 +1186,10 @@
       if ((event.target as HTMLElement).closest("button, input, label")) return;
       if (!group.readOnly) toggle(row, group.place);
     }}
+    ondblclick={(event) => {
+      if ((event.target as HTMLElement).closest("button, input, label")) return;
+      if (activatable(row, group.place)) openKeyWindow(row);
+    }}
   >
     <span class="stn-cell-pick">
       {#if !group.readOnly}
@@ -1202,7 +1244,7 @@
             class="stn-quick-short">to {shortLabel(group.targets[0]!.label)}</span>
         </button>
       {/if}
-      {#if !group.readOnly && group.targets.length > 0}
+      {#if !group.readOnly && (group.targets.length > 0 || activatable(row, group.place))}
         <button
           type="button"
           class="stn-btn stn-btn-more"
@@ -1932,6 +1974,11 @@
     </div>
   {/if}
 
+  {#if activatingKey}
+    {#key activatingKey.itemID}
+      <KeyActivationWindow {store} {flow} item={activatingKey} onClose={() => (activatingKey = null)} />
+    {/key}
+  {/if}
   <!-- The row menu. Rendered at the panel's root, never inside the scrolling
        list, so opening it cannot make the list taller. See openMenu for why it
        is absolute rather than fixed. -->
@@ -1940,6 +1987,11 @@
     <div class="stn-menu-shade" onclick={() => (menu = null)}></div>
     <div class="stn-menu" style="left: {menu.x}px; top: {menu.y}px">
       <p class="stn-menu-head">{nameOf(menu.row)}</p>
+      {#if activatable(menu.row, menu.place)}
+        <button type="button" class="stn-menu-item" onclick={() => openKeyWindow(menu!.row)}>
+          {activateWords(menu.row)}
+        </button>
+      {/if}
       {#each menu.targets as target (target.label)}
         <button
           type="button"

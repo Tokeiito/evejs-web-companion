@@ -14,6 +14,8 @@
   import Scanner from "./Scanner.svelte";
   import Mail from "./Mail.svelte";
   import Contacts from "./Contacts.svelte";
+  import Watchlist from "./Watchlist.svelte";
+  import Locations from "./Locations.svelte";
   import Contracts from "./Contracts.svelte";
   import PersonalAssets from "./PersonalAssets.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
@@ -26,6 +28,8 @@
   import Skills from "./Skills.svelte";
   import Planets from "./Planets.svelte";
   import Travel from "./Travel.svelte";
+  import RouteWindow from "./RouteWindow.svelte";
+  import MissionTracker from "./MissionTracker.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
@@ -119,7 +123,9 @@
 {:else if tab === "mail"}
   <Mail {store} {flow} />
 {:else if tab === "contacts"}
-  <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} />
+  <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
+{:else if tab === "locations"}
+  <Locations {store} {flow} />
 {:else if tab === "contracts"}
   <Contracts {store} {flow} />
 {:else if tab === "assets"}
@@ -143,7 +149,11 @@
 {:else if tab === "planets"}
   <Planets {store} {flow} />
 {:else if tab === "travel"}
-  <Travel {store} {flow} />
+  <Travel {store} {flow} showRouteWindow={() => onOpen?.("routeWindow")} />
+{:else if tab === "routeWindow"}
+  <RouteWindow {store} {flow} />
+{:else if tab === "missionTracker"}
+  <MissionTracker {store} {flow} showAgents={() => onOpen?.("agents")} />
 {:else if tab === "bots"}
   <Bots {store} {flow} />
 {:else if tab === "botBuilder"}
@@ -173,6 +183,8 @@
   <Standings {store} {flow} />
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
+{:else if tab === "watchlist"}
+  <Watchlist {store} {flow} />
 {:else if tab === "settings"}
   <Settings {store} {flow} />
 {:else if tab === "log"}

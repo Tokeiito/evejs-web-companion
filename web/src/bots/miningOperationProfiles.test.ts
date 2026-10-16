@@ -39,8 +39,8 @@ test("versioned standard BELT profiles are valid runner docs, independent of sav
   const hauling = buildStandardProfile(definition, hauler);
   assert.equal(mining.scriptID, BELT_MINER_ID);
   assert.equal(hauling.scriptID, BELT_HAULER_ID);
-  assert.equal(mining.rev, 2);
-  assert.equal(hauling.rev, 1);
+  assert.equal(mining.rev, 3);
+  assert.equal(hauling.rev, 2);
   for (const profile of [mining, hauling]) {
     const decoded = decodeScriptValue(profile.doc);
     assert.equal(decoded.ok, true, decoded.ok ? "" : decoded.refusal);
@@ -96,7 +96,7 @@ for (const [family, id] of [["BELT", "belt"], ["ORE_ANOMALY", "ore-anomaly"], ["
     const def = { ...definition, area: { targetClasses: [family] }, unloadPolicy: "SELF_UNLOAD" };
     const profile = buildStandardProfile(def, miner);
     assert.equal(profile.scriptID, `mcc.${id}.self-unload.miner`);
-    assert.equal(profile.rev, 1);
+    assert.equal(profile.rev, 2);
     const decoded = decodeScriptValue(profile.doc); assert.ok(decoded.ok);
     assert.ok(analyzeBotRunPolicy(decoded.doc), "profile is analyzed by the current Farmer policy; operation recovery separately requires fresh target authority");
     assert.deepEqual(profile.doc.program[0].body.map((node: { macro: string }) => node.macro), ["undock", "mine-at-belt", "deliver-ore"]);
@@ -114,7 +114,7 @@ test("site families resolve distinct v1 runner documents, never a cross-family p
     for (const member of [miner, hauler]) {
       const profile = buildStandardProfile(def, member);
       assert.equal(profile.scriptID, `mcc.${id}.hauler-service.${member.role.toLowerCase()}`);
-      assert.equal(profile.rev, 1);
+      assert.equal(profile.rev, 2);
       const decoded = decodeScriptValue(profile.doc);
       assert.ok(decoded.ok, JSON.stringify(decoded));
       const body = profile.doc.program[0].body;

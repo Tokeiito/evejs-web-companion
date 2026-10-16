@@ -38,15 +38,19 @@ export type TabID =
   | "miningOperations"
   | "activity"
   | "fleet"
+  | "watchlist"
   | "scanner"
   | "mail"
   | "contacts"
+  | "locations"
   | "chat"
   | "wallet"
   | "corpWallet"
   | "standings"
   | "characterSheet"
   | "showInfo"
+  | "routeWindow"
+  | "missionTracker"
   | "log"
   | "settings";
 
@@ -175,9 +179,14 @@ export const TABS: readonly TabDef[] = [
   { id: "miningOperations", label: "Mining Command Center", where: "both", launchable: false },
   { id: "activity", label: "Activity", where: "both" },
   { id: "fleet", label: "Fleet", where: "both" },
+  // The fleet's watch list (fleetWatchList.py WatchListPanel): opened where it is wanted, as the client opens it on an
+  // add to it (fleetSvc.AddFavorite, 676), so not offered in the rail.
+  { id: "watchlist", label: "Watch List", where: "both", launchable: false },
   { id: "mail", label: "Mail", where: "both" },
   // The client's People & Places (AddressBookWindow), titled Contacts: the pilot's own contacts and blocked owners.
   { id: "contacts", label: "Contacts", where: "both" },
+  // The client's Locations window (neocom/locations/window.py): the pilot's bookmarks.
+  { id: "locations", label: "Locations", where: "both" },
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
@@ -187,6 +196,13 @@ export const TABS: readonly TabDef[] = [
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.
   { id: "showInfo", label: "Show Info", where: "both", launchable: false },
+  // The client's route window (autopilotSettings.py AutopilotSettings): the waypoints in their order and the avoidance
+  // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does
+  // the page, from Travel.
+  { id: "routeWindow", label: "Route and avoidance", where: "both", launchable: false },
+  // The client's job board's tracker (InfoPanelJobBoard): each accepted mission and the objective it is on, with its one
+  // button. The client keeps it on screen among its info panels; here it is a window the rail opens.
+  { id: "missionTracker", label: "Opportunities", where: "both" },
   // R80 — the notice log. Launchable on purpose, unlike Show Info: "what did I
   // miss?" is a question a player asks without anything having been clicked.
   { id: "log", label: "Log", where: "both" },

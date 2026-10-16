@@ -46,6 +46,52 @@ export function transferReason(typed: string): string {
   return typed.slice(0, TRANSFER_REASON_MAX).replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * The wallet's Give ISK tab (giveIskPanel.py TransferISK, 101 to 112): GiveCash(selectedCharacterID, amount), with no
+ * reason and no account key. Answers whether the server answered something, which is what the tab goes by (`if ret:`):
+ * only then does it clear itself and say the transfer was made. Fails as the call fails.
+ */
+export async function giveIskFromWallet(act: Ask, toID: number, amount: number): Promise<boolean> {
+  if (!Number.isSafeInteger(toID) || toID <= 0) throw new Error("That is no one to give ISK to.");
+  const answered = await act("account", "GiveCash", [toID, amount]);
+  return answered !== null && answered !== undefined && answered !== false && answered !== 0;
+}
+
+/** qtyConst.MIN_AMOUNT_TO_DISPLAY_FULL_TEXT: the least the amount's words are shown for. */
+const READABLE_FROM = 10_000;
+const UNIT_PREFIXES: readonly (string | null)[] = [null, "UI/Util/UnitPrefixThousand", "UI/Util/UnitPrefixMillion", "UI/Util/UnitPrefixBillion", "UI/Util/UnitPrefixTrillion"];
+/** The labels the amount's words may need. */
+export const READABLE_ISK_LABELS: readonly string[] = [...UNIT_PREFIXES.filter((label): label is string => label !== null), "UI/Common/ISK"];
+
+/**
+ * GetQtyText(amount, EDIT_INPUT_TYPE_ISK) (qtyTooltip/tooltip.py 19 to 30): under ten thousand nothing; else
+ * eveformat.isk_readable, three significant figures over the thousands' unit word ("1.5 million ISK", number.py
+ * _readable_value_and_log1k), with the client's "about" mark before it where the figures are not the amount. The
+ * mark's character did not survive the client's decompiling (qtyConst.ABOUT_CHAR); "≈" stands for it. Null where
+ * nothing is shown or a word is not to hand.
+ */
+export function readableIsk(amount: number, word: (label: string) => string | null): string | null {
+  if (!(amount >= READABLE_FROM)) return null;
+  const digits = 3 - 1 - Math.floor(Math.log10(Math.abs(amount)));
+  const rounded = Math.round(amount * 10 ** digits) / 10 ** digits;
+  const log1k = Math.max(0, Math.min(Math.floor(Math.log10(Math.abs(rounded)) / 3), 4));
+  const value = rounded / 1000 ** log1k;
+  let places = 0;
+  for (let i = 0; i < 2; i += 1) {
+    if (Math.round(value * 10 ** (2 - i)) % 10 > 0) {
+      places = 2 - i;
+      break;
+    }
+  }
+  const prefix = UNIT_PREFIXES[log1k] ?? null;
+  const unit = prefix === null ? "" : word(prefix);
+  const isk = word("UI/Common/ISK");
+  if (unit === null || isk === null) return null;
+  const figures = value.toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places });
+  const text = `${figures}${unit ? ` ${unit}` : ""} ${isk}`;
+  return Math.abs(rounded - amount) <= Math.abs(amount) * 1e-9 ? text : `≈ ${text}`;
+}
+
 /** Gives `amount` of the pilot's ISK to the character `toID`, with the reason. Fails as the call fails. */
 export async function giveMoney(act: Ask, toID: number, amount: number, reason: string): Promise<void> {
   if (!Number.isSafeInteger(toID) || toID <= 0) throw new Error("That is no one to give money to.");

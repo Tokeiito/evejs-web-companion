@@ -1,6 +1,6 @@
 // The R4 Agents & Missions controller against a faked BFF: loadAgents fills the
 // roster, openConversation decodes the agent dialogue, accepting a courier
-// pulls the briefing + journal, a refused action surfaces through the store,
+// pulls the briefing (the journal is the server's notice's), a refused action surfaces through the store,
 // and a lost session unwinds to offline.
 
 import test from "node:test";
@@ -253,7 +253,7 @@ test("openConversation decodes the agent dialogue into the store", async () => {
   assert.equal(agents.briefing!.cargoTypeID, 3814);
 });
 
-test("accepting a courier posts DoAction(accept) then pulls the briefing and journal", async () => {
+test("accepting a courier posts DoAction(accept) then pulls the briefing, and no journal of its own", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/agents/3008416/action") {
@@ -271,11 +271,12 @@ test("accepting a courier posts DoAction(accept) then pulls the briefing and jou
 
   await flow.chooseAction(3008416, { actionID: 816, buttonType: 3, label: "Accept" });
 
-  // The accept posted the token, then the briefing + journal were pulled.
+  // The accept posted the token, then the briefing was pulled. The journal is the server's notice's to read again
+  // (OnAgentMissionChange "accepted"): agentDialogueWindow.ExecuteAgentAction reads nothing of its own.
   const action = requests.find((r) => r.path === "/api/bridge/agents/3008416/action");
   assert.deepEqual(action!.body, { actionID: 816 });
   assert.ok(requests.some((r) => r.path === "/api/bridge/agents/3008416/briefing"));
-  assert.ok(requests.some((r) => r.path === JOURNAL_READ));
+  assert.equal(requests.some((r) => r.path === JOURNAL_READ), false);
 
   const agents = store.agents.get();
   // Briefing shows the courier cargo / destination / reward / time bonus.
@@ -283,12 +284,9 @@ test("accepting a courier posts DoAction(accept) then pulls the briefing and jou
   assert.equal(agents.briefing!.destinationLocationID, 60000256);
   assert.equal(agents.briefing!.rewardISK, "102000");
   assert.equal(agents.briefing!.bonusISK, "38250");
-  // Journal shows the accepted mission.
-  assert.equal(agents.journal!.active.length, 1);
-  assert.equal(agents.journal!.active[0]!.missionID, 1382);
 });
 
-test("declining clears the briefing and refreshes the journal", async () => {
+test("declining clears the briefing, and reads no journal of its own", async () => {
   const store = createClientStore();
   // Seed a stale briefing so the decline must clear it.
   store.apply({
@@ -330,8 +328,8 @@ test("declining clears the briefing and refreshes the journal", async () => {
   await flow.chooseAction(3008416, { actionID: 817, buttonType: 9, label: "Decline" });
 
   assert.equal(store.agents.get().briefing, null, "the stale briefing is cleared");
-  assert.ok(requests.some((r) => r.path === JOURNAL_READ));
-  assert.equal(store.agents.get().journal!.active.length, 0);
+  // The server's OnAgentMissionChange "declined" reads the journal again, not the press.
+  assert.equal(requests.some((r) => r.path === JOURNAL_READ), false);
 });
 
 test("a refused agent action is surfaced through the store, not thrown", async () => {
@@ -402,7 +400,7 @@ const REWARDS_RESPONSE = {
   errors: { cash: null, lp: null, standings: null },
 };
 
-test("completing a courier posts DoAction(complete), clears the briefing, and pulls the reward reads + journal", async () => {
+test("completing a courier posts DoAction(complete), clears the briefing, and pulls the reward reads, and no journal", async () => {
   const store = createClientStore();
   // Seed a stale briefing so completion must clear it.
   store.apply({
@@ -431,15 +429,14 @@ test("completing a courier posts DoAction(complete), clears the briefing, and pu
   // The Complete button is buttonType 6.
   await flow.chooseAction(3008416, { actionID: 819, buttonType: 6, label: "Complete Mission" });
 
-  // Complete posted the token, then the reward reads + journal were pulled.
+  // Complete posted the token, then the reward reads were pulled; the journal is the server's notice's to read again.
   const action = requests.find((r) => r.path === "/api/bridge/agents/3008416/action");
   assert.deepEqual(action!.body, { actionID: 819 });
   assert.ok(requests.some((r) => r.path === "/api/bridge/rewards"), "rewards pulled");
-  assert.ok(requests.some((r) => r.path === JOURNAL_READ), "journal pulled");
+  assert.equal(requests.some((r) => r.path === JOURNAL_READ), false, "no journal read of the press's own");
 
   const agents = store.agents.get();
   assert.equal(agents.briefing, null, "the briefing is cleared after completion");
-  assert.equal(agents.journal!.active.length, 0, "the mission left the journal");
 
   // The reward readout reflects the payout.
   const rewards = store.rewards.get();
@@ -641,8 +638,8 @@ test("R35 predicate 1: a REFUSED Complete keeps the briefing and pulls no reward
   assert.ok(requests.some((r) => r.path === "/api/bridge/agents/3008416/briefing"));
   assert.equal(agents.briefing!.cargoTypeID, LIVE_BRIEFING.cargoTypeID, "the mission is still accepted, so its briefing must survive a refusal");
   assert.equal(agents.briefing!.destinationLocationID, LIVE_BRIEFING.destinationLocationID);
-  // The journal still refreshes: the accepted row is genuinely still there.
-  assert.equal(agents.journal!.active.length, 1, "the mission is still in the journal");
+  // Nor is the journal read: a refusal changes nothing in it, and the press reads none of its own.
+  assert.equal(requests.some((r) => r.path === JOURNAL_READ), false);
 });
 
 test("R35 predicate 1: a SUCCESSFUL Complete (missionCompleted true) still clears and pays out", async () => {
@@ -845,9 +842,10 @@ test("opening an agent's window presses Request Mission at once, as the client's
   assert.deepEqual(pressed(), [null, 821]);
   // The briefing's times are kept with the layout.
   assert.deepEqual(store.agents.get().missionTimes, { declineTime: null, expirationTime: 134295222004640000n });
-  // One layout, of what came of the press: the briefing read once, after both. Then the journal, which the press changed.
-  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing", JOURNAL_READ]);
-  assert.notEqual(store.agents.get().journal, null);
+  // One layout, of what came of the press: the briefing read once, after both. The journal the press changed is the
+  // server's notice's to read again (OnAgentMissionChange "offered"), not the window's.
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing"]);
+  assert.equal(store.agents.get().journal, null);
   const agents = store.agents.get();
   assert.deepEqual(agents.conversation!.actions.map((action) => action.buttonType), [3, 9]);
   assert.equal(agents.briefing!.cargoTypeID, 3814);
@@ -893,7 +891,7 @@ test("the briefing and the objectives are read for every layout, whatever was pr
   const { store, flow, requests } = await talking({ 818: conversationWith([[816, 3], [817, 9]]) });
   // Defer: not an accept, a decline or a completion.
   await flow.chooseAction(3008416, { actionID: 818, buttonType: 10, label: "Defer" });
-  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "briefing", JOURNAL_READ]);
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "briefing"]);
   assert.equal(store.agents.get().briefing!.cargoTypeID, 3814);
 });
 
@@ -1080,8 +1078,8 @@ test("talking again is the opening again: a mission to view is pressed for, as w
   await flow.openConversation(3008416);
   requests.length = 0;
   await push("OnAgentMissionChange", ["modified", 3008416]);
-  // The journal twice: once for the change the server told of, and once for the window's own press, as at any opening.
-  assert.deepEqual(asked(), ["3008416:action:900", "3008416:action:null", "briefing", "journal", "journal"]);
+  // The journal once, for the change the server told of: the window's own press reads none.
+  assert.deepEqual(asked(), ["3008416:action:900", "3008416:action:null", "briefing", "journal"]);
 });
 
 test("another agent's mission modified leaves the window alone; the journal is still out of date", async () => {

@@ -277,6 +277,10 @@ test("a pilot is invited by one call on the pilot's own fleet, the invitee and t
   const unknown = askingOf();
   await inviteToFleet(unknown.act, 140000003, null);
   assert.equal(unknown.asked.length, 1);
+  // The invite menu's places (menusvc.FleetInviteMenu, DoInviteToFleet): self.fleet.Invite(charID, wingID, squadID, role).
+  const placed = askingOf();
+  await inviteToFleet(placed.act, 140000003, 140000001, undefined, { wingID: 654500030001, squadID: 654500040001, role: 3 });
+  assert.deepEqual(placed.asked, [["fleetObjectHandler", "Invite", [140000003, 654500030001, 654500040001, 3], null, null]]);
 });
 
 test("nobody is invited who is no pilot, and the pilot does not invite itself: nothing is asked", async () => {

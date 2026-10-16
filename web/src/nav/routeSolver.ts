@@ -26,6 +26,11 @@ export interface RouteHop {
   readonly toSystemID: number;
   readonly gateToWarpID: number;
   readonly jumpToGateID: number;
+  /**
+   * A hop through an Ansiblex jump gate, not a stargate (Include Jump Gates, nav/jumpGates.ts): `gateToWarpID` is the
+   * Ansiblex, warped to as a stargate is and jumped through by its own call; `jumpToGateID` is nought.
+   */
+  readonly throughJumpGate?: boolean;
 }
 
 /** One directed stargate edge out of a system (as the graph stores it). */
@@ -48,6 +53,10 @@ export interface SystemGraphData {
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
   /** Each system's security as it was made, by its ID; a map served without it has none. */
   readonly security?: Readonly<Record<string, number>>;
+  /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem); a map served without them has none. */
+  readonly triglavian?: readonly number[];
+  /** Each system's constellation and region, by the system's ID; a map served without them has none. */
+  readonly within?: Readonly<Record<string, readonly [number, number]>>;
 }
 
 /** A built, queryable system-adjacency graph. */
@@ -57,6 +66,12 @@ export interface SystemGraph {
   /** The security the system was made with; null where the map has none for it. */
   security(systemID: number): number | null;
   neighbors(systemID: number): readonly SystemEdge[];
+  /** Whether the system is the Triglavian Collective's (idCheckers.IsTriglavianSystem: its factionID 500026). */
+  isTriglavian?(systemID: number): boolean;
+  /** The systems a place stands for (mapSvc.GetSolarSystemIDsIn): a system itself, a constellation's or a region's systems. */
+  systemsIn?(id: number): readonly number[];
+  /** A system's constellation, a constellation's region (mapSvc.GetParent); null for a region or what the map has not. */
+  parentOf?(id: number): number | null;
   readonly systemCount: number;
   readonly edgeCount: number;
 }
@@ -108,11 +123,34 @@ export function buildSystemGraph(data: SystemGraphData): SystemGraph {
     edgeCount += 1;
   }
 
+  const triglavian = new Set<number>((data.triglavian ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0));
+
+  const parents = new Map<number, number>();
+  const children = new Map<number, number[]>();
+  const holds = (placeID: number, systemID: number): void => {
+    const list = children.get(placeID);
+    if (list) list.push(systemID);
+    else children.set(placeID, [systemID]);
+  };
+  for (const [key, pair] of Object.entries(data.within ?? {})) {
+    const systemID = Number(key);
+    const constellationID = Number(Array.isArray(pair) ? pair[0] : 0);
+    const regionID = Number(Array.isArray(pair) ? pair[1] : 0);
+    if (!(systemID > 0) || !(constellationID > 0) || !(regionID > 0)) continue;
+    parents.set(systemID, constellationID);
+    parents.set(constellationID, regionID);
+    holds(constellationID, systemID);
+    holds(regionID, systemID);
+  }
+
   return {
     hasSystem: (systemID) => known.has(systemID),
     systemName: (systemID) => names.get(systemID) ?? null,
     security: (systemID) => security.get(systemID) ?? null,
     neighbors: (systemID) => adjacency.get(systemID) ?? [],
+    isTriglavian: (systemID) => triglavian.has(systemID),
+    systemsIn: (id) => (id >= 30_000_000 && id <= 39_999_999 ? [id] : children.get(id) ?? []),
+    parentOf: (id) => parents.get(id) ?? null,
     systemCount: known.size,
     edgeCount,
   };
@@ -211,10 +249,15 @@ export function solveRoute(
 
 /**
  * The hops along a way already chosen: the systems in order, each a jump from the one before. The gate
- * for a hop is the first the map has between the two. Not reachable where the way is empty or two of its
- * systems have no jump between them.
+ * for a hop is the first the map has between the two; where it has none, the jump gate the pilot may take
+ * from the one to the other (`jumpGates`). Not reachable where the way is empty or two of its systems have
+ * no jump between them.
  */
-export function routeAlong(graph: SystemGraph, systems: readonly number[]): RouteResult {
+export function routeAlong(
+  graph: SystemGraph,
+  systems: readonly number[],
+  jumpGates: readonly { readonly fromSystemID: number; readonly toSystemID: number; readonly structureID: number }[] = [],
+): RouteResult {
   const first = systems[0];
   if (first === undefined) {
     return UNREACHABLE(0);
@@ -225,7 +268,12 @@ export function routeAlong(graph: SystemGraph, systems: readonly number[]): Rout
     const toSystemID = systems[at]!;
     const edge = graph.neighbors(fromSystemID).find((each) => each.toSystemID === toSystemID);
     if (edge === undefined) {
-      return UNREACHABLE(first);
+      const jumpGate = jumpGates.find((each) => each.fromSystemID === fromSystemID && each.toSystemID === toSystemID);
+      if (jumpGate === undefined) {
+        return UNREACHABLE(first);
+      }
+      hops.push({ fromSystemID, toSystemID, gateToWarpID: jumpGate.structureID, jumpToGateID: 0, throughJumpGate: true });
+      continue;
     }
     hops.push({ fromSystemID, toSystemID, gateToWarpID: edge.gateID, jumpToGateID: edge.destinationGateID });
   }

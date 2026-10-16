@@ -52,6 +52,18 @@ export interface FormatContext {
   readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
   /** The same for a tag that asks for an interval's short written form ("6d 8h 57m"). */
   readonly writeShortInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /**
+   * A distance in metres written as the client writes one (NumericPropertyHandler._GetDistance: FmtDist(value,
+   * maxdemicals=decimalPlaces, 3 where the tag says none)), for a numeric tag that asks for its distance. Without
+   * it such a tag is written as a plain number.
+   */
+  readonly writeDistance?: (meters: number, decimalPlaces: number) => string;
+  /**
+   * An amount of ISK written as the client writes one (NumericPropertyHandler._GetIsk: FmtISK(value,
+   * showFractionsAlways=decimalPlaces > 0), 2 places where the tag says none), for a numeric tag that asks for its
+   * isk. Null, or without it, such a tag is written as a plain number.
+   */
+  readonly writeIsk?: (amount: number, decimalPlaces: number) => string | null;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -174,6 +186,7 @@ const idOf = (value: JsonValue | undefined): number | null => {
 /** Which of the page's name kinds a place's ID belongs to, by the game's ID ranges. */
 function locationKind(id: number): NameKind {
   if (id >= 10_000_000 && id < 20_000_000) return "region";
+  if (id >= 20_000_000 && id < 30_000_000) return "constellation";
   if (id >= 30_000_000 && id < 40_000_000) return "system";
   if (id >= 60_000_000 && id < 64_000_000) return "station";
   return "structure";
@@ -200,7 +213,9 @@ function formatDateTime(filetime: number, settings: Readonly<Record<string, stri
     return "";
   }
   const date = `${when.getUTCFullYear()}.${two(when.getUTCMonth() + 1)}.${two(when.getUTCDate())}`;
-  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}`;
+  // dateTimeFormatters.FormatDateTime (11 to 18): a full, long or medium time has its seconds, a short one not.
+  const seconds = settings.time === "medium" || settings.time === "long" || settings.time === "full" ? `:${two(when.getUTCSeconds())}` : "";
+  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}${seconds}`;
   if (settings.date === "none") return time;
   if (settings.time === "none") return date;
   return `${date} ${time}`;
@@ -258,7 +273,16 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
   switch (token.type) {
     case "numeric": {
       const value = numberOf(given);
-      text = value === null ? "" : formatNumber(value, token);
+      const places = (fallback: number): number => {
+        const said = Number(token.settings.decimalPlaces ?? fallback);
+        return Number.isInteger(said) && said >= 0 ? said : fallback;
+      };
+      const isk = value !== null && token.property === "isk" && context.writeIsk ? context.writeIsk(value, places(2)) : null;
+      text = value === null
+        ? ""
+        : token.property === "distance" && context.writeDistance
+          ? context.writeDistance(value, places(3))
+          : isk ?? formatNumber(value, token);
       break;
     }
     case "item":
@@ -340,6 +364,22 @@ const UE_LOCID = 3;
 const UE_TYPEID = 4;
 const UE_TYPEIDANDQUANTITY = 24;
 const UE_LIST = 103;
+/** carbon/common/lib/const.py 273: one of the client's labels, worded with its own arguments (cfg.py 125, _GetLocalization). */
+const UE_LOC = 101;
+
+/** A dict as the bridge carries one ({type: "dict", entries}), as a label's arguments; anything else gives none. */
+function dictArguments(value: JsonValue | undefined): Record<string, JsonValue> {
+  const out: Record<string, JsonValue> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, JsonValue>;
+    if (record.type === "dict" && Array.isArray(record.entries)) {
+      for (const entry of record.entries) {
+        if (Array.isArray(entry) && typeof entry[0] === "string") out[entry[0]] = entry[1] ?? null;
+      }
+    }
+  }
+  return out;
+}
 
 export interface TypedContext extends FormatContext {
   /** The client's templates by label, for the two the conversion words with. */
@@ -405,6 +445,11 @@ export function convertTyped(code: JsonValue | undefined, value: JsonValue | und
       const separator = typeof second === "string" ? second : context.templates?.[LIST_DELIMITER] ?? ", ";
       return texts.join(separator);
     }
+    case UE_LOC: {
+      // cfg._GetLocalization (264 to 284): the label's own text, filled with its arguments, each typed one worded first.
+      const template = typeof inner === "string" ? context.templates?.[inner] : undefined;
+      return typeof template === "string" ? formatTemplate(template, prepareArguments(dictArguments(second), context), context) : "";
+    }
     default:
       return "";
   }
@@ -420,17 +465,25 @@ export function prepareArguments(args: TemplateArguments, context: TypedContext)
 }
 
 /** What a typed value needs before it can be worded: the names, and the client's labels. */
-function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[]): void {
+function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[], templates?: TypedContext["templates"]): void {
   const [code, value] = tuple;
   if (nestedTyped(value)) {
-    typedNeeds(value, refs, labels);
+    typedNeeds(value, refs, labels, templates);
     return;
   }
   const id = idOf(value);
-  if (code === UE_LIST) {
+  if (code === UE_LOC && typeof value === "string") {
+    labels.push(value);
+    const args = dictArguments(third(tuple));
+    for (const each of Object.values(args)) {
+      if (Array.isArray(each)) typedNeeds(each, refs, labels, templates);
+    }
+    const template = templates?.[value];
+    if (typeof template === "string") refs.push(...templateNameRefs(template, args));
+  } else if (code === UE_LIST) {
     for (const entry of listEntries(value)) {
       if (Array.isArray(entry)) {
-        typedNeeds(entry, refs, labels);
+        typedNeeds(entry, refs, labels, templates);
       }
     }
     if (typeof third(tuple) !== "string") {
@@ -448,12 +501,15 @@ function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string
   }
 }
 
-/** The names a dialog's typed arguments need, for the page's name cache to fetch. */
-export function typedNameRefs(args: TemplateArguments): NameRef[] {
+/**
+ * The names a dialog's typed arguments need, for the page's name cache to fetch. A label's own names (UE_LOC) are
+ * known only from its text, where `templates` has it.
+ */
+export function typedNameRefs(args: TemplateArguments, templates?: TypedContext["templates"]): NameRef[] {
   const refs: NameRef[] = [];
   for (const value of Object.values(args)) {
     if (Array.isArray(value)) {
-      typedNeeds(value, refs, []);
+      typedNeeds(value, refs, [], templates);
     }
   }
   return refs;
