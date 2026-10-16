@@ -245,10 +245,12 @@ test("a typed value given as a value is converted first, and its own third membe
   assert.equal(convert([103, [24, 34, 10], "<br>"]), "");
 });
 
-test("a code that is not done is nothing", () => {
-  for (const tuple of [[14, 134359400000000000], [28, 1500], [999, "x"], ["4", 34], [null, 34], [undefined, 34]]) {
-    assert.equal(convert(tuple), "", JSON.stringify(tuple));
-  }
+// cfg.py FormatConvert (370 to 380): a code with no format is 'INVALID FORMAT TYPE %s, value is %s'.
+test("a code the client has no format for is said as the client says it; a tuple with no code is nothing", () => {
+  assert.equal(convert([999, "x"]), "INVALID FORMAT TYPE 999, value is x");
+  assert.equal(convert(["4", 34]), "INVALID FORMAT TYPE 4, value is 34");
+  assert.equal(convert([null, 34]), "INVALID FORMAT TYPE None, value is 34");
+  assert.equal(convert([undefined, 34]), "");
 });
 
 test("a dialog's arguments are prepared as the client prepares them: every tuple to its text, the rest left alone", () => {

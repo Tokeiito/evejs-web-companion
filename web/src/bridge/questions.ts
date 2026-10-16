@@ -33,6 +33,7 @@ import {
   typedLabels,
   typedNameRefs,
   type TemplateArguments,
+  type TypedContext,
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
@@ -262,11 +263,27 @@ export function argumentsOf(value: unknown): TemplateArguments {
  * it, which wins. A dialog's are prepared first as the client prepares them,
  * its typed values turned to text (cfg.__prepdict).
  */
+/**
+ * How the client's words are filled for a question or a dialog: names, the pilot, the install's templates, and an
+ * interval, a distance and ISK written the client's way where its words for them are to hand.
+ */
+function wordingContext(client: ClientWording, nameOf: NameOf): TypedContext {
+  return {
+    nameOf,
+    playerID: client.playerID ?? null,
+    templates: client.templates,
+    writeInterval: intervalWriter(client.templates),
+    writeShortInterval: shortIntervalWriter(client.templates),
+    // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
+    writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
+    writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
+  };
+}
+
 function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameOf): TemplateArguments {
   const given = parametersOf(words.parameters);
-  const sent = typeof words.dialog === "string"
-    ? prepareArguments(given, { nameOf, playerID: client.playerID ?? null, templates: client.templates })
-    : given;
+  // A dialog's typed values worded as the client prepares them (cfg.__prepdict), with the same writers.
+  const sent = typeof words.dialog === "string" ? prepareArguments(given, wordingContext(client, nameOf)) : given;
   return { ...(client.extra ?? {}), ...sent };
 }
 
@@ -278,18 +295,7 @@ function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameO
 export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: ClientWording): string | null {
   const key = wordsKey(words);
   const template = key !== null ? client.templates[key] : null;
-  // An interval in a label is written the client's way when the client's words for one are to hand.
-  return typeof template === "string"
-    ? formatTemplate(template, argumentsFor(words, client, nameOf), {
-        nameOf,
-        playerID: client.playerID ?? null,
-        writeInterval: intervalWriter(client.templates),
-        writeShortInterval: shortIntervalWriter(client.templates),
-        // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
-        writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
-        writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
-      })
-    : null;
+  return typeof template === "string" ? formatTemplate(template, argumentsFor(words, client, nameOf), wordingContext(client, nameOf)) : null;
 }
 
 /** The labels a dialog's numeric values are written with: a distance's units, and ISK's (ISK_LABELS). */

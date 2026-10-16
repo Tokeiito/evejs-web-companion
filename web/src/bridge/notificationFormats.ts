@@ -20,7 +20,7 @@
 // yet. The contacts' subjects come from their own formatters (contactNotifications.ts). Anything else is null, and
 // the page says it its own way.
 
-import { formatTemplate, parseTemplate, plainText, type FormatContext, type TemplateArguments } from "./clientWords.ts";
+import { DATE_LABELS, YEAR_1800_TICKS, formatTemplate, parseTemplate, plainText, type FormatContext, type TemplateArguments } from "./clientWords.ts";
 import { CONTACT_NOTIFICATION_TYPE, formatContactNotification } from "./contactNotifications.ts";
 import type { Notification } from "./notifications.ts";
 import type { NameKind, NameRef } from "../store/names.ts";
@@ -260,20 +260,8 @@ function iskWorded(amount: JsonValue | undefined, showFractionsAlways: JsonValue
   return worded(fractions ? "UI/Util/FmtIsk" : "UI/Util/FmtIskNoDecimal", {}, { amount: shown }, context);
 }
 
-/** The client's clock: 100 ns ticks. appConst.YEAR365 * 199, below which FmtDate takes the value for a length of time. */
-const YEAR_1800 = 365n * 24n * 3600n * 10_000_000n * 199n;
-/** carbon's format.FmtDate (71 to 114): the label for each format, by its two letters. */
-const DATE_LABELS: Readonly<Record<string, string>> = {
-  ll: "/Carbon/UI/Common/DateTime/SimpleDateUTC", sl: "/Carbon/UI/Common/DateTime/SimpleDateUTC", xs: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
-  ls: "/Carbon/UI/Common/DateTime/DateLongShort", ss: "/Carbon/UI/Common/DateTime/DateLongShort",
-  ln: "/Carbon/UI/Common/DateTime/DateLongNone", sn: "/Carbon/UI/Common/DateTime/DateLongNone", xn: "/Carbon/UI/Common/DateTime/DateLongNone",
-  nl: "/Carbon/UI/Common/DateTime/Time",
-  ns: "/Carbon/UI/Common/DateTime/HoursAndMinutes",
-  xl: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
-  el: "/Carbon/UI/Common/DateTime/DateExtendedLong",
-  es: "/Carbon/UI/Common/DateTime/DateExtendedShort",
-  en: "/Carbon/UI/Common/DateTime/DateExtendedNone",
-};
+/** The client's clock: 100 ns ticks; below the year 1800 FmtDate takes the value for a length of time (clientWords.ts). */
+const YEAR_1800 = YEAR_1800_TICKS;
 
 /**
  * FmtDate(date, fmt='ll'): a time as the label of its format words it (datetime=date); undefined for a length of
