@@ -1789,6 +1789,8 @@ function createGamePortPilots({
       selection: null,
       /** godma's priming that is out now, and the ship in a place it is for: whoever wants the ship's readings meanwhile waits for it. */
       dogmaPriming: null,
+      /** What the last priming's GetAllInfo answered, as it came: what the page's asking of it is answered from (allInfoKept). */
+      allInfo: null,
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
@@ -2311,6 +2313,11 @@ function createGamePortPilots({
     if (service === "beyonce" && method === "GetFormations") {
       const known = await run(entry, service, method, () => formationsKnown(entry));
       return { service, method, result: wireToBridgeJson(known === undefined ? null : known), notifications: drain(entry) };
+    }
+    // GetAllInfo is godma's priming, asked once for a ship in a place: anyone's asking after is answered from godma.
+    if (service === "dogmaIM" && method === "GetAllInfo") {
+      const kept = await allInfoKept(entry);
+      if (kept !== undefined) return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
     }
     // An attribute's value is the client's own dogma location's to answer, where godma holds the item.
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
@@ -4222,6 +4229,21 @@ function createGamePortPilots({
     return entry.dogma.shipReadings(place.shipID);
   }
 
+  /**
+   * GetAllInfo answered from what godma holds, as the client's godma has it for its windows: primed once for a ship in a
+   * place (godma.Prime, 2405 to 2409) and kept by the server's notices since. The priming's answer with the ship's
+   * items as godma holds them now (pilotDogma.allInfoNow). Undefined where godma is not primed for where the pilot is,
+   * or the pilot has no ship: then it is asked.
+   */
+  async function allInfoKept(entry) {
+    const place = whereabouts(entry);
+    await shipReadings(entry, place);
+    // A module just fitted is as the server has answered of it, once it has.
+    await entry.itemWork;
+    if (!place.shipID || entry.dogmaLoaded !== primedFor(entry, place) || !entry.allInfo) return undefined;
+    return entry.dogma.allInfoNow(entry.allInfo, place.shipID);
+  }
+
   /** The asking itself. True where godma is primed for the ship in the place; false where dogma could not be asked; fails where the session is lost. */
   async function primeGodma(entry, place, loadedFor) {
     try {
@@ -4238,6 +4260,7 @@ function createGamePortPilots({
       // What godma let go before it asked: every inventory but the character's.
       entry.dogma.purge();
       entry.dogma.loadAllInfo(allInfo);
+      entry.allInfo = allInfo;
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
       // The achievements' eventHandler.OnHighSlotFittingChanged: godma has the ship now, and its turret slots were owed.
@@ -5609,6 +5632,11 @@ function createGamePortPilots({
     }
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
+    // GetAllInfo is godma's priming, asked once for a ship in a place: anyone's asking after is answered from godma.
+    if (service === "dogmaIM" && method === "GetAllInfo") {
+      const kept = await allInfoKept(entry);
+      if (kept !== undefined) return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
+    }
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
       const held = attributeHeld(entry, form.args);
       if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
