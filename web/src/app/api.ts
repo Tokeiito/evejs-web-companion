@@ -3988,6 +3988,9 @@ export async function loadScannerOperations(
           destination: scannerVector(row.destination),
           scanRange: asNumberOrNull(row.scanRange) ?? 0,
           rangeStep: asNumberOrNull(row.rangeStep) ?? 0,
+          rangeSteps: Array.isArray(row.rangeSteps)
+            ? row.rangeSteps.map((range) => asNumberOrNull(range)).filter((range): range is number => range !== null && range > 0)
+            : [],
           state: asNumberOrNull(row.state) ?? 0,
           expiry: typeof row.expiry === "string" ? row.expiry : "0",
         }];

@@ -27,6 +27,8 @@ export interface ScannerProbeOperation {
   readonly destination: readonly [number, number, number];
   readonly scanRange: number;
   readonly rangeStep: number;
+  /** The type's eight ranges in metres, step 1 first; empty where the read does not say them (the web gateway's). */
+  readonly rangeSteps?: readonly number[];
   readonly state: number;
   readonly expiry: string;
 }

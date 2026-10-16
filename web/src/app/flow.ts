@@ -1085,6 +1085,10 @@ export interface AppFlow {
   recoverScannerProbes(): Promise<void>;
   /** Reconnect the session character's lost probes, then refresh scanner state. */
   reconnectScannerProbes(): Promise<void>;
+  /** The probe menu's Scan Range: the chosen probes given a range step (1 to 8), then the scanner read again. */
+  setProbeRangeStep(probeIDs: readonly number[], rangeStep: number): Promise<void>;
+  /** The probe menu's Recover Probe: the chosen probes recalled, then the scanner read again. */
+  recoverChosenProbes(probeIDs: readonly number[]): Promise<void>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
@@ -5236,6 +5240,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function reconnectScannerProbes(): Promise<void> {
     return runScannerAction(async () => scannerWrites.reconnect(await api.loadScannerOperations(callOptions), scannerShip()));
+  }
+
+  // The probe menu's two (scanSvc.GetProbeMenu): a range step for the chosen probes, and their recall.
+  function setProbeRangeStep(probeIDs: readonly number[], rangeStep: number): Promise<void> {
+    return runScannerAction(async () => scannerWrites.setRangeStep(await api.loadScannerOperations(callOptions), probeIDs, rangeStep));
+  }
+
+  function recoverChosenProbes(probeIDs: readonly number[]): Promise<void> {
+    return runScannerAction(async () => scannerWrites.recoverSome(await api.loadScannerOperations(callOptions), scannerShip(), probeIDs));
   }
 
   // --- Fleet Center -------------------------------------------------------
@@ -18724,6 +18737,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     analyzeScannerSignatures,
     recoverScannerProbes,
     reconnectScannerProbes,
+    setProbeRangeStep,
+    recoverChosenProbes,
     loadFleet,
     formFleet,
     inviteFleetMember,

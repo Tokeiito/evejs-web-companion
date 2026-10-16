@@ -2004,8 +2004,8 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "SetActivityState([probeID, ...], True or False): a list",
   ),
-  "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans."),
-  "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
+  "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans. On the game port the transport keeps it the same way and sends nothing (pilots.js, callBoundMethod)."),
+  "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans. On the game port the transport keeps it the same way and sends nothing (pilots.js, callBoundMethod)."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
   "dogmaIM.GetAllInfo": Object.freeze({
     status: "same",

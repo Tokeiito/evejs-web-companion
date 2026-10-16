@@ -102,6 +102,8 @@ export const PROBE_STATE = Object.freeze({ INACTIVE: 0, IDLE: 1, MOVING: 2, WARP
 export const PROBES_IN_A_FORMATION = 8;
 /** scanSvc.py 25: MIN_PROBE_RECOVER_DISTANCE, in metres from the ship's surface. */
 export const MIN_PROBE_RECOVER_DISTANCE = 2000;
+/** probescanning/const.py scanProbeNumberOfRangeSteps. */
+export const SCAN_RANGE_STEPS = 8;
 /** scanSvc.py 24: RECONNECT_DELAY_MINUTES = 1. */
 export const RECONNECT_DELAY_MS = 60_000;
 /** inventorycommon/const.py 48 and 49: mapVoidSystemMin and mapVoidSystemMax (idCheckers.IsVoidSpaceSystem, 129). */
@@ -257,6 +259,37 @@ export function createScannerWrites(act: Ask, now: () => number = Date.now) {
       }
       const recalled = countOf(await act("scanMgr", "RecoverProbes", [[...recall.probeIDs]]));
       if (recalled !== null && recalled < recall.probeIDs.length) throw new Error(NOT_ALL_PROBES_RETURNED);
+    },
+
+    /**
+     * The probe menu's Scan Range (scanSvc.GetProbeMenu 398 to 401, SetScanRange_Check 409 to 413): each chosen probe
+     * given the step, refused while a scan is under way (UserErrorIfScanning). SetProbeRangeStep is the client's own
+     * list's (probeTracker.SetProbeRangeStep, which changes nothing for a step outside the eight); on the game port
+     * the transport keeps it and sends nothing, and the next RequestScans carries it.
+     */
+    async setRangeStep(scanner: ScannerRead, probeIDs: readonly number[], rangeStep: number): Promise<void> {
+      if (scanner.scanning === true) throw new Error(SCAN_IN_PROGRESS);
+      if (!Number.isInteger(rangeStep) || rangeStep < 1 || rangeStep > SCAN_RANGE_STEPS) return;
+      const held = new Set(scanner.probes.map((probe) => probe.probeID));
+      for (const probeID of probeIDs) {
+        if (held.has(probeID)) await act("scanMgr", "SetProbeRangeStep", [probeID, rangeStep]);
+      }
+    },
+
+    /**
+     * The probe menu's Recover Probe (RecoverProbe_Check, 416 to 420; scanSvc.RecoverProbes 324 to 337): the chosen
+     * probes recalled, refused while a scan is under way, from a capsule, or with one of them within 2,000 metres.
+     * Fails where the server recalled fewer than were asked for (probeTracker.RecoverProbes).
+     */
+    async recoverSome(scanner: ScannerRead, ship: ScannerShip, probeIDs: readonly number[]): Promise<void> {
+      if (scanner.scanning === true) throw new Error(SCAN_IN_PROGRESS);
+      if (ship.isCapsule === true) throw new Error(NO_PROBES_FOR_A_CAPSULE);
+      for (const probeID of probeIDs) {
+        const distance = ship.surfaceDistanceTo(probeID);
+        if (distance !== null && distance < MIN_PROBE_RECOVER_DISTANCE) throw new Error(PROBES_TOO_CLOSE_TO_RECOVER);
+      }
+      const recalled = countOf(await act("scanMgr", "RecoverProbes", [[...probeIDs]]));
+      if (recalled !== null && recalled < probeIDs.length) throw new Error(NOT_ALL_PROBES_RETURNED);
     },
 
     /** Asks the server to tell of the pilot's probes again. Refuses as the client does; fails as the call fails. */

@@ -4103,6 +4103,9 @@ function createGamePortPilots({
           destination: probe.destination,
           scanRange: probe.scanRange,
           rangeStep: probe.rangeStep,
+          // scanSvc.GetScanRangeStepsByTypeID: the eight ranges the probe's menu offers (GetProbeMenu, 398 to 401);
+          // null where the type's attributes are not known.
+          rangeSteps: entry.scanner.rangeSteps(probe.typeID) ?? null,
           state: probe.state,
           expiry: String(probe.expiry ?? "0"),
         })),
@@ -4124,7 +4127,8 @@ function createGamePortPilots({
    *   SetActivityState(ids, on)   each goes between idle and inactive
    *
    * and, for the two calls the web client makes where the retail client only
-   * changes its own list (SetProbeDestination, SetProbeRangeStep), that change.
+   * changes its own list (SetProbeDestination, SetProbeRangeStep), that change:
+   * those two are not sent at all (callBoundMethod), the change being the whole of them.
    */
   /**
    * What the client's dogma location does to its own weapon banks once a
@@ -5210,6 +5214,13 @@ function createGamePortPilots({
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
       const held = attributeHeld(entry, form.args);
       if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
+    }
+    // scanSvc.SetProbeDestination and SetProbeRangeStep (169 to 175): the client's own list of its probes, never the
+    // server's. The probes are kept here as its scan service keeps them, so the change is made to them and nothing is
+    // sent, and what was not sent is not counted. The next RequestScans carries it, as the client's does.
+    if (service === "scanMgr" && (method === "SetProbeDestination" || method === "SetProbeRangeStep")) {
+      afterScanManagerCall(entry, method, form.args, null);
+      return { service, method, result: null, notifications: drain(entry) };
     }
     // What crimewatch's service keeps is its to answer on a Moniker's handle too.
     if (keptOfCrimewatch(service, method, form)) {
