@@ -453,3 +453,98 @@ export function createBotPresses(): BotPresses {
     },
   };
 }
+
+// ── a question's title, and its answer kept ("do not ask again") ─────────────
+//
+// What a question is put up as, by what asks it:
+//
+//   XmppChat.AskYesNoQuestion   a dialog of the install's by its name (prompt_player_fsd_dialog, YESNO; dialog_handler
+//                               _handle_player_fsd_dialog and _prompt_player): titled with the dialog's title, else
+//                               its type's own word (TITLE_BY_DIALOG_TYPE, 24 to 29; Information for any other); a
+//                               dialog the install marks suppressable has the box "/Carbon/UI/Common/DoNotAskAgain"
+//                               (messagebox.py prompt_player, 164 to 168); ticked, the answer is kept where the dialog
+//                               lets it be (_persist_prompt_suppress_choice, 126 to 132).
+//   agents.YesNo with a suppressID   the agent's box (agents.py ShowMessageWindow, 432 to 437; ui_message.py
+//                               prompt_player, 21 to 42), with the box "UI/Common/SuppressionShowMessage"; ticked, any
+//                               answer but No, Close or Cancel is kept.
+//   agents.SingleChoiceBox with a suppressID   its radio box (agents.py 439 to 468), with the box
+//                               "UI/Common/SuppressionShowMessageRemember"; ticked, the answer is kept whatever it is,
+//                               the button and the choice.
+//
+// An answer kept is the answer: the question is not put up (dialog_handler 59 to 64; prompt_player 22 to 25;
+// SingleChoiceBox 460 to 462). The client keeps them all in one place, settings.user.suppress, under 'suppress.' and
+// the dialog's name or the suppressID; so does the page (AppFlow.keepQuestionAnswer).
+
+/** TITLE_BY_DIALOG_TYPE: a dialog type's own word, for a box whose dialog has no title. */
+export const DIALOG_TYPE_TITLES: Readonly<Record<string, string>> = {
+  info: "UI/Common/Information",
+  infomodal: "UI/Common/Information",
+  warning: "UI/Generic/Warning",
+  question: "UI/Common/Question",
+  error: "UI/Common/Error",
+  fatal: "UI/Common/Fatal",
+};
+/** The title of a box whose dialog has none and whose type has no word of its own. */
+export const INFORMATION_TITLE = "UI/Common/Information";
+/** The page's own words for those, where the install's are not to hand. */
+export const OWN_DIALOG_TITLES: Readonly<Record<string, string>> = {
+  "UI/Common/Information": "Information",
+  "UI/Generic/Warning": "Warning",
+  "UI/Common/Question": "Question",
+  "UI/Common/Error": "Error",
+  "UI/Common/Fatal": "Fatal",
+};
+/** The agents' boxes' words (agents.py 435 and 465). */
+export const SUPPRESSION_SHOW_MESSAGE = "UI/Common/SuppressionShowMessage";
+export const SUPPRESSION_SHOW_MESSAGE_REMEMBER = "UI/Common/SuppressionShowMessageRemember";
+
+/** How a question's answer may be kept: by the dialog it is, or by the agent's suppressID; null where it may not. */
+export type QuestionKeeping =
+  | { readonly kind: "dialog"; readonly key: string }
+  | { readonly kind: "agentYesNo"; readonly key: string }
+  | { readonly kind: "agentChoice"; readonly key: string };
+
+/** The dialog a question is, where it is one of the install's (AskYesNoQuestion's), by its name; else null. */
+export function questionDialog(question: ClientQuestion): string | null {
+  return typeof question.body.dialog === "string" && question.body.dialog !== "" ? question.body.dialog : null;
+}
+
+export function questionKeeping(question: ClientQuestion): QuestionKeeping | null {
+  const dialog = questionDialog(question);
+  if (dialog !== null) return question.kind === "yesNo" ? { kind: "dialog", key: dialog } : null;
+  if (question.suppressID === null || question.suppressID === "") return null;
+  if (question.kind === "yesNo") return { kind: "agentYesNo", key: question.suppressID };
+  if (question.kind === "choice") return { kind: "agentChoice", key: question.suppressID };
+  return null;
+}
+
+/** The answer a kept one gives a question (`kept` as AppFlow keeps it); undefined where none is kept or it fits not. */
+export function keptQuestionAnswer(question: ClientQuestion, kept: string | null): QuestionAnswer | undefined {
+  const keeping = questionKeeping(question);
+  if (keeping === null || kept === null) return undefined;
+  if (keeping.kind === "agentChoice") {
+    const match = /^choice:(ok|cancel):(\d+)$/.exec(kept);
+    if (match === null) return undefined;
+    const answer = { confirmed: match[1] === "ok", index: Number(match[2]) };
+    return answerFits(question, answer) ? answer : undefined;
+  }
+  // A YESNO question's kept Yes or No (an OK kept by another dialog's box answers no Yes either: ID_OK is not ID_YES).
+  return kept === "yes" ? true : kept === "no" || kept === "ok" ? false : undefined;
+}
+
+/**
+ * What to keep of an answer given with the box ticked, or null where it is not kept: a dialog's where the dialog lets
+ * that answer be kept (`dialogSuppress`, its "suppress" words: "any", "yes" or "no"); an agent's Yes; an agent's
+ * choice whatever it is.
+ */
+export function keptValueOf(question: ClientQuestion, answer: QuestionAnswer, dialogSuppress: string | null | undefined): string | null {
+  const keeping = questionKeeping(question);
+  if (keeping === null) return null;
+  if (keeping.kind === "agentChoice") {
+    return answer !== null && typeof answer === "object" ? `choice:${answer.confirmed ? "ok" : "cancel"}:${answer.index}` : null;
+  }
+  if (typeof answer !== "boolean") return null;
+  if (keeping.kind === "agentYesNo") return answer ? "yes" : null;
+  const said = answer ? "yes" : "no";
+  return dialogSuppress === "any" || dialogSuppress === said ? said : null;
+}

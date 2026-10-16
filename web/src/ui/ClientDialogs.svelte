@@ -29,7 +29,10 @@
   import type { SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { NUMERIC_WORD_LABELS, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import {
+    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, questionText, wordsLabels, wordsNameRefs,
+    type ClientWording,
+  } from "../bridge/questions.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -65,23 +68,10 @@
   const BOX_TYPES: ReadonlySet<string> = new Set(["info", "infomodal", "warning", "question", "error", "fatal", "windowhelp"]);
   const STRIP_TYPES: ReadonlySet<string> = new Set(["notify", "hint", "event"]);
   /** TITLE_BY_DIALOG_TYPE: the type's own word for a box whose dialog has no title; Information for any other. */
-  const TYPE_TITLES: Readonly<Record<string, string>> = {
-    info: "UI/Common/Information",
-    infomodal: "UI/Common/Information",
-    warning: "UI/Generic/Warning",
-    question: "UI/Common/Question",
-    error: "UI/Common/Error",
-    fatal: "UI/Common/Fatal",
-  };
-  const INFORMATION = "UI/Common/Information";
+  const TYPE_TITLES = DIALOG_TYPE_TITLES;
+  const INFORMATION = INFORMATION_TITLE;
   /** The page's own words for those, where the install's are not to hand. */
-  const OWN_TITLES: Readonly<Record<string, string>> = {
-    "UI/Common/Information": "Information",
-    "UI/Generic/Warning": "Warning",
-    "UI/Common/Question": "Question",
-    "UI/Common/Error": "Error",
-    "UI/Common/Fatal": "Fatal",
-  };
+  const OWN_TITLES = OWN_DIALOG_TITLES;
   /** How long the strip stays (QuickMessage.ShowMsg: AutoTimer(5000, self.hide)). */
   const STRIP_MS = 5000;
 

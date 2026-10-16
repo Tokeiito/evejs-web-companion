@@ -217,7 +217,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
@@ -2008,6 +2008,8 @@ export interface AppFlow {
    * _persist_prompt_suppress_choice): the dialog is not put up again, and a question is answered with what was kept.
    */
   keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void;
+  /** A server question's answer kept, by its dialog's name or its suppressID (bridge/questions.ts keptValueOf). */
+  keepQuestionAnswer(key: string, value: string): void;
   /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
@@ -2948,6 +2950,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // the bot pressed it, and meant it.
       if (botPresses.answers(question)) {
         void api.answerClientQuestion(question.id, true, callOptions).catch(() => {});
+        return;
+      }
+      // An answer the user kept for it ("do not ask again") is the answer, and nothing is put up (bridge/questions.ts).
+      const keeping = questionKeeping(question);
+      const kept = keeping === null ? undefined : keptQuestionAnswer(question, questionAnswerKept(keeping.key));
+      if (kept !== undefined) {
+        void api.answerClientQuestion(question.id, kept, callOptions).catch(() => {});
         return;
       }
       store.apply({ type: "live/question", question, epoch, sequence });
@@ -7663,10 +7672,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void {
+    keepQuestionAnswer(dialog, answer);
+  }
+
+  /**
+   * A server question's answer kept, in the same place (bridge/questions.ts questionKeeping): by its dialog's name or
+   * the agent's suppressID, as written by keptValueOf ("yes", "no", "ok", or an agent's choice "choice:ok:2").
+   */
+  function questionAnswerKept(key: string): string | null {
     try {
-      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, answer);
+      return settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${key}`) ?? null;
     } catch {
-      // Storage full or refused: the dialog is asked again.
+      return null;
+    }
+  }
+
+  function keepQuestionAnswer(key: string, value: string): void {
+    try {
+      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${key}`, value);
+    } catch {
+      // Storage full or refused: the question is asked again.
     }
   }
 
@@ -18927,6 +18952,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     dismissDialog,
     answerDialog,
     keepDialogAnswer,
+    keepQuestionAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
     setDestination,
