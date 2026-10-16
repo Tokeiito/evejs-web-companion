@@ -287,6 +287,7 @@ class GamePortSession {
     callTimeoutMs = CALL_TIMEOUT_MS,
     provisionalWaitLimitMs = Infinity,
     clientCalls = null,
+    onSent = null,
   } = {}) {
     if (!transport) throw new TypeError("A game-port session needs a transport.");
     this.transport = transport;
@@ -309,6 +310,12 @@ class GamePortSession {
      * as a promise. Undefined means nobody here answers that call.
      */
     this.clientCalls = clientCalls;
+    /**
+     * Told of each call as it goes on the wire: fn(service, method, {carried}), where `service` is the one a bound
+     * object was bound for (null where that is not known) and `carried` is true for the call a bind carried. A call
+     * shared with one already out, or answered from the object cache, is not sent and is not told.
+     */
+    this.onSent = onSent;
 
     this.closed = false;
     this.closeReason = null;
@@ -321,6 +328,8 @@ class GamePortSession {
     this.nodeOfAddress = new Map();
     /** The calls that are out now, by what makes each the call it is (callKey), each with the answer awaited. */
     this.callsOut = new Map();
+    /** The service each bound object was bound for, by its "N=node:id": what a call on it is counted under (onSent). */
+    this.objectServices = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
     /** objectCaching.methodCallCachingDetails: what the server said of a method's answers, by "service.method": {versionCheck, sessionInfo}. */
@@ -575,6 +584,7 @@ class GamePortSession {
     }
     const reply = await this._call({
       destination: nodeAddress(nodeID, service), boundObject: null, service, method: "MachoBindObject", args: [bindParams, call === null ? null : carriedCall(call)], kwargs: null,
+      carried: call === null ? null : call[0],
     });
     const head = Array.isArray(reply) ? reply[0] : null;
     const pair = unwrapSubstream(head && typeof head === "object" && head.type === "substruct" ? head.value : head);
@@ -582,7 +592,18 @@ class GamePortSession {
     if (!objectID || !objectID.startsWith("N=")) {
       throw new GamePortError("BIND_FAILED", `${service} did not return a bound object.`, reply);
     }
+    this.objectServices.set(objectID, service);
     return { objectID, nodeID, result: Array.isArray(reply) ? reply[1] : null };
+  }
+
+  /**
+   * An object another call answered with (invCache's inventories, a fleet made, the scan manager), known from now
+   * as the service's that answered it, so that what is sent on it is counted under that service. Answers the
+   * object's "N=node:id".
+   */
+  objectIsOf(objectID, service) {
+    if (objectID && service) this.objectServices.set(objectID, service);
+    return objectID;
   }
 
   /** A call on a bound object, by the "N=node:id" a bind returned. */
@@ -618,7 +639,7 @@ class GamePortSession {
   }
 
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1 }, written) {
+  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
@@ -654,9 +675,22 @@ class GamePortSession {
         this.timers.clearTimeout(waiter.timer);
         this.pending.delete(callID);
         reject(error);
+        return;
       }
+      this._sent(service ?? this.objectServices.get(boundObject) ?? null, method, carried);
     });
     return answered.then((result) => this._answered({ boundObject, service, method, args }, result));
+  }
+
+  /** A call on the wire, told to whoever counts them (onSent), and the call a bind carried after it. Their counting is never the call's failure. */
+  _sent(service, method, carried) {
+    if (typeof this.onSent !== "function") return;
+    try {
+      this.onSent(service, method, { carried: false });
+      if (typeof carried === "string") this.onSent(service, carried, { carried: true });
+    } catch {
+      // A count missed is a count missed; the call is out.
+    }
   }
 
   /** What a call answers its caller: the answer, with a cached one opened, and kept if it is a service's own. */

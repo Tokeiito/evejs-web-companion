@@ -2729,18 +2729,38 @@ const retailNeeds = (service, method) => RETAIL_CALLS[`${service}.${method}`]?.n
  */
 function createCallLedger() {
   const pairs = new Map();
+  const rowOf = (key) => pairs.get(key) ?? { pair: key, calls: 0, sent: 0, carried: 0, statuses: {}, source: null, note: null };
   return {
+    /**
+     * A pair the transport asked for, in the form it took: `calls` counts these. Not every asking is sent: one
+     * shared with the same call already out takes that call's answer (session.js _call).
+     */
     note(service, method, form) {
       const key = `${service}.${method}`;
-      const row = pairs.get(key) ?? { pair: key, calls: 0, statuses: {}, source: form.source, note: form.note };
+      const row = rowOf(key);
       row.calls += 1;
       row.statuses[form.status] = (row.statuses[form.status] ?? 0) + 1;
-      if (form.status !== "same" && form.note) row.note = form.note;
+      if (row.source === null) row.source = form.source ?? null;
+      if (row.note === null || (form.status !== "same" && form.note)) row.note = form.note ?? row.note;
       pairs.set(key, row);
     },
-    /** Every pair called, most called first. */
+    /**
+     * A pair the session put on the wire: `sent` counts these, and `carried` those of them a bind carried, which
+     * went in the bind's packet (MachoBindObject(params, (method, args, keywords))). A call on an object whose
+     * service the session does not know is counted under "(object)".
+     */
+    sent(service, method, { carried = false } = {}) {
+      const key = `${service ?? "(object)"}.${method}`;
+      const row = rowOf(key);
+      row.sent += 1;
+      if (carried) row.carried += 1;
+      pairs.set(key, row);
+    },
+    /** Every pair asked or sent, most sent first. */
     rows() {
-      return [...pairs.values()].sort((a, b) => b.calls - a.calls || a.pair.localeCompare(b.pair)).map((row) => ({ ...row, statuses: { ...row.statuses } }));
+      return [...pairs.values()]
+        .sort((a, b) => b.sent - a.sent || b.calls - a.calls || a.pair.localeCompare(b.pair))
+        .map((row) => ({ ...row, statuses: { ...row.statuses } }));
     },
   };
 }

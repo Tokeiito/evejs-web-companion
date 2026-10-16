@@ -1161,6 +1161,36 @@ function createGamePortPilots({
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
+  /**
+   * The calls the session makes of itself, never asked for by name here, in the client's form: the login's
+   * GetServiceInfo (machoNet.py 1702), the clock's GetTime (connectionService.py 208, 250), the idle connection's
+   * Ping (connectionService.py 189), a Moniker's MachoResolveObject and MachoBindObject (moniker.py 235, 143), a
+   * cached object's GetCachableObject (objectCaching.py 299). docs/game-port-client-reference.md A1 to A4, P7 and C3.
+   */
+  const SESSIONS_OWN = Object.freeze({ status: "same", source: "carbon/common/script/net/machoNet.py, moniker.py, objectCaching.py; carbon/client/script/remote/connectionService.py", note: null });
+  const sessionsOwn = (service, method) => method === "MachoResolveObject" || method === "MachoBindObject" ||
+    (service === "machoNet" && (method === "GetServiceInfo" || method === "GetTime")) || (service === "pingService" && method === "Ping") ||
+    (service === "objectCaching" && method === "GetCachableObject");
+  /**
+   * A call the session put on the wire, counted as sent (ledger.sent). What is asked and not sent is not: a call
+   * shared with the same one already out, an answer kept, a Moniker made and never called. The session's own calls
+   * are noted as they go, for nothing here asks them by name.
+   */
+  function noteSent(service, method, { carried = false } = {}) {
+    if (!carried && sessionsOwn(service, method)) ledger.note(service, method, SESSIONS_OWN);
+    ledger.sent(service, method, { carried });
+  }
+  /** A session on a transport, which tells the ledger each call it sends. */
+  const sessionOn = (transport) => {
+    const session = createSession(transport);
+    session.onSent = noteSent;
+    return session;
+  };
+  /** The object an answer gave, made known to the session as the service's that answered it (session.objectIsOf). */
+  const answeredObject = (session, service, answer) => {
+    const objectID = boundObjectID(answer);
+    return objectID && typeof session.objectIsOf === "function" ? session.objectIsOf(objectID, service) : objectID;
+  };
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
@@ -1605,7 +1635,7 @@ function createGamePortPilots({
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
     }
-    const session = handed ? handed.session : createSession(transport);
+    const session = handed ? handed.session : sessionOn(transport);
     const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
@@ -4069,7 +4099,7 @@ function createGamePortPilots({
       if (!item || positive(item.categoryID) !== CATEGORY_SHIP) return;
       // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
       ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-      const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
+      const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
       ledger.note("invbroker", "GetAvailableTurretSlots", shape("invbroker", "GetAvailableTurretSlots", [], null, contextFor(entry)));
       await entry.session.callBound(shipInventory, "GetAvailableTurretSlots", [], null);
     });
@@ -4126,7 +4156,7 @@ function createGamePortPilots({
       } catch {
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
-      line.session = createSession(transport);
+      line.session = sessionOn(transport);
       // The server hanging up, or anything else that ends it: the next thing asked opens another.
       line.unlisten = line.session.onClose(forget);
       await line.session.login(userName, passwordFor(userName));
@@ -5276,17 +5306,17 @@ function createGamePortPilots({
       if (asked !== (structureID ?? attribute(entry, "stationid"))) {
         throw fail("CALL_REFUSED", "The pilot is not docked there.");
       }
-      if (structureID !== null) return boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
-      return boundObjectID(await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
+      if (structureID !== null) return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
+      return answeredObject(session, "invbroker", await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
     }
     if (service === "invbroker" && method === "GetInventoryFromId") {
       // invCache.GetInventoryFromId(itemid, passive=0): both positional.
       const passive = kwargs && kwargs.passive !== undefined ? kwargs.passive : args[1] ?? 0;
-      return boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
+      return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
     }
     // A service's own method that answers with a bound object:
     // sm.RemoteSvc('scanMgr').GetSystemScanMgr(), sm.RemoteSvc('fleetObjectHandler').CreateFleet().
-    return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
+    return answeredObject(session, service, await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
   /** idCheckers.IsNPC(session.corpid): whether the pilot's corporation is an NPC one. */
@@ -5645,10 +5675,9 @@ function createGamePortPilots({
       entry.bound.set(handle, { objectID: heldObject, service, container });
       return { boundHandle: handle, service, method, notifications: drain(entry) };
     }
-    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
-      // nothing is sent until it is called.
+      // nothing is sent until it is called. Nor is anything counted: its bind is, as the session sends it (noteSent).
       const given = Array.isArray(args) ? args[0] : undefined;
       // The pilot's own fleet (none named, or the session's named) is asked of the one object fleetSvc keeps for
       // it, where it is held: no Moniker is made.
@@ -5662,6 +5691,7 @@ function createGamePortPilots({
       entry.bound.set(made, own ?? { objectID: null, service, params });
       return { boundHandle: made, service, method, notifications: drain(entry) };
     }
+    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     let objectID;
     try {
       const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
@@ -5732,7 +5762,7 @@ function createGamePortPilots({
       if (service === "invbroker" && method === "FitFitting" && object.params !== undefined) {
         // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
         ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-        const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
+        const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
