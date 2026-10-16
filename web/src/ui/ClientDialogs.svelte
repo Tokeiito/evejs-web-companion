@@ -38,6 +38,7 @@
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
+  import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
 
@@ -99,7 +100,41 @@
     "UI/Contracts/Util/AmountInMillions": "{[numeric]amount, decimalPlaces=2} million",
     "UI/Contracts/Util/AmountInBillions": "{[numeric]amount, decimalPlaces=2} billion",
     "UI/Contracts/Util/AmountInTrillions": "{[numeric]amount, decimalPlaces=2} trillion",
+    "UI/Market/MarketQuote/ImportShoppingListOption": "Paste a shopping list",
+    "UI/Market/MarketQuote/ImportShoppingListOptionHint": "One type to a line, with how many before or after its name.",
+    "UI/Market/MarketQuote/CopyOrderToClipboard": "Copy the list",
+    "UI/Market/MarketQuote/TotalPrice": "Total",
+    // The import's lines not read (ImportShoppingList, CustomInfo): asked here, said by the flow.
+    "UI/SkillQueue/CouldNotReadLines": "These lines were not understood:",
   };
+  /** eveFormat.FmtAmt(amount, showFraction=2), as the export writes a price: grouped by thousands, two places. */
+  const twoPlaces = (amount: number): string => new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+  /**
+   * buyMultiFromBase._ExportShoppingList (168 to 205): a line for each row, its name (CleanText), its quantity times the
+   * orders, its price and its total each to two places or "-" where it has none, tab between; then the total's line;
+   * the lines joined by CR LF. The client in English writes the names in English (GetNameFunc).
+   */
+  function multiBuyExport(buy: MultiBuyAsk, total: number): string {
+    const lines = buy.rows.map((row) => {
+      const qty = row.qty * buy.multiplier;
+      const priced = row.price !== null && row.price !== 0;
+      return [
+        nameOf("type", row.typeID).replace(/\*/g, ""),
+        String(qty),
+        priced ? twoPlaces(Math.round(row.price! * 100) / 100) : "-",
+        priced ? twoPlaces(Math.round(qty * row.price! * 100) / 100) : "-",
+      ].join("\t");
+    });
+    lines.push([buyWord("UI/Market/MarketQuote/TotalPrice"), "", "", twoPlaces(total)].join("\t"));
+    return lines.join("\r\n");
+  }
+  /** The import button (_AddImportButton): the clipboard's text read, or null where the browser would not give it. */
+  async function importFromClipboard(n: number): Promise<void> {
+    const text = await navigator.clipboard.readText().catch(() => null);
+    await flow.importMultiBuy(n, text);
+  }
+  /** The export menu's Copy Order to Clipboard (ExportShoppingListLocalized): the list put on the clipboard. */
+  let exportOpen = $state(false);
   /** A percentage as FmtAmt(percentage * 100, showFraction=1) writes it: to a tenth. */
   const tenths = (fraction: number): number => Math.round(fraction * 1000) / 10;
   /**
@@ -174,6 +209,9 @@
     const place = $multiBuyAsked.stationID;
     flow.requestNames([
       ...$multiBuyAsked.rows.map((row) => ({ kind: "type" as const, id: row.typeID })),
+      // The import hint's two examples (const.typeVeldspar, const.typeTritanium).
+      { kind: "type" as const, id: 1230 },
+      { kind: "type" as const, id: 34 },
       ...(place === null ? [] : [{ kind: (place >= 1_000_000_000_000 ? "structure" : "station") as NameKind, id: place }]),
     ]);
   });
@@ -592,7 +630,13 @@
       <p class="body apply-description">{applyWord("UI/SkillTrading/ApplySkillPointsDescription", { color: "#3ea8d9", points: apply.points, amount: apply.entries.length })}</p>
       <ul class="apply-rows">
         {#each apply.entries as entry (`${entry.skill}:${entry.level}`)}
+          {@const groupIcon = skillGroupIcon(entry.groupID)}
+          {@const complete = apply.finished && entry.progressWithFreePoints === 1}
           <li class="apply-row">
+            <!-- ApplySkillPointsListEntry: the skill group's icon at the left (SetSkillGroupIcon), the book's mark at the
+                 right, which turns to the level's completion, in green, once the points have made it (OnGaugeProgressSet). -->
+            <span class="apply-icon">{#if groupIcon !== null}<img src={groupIcon} alt="" width="32" height="32" />{/if}</span>
+            <span class="apply-middle">
             <span class="apply-gauge">
               <span class="apply-fill with-points" style:width={`${entry.progressWithFreePoints * 100}%`}></span>
               <span class="apply-fill trained" class:complete={apply.finished && entry.progressWithFreePoints === 1} style:width={`${entry.progress * 100}%`}></span>
@@ -602,6 +646,12 @@
               <span class="dim">{entry.timeSavedTicks === null ? "" : applyWord("UI/SkillTrading/EstimatedSkillTimeSaved", { timeSaved: Math.max(0, Math.trunc(entry.timeSavedTicks)) })}</span>
               <span>{applyWord("UI/SkillTrading/SkillProgressLabel", { progress: percent(entry.progress), progressWithFreePoints: percent(entry.progressWithFreePoints) })}</span>
             </span>
+            </span>
+            {#if complete}
+              <span class="apply-book complete" style:mask-image={`url(${SKILL_TRAINING_COMPLETE})`} style:-webkit-mask-image={`url(${SKILL_TRAINING_COMPLETE})`}></span>
+            {:else}
+              <img class="apply-book" src={SKILL_BOOK_NOT_YET} alt="" width="32" height="32" />
+            {/if}
           </li>
         {/each}
       </ul>
@@ -687,6 +737,22 @@
       <span class="book-title">
         <strong>{buyWord("UI/Inventory/ItemActions/MultiBuy")} ({buy.rows.length})</strong>
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>✕</button>
+      </span>
+      <!-- The import button at the top left (_AddImportButton, its hint the option and how a line is read), and the export
+           menu (GetExportMenu): Copy Order to Clipboard. Not here: the English copy (only a client in another language
+           has it) and Add Order to Quickbar (the market's quickbar, which the page has not). -->
+      <span class="multibuy-tools">
+        <button type="button" class="multibuy-import" disabled={buy.busy}
+          title={`${buyWord("UI/Market/MarketQuote/ImportShoppingListOption")}\n\n${buyWord("UI/Market/MarketQuote/ImportShoppingListOptionHint", { type1: 1230, type2: 34 })}`}
+          onclick={() => void importFromClipboard(buy.n).catch(() => {})}>⎘</button>
+        <span class="multibuy-export">
+          <button type="button" aria-haspopup="menu" aria-expanded={exportOpen} onclick={() => (exportOpen = !exportOpen)}>☰</button>
+          {#if exportOpen}
+            <span class="multibuy-menu" role="menu">
+              <button type="button" role="menuitem" onclick={() => { exportOpen = false; void navigator.clipboard.writeText(multiBuyExport(buy, sum)).catch(() => {}); }}>{buyWord("UI/Market/MarketQuote/CopyOrderToClipboard")}</button>
+            </span>
+          {/if}
+        </span>
       </span>
       <span class="multibuy-place">
         <select disabled>
@@ -923,6 +989,9 @@
   .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem 5.5rem auto; align-items: center; gap: 0.5rem; }
   .multibuy-delta { text-align: right; font-size: 0.8rem; background: none; border: none; color: inherit; padding: 0; cursor: pointer; }
   .multibuy-info { font-weight: normal; color: var(--muted, #9aa); }
+  .multibuy-tools { display: flex; justify-content: space-between; align-items: center; }
+  .multibuy-export { position: relative; }
+  .multibuy-menu { position: absolute; right: 0; top: 100%; z-index: 2; display: flex; flex-direction: column; background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; white-space: nowrap; }
   .multibuy-delta.above { color: #ff5050; }
   .multibuy-delta.below { color: #00ff00; }
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
@@ -934,7 +1003,11 @@
   .apply-head { padding: 0.4rem 0.5rem; background: rgba(34, 34, 36, 0.7); }
   .apply-description { text-align: center; }
   .apply-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; max-height: 50vh; overflow-y: auto; }
-  .apply-row { display: flex; flex-direction: column; gap: 0.2rem; }
+  .apply-row { display: grid; grid-template-columns: 32px 1fr 32px; align-items: start; gap: 0.5rem; }
+  .apply-middle { display: flex; flex-direction: column; gap: 0.2rem; }
+  .apply-icon, .apply-book { width: 32px; height: 32px; }
+  /* skillBookIcon.SetRGBA(default_skillbook_green_color): the completion mark drawn in (0.239, 0.647, 0.278). */
+  .apply-book.complete { background-color: rgb(61, 165, 71); mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; }
   .apply-gauge { position: relative; height: 1.9rem; border: 1px solid rgba(255, 255, 255, 0.25); display: flex; align-items: center; justify-content: center; }
   .apply-fill { position: absolute; left: 0; top: 0; bottom: 0; }
   .apply-fill.with-points { background: rgba(54, 102, 140, 0.6); }

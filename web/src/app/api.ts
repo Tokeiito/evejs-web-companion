@@ -3785,6 +3785,8 @@ export async function getTypePrices(
   readonly published: Readonly<Record<number, boolean | null>>;
   /** Each type's portion size (evetypes.GetPortionSize), or null. */
   readonly portionSize: Readonly<Record<number, number | null>>;
+  /** Each type's group (evetypes.GetGroupID), or null. */
+  readonly groupID: Readonly<Record<number, number | null>>;
 }> {
   const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
@@ -3795,7 +3797,30 @@ export async function getTypePrices(
   for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
   const portionSize: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.portionSize))) portionSize[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
-  return { available: data.available === true, basePrice, published, portionSize };
+  const groupID: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.groupID))) groupID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize, groupID };
+}
+
+/**
+ * A shopping list read as the client's multibuy window reads one from the clipboard (POST
+ * /api/client-data/multibuy-import; textImporting.importMultibuy): each market type it names with its quantity, in the
+ * order the client adds them, and the lines it could not read.
+ */
+export async function importMultibuy(
+  text: string,
+  options: ApiOptions = {},
+): Promise<{ readonly found: readonly (readonly [number, number])[]; readonly failedLines: readonly string[] }> {
+  const data = await postJson("/api/client-data/multibuy-import", { text }, options);
+  const found: (readonly [number, number])[] = [];
+  for (const entry of Array.isArray(data.found) ? (data.found as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const qty = Number(entry[1]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(qty)) found.push([typeID, qty]);
+  }
+  const failedLines = Array.isArray(data.failedLines) ? (data.failedLines as JsonValue[]).map((line) => String(line)) : [];
+  return { found, failedLines };
 }
 
 /**

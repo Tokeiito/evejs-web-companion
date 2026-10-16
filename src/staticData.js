@@ -95,6 +95,25 @@ function getType(typeID) {
   );
 }
 
+/**
+ * marketQuote.GetMarketTypeIDFinder (quote.py 214 to 229; textToTypeIDFinder.py): every type in the market's groups,
+ * by its English name with the <localized> tags and the '*' taken out, trimmed and lowered. A Map of the name to the
+ * type, made once.
+ */
+function getMarketTypeNames() {
+  const cacheKey = "itemTypes:marketTypeNames";
+  if (!caches.has(cacheKey)) {
+    const { cleanText } = require("./clientData/importMultibuy");
+    const names = new Map();
+    for (const type of buildIndex("itemTypes", "types", "typeID").values()) {
+      if (!type || !(Number(type.marketGroupID) > 0) || typeof type.name !== "string") continue;
+      names.set(cleanText(type.name).trim().toLowerCase(), Number(type.typeID));
+    }
+    caches.set(cacheKey, names);
+  }
+  return caches.get(cacheKey);
+}
+
 function getTypeName(typeID) {
   const entry = getType(typeID);
   return entry ? String(entry.name || `Type ${typeID}`) : `Type ${typeID}`;
@@ -2226,6 +2245,7 @@ module.exports = {
   getLauncherEffectName,
   getOverloadEffectID,
   getTypeActivatable,
+  getMarketTypeNames,
   getPassiveFilteredEffects,
   getModuleChargeFitment,
   getChargeSize,
