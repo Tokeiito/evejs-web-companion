@@ -14,6 +14,7 @@ const { createClientWords } = require("./clientData/clientWords");
 const { createClientTextures } = require("./clientData/clientTextures");
 const { createMultibuyImport } = require("./clientData/importMultibuy");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
+const { hullBrowserData } = require("./clientData/hullBrowser");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
 const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
@@ -13158,6 +13159,30 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
 // Dogma effects' names, as the numbers of their messages (dogma.data.get_effect_display_name: the effect's
 // displayNameID), for the effects asked; null for an effect with none. `available` false where the client's data
 // could not be read. No session: they do not vary by player.
+// The fitting browser's hulls (src/clientData/hullBrowser.js): every hull the market sells, its special edition
+// ships, each hull's group, faction, meta group and whether it is published, the same of each type asked (a saved
+// fitting's hull; null for a type the client does not have), and each race's name as the number of its message.
+// `available` false where the client's data could not be read. No session: they do not vary by player.
+app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const names = ["marketGroupParents", "typeMarketGroups", "typePublished", "typeGroups", "typeFactions", "typeMetaGroups", "raceNameIDs"];
+    const read = await Promise.all(names.map((name) => clientBuiltData.table(name)));
+    if (read.some((table) => !table)) {
+      res.json({ ok: true, available: false });
+      return;
+    }
+    const tables = Object.fromEntries(names.map((name, at) => [name, read[at]]));
+    res.json({ ok: true, available: true, ...hullBrowserData(tables, asked.slice(0, 500)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

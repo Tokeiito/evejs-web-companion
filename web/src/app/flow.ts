@@ -486,6 +486,7 @@ import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { type HullBrowserData } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
@@ -2290,6 +2291,12 @@ export interface AppFlow {
   saveFitAs(): Promise<void>;
   /** Of saved fittings, those the pilot has the skills for (fittingSvc.HasSkillForFit), kept until the skills change. */
   fittingsWithSkills(fittingIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** Of hulls, those the pilot has the skills for (godma.CheckSkillRequirementsForType), kept until the skills change. */
+  hullsWithSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** The fitting browser's hulls and their facts, as read; null before. */
+  readonly hullBrowser: ReadableSignal<HullBrowserData | null>;
+  /** Reads them where not had, with the facts of each type named that is not had (a saved fitting's hull). */
+  loadHullBrowser(typeIDs: readonly number[]): Promise<void>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -3621,7 +3628,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // fittingSvc.OnSkillsChanged (1050 to 1052): what is kept of the fittings' skills let go, at the server's word of the
     // skills (skillsvc's OnServerSkillsChanged and OnServerSkillsRemoved scatter it), and at its own.
-    if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") hasSkillByFittingID.clear();
+    if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") {
+      hasSkillByFittingID.clear();
+      hasSkillByTypeID.clear();
+    }
     // fittingSvc.OnCommunityFittingsUpdated and OnGlobalConfigChanged (machoNet's, at OnGlobalConfigUpdated): the
     // community's fittings let go, and read again.
     if (method === "OnCommunityFittingsUpdated" || method === "OnGlobalConfigUpdated") {
@@ -7159,20 +7169,74 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const fittings = fittingIDs.map(savedFittingOf).filter((fitting): fitting is SourcedFitting => fitting !== null);
     const unknown = fittings.filter((fitting) => !hasSkillByFittingID.has(fitting.fittingID));
     if (unknown.length > 0) {
-      const types = [...new Set(unknown.flatMap((fitting) => [fitting.shipTypeID, ...fitting.modules.filter((module) => !RIG_SLOT_FLAGS.includes(module.flagID)).map((module) => module.typeID)]))];
+      const typesOf = (fitting: SourcedFitting): number[] => [fitting.shipTypeID, ...fitting.modules.filter((module) => !RIG_SLOT_FLAGS.includes(module.flagID)).map((module) => module.typeID)];
+      const met = await typesMeetingSkills(unknown.flatMap(typesOf));
+      if (met === null) return new Set(fittingIDs);
+      for (const fitting of unknown) hasSkillByFittingID.set(fitting.fittingID, typesOf(fitting).every((typeID) => met.has(typeID)));
+    }
+    return new Set(fittings.filter((fitting) => hasSkillByFittingID.get(fitting.fittingID) === true).map((fitting) => fitting.fittingID));
+  }
+
+  // Whether the pilot has the skills for a type, kept until the skills change (as the fittings' answers are).
+  const hasSkillByTypeID = new Map<number, boolean>();
+
+  /**
+   * godma.CheckSkillRequirementsForType (623 to 632) for each type named: its required skills (the client's table,
+   * fifty types an asking) met at the pilot's effective levels. Answers those met; null where the table cannot be had.
+   */
+  async function typesMeetingSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number> | null> {
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !hasSkillByTypeID.has(typeID));
+    if (unknown.length > 0) {
       const required: Record<number, Readonly<Record<number, number>>> = {};
-      for (let at = 0; at < types.length; at += 50) {
-        const read = await api.getRequiredSkills(types.slice(at, at + 50), callOptions);
-        if (!read.available) return new Set(fittingIDs);
+      for (let at = 0; at < unknown.length; at += 50) {
+        const read = await api.getRequiredSkills(unknown.slice(at, at + 50), callOptions);
+        if (!read.available) return null;
         Object.assign(required, read.required);
       }
       const mine = skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", []));
-      const met = (typeID: number): boolean => Object.entries(required[typeID] ?? {}).every(([skill, level]) => (mine.get(Number(skill))?.effectiveSkillLevel ?? 0) >= Number(level));
-      for (const fitting of unknown) {
-        hasSkillByFittingID.set(fitting.fittingID, met(fitting.shipTypeID) && fitting.modules.every((module) => RIG_SLOT_FLAGS.includes(module.flagID) || met(module.typeID)));
+      for (const typeID of unknown) {
+        hasSkillByTypeID.set(typeID, Object.entries(required[typeID] ?? {}).every(([skill, level]) => (mine.get(Number(skill))?.effectiveSkillLevel ?? 0) >= Number(level)));
       }
     }
-    return new Set(fittings.filter((fitting) => hasSkillByFittingID.get(fitting.fittingID) === true).map((fitting) => fitting.fittingID));
+    return new Set(typeIDs.filter((typeID) => hasSkillByTypeID.get(typeID) === true));
+  }
+
+  /**
+   * The fitting browser's skills filter for the market's hulls (GetAllShipGroupsAndShipsByGroupID, 377 to 378:
+   * godma.CheckSkillRequirementsForType): those named the pilot has the skills for; every one named where the table
+   * cannot be had.
+   */
+  async function hullsWithSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    return (await typesMeetingSkills(typeIDs)) ?? new Set(typeIDs);
+  }
+
+  // The fitting browser's hulls (GET /api/client-data/hull-browser), read once and kept: static data. A saved
+  // fitting's hull not among them is asked after.
+  const hullBrowserSignal = createSignal<HullBrowserData | null>(null);
+  let hullBrowserRead: Promise<void> | null = null;
+
+  /** The browser's hulls read where they are not had, with the facts of each type named that is not had. */
+  async function loadHullBrowser(typeIDs: readonly number[]): Promise<void> {
+    while (hullBrowserRead !== null) await hullBrowserRead.catch(() => {});
+    const held = hullBrowserSignal.get();
+    if (held !== null && !held.available) return;
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !(held?.types.has(typeID) ?? false));
+    if (held !== null && unknown.length === 0) return;
+    hullBrowserRead = (async () => {
+      const read = await api.getHullBrowser(unknown, callOptions);
+      if (!read.available) {
+        hullBrowserSignal.set({ available: false, hullTypeIDs: [], specialTypeIDs: new Set(), types: new Map(), raceNameIDs: {} });
+        return;
+      }
+      const types = new Map(held?.types ?? []);
+      for (const [key, facts] of Object.entries(read.types)) types.set(Number(key), facts);
+      hullBrowserSignal.set({ available: true, hullTypeIDs: read.hullTypeIDs, specialTypeIDs: new Set(read.specialTypeIDs), types, raceNameIDs: read.raceNameIDs });
+    })();
+    try {
+      await hullBrowserRead;
+    } finally {
+      hullBrowserRead = null;
+    }
   }
 
   /** globalConfig/const.py SHOW_COMMUNITY_FITTINGS_CONFIG, and its default ('1'). */
@@ -20836,6 +20900,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     saveViewFitting,
     saveFitAs,
     fittingsWithSkills,
+    hullsWithSkills,
+    hullBrowser: readonlySignal(hullBrowserSignal),
+    loadHullBrowser,
     deleteFitting,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,

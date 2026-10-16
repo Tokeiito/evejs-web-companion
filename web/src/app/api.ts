@@ -32,6 +32,7 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
+import type { HullFacts } from "../bridge/hullBrowser.ts";
 import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
@@ -3771,6 +3772,44 @@ export async function getTypePrices(
   const categoryID: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.categoryID))) categoryID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
   return { available: data.available === true, basePrice, published, portionSize, groupID, categoryID };
+}
+
+/**
+ * The fitting browser's hulls (GET /api/client-data/hull-browser): every hull the market sells, the special edition
+ * ships, each hull's facts and those of each type asked (null for a type the client has not), and each race's name as
+ * the number of its message; `available` false where the client's data could not be read.
+ */
+export async function getHullBrowser(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly available: boolean;
+  readonly hullTypeIDs: readonly number[];
+  readonly specialTypeIDs: readonly number[];
+  readonly types: Readonly<Record<number, HullFacts | null>>;
+  readonly raceNameIDs: Readonly<Record<number, number | null>>;
+}> {
+  const data = await getJson(`/api/client-data/hull-browser?typeIDs=${typeIDs.join(",")}`, options);
+  const numbers = (value: JsonValue | undefined): number[] => (Array.isArray(value) ? value.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0) : []);
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const types: Record<number, HullFacts | null> = {};
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      types[typeID] = null;
+      continue;
+    }
+    const facts = value as Record<string, JsonValue>;
+    types[typeID] = { groupID: orNull(facts.groupID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true };
+  }
+  const raceNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.raceNameIDs))) {
+    const raceID = Number(key);
+    if (Number.isSafeInteger(raceID) && raceID > 0) raceNameIDs[raceID] = orNull(value);
+  }
+  return { available: data.available === true, hullTypeIDs: numbers(data.hullTypeIDs), specialTypeIDs: numbers(data.specialTypeIDs), types, raceNameIDs };
 }
 
 /**

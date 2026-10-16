@@ -9677,3 +9677,13 @@
 .mission-page-card { display: flex; flex-direction: column; }
 .mission-page-card-line.minor { opacity: 0.7; }
 .mission-page-card-line.standing.low { color: var(--danger, #e3170d); font-weight: 600; }
+
+/* The fitting browser's tree of groups, races and hulls (ui/Fitting.svelte). A group or race holding the ship the
+   pilot is in is marked green, as is that hull (fittingBrowser.py ShipParentGroup.Load, HullTypeListGroup's
+   myShipSelection). */
+.browser-tree .browser-node { margin-left: 0.9rem; }
+.browser-tree > .browser-node { margin-left: 0; }
+.browser-node > summary { cursor: pointer; padding: 0.1rem 0; }
+.browser-node.holds-current > summary { color: var(--ok, #5aba56); }
+.browser-node.current-hull > summary { background: rgba(0, 128, 0, 0.12); }
+.browser-node > summary small { margin-left: 0.4rem; }

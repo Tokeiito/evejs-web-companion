@@ -66,6 +66,16 @@ const TABLES = Object.freeze({
   // A dogma effect's name, the number of its message (dogma.data.get_effect_display_name: the effect's displayNameID),
   // which the fitting display heads each slot kind of a fitting with (fittingSvc.GetFittingInfoForScrollList).
   effectDisplayNames: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", attribute: "displayNameID" }),
+  // What the fitting browser lists its hulls by (fittingBrowser.py GetShipsAndGroups and GetAllShipGroupsAndShipsByGroupID;
+  // src/clientData/hullBrowser.js): a market group's parent (marketgroups/data.py get_market_group_parent_id), a
+  // type's market group, group, faction and meta group (evetypes.GetMarketGroupID, GetGroupID, GetFactionID,
+  // GetMetaGroupID), and a race's name (characterdata/races.py get_race_name: nameID).
+  marketGroupParents: Object.freeze({ loader: "marketGroupsLoader", resource: "res:/staticdata/marketgroups.fsdbinary", attribute: "parentGroupID" }),
+  typeMarketGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "marketGroupID" }),
+  typeGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "groupID" }),
+  typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
+  typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
+  raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),

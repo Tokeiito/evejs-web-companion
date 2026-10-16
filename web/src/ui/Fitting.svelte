@@ -59,6 +59,7 @@
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { hullTree, NON_EMPIRE, type HullFacts } from "../bridge/hullBrowser.ts";
 
   let {
     store,
@@ -85,6 +86,8 @@
   const savedFittings = flow.savedFittings;
   // svelte-ignore state_referenced_locally
   const communityFittingsEnabled = flow.communityFittingsEnabled;
+  // svelte-ignore state_referenced_locally
+  const hullBrowser = flow.hullBrowser;
 
   let busy = $state(false);
   let error = $state("");
@@ -213,13 +216,12 @@
   }
 
   // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
-  // it: the pilot's and its corporation's fittings for the ship it is in (the browser's filter
-  // fittings_show_only_for_current_ship), the pilot's before the corporation's and each by its name
-  // (GetFittingEntriesForType: FITTING_OWNER_PERSONAL 0, FITTING_OWNER_CORP 1), and of a fitting's menu
-  // (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own: CanDeleteFit).
-  // Its words are the install's; the page's own stand in. Not done: the hulls and groups it is browsed by and its other
-  // filters, an entry's owner icon and tooltip, the menu's Simulate Fitting and the multifit, and deleting a
-  // corporation's fitting (its fitting manager's role, and a call the page does not make).
+  // it: its tree of ship groups, races and hulls with the fittings under each hull (bridge/hullBrowser.ts), and of a
+  // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
+  // CanDeleteFit). Its words are the install's; the page's own stand in. Not done: an entry's tooltip, a hull's menu and
+  // tooltip and its Simulate button, the menu's Simulate Fitting and the multifit, a fitting clicked (simulated), the
+  // groups' Compare, an unsupported fitting shown whole to a game master, and deleting a corporation's fitting (its
+  // fitting manager's role, and a call the page does not make). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
@@ -236,6 +238,11 @@
     "UI/Fitting/FittingWindow/FilterCurrentHull": "Only for the ship you are in",
     "UI/Fitting/FittingWindow/FilterSkillsForFitting": "Only those you have the skills for",
     "UI/Fitting/FilterCommunityFittings": "Fittings shared with everyone",
+    // The tree's own groups (fittingBrowser.py 131 to 182, GetNameAndIconIDForRace).
+    "UI/Fitting/FittingWindow/NonEmpireFaction": "Other factions",
+    "UI/Fitting/FittingWindow/SpecialEditionShips": "Special ships",
+    "UI/Fitting/FittingWindow/UnsupportedShip": "Hulls no longer had",
+    "UI/Fitting/FittingWindow/UnknownShipType": "an unknown hull",
     // A fitting's owner mark (entries/fitting.py FittingEntry.Load, 58 to 70) and a hull's counts by owner
     // (fittingBrowser.py ShipTypeGroup, 630 to 650).
     "UI/Fitting/CorpFittingHint": "Your corporation's fitting",
@@ -267,12 +274,13 @@
   // in, each off until set (with no owner set, every owner's are shown: GetFittingScrolllist, 74 to 79); and the search
   // (CharSettingString lastHullFilterString, the character's), which a fitting's name, its hull's name or the hull's
   // group's holds (FilterOutFittings, TextMatched, 265 to 320). The toggles are the account's (UserSettingBool), kept
-  // here in this browser, as is the search for the character. The fittings are shown by hull, each hull under its name
-  // and its group's. The skills' filter lets through only the fittings the pilot has the skills for (FilterOutFittings,
+  // here in this browser, as is the search for the character. The skills' filter lets through only the fittings the pilot has the skills for (FilterOutFittings,
   // 283 to 289; the flow's fittingsWithSkills, fittingSvc.HasSkillForFit). The community's filter is on until unset
   // (fittings_show_community, FILTER_DEFAULT_COMMUNITY_FITTING), and with the global config's community fittings off
-  // (AreCommunityFittingsEnabled) its button is not shown nor its fittings read (GetFittingScrolllist, 66 to 80). Not
-  // done: the alliance's filter, the browser's race level and its hulls without fittings.
+  // (AreCommunityFittingsEnabled) its button is not shown nor its fittings read (GetFittingScrolllist, 66 to 80). With no
+  // owner's filter set, every hull the market sells is listed that the search (its name or its group's), the
+  // current-hull filter and the skills filter (godma.CheckSkillRequirementsForType: the flow's hullsWithSkills) let
+  // through (GetAllShipGroupsAndShipsByGroupID, 359 to 383). Not done: the alliance's filter.
   const HULL_SETTINGS_KEPT = "evejs.BrowserHullSettings";
   const HULL_FILTER_KEPT = "evejs.lastHullFilterString";
   const keptHullSettings = ((): { personal: boolean; corp: boolean; community: boolean; currentShip: boolean; skills: boolean } => {
@@ -293,6 +301,18 @@
     if (!onlyWithSkills) return;
     const ids = ($savedFittings ?? []).map((saved) => saved.fittingID);
     void flow.fittingsWithSkills(ids).then((set) => { fittingsWithSkills = set; }).catch(() => {});
+  });
+  /** The market's hulls the pilot has the skills for, as the flow last answered; null while none is answered. */
+  let hullsWithSkills = $state<ReadonlySet<number> | null>(null);
+  $effect(() => {
+    const data = $hullBrowser;
+    if (!onlyWithSkills || ownerFilterIsSet || data === null || !data.available) return;
+    void flow.hullsWithSkills(data.hullTypeIDs).then((set) => { hullsWithSkills = set; }).catch(() => {});
+  });
+  // The browser's hulls read once there are fittings to place (the client's own data), with each fitting's hull.
+  $effect(() => {
+    if ($savedFittings === null) return;
+    void flow.loadHullBrowser([...new Set($savedFittings.map((saved) => saved.shipTypeID))]).catch(() => {});
   });
   let showPersonalFittings = $state(keptHullSettings.personal);
   let showCorpFittings = $state(keptHullSettings.corp);
@@ -318,11 +338,30 @@
       // Storage refused: the filters hold while the window is open.
     }
   }
-  // The hulls' names and their groups', for the headings and the search.
+  // The hulls' names and their groups' (every hull the market sells, where they are listed), for the tree and the
+  // search; and the races' names (the messages their records name).
   $effect(() => {
-    const hulls = [...new Set(($savedFittings ?? []).map((saved) => saved.shipTypeID))];
+    const listed = !ownerFilterIsSet && $hullBrowser?.available ? $hullBrowser.hullTypeIDs : [];
+    const hulls = [...new Set([...($savedFittings ?? []).map((saved) => saved.shipTypeID), ...listed])];
     if (hulls.length > 0) flow.requestNames(hulls.flatMap((id) => [{ kind: "type" as const, id }, { kind: "typeGroup" as const, id }]));
   });
+  $effect(() => {
+    const races = Object.values($hullBrowser?.raceNameIDs ?? {}).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]));
+    if (races.length > 0) flow.requestWords(races);
+  });
+  /** A race's name (characterdata/races.py get_race_name), the non-empire factions' the browser's own label. */
+  function raceName(raceID: number): string {
+    if (raceID === NON_EMPIRE) return fitWord("UI/Fitting/FittingWindow/NonEmpireFaction");
+    const messageID = $hullBrowser?.raceNameIDs[raceID] ?? null;
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" && template !== "" ? plainText(template) : String(raceID);
+  }
+  // The tree's groups, races and hulls opened (the client's list groups' open state), while the window is open.
+  let opened = $state<Record<string, boolean>>({});
+  function toggled(id: string, event: Event): void {
+    const open = (event.currentTarget as HTMLDetailsElement).open;
+    if ((opened[id] === true) !== open) opened[id] = open;
+  }
   /** A filter button's hint with the owner's count (LoadFilterBtnTooltipPanel: "(n/most)"). */
   function filterHint(label: string, count: number, most: number): string {
     const template = $words.templates[label];
@@ -339,12 +378,10 @@
     }
     return counts;
   });
-  /**
-   * The fittings the filters let through, by hull (FilterOutFittings, 265 to 296): each hull's fittings by owner (the
-   * pilot's, the corporation's, the community's: GetFittingEntriesForType's sortBy, 458 to 470), each by name.
-   */
-  const fittingsByHull = $derived.by(() => {
-    const ownerFilterIsSet = showPersonalFittings || showCorpFittings || showCommunityFittings;
+  /** ownerFilterIsSet: an owner's fittings asked for (GetFittingScrolllist, 74). */
+  const ownerFilterIsSet = $derived(showPersonalFittings || showCorpFittings || showCommunityFittings);
+  /** The fittings the filters let through (FilterOutFittings, 265 to 296). */
+  const shownFittings = $derived.by(() => {
     const shownOwner = { personal: showPersonalFittings, corporation: showCorpFittings, community: showCommunityFittings };
     const text = hullFilterText.toLowerCase();
     const shown = ($savedFittings ?? []).filter((saved) => {
@@ -353,14 +390,33 @@
       if (onlyCurrentHull && activeShipTypeID !== null && saved.shipTypeID !== activeShipTypeID) return false;
       return !text || saved.name.toLowerCase().includes(text) || hullName(saved.shipTypeID).toLowerCase().includes(text) || hullGroupName(saved.shipTypeID).toLowerCase().includes(text);
     });
-    const ownerType = (source: string): number => (source === "community" ? 2 : source === "corporation" ? 1 : 0);
-    const byName = (left: string, right: string): number => (left.toLowerCase() < right.toLowerCase() ? -1 : left.toLowerCase() > right.toLowerCase() ? 1 : 0);
-    const hulls = new Map<number, typeof shown>();
-    for (const saved of shown) hulls.set(saved.shipTypeID, [...(hulls.get(saved.shipTypeID) ?? []), saved]);
-    return [...hulls].map(([shipTypeID, fittings]) => ({
-      shipTypeID,
-      fittings: fittings.slice().sort((left, right) => ownerType(left.source) - ownerType(right.source) || byName(left.name, right.name)),
-    })).sort((left, right) => byName(hullGroupName(left.shipTypeID), hullGroupName(right.shipTypeID)) || byName(hullName(left.shipTypeID), hullName(right.shipTypeID)));
+    return shown;
+  });
+  /**
+   * The browser's tree (bridge/hullBrowser.ts): with no owner's filter set, the market's hulls the search (a hull's name
+   * or its group's), the current-hull filter (none at all with no ship: GetAllShipGroupsAndShipsByGroupID, 368 to
+   * 369) and the skills filter let through, besides the fittings'. Null where the client's data is not had.
+   */
+  const browserTree = $derived.by(() => {
+    const data = $hullBrowser;
+    if (data === null || !data.available) return null;
+    const text = hullFilterText.toLowerCase();
+    const marketHulls = ownerFilterIsSet ? [] : data.hullTypeIDs.filter((typeID) => {
+      if (text && !hullName(typeID).toLowerCase().includes(text) && !hullGroupName(typeID).toLowerCase().includes(text)) return false;
+      if (onlyCurrentHull && activeShipTypeID !== typeID) return false;
+      return !(onlyWithSkills && hullsWithSkills !== null && !hullsWithSkills.has(typeID));
+    });
+    return hullTree({
+      fittings: shownFittings,
+      ownerFilterIsSet,
+      marketHulls,
+      specialTypeIDs: data.specialTypeIDs,
+      facts: (typeID): HullFacts | null | undefined => (data.types.has(typeID) ? data.types.get(typeID) : undefined),
+      typeName: hullName,
+      groupName: hullGroupName,
+      raceName,
+      currentShipTypeID: activeShipTypeID,
+    });
   });
 
   /** "160" — a stack count, grouped. A singleton charge reports -1; call it 1. */
@@ -1609,20 +1665,7 @@
         onclick={() => { onlyWithSkills = !onlyWithSkills; keepHullSettings(); }}>📘</button>
       <input type="search" bind:value={hullFilterText} oninput={keepHullSettings} aria-label="Search fittings" />
     </p>
-    {#if $savedFittings === null}
-      <p class="note">…</p>
-    {:else if fittingsByHull.length === 0}
-      <p class="note">{fitWord("UI/Common/NothingFound")}</p>
-    {:else}
-      {#each fittingsByHull as hull (hull.shipTypeID)}
-      {@const count = fittingNumByTypeID.get(hull.shipTypeID)}
-      <h3>
-        {hullName(hull.shipTypeID)} <small class="note">{hullGroupName(hull.shipTypeID)}</small>
-        {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}
-        {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCorpFittings")}>🏢 {count.corporation}</small>{/if}
-        {#if count?.community && $communityFittingsEnabled}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCommunityFittings")}>🌐 {count.community}</small>{/if}
-      </h3>
-      {#each hull.fittings as saved (saved.fittingID)}
+    {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
         <p class="controls saved-fitting">
           {#if saved.source === "corporation"}
             <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
@@ -1645,8 +1688,91 @@
             </button>
           {/if}
         </p>
-      {/each}
-      {/each}
+    {/snippet}
+    {#snippet hullEntry(hull: NonNullable<typeof browserTree>["groups"][number]["races"][number]["hulls"][number])}
+      {@const id = `h:${hull.typeID}`}
+      {@const count = fittingNumByTypeID.get(hull.typeID)}
+      <details class="browser-node" class:current-hull={hull.isCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
+        <summary>
+          <TypeIcon typeID={hull.typeID} name={hullName(hull.typeID)} size="sm" />
+          <strong>{hullName(hull.typeID)}</strong>
+          {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}
+          {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCorpFittings")}>🏢 {count.corporation}</small>{/if}
+          {#if count?.community && $communityFittingsEnabled}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCommunityFittings")}>🌐 {count.community}</small>{/if}
+        </summary>
+        {#if opened[id] === true}
+          {#each hull.fittings as saved (saved.fittingID)}
+            {@render fittingRow(saved)}
+          {/each}
+        {/if}
+      </details>
+    {/snippet}
+    {#snippet groupEntry(group: NonNullable<typeof browserTree>["groups"][number], prefix: string)}
+      {@const id = `${prefix}g:${group.groupID}`}
+      <details class="browser-node" class:holds-current={group.hasCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
+        <summary>{hullGroupName(group.namedBy)}</summary>
+        {#if opened[id] === true}
+          {#each group.races as race (race.raceID)}
+            {@const raceID = `${id}_${race.raceID}`}
+            <details class="browser-node" class:holds-current={race.hasCurrent} open={opened[raceID] === true} ontoggle={(event) => toggled(raceID, event)}>
+              <summary>{raceName(race.raceID)}</summary>
+              {#if opened[raceID] === true}
+                {#each race.hulls as hull (hull.typeID)}
+                  {@render hullEntry(hull)}
+                {/each}
+              {/if}
+            </details>
+          {/each}
+        {/if}
+      </details>
+    {/snippet}
+    {#if $savedFittings === null || $hullBrowser === null}
+      <p class="note">…</p>
+    {:else if browserTree === null}
+      <!-- The client's data is not had here: the fittings let through, by name, each with its hull. -->
+      {#if shownFittings.length === 0}
+        <p class="note">{fitWord("UI/Common/NothingFound")}</p>
+      {:else}
+        {#each shownFittings as saved (saved.fittingID)}
+          <small class="note">{hullName(saved.shipTypeID)}</small>
+          {@render fittingRow(saved)}
+        {/each}
+      {/if}
+    {:else if browserTree.nothingFound}
+      <p class="note">{fitWord("UI/Common/NothingFound")}</p>
+    {:else}
+      <div class="browser-tree">
+        {#each browserTree.groups as group (group.groupID)}
+          {@render groupEntry(group, "")}
+        {/each}
+        {#if browserTree.special.length > 0}
+          <details class="browser-node" class:holds-current={browserTree.specialHasCurrent} open={opened.special === true} ontoggle={(event) => toggled("special", event)}>
+            <summary>{fitWord("UI/Fitting/FittingWindow/SpecialEditionShips")}</summary>
+            {#if opened.special === true}
+              {#each browserTree.special as group (group.groupID)}
+                {@render groupEntry(group, "special")}
+              {/each}
+            {/if}
+          </details>
+        {/if}
+        {#if browserTree.unsupported.length > 0}
+          <details class="browser-node" open={opened.unsupported === true} ontoggle={(event) => toggled("unsupported", event)}>
+            <summary>{fitWord("UI/Fitting/FittingWindow/UnsupportedShip")}</summary>
+            {#if opened.unsupported === true}
+              {#each browserTree.unsupported as saved (saved.fittingID)}
+                <p class="controls saved-fitting">
+                  <span>{saved.name} ({$hullBrowser?.types.get(saved.shipTypeID) ? hullName(saved.shipTypeID) : fitWord("UI/Fitting/FittingWindow/UnknownShipType")}) - unsupported</span>
+                  {#if saved.source === "personal"}
+                    <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
+                      {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+                    </button>
+                  {/if}
+                </p>
+              {/each}
+            {/if}
+          </details>
+        {/if}
+      </div>
     {/if}
   </section>
 
