@@ -51,6 +51,8 @@
   const asked = flow.quantityAsked;
   // svelte-ignore state_referenced_locally
   const skillsRequired = flow.skillsRequired;
+  // svelte-ignore state_referenced_locally
+  const shipNameAsked = flow.shipNameAsked;
 
   /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
   const QUANTITY_WORDS: Readonly<Record<string, string>> = {
@@ -240,6 +242,48 @@
   function skillWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
     return plainText(formatTemplate(wordOf(label, SKILL_WINDOW_WORDS[label] ?? ""), args, { nameOf }));
   }
+  // The client's ship naming window (shipNameDialog.py): its title, the field (32 letters at most, counted) with the
+  // ship's type and the pilot's name as its hint, the line asking why, Do Not Ask Again, Confirm and Later. Confirm
+  // takes the field, or the hint where it is empty, on one line and trimmed. Its words are the install's; the page's
+  // own stand in where they are not to hand. Not done: the why line's tooltip, the sounds.
+  const SHIP_NAME_WORDS: Readonly<Record<string, string>> = {
+    "UI/Ship/NameChange/WindowTitle": "Ship name",
+    "UI/Ship/NameChange/InputFieldLabel": "Name",
+    "UI/Ship/NameChange/InfoLabel": "A name of your own for this ship",
+    "UI/Inflight/OwnerAndShip": "{[item]shipTypeID.rawName} of {[character]charID.name}",
+    "UI/Common/Confirm": "OK",
+    "UI/Common/Later": "Not now",
+  };
+  /** A word of the naming window: the install's, or the page's own. */
+  const shipWord = (label: string): string => wordOf(label, SHIP_NAME_WORDS[label] ?? "");
+  let shipNameTyped = $state("");
+  let shipNameFor: number | null = null;
+  let shipNameKeep = $state(false);
+  $effect(() => {
+    const ask = $shipNameAsked;
+    if ((ask?.n ?? null) === shipNameFor) return;
+    shipNameFor = ask?.n ?? null;
+    shipNameTyped = "";
+    shipNameKeep = false;
+    if (ask === null) return;
+    flow.requestWords([...Object.keys(SHIP_NAME_WORDS), DO_NOT_ASK_AGAIN_LABEL]);
+    const pilot = $station.online?.characterID ?? null;
+    flow.requestNames([{ kind: "type", id: ask.typeID }, ...(pilot === null ? [] : [{ kind: "owner" as const, id: pilot }])]);
+  });
+  const shipNameHint = $derived(
+    $shipNameAsked === null
+      ? ""
+      : plainText(formatTemplate(shipWord("UI/Inflight/OwnerAndShip"), {
+          shipTypeID: $shipNameAsked.typeID,
+          charID: $station.online?.characterID ?? 0,
+        }, { nameOf })),
+  );
+  function answerShipName(confirm: boolean): void {
+    const ask = $shipNameAsked;
+    if (ask === null) return;
+    const name = confirm ? (shipNameTyped || shipNameHint).replace(/\n/g, " ").trim() : null;
+    flow.answerShipName(ask.n, name, shipNameKeep);
+  }
   const hintText = $derived($asked === null ? "" : $asked.hintLabel === null ? $asked.hint ?? "" : wordOf($asked.hintLabel, $asked.hint ?? ""));
   function focusAll(node: HTMLInputElement): void {
     node.focus();
@@ -281,6 +325,39 @@
         <span class="answers">
           <button type="submit">{wordOf("UI/Common/Buttons/OK", "OK")}</button>
           <button type="button" onclick={() => answerQuantity(false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
+        </span>
+      </form>
+    </div>
+  </div>
+{/if}
+
+{#if $shipNameAsked !== null}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={shipWord("UI/Ship/NameChange/WindowTitle")} data-dialog="ShipNameDialog" data-in-front={inFront}>
+      <form
+        class="quantity"
+        onsubmit={(event) => {
+          event.preventDefault();
+          answerShipName(true);
+        }}
+      >
+        {#if !inFront && pilotName !== null}
+          <span class="for-pilot">For {pilotName}</span>
+        {/if}
+        <strong>{shipWord("UI/Ship/NameChange/WindowTitle")}</strong>
+        <label class="ship-name-field">
+          <span>{shipWord("UI/Ship/NameChange/InputFieldLabel")}</span>
+          <input type="text" maxlength="32" placeholder={shipNameHint} bind:value={shipNameTyped} use:focusAll />
+          <span class="ship-name-count">{shipNameTyped.length}/32</span>
+        </label>
+        <p class="body">{shipWord("UI/Ship/NameChange/InfoLabel")}</p>
+        <label class="keep">
+          <input type="checkbox" bind:checked={shipNameKeep} />
+          {wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again")}
+        </label>
+        <span class="answers">
+          <button type="submit">{shipWord("UI/Common/Confirm")}</button>
+          <button type="button" onclick={() => answerShipName(false)}>{shipWord("UI/Common/Later")}</button>
         </span>
       </form>
     </div>
@@ -347,6 +424,8 @@
 
 <style>
   .skill-type { font-size: 1.05rem; }
+  .ship-name-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .ship-name-count { align-self: flex-end; font-size: 0.8rem; opacity: 0.7; }
   .skill-rows { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.25rem; }
   .client-dialog-shade { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center;
     pointer-events: none; }

@@ -2612,6 +2612,15 @@ const RETAIL_CALLS = Object.freeze({
   "ship.Jettison": judged(`${INV_ITEM_FUNCTIONS}:63`, jettisoning, "GetShipAccess().Jettison(itemIDs), the items as one list, from an item's menu (and a node graph's action, with no confirmation). Recorded twice, each on the bind of the ship's Moniker for the solar system, with one list of one ID and no keywords, and answered two lists: what went to a can, and what was launched for itself."),
   "ship.LeaveShip": judged(`${STATION_SVC}:248`, leavingTheShip, "station.TryLeaveShip: gameui.GetShipAccess().LeaveShip(shipid), for the ship the pilot is in and no other, docked; from the item's menu and before a clone jump. In a structure, structureDocking.LeaveShip makes the same call and then makes the capsule it answers active. In space the menu ejects. In no recording."),
   "dogmaIM.CreateNewbieShip": judged(`${STATION_SVC}:613`, boardingACorvette, "station.CreateNewbieShip: sm.RemoteSvc('dogmaIM').CreateNewbieShip(shipID, locationID), by the service's name, for the ship the pilot is in and where it is docked (session.stationid or session.structureid). The client asks the pilot first unless it is in a capsule, and refuses by itself aboard a corvette. From the lobby's corvette button and no other place. In no recording."),
+  "ship.AssembleShip": reshaped(
+    `${INV_ITEM_FUNCTIONS}:197`,
+    // GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems): the ships one list, the two keywords.
+    (args, kwargs) => ({
+      args: [list(Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : [args[0]])],
+      kwargs: { name: kwargs.name ?? null, subSystems: kwargs.subSystems ?? null },
+    }),
+    "GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems), from a packaged ship's menu in the hangar (Assemble Ship, and Board Ship's first step): the ships as one list, the name the pilot gave in the naming window or None, and a modular ship's subsystems or None. In no recording.",
+  ),
   "ship.Board": same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:209", "GetShipAccess().Board(shipID, session.shipid or session.stationid), through sessionMgr.PerformSessionChange('board', ...). Recorded on Tranquility in space as (shipID, the ship left), the bind carrying it."),
   "repairSvc.GetRepairQuotes": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:63", quotingRepairs, "GetRemoteRepairMgr().GetRepairQuotes(itemIDs): the items as a list, on a Moniker of repairSvc made for the one call (45 to 60). In no recording."),
   "repairSvc.RepairItemsInStation": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:67", repairingInAStation, "GetRemoteRepairMgr().RepairItemsInStation(itemIDs, payment), docked in a station: the items as a list and the payment a float, the amount the shop's window worked out (300 to 327). In no recording."),

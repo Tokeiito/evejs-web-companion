@@ -887,6 +887,8 @@
   });
 
   const uncheckedBays = $derived(uncheckedShipBays(openShip));
+  /** A strategic cruiser's group (IsModularShip): its subsystems are chosen before it is assembled. */
+  const isModularShipGroup = (groupID: number | null): boolean => groupID === 963;
   /** A ship in the hangar as the panel says it: docked there, or packaged, with how many of it the stack holds. */
   function shipState(ship: InventoryItemRow): string {
     return ship.singleton ? "Docked here" : `Packaged · ${ship.quantity.toLocaleString()}`;
@@ -1756,6 +1758,15 @@
                 {#if ship.singleton}
                   <button type="button" class="stn-btn" disabled={busy} onclick={() => openInBays(ship)}>
                     Open
+                  </button>
+                {:else if !isModularShipGroup(ship.groupID)}
+                  <!-- A packaged ship, the client's two: Assemble Ship, and Board Ship (assembled first, then boarded:
+                       invItemFunctions.AssembleAndBoardShip). A modular ship's subsystems are asked first: not offered. -->
+                  <button type="button" class="stn-btn" disabled={busy} onclick={() => run(() => flow.assembleShip(ship.itemID, false))}>
+                    Assemble
+                  </button>
+                  <button type="button" class="stn-btn stn-btn-quick" disabled={busy} onclick={() => run(() => flow.assembleShip(ship.itemID, true))}>
+                    Board
                   </button>
                 {/if}
                 {#if isBoardableShip(ship, $inventory.activeShipID)}

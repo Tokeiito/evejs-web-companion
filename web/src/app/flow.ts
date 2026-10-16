@@ -526,7 +526,7 @@ import {
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
-import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
+import { assembleShip as assembleShipCall, boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
@@ -850,6 +850,13 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+}
+
+/** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
+export interface ShipNameAsk {
+  readonly n: number;
+  /** The ship's type: the window's hint is its name and the pilot's (UI/Inflight/OwnerAndShip). */
+  readonly typeID: number;
 }
 
 /** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
@@ -2052,6 +2059,12 @@ export interface AppFlow {
   readonly skillsRequired: ReadableSignal<SkillsRequired | null>;
   /** The window put away (its button). */
   dismissSkillsRequired(): void;
+  /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
+  /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
+  answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
+  /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
+  assembleShip(shipID: number, board: boolean): Promise<void>;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -6106,6 +6119,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client's skill requirement window (skillRequirementDialog.py), one at a time.
   const skillsRequiredSignal = createSignal<SkillsRequired | null>(null);
+
+  // The client's ship naming window (shipNameDialog.py, prompt_rename_ship), one at a time; a newer one ends it.
+  const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
+  let shipNameAnswer: ((name: string | null) => void) | null = null;
+  /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
+  const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
+
+  /** Asks the client's ship naming window: the name on Confirm, null on Later. */
+  function askShipName(typeID: number): Promise<string | null> {
+    shipNameAnswer?.(null);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      shipNameAnswer = (name) => {
+        shipNameAnswer = null;
+        shipNameAskedSignal.set(null);
+        resolve(name);
+      };
+      shipNameAskedSignal.set({ n, typeID });
+    });
+  }
+
+  function answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void {
+    if (shipNameAskedSignal.get()?.n !== n || shipNameAnswer === null) return;
+    // The window's checkbox is the pilot's setting from the moment it is ticked (SuppressSettingBool).
+    if (doNotAskAgain) keepQuestionAnswer(SHIP_NAME_SUPPRESS, "yes");
+    shipNameAnswer(name);
+  }
+
+  /**
+   * A ship boarded as the client boards one (station.TryActivateShip, base.py 214 to 235): where the pilot lacks a
+   * skill its type needs, nothing is asked of the server and the skill requirement window says which.
+   */
+  async function boardShipChecked(shipID: number, typeID: number | null): Promise<void> {
+    if (typeID !== null) {
+      const missing = await skillsMissingFor(typeID).catch(() => null);
+      if (missing !== null) {
+        skillsRequiredSignal.set(missing);
+        return;
+      }
+    }
+    await runMutation(() => boardShipNow(shipID));
+    await refreshActiveShipViews();
+  }
 
   /**
    * What the pilot is missing to fly a ship of this type, as the client's dogma location reckons it before it boards
@@ -19158,6 +19215,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerQuantity,
     skillsRequired: readonlySignal(skillsRequiredSignal),
     dismissSkillsRequired: () => skillsRequiredSignal.set(null),
+    shipNameAsked: readonlySignal(shipNameAskedSignal),
+    answerShipName,
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -19302,16 +19361,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async boardShip(shipID) {
       // station.TryActivateShip (base.py 221 to 223): a ship whose skills the pilot lacks is not boarded, nothing is
       // asked of the server, and the skill requirement window says what is missing (prompt_missing_skill_requirements).
-      const typeID = store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null;
-      if (typeID !== null) {
-        const missing = await skillsMissingFor(typeID).catch(() => null);
-        if (missing !== null) {
-          skillsRequiredSignal.set(missing);
-          return;
-        }
-      }
-      await runMutation(() => boardShipNow(shipID));
-      await refreshActiveShipViews();
+      await boardShipChecked(shipID, store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null);
+    },
+
+    async assembleShip(shipID, board) {
+      // invItemFunctions.AssembleShip (164 to 210): one ship, the name asked first unless the pilot said not to, then
+      // the call on the ship's object (bridge/shipWrites.ts). Later is no name, and the ship is assembled all the same.
+      const row = store.inventory.get().hangar.rows.find((each) => each.itemID === shipID) ?? null;
+      if (row === null || row.singleton) return;
+      const name = questionAnswerKept(SHIP_NAME_SUPPRESS) === null ? await askShipName(row.typeID) : null;
+      let assembled: number | null = null;
+      await runMutation(async () => {
+        assembled = await assembleShipCall(bridgeDo, shipID, name);
+      });
+      // AssembleAndBoardShip (213 to 240): the first ship assembled boarded, as any ship is (TryActivateShip).
+      if (board && assembled !== null) await boardShipChecked(assembled, row.typeID);
     },
 
     askAreYouSure: (cons) => askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons),
