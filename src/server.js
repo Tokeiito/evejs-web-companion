@@ -4146,7 +4146,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
   if (!held) {
     return;
   }
-  // A typeID is OPTIONAL: the player's own orders, transactions and escrow are
+  // A typeID is OPTIONAL: the player's own orders and escrow are
   // worth showing before they have picked an item to look at.
   const typeID = Number(req.query.typeID) || 0;
   try {
@@ -4157,19 +4157,19 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // Six INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
     // player whose order book fails to load still sees their own orders and
     // their ISK.
-    const [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld] =
+    // The pilot's trades are not asked here: the client keeps them in its market service, asked once and let go
+    // when its own orders change (marketSvc.GetPersonalMarketTransactions, 20 to 35), and the page reads them so
+    // (flow.loadMarketTransactions). Asked with every market read, they went twice where the client asks once.
+    // Nor the pilot's ISK: the client's wallet service asks it once and keeps it as OnAccountChange says (walletSvc.py
+    // 41 to 49, 81 to 100); the page keeps it so (walletReads.wealth) and the market window shows that.
+    const [book, ownOrders, history, escrow, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
           : Promise.resolve({ result: null }),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
-        // fromDate 0 = everything the server still keeps.
-        heldTopLevelCall(held, req.webSessionID, "marketProxy", "CharGetTransactions", [0], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
-        // Already allowlisted since R6. The wallet sits beside the order book
-        // so the player can see what they have before they spend it.
-        heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
@@ -4180,7 +4180,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
           : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld];
+    const settled = [book, ownOrders, history, escrow, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -4220,9 +4220,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },
-      transactions: { result: valueOf(transactions), error: codeOf(transactions) },
       escrow: { result: valueOf(escrow), error: codeOf(escrow) },
-      cashBalance: { result: valueOf(balance), error: codeOf(balance) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
       priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage

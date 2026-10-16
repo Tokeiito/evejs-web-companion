@@ -44,7 +44,6 @@ import {
   decodeOrderBook,
   decodeOwnOrders,
   decodePriceHistory,
-  decodeTransactions,
   joinPriceHistory,
   marketRefusalMessage,
   toAmountString,
@@ -5038,16 +5037,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
+    // The pilot's ISK as the wallet service keeps it (walletSvc.wealth): asked once, then what OnAccountChange says.
+    const wealth = await walletReads.wealth().catch(() => null);
     const book = decodeOrderBook(reads.book.result);
     const ownOrders = decodeOwnOrders(reads.ownOrders.result);
     const orderHistory = decodeOwnOrders(reads.orderHistory.result);
-    // ⚠ The transaction decoder needs the character's OWN id: a trade row names
-    // a buyer and a seller and nothing else, so which side the player was on is
-    // derived by comparison, never guessed.
-    const transactions = decodeTransactions(
-      reads.transactions.result,
-      reads.characterID ?? 0,
-    );
     store.apply({
       type: "market/loaded",
       typeID: reads.typeID,
@@ -5059,19 +5053,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       buys: book.buys,
       ownOrders,
       orderHistory,
-      transactions,
+      // The pilot's trades are the market service's, read once and kept (loadMarketTransactions), not the market read's.
+      transactions: [],
       escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
       // marketsvc.GetPriceHistory: the two halves joined, as the client joins them. A read with no old half at
       // all (nothing asked, or an older BFF) is the new half as it came.
       priceHistory: reads.priceHistoryOld.result === null
         ? decodePriceHistory(reads.priceHistory.result)
         : joinPriceHistory(decodePriceHistory(reads.priceHistoryOld.result), decodePriceHistory(reads.priceHistory.result), BigInt(Date.now()) * 10000n + 116444736000000000n),
-      cashBalance: toAmountString(reads.cashBalance.result),
+      cashBalance: wealth === null ? null : toAmountString(wealth),
       bookError: reads.book.error,
       // The own-orders picture is one thing to the player, so a failure in
       // either half is an own-orders failure.
       ownOrdersError: reads.ownOrders.error || reads.orderHistory.error,
-      transactionsError: reads.transactions.error,
+      transactionsError: null,
       marketUnavailable: reads.marketUnavailable,
     });
 
@@ -5089,10 +5084,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       refs.push({ kind: "type", id: row.typeID });
       refs.push({ kind: "station", id: row.stationID });
       refs.push({ kind: "system", id: row.solarSystemID });
-    }
-    for (const row of transactions) {
-      refs.push({ kind: "type", id: row.typeID });
-      refs.push({ kind: "station", id: row.stationID });
     }
     requestNames(refs);
   }
