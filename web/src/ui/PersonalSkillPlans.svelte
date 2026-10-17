@@ -29,6 +29,13 @@
   // it, then tracks the plan (at once where none is tracked; on the client's AskTrackPlan question where another is),
   // and says SkillsAddedNotification where levels were added (TrainSkills; the client's notice, said here in the view).
   //
+  // The panel opens on Certified Plans (skillPlansBrowserPanel: Certified Plans, then Personal Plans; the choice kept).
+  // Certified Plans (certifiedPlansPanel.py, bridge/certifiedSkillPlans.ts): the AIR plan alone until it is trained or
+  // queued, the career paths locked (CareerPathsLockedByAIR); then the career paths in the client's table's order, hinted by
+  // their descriptions (SelectCareerPathHint till one is chosen, the choice kept); the empire factions in factionByRace's
+  // order, the pilot's own chosen with a career path, none for the Industrialist; and the chosen ones' plans, by name. A
+  // certified plan opened has no Edit or Delete (IsEditable), is tracked as any plan, and has its table's milestones.
+  //
   // Create (CreatePersonalPlanButton, under the plans or alone where there are none: off where there are ten,
   // MaximumSkillPlanReached; its tooltip CreatePersonalSkillPlan and PlansInTotal), the opened plan's Edit (its hint
   // EditPlan) and an entry's menu's Edit open the editor (SkillPlanEditor.svelte) in the list's place, on a new plan
@@ -52,6 +59,8 @@
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
+  import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
+  import type { CertifiedPlanEntry } from "../app/flow.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -101,11 +110,80 @@
     "UI/SkillPlan/MilestoneModule": "Module",
     "UI/SkillPlan/MilestoneOther": "Other",
     "UI/SkillPlan/TotalTrainingTime": "Time to train:",
+    "UI/SkillPlan/CertifiedPlans": "Ready-made plans",
+    "UI/SkillPlan/CertifiedPlansHoverTooltip": "Plans made for each career path.",
+    "UI/SkillPlan/SelectCareerPathHint": "Choose a career path",
+    "UI/SkillPlan/CareerPathsLockedByAIR": "Finish the AIR plan to open the career paths.",
+    "UI/SkillPlan/CertifiedSkillPlan": "Ready-made plan",
   };
+
+  // The panels (skillPlansBrowserPanel's toggle buttons): Certified Plans, then Personal Plans; the choice kept
+  // (skillPlanUtil.GetPersistedPanelID, its default the certified one).
+  const PANEL_KEY = "evejs.skillPlansPanel";
+  function storedPanel(): "certified" | "personal" {
+    try {
+      return localStorage.getItem(PANEL_KEY) === "personal" ? "personal" : "certified";
+    } catch {
+      return "certified";
+    }
+  }
+  let panel = $state<"certified" | "personal">(storedPanel());
+  function choosePanel(next: "certified" | "personal"): void {
+    panel = next;
+    try {
+      localStorage.setItem(PANEL_KEY, next);
+    } catch {
+      // Kept for this page only.
+    }
+  }
+
+  // The Certified Plans panel (certifiedPlansPanel.py).
+  let certified = $state<Awaited<ReturnType<AppFlow["certifiedSkillPlans"]>> | undefined>(undefined);
+  const CAREER_KEY = "evejs.skillPlanCareerPathID";
+  let careerPathID = $state<number | null>(null);
+  let factionID = $state<number | null>(null);
+
+  async function loadCertified(): Promise<void> {
+    certified = await flow.certifiedSkillPlans().catch(() => null);
+    // AutoSelectCareerPath: the career path kept, chosen again.
+    if (certified && careerPathID === null) {
+      try {
+        const kept = Number(localStorage.getItem(CAREER_KEY));
+        if (certified.careerPaths.some((career) => career.careerPathID === kept)) chooseCareer(kept);
+      } catch {
+        // None kept.
+      }
+    }
+  }
+
+  /** OnCareerPathTabGroup: the pilot's race's faction chosen with it; none for the Industrialist. */
+  function chooseCareer(id: number): void {
+    careerPathID = id;
+    factionID = id === CAREER_PATH_INDUSTRIALIST ? null : certified?.raceFactionID ?? null;
+    try {
+      localStorage.setItem(CAREER_KEY, String(id));
+    } catch {
+      // Kept for this page only.
+    }
+  }
+
+  /** A message by its number, in the install's words. */
+  function message(messageID: number | null): string {
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") })) : "";
+  }
+
+  /** CertifiedSkillPlanController.GetName and GetDescription: their messages. */
+  const certifiedEntries = $derived(
+    certified ? certified.plans.map((plan): CertifiedPlanEntry => ({ ...plan, name: message(plan.nameID), description: message(plan.descriptionID) })) : [],
+  );
+  const certifiedShown = $derived(sortPlansByName(certifiedPlansShown(certifiedEntries, careerPathID, factionID)));
+  const airPlan = $derived(certifiedEntries.find((plan) => plan.id === certifiedPlanUuid(PLAN_ID_AIR)) ?? null);
 
   onMount(() => {
     flow.requestWords([...Object.keys(OWN), ...SHORT_INTERVAL_WORD_LABELS]);
     void load();
+    void loadCertified();
   });
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -213,7 +291,9 @@
   }
 
   let selectedID = $state<string | null>(null);
-  const selected = $derived(read && selectedID !== null ? read.plans.find((plan) => plan.id === selectedID) ?? null : null);
+  const selected = $derived<(PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }) | null>(
+    selectedID === null ? null : (read?.plans.find((plan) => plan.id === selectedID) ?? certifiedEntries.find((plan) => plan.id === selectedID) ?? null),
+  );
   let contentsShown = $state(false);
   /** The plan opened, as read (its rows, books, locks): undefined while read, null where it could not be. */
   let contents = $state<{ readonly planID: string; readonly detail: SkillPlanDetail | null } | undefined>(undefined);
@@ -257,8 +337,14 @@
   // The opened plan's milestones (flow.skillPlanMilestones): undefined while read, a null list where they could not be.
   let milestones = $state<{ readonly planID: string; readonly list: readonly MilestoneEntry[] | null } | undefined>(undefined);
 
-  async function readMilestones(plan: PersonalSkillPlanEntry): Promise<void> {
+  async function readMilestones(plan: PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }): Promise<void> {
     milestones = undefined;
+    // A certified plan's milestones are its table's (CertifiedSkillPlanController.GetMilestones): nothing asked, nothing put right.
+    if (plan.certified) {
+      const list = await flow.certifiedPlanMilestones(plan.milestoneList ?? []).catch(() => null);
+      if (selectedID === plan.id) milestones = { planID: plan.id, list };
+      return;
+    }
     const read_ = await flow.skillPlanMilestones(plan).catch(() => null);
     if (selectedID !== plan.id) return;
     milestones = { planID: plan.id, list: read_ ? read_.milestones : null };
@@ -333,32 +419,50 @@
 
 <section>
   <header class="panel-head">
-    <h2 title={word("UI/SkillPlan/PersonalPlansHoverTooltip")}>{word("UI/SkillPlan/PersonalPlans")}</h2>
+    <div class="skill-plan-tabs" role="tablist">
+      <button type="button" role="tab" aria-selected={panel === "certified"} class:selected={panel === "certified"}
+        title={word("UI/SkillPlan/CertifiedPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("certified"); }}>{word("UI/SkillPlan/CertifiedPlans")}</button>
+      <button type="button" role="tab" aria-selected={panel === "personal"} class:selected={panel === "personal"}
+        title={word("UI/SkillPlan/PersonalPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("personal"); }}>{word("UI/SkillPlan/PersonalPlans")}</button>
+    </div>
     <span class="controls">
-      <button type="button" disabled={busy} onclick={() => void load()}>Refresh</button>
+      <button type="button" disabled={busy} onclick={() => { void load(); void loadCertified(); }}>Refresh</button>
     </span>
   </header>
+  {#snippet planCard(plan: PersonalSkillPlanEntry, withMenu: boolean)}
+    <li>
+      <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => { if (withMenu) openMenu(plan, event); }}>
+        <span class="skill-plan-name">{plan.name}</span>
+        {#if read && read.trackedID === plan.id}
+          <span class="skill-plan-tracked" title={word("UI/SkillPlan/TrackedSkillPlan")} aria-label={word("UI/SkillPlan/TrackedSkillPlan")}>👁</span>
+        {/if}
+        <span class="skill-plan-time" class:completed={plan.completed}>
+          {timeLeft(plan)}
+          {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
+        </span>
+      </button>
+    </li>
+  {/snippet}
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  {#if read === undefined}
-    <p class="note">Reading your skill plans…</p>
-  {:else if read === null}
-    <p class="error">{word("UI/SkillPlan/ConnectionError")}</p>
-  {:else if editing !== null}
+  {#if editing !== null}
     <SkillPlanEditor {store} {flow} plan={editing.plan} planCount={plans.length} onClose={editorClosed} />
   {:else if selected !== null}
     {@const plan = selected}
-    {@const tracked = read.trackedID === plan.id}
+    {@const tracked = read?.trackedID === plan.id}
     <div class="skill-plan-view">
       <div class="skill-plan-view-head">
-        <span class="skill-plan-caption">{word("UI/SkillPlan/SkillPlan")}</span>
+        <span class="skill-plan-caption">{word(plan.certified ? "UI/SkillPlan/CertifiedSkillPlan" : "UI/SkillPlan/SkillPlan")}</span>
         <span class="skill-plan-view-name">{plan.name}</span>
         <button type="button" class="skill-plan-close" aria-label="Close" onclick={close}>✕</button>
       </div>
       <div class="skill-plan-view-buttons">
-        <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
-        <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
+        <!-- UpdateInformation: Edit and Delete only where the plan is editable (not a certified one). -->
+        {#if !plan.certified}
+          <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
+          <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
+        {/if}
         <button type="button" class="skill-plan-track" class:tracked
           title={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
           aria-label={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
@@ -452,24 +556,56 @@
         </div>
       {/if}
     </div>
+  {:else if panel === "certified"}
+    <!-- The Certified Plans panel: the AIR plan alone until it is trained or queued, the career paths locked; then the
+         career paths, the factions (none for the Industrialist) and the chosen ones' plans. -->
+    {#if certified === undefined}
+      <p class="note">Reading the certified plans…</p>
+    {:else if certified === null}
+      <p class="error">The client's certified plans could not be read.</p>
+    {:else}
+      {#if !certified.airFinished && airPlan !== null}
+        <ul class="skill-plan-cards skill-plan-air">{@render planCard(airPlan, false)}</ul>
+      {/if}
+      <div class="skill-plan-careers" role="tablist">
+        {#each certified.careerPaths as career (career.careerPathID)}
+          <button type="button" role="tab" disabled={!certified.airFinished} aria-selected={careerPathID === career.careerPathID}
+            class:selected={careerPathID === career.careerPathID}
+            title={certified.airFinished ? message(career.descriptionID) : word("UI/SkillPlan/CareerPathsLockedByAIR")}
+            onclick={() => chooseCareer(career.careerPathID)}>{message(career.nameID)}</button>
+        {/each}
+      </div>
+      {#if certified.airFinished}
+        {#if careerPathID === null}
+          <p class="skill-plan-hint">{word("UI/SkillPlan/SelectCareerPathHint")}</p>
+        {:else}
+          {#if careerPathID !== CAREER_PATH_INDUSTRIALIST}
+            <div class="skill-plan-factions" role="radiogroup">
+              {#each empireFactions() as faction (faction)}
+                <button type="button" role="radio" aria-checked={factionID === faction} class:selected={factionID === faction}
+                  title={resolvedName($names.resolved, "faction", faction, "")} onclick={() => { factionID = faction; }}>{resolvedName($names.resolved, "faction", faction, String(faction))}</button>
+              {/each}
+            </div>
+          {/if}
+          <ul class="skill-plan-cards">
+            {#each certifiedShown as plan (plan.id)}
+              {@render planCard(plan, false)}
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    {/if}
+  {:else if read === undefined}
+    <p class="note">Reading your skill plans…</p>
+  {:else if read === null}
+    <p class="error">{word("UI/SkillPlan/ConnectionError")}</p>
   {:else if plans.length === 0}
     <p class="empty">{word("UI/SkillPlan/NoPersonalSkillPlans")}</p>
     <button type="button" class="skill-plan-create" title={createTip(0)} onclick={() => edit(null)}>{word("UI/SkillPlan/CreateNewSkillPlan")}</button>
   {:else}
     <ul class="skill-plan-cards">
       {#each plans as plan (plan.id)}
-        <li>
-          <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => openMenu(plan, event)}>
-            <span class="skill-plan-name">{plan.name}</span>
-            {#if read.trackedID === plan.id}
-              <span class="skill-plan-tracked" title={word("UI/SkillPlan/TrackedSkillPlan")} aria-label={word("UI/SkillPlan/TrackedSkillPlan")}>👁</span>
-            {/if}
-            <span class="skill-plan-time" class:completed={plan.completed}>
-              {timeLeft(plan)}
-              {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
-            </span>
-          </button>
-        </li>
+        {@render planCard(plan, true)}
       {/each}
     </ul>
     <button type="button" class="skill-plan-create" disabled={plans.length >= MAX_PERSONAL_PLANS} title={createTip(plans.length)}
@@ -485,6 +621,13 @@
 </section>
 
 <style>
+  .skill-plan-tabs, .skill-plan-careers, .skill-plan-factions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .skill-plan-tabs button.selected, .skill-plan-careers button.selected, .skill-plan-factions button.selected { outline: 1px solid currentColor; }
+  .skill-plan-careers { margin: 0.5rem 0; }
+  .skill-plan-careers button { flex: 1; min-height: 2.5rem; }
+  .skill-plan-factions { justify-content: center; margin-bottom: 0.75rem; }
+  .skill-plan-hint { text-align: center; font-size: 1.1rem; opacity: 0.8; }
+  .skill-plan-air { max-width: 20rem; margin: 0 auto 0.75rem; }
   /* SkillPlanScroll: as many to a row as fit at 325 wide, each entry 134 high. */
   .skill-plan-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
   .skill-plan-card { position: relative; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 0.5rem;

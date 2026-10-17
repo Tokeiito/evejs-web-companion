@@ -61,6 +61,12 @@ const TABLES = Object.freeze({
   // what needs it (150, skills), by meta group, the types that need the skill at that level. The skill plan editor's
   // remove lock reads it (skillPlanUtil.GetSkillsRequiring). Read a row at a time.
   requiredSkillsIndex: Object.freeze({ loader: "requiredSkillsIndexLoader", resource: "res:/staticdata/requiredskillsindex.fsdbinary", rowsOnly: true }),
+  // The certified skill plans (skills/skillplan/skillPlanFSDLoader.get_skill_plans): each one's name and description
+  // messages, career path, faction, NPC corporation division, skill requirements in order and milestones.
+  skillPlans: Object.freeze({ loader: "skillPlansLoader", resource: "res:/staticdata/skillplans.fsdbinary" }),
+  // The career paths (characterdata/careerpath.get_career_paths), whose buttons the Certified Plans panel lays out in
+  // the order the table iterates them: keyOrder.
+  careerPaths: Object.freeze({ loader: "careerPathsLoader", resource: "res:/staticdata/careerpaths.fsdbinary", keyOrder: true }),
   // A type's base price and whether it is published (evetypes.GetBasePrice and IsPublished): what a skill book bought
   // directly costs (characterskills/common/purchase.py get_direct_purchase_price) and whether it is sold so at all
   // (evetypes.IsSkillAvailableForPurchase). One attribute of the types each, as typeShipGroups is.
@@ -159,6 +165,21 @@ function orderedRows(printed) {
   return table;
 }
 
+// A table printed as a dict of whole-number keys, its rows as they are, with the order the loader printed its keys in
+// kept beside them as "#order" (a key no whole number, so not moved): JSON.parse would put whole-number keys in rising
+// order. Only for a table whose rows hold no whole-number keys of their own.
+function keyOrdered(printed) {
+  const marked = JSON.parse(printed.replace(/"(\d+)":/g, '"#$1":'));
+  const table = {};
+  const order = [];
+  for (const [key, row] of Object.entries(marked)) {
+    table[key.slice(1)] = row;
+    order.push(Number(key.slice(1)));
+  }
+  table["#order"] = order;
+  return table;
+}
+
 function createClientBuiltData({
   clientRoot = null,
   python = "python",
@@ -186,7 +207,7 @@ function createClientBuiltData({
       ...(described.attribute ? { attribute: described.attribute } : {}),
       ...(keys ? { keys } : {}),
     });
-    const table = described.keepOrder ? orderedRows(printed) : JSON.parse(printed);
+    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed) : JSON.parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
       throw new Error(`The client's ${described.loader} did not print a table.`);
     }

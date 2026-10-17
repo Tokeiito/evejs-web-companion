@@ -13122,6 +13122,43 @@ app.get("/api/client-data/skills-requiring", requireAuth, async (req, res, next)
   }
 });
 
+// The certified skill plans and the career paths, as the client's own data has them (skillPlanFSDLoader.get_skill_plans,
+// careerpath.get_career_paths): each plan's id, name and description messages, career path, faction, NPC corporation
+// division, skill requirements ([typeID, level] in order) and milestones ({typeID, level: null for a type}); the career
+// paths in the order the client's table iterates them, each its id and name and description messages. `available`
+// is false where a table could not be read.
+app.get("/api/client-data/certified-skill-plans", requireAuth, async (req, res, next) => {
+  try {
+    const [plans, careers] = await Promise.all([clientBuiltData.table("skillPlans"), clientBuiltData.table("careerPaths")]);
+    if (!plans || !careers) {
+      res.json({ ok: true, available: false, plans: [], careerPaths: [] });
+      return;
+    }
+    const numberOrNull = (value) => (Number.isSafeInteger(Number(value)) && value !== null && value !== undefined ? Number(value) : null);
+    res.json({
+      ok: true,
+      available: true,
+      plans: Object.entries(plans).map(([planID, plan]) => ({
+        planID: Number(planID),
+        nameID: numberOrNull(plan.nameID),
+        descriptionID: numberOrNull(plan.descriptionID),
+        careerPathID: numberOrNull(plan.careerPathID),
+        factionID: numberOrNull(plan.factionID),
+        npcCorporationDivision: numberOrNull(plan.npcCorporationDivision),
+        requirements: (Array.isArray(plan.skillRequirements) ? plan.skillRequirements : []).map((skill) => [Number(skill.typeID), Number(skill.level)]),
+        milestones: (Array.isArray(plan.milestones) ? plan.milestones : []).map((milestone) => ({ typeID: Number(milestone.typeID), level: numberOrNull(milestone.level) })),
+      })),
+      careerPaths: (Array.isArray(careers["#order"]) ? careers["#order"] : []).map((careerPathID) => ({
+        careerPathID,
+        nameID: numberOrNull(careers[String(careerPathID)] && careers[String(careerPathID)].nameID),
+        descriptionID: numberOrNull(careers[String(careerPathID)] && careers[String(careerPathID)].descriptionID),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Every skill type, by the server's static data: its type, name, group and group's name, and whether it is published.
 // The skill plan editor's catalogue (skillsvc._ConstructSkillControllers: the skill category's types, published or
 // held, by group) is made of it.

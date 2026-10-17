@@ -5248,3 +5248,41 @@ export async function getSkillsRequiring(typeIDs: readonly number[], options: Ap
   }
   return { available: data.available === true, requiring };
 }
+
+/** The certified skill plans and the career paths, from the client's own data (GET /api/client-data/certified-skill-plans). */
+export async function getCertifiedSkillPlans(options: ApiOptions = {}): Promise<{
+  readonly available: boolean;
+  readonly plans: readonly import("../bridge/certifiedSkillPlans.ts").CertifiedPlanData[];
+  readonly careerPaths: readonly import("../bridge/certifiedSkillPlans.ts").CareerPath[];
+}> {
+  const data = await getJson("/api/client-data/certified-skill-plans", options);
+  const num = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const plans = (Array.isArray(data.plans) ? data.plans : []).flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const planID = num(row.planID);
+    if (planID === null) return [];
+    return [{
+      planID,
+      nameID: num(row.nameID),
+      descriptionID: num(row.descriptionID),
+      careerPathID: num(row.careerPathID),
+      factionID: num(row.factionID),
+      npcCorporationDivision: num(row.npcCorporationDivision),
+      requirements: (Array.isArray(row.requirements) ? row.requirements : []).flatMap((pair) =>
+        Array.isArray(pair) && typeof pair[0] === "number" && typeof pair[1] === "number" ? [[pair[0], pair[1]] as const] : []),
+      milestones: (Array.isArray(row.milestones) ? row.milestones : []).flatMap((m) => {
+        if (typeof m !== "object" || m === null || Array.isArray(m)) return [];
+        const typeID = num((m as Record<string, JsonValue>).typeID);
+        return typeID === null ? [] : [{ typeID, level: num((m as Record<string, JsonValue>).level) }];
+      }),
+    }];
+  });
+  const careerPaths = (Array.isArray(data.careerPaths) ? data.careerPaths : []).flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const careerPathID = num(row.careerPathID);
+    return careerPathID === null ? [] : [{ careerPathID, nameID: num(row.nameID), descriptionID: num(row.descriptionID) }];
+  });
+  return { available: data.available === true, plans, careerPaths };
+}

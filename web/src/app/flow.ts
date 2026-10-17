@@ -210,6 +210,20 @@ import {
   type MilestoneEntry,
 } from "../bridge/skillPlanMilestones.ts";
 import { adjustedMilestones, type EditorMilestones } from "../bridge/skillPlanEditorMilestones.ts";
+import {
+  PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
+} from "../bridge/certifiedSkillPlans.ts";
+
+/** A certified plan as its entry shows it: its name and description are messages (nameID, descriptionID). */
+export type CertifiedPlanEntry = CertifiedPlanData & {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly certified: true;
+  readonly milestoneList: readonly Milestone[];
+  readonly completed: boolean;
+  readonly trainingTicks: number | null;
+};
 import type { Milestone } from "../bridge/skillPlanMilestones.ts";
 
 /** The editor's milestones at Save, and the plan's own as they were read (AdjustMilestonesToAddAndDeletedIDs). */
@@ -2460,6 +2474,20 @@ export interface AppFlow {
    * had (the client's SkillPlanConnectionError).
    */
   personalSkillPlans(): Promise<PersonalSkillPlansRead | null>;
+  /**
+   * The certified skill plans (bridge/certifiedSkillPlans.ts), from the client's own table, as their entries show them;
+   * the career paths in the table's order; whether the AIR plan is done (HasFinishedAIRSkillPlan) and the faction of
+   * the pilot's race. Their names' and the career paths' messages, and the factions' names, asked for. Null where the
+   * client's data could not be read.
+   */
+  /** A certified plan's milestones (the client's table's), as the opened plan shows them. Null without the client's data. */
+  certifiedPlanMilestones(milestones: readonly Milestone[]): Promise<readonly MilestoneEntry[] | null>;
+  certifiedSkillPlans(): Promise<{
+    readonly plans: readonly CertifiedPlanEntry[];
+    readonly careerPaths: readonly CareerPath[];
+    readonly airFinished: boolean;
+    readonly raceFactionID: number | null;
+  } | null>;
   /**
    * SkillPlanEntry.Delete (skillPlanService._DeletePersonal): the client's DeleteSkillPlan question, then Delete on
    * the public gateway; true where it was deleted, false on No. A refusal is thrown.
@@ -7657,18 +7685,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       plans.push({ ...plan, requirements });
     }
+    return { trackedID, plans: await planEntries(plans, skillsAnswer, allSkillsAnswer) };
+  }
+
+  /**
+   * Plans as their entries show them (SkillPlanEntry): IsCompleted, and GetTotalTrainingTimeLeft
+   * (GetTrainingTimeForSkills, which asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted).
+   */
+  async function planEntries<P extends PersonalSkillPlan>(plans: readonly P[], skillsAnswer: JsonValue, allSkillsAnswer: JsonValue): Promise<(P & { readonly completed: boolean; readonly trainingTicks: number | null })[]> {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
     const facts = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    return plans.map((plan) => ({
+      ...plan,
+      completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+      trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
+    }));
+  }
+
+  let certifiedPlansHeld: { readonly plans: readonly CertifiedPlanData[]; readonly careerPaths: readonly CareerPath[] } | null = null;
+
+  async function certifiedSkillPlans(): ReturnType<AppFlow["certifiedSkillPlans"]> {
+    try {
+      if (certifiedPlansHeld === null) {
+        const read = await api.getCertifiedSkillPlans(callOptions);
+        if (!read.available) return null;
+        certifiedPlansHeld = read;
+      }
+    } catch {
+      return null;
+    }
+    const held = certifiedPlansHeld;
+    requestWords(held.plans.flatMap((plan) => [plan.nameID, plan.descriptionID]).concat(held.careerPaths.flatMap((career) => [career.nameID, career.descriptionID]))
+      .flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])));
+    requestNames(empireFactions().map((factionID) => ({ kind: "faction" as const, id: factionID })));
+    const [skillsAnswer, allSkillsAnswer, queueAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+    ]);
+    const mine = skillLevelsOf(skillsAnswer);
+    const queued = new Set(queuedLevels(Array.isArray(queueAnswer) ? queueAnswer[0] : null).map((entry) => `${entry.typeID}:${entry.toLevel}`));
+    const asPlans = held.plans.map((plan) => ({
+      ...plan,
+      id: certifiedPlanUuid(plan.planID),
+      name: "",
+      description: "",
+      certified: true as const,
+      milestoneList: certifiedMilestones(plan),
+    }));
     return {
-      trackedID,
-      plans: plans.map((plan) => ({
-        ...plan,
-        completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
-        // GetTrainingTimeForSkills asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted.
-        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
-      })),
+      plans: await planEntries(asPlans, skillsAnswer, allSkillsAnswer),
+      careerPaths: held.careerPaths,
+      airFinished: airPlanFinished(held.plans.find((plan) => plan.planID === PLAN_ID_AIR), (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0, queued),
+      raceFactionID: factionOfRace(store.station.get().online?.raceID ?? null),
     };
   }
 
@@ -7882,24 +7953,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void setPlanSkillRequirements(plan.id, updated).catch(() => {});
       }
     }
+    return { requirements, milestones: await milestoneEntriesWith(valid, needs.order, (typeID) => factsOf(typeID)?.categoryID ?? null) };
+  }
+
+  /** Milestones as the opened plan shows them: their kind, needs, IsCompleted and the time left to train their type. */
+  async function milestoneEntriesWith(milestones: readonly Milestone[], required: RequiredSkills, categoryOf: (typeID: number) => number | null): Promise<MilestoneEntry[]> {
     const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
-    const needed = valid.map((milestone) => milestoneRequiredSkills(milestone, needs.order));
-    const skillTypes = [...new Set(valid.flatMap((milestone) => [...requiredSkillsRecursive(milestone.typeID, needs.order).keys()]))];
+    const needed = milestones.map((milestone) => milestoneRequiredSkills(milestone, required));
+    const skillTypes = [...new Set(milestones.flatMap((milestone) => [...requiredSkillsRecursive(milestone.typeID, required).keys()]))];
     const training = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
-    return {
-      requirements,
-      milestones: valid.map((milestone, at): MilestoneEntry => ({
-        ...milestone,
-        subType: milestoneSubType(factsOf(milestone.typeID)?.categoryID ?? null),
-        needs: needed[at]!,
-        completed: milestoneCompleted(needed[at]!, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
-        // GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the milestone's type's needs (a skill
-        // milestone's skill's, its own level aside).
-        trainingTicks: training === null ? null : trainingTimeLeft(milestone.typeID, needs.order, mine, lapsed, training),
-      })),
-    };
+    return milestones.map((milestone, at): MilestoneEntry => ({
+      ...milestone,
+      subType: milestoneSubType(categoryOf(milestone.typeID)),
+      needs: needed[at]!,
+      completed: milestoneCompleted(needed[at]!, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+      // GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the milestone's type's needs (a skill
+      // milestone's skill's, its own level aside).
+      trainingTicks: training === null ? null : trainingTimeLeft(milestone.typeID, required, mine, lapsed, training),
+    }));
+  }
+
+  async function certifiedPlanMilestones(milestones: readonly Milestone[]): Promise<readonly MilestoneEntry[] | null> {
+    const types = [...new Set(milestones.map((milestone) => milestone.typeID))];
+    if (types.length === 0) return [];
+    requestNames(types.map((typeID) => ({ kind: "type" as const, id: typeID })));
+    const facts = await skillPlanTypeFacts(types).catch(() => null);
+    if (facts === null) return null;
+    return milestoneEntriesWith(milestones, facts.required, (typeID) => facts.categoryID.get(typeID) ?? null);
   }
 
   /**
@@ -22497,6 +22579,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     shipTraits: readonlySignal(shipTraitsSignal),
     requestShipTraits,
     personalSkillPlans,
+    certifiedSkillPlans,
+    certifiedPlanMilestones,
     deletePersonalSkillPlan,
     skillPlanDetail,
     trainSkillPlan,
