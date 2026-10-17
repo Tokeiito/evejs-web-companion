@@ -3974,6 +3974,36 @@ export async function getAttributeDisplay(
   return { available: data.available === true, attributes };
 }
 
+/**
+ * The certificates filed under skill groups (GET /api/client-data/skill-group-certificates): by group, each
+ * certificate's skills with the level each of its five grades asks (nought where it asks none).
+ */
+export async function getSkillGroupCertificates(
+  groupIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<ReadonlyMap<number, readonly { readonly certificateID: number; readonly skills: readonly (readonly [number, readonly number[]])[] }[]>> {
+  const data = await getJson("/api/client-data/skill-group-certificates?groupIDs=" + groupIDs.join(","), options);
+  const raw = typeof data.certificates === "object" && data.certificates !== null && !Array.isArray(data.certificates)
+    ? (data.certificates as Record<string, JsonValue>)
+    : {};
+  const out = new Map<number, { readonly certificateID: number; readonly skills: readonly (readonly [number, readonly number[]])[] }[]>();
+  for (const [key, value] of Object.entries(raw)) {
+    const groupID = Number(key);
+    if (!Number.isSafeInteger(groupID) || groupID <= 0 || !Array.isArray(value)) continue;
+    out.set(groupID, value.flatMap((certificate) => {
+      if (certificate === null || typeof certificate !== "object" || Array.isArray(certificate)) return [];
+      const record = certificate as Record<string, JsonValue>;
+      const skills = (Array.isArray(record.skills) ? record.skills : []).flatMap((skill) => {
+        if (!Array.isArray(skill) || !Array.isArray(skill[1])) return [];
+        const typeID = Number(skill[0]);
+        return Number.isSafeInteger(typeID) && typeID > 0 ? [[typeID, (skill[1] as JsonValue[]).map((level) => Number(level) || 0)] as const] : [];
+      });
+      return [{ certificateID: Number(record.certificateID) || 0, skills }];
+    }));
+  }
+  return out;
+}
+
 /** What the compare tool reads of some types (GET /api/client-data/type-attributes). */
 export interface TypeAttributesRead {
   readonly available: boolean;

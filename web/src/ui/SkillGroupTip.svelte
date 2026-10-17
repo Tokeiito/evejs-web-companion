@@ -2,8 +2,8 @@
   // A skill group's tooltip in the plan editor's catalogue (SkillGroupEntry.LoadTooltipPanel,
   // skillsPanelUtil.LoadSkillGroupTooltipPanel): its name; its description (DESCRIPTION_BY_GROUPID); the levels of its
   // skills trained of all of them, those above an alpha clone's ceiling said apart in omega gold; their points trained
-  // of all; its two attributes, each with its picture (ATTRIBUTES_BY_GROUPID, AttributeCont). Not here: the
-  // certificates claimed (AddCertificatesClaimed).
+  // of all; its certificates' levels claimed of all, where it has any (AddCertificatesClaimed); its two attributes,
+  // each with its picture (ATTRIBUTES_BY_GROUPID, AttributeCont).
   import { onMount } from "svelte";
   import { portal } from "./portal.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
@@ -13,12 +13,14 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow, groupID, name, summary, attributes, top, left }: {
+  let { store, flow, groupID, name, summary, certificates = null, attributes, top, left }: {
     store: ClientStore;
     flow: AppFlow;
     groupID: number;
     name: string;
     summary: ReturnType<typeof groupSummary>;
+    /** Its certificates' levels claimed and of all; null until read. */
+    certificates?: { readonly claimed: number; readonly total: number } | null;
     /** The attributes' names (their messages' numbers) and pictures, as read. */
     attributes: ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }>;
     top: number;
@@ -35,6 +37,7 @@
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillLevelsPerGroup": "{[numeric]levelsTrained} of {[numeric]levelsTotal} levels trained",
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillLevelsPerGroupDisabled": "{[numeric]levelsTrained} of {[numeric]levelsTotal} levels trained, {[numeric]levelsDisabled} of them past what an alpha clone may use",
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillPointsPerGroup": "{[numeric]pointsTrained, useGrouping} of {[numeric]pointsTotal, useGrouping} points",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/CertificatesClaimedPerGroup": "{[numeric]certsTrained} of {[numeric]certsTotal} certificate levels",
   };
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -64,6 +67,9 @@
     : word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillLevelsPerGroup", { levelsTrained: summary.levelsTrained, levelsTotal: summary.levelsTotal })}</p>
   {#if summary.pointsTotal !== null}
     <p>{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillPointsPerGroup", { pointsTrained: summary.pointsTrained, pointsTotal: summary.pointsTotal })}</p>
+  {/if}
+  {#if certificates !== null && certificates.total > 0}
+    <p>{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/CertificatesClaimedPerGroup", { certsTrained: certificates.claimed, certsTotal: certificates.total })}</p>
   {/if}
   {#if pair !== null}
     <span class="skill-group-tip-attributes">

@@ -1871,6 +1871,28 @@ function getNpcCharacter(characterID) {
   return numericCharacterID ? buildJsonlIndex("npcCharacters.jsonl").get(numericCharacterID) || null : null;
 }
 
+/**
+ * The certificates filed under skill groups, as the client's certificate service holds them (certificateSvc.Certificates
+ * from cfg.certificates: res:/staticdata/certificates.static), read from the static data export of the same build:
+ * by the group a certificate is filed under (its groupID), each certificate's number and its skills, each with the
+ * level each of its five grades asks of it (basic, standard, improved, advanced, elite; nought where a grade asks none),
+ * in the export's order.
+ */
+function getSkillGroupCertificates(groupIDs) {
+  const wanted = new Set((Array.isArray(groupIDs) ? groupIDs : []).map((groupID) => Number(groupID) || 0).filter((groupID) => groupID > 0));
+  const grades = ["basic", "standard", "improved", "advanced", "elite"];
+  const byGroup = {};
+  for (const row of buildJsonlIndex("certificates.jsonl").values()) {
+    const groupID = Number(row && row.groupID) || 0;
+    if (!wanted.has(groupID)) continue;
+    const skills = (Array.isArray(row.skillTypes) ? row.skillTypes : [])
+      .map((skill) => [Number(skill && skill._key) || 0, grades.map((grade) => Number(skill && skill[grade]) || 0)])
+      .filter(([typeID]) => typeID > 0);
+    (byGroup[groupID] = byGroup[groupID] || []).push({ certificateID: Number(row._key) || 0, skills });
+  }
+  return byGroup;
+}
+
 /** inventorycommon/const.py typeCharacter: the type the client gives an NPC character in its table of owners. */
 const NPC_CHARACTER_TYPE_ID = 1373;
 
@@ -2261,6 +2283,7 @@ function getNpcIndustryFacility(facilityID) {
 }
 
 module.exports = {
+  getSkillGroupCertificates,
   findAgents,
   findCharacters,
   findMapLocations,

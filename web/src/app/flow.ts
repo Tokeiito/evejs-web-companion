@@ -204,7 +204,7 @@ import {
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
-import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, certificateLevel, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
 import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
@@ -2708,6 +2708,12 @@ export interface AppFlow {
    * message (asked for) and its picture's res: path. Null where the client's tables could not be read.
    */
   attributeDisplay(attributeIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }> | null>;
+  /**
+   * Each skill group's certificates claimed (SkillGroupController GetAccumulatedCertificateLevelsTrained: each of its
+   * certificates' levels, Certificate.GetLevel, summed) of all (GetAccumulatedCertificateLevelsTotal: five each). Null
+   * where they could not be read.
+   */
+  skillGroupCertificates(groupIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly claimed: number; readonly total: number }> | null>;
   /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
   skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
   /**
@@ -8258,6 +8264,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         });
       }
       return states;
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillGroupCertificates(groupIDs: readonly number[]): ReturnType<AppFlow["skillGroupCertificates"]> {
+    try {
+      const [certificates, skillsAnswer] = await Promise.all([
+        api.getSkillGroupCertificates(groupIDs, callOptions),
+        bridgeAsk("skillHandler", "GetSkills", []),
+      ]);
+      const mine = skillLevelsOf(skillsAnswer);
+      const myLevel = (typeID: number): number => mine.get(typeID)?.trainedSkillLevel ?? 0;
+      const out = new Map<number, { readonly claimed: number; readonly total: number }>();
+      for (const groupID of groupIDs) {
+        const filed = certificates.get(groupID) ?? [];
+        out.set(groupID, {
+          claimed: filed.reduce((sum, certificate) => sum + certificateLevel(certificate.skills, myLevel), 0),
+          total: filed.length * 5,
+        });
+      }
+      return out;
     } catch {
       return null;
     }
@@ -23660,6 +23688,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillRowInfoFor,
     skillCatalogueStates,
     attributeDisplay,
+    skillGroupCertificates,
     skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,
     saveSkillPlan,

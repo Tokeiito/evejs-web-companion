@@ -57,7 +57,7 @@
   //                   GetEstimatedTotalSkillPoints); all read again as the queue or the skills change (_OnSkillsStateChanged)
   //
   // Not done: the end line while an item is dragged over (its type is not readable before the drop), fittings dragged
-  // as text links, a milestone's level changed in its tooltip, the ring, the group tooltip's certificates.
+  // as text links, a milestone's level changed in its tooltip, the ring.
   import { onMount, untrack } from "svelte";
   import SkillGroupTip from "./SkillGroupTip.svelte";
   import { serverNow, trainingReadout } from "../bridge/skills.ts";
@@ -199,10 +199,16 @@
   }
   /** The catalogue's skills as the skill controllers answer them; none until read (the filters then keep all). */
   let catalogueStates = $state<ReadonlyMap<number, CatalogueSkillRow>>(new Map());
+  /** Each group's certificates claimed and of all, read with the catalogue. */
+  let groupCertificates = $state<ReadonlyMap<number, { readonly claimed: number; readonly total: number }>>(new Map());
   async function readCatalogueStates(): Promise<void> {
     if (!groups) return;
-    const states = await flow.skillCatalogueStates(groups.flatMap((group) => group.skills.map((skill) => skill.typeID)));
+    const [states, certificates] = await Promise.all([
+      flow.skillCatalogueStates(groups.flatMap((group) => group.skills.map((skill) => skill.typeID))),
+      flow.skillGroupCertificates(groups.map((group) => group.groupID)),
+    ]);
     if (states !== null) catalogueStates = states;
+    if (certificates !== null) groupCertificates = certificates;
   }
 
   // _OnSkillsStateChanged: the entries read again as the queue or the skills change (the first read is the mount's).
@@ -876,6 +882,7 @@
           {@const tipGroup = groups.find((group) => group.groupID === groupTip?.groupID)}
           {#if tipGroup !== undefined}
             <SkillGroupTip {store} {flow} groupID={tipGroup.groupID} name={tipGroup.name} summary={groupSummary(tipGroup.skills, catalogueStates)}
+              certificates={groupCertificates.get(tipGroup.groupID) ?? null}
               attributes={attributeShown} top={groupTip.top} left={groupTip.left} />
           {/if}
         {/if}

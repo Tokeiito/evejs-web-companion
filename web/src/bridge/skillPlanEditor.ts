@@ -386,6 +386,17 @@ export function groupSummary(skills: readonly CatalogueEntry[], states: Readonly
   return { levelsTrained, levelsTotal: skills.length * MAX_LEVEL, levelsDisabled, pointsTrained, pointsTotal };
 }
 
+/**
+ * Certificate.GetLevel: the highest of its five grades whose every asked skill (a level above nought) the pilot has at
+ * that level or more (MySkillLevel: trained, not lapsed; nought where not had); nought where none is.
+ */
+export function certificateLevel(skills: readonly (readonly [number, readonly number[]])[], myLevel: (typeID: number) => number): number {
+  for (let grade = MAX_LEVEL; grade >= 1; grade -= 1) {
+    if (skills.every(([typeID, levels]) => !((levels[grade - 1] ?? 0) > 0 && myLevel(typeID) < (levels[grade - 1] ?? 0)))) return grade;
+  }
+  return 0;
+}
+
 /** skills/skillConst.py DESCRIPTION_BY_GROUPID: each skill group's description, by its label. */
 const GROUP_DESCRIPTION = "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/skillGroups/description";
 export const SKILL_GROUP_DESCRIPTIONS: ReadonlyMap<number, string> = new Map(([

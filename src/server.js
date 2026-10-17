@@ -13429,6 +13429,17 @@ app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next
   }
 });
 
+// The certificates filed under skill groups (certificateSvc.GetCertificatesByGroupID), each with its skills and the
+// level each grade asks of them (src/staticData.js getSkillGroupCertificates). At most 64 groups at once.
+app.get("/api/client-data/skill-group-certificates", requireAuth, (req, res, next) => {
+  try {
+    const asked = String((req.query && req.query.groupIDs) || "").split(",").map(Number).filter((groupID) => Number.isSafeInteger(groupID) && groupID > 0).slice(0, 64);
+    res.json({ ok: true, certificates: staticDataModule.getSkillGroupCertificates(asked) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
