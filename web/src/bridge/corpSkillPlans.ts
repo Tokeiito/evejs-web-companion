@@ -4,8 +4,12 @@
 //
 //   the tab        only for a pilot in a player corporation (skillPlansBrowserPanel: idCheckers.IsPlayerCorporation)
 //   reading        GetAll: each plan's id, name, description and category (a career path, the category's uuid as a
-//                  whole number); its skills read by Get when wanted (CorpSkillPlanController.skillRequirements), put
-//                  right by ValidateSkillPlan and SetRequiredSkills where that changed them
+//                  whole number, 0 for none); a plan without a category left out (_GetCorpSkillPlanController:
+//                  uuid.UUID(bytes=...) raises, and the plan is not kept); its skills read by Get when wanted
+//                  (CorpSkillPlanController.skillRequirements), put right by ValidateSkillPlan and SetRequiredSkills
+//                  where that changed them
+//   saving         Create with the category chosen (the editor's Category: None, 0, or a career path), sent as
+//                  uuid.UUID(int=category).bytes; an edited plan sent what differs, SetCategory among it
 //   editable       IsEditable: the pilot's corporation's, and the pilot has corpRoleSkillPlanManager
 //   trackable      never (IsTrackable): Track saves a copy among the personal plans and tracks that
 //                  (_CreateCopySelectAndTrack)
@@ -13,7 +17,7 @@
 //                  name holds the filter text (case aside), by name (localization.util.Sort); twelve to a page;
 //                  NumShown; NoCorpSkillPlans with none, NoSkillPlansMatchingFilters with none shown
 
-import { uuidFromBytes } from "./skillPlans.ts";
+import { bytesFromUuid, uuidFromBytes } from "./skillPlans.ts";
 
 /** appConst.corpRoleSkillPlanManager */
 export const CORP_ROLE_SKILL_PLAN_MANAGER = 4611686018427387904n;
@@ -56,18 +60,24 @@ export function uuidIntFromBytes(base64: string): number {
   return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : 0;
 }
 
+/** uuid.UUID(int=categoryID).bytes, as the codec takes bytes (corpSkillPlanRequestsMessenger.create, set_category). */
+export function categoryBytes(categoryID: number): string {
+  return bytesFromUuid(BigInt(Math.max(0, Math.trunc(categoryID))).toString(16).padStart(32, "0"));
+}
+
 /** GetAll: each plan's id and summary. */
 export function corpPlansFromGetAll(payload: unknown): CorpPlanSummary[] {
   const plans = record(payload).skill_plans;
   return (Array.isArray(plans) ? plans : []).flatMap((entry) => {
     const id = uuidFromBytes(String(record(record(entry).identifier).uuid ?? ""));
     const plan = record(record(entry).skill_plan);
-    if (id === null) return [];
+    const category = String(record(plan.category).uuid ?? "");
+    if (id === null || category === "" || uuidFromBytes(category) === null) return [];
     return [{
       id,
       name: typeof plan.name === "string" ? plan.name : "",
       description: typeof plan.description === "string" ? plan.description : "",
-      categoryID: uuidIntFromBytes(String(record(plan.category).uuid ?? "")),
+      categoryID: uuidIntFromBytes(category),
     }];
   });
 }

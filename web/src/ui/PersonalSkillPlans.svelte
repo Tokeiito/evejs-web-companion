@@ -40,8 +40,11 @@
   // corporation (IsPlayerCorporation): the corporation's plans (flow.corpSkillPlans); where there are any, the career
   // paths as category buttons (one chosen or none), NumShown and the filter on the name; twelve to a page by name, the
   // page buttons where there is more than one page; NoCorpSkillPlans or NoSkillPlansMatchingFilters with none shown.
-  // A corporation plan opened (its caption CorpSkillPlan) has Delete, as its entry's menu has, only for a pilot with
-  // corpRoleSkillPlanManager (IsEditable). It cannot be tracked (IsTrackable): Track (its hint SaveAnTrackPlan) saves a
+  // A corporation plan opened (its caption CorpSkillPlan) has Edit and Delete, as its entry's menu has, only for a pilot
+  // with corpRoleSkillPlanManager (IsEditable); the panel's Create (CreateCorpPlanButton, under the plans or the hint:
+  // off without the role, CorpPlanCreateRequiresRoleHint, or at a hundred) and Edit open the editor with the plan's
+  // Category; a save reads the panel again from its first page. It cannot be tracked (IsTrackable): Track (its hint
+  // SaveAnTrackPlan) saves a
   // copy among the personal plans, opens it and tracks it (_CreateCopySelectAndTrack), and Start Training tracks such
   // a copy (_CheckSetCurrentSkillPlanAsTracked). Its milestones are the corporation's.
   //
@@ -53,7 +56,7 @@
   // Not done: Save and Share, the omega button's upgrade window, the progress gauge and milestones, the faction and
   // career icons, the omega mark and banner, the missing books' buy button, a level's add-to-queue button, a skill
   // row's selection, menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry,
-  // and a corporation plan's Create and Edit.
+  // and the corporation's notices (another member's changes, seen as they are made).
   import { onMount } from "svelte";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
   import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
@@ -70,7 +73,7 @@
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
   import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
   import type { CertifiedPlanEntry, CorpPlanEntry } from "../app/flow.ts";
-  import { CORP_PLANS_PER_PAGE, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
+  import { CORP_PLANS_PER_PAGE, MAX_CORP_PLANS, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -79,6 +82,7 @@
     readonly certified?: true;
     readonly milestoneList?: CertifiedPlanEntry["milestoneList"];
     readonly corp?: CorpPlanEntry["corp"];
+    readonly categoryID?: CorpPlanEntry["categoryID"];
   };
 
   // svelte-ignore state_referenced_locally
@@ -142,6 +146,8 @@
     "UI/SkillPlan/NoSkillPlansMatchingFilters": "No plan matches these filters.",
     "UI/SkillPlan/NoCorpSkillPlans": "Your corporation keeps no skill plan.",
     "UI/SkillPlan/SaveAnTrackPlan": "Keep a copy among your own plans, and follow that.",
+    "UI/SkillPlan/CreateCorpSkillPlan": "Make a plan for your corporation",
+    "UI/SkillPlan/CorpPlanCreateRequiresRoleHint": "Making your corporation's plans needs its skill plan manager role.",
   };
 
   // The panels (skillPlansBrowserPanel's toggle buttons): Certified Plans, Personal Plans, and Corporation Plans for a
@@ -248,6 +254,8 @@
 
   const corpAll = $derived(corp ? corpPlansFiltered(corp.plans, corpCategoryID, corpFilter) : []);
   const corpShown = $derived(corpAll.slice(corpPage * CORP_PLANS_PER_PAGE, (corpPage + 1) * CORP_PLANS_PER_PAGE));
+  /** The editor's Category choices after None (_GetCategoryComboOptions: the career paths in the table's order). */
+  const corpCategories = $derived((certified?.careerPaths ?? []).map((career) => ({ id: career.careerPathID, name: message(career.nameID) })));
 
   onMount(() => {
     flow.requestWords([...Object.keys(OWN), ...SHORT_INTERVAL_WORD_LABELS]);
@@ -344,19 +352,38 @@
   // --- A plan opened ---------------------------------------------------------------------------------------------
 
   // The editor, open on a plan (a copy) or a new one (plan null).
-  let editing = $state<{ readonly plan: PersonalSkillPlanEntry | null } | null>(null);
+  let editing = $state<{ readonly plan: OpenedPlan | null; readonly corp: boolean } | null>(null);
 
-  function edit(plan: PersonalSkillPlanEntry | null): void {
+  /** The editor on a plan, or on a new one (plan null; corp: the corporation's, OnCreateNewCorpSkillPlanButton). */
+  function edit(plan: OpenedPlan | null, corp = plan?.corp === true): void {
     menuUp = false;
-    editing = { plan };
+    editing = { plan, corp };
   }
 
   function editorClosed(saved: boolean): void {
+    const corpPlan = editing?.corp === true;
     editing = null;
     if (saved) {
       selectedID = null;
-      void load();
+      // OnSkillPlanCreated, OnSkillPlanSaved: the corporation panel's pages made again, its first shown.
+      if (corpPlan) {
+        corpPage = 0;
+        void loadCorp();
+      } else {
+        void load();
+      }
     }
+  }
+
+  /**
+   * CreateCorpPlanButton's tooltip: its header, the plans in total, the warning (_GetWarningText: the role wanted, or
+   * the most reached).
+   */
+  function createCorpTip(numPlans: number, canEdit: boolean): string {
+    const lines = [word("UI/SkillPlan/CreateCorpSkillPlan"), word("UI/SkillPlan/PlansInTotal", { numPlans, numTotal: MAX_CORP_PLANS })];
+    if (!canEdit) lines.push(word("UI/SkillPlan/CorpPlanCreateRequiresRoleHint"));
+    else if (numPlans >= MAX_CORP_PLANS) lines.push(word("UI/SkillPlan/MaximumSkillPlanReached", { numPlans: MAX_CORP_PLANS }));
+    return lines.join("\n");
   }
 
   /** CreatePersonalPlanButton's tooltip: its header, the plans in total, the warning at the most. */
@@ -594,7 +621,8 @@
     <p class="error">{error}</p>
   {/if}
   {#if editing !== null}
-    <SkillPlanEditor {store} {flow} plan={editing.plan} planCount={plans.length} onClose={editorClosed} />
+    <SkillPlanEditor {store} {flow} plan={editing.plan} planCount={editing.corp ? corp?.plans.length ?? 0 : plans.length} onClose={editorClosed}
+      corp={editing.corp ? { categoryID: editing.plan?.categoryID ?? null, categories: corpCategories } : null} />
   {:else if selected !== null}
     {@const plan = selected}
     {@const tracked = read?.trackedID === plan.id}
@@ -607,9 +635,10 @@
       </div>
       <div class="skill-plan-view-buttons">
         <!-- UpdateInformation: Edit and Delete only where the plan is editable (IsEditable: not a certified one; a
-             corporation's only with corpRoleSkillPlanManager, its Edit not here yet). -->
+             corporation's only with corpRoleSkillPlanManager). -->
         {#if plan.corp}
           {#if corp?.canEdit}
+            <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
             <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
           {/if}
         {:else if !plan.certified}
@@ -786,6 +815,9 @@
           </div>
         {/if}
       {/if}
+      <!-- CreateCorpPlanButton (UpdateState): off without corpRoleSkillPlanManager or at a hundred plans. -->
+      <button type="button" class="skill-plan-create" disabled={!corpRead.canEdit || corpRead.plans.length >= MAX_CORP_PLANS}
+        title={createCorpTip(corpRead.plans.length, corpRead.canEdit)} onclick={() => edit(null, true)}>{word("UI/SkillPlan/CreateNewSkillPlan")}</button>
     {/if}
   {:else if read === undefined}
     <p class="note">Reading your skill plans…</p>
@@ -806,9 +838,7 @@
   {#if menuUp && menu !== null}
     {@const menuFor = menu}
     <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
-      {#if !menuFor.plan.corp}
-        <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
-      {/if}
+      <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
       <button type="button" role="menuitem" onclick={() => void deletePlan(menuFor.plan)}>{word("UI/Common/Buttons/Delete")}</button>
     </span>
   {/if}

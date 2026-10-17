@@ -1,6 +1,7 @@
 <script lang="ts">
-  // The client's skill plan editor (skillPlanEditor/skillPlanEditorPanel.py), for a new personal plan or a copy of one
-  // to edit (skillPlanPanel.OnCreateNewPersonalSkillPlanButton, OnEditSkillPlanButton: skillPlan.GetCopy()). Its rules
+  // The client's skill plan editor (skillPlanEditor/skillPlanEditorPanel.py), for a new personal or corporation plan or
+  // a copy of one to edit (skillPlanPanel.OnCreateNewPersonalSkillPlanButton, OnCreateNewCorpSkillPlanButton,
+  // OnEditSkillPlanButton: skillPlan.GetCopy()). Its rules
   // are bridge/skillPlanEditor.ts; every change of the skills goes through the client's validation
   // (bridge/skillPlanValidation.ts, as EditableSkillPlanController does).
   //
@@ -15,6 +16,9 @@
   //   the overview    SkillPlanEditorOverview: Name (50 letters, counted, hinted EnterPlanName), Description (1000
   //                   letters, hinted EnterPlanDescription), Clear (the skills, the name and the description) and Save
   //                   (off with CantSaveTooltip with no skill or no name)
+  //   the category    a corporation plan's only (HasEditableCategoryID): the overview's Category combo, None and then the
+  //                   career paths in the client's table's order (_GetCategoryComboOptions); Clear puts it back to None;
+  //                   Save sends it (OnSaveButton: SetCategoryID from the combo)
   //
   //   milestones      the overview's milestone editor (SkillPlanProgressIndicatorEditable and its header): Milestones
   //                   with the count of five, each milestone's kind and name with its Remove Milestone, an empty slot
@@ -22,7 +26,7 @@
   //                   on it is added, and on a milestone replaces it after the client's question
   //                   (bridge/skillPlanEditorMilestones.ts); an edited plan's milestones are its own, copied (GetCopy)
   //
-  // Not done: the category (a corporation plan's), dragging ships, modules and fittings in from other windows, a
+  // Not done: dragging ships, modules and fittings in from other windows, a
   // milestone's level changed in its tooltip, the ring, the double clicks, a row's selection marks, the catalogue's
   // filter combo and group icons, the contents' menu (copy, import, clear), the time and bar of a level.
   import { onMount } from "svelte";
@@ -43,21 +47,26 @@
     editedPlanDiffers, highestPlanLevel, nextPlanLevel, withLevelAppended, withLevelRemoved, type CatalogueGroup,
   } from "../bridge/skillPlanEditor.ts";
 
-  let { store, flow, plan, planCount, onClose }: {
+  let { store, flow, plan, planCount, onClose, corp = null }: {
     store: ClientStore;
     flow: AppFlow;
     /** The plan edited, or null for a new one. */
     plan: PersonalSkillPlanEntry | null;
-    /** How many personal plans there are (the new plan's limit). */
+    /** How many plans of its kind there are (the new plan's limit): personal ones, or the corporation's. */
     planCount: number;
     /** Gone back, the plan saved or not. */
     onClose: (saved: boolean) => void;
+    /** A corporation plan's: its category (null for a new plan, None chosen) and the career paths to choose from. */
+    corp?: { readonly categoryID: number | null; readonly categories: readonly { readonly id: number; readonly name: string }[] } | null;
   } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // The Category combo's value (0: None).
+  // svelte-ignore state_referenced_locally
+  let categoryID = $state(corp?.categoryID ?? 0);
 
   const OWN: Readonly<Record<string, string>> = {
     "UI/SkillPlan/Skills": "Skills",
@@ -70,6 +79,8 @@
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters": "No skill shown with these filters",
     "UI/Common/Name": "Name",
     "UI/Common/Description": "Description",
+    "UI/Common/Category": "Category",
+    "UI/Generic/None": "None",
     "UI/SkillPlan/EnterPlanName": "The plan's name",
     "UI/SkillPlan/EnterPlanDescription": "What the plan is for",
     "UI/Inventory/Clear": "Clear",
@@ -159,7 +170,7 @@
     if (plan) {
       const editedPlan = plan;
       void (async () => {
-        const read = await flow.skillPlanMilestones(editedPlan).catch(() => null);
+        const read = await flow.skillPlanMilestones(editedPlan, corp ? "corporation" : "character").catch(() => null);
         if (!read) return;
         persisted = read.milestones;
         milestones = copiedMilestones(read.milestones, newMilestoneID);
@@ -293,6 +304,7 @@
     requirements = [];
     milestones = milestones.toAdd.reduce((out, milestone) => withMilestoneRemoved(out, milestone.id), milestones);
     name = "";
+    categoryID = 0;
     description = "";
   }
 
@@ -308,7 +320,8 @@
     if (saving || !canSavePlan(edited)) return;
     saving = true;
     try {
-      if (await flow.saveSkillPlan(edited, plan, planCount, { milestones, persisted })) onClose(true);
+      const corpSave = corp ? { categoryID, savedCategoryID: corp.categoryID } : undefined;
+      if (await flow.saveSkillPlan(edited, plan, planCount, { milestones, persisted }, corpSave)) onClose(true);
     } finally {
       saving = false;
     }
@@ -408,6 +421,15 @@
       </div>
       <label for="plan-editor-description">{word("UI/Common/Description")}</label>
       <textarea id="plan-editor-description" rows="6" maxlength={MAX_PLAN_DESCRIPTION_LENGTH} placeholder={word("UI/SkillPlan/EnterPlanDescription")} bind:value={description}></textarea>
+      {#if corp}
+        <label for="plan-editor-category">{word("UI/Common/Category")}</label>
+        <select id="plan-editor-category" bind:value={categoryID}>
+          <option value={0}>{word("UI/Generic/None")}</option>
+          {#each corp.categories as category (category.id)}
+            <option value={category.id}>{category.name}</option>
+          {/each}
+        </select>
+      {/if}
       <div class="plan-editor-buttons">
         <button type="button" onclick={clear}>{word("UI/Inventory/Clear")}</button>
         <button type="button" class="primary" disabled={!canSavePlan(edited) || saving || working}

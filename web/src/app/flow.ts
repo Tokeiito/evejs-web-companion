@@ -214,7 +214,13 @@ import {
   PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
 } from "../bridge/certifiedSkillPlans.ts";
 
-import { corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
+import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
+
+/** A corporation plan's save: the category chosen in the editor (0 for None), and the saved plan's (null for a new one). */
+export interface CorpPlanSave {
+  readonly categoryID: number;
+  readonly savedCategoryID: number | null;
+}
 
 /** A corporation plan as its entry shows it. */
 export type CorpPlanEntry = CorpPlanSummary & {
@@ -2547,8 +2553,11 @@ export interface AppFlow {
    * The editor's Save (skillPlanService.Save): a new plan (saved null) created, the plans counted first
    * (CheckNumPersonalSkillPlans: MaxPersonalPlansReached at ten); an edited one sent what differs from the saved one
    * (_GetCallsToUpdate). A refusal said as the client says it (_RaiseErrorMessageOnSave). True where it was saved.
+   * A corporation plan (corp given) is saved by the corporation's requests: created with the category chosen, the
+   * corporation's plans counted first (CheckNumCorpSkillPlans: MaxCorpPlansReached at a hundred, planCount theirs);
+   * an edited one sent what differs, its category among it (SetCategory); its milestones the corporation's.
    */
-  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones): Promise<boolean>;
+  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones, corp?: CorpPlanSave): Promise<boolean>;
   /**
    * What the editor's milestones read of types (skillPlanUtil.IsTypeValidMilestone, AddAllSkillsRequiredFor): each
    * one's category and its needs in the client's table's order (and every skill they lead to). Null without the
@@ -7918,31 +7927,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return out;
   }
 
-  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones): Promise<boolean> {
+  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones, corp?: CorpPlanSave): Promise<boolean> {
+    // The plan's own request module: personalSkillPlanRequest, or corpSkillPlanRequest for a corporation plan.
+    const scope = corp ? "corporation" : "character";
     const requirements = edited.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level }));
     // OnSaveButton: AdjustMilestonesToAddAndDeletedIDs first.
     const adjusted = milestones ? adjustedMilestones(milestones.milestones, milestones.persisted) : { toAdd: [], toDelete: [] };
     try {
       if (saved === null) {
-        if (planCount >= MAX_PERSONAL_PLANS) {
+        // CheckNumCorpSkillPlans, CheckNumPersonalSkillPlans
+        if (corp && planCount >= MAX_CORP_PLANS) {
+          sayDialog("MaxCorpPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "Your corporation has as many skill plans as can be kept.");
+          return false;
+        }
+        if (!corp && planCount >= MAX_PERSONAL_PLANS) {
           sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
           return false;
         }
-        const created = await gatewayAsk("eve_public.character.skill.plan.CreateRequest", { skill_plan: { name: edited.name, description: edited.description, skill_requirements: requirements } }, true);
-        // _CreateAndCachePersonalController: SetMilestonesToAdd, SaveMilestones.
+        const created = await gatewayAsk(`eve_public.${scope}.skill.plan.CreateRequest`, {
+          skill_plan: {
+            name: edited.name,
+            description: edited.description,
+            skill_requirements: requirements,
+            ...(corp ? { category: { uuid: categoryBytes(corp.categoryID) } } : {}),
+          },
+        }, true);
+        // _CreateAndCachePersonalController, _CreateAndCacheCorpController: SetMilestonesToAdd, SaveMilestones.
         const planID = uuidFromBytes(String(((created as { skill_plan?: { uuid?: string } } | null)?.skill_plan?.uuid) ?? ""));
-        if (planID !== null) await saveMilestones(planID, adjusted);
+        if (planID !== null) await saveMilestones(planID, adjusted, scope);
         return true;
       }
       const uuid = bytesFromUuid(saved.id);
-      await Promise.all(planUpdates(saved, edited).map((what) =>
+      // _GetCallsToUpdate: the name, the description, the skills, and the category, where they differ.
+      const calls: Promise<unknown>[] = planUpdates(saved, edited).map((what) =>
         what === "name"
-          ? gatewayAsk("eve_public.character.skill.plan.SetNameRequest", { skill_plan: { uuid }, name: edited.name }, true)
+          ? gatewayAsk(`eve_public.${scope}.skill.plan.SetNameRequest`, { skill_plan: { uuid }, name: edited.name }, true)
           : what === "description"
-            ? gatewayAsk("eve_public.character.skill.plan.SetDescriptionRequest", { skill_plan: { uuid }, description: edited.description }, true)
-            : setPlanSkillRequirements(saved.id, edited.requirements)));
-      // _SaveExistingPersonalSkillPlan: skillPlan.SaveMilestones().
-      await saveMilestones(saved.id, adjusted);
+            ? gatewayAsk(`eve_public.${scope}.skill.plan.SetDescriptionRequest`, { skill_plan: { uuid }, description: edited.description }, true)
+            : gatewayAsk(`eve_public.${scope}.skill.plan.SetSkillRequirementsRequest`, { skill_plan: { uuid }, requirements }, true));
+      if (corp && corp.categoryID !== corp.savedCategoryID) {
+        calls.push(gatewayAsk("eve_public.corporation.skill.plan.SetCategoryRequest", { skill_plan: { uuid }, category: { uuid: categoryBytes(corp.categoryID) } }, true));
+      }
+      await Promise.all(calls);
+      // _SaveExistingPersonalSkillPlan, _SaveExistingCorpSkillPlan: skillPlan.SaveMilestones().
+      await saveMilestones(saved.id, adjusted, scope);
       return true;
     } catch (error) {
       saySkillPlanSaveRefused(error, edited);
@@ -8071,12 +8099,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * EditableSkillPlanController.SaveMilestones: the ids to delete deleted, then those to add created, each set at once
    * (uthread.parallel), each one's failure only logged (_Delete, _Create).
    */
-  async function saveMilestones(planID: string, milestones: EditorMilestones): Promise<void> {
+  async function saveMilestones(planID: string, milestones: EditorMilestones, scope: "character" | "corporation" = "character"): Promise<void> {
     await Promise.all(milestones.toDelete.map((id) =>
-      gatewayAsk("eve_public.character.skill.plan.milestone.DeleteRequest", { milestone: { uuid: bytesFromUuid(id) } }, true).catch(() => null)));
+      gatewayAsk(`eve_public.${scope}.skill.plan.milestone.DeleteRequest`, { milestone: { uuid: bytesFromUuid(id) } }, true).catch(() => null)));
     const skill_plan = { uuid: bytesFromUuid(planID) };
     await Promise.all(milestones.toAdd.map((milestone) =>
-      gatewayAsk("eve_public.character.skill.plan.milestone.CreateRequest", {
+      gatewayAsk(`eve_public.${scope}.skill.plan.milestone.CreateRequest`, {
         milestone: milestone.kind === "type"
           ? { skill_plan, train_to_type: { sequential: String(milestone.typeID) } }
           : { skill_plan, skill: { skill_type: { sequential: String(milestone.typeID) }, level: milestone.level } },

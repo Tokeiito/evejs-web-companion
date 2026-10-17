@@ -13489,6 +13489,11 @@ const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.corporation.skill.plan.SetSkillRequirementsRequest",
   "eve_public.corporation.skill.plan.DeleteRequest",
   "eve_public.corporation.skill.plan.milestone.DeleteRequest",
+  "eve_public.corporation.skill.plan.CreateRequest",
+  "eve_public.corporation.skill.plan.SetNameRequest",
+  "eve_public.corporation.skill.plan.SetDescriptionRequest",
+  "eve_public.corporation.skill.plan.SetCategoryRequest",
+  "eve_public.corporation.skill.plan.milestone.CreateRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
