@@ -75,9 +75,3 @@ function fittingOf(read: Record<string, unknown>): DraggedFitting | null {
   if (items.length !== fitData.length) return null;
   return { fittingID, shipTypeID, fitData: items, name };
 }
-
-/** The number of the saved fitting dropped, or null where none was (read in the drop's own handler, before any await). */
-export function droppedFittingID(event: DragEvent): number | null {
-  const fittingID = droppedFitting(event)?.fittingID ?? null;
-  return fittingID !== null && fittingID > 0 ? fittingID : null;
-}

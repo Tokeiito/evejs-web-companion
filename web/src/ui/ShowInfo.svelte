@@ -14,7 +14,7 @@
   import { onMount } from "svelte";
   import TypeIcon from "./TypeIcon.svelte";
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
-  import { LINK_WORDS, linkFollowerOf } from "./linkFollowers.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
@@ -441,6 +441,8 @@
           type="button"
           class="evelink {follower.kind}"
           title={follower.hint}
+          draggable="true"
+          ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}
           onclick={follower.follow}>{run.text}</button>{:else}<span
           class:info-bold={run.bold}
           class:info-italic={run.italic}

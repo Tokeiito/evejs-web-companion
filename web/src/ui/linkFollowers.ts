@@ -15,9 +15,18 @@
 // Any other link is not followed (shown underlined, its url its hint). The colours are styles.css's `.evelink`.
 
 import type { AppFlow } from "../app/flow.ts";
-import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
+import { LINK_DRAG_TYPE, parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 import { linkScheme } from "../bridge/showInfoLink.ts";
 import { showInfo, subjectOfShowInfoLink } from "./showInfo.ts";
+
+/**
+ * A link in a text dragged (carbonui label.GetDragData: a TextLink of its url and its text, the tags stripped), for a
+ * text to take (eveEditPlainText.OnDropData: AddLink of the text and the url, flow.droppedLinkMarkup).
+ */
+export function startLinkDrag(event: DragEvent, url: string, text: string): void {
+  event.dataTransfer?.setData(LINK_DRAG_TYPE, JSON.stringify({ url, text: text.replace(/<[^>]*>/g, "") }));
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+}
 
 /** The links' hints, the page's own words where the install's are not to hand. */
 export const LINK_WORDS: Readonly<Record<string, string>> = {

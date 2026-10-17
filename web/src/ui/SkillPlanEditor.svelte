@@ -67,7 +67,7 @@
   import SkillRowTip from "./SkillRowTip.svelte";
   import { endSkillDrag, startSkillDrag } from "./skillDrag.ts";
   import { DRAG_MIME, decodeDrag } from "./dragDrop.ts";
-  import { droppedFittingID, isFittingDrag } from "./fittingDrag.ts";
+  import { droppedFittingDrag, isFittingDrag, type DraggedFitting } from "./fittingDrag.ts";
   import { skillGroupIcon } from "./skillGroupIcons.ts";
   import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
   import type { SkillRowInfo } from "../bridge/skillPlans.ts";
@@ -482,18 +482,20 @@
   }
 
   /**
-   * OnDropData and OnEntryDropData past a skill's drag, alike on a level or on the list: a saved fitting
-   * (_OnDropFitting), else an item or a fitted module (_OnTypeDropData). What was dropped is read before any await, as
-   * a drop's data can only be.
+   * OnDropData and OnEntryDropData past a skill's drag, alike on a level or on the list: a fitting (a FittingEntry: a
+   * saved one, one not saved, the Fitting window's; _OnDropFitting), else an item or a fitted module (_OnTypeDropData).
+   * A link dropped (a TextLink) is not taken: the client's own reading of it unpacks parse_fitting_url's one string
+   * into two names (UNPACK_SEQUENCE 2, in OnDropData's and OnEntryDropData's bytecode) and raises. What was dropped is
+   * read before any await, as a drop's data can only be.
    */
   async function dropOther(event: DragEvent): Promise<void> {
-    const fittingID = droppedFittingID(event);
-    const item = fittingID === null ? decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null) : null;
-    if ((fittingID === null && item === null) || working) return;
+    const fitting = droppedFittingDrag(event);
+    const item = fitting === null ? decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null) : null;
+    if ((fitting === null && item === null) || working) return;
     working = true;
     note = "";
     try {
-      if (fittingID !== null) await addFittingNeeds(fittingID);
+      if (fitting !== null) await addFittingNeeds(fitting.kind === "fitting" ? fitting.fitting : await flow.draggedFittingOf(fitting.source));
       else if (item !== null) await addTypeRequirements(item.typeID);
       await readRequiring();
     } catch {
@@ -504,8 +506,8 @@
   }
 
   /** _OnDropFitting: the hull's and each module's needs appended where the plan lacks that level (BulkAddAllSkillsRequiredFor). */
-  async function addFittingNeeds(fittingID: number): Promise<void> {
-    const typeIDs = await flow.skillPlanFittingTypes(fittingID);
+  async function addFittingNeeds(fitting: Pick<DraggedFitting, "shipTypeID" | "fitData"> | null): Promise<void> {
+    const typeIDs = fitting === null ? null : await flow.skillPlanFittingTypes(fitting);
     if (typeIDs === null) {
       note = "That fitting's types could not be read: the plan was not changed.";
       return;
@@ -699,7 +701,7 @@
     // GetDragDataTypeIDAndLevel: an item's or a fitted module's type; a fitting has none (CantAddAsMilestone).
     const item = raw ? null : decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
     if (!raw && item === null) {
-      if (droppedFittingID(event) !== null) flow.sayCantAddAsMilestone();
+      if (droppedFittingDrag(event) !== null) flow.sayCantAddAsMilestone();
       return;
     }
     if (working) return;

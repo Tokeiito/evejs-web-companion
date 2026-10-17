@@ -2903,11 +2903,11 @@ export interface AppFlow {
    */
   skillPlanTypeFacts(typeIDs: readonly number[]): Promise<{ readonly required: RequiredSkills; readonly categoryID: ReadonlyMap<number, number | null> } | null>;
   /**
-   * A saved fitting's types as the skill plan editor takes them when it is dropped there (_OnDropFitting, by
-   * GetTypesByRack's kinds: bridge/fittingContents.ts fittingTypesForSkillPlan); null where the fitting is not held or
-   * its types' facts could not be read.
+   * A fitting's types as the skill plan editor takes them when it is dropped there (_OnDropFitting, by GetTypesByRack's
+   * kinds: bridge/fittingContents.ts fittingTypesForSkillPlan), saved or not; null where its types' facts could not be
+   * read.
    */
-  skillPlanFittingTypes(fittingID: number): Promise<readonly number[] | null>;
+  skillPlanFittingTypes(fitting: { readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[] }): Promise<readonly number[] | null>;
   /** A type dropped that is no milestone (SkillPlanProgressIndicatorEditable._OnDataDropped): CantAddAsMilestone. */
   sayCantAddAsMilestone(): void;
   /** A milestone dropped on one (OnMilestoneDataDropped): ReplaceMilestoneWithNewMilestone; true on Yes. */
@@ -9644,14 +9644,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { required, categoryID: new Map(typeIDs.map((typeID) => [typeID, meta.types.get(typeID)?.categoryID ?? null])) };
   }
 
-  async function skillPlanFittingTypes(fittingID: number): ReturnType<AppFlow["skillPlanFittingTypes"]> {
-    const fitting = savedFittingOf(fittingID);
-    if (fitting === null) return null;
-    const facts = await fittingTypeFacts([...new Set(fitting.modules.map((module) => module.typeID))]).catch(() => null);
+  async function skillPlanFittingTypes(fitting: Parameters<AppFlow["skillPlanFittingTypes"]>[0]): ReturnType<AppFlow["skillPlanFittingTypes"]> {
+    const facts = await fittingTypeFacts([...new Set(fitting.fitData.map(([typeID]) => typeID))]).catch(() => null);
     if (facts === null) return null;
     return fittingTypesForSkillPlan(
       fitting.shipTypeID,
-      fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+      fitting.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
       (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
     );
   }

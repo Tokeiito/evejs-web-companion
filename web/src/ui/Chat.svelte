@@ -25,7 +25,7 @@
   import { LINK_DRAG_TYPE } from "../bridge/skillPlanLink.ts";
   import { droppedFittingDrag, isFittingDrag } from "./fittingDrag.ts";
   import type { DroppedLink } from "../app/flow.ts";
-  import { LINK_WORDS, linkFollowerOf } from "./linkFollowers.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 
   let { store, flow, openSkillPlanLink = null }: {
@@ -263,7 +263,7 @@
             {#each active.messages as message, index (index)}
               <li>
                 <span class="author">{message.characterName}</span>:
-                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button type="button" class="evelink {follower.kind}" title={follower.hint} onclick={follower.follow}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
+                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button type="button" class="evelink {follower.kind}" title={follower.hint} onclick={follower.follow} draggable="true" ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
               </li>
             {/each}
           </ul>

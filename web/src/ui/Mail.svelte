@@ -63,7 +63,7 @@
     hasChatManagerRole,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
-  import { LINK_WORDS, linkFollowerOf } from "./linkFollowers.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { isSearchMatch } from "../bridge/searchMatch.ts";
@@ -2545,6 +2545,8 @@
                     class="evelink {follower.kind}"
                     class:mail-italic={run.italic}
                     title={follower.hint}
+                    draggable="true"
+                    ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}
                     onclick={follower.follow}>{run.text}</button>{:else}<span
                     class:mail-bold={run.bold}
                     class:mail-italic={run.italic}
