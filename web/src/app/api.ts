@@ -5154,3 +5154,25 @@ export async function startMiningOperation(
 export async function stopMiningOperation(operationID: string, options: ApiOptions = {}): Promise<MiningOperationsPayload> {
   return miningOperationsPayload(await postJson(`/api/mining-operations/${encodeURIComponent(operationID)}/stop`, {}, options));
 }
+
+/** The public gateway's answer to one of the client's eve_public requests: its status and its payload, decoded. */
+export interface PublicGatewayAnswer {
+  readonly statusCode: number;
+  readonly statusMessage: string;
+  readonly typeName: string | null;
+  readonly payload: JsonValue | null;
+}
+
+/**
+ * One of the client's eve_public requests made on the public gateway for the page's pilot (the BFF's
+ * POST /api/public-gateway/request), as its client makes it; a write with confirm said.
+ */
+export async function publicGatewayRequest(request: string, payload: Record<string, JsonValue>, options: ApiOptions & { confirm?: boolean } = {}): Promise<PublicGatewayAnswer> {
+  const data = await postJson("/api/public-gateway/request", { request, payload, ...(options.confirm ? { confirm: true } : {}) }, options);
+  return {
+    statusCode: typeof data.statusCode === "number" ? data.statusCode : 0,
+    statusMessage: typeof data.statusMessage === "string" ? data.statusMessage : "",
+    typeName: typeof data.typeName === "string" ? data.typeName : null,
+    payload: data.payload ?? null,
+  };
+}

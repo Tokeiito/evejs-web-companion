@@ -169,8 +169,22 @@ export function trainingTimeLeft(
   facts: SkillTrainingFacts,
 ): number | null {
   if (isSkillRequirementMet(typeID, required, skills)) return 0;
+  return trainingTimeForSkills(requiredSkillsRecursive(typeID, required), skills, includingLapsed, facts);
+}
+
+/**
+ * skillsvc.GetTrainingTimeForSkills (1112 to 1123): the time, in ticks, to train each skill from the level trained
+ * (GetSkillIncludingLapsed's, the lapsed counted) to the level given, each level at GetRawTrainingTimeForSkillLevel.
+ * Null where a rank or a rate is not known.
+ */
+export function trainingTimeForSkills(
+  levels: Iterable<readonly [number, number]>,
+  skills: PilotSkills,
+  includingLapsed: PilotSkills,
+  facts: SkillTrainingFacts,
+): number | null {
   let total = 0;
-  for (const [skill, toLevel] of requiredSkillsRecursive(typeID, required)) {
+  for (const [skill, toLevel] of levels) {
     const had = includingLapsed.get(skill);
     if (had !== undefined && had.trainedSkillLevel >= toLevel) continue;
     for (let level = (had?.trainedSkillLevel ?? 0) + 1; level <= toLevel; level += 1) {

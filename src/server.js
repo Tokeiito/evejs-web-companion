@@ -28,6 +28,7 @@ const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = requir
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
+const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
 const { attachPilotSocket } = require("./pilotSocket");
 const { createInProcessFetch, hostedBotReach } = require("./inProcessFetch");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
@@ -13370,6 +13371,52 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 // (assetSearchUtil.py 437 to 475). With them each type's market group, whether it is published, its group and its
 // category (evetypes.GetMarketGroupID, IsPublished, GetGroupID, GetCategoryIDByGroup): what a type's menu offers by
 // (menusvc.GetMenuFromItemIDTypeID) and what the market's quickbar fades a type by (QuickbarItem.Load). At most 500.
+// The public gateway (gamePort/publicGateway.js): one of the client's own eve_public requests made for the page's
+// pilot as its client makes it (send_character_request: the pilot's account as the authenticated user, the pilot as
+// the active identity), and the gateway's answer: {statusCode, statusMessage, typeName, payload}, the payload decoded
+// by the client's own message of that type. The requests are those the page makes; a write among them only with
+// confirm said. The pilot is the held session's, never the page's to name.
+const PUBLIC_GATEWAY_READS = new Set([
+  // skills/skillplan/grpc/message_bus/skillPlanRequestsMessenger.py
+  "eve_public.character.skill.plan.GetAllRequest",
+  "eve_public.character.skill.plan.GetRequest",
+  "eve_public.character.skill.plan.GetActiveRequest",
+]);
+const PUBLIC_GATEWAY_WRITES = new Set([
+  "eve_public.character.skill.plan.DeleteRequest",
+]);
+let publicGatewayClient = null;
+app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const request = typeof body.request === "string" ? body.request : "";
+    const write = PUBLIC_GATEWAY_WRITES.has(request);
+    if (!write && !PUBLIC_GATEWAY_READS.has(request)) {
+      res.status(400).json({ ok: false, error: "GATEWAY_REQUEST_REFUSED", message: `${request || "That"} is no request the page makes on the public gateway.` });
+      return;
+    }
+    if (write && body.confirm !== true) {
+      res.status(403).json({ ok: false, error: "GATEWAY_WRITE_REFUSED", message: `${request} is a write: it is made only with confirm said.` });
+      return;
+    }
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload) ? body.payload : {};
+    if (!publicGatewayClient) publicGatewayClient = createPublicGateway({ url: publicGatewayUrl(process.env, gameEndpoint(process.env).host) });
+    let answer;
+    try {
+      answer = await publicGatewayClient.request({ userID: held.accountID, characterID: held.characterID }, request, payload);
+    } catch (error) {
+      if (!String(error && error.code).startsWith("GATEWAY_")) throw error;
+      res.status(502).json({ ok: false, error: error.code, message: error.message });
+      return;
+    }
+    res.json({ ok: true, ...answer });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

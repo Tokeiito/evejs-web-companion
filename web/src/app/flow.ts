@@ -200,9 +200,13 @@ import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridg
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
   allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
-  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
+  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
+import {
+  bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  type PersonalSkillPlansRead,
+} from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
 import {
@@ -2434,6 +2438,18 @@ export interface AppFlow {
   readonly shipTraits: ReadableSignal<ShipTraitsHeld>;
   /** Asks the traits of the ships named that are not asked yet, with the words and names they are written with. */
   requestShipTraits(typeIDs: readonly number[]): Promise<void>;
+  /**
+   * The pilot's personal skill plans (bridge/skillPlans.ts), read as the client's skill plan service primes them, on
+   * the public gateway: GetAll, then each plan by Get (one whose Get fails left out), and the tracked plan by
+   * GetActive; with each plan's time left to train and whether it is completed. Null where the gateway could not be
+   * had (the client's SkillPlanConnectionError).
+   */
+  personalSkillPlans(): Promise<PersonalSkillPlansRead | null>;
+  /**
+   * SkillPlanEntry.Delete (skillPlanService._DeletePersonal): the client's DeleteSkillPlan question, then Delete on
+   * the public gateway; true where it was deleted, false on No. A refusal is thrown.
+   */
+  deletePersonalSkillPlan(id: string): Promise<boolean>;
   /**
    * The compare tool's reading of types (comparableType.py), from the client's own tables and kept: each type's dogma
    * attributes and facts, the attributes' records and the units' names, all that is held; the words and the names
@@ -6852,39 +6868,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const ALPHA_TRAINING_MULTIPLIER = 0.5;
 
   /**
-   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
-   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
-   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
-   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
-   *
-   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
-   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
-   * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
-   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's ceilings
-   * (CloneGradeStorage, by race) hold its levels back: the bar's omega boxes, NeedsOmegaUpgrade (no action then).
+   * What the client's skill service reckons training by, for those skills: the pilot's levels (GetSkills, and
+   * GetAllSkills for the lapsed too), the queue (GetSkillQueueAndFreePoints), each skill's rank and the two attributes
+   * it trains by, and the rate, GetSkillpointsPerMinute(includeBoosters=False): each attribute (GetAttributes) halved
+   * for an alpha clone (GetCharacterAttribute), less what the pilot's skill accelerators (GetBoosters) add to it, halved
+   * too for an alpha; with an alpha clone's ceilings, and each skill's points now (the one in training counted).
    */
-  async function skillWindowRest(
-    typeID: number,
-    required: RequiredSkills,
-    skillsAnswer: JsonValue,
-    allSkillsAnswer: JsonValue,
-    listed: readonly (readonly [number, number])[],
-  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">> {
+  async function pilotTrainingFacts(skillTypes: readonly number[], skillsAnswer: JsonValue, allSkillsAnswer: JsonValue) {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
-    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
-    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes, lists] = await Promise.all([
+    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes] = await Promise.all([
       bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
       bridgeAsk("skillHandler", "GetAttributes", []),
       bridgeAsk("skillHandler", "GetBoosters", []),
       api.fetchTypeDogma(skillTypes, [ATTRIBUTE_SKILL_TIME_CONSTANT, ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY], callOptions),
-      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
     ]);
-    // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
-    // client's data the list alone goes.
-    // The type's own category is asked with them: a skill's is NeedsOmegaUpgrade's second half.
-    const prices = await api.getTypePrices([...new Set([...listed.map(([skill]) => skill), typeID])], callOptions)
-      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>>, categoryID: {} as Readonly<Record<number, number | null>> }));
     const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
     const queued = queuedLevels(queue);
     const training = skillInTraining(queue);
@@ -6944,6 +6942,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
     const pointsNow = (skill: number): number =>
       sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
+    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, pointsNow };
+  }
+
+  /**
+   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
+   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
+   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
+   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
+   *
+   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
+   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
+   * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
+   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's ceilings
+   * (CloneGradeStorage, by race) hold its levels back: the bar's omega boxes, NeedsOmegaUpgrade (no action then).
+   */
+  async function skillWindowRest(
+    typeID: number,
+    required: RequiredSkills,
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+    listed: readonly (readonly [number, number])[],
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">> {
+    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
+    const [{ mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, pointsNow }, lists] = await Promise.all([
+      pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer),
+      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
+    ]);
+    // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
+    // client's data the list alone goes.
+    // The type's own category is asked with them: a skill's is NeedsOmegaUpgrade's second half.
+    const prices = await api.getTypePrices([...new Set([...listed.map(([skill]) => skill), typeID])], callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>>, categoryID: {} as Readonly<Record<number, number | null>> }));
 
     const rows = listed.map(([skill, level]) => ({
       skill,
@@ -7506,6 +7536,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ...Object.values(read.unitNameIDs).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
     ]);
     requestNames(Object.values(read.traits).flatMap((each) => (each === null ? [] : each.skills.map((skill) => ({ kind: "type" as const, id: skill.skillTypeID })))));
+  }
+
+  // The public gateway: one of the client's eve_public requests for the pilot; the payload where it answered 200
+  // (requestsMessenger._check_response_status), else a refusal with its status.
+  async function gatewayAsk(request: string, payload: Record<string, JsonValue> = {}, confirm = false): Promise<JsonValue | null> {
+    const answer = await api.publicGatewayRequest(request, payload, { ...callOptions, confirm });
+    if (answer.statusCode !== 200) {
+      throw Object.assign(new Error(`${request} was answered ${answer.statusCode}${answer.statusMessage ? `: ${answer.statusMessage}` : ""}.`), { statusCode: answer.statusCode });
+    }
+    return answer.payload;
+  }
+
+  async function personalSkillPlans(): Promise<PersonalSkillPlansRead | null> {
+    let ids: readonly string[];
+    try {
+      ids = planIDsFromGetAll(await gatewayAsk("eve_public.character.skill.plan.GetAllRequest"));
+    } catch {
+      return null;
+    }
+    const [read, trackedID, skillsAnswer, allSkillsAnswer] = await Promise.all([
+      Promise.all(ids.map((id) => gatewayAsk("eve_public.character.skill.plan.GetRequest", { skill_plan: { uuid: bytesFromUuid(id) } })
+        .then((payload) => planFromGet(id, payload))
+        .catch(() => null))),
+      gatewayAsk("eve_public.character.skill.plan.GetActiveRequest").then(trackedPlanFromGetActive).catch(() => null),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    const plans = read.filter((plan) => plan !== null);
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
+    const facts = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    return {
+      trackedID,
+      plans: plans.map((plan) => ({
+        ...plan,
+        completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, facts),
+      })),
+    };
+  }
+
+  async function deletePersonalSkillPlan(id: string): Promise<boolean> {
+    if (!(await askDialog("DeleteSkillPlan", {}, "Delete this skill plan for good?"))) return false;
+    await gatewayAsk("eve_public.character.skill.plan.DeleteRequest", { skill_plan: { uuid: bytesFromUuid(id) } }, true);
+    return true;
   }
 
   // The compare tool's types and their attributes' records, as read: static data, kept.
@@ -22040,6 +22116,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadHullBrowser,
     shipTraits: readonlySignal(shipTraitsSignal),
     requestShipTraits,
+    personalSkillPlans,
+    deletePersonalSkillPlan,
     comparisonTypes,
     cfgAveragePrices,
     typeFacts,

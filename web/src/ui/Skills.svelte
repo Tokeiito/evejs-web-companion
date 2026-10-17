@@ -24,6 +24,8 @@
   // cache covers every skill type, so here — uniquely — the pictures are the
   // normal case and the lettered tile is the exception.
   import TypeIcon from "./TypeIcon.svelte";
+  // The client's Personal Plans, read on the public gateway.
+  import PersonalSkillPlans from "./PersonalSkillPlans.svelte";
   import {
     formatDuration,
     formatSkillPoints,
@@ -441,6 +443,8 @@
     </div>
   {/if}
 </section>
+
+<PersonalSkillPlans {store} {flow} />
 
 <section>
   <header class="panel-head">
