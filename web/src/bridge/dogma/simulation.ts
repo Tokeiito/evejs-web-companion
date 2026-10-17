@@ -54,18 +54,19 @@ export function simulatedMaxActiveDrones(simulation: SimulatedShip): number {
 }
 
 /**
- * SelectedDroneTracker.RegisterDroneAsActive, its errors not raised: the drone selected where fewer than the most that
- * may be active are, and the bandwidth it takes is left.
+ * SelectedDroneTracker.RegisterDroneAsActive: the drone selected where fewer than the most that may be active are
+ * (else "limit": ActiveDronesLimitWarning) and the bandwidth it takes is left (else "bandwidth":
+ * ActiveDroneBandwithWarning); null where it is selected.
  */
-function registerDrone(simulation: SimulatedShip, drone: DogmaItem, quantity = 1): boolean {
+function registerDrone(simulation: SimulatedShip, drone: DogmaItem, quantity = 1): "limit" | "bandwidth" | null {
   let selected = 0;
   for (const count of simulation.selectedDrones.values()) selected += count;
-  if (selected >= Math.max(simulatedMaxActiveDrones(simulation), 5)) return false;
+  if (selected >= Math.max(simulatedMaxActiveDrones(simulation), 5)) return "limit";
   const value = (item: DogmaItem, attributeID: number): number => simulation.location.value(item, attributeID);
   const { used, ship } = activeDroneBandwidth(simulation.ship, { accurate: value, value }, simulation.selectedDrones);
-  if (quantity * value(drone, ATTRIBUTE_DRONE_BANDWIDTH_USED) + used > ship) return false;
+  if (quantity * value(drone, ATTRIBUTE_DRONE_BANDWIDTH_USED) + used > ship) return "bandwidth";
   simulation.selectedDrones.set(drone, (simulation.selectedDrones.get(drone) ?? 0) + quantity);
-  return true;
+  return null;
 }
 
 /** GetDronesInDamgeAmountOrder: the damage multiplier times the sum of the drone's distinct damages, the most first. */
@@ -180,6 +181,8 @@ const ATTRIBUTE_SERVICE_SLOTS = 2056;
 const ATTRIBUTE_RIG_SIZE = 1547;
 const ATTRIBUTE_MAX_GROUP_FITTED = 1544;
 const ATTRIBUTE_MAX_TYPE_FITTED = 2431;
+const ATTRIBUTE_CHARGE_SIZE = 128;
+const ATTRIBUTE_CAPACITY = 38;
 /** IsShipFittable: a module, a subsystem, a structure module. */
 const SHIP_FITTABLE_CATEGORIES: ReadonlySet<number> = new Set([7, 32, 66]);
 const CATEGORY_STRUCTURE = 65;
@@ -370,10 +373,9 @@ export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagI
 export function fitToOneSlot(simulation: SimulatedShip, typeID: number): FitError | null {
   if (simulation.location.static.types[typeID]?.categoryID === CATEGORY_DRONE) {
     const drone = fitDrone(simulation, typeID);
-    if (drone) {
-      simulation.changed = true;
-      registerDrone(simulation, drone);
-    }
+    if (!drone) return { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+    simulation.changed = true;
+    registerDrone(simulation, drone);
     return null;
   }
   let error: FitError | null = { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
@@ -382,6 +384,109 @@ export function fitToOneSlot(simulation: SimulatedShip, typeID: number): FitErro
     if (error === null) break;
   }
   return error;
+}
+
+/** The simulated drone bay by type (dronePickerMenu's nodes): each type's drones, and how many of them are selected. */
+export function simulatedDroneTypes(simulation: SimulatedShip): { readonly typeID: number; readonly drones: readonly DogmaItem[]; readonly active: number }[] {
+  const byType = new Map<number, DogmaItem[]>();
+  for (const drone of simulation.ship.drones.values()) {
+    const list = byType.get(drone.typeID) ?? [];
+    list.push(drone);
+    byType.set(drone.typeID, list);
+  }
+  return [...byType].map(([typeID, drones]) => ({
+    typeID,
+    drones,
+    active: drones.filter((drone) => simulation.selectedDrones.has(drone)).length,
+  }));
+}
+
+/**
+ * dronePickerMenu.ChangeActiveNum: as many of a type's drones selected as wanted (the number selected already
+ * wanted, one fewer), the unselected ones selected in turn or the selected ones let go; a selection the tracker
+ * refuses stops it, and its warning is answered.
+ */
+export function setActiveDronesOfType(simulation: SimulatedShip, typeID: number, wanted: number): "limit" | "bandwidth" | null {
+  const drones = [...simulation.ship.drones.values()].filter((drone) => drone.typeID === typeID);
+  const active = drones.filter((drone) => simulation.selectedDrones.has(drone));
+  let want = wanted;
+  if (active.length === want) want = Math.max(0, want - 1);
+  const diff = want - active.length;
+  if (active.length > 0 && diff < 0) {
+    for (const drone of active.slice(0, -diff)) simulation.selectedDrones.delete(drone);
+    return null;
+  }
+  let added = 0;
+  for (const drone of drones) {
+    if (added >= diff) break;
+    if (simulation.selectedDrones.has(drone)) continue;
+    const warning = registerDrone(simulation, drone);
+    if (warning) return warning;
+    added += 1;
+  }
+  return null;
+}
+
+/**
+ * dronePickerMenu.ChangeNumDrones: as many of a type in the drone bay as wanted: more fitted while the bay has room,
+ * the new ones selected where they may be (TryFitDronesToDroneBay: RegisterTopDpsDrones); or the unselected ones
+ * unfitted first.
+ */
+export function setDronesOfType(simulation: SimulatedShip, typeID: number, wanted: number): void {
+  const drones = [...simulation.ship.drones.values()].filter((drone) => drone.typeID === typeID);
+  const diff = wanted - drones.length;
+  if (diff > 0) {
+    const fitted: DogmaItem[] = [];
+    for (let at = 0; at < diff; at += 1) {
+      const drone = fitDrone(simulation, typeID);
+      if (!drone) break;
+      fitted.push(drone);
+    }
+    for (const drone of dronesByDamage(simulation.location, fitted)) registerDrone(simulation, drone);
+    if (fitted.length > 0) simulation.changed = true;
+  } else if (diff < 0) {
+    // sorted(key=x in activeDrones): the unselected first.
+    const order = [...drones].sort((left, right) => Number(simulation.selectedDrones.has(left)) - Number(simulation.selectedDrones.has(right)));
+    for (const drone of order.slice(0, -diff)) unfitFromSimulation(simulation, drone);
+  }
+}
+
+/** ammoloadingUtils.IsChargeCompatibleWithLauncher: a group the module takes, and its charge size (or room for one). */
+export function chargeFitsModule(location: DogmaLocation, chargeTypeID: number, moduleTypeID: number): boolean {
+  const chargeGroups = (location.static.types[moduleTypeID]?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+  const groupID = location.static.types[chargeTypeID]?.groupID ?? null;
+  if (groupID === null || !chargeGroups.includes(groupID)) return false;
+  const requiredChargeSize = typeAttribute(location, moduleTypeID, ATTRIBUTE_CHARGE_SIZE);
+  if (requiredChargeSize && requiredChargeSize === typeAttribute(location, chargeTypeID, ATTRIBUTE_CHARGE_SIZE)) return true;
+  if (!requiredChargeSize) {
+    // GetModuleCapacityForAmmoType: int(the module's capacity / the charge's volume + 1e-07).
+    const chargeVolume = typeAttribute(location, chargeTypeID, ATTRIBUTE_VOLUME);
+    if (chargeVolume && Math.trunc(typeAttribute(location, moduleTypeID, ATTRIBUTE_CAPACITY) / chargeVolume + 1e-7) > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * FitAmmoToLocation: a charge loaded into the simulated module in a slot, where the module takes it; the charge loaded
+ * there before unfitted; as many as the module holds (GetNumChargesFullyLoaded: int(its capacity / the charge's
+ * volume)), none and it is unfitted again. True where it is loaded.
+ */
+export function loadChargeToSimulation(simulation: SimulatedShip, flagID: number, chargeTypeID: number): boolean {
+  const { location, ship } = simulation;
+  const module = fittedModules(simulation).find((item) => item.flagID === flagID) ?? null;
+  if (!module || !chargeFitsModule(location, chargeTypeID, module.typeID)) return false;
+  const old = ship.subLocations.get(flagID);
+  if (old) unfitFromSimulation(simulation, old);
+  const charge = location.loadCharge(ship, flagID, chargeTypeID);
+  const chargeVolume = location.value(charge, ATTRIBUTE_VOLUME);
+  const numCharges = chargeVolume ? Math.trunc(location.value(module, ATTRIBUTE_CAPACITY) / chargeVolume) : 0;
+  if (numCharges < 1) {
+    unfitFromSimulation(simulation, charge);
+    return false;
+  }
+  charge.stacksize = numCharges;
+  simulation.changed = true;
+  return true;
 }
 
 /** UnfitModule (and UnfitDrone): the module put offline, the fit errors passed over, then unfitted with its charge. */

@@ -444,6 +444,8 @@ export interface FittingState {
     readonly moduleKinds: Readonly<Record<number, number>>;
     /** The simulated ship's slots: the ship's own, with what the simulation has fitted in each. */
     readonly slots: readonly FittingSlot[];
+    /** The simulated drone bay by type: how many drones of it, how many selected. */
+    readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
   } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the

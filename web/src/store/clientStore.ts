@@ -1402,7 +1402,7 @@ export function createClientStore(): ClientStore {
         const current = fitting.get();
         fitting.set({
           ...current,
-          simulation: { shipID: event.shipID, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots },
+          simulation: { shipID: event.shipID, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones },
         });
         break;
       }

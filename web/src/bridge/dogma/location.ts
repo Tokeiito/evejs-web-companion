@@ -110,6 +110,8 @@ export interface DogmaTypeFacts {
   /** GetCanFitShipGroups and GetCanFitShipTypes: the ship groups and types it may be fitted to (none: any). */
   readonly fitsShipGroups?: readonly number[];
   readonly fitsShipTypes?: readonly number[];
+  /** GetChargeGroupsForLauncher: the charge groups it takes (its chargeGroup attributes above nought). */
+  readonly chargeGroups?: readonly number[];
 }
 
 /** An attribute's static record, as Attribute and itemAttributeFactory go by it. */

@@ -33,7 +33,20 @@ import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridg
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
 import { dockedDrones, type DroneReading } from "../bridge/dogma/drones.ts";
-import { fitToOneSlot, fitToSimulation, simulateCurrentShip, simulatedDrones, unfitFromSimulation, type FitError, type SimulatedShip } from "../bridge/dogma/simulation.ts";
+import {
+  fitToOneSlot,
+  fitToSimulation,
+  loadChargeToSimulation,
+  setActiveDronesOfType,
+  setDronesOfType,
+  simulateCurrentShip,
+  simulatedDrones,
+  simulatedDroneTypes,
+  simulatedMaxActiveDrones,
+  unfitFromSimulation,
+  type FitError,
+  type SimulatedShip,
+} from "../bridge/dogma/simulation.ts";
 import { moduleInSlot, moduleKind, moduleState, offlineSlots, RIG_SLOT_FLAGS, switchModuleState } from "../bridge/dogma/moduleStates.ts";
 import {
   DAMAGE_STATE_ATTRIBUTES,
@@ -1427,6 +1440,12 @@ export interface AppFlow {
   fitSimulatedModule(typeID: number, flagID: number | null): Promise<FitError | null>;
   /** The simulated module in a slot unfitted. */
   unfitSimulatedModule(flagID: number): void;
+  /** A charge loaded into the simulated module in a slot; false where it does not take it. */
+  loadSimulatedCharge(flagID: number, chargeTypeID: number): Promise<boolean>;
+  /** As many drones of a type in the simulated drone bay as wanted. */
+  setSimulatedDrones(typeID: number, wanted: number): Promise<void>;
+  /** As many of a type's simulated drones selected as wanted; "limit" or "bandwidth" where the selection is refused. */
+  setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null;
   /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
   switchSimulatedModule(flagID: number, backwards: boolean): void;
   /**
@@ -5976,11 +5995,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           typeID: module.typeID,
           groupID: module.groupID,
           online: location.isOnline(module),
-          charge: charge ? { itemID: [0, flagID, charge.typeID], typeID: charge.typeID, quantity: 1 } : null,
+          charge: charge ? { itemID: [0, flagID, charge.typeID], typeID: charge.typeID, quantity: charge.stacksize } : null,
         },
       };
     });
-    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds, slots });
+    // The simulated drone bay by type (dronePickerMenu): how many, how many selected.
+    const drones = simulatedDroneTypes(simulation.simulated).map((entry) => ({ typeID: entry.typeID, total: entry.drones.length, active: entry.active }));
+    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds, slots, drones });
+  }
+
+  /** A charge loaded into the simulated module in a slot (FitAmmoToLocation); false where the module does not take it. */
+  async function loadSimulatedCharge(flagID: number, chargeTypeID: number): Promise<boolean> {
+    if (!simulation) return false;
+    await dogmaStaticFor([chargeTypeID], []);
+    if (!simulation) return false;
+    const loaded = loadChargeToSimulation(simulation.simulated, flagID, chargeTypeID);
+    showSimulation();
+    return loaded;
+  }
+
+  /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
+  async function setSimulatedDrones(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    await dogmaStaticFor([typeID], []);
+    if (!simulation) return;
+    setDronesOfType(simulation.simulated, typeID, wanted);
+    showSimulation();
+  }
+
+  /** As many of a type's simulated drones selected as wanted (ChangeActiveNum); the tracker's warning where it refuses. */
+  function setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null {
+    if (!simulation) return null;
+    const warning = setActiveDronesOfType(simulation.simulated, typeID, wanted);
+    showSimulation();
+    return warning ? { warning, limit: simulatedMaxActiveDrones(simulation.simulated) } : null;
   }
 
   /**
@@ -24754,6 +24802,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     unfitSimulatedModule(flagID) {
       unfitSimulatedModule(flagID);
+    },
+    loadSimulatedCharge(flagID, chargeTypeID) {
+      return loadSimulatedCharge(flagID, chargeTypeID);
+    },
+    setSimulatedDrones(typeID, wanted) {
+      return setSimulatedDrones(typeID, wanted);
+    },
+    setSimulatedActiveDrones(typeID, wanted) {
+      return setSimulatedActiveDrones(typeID, wanted);
     },
     switchSimulatedModule(flagID, backwards) {
       switchSimulatedModule(flagID, backwards);

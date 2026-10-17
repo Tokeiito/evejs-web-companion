@@ -285,6 +285,7 @@ export type FeedEvent =
       readonly moduleStates: Readonly<Record<number, number>>;
       readonly moduleKinds: Readonly<Record<number, number>>;
       readonly slots: readonly FittingSlot[];
+      readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
     }
   // The simulation left (flow.exitSimulation).
   | { readonly type: "fitting/simulation-ended" }

@@ -894,13 +894,16 @@
   /** Modules sitting in the hangar or the ship's cargo that could be fitted. */
   function fittableRows(): { row: InventoryItemRow; source: "hangar" | "cargo" }[] {
     const rows: { row: InventoryItemRow; source: "hangar" | "cargo" }[] = [];
+    // In a simulation a charge and a drone go into the ghost too (FitAmmoToLocation, TryFitModuleToOneSlot).
+    const takes = (categoryID: number | null): boolean =>
+      isFittableRow(categoryID) || ($fitting.simulation !== null && $fitting.simulation !== undefined && (categoryID === 8 || categoryID === 18));
     for (const row of $inventory.hangar.rows) {
-      if (isFittableRow(row.categoryID)) {
+      if (takes(row.categoryID)) {
         rows.push({ row, source: "hangar" });
       }
     }
     for (const row of $inventory.cargo.rows) {
-      if (isFittableRow(row.categoryID)) {
+      if (takes(row.categoryID)) {
         rows.push({ row, source: "cargo" });
       }
     }
@@ -1150,6 +1153,8 @@
     "UI/Fitting/FittingWindow/WarningMaxGroupFitted": "No more than {extraInfo} of that group may be fitted.",
     "UI/Fitting/FittingWindow/WarningMaxTypeFitted": "No more than {extraInfo} of that module may be fitted.",
     "UI/Fitting/FittingWindow/WarningModuleCouldntBeFitted": "The module could not be fitted.",
+    "UI/Fitting/FittingWindow/ActiveDronesLimitWarning": "No more than {limit} drones may be active.",
+    "UI/Fitting/FittingWindow/ActiveDroneBandwithWarning": "The ship has not the bandwidth for another drone.",
   };
   /** FeedbackLabelCont's errorDict and errorLabelPathDictWithVariables, by FIT_ERRORS key. */
   const FIT_ERROR_LABELS: Readonly<Record<number, string>> = {
@@ -1182,6 +1187,40 @@
   /** The picked module's type, where one is picked. */
   function pickedTypeID(): number | null {
     return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.typeID ?? null;
+  }
+  /** The picked item's category, where one is picked. */
+  function pickedCategoryID(): number | null {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.categoryID ?? null;
+  }
+  /** A picked charge loaded into a simulated module (dropped on it: FitAmmoToLocation). */
+  function loadSimulated(flagID: number): void {
+    const typeID = pickedTypeID();
+    if (typeID === null) return;
+    pickedItemID = null;
+    void run(async () => {
+      // FitAmmoToLocation returns nothing where the module does not take the charge, and the window says nothing.
+      await flow.loadSimulatedCharge(flagID, typeID);
+      fitFeedback = "";
+    });
+  }
+  /** The tracker's warning, said (SelectedDroneTracker: ActiveDronesLimitWarning, ActiveDroneBandwithWarning). */
+  function droneWarning(refused: { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null): string {
+    if (refused === null) return "";
+    const { warning, limit } = refused;
+    const label = warning === "limit" ? "UI/Fitting/FittingWindow/ActiveDronesLimitWarning" : "UI/Fitting/FittingWindow/ActiveDroneBandwithWarning";
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { limit }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** A simulated drone type's selected count changed (dronePickerMenu.ChangeActiveNum). */
+  function setActiveDrones(typeID: number, wanted: number): void {
+    fitFeedback = droneWarning(flow.setSimulatedActiveDrones(typeID, wanted));
+  }
+  /** A simulated drone type's count in the bay changed (dronePickerMenu.ChangeNumDrones). */
+  function setDrones(typeID: number, wanted: number): void {
+    fitFeedback = "";
+    void run(() => flow.setSimulatedDrones(typeID, wanted));
   }
   /** A picked module fitted in the simulation, in the slot named or the first it fits. */
   function fitSimulated(flagID: number | null): void {
@@ -1238,7 +1277,9 @@
   }
   /** A simulated socket said: its slot, its module and the module's simulated state (not the ship's own online state). */
   function simulatedSocketDescription(slot: FittingSlot): string {
-    return slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}, ${simulatedStateText(slot) ?? ""}` : socketDescription(slot);
+    if (!slot.module) return socketDescription(slot);
+    const loaded = slot.module.charge ? `, loaded with ${chargeCount(slot.module.charge.quantity)} ${moduleName(slot.module.charge.typeID)}` : "";
+    return `${slotName(slot)}, ${moduleName(slot.module.typeID)}, ${simulatedStateText(slot) ?? ""}${loaded}`;
   }
   /** The ghost ship icon's tooltip (LoadSimulationIconTooltip): its header and its description. */
   const simulateHint = $derived.by(() =>
@@ -1264,8 +1305,17 @@
     if (flagID === null) return;
     error = "";
     simulationError = null;
+    // A picked drone goes into the drone bay; a picked charge onto a module is loaded into it.
+    if (pickedItemID !== null && pickedCategoryID() === 18) {
+      fitSimulated(null);
+      return;
+    }
     if (!slot.module) {
-      if (pickedItemID !== null) fitSimulated(flagID);
+      if (pickedItemID !== null && pickedCategoryID() !== 8) fitSimulated(flagID);
+      return;
+    }
+    if (pickedItemID !== null && pickedCategoryID() === 8) {
+      loadSimulated(flagID);
       return;
     }
     try {
@@ -1901,7 +1951,28 @@
             {@render statRow("Drone bay", stats.bays.droneCapacity, asVolume)}
           </tbody>
         </table>
-        {#if showInventory}
+        {#if simulation}
+          <!-- The simulated drone bay (dronePickerMenu): each type, how many of it are active of how many, and both
+               changed a drone at a time. -->
+          {#if simulation.drones.length === 0}
+            <p class="note">No drones in the simulated drone bay. Pick up drones from the hangar to add them.</p>
+          {:else}
+            <ul class="fit-sim-drones">
+              {#each simulation.drones as entry (entry.typeID)}
+                <li>
+                  <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
+                  <span class="fit-sim-drone-count">{entry.active} of {entry.total} active</span>
+                  <span class="row-actions">
+                    <button type="button" class="minor" disabled={busy || entry.active === 0} onclick={() => setActiveDrones(entry.typeID, entry.active - 1)}>Fewer active</button>
+                    <button type="button" class="minor" disabled={busy || entry.active === entry.total} onclick={() => setActiveDrones(entry.typeID, entry.active + 1)}>More active</button>
+                    <button type="button" class="minor" disabled={busy} onclick={() => setDrones(entry.typeID, entry.total - 1)}>One fewer</button>
+                    <button type="button" class="minor" disabled={busy} onclick={() => setDrones(entry.typeID, entry.total + 1)}>One more</button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if showInventory}
           <p class="controls">
             <button type="button" class="minor" onclick={() => showInventory?.()}>
               Manage drones

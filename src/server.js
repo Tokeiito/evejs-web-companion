@@ -13623,12 +13623,15 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
       // named canFitShipGroup..., and a type (dgmAttrCatType, 11) named canFitShipType... or fitsToShipType.
       const fitsShipGroups = [];
       const fitsShipTypes = [];
+      // The charge groups it takes (GetChargeGroupAttributes: those of the group data type named chargeGroup...).
+      const chargeGroups = [];
       for (const [attributeID, value] of rows) {
         const record = attributeRows[String(attributeID)];
         const name = record && typeof record.name === "string" ? record.name : "";
         const category = record ? whole(record.dataType) : null;
         if (value === null) continue;
         if (category === 12 && name.startsWith("canFitShipGroup")) fitsShipGroups.push(value);
+        else if (category === 12 && name.startsWith("chargeGroup")) chargeGroups.push(value);
         else if (category === 11 && (name === "fitsToShipType" || name.startsWith("canFitShipType"))) fitsShipTypes.push(value);
       }
       types[typeID] = {
@@ -13637,6 +13640,7 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         defaultEffectID,
         fitsShipGroups,
         fitsShipTypes,
+        chargeGroups,
         groupID,
         categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
