@@ -15,7 +15,7 @@ import {
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
-import { evaluateFit } from "../bridge/dogma/fittingWarnings.ts";
+import { evaluateFit, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -6073,6 +6073,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
     // it (GetFittingDictForActiveShip: CreateFittingData of its fitted modules), its cargo hold's capacity and use as
     // the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline (FindOfflineModules).
+    await ensureWarningFacts(modules.map((module) => module.typeID), shipTypeID).catch(() => false);
     const warnings = evaluateFit({
       static: staticData,
       shipTypeID,
@@ -6081,9 +6082,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       resources: resourceLoads(figures.resources),
       cargo: store.inventory.get().cargo.capacity ?? null,
       offlineModules: modules.filter((module) => !module.online).map((module) => [module.typeID, module.flagID] as const),
+      fittedItems: [...modules.map((module) => [module.typeID, module.flagID] as const), ...charges.map((charge) => [charge.typeID, charge.flagID] as const)],
+      typeLists: warningListsOf,
+      shipElements: bubbleElementsKept.get(shipTypeID) ?? null,
     });
     store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings });
   }
+
+  // What the warnings go by that the static data does not hold, read once a type: each fitted type's warning lists
+  // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID) and each hull's info bubble elements (cfg.infoBubbleTypeElements).
+  const warningListsKept = new Map<number, ReadonlySet<number>>();
+  const bubbleElementsKept = new Map<number, readonly number[] | null>();
+  /** The warnings' facts of the types and the hull named that are not held yet, read; true where any were. */
+  async function ensureWarningFacts(typeIDs: readonly number[], shipTypeID: number): Promise<boolean> {
+    const types = [...new Set(typeIDs)].filter((typeID) => !warningListsKept.has(typeID));
+    const hull = !bubbleElementsKept.has(shipTypeID);
+    if (types.length === 0 && !hull) return false;
+    const reads: Promise<unknown>[] = [];
+    for (let at = 0; at < types.length; at += 32) {
+      const chunk = types.slice(at, at + 32);
+      reads.push(api.loadTypeListsHolding(chunk, WARNING_TYPE_LISTS, callOptions).then((lists) => {
+        for (const typeID of chunk) warningListsKept.set(typeID, new Set(lists[typeID] ?? []));
+      }));
+    }
+    if (hull) reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((read) => bubbleElementsKept.set(shipTypeID, read.types[shipTypeID] ?? null)));
+    const settled = await Promise.allSettled(reads);
+    return settled.some((each) => each.status === "fulfilled");
+  }
+  const warningListsOf = (typeID: number): ReadonlySet<number> => warningListsKept.get(typeID) ?? new Set<number>();
 
   /** A type's group and category as the page's static dogma data holds them (no type list among them). */
   function staticTypeFacts(staticData: DogmaStatic): (typeID: number) => TypeFacts {
@@ -6231,6 +6257,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function showSimulation(): void {
     if (!simulation) return;
     const { location, ship, pilot } = simulation.simulated;
+    // The current fitting (GetFittingDictForSimulatedShip), and the warnings' facts of its types read where they are
+    // not held yet, the simulation shown again with them.
+    const simulatedFit = createFittingData(simulatedShipItems(simulation.simulated), staticTypeFacts(location.static));
+    void ensureWarningFacts(simulatedFit.map(([typeID]) => typeID), ship.typeID)
+      .then((read) => {
+        if (read) showSimulation();
+      })
+      .catch(() => {});
     const figures = panelFigures({
       location,
       ship,
@@ -6302,11 +6336,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       warnings: evaluateFit({
         static: location.static,
         shipTypeID: ship.typeID,
-        fit: createFittingData(simulatedShipItems(simulation.simulated), staticTypeFacts(location.static)),
+        fit: simulatedFit,
         slotExists: (flagID) => location.slotExists(ship, flagID),
         resources: resourceLoads(figures.resources),
         cargo: simulatedCargoCapacity(simulation.simulated),
         offlineModules: [],
+        fittedItems: [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null).map((item) => [item.typeID, item.flagID as number] as const),
+        typeLists: warningListsOf,
+        shipElements: bubbleElementsKept.get(ship.typeID) ?? null,
       }),
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
       // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.

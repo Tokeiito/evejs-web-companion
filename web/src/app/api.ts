@@ -3832,6 +3832,22 @@ export async function getTypePrices(
  * ability, cooldown and charges, or null; null for a type with none; `available` false where the data could not be
  * read. At most 50 types an asking.
  */
+/** The ships' info bubble elements (cfg.infoBubbleTypeElements): each type's, in its slots' order; null for one with none. */
+export async function getInfoBubbleElements(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly types: Readonly<Record<number, readonly number[] | null>> }> {
+  const data = await getJson(`/api/client-data/info-bubble-elements?typeIDs=${typeIDs.join(",")}`, options);
+  const types: Record<number, readonly number[] | null> = {};
+  const record = typeof data.types === "object" && data.types !== null && !Array.isArray(data.types) ? (data.types as Record<string, JsonValue>) : {};
+  for (const [key, value] of Object.entries(record)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    types[typeID] = Array.isArray(value) ? value.filter((id): id is number => typeof id === "number" && Number.isFinite(id)) : null;
+  }
+  return { available: data.available === true, types };
+}
+
 export async function getFighterAbilities(
   typeIDs: readonly number[],
   options: ApiOptions = {},
