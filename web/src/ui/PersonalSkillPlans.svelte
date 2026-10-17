@@ -63,12 +63,16 @@
   // them, bridge/skillPlans.ts planProgressAt), drawn again each second with its time left while any plan shown has
   // levels queued (_UpdateTrainingTimeThread), and read again when the queue changes (OnSkillQueueChanged); and the
   // omega mark where the plan has a skill an alpha may not train and the pilot is alpha (CheckShowOmegaIndicator).
+  // Hovered, an entry shows its tooltip (SkillPlanEntryTooltip, at the entry's right): Skill Plan, the description,
+  // SkillbooksMissing2 with their count where any book is not held, and RequireOmega with the count of skills an alpha
+  // may not train where the pilot is alpha.
   //
-  // Not done: Share, the omega button's upgrade window (the omega state's click), the faction and career icons, the
+  // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the omega button's upgrade window (the omega state's click), the faction and career icons, the
   // omega banner, a skill row's selection, menu, tooltip and drag, the contents' menu (copy
   // to clipboard), the tooltip and drag of an entry, and the corporation's notices (another member's changes, seen as
   // they are made).
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
   import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -162,6 +166,8 @@
     "UI/SkillPlan/SaveAnTrackPlan": "Keep a copy among your own plans, and follow that.",
     "UI/SkillPlan/CreateCorpSkillPlan": "Make a plan for your corporation",
     "UI/CloneState/RequiresOmegaClone": "Needs an omega clone",
+    "UI/SkillPlan/SkillbooksMissing2": "Books not held",
+    "UI/SkillPlan/RequireOmega": "Needs omega",
     "UI/SkillPlan/ClickToBuyMissingSkillAndRequirements": "A book for this skill, or for one it needs, is not held: buy them.",
     "UI/SkillPlan/RemoveFromQueue": "This level is queued: take it out.",
     "UI/SkillPlan/RemoveFromQueueLocked": "This level is queued, and another queued skill needs it.",
@@ -344,6 +350,26 @@
     if (corp !== undefined) void loadCorp();
   });
 
+  // The entry's tooltip, for the entry hovered or focused: at its right, or at its left where the screen ends first.
+  let tip = $state<{ readonly planID: string; readonly top: number; readonly left: number | null; readonly right: number | null } | null>(null);
+  /** The tooltip's widest (17rem) and the gap between it and the entry, in pixels. */
+  const TIP_WIDTH = 272;
+  const TIP_GAP = 8;
+  function showTip(plan: OpenedPlan, event: Event): void {
+    if (!(event.currentTarget instanceof HTMLElement)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fitsRight = rect.right + TIP_GAP + TIP_WIDTH <= window.innerWidth;
+    tip = {
+      planID: plan.id,
+      top: rect.top,
+      left: fitsRight ? rect.right + TIP_GAP : null,
+      right: fitsRight ? null : window.innerWidth - rect.left + TIP_GAP,
+    };
+  }
+  function hideTip(plan: OpenedPlan): void {
+    if (tip !== null && tip.planID === plan.id) tip = null;
+  }
+
   // _UpdateTrainingTimeThread: while a plan shown has levels queued (GetInTrainingRatio above nought), the entries are
   // drawn again each second (UpdateState).
   let now = $state(Date.now());
@@ -490,6 +516,7 @@
   }
 
   function open(plan: OpenedPlan): void {
+    tip = null;
     selectedID = plan.id;
     notice = "";
     void readContents(plan);
@@ -710,7 +737,8 @@
   </header>
   {#snippet planCard(plan: OpenedPlan, withMenu: boolean)}
     {@const shown = plan.progress ? planProgressAt(plan.progress, now) : null}
-    <li>
+    <li onmouseenter={(event) => showTip(plan, event)} onmouseleave={() => hideTip(plan)}
+      onfocusin={(event) => showTip(plan, event)} onfocusout={() => hideTip(plan)}>
       <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => { if (withMenu) openMenu(plan, event); }}>
         <span class="skill-plan-name">{plan.name}</span>
         {#if read && read.trackedID === plan.id}
@@ -731,6 +759,21 @@
           </span>
         </span>
       </button>
+      <!-- SkillPlanEntryTooltip: its pointer on its left, so it stands at the entry's right (at its left where the
+           screen ends first); fixed, on the page's body (portal.ts), so the window neither cuts it off nor moves it. -->
+      {#if tip !== null && tip.planID === plan.id}
+      <div class="skill-plan-tip" role="tooltip" use:portal style:top={`${tip.top}px`}
+        style:left={tip.left === null ? undefined : `${tip.left}px`} style:right={tip.right === null ? undefined : `${tip.right}px`}>
+        <strong>{word("UI/SkillPlan/SkillPlan")}</strong>
+        {#if plan.description}<p>{plan.description}</p>{/if}
+        {#if (plan.missingBooks ?? 0) > 0}
+          <span class="skill-plan-tip-row"><span class="skill-plan-tip-icon books" aria-hidden="true">📖</span>{word("UI/SkillPlan/SkillbooksMissing2")}<span class="skill-plan-tip-count">x{plan.missingBooks}</span></span>
+        {/if}
+        {#if (plan.numOmegaSkills ?? 0) > 0}
+          <span class="skill-plan-tip-row"><span class="skill-plan-tip-icon omega" aria-hidden="true">Ω</span>{word("UI/SkillPlan/RequireOmega")}<span class="skill-plan-tip-count">x{plan.numOmegaSkills}</span></span>
+        {/if}
+      </div>
+      {/if}
     </li>
   {/snippet}
   {#if error}
@@ -960,7 +1003,7 @@
   {/if}
   {#if menuUp && menu !== null}
     {@const menuFor = menu}
-    <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+    <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
       <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
       <button type="button" role="menuitem" onclick={() => void deletePlan(menuFor.plan)}>{word("UI/Common/Buttons/Delete")}</button>
     </span>
@@ -995,6 +1038,15 @@
   .skill-plan-gauge-trained { background: #ffffff; }
   .skill-plan-gauge-training { background: #58a7bf; }
   .skill-plan-marks { display: flex; gap: 0.5rem; align-items: center; }
+  /* SkillPlanEntryTooltip: a standard tooltip, one column; its rows' icons twenty wide, each count in a badge. */
+  .skill-plan-tip { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 0.45rem; width: max-content; max-width: 17rem;
+    padding: 0.6rem 0.75rem; border: 1px solid var(--line, #333); background: rgba(10, 12, 16, 0.96); pointer-events: none; }
+  .skill-plan-tip p { margin: 0; overflow-wrap: anywhere; }
+  .skill-plan-tip-row { display: flex; align-items: center; gap: 0.6rem; }
+  .skill-plan-tip-icon { width: 1.25rem; text-align: center; }
+  .skill-plan-tip-icon.books { color: #e05a4f; }
+  .skill-plan-tip-icon.omega { color: #e8b34a; }
+  .skill-plan-tip-count { padding: 0 0.3rem; border-radius: 0.3rem; background: rgba(255, 255, 255, 0.15); }
   .skill-plan-omega { color: #e8b34a; }
   /* TextColor.SUCCESS where the plan is completed. */
   .skill-plan-time.completed { color: #4caf50; }

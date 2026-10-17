@@ -15,6 +15,7 @@
   // So it is implemented client-side here too, which is also why re-sorting the
   // book costs no round-trip.
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
   import {
     DURATION_CHOICES,
@@ -788,7 +789,7 @@
   {/if}
   {#if qbMenuUp && qbMenu !== null}
     {@const menuFor = qbMenu}
-    <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+    <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
       {#if menuFor.kind === "folder"}
         {@const folder = menuFor.entry}
         {@const buyDict = typesUnderFolder($quickbar, folder.id)}

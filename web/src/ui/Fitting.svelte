@@ -19,6 +19,7 @@
   // hull bonuses and in-space effects already applied — taken straight from the
   // server's post-dogma map and never recomputed in the browser.
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
   import {
     SLOT_FAMILY_LABELS,
     SLOT_FAMILY_ORDER,
@@ -1890,7 +1891,7 @@
   <section bind:this={browserSection}>
     {#if hullMenu !== null}
       {@const menuFor = hullMenu}
-      <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+      <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
         <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
         {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
@@ -1904,7 +1905,7 @@
     {/if}
     {#if nodeMenu !== null}
       {@const menuFor = nodeMenu}
-      <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+      <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
         <button type="button" role="menuitem" onclick={() => { const typeIDs = menuFor.typeIDs; nodeMenu = null; if (typeIDs !== null) compareTypes(typeIDs); }}>{fitWord("UI/Compare/CompareButton")}</button>
         <hr />
         <button type="button" role="menuitem" onclick={() => { const id = menuFor.id; nodeMenu = null; opened[id] = opened[id] !== true; }}>{fitWord(opened[menuFor.id] === true ? "UI/Common/Collapse" : "UI/Common/Expand")}</button>

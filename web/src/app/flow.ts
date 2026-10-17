@@ -7756,7 +7756,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     plans: readonly P[],
     skillsAnswer: JsonValue,
     allSkillsAnswer: JsonValue,
-  ): Promise<(P & { readonly completed: boolean; readonly trainingTicks: number | null; readonly progress: PlanProgress | null; readonly omegaMark: boolean })[]> {
+  ): Promise<(P & {
+    readonly completed: boolean;
+    readonly trainingTicks: number | null;
+    readonly progress: PlanProgress | null;
+    readonly omegaMark: boolean;
+    readonly missingBooks: number;
+    readonly numOmegaSkills: number;
+  })[]> {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
@@ -7774,13 +7781,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const training = facts !== null && facts.training !== null && head !== undefined && head.typeID === facts.training && perMinute !== null
       ? { skill: facts.training, perMs: perMinute / 60_000, toLevel: head.toLevel }
       : null;
-    return plans.map((plan) => ({
-      ...plan,
-      completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
-      trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
-      progress: facts === null ? null : planProgressFrom(skillRequirementsDict(plan), facts.rank, facts.pointsNow, facts.queued, training, at),
-      omegaMark: [...skillRequirementsDict(plan).keys()].some(restricted),
-    }));
+    return plans.map((plan) => {
+      const planSkills = [...skillRequirementsDict(plan).keys()];
+      const numOmegaSkills = planSkills.filter(restricted).length;
+      return {
+        ...plan,
+        completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
+        progress: facts === null ? null : planProgressFrom(skillRequirementsDict(plan), facts.rank, facts.pointsNow, facts.queued, training, at),
+        omegaMark: numOmegaSkills > 0,
+        // GetMissingSkillbooks: GetMyLevelIncludingLapsed is None.
+        missingBooks: planSkills.filter((skill) => !lapsed.has(skill)).length,
+        numOmegaSkills,
+      };
+    });
   }
 
   let certifiedPlansHeld: { readonly plans: readonly CertifiedPlanData[]; readonly careerPaths: readonly CareerPath[] } | null = null;

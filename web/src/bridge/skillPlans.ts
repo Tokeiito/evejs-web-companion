@@ -10,7 +10,9 @@
 //                  Completed; the tracked mark; Edit and Delete in its menu; the progress gauge (UpdateProgressGauge:
 //                  GetProgressRatio white, GetInTrainingRatio after it cryo blue; characterskills/util.py), redrawn each
 //                  second with the time left while the plan has levels queued (_UpdateTrainingTimeThread); the omega
-//                  mark (CheckShowOmegaIndicator: IsOmega, and the pilot not omega)
+//                  mark (CheckShowOmegaIndicator: IsOmega, and the pilot not omega); its tooltip
+//                  (SkillPlanEntryTooltip): Skill Plan, the description, SkillbooksMissing2 with their count where any
+//                  is not held, RequireOmega with the count of skills an alpha may not train where the pilot is not omega
 //   the order      SkillPlanScroll.ConstructSkillPlanEntries: localization.util.Sort by name
 //   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py
 
@@ -214,6 +216,10 @@ export interface PersonalSkillPlanEntry extends PersonalSkillPlan {
   readonly progress?: PlanProgress | null;
   /** CheckShowOmegaIndicator: the plan has a skill an alpha may not train, and the pilot is not omega. */
   readonly omegaMark?: boolean;
+  /** GetMissingSkillbooks' count: the plan's skills not held, lapsed ones counted held (the entry's tooltip). */
+  readonly missingBooks?: number;
+  /** GetNumOmegaSkills where the pilot is not omega, else nought (the entry's tooltip). */
+  readonly numOmegaSkills?: number;
 }
 
 /** The personal plans, and the tracked plan's id (null for none). */
