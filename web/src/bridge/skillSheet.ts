@@ -146,8 +146,8 @@ export function effectiveSkillLevel(skills: unknown, typeID: number): number {
  */
 export function skillLevelsOf(
   skills: unknown,
-): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number; readonly injected: boolean }> {
-  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number; injected: boolean }>();
+): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number; readonly injected: boolean; readonly virtualSkillLevel: number }> {
+  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number; injected: boolean; virtualSkillLevel: number }>();
   for (const [key, entry] of entriesOf(skills)) {
     const typeID = number(key);
     const fields = skillFields(entry);
@@ -159,6 +159,8 @@ export function skillLevelsOf(
       effectiveSkillLevel: Math.max(trained, number(fields[4]) ?? 0),
       // An expert system's skill alone: its trainedSkillLevel None (skillsvc.IsSkillInjected).
       injected: number(fields[1]) !== null,
+      // The level an expert system gives it (virtualSkillLevel), nought where none.
+      virtualSkillLevel: number(fields[4]) ?? 0,
     });
   }
   return levels;

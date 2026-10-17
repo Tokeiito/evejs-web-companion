@@ -4,7 +4,9 @@
   // (cryo blue), the time until then (day to minute) and the rate. A plan's contents rows and the plan editor's
   // catalogue show it. Beside the description its InfoIcon (Show Info of the skill, its hint UI/Commands/ShowInfo). The
   // panel takes the pointer (its state UI_NORMAL): it stays while the pointer is on it, which onHover tells its host.
-  // Not here: the expert systems' notice (add_expert_system_information).
+  // A skill an expert system gives a level of (its virtual level) has the expert systems' notice after the level and
+  // points (add_expert_system_information, add_skill_provided_by_expert_systems): the expert systems' logo and
+  // SkillProvidedByExpertSystems, then each of the pilot's expert systems that gives it, its name a link (Show Info).
   import { onMount } from "svelte";
   import { portal } from "./portal.ts";
   import { showInfo } from "./showInfo.ts";
@@ -44,6 +46,7 @@
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/TrainingRate": "Rate",
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SpPerMinute": "{spPerMin} points a minute",
     "UI/Commands/ShowInfo": "Show information",
+    "UI/ExpertSystem/SkillProvidedByExpertSystems": "Given for a time by an expert system:",
   };
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -67,6 +70,8 @@
     return [days > 0 ? `${days}d` : "", hours > 0 ? `${hours}h` : "", `${mins}m`].filter(Boolean).join(" ");
   }
 
+  /** expertSystems/client/texture.py logo_simple_24. */
+  const EXPERT_SYSTEM_LOGO = clientTexture("res:/UI/Texture/classes/ExpertSystems/logo_simple_24.png");
   /** InfoIcon's picture (infoIcon.py default_texturePath). */
   const INFO_ICON = clientTexture("res:/ui/Texture/Icons/38_16_208.png");
 
@@ -88,6 +93,15 @@
     <span>{word("UI/Common/SkillLevel", { level: info.level === 0 ? "0" : romanLevel(info.level) })}</span>
     {#if info.totalPoints !== null}<span>{word("UI/SkillQueue/CurrentAndTotalSkillPoints", { current: info.points, total: info.totalPoints })}</span>{/if}
   </span>
+  {#if info.virtualLevel > 0}
+    <span class="skill-row-tip-expert">
+      <img src={EXPERT_SYSTEM_LOGO} alt="" width="24" height="24" />
+      <span>{word("UI/ExpertSystem/SkillProvidedByExpertSystems")}</span>
+    </span>
+    {#each info.expertSystems as expertSystem (expertSystem)}
+      <button type="button" class="skill-row-tip-link" onclick={() => showInfo({ kind: "type", typeID: expertSystem })}>{resolvedName($names.resolved, "type", expertSystem, "")}</button>
+    {/each}
+  {/if}
   {#if info.queued !== null}
     <span class="skill-row-tip-queued">{word("UI/Skills/TrainingToLevel", { level: info.queued.level })}</span>
     {#if info.queued.ticks !== null}
@@ -105,6 +119,8 @@
     padding: 0.6rem 0.75rem; border: 1px solid var(--line, #333); background: rgba(10, 12, 16, 0.96); }
   .skill-row-tip-description { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
   .skill-row-tip-info { flex: none; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0; }
+  .skill-row-tip-expert { display: flex; align-items: center; gap: 0.5rem; }
+  .skill-row-tip-link { align-self: flex-start; margin-left: 0.75rem; padding: 0; border: 0; background: none; color: #5ccbcb; cursor: pointer; text-align: left; }
   .skill-row-tip p { margin: 0; overflow-wrap: anywhere; }
   .skill-row-tip-pair { display: flex; justify-content: space-between; gap: 0.75rem; }
   .skill-row-tip-queued { color: #58a7bf; }

@@ -322,6 +322,13 @@ export interface SkillRowInfo {
    * at that level, in ticks; null unknown) and the training rate (GetSkillpointsPerMinute); null where it is not queued. */
   readonly queued: { readonly level: number; readonly ticks: number | null; readonly rate: number | null } | null;
   readonly menu: SkillMenuFacts;
+  /** SkillTooltipController.virtual_level: the level an expert system gives it, nought where none. */
+  readonly virtualLevel: number;
+  /**
+   * get_active_expert_systems_providing_skill: the pilot's expert systems (GetMyExpertSystems) that give the skill, as
+   * that dict iterates; none where it has no virtual level (the notice is not shown then).
+   */
+  readonly expertSystems: readonly number[];
 }
 
 /**

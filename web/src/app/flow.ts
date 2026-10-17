@@ -8243,10 +8243,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           published: type?.published === true,
           categoryID: type?.categoryID ?? null,
         },
+        virtualLevel: had?.virtualSkillLevel ?? 0,
+        expertSystems: [],
       });
+    }
+    // should_add_expert_system_notification: a virtual level (and expert systems enabled, which the page takes them to
+    // be: its global config's default); then the expert systems that give it.
+    const virtual = [...skillInfo].filter(([, info]) => info.virtualLevel > 0).map(([skill]) => skill);
+    if (virtual.length > 0) {
+      const providing = await expertSystemsProviding(virtual);
+      for (const skill of virtual) skillInfo.set(skill, { ...skillInfo.get(skill)!, expertSystems: providing.get(skill) ?? [] });
     }
     requestWords([...skillInfo.values()].flatMap((info) => (info.descriptionID === null ? [] : [`#${info.descriptionID}`])));
     return skillInfo;
+  }
+
+  /**
+   * get_active_expert_systems_providing_skill for each skill: the pilot's expert systems (GetMyExpertSystems' dict, as
+   * expertSystemSvc keeps it) whose data gives it (does_expert_system_provide_skill), in that dict's order. Their names
+   * asked for. Empty for every skill where they could not be read.
+   */
+  async function expertSystemsProviding(skills: readonly number[]): Promise<ReadonlyMap<number, readonly number[]>> {
+    const out = new Map<number, readonly number[]>();
+    try {
+      const [data, answer] = await Promise.all([
+        api.getExpertSystems(callOptions),
+        expertSystemsHeld !== null ? Promise.resolve(expertSystemsHeld) : bridgeAsk("expertSystemMgr", "GetMyExpertSystems", []),
+      ]);
+      expertSystemsHeld = answer as JsonValue;
+      if (data === null) return out;
+      const mine = readDictPairs(answer).map(([key]) => Number(key)).filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0);
+      requestNames(mine.map((typeID) => ({ kind: "type" as const, id: typeID })));
+      for (const skill of skills) out.set(skill, mine.filter((typeID) => (data.get(typeID)?.skills ?? []).some(([given]) => given === skill)));
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+    }
+    return out;
   }
 
   async function skillRowInfoFor(typeIDs: readonly number[]): ReturnType<AppFlow["skillRowInfoFor"]> {

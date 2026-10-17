@@ -50,6 +50,8 @@ export interface PilotSkill {
    * given): it is among the pilot's skills, and not injected (skillsvc.IsSkillInjected). Left out: injected.
    */
   readonly injected?: boolean;
+  /** The level an expert system gives it (virtualSkillLevel); nought or left out where none. */
+  readonly virtualSkillLevel?: number;
 }
 
 /** skillsvc.IsSkillInjected: among the skills (the lapsed counted where those are given), its trained level not None. */
