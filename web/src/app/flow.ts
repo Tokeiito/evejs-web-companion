@@ -32,6 +32,7 @@ import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
+import { dockedDrones } from "../bridge/dogma/drones.ts";
 import {
   decodeBrain,
   loadSimulatedFitting,
@@ -5713,7 +5714,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // The pilot's security status as the ship's row carries it (pilotSecurityStatus).
     const security = shipInfo.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
-    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID)];
+    // The drone bay's stacks, which the client's dogma location loads with the ship's other items
+    // (LoadItemsInLocation: invCache's list of the ship, the drone bay a valid flag).
+    // A bay that cannot be read leaves the drones out, and the rest is reckoned all the same.
+    const bay = await api.getDrones(callOptions).then((answer) => decodeDroneBay(answer.bay) ?? []).catch(() => []);
+    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID)];
     const attributeIDs = [
       ...shipInfo.attributes.map((attribute) => attribute.attributeID),
       ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
@@ -5729,6 +5734,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       modules,
       charges,
     );
+    for (const stack of bay) reckoned.location.loadDrone(reckoned.ship, String(stack.itemID), stack.typeID, stack.quantity);
     // Godma's rows: the ship's, its modules' and charges' (keyed as the location keys them), the pilot's.
     const godmaRows = new Map<string, Map<number, number>>();
     const rowOf = (attributes: readonly { readonly attributeID: number; readonly value: number | boolean | null }[]): Map<number, number> =>
@@ -5766,6 +5772,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       included: isOnlineModule,
       maxDamageMultiplier: () => 1.0,
     });
+    // The drone panel's: docked, the bay's best set is the active one (clientDogmaLocation.GetActiveDrones), each
+    // figure off the dogma location; its damage is part of the offense's total (GetAllDpsInfo).
+    const drones = dockedDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
+      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
+      value: (item, attributeID) => reckoned.location.value(item, attributeID),
+    });
     // The defense panel's: the ship's figures as GetStatsInfo reads them, each repairer counted (the ship itself:
     // IncludeModuleInHpCalculation), docked each off the dogma location.
     const layers = defense(reckoned.location, reckoned.ship, {
@@ -5782,11 +5794,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...derived,
         defense: layers,
         navigation: { ...derived.navigation, alignTimeSeconds: known(alignTime), inertiaModifier: known(attributes.get(70) ?? 0) },
+        drones,
         firepower: {
           ...derived.firepower,
-          dps: known(weapons.totalDps),
+          dps: known(weapons.totalDps + drones.dps),
+          droneDps: known(drones.dps),
           volley: known(weapons.alphaStrike),
-          simulator: weapons,
+          simulator: { ...weapons, totalDps: weapons.totalDps + drones.dps, totalDpsWithReload: weapons.totalDpsWithReload + drones.dps },
         },
         capacitor: {
           ...derived.capacitor,

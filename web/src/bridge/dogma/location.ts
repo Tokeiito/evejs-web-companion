@@ -151,6 +151,8 @@ const ATTRIBUTE_UPGRADE_COST = 1153;
 const OP_MOD_ADD = 2;
 const OP_MOD_SUB = 3;
 const CATEGORY_SHIP = 6;
+const CATEGORY_DRONE = 18;
+const FLAG_DRONE_BAY = 87;
 /** inventorycommon/util.py IsFittingModule: a module or a structure module. */
 const FITTING_MODULE_CATEGORIES: ReadonlySet<number> = new Set([7, 66]);
 
@@ -260,6 +262,10 @@ export class DogmaItem {
   ownerModifiable = false;
   /** A location's: its sublocations (the charges) by flag. */
   readonly subLocations = new Map<number, DogmaItem>();
+  /** A ship's: its drones (RegisterDrone), by key. */
+  readonly drones = new Map<string, DogmaItem>();
+  /** How many the item is (the inventory row's stacksize: a stack of drones). */
+  stacksize = 1;
   /** A location's: the items fitted to it (itself among them, for a ship), and the modifiers it holds for them. */
   readonly fitted = new Map<string, DogmaItem>();
   readonly locationMods = new Map<number, Map<string, HeldModifier>>();
@@ -322,6 +328,8 @@ export class DogmaLocation {
     typeID: number,
     links: {
       readonly location?: DogmaItem;
+      /** The pilot, for an item with no location of its own (a drone: DroneDogmaItem.GetLocation is None). */
+      readonly pilot?: DogmaItem;
       readonly flagID?: number;
       readonly ownerModifiable?: boolean;
       /** DBLessDogmaItem: its Load does nothing, so its attributes are made only as they are asked for. */
@@ -335,6 +343,10 @@ export class DogmaLocation {
       item.location = links.location;
       item.pilot = links.location.pilot;
       item.ship = links.location.categoryID === CATEGORY_SHIP ? links.location : links.location.ship;
+    }
+    if (!links.location && links.pilot) {
+      item.pilot = links.pilot;
+      item.ship = links.pilot.ship;
     }
     if (links.flagID !== undefined) item.flagID = links.flagID;
     item.ownerModifiable = links.ownerModifiable === true;
@@ -463,7 +475,9 @@ export class DogmaLocation {
   /** The item a modifier's domain names (BaseModifier._GetDomainID on the effect's environment). */
   private domainItem(item: DogmaItem, domain: string | null): DogmaItem | null {
     if (domain === null || domain === "itemID") return item;
-    if (domain === "shipID") return item.categoryID === CATEGORY_SHIP ? item : item.ship;
+    // A ship's own, an item fitted to one its ship's (GetShipID: its location), and a drone's itself
+    // (BaseDogmaItem.GetShipID).
+    if (domain === "shipID") return item.categoryID === CATEGORY_SHIP || item.categoryID === CATEGORY_DRONE ? item : item.ship;
     if (domain === "charID") return item.pilot;
     if (domain === "otherID") return this.otherOf(item);
     return null;
@@ -565,6 +579,20 @@ export class DogmaLocation {
       if (effect.modifiers) this.startModifiers(module, effect.modifiers);
       module.activeEffects.add(effectID);
     }
+  }
+
+  /**
+   * A drone in the ship's drone bay (LoadItemsInLocation, FitItemToLocation: the ship's drone bay is a valid flag):
+   * loaded with no location of its own (DroneDogmaItem.GetLocation), the pilot's (its owner), registered with the ship
+   * (SetLocation: RegisterDrone), so owner-modifiable (IsOwnerModifiable: the pilot's ship holds it among its drones,
+   * on the client), and its passive effects started.
+   */
+  loadDrone(ship: DogmaItem, key: string, typeID: number, stacksize: number): DogmaItem {
+    const drone = this.loadItem(key, typeID, { pilot: ship.pilot ?? undefined, flagID: FLAG_DRONE_BAY, ownerModifiable: true });
+    drone.stacksize = stacksize;
+    ship.drones.set(drone.key, drone);
+    this.startPassiveEffects(drone);
+    return drone;
   }
 
   /**

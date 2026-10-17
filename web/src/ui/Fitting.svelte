@@ -503,6 +503,8 @@
     "UI/Fitting/FittingWindow/MissilesDps": "Launchers",
     "UI/Fitting/FittingWindow/DotDps": "Damage over time",
     "UI/Fitting/FittingWindow/SmartbombsDps": "Area weapons",
+    "UI/Fitting/FittingWindow/DronesDps": "Drones",
+    "UI/Fitting/FittingWindow/NumDronesActive": "{[numeric]numDrones} active",
     "UI/Fitting/FittingWindow/WithReloadTimeText": "counting reloads",
   };
   $effect(() => {
@@ -537,6 +539,7 @@
     if (simulation.turretDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/TurretsDps"), ...dpsText(simulation.turretDps, simulation.turretDpsWithReload, simulation.maxTurretDps, simulation.maxTurretDpsWithReload) });
     if (simulation.missileDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/MissilesDps"), ...dpsText(simulation.missileDps, simulation.missileDpsWithReload) });
     if (simulation.dotDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/DotDps"), ...dpsText(simulation.dotDps, null) });
+    if (stats.drones?.dps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/DronesDps"), ...dpsText(stats.drones.dps, null) });
     if (simulation.aoeDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/SmartbombsDps"), ...dpsText(simulation.aoeDps, null) });
     return lines;
   }
@@ -1680,12 +1683,27 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Drones</span>
-        <span class="fit-sec-headline">{@render statValue(stats.firepower.droneDps, (v) => `${whole(v)} dps`)}</span>
+        {#if stats.drones}
+          <!-- dronePanel.SetDroneDpsText: the active drones' damage a second. -->
+          <span class="fit-sec-headline">{offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: stats.drones.dps })}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.firepower.droneDps, (v) => `${whole(v)} dps`)}</span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
-            {@render statRow("Bandwidth", stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}
+            {#if stats.drones}
+              <!-- dronePanel.UpdateDroneStats: how many are active, the bandwidth they use of the ship's (FmtAmt of
+                   the used, the ship's as its attribute is shown), the pilot's control range. -->
+              <tr><th scope="row">Active drones</th><td>{offenseWord("UI/Fitting/FittingWindow/NumDronesActive", { numDrones: stats.drones.activeDrones })}</td></tr>
+              <tr>
+                <th scope="row">Bandwidth</th>
+                <td>{Math.round(stats.drones.bandwidthUsed).toLocaleString()}/{knownWord(stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}</td>
+              </tr>
+            {:else}
+              {@render statRow("Bandwidth", stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}
+            {/if}
             {@render statRow("Control range", stats.bays.droneControlRange, asDistance)}
             {@render statRow("Drone bay", stats.bays.droneCapacity, asVolume)}
           </tbody>

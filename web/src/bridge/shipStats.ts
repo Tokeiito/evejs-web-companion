@@ -146,6 +146,11 @@ export interface ShipStats {
    */
   readonly defense?: import("./dogma/defense.ts").DefenseReading;
   /**
+   * The client's own drone panel figures (shipfitting/droneUtil, clientDogmaLocation.GetActiveDrones:
+   * bridge/dogma/drones.ts), where the figures are the page's own dogma's. Absent where they are the server's.
+   */
+  readonly drones?: import("./dogma/drones.ts").DroneReading;
+  /**
    * Seconds for the shield to recharge from empty (attribute 479 / 1000). The
    * ship reports this directly, so it is sourced — unlike the ACTIVE repair
    * rates, which need per-module reads and stay unavailable.
