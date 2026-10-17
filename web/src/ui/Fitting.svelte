@@ -399,6 +399,52 @@
       ? capacitorWord("UI/Fitting/FittingWindow/Stable")
       : capacitorWord("UI/Fitting/FittingWindow/CapacitorNotStable", { time: Math.trunc(simulation.ttl ?? 0) });
   }
+  // The offense panel's words (offensePanel.py), the client's from the install; the page's own where it has none.
+  const OFFENSE_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/DpsLabel": "{[numeric]dps, decimalPlaces=1} damage a second",
+    "UI/Fitting/FittingWindow/DpsLabelWithRange": "{[numeric]dps, decimalPlaces=1} to {[numeric]maxDps, decimalPlaces=1} damage a second",
+    "UI/Fitting/FittingWindow/TurretsDps": "Guns",
+    "UI/Fitting/FittingWindow/MissilesDps": "Launchers",
+    "UI/Fitting/FittingWindow/DotDps": "Damage over time",
+    "UI/Fitting/FittingWindow/SmartbombsDps": "Area weapons",
+    "UI/Fitting/FittingWindow/WithReloadTimeText": "counting reloads",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(OFFENSE_WORDS));
+  });
+  /** An offense label filled: the client's template where the install has it, the page's own otherwise. */
+  function offenseWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : OFFENSE_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** offensePanel._GetDpsText: the damage a second (a range where a spool's top differs), and with reloading where that differs. */
+  function dpsText(dps: number, withReload: number | null, maxDps: number | null = null, maxWithReload: number | null = null): { readonly text: string; readonly withReload: string | null } {
+    const label = maxDps ? "UI/Fitting/FittingWindow/DpsLabelWithRange" : "UI/Fitting/FittingWindow/DpsLabel";
+    const text = offenseWord(label, { dps, maxDps: maxDps ?? 0 });
+    const reload = withReload && withReload !== dps ? `(${offenseWord(label, { dps: withReload, maxDps: maxWithReload ?? 0 })})` : null;
+    return { text, withReload: reload };
+  }
+  type OffenseSimulation = NonNullable<typeof stats.firepower.simulator>;
+  /** _UpdateOffenseStats: the total, with reloading beside it where that differs. */
+  function offenseHeadline(simulation: OffenseSimulation): string {
+    const total = offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.totalDps });
+    return simulation.totalDpsWithReload && simulation.totalDpsWithReload !== simulation.totalDps
+      ? `${total} (${offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.totalDpsWithReload })})`
+      : total;
+  }
+  /** LoadDpsTooltipPanel's lines: each kind of weapon that does damage, with its damage a second. */
+  function offenseLines(simulation: OffenseSimulation): { readonly label: string; readonly text: string; readonly withReload: string | null }[] {
+    const lines: { label: string; text: string; withReload: string | null }[] = [];
+    if (simulation.turretDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/TurretsDps"), ...dpsText(simulation.turretDps, simulation.turretDpsWithReload, simulation.maxTurretDps, simulation.maxTurretDpsWithReload) });
+    if (simulation.missileDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/MissilesDps"), ...dpsText(simulation.missileDps, simulation.missileDpsWithReload) });
+    if (simulation.dotDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/DotDps"), ...dpsText(simulation.dotDps, null) });
+    if (simulation.aoeDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/SmartbombsDps"), ...dpsText(simulation.aoeDps, null) });
+    return lines;
+  }
+
   /** capacitorPanel.ColorPowerCore's hint: the share it settles at, or how long it lasts. */
   function capacitorBalance(simulation: CapacitorSimulation): string {
     return simulation.loadBalance === 0
@@ -1301,21 +1347,44 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Offense</span>
-        <span class="fit-sec-headline">{@render statValue(stats.firepower.dps, (v) => `${whole(v)} dps`)}</span>
+        {#if stats.firepower.simulator}
+          <span class="fit-sec-headline">{offenseHeadline(stats.firepower.simulator)}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.firepower.dps, (v) => `${whole(v)} dps`)}</span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
-        <table class="guests">
-          <tbody>
-            {@render statRow("Damage per second", stats.firepower.dps, whole)}
-            {@render statRow("Drone damage per second", stats.firepower.droneDps, whole)}
-            {@render statRow("Volley damage", stats.firepower.volley, whole)}
-            {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
-          </tbody>
-        </table>
-        <p class="note">
-          Damage summed across your guns, drones or miners needs each module's
-          own stats — click a weapon below to read its effective figures.
-        </p>
+        {#if stats.firepower.simulator}
+          <table class="guests">
+            <tbody>
+              {#each offenseLines(stats.firepower.simulator) as line (line.label)}
+                <tr>
+                  <th scope="row">{line.label}</th>
+                  <td>
+                    {line.text}
+                    {#if line.withReload}<br /><span class="muted">{offenseWord("UI/Fitting/FittingWindow/WithReloadTimeText")} {line.withReload}</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+              <!-- offensePanel: the alpha strike, a whole number of hit points (int(round(alpha))). -->
+              <tr><th scope="row">Volley damage</th><td>{whole(Math.round(stats.firepower.simulator.alphaStrike))} HP</td></tr>
+              {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
+            </tbody>
+          </table>
+        {:else}
+          <table class="guests">
+            <tbody>
+              {@render statRow("Damage per second", stats.firepower.dps, whole)}
+              {@render statRow("Drone damage per second", stats.firepower.droneDps, whole)}
+              {@render statRow("Volley damage", stats.firepower.volley, whole)}
+              {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
+            </tbody>
+          </table>
+          <p class="note">
+            Damage summed across your guns, drones or miners needs each module's
+            own stats — click a weapon below to read its effective figures.
+          </p>
+        {/if}
       </div>
     </details>
 

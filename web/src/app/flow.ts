@@ -30,6 +30,7 @@ import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, pl
 import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
+import { offense } from "../bridge/dogma/offense.ts";
 import {
   decodeBrain,
   loadSimulatedFitting,
@@ -5726,12 +5727,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const derived = deriveShipStats(attributes, undefined, pilotAttributes);
     // The capacitor panel's simulation, of the modules online (clientDogmaLocation.IsModuleIncludedInCalculation).
     const simulator = capSimulatorValues(capacitorSimulator(reckoned.location, reckoned.ship, isOnlineModule));
+    // The offense panel's, as the client reckons its own ship docked: each damage off its dogma location
+    // (GetAccurateAttributeValue, docked), the rates, multipliers and reloads off godma (GetTurretMissileAndAoeDps:
+    // GetGodmaAttributeValue, godma holding the ship), the pilot's missile damage multiplier among them; no spool
+    // (clientDogmaLocation.GetMaxDamageMultiplier: 1). An attribute godma's row does not list is read off the dogma
+    // location.
+    const godmaRows = new Map<string, Map<number, number>>();
+    const rowOf = (attributes: readonly { readonly attributeID: number; readonly value: number | boolean | null }[]): Map<number, number> =>
+      new Map(attributes.filter((attribute) => typeof attribute.value === "number").map((attribute) => [attribute.attributeID, attribute.value as number]));
+    for (const item of allInfo.ships) {
+      if (item.typeID === null || item.flagID === null) continue;
+      const key = item === shipInfo
+        ? reckoned.ship.key
+        : item.sublocation || item.categoryID === 8
+          ? `${reckoned.ship.key}|${item.flagID}|${item.typeID}`
+          : String(item.itemID);
+      godmaRows.set(key, rowOf(item.attributes));
+    }
+    if (allInfo.character) godmaRows.set(reckoned.pilot.key, rowOf(allInfo.character.attributes));
+    const weapons = offense(reckoned.location, reckoned.ship, reckoned.pilot, {
+      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
+      gav: (item, attributeID) => godmaRows.get(item.key)?.get(attributeID) ?? reckoned.location.value(item, attributeID),
+      included: isOnlineModule,
+      maxDamageMultiplier: () => 1.0,
+    });
     store.apply({
       type: "fitting/reckoned",
       shipID,
       resources: resourcesOf(attributes),
       stats: {
         ...derived,
+        firepower: {
+          ...derived.firepower,
+          dps: known(weapons.totalDps),
+          volley: known(weapons.alphaStrike),
+          simulator: weapons,
+        },
         capacitor: {
           ...derived.capacitor,
           deltaPerSecond: known(simulator.delta),

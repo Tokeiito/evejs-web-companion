@@ -174,6 +174,12 @@ export interface ShipStats {
     readonly dps: Stat;
     readonly volley: Stat;
     readonly droneDps: Stat;
+    /**
+     * The client's own reckoning of the weapons (fittingDogmaLocationUtil GetTurretMissileAndAoeDps and
+     * GetAlphaStrike: bridge/dogma/offense.ts), where the figures are the page's own dogma's. Absent where they are
+     * the server's.
+     */
+    readonly simulator?: import("./dogma/offense.ts").OffenseReading;
   };
   readonly mining: { readonly cubicMetresPerSecond: Stat };
   readonly repairs: Readonly<Record<LayerName, Stat>>;
