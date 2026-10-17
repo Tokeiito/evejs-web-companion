@@ -32,9 +32,11 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { romanLevel } from "../bridge/skills.ts";
   import {
-    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionText, wordsLabels, wordsNameRefs,
+    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionMarkup, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
   } from "../bridge/questions.ts";
+  import { labelEscaped } from "../bridge/labelMarkup.ts";
+  import LabelText from "./LabelText.svelte";
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
@@ -551,7 +553,7 @@
     const title = own || (typeof typeWords === "string" && typeWords !== "" ? typeWords : OWN_TITLES[typeTitle] ?? "Information");
     const body = first.type === null ? first.said.fallback : questionText(partOf(first.said, "body"), nameOf, client) || first.said.fallback;
     const suppress = $words.templates[suppressKey(first.said.dialog)];
-    return { said: first.said, title, body, suppress: typeof suppress === "string" ? suppress : null };
+    return { said: first.said, title, body, markup: bodyMarkup(first.said, first.type !== null), suppress: typeof suppress === "string" ? suppress : null };
   });
   // The box's checkbox, unticked for each box put up.
   let keepTicked = $state(false);
@@ -574,8 +576,18 @@
   const strip = $derived.by(() => {
     const strips = shown.filter((one) => one.kind === "strip");
     const last = strips[strips.length - 1];
-    return last === undefined ? null : { said: last.said, text: questionText(partOf(last.said, "body"), nameOf, client) || last.said.fallback };
+    return last === undefined ? null : { said: last.said, text: questionText(partOf(last.said, "body"), nameOf, client) || last.said.fallback, markup: bodyMarkup(last.said, true) };
   });
+
+  /**
+   * A dialog's body as the client's label is given it (messagebox.MessageBox.construct_message_body and
+   * QuickMessage: carbonui.text.styles.TextBody): the client's text filled in with its markup kept; where the page
+   * has none of the client's text, its own words, written so that the label reads them as they are.
+   */
+  function bodyMarkup(one: SaidDialog, typed: boolean): string {
+    const marked = typed ? questionMarkup(partOf(one, "body"), nameOf, client) : null;
+    return marked !== null && marked !== "" ? marked : labelEscaped(one.fallback);
+  }
 
   // The strip's own time, from when its text is put in. Kept apart from the effect's runs: a run for any other change
   // of the store leaves the time as it is (the effect reads the whole store's words).
@@ -1424,7 +1436,7 @@
         <span class="for-pilot">For {pilotName}</span>
       {/if}
       <strong>{box.title}</strong>
-      <p class="body">{box.body}</p>
+      <div class="body"><LabelText markup={box.markup} /></div>
       {#if box.suppress !== null}
         <label class="keep">
           <input type="checkbox" bind:checked={keepTicked} />
@@ -1445,7 +1457,7 @@
 {#if strip !== null}
   <div class="client-strip" role="status" data-dialog={strip.said.dialog} data-in-front={inFront}>
     {#if !inFront && pilotName !== null}<span class="for-pilot">For {pilotName}</span>{/if}
-    <span class="strip-text">{strip.text}</span>
+    <span class="strip-text"><LabelText markup={strip.markup} /></span>
   </div>
 {/if}
 
