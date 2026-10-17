@@ -287,8 +287,8 @@
   // with its icon and name, its quantity, the total where the orders are more than one, its best price at the station
   // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel, and Buy and Fit
   // first of them where it was opened for a fitting (AddBuyAndFitBtn). Its words are the install's; the page's own stand
-  // in. Not done: the other markets of the system in the station list, dropping types in, and Buy and Fit's tooltip
-  // (LoadFittingInfoTooltip). Add Order to Quickbar (AddToQuickbar, 207 to 212): AddNewQuickbarFolder's name popup, then
+  // in. Not done: dropping types in, and Buy and Fit's tooltip (LoadFittingInfoTooltip). The station list is the
+  // client's (GetStations: the system's markets, bridge/multiBuyStations.ts), with its warning. Add Order to Quickbar (AddToQuickbar, 207 to 212): AddNewQuickbarFolder's name popup, then
   // a folder of that name at the quickbar's top and each row's type in it with its whole quantity (GetTotalQty: the
   // row's times the orders') as its extra text (ui/marketQuickbar.ts).
   const MULTIBUY_WORDS: Readonly<Record<string, string>> = {
@@ -299,6 +299,8 @@
     "UI/Generic/Cancel": "Not now",
     "UI/Common/Quantity": "How many",
     "UI/Market/MarketQuote/NoStationSelected": "Nowhere to buy chosen",
+    "UI/Market/MarketQuote/NotStationsAvailable": "No market in this system",
+    "UI/Market/MarketQuote/StationWarning": "Not where you are docked",
     "UI/Common/Percentage": "{[numeric]percentage, decimalPlaces=1}%",
     "UI/Market/MarketQuote/MultiBuyAboveAverage": "Altogether these cost {percentage} above their average.",
     "UI/Market/MarketQuote/MultiBuyTypesAboveAverage": "These cost far above their average:",
@@ -379,6 +381,13 @@
     await flow.importMultiBuy(n, text);
   }
   /** The export menu's Copy Order to Clipboard (ExportShoppingListLocalized): the list put on the clipboard. */
+  /** The station list's options (LoadStationOptions): where the pilot is docked, as Current Station, then the others. */
+  function stationOptionsOf(buy: MultiBuyAsk): { readonly id: number; readonly name: string }[] {
+    return [
+      ...(buy.currentStationID === null ? [] : [{ id: buy.currentStationID, name: buyWord("UI/Market/MarketQuote/CurrentStation", { stationName: nameOf(buy.currentStationID >= 1_000_000_000_000 ? "structure" : "station", buy.currentStationID) }) }]),
+      ...(buy.stationList ?? []),
+    ];
+  }
   let exportOpen = $state(false);
   /** The multibuy whose list is being kept in the quickbar (its number), its folder's name asked; null where none is. */
   let quickbarNaming = $state<number | null>(null);
@@ -1033,11 +1042,17 @@
           onok={(name) => addOrderToQuickbar(name, buy)} oncancel={() => (quickbarNaming = null)} />
       {/if}
       <span class="multibuy-place">
-        <select disabled>
-          {#if buy.stationID === null}
-            <option>{buyWord("UI/Market/MarketQuote/NoStationSelected")}</option>
+        <!-- The station list (stationCombo, LoadStationOptions and GetStations): where the pilot is docked first, as Current
+             Station, then the system's other markets (the flow's stationList); "No stations available in solar system"
+             where it has none (noChoiceLabel). A pick buys there and reads every row's price there (OnStationChanged). -->
+        <select disabled={buy.busy || stationOptionsOf(buy).length === 0} value={buy.stationID === null ? "" : String(buy.stationID)}
+          onchange={(event) => void flow.editMultiBuy(buy.n, { stationID: Number((event.currentTarget as HTMLSelectElement).value) }).catch(() => {})}>
+          {#if stationOptionsOf(buy).length === 0}
+            <option value="">{buy.stationList === null ? buyWord("UI/Market/MarketQuote/NoStationSelected") : buyWord("UI/Market/MarketQuote/NotStationsAvailable")}</option>
           {:else}
-            <option>{buyWord("UI/Market/MarketQuote/CurrentStation", { stationName: nameOf(buy.stationID >= 1_000_000_000_000 ? "structure" : "station", buy.stationID) })}</option>
+            {#each stationOptionsOf(buy) as option (option.id)}
+              <option value={String(option.id)}>{option.name}</option>
+            {/each}
           {/if}
         </select>
         <label class="multibuy-orders">
@@ -1076,6 +1091,12 @@
             onchange={(event) => void flow.editMultiBuy(buy.n, { useCorp: (event.currentTarget as HTMLInputElement).checked })} />
           {buyWord("UI/Market/MarketQuote/UseCorpAccount", { accountName: corpAccountName(buy.corpAccount) })}
         </label>
+      {/if}
+      <!-- ShowOrHideStationWarning (442 to 452): none chosen, or not where the pilot is docked. -->
+      {#if buy.stationID === null}
+        <span class="multibuy-warning">{buyWord("UI/Market/MarketQuote/NoStationSelected")}</span>
+      {:else if buy.stationID !== buy.currentStationID}
+        <span class="multibuy-warning">{buyWord("UI/Market/MarketQuote/StationWarning")}</span>
       {/if}
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
@@ -1542,6 +1563,8 @@
   .dimmed { opacity: 0.2; pointer-events: none; }
   .multibuy-place { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.6rem; }
   .multibuy-orders { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.85rem; }
+  /* The client's station warning: large, bold, red (DrawStationWarning: COL_RED). */
+  .multibuy-warning { color: #e05050; font-weight: 700; }
   .multibuy-orders input { width: 5rem; }
   .multibuy-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.3rem; max-height: 50vh; overflow-y: auto; }
   .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem 5.5rem auto; align-items: center; gap: 0.5rem; }

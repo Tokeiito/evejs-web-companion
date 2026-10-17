@@ -324,7 +324,7 @@ import {
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
 import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotMap, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
 import { availableJumpGateJumps, type JumpGateJump } from "../nav/jumpGates.ts";
-import { decodeJumpBridgesWithMyAccess } from "../bridge/structures.ts";
+import { decodeJumpBridgesWithMyAccess, decodeStructureMapData } from "../bridge/structures.ts";
 import {
   AVOIDING_DIALOGS,
   autopilotSettingsFrom,
@@ -508,6 +508,7 @@ import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, re
 import { type HullBrowserData, type ShipTraitsHeld } from "../bridge/hullBrowser.ts";
 import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
 import type { TypeMetaFacts } from "./api.ts";
+import { marketDockableLocations, multiBuyStationList as multiBuyStationList_, type SystemItem } from "../bridge/multiBuyStations.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
@@ -1011,8 +1012,18 @@ export interface MultiBuyRow {
 /** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
 export interface MultiBuyAsk {
   readonly n: number;
-  /** Where it buys: the station or structure the pilot is docked in (its station list's current one); null with none. */
+  /**
+   * Where it buys (baseStationID): at first the station or structure the pilot is docked in, or the list's first where
+   * it is docked nowhere (LoadStationOptions); then the one picked from its station list (OnStationChanged).
+   */
   readonly stationID: number | null;
+  /** Where the pilot is docked (session.stationid or structureid), the list's "Current Station"; null where nowhere. */
+  readonly currentStationID: number | null;
+  /**
+   * The station list's others (buyMultiFromBase.GetStations, bridge/multiBuyStations.ts): the region's markets in the
+   * pilot's system besides where it is docked, sorted as the client sorts them, each with its name; null while read.
+   */
+  readonly stationList: readonly { readonly id: number; readonly name: string }[] | null;
   /** The number of orders (orderMultiplierEdit): each row's quantity is bought this many times over. */
   readonly multiplier: number;
   readonly rows: readonly MultiBuyRow[];
@@ -2335,7 +2346,7 @@ export interface AppFlow {
   /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
   openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
   /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
-  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void>;
+  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean } | { readonly stationID: number }): Promise<void>;
   /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
   answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
   /** A fitting's contents by heading and its slot kinds' effects' names (GetFittingInfoForScrollList), for a tooltip. */
@@ -7055,6 +7066,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const base: MultiBuyAsk = open ?? {
       n: (dialogsSaidCount += 1),
       stationID: inventory.stationID ?? inventory.structureID ?? null,
+      currentStationID: inventory.stationID ?? inventory.structureID ?? null,
+      stationList: null,
       multiplier: 1,
       rows: [],
       busy: false,
@@ -7085,8 +7098,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const now = multiBuyAskedSignal.get();
         if (now !== null && now.n === base.n) multiBuyAskedSignal.set({ ...now, corpAccount });
       }).catch(() => {});
+      // Its station list, as the window is made (LoadStationOptions, 215 to 228); where the pilot is docked nowhere,
+      // the list's first is where it buys.
+      void multiBuyStationList().then((stationList) => {
+        const now = multiBuyAskedSignal.get();
+        if (now === null || now.n !== base.n) return;
+        const first = now.stationID === null && stationList.length > 0 ? stationList[0]!.id : null;
+        multiBuyAskedSignal.set({ ...now, stationList, ...(first === null ? {} : { stationID: first, rows: now.rows.map((row) => ({ ...row, loading: true })) }) });
+        if (first !== null) void multiBuyPrices();
+      }).catch(() => {});
     }
     await multiBuyPrices();
+  }
+
+  // The region's markets as the client keeps them (GetMarketDockableLocationsInRegion: asked once for each region).
+  const multiBuyMarketsByRegion = new Map<number, ReadonlySet<number>>();
+
+  /**
+   * buyMultiFromBase.GetStations (382 to 400): the region's markets (GetMyCharacterStructures, those holding the market
+   * service) that are among the pilot's system's items (its stations from the client's map data, and
+   * GetStructureMapData's structures), besides where it is docked, sorted (bridge/multiBuyStations.ts), named.
+   */
+  async function multiBuyStationList(): Promise<readonly { readonly id: number; readonly name: string }[]> {
+    const online = store.station.get().online;
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? online?.solarSystemID ?? null;
+    if (solarSystemID === null) return [];
+    const inventory = store.inventory.get();
+    const current = inventory.stationID ?? inventory.structureID ?? null;
+    const [systemStations, mapAnswer] = await Promise.all([
+      api.getSystemStations(solarSystemID, callOptions),
+      bridgeAsk("structureDirectory", "GetStructureMapData", [solarSystemID]),
+    ]);
+    const regionID = systemStations.regionID ?? 0;
+    let markets = multiBuyMarketsByRegion.get(regionID);
+    if (markets === undefined) {
+      markets = marketDockableLocations(await bridgeAsk("structureDirectory", "GetMyCharacterStructures", []));
+      multiBuyMarketsByRegion.set(regionID, markets);
+    }
+    await resolveNamesNow(systemStations.stations.map((station) => ({ kind: "station" as const, id: station.stationID })));
+    const stationName = (id: number): string => {
+      const name = nameCache.get(nameKey("station", id));
+      return typeof name === "string" ? name : "";
+    };
+    const items: SystemItem[] = [
+      ...systemStations.stations.map((station) => ({ itemID: station.stationID, itemName: stationName(station.stationID), celestialIndex: station.celestialIndex, orbitIndex: station.orbitIndex })),
+      ...decodeStructureMapData(mapAnswer).map((row) => ({ itemID: row.structureID, itemName: row.itemName, celestialIndex: row.celestialIndex, orbitIndex: row.orbitIndex })),
+    ];
+    return multiBuyStationList_(markets, items, current).map((item) => ({ id: item.itemID, name: item.itemName }));
   }
 
   /** appConst.corpRoleAccountant and corpRoleTrader: the roles that may buy for the corporation. */
@@ -7167,9 +7225,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean }): Promise<void> {
+  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean } | { readonly stationID: number }): Promise<void> {
     const asked = multiBuyAskedSignal.get();
     if (asked === null || asked.n !== n || asked.busy) return;
+    if ("stationID" in edit) {
+      // OnStationChanged and UpdateStationID (545 to 556): where it buys, and every row's price read there.
+      multiBuyAskedSignal.set({ ...asked, stationID: edit.stationID, rows: asked.rows.map((row) => ({ ...row, loading: true })) });
+      await multiBuyPrices();
+      return;
+    }
     if ("useCorp" in edit) {
       // OnUseCorp (155 to 162): the box kept as it is ticked.
       setBuyUseCorp(edit.useCorp);

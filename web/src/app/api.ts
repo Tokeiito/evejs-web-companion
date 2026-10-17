@@ -3856,6 +3856,25 @@ export async function getShipTraits(
   return { available: data.available === true, traits, unitNameIDs };
 }
 
+/**
+ * A solar system's region and its NPC stations, each with its celestialIndex and orbitIndex (GET
+ * /api/map/system-stations/:id: the client's map data, cfg.GetLocationsLocalBySystem). Static reference data.
+ */
+export async function getSystemStations(
+  solarSystemID: number,
+  options: ApiOptions = {},
+): Promise<{ readonly regionID: number | null; readonly stations: readonly { readonly stationID: number; readonly celestialIndex: number | null; readonly orbitIndex: number | null }[] }> {
+  const data = await getJson(`/api/map/system-stations/${solarSystemID}`, options);
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const stations = (Array.isArray(data.stations) ? data.stations : []).flatMap((each) => {
+    if (each === null || typeof each !== "object" || Array.isArray(each)) return [];
+    const row = each as Record<string, JsonValue>;
+    const stationID = orNull(row.stationID);
+    return stationID === null ? [] : [{ stationID, celestialIndex: orNull(row.celestialIndex), orbitIndex: orNull(row.orbitIndex) }];
+  });
+  return { regionID: orNull(data.regionID), stations };
+}
+
 /** A type's facts from the client's types record (GET /api/client-data/type-meta). */
 export interface TypeMetaFacts {
   readonly metaLevel: number | null;

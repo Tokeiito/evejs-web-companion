@@ -836,6 +836,25 @@ function getStation(stationID) {
   return buildIndex("stations", "stations", "stationID").get(Number(stationID) || 0) || null;
 }
 
+/**
+ * A solar system's NPC stations as the client's own map data has them (cfg.GetLocationsLocalBySystem, which
+ * mapSvc.GetSolarsystemItems reads): each station's number, and its celestialIndex and orbitIndex (the SDE's
+ * npcStations), by which the multibuy's station list sorts (buyMultiFromBase.GetStations). Static reference data.
+ */
+function getSystemStations(solarSystemID) {
+  const numericSystemID = Number(solarSystemID) || 0;
+  const stations = [];
+  for (const [stationID, row] of buildJsonlIndex("npcStations.jsonl")) {
+    if (Number(row && row.solarSystemID) !== numericSystemID) continue;
+    stations.push({
+      stationID,
+      celestialIndex: Number.isFinite(Number(row.celestialIndex)) ? Number(row.celestialIndex) : null,
+      orbitIndex: Number.isFinite(Number(row.orbitIndex)) ? Number(row.orbitIndex) : null,
+    });
+  }
+  return stations.sort((left, right) => left.stationID - right.stationID);
+}
+
 function getStationName(stationID) {
   const entry = getStation(stationID);
   return entry ? String(entry.stationName || `Station ${stationID}`) : `Station ${stationID}`;
@@ -2247,6 +2266,7 @@ module.exports = {
   getSolarSystemName,
   getStargates,
   getStation,
+  getSystemStations,
   getStationName,
   getStationShortName,
   getLocalTypeIconUrl,

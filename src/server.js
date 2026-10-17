@@ -12611,6 +12611,22 @@ app.get("/api/map/station/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+// A solar system's region and its NPC stations with their celestialIndex and orbitIndex (staticData.getSystemStations:
+// the client's own map data, cfg.GetLocationsLocalBySystem), for the multibuy's station list. Static reference data.
+app.get("/api/map/system-stations/:id", requireAuth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id) || 0;
+    if (id <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_ID", message: "A positive id is required." });
+      return;
+    }
+    const system = staticData.getSolarSystem(id);
+    res.json({ ok: true, regionID: system && Number(system.regionID) > 0 ? Number(system.regionID) : null, stations: staticData.getSystemStations(id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Map name search (goal R7a): let a player set a travel destination by NAME
 // instead of a raw EVE ID. Searches the static solar-system + station tables by
 // name and returns capped matches the client hands to startRoute (the R5b route
