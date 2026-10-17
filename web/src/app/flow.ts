@@ -214,6 +214,7 @@ import {
   PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
 } from "../bridge/certifiedSkillPlans.ts";
 
+import { levelButtonState, levelsForSkillAndRequirements, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
 import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
 
 /** A corporation plan's save: the category chosen in the editor (0 for None), and the saved plan's (null for a new one). */
@@ -2526,6 +2527,21 @@ export interface AppFlow {
    * be read.
    */
   skillPlanDetail(plan: PersonalSkillPlan): Promise<SkillPlanDetail | null>;
+  /**
+   * skills/client/util.buy_missing_skills: the books of these skills not held (lapsed counted held) bought in the books
+   * window (skillsvc.PurchaseSkills: refused where buying is switched off), then waited for among the pilot's skills
+   * (WaitUntilSkillsAreAvailable). True where none was missing or any was bought.
+   */
+  buyMissingSkillBooks(typeIDs: readonly number[]): Promise<boolean>;
+  /**
+   * An opened plan's level button clicked (SkillLevelEntryPrimaryButton._OnClick), by the state its row was read in
+   * (bridge/skillPlanLevelButton.ts): book buys the books of the skill and of what it needs (BuyAllRequiredSkillbooks);
+   * remove takes the level out of the queue (RemoveSkillsFromQueue: CheckCanRemoveSkillFromQueue's refusal said as the
+   * client says it); add queues the level and what it needs (AddSkillAndRequirementsToQueue). A change of the queue is
+   * committed as the client commits it (OnClientQueueModified). The omega state's window and the off states do
+   * nothing here.
+   */
+  skillPlanLevelAction(skill: number, level: number, state: LevelButtonState): Promise<void>;
   /**
    * The opened plan's Start Training (SelectedSkillPlanContainer.TrainSkills): the plan's levels left to train added
    * to the end of the queue and the queue saved started (AddToTrainingQueue: skillQueueSvc.AddSkillsToQueue, then
@@ -7843,13 +7859,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       return null;
     }
-    // The skills' own needs, for whether a level can be trained (the bar's boxes); without the client's table, none.
-    const [facts, needs] = await Promise.all([
-      pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null),
-      api.getRequiredSkills(skillTypes, callOptions).catch(() => null),
-    ]);
+    const facts = await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
     if (facts === null) return null;
-    const required: RequiredSkills = needs !== null && needs.available ? needs.order : {};
+    // The skills' own needs however deep, for whether a level can be trained (the bar's boxes, the books held), and the
+    // queued skills' (GetDependentSkills, whether a level may come out of the queue); without the client's table, none.
+    const required: RequiredSkills = (await requiredSkillsFor([...skillTypes, ...facts.queued.map((entry) => entry.typeID)]).catch(() => null)) ?? {};
+    // IsInjected and IsAllPrereqsInjected: held, lapsed counted (skillsvc.IsSkillInjected).
+    const booksHeld = (skill: number): boolean =>
+      facts.lapsed.has(skill) && [...requiredSkillsRecursive(skill, required).keys()].every((need) => facts.lapsed.has(need));
+    // GetSkillPointsMissingForLevel: the level's points less those trained and enabled (GetMySkillPoints).
+    const pointsMissing = (skill: number, level: number): number | null => {
+      const rank = facts.rank(skill);
+      return rank === null || rank === undefined ? null : skillPointsForLevel(rank, level) - (facts.mine.get(skill)?.trainedSkillPoints ?? 0);
+    };
     const rows = plan.requirements.map(([skill, level]) => {
       const held = facts.mine.get(skill);
       return {
@@ -7859,6 +7881,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         boxes: skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0),
         // SkillController.GetTrainingTimeForLevelText: GetTimeLeftToTrain(level, includeBoosters=False).
         ticks: rawTrainingTimeForSkillLevel(skill, level, facts.mine, facts),
+        button: levelButtonState(level, {
+          omega: facts.omega,
+          ceiling: facts.ceilings === null ? 0 : facts.ceilings.get(skill) ?? 0,
+          booksHeld: booksHeld(skill),
+          inQueue: facts.queued.some((entry) => entry.typeID === skill && entry.toLevel === level),
+          canRemove: queueRemovalRefusal(skill, level, facts.queued, required) === null,
+          myLevel: facts.lapsed.get(skill)?.trainedSkillLevel ?? 0,
+        }),
+        pointsMissing: pointsMissing(skill, level),
+        // GetSkillpointsPerMinute(skill), boosters counted.
+        pointsPerMinute: facts.rateWithBoosters(skill),
       };
     });
     const planSkills = [...skillRequirementsDict(plan).keys()];
@@ -7880,6 +7913,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  /**
+   * The client's requiredSkillsForTypes for these types and every skill they need however deep, each type's needs in
+   * its table's order (the route walks fifty asked at a time). Null without the client's table.
+   */
+  async function requiredSkillsFor(typeIDs: readonly number[]): Promise<RequiredSkills | null> {
+    const asked = [...new Set(typeIDs)];
+    const out: Record<number, RequiredSkills[number]> = {};
+    for (let at = 0; at < asked.length; at += 50) {
+      const read = await api.getRequiredSkills(asked.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      Object.assign(out, read.order);
+    }
+    return out;
+  }
+
+  async function skillPlanLevelAction(skill: number, level: number, state: LevelButtonState): Promise<void> {
+    if (state === "book") {
+      // BuyAllRequiredSkillbooks: GetPrereqSkillsRecursive's skills, then the skill itself.
+      const required = await requiredSkillsFor([skill]);
+      await buyMissingSkillBooks([...(required === null ? [] : requiredSkillsRecursive(skill, required).keys()), skill]);
+      return;
+    }
+    if (state !== "remove" && state !== "add") return;
+    const [answered, skillsAnswer, allSkillsAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    if (state === "remove") {
+      const required = (await requiredSkillsFor(queue.map((entry) => entry.typeID))) ?? {};
+      const refusal = queueRemovalRefusal(skill, level, queue, required);
+      if (refusal !== null) {
+        sayDialog(refusal, null, refusal === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+          ? "A higher level of this skill is still in the queue."
+          : "A skill in the queue needs this one.");
+        return;
+      }
+      // InternalRemoveFromQueue, then OnClientQueueModified's commit.
+      await saveSkillQueueSaved(queue.filter((entry) => !(entry.typeID === skill && entry.toLevel === level)), "Removed from your skill queue", "that skill");
+      return;
+    }
+    const required = await requiredSkillsFor([skill]);
+    if (required === null) return;
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const { levels, stopped } = levelsForSkillAndRequirements(
+      skill,
+      level,
+      missingSkillsRecursive(skill, required, skillLevelsOf(skillsAnswer), lapsed),
+      lapsed,
+      queue,
+      (typeID) => requiredSkillsRecursive(typeID, required),
+    );
+    // QueueSkillAlreadyPresent stops the adding, logged and not committed; with nothing to add nothing changes.
+    if (stopped || levels.length === 0) return;
+    await saveSkillQueueSaved([...queue, ...levels.map(([typeID, toLevel]) => ({ typeID, toLevel }))], "Added to your skill queue", "that skill");
+  }
+
   async function trainSkillPlan(
     plan: PersonalSkillPlan,
     trackedID: string | null,
@@ -7894,7 +7985,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const maxQueued = (typeID: number): number => Math.max(0, ...queue.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
     const levels = untrainedSkills(plan, (typeID) => lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued);
     const next = queueWithLevels(queue, levels);
-    if (!(await saveSkillQueueSaved(next, "Added to your skill queue", "those skills", true))) return { added: null, trackedID };
+    // AddSkillsToQueue, then OnClientQueueModified: committed started unless every training slot is in use.
+    if (!(await saveSkillQueueSaved(next, "Added to your skill queue", "those skills"))) return { added: null, trackedID };
     const trackID = trackedCopy ? await trackedCopy() : plan.id;
     if (trackID === null) return { added: next.length - queue.length, trackedID };
     let tracked = trackedID;
@@ -9347,18 +9439,62 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
     const purchased = await askSkillBooks(available, unavailable, priceOf);
     if (purchased.length === 0) return;
-    // WaitUntilSkillsAreAvailable: the skills read again until each bought one is among them (the server injects
-    // them before it answers; a few readings at most).
-    for (let reading = 0; reading < 5; reading += 1) {
-      const now = await skillsIncludingLapsedNow().catch(() => null);
-      if (now !== null && purchased.every((skill) => now.has(skill))) break;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+    await waitUntilSkillsAvailable(purchased);
     const stillMissing = action.missing.filter((skill) => !purchased.includes(skill));
     const toQueue = stillMissing.length === 0 ? action.levels : action.levels.filter(([skill]) => !stillMissing.includes(skill));
     const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
     const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
     await saveSkillQueue(queueWithLevels(queue, toQueue), "Added to your skill queue", "those skills", true);
+  }
+
+  /**
+   * WaitUntilSkillsAreAvailable: the skills read again until each bought one is among them (the server injects them
+   * before it answers; a few readings at most).
+   */
+  async function waitUntilSkillsAvailable(purchased: readonly number[]): Promise<void> {
+    for (let reading = 0; reading < 5; reading += 1) {
+      const now = await skillsIncludingLapsedNow().catch(() => null);
+      if (now !== null && purchased.every((skill) => now.has(skill))) return;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+
+  /**
+   * Each book's facts as the books window wants them: sold (evetypes.IsSkillAvailableForPurchase: published, and on
+   * the list; without the client's data the list alone goes), and its base price.
+   */
+  async function skillBookFacts(typeIDs: readonly number[]): Promise<Readonly<Record<number, { readonly sold: boolean; readonly basePrice: number | null }>>> {
+    const lists: Record<number, readonly number[] | null> = {};
+    for (let at = 0; at < typeIDs.length; at += 32) {
+      Object.assign(lists, await api.loadTypeListsHolding(typeIDs.slice(at, at + 32), [SKILLS_FOR_PURCHASE_LIST], callOptions));
+    }
+    const prices = await api.getTypePrices(typeIDs, callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>> }));
+    return Object.fromEntries(typeIDs.map((skill) => [skill, {
+      sold: lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true),
+      basePrice: prices.basePrice[skill] ?? null,
+    }]));
+  }
+
+  async function buyMissingSkillBooks(typeIDs: readonly number[]): Promise<boolean> {
+    // _is_skill_missing: not among the pilot's skills, lapsed ones counted.
+    const lapsed = await skillsIncludingLapsedNow();
+    const missing = [...new Set(typeIDs)].filter((typeID) => !lapsed.has(typeID));
+    if (missing.length === 0) return true;
+    // skillsvc.PurchaseSkills (characterskills/client/purchase.py purchase_skills), as Buy and train makes it.
+    if (!(await skillPurchaseEnabled())) {
+      sayDialog("SkillPurchaseDisabled", null, "Skill books cannot be bought directly here.");
+      return false;
+    }
+    const books = await skillBookFacts(missing);
+    const { available, unavailable } = booksToBuy(missing, lapsed, () => true, (typeID) => books[typeID]?.sold === true);
+    const purchased = await askSkillBooks(available, unavailable, (skill) => {
+      const base = books[skill]?.basePrice ?? null;
+      return base === null ? null : directPurchasePrice(base);
+    });
+    if (purchased.length === 0) return false;
+    await waitUntilSkillsAvailable(purchased);
+    return true;
   }
 
   /** The books window opened (MissingSkillbooksWnd, modal); answers the skills it bought before it was put away. */
@@ -22733,6 +22869,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     personalSkillPlans,
     certifiedSkillPlans,
     certifiedPlanMilestones,
+    buyMissingSkillBooks,
+    skillPlanLevelAction,
     corpSkillPlans,
     deleteCorpSkillPlan,
     copySkillPlan,

@@ -12,6 +12,7 @@
 //   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py
 
 import type { SkillLevelBox } from "./missingSkills.ts";
+import type { LevelButtonState } from "./skillPlanLevelButton.ts";
 
 /** The nought uuid: SetActive's "none" (skillPlanRequestsMessenger.set_active), GetActive's answer with none tracked. */
 export const NO_SKILL_PLAN = "00000000-0000-0000-0000-000000000000";
@@ -135,6 +136,12 @@ export interface SkillPlanContentRow {
   readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
   /** GetTrainingTimeForLevelText's time: the level alone (GetRawTrainingTimeForSkillLevel, no boosters); null unknown. */
   readonly ticks: number | null;
+  /** Its button's state (SkillLevelEntryPrimaryButton, bridge/skillPlanLevelButton.ts). */
+  readonly button: LevelButtonState;
+  /** The add state's tooltip: GetSkillPointsMissingForLevel(level); null unknown. */
+  readonly pointsMissing: number | null;
+  /** The add state's tooltip: GetSkillpointsPerMinute(skill), boosters counted; null unknown. */
+  readonly pointsPerMinute: number | null;
 }
 
 /**

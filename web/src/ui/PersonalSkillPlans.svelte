@@ -53,10 +53,16 @@
   // EditPlan) and an entry's menu's Edit open the editor (SkillPlanEditor.svelte) in the list's place, on a new plan
   // or a copy of the plan; a save goes back to the list, read again (OnSkillPlanCreated, OnSkillPlanSaved).
   //
-  // Not done: Save and Share, the omega button's upgrade window, the progress gauge and milestones, the faction and
-  // career icons, the omega mark and banner, the missing books' buy button, a level's add-to-queue button, a skill
-  // row's selection, menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry,
-  // and the corporation's notices (another member's changes, seen as they are made).
+  // The contents' rows each have their level's button (SkillLevelEntryPrimaryButton, bridge/skillPlanLevelButton.ts):
+  // omega, a book to buy, queued (out of the queue, or off where it may not come out), trained (off), or to queue with
+  // what it needs; its hint the client's, add's with the points the level lacks and the pilot's points a minute. Under
+  // the rows, Buy Missing Skillbooks with their count where any is not held (UpdateSkillsMissingBanner; its click
+  // buy_missing_skills). After either, the contents are read again (OnSkillQueueChanged, OnSkillsAvailable).
+  //
+  // Not done: Share, the omega button's upgrade window (the omega state's click), the progress gauge, the faction and
+  // career icons, the omega mark and banner, a skill row's selection, menu, tooltip and drag, the contents' menu (copy
+  // to clipboard), the tooltip and drag of an entry, and the corporation's notices (another member's changes, seen as
+  // they are made).
   import { onMount } from "svelte";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
   import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
@@ -68,9 +74,10 @@
   import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import {
     skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
-    type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanDetail,
+    type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
+  import { LEVEL_BUTTON_HINTS, levelButtonOff, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
   import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
   import type { CertifiedPlanEntry, CorpPlanEntry } from "../app/flow.ts";
   import { CORP_PLANS_PER_PAGE, MAX_CORP_PLANS, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
@@ -147,6 +154,15 @@
     "UI/SkillPlan/NoCorpSkillPlans": "Your corporation keeps no skill plan.",
     "UI/SkillPlan/SaveAnTrackPlan": "Keep a copy among your own plans, and follow that.",
     "UI/SkillPlan/CreateCorpSkillPlan": "Make a plan for your corporation",
+    "UI/CloneState/RequiresOmegaClone": "Needs an omega clone",
+    "UI/SkillPlan/ClickToBuyMissingSkillAndRequirements": "A book for this skill, or for one it needs, is not held: buy them.",
+    "UI/SkillPlan/RemoveFromQueue": "This level is queued: take it out.",
+    "UI/SkillPlan/RemoveFromQueueLocked": "This level is queued, and another queued skill needs it.",
+    "UI/SkillPlan/AlreadyTrained": "This level is trained.",
+    "UI/SkillPlan/AddToQueue": "Queue it to level {skillLevel}",
+    "UI/Skills/SkillPointsRequired": "Points still needed",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SpPerMinute": "{spPerMin} points a minute",
+    "UI/SkillPlan/BuyMissingSkillbooks": "Buy the books not held ({numMissing})",
     "UI/SkillPlan/CorpPlanCreateRequiresRoleHint": "Making your corporation's plans needs its skill plan manager role.",
   };
 
@@ -560,6 +576,50 @@
     }
   }
 
+  // A level's button (SkillLevelEntryPrimaryButton): its mark by state (the client's icons stand for these).
+  const LEVEL_BUTTON_MARKS: Readonly<Record<LevelButtonState, string>> = {
+    omega: "Ω",
+    book: "📖",
+    remove: "−",
+    "remove-locked": "−",
+    trained: "✔",
+    add: "+",
+  };
+  let levelBusy = $state(false);
+
+  /** GetTooltipText; add's with the points the level lacks and the pilot's points a minute (LoadTooltipPanel). */
+  function levelHint(row: SkillPlanContentRow): string {
+    if (row.button !== "add") return word(LEVEL_BUTTON_HINTS[row.button]);
+    const lines = [word(LEVEL_BUTTON_HINTS.add, { skillLevel: row.level })];
+    if (row.pointsMissing !== null) lines.push(`${word("UI/Skills/SkillPointsRequired")}: ${row.pointsMissing.toLocaleString("en-US")}`);
+    if (row.pointsPerMinute !== null) lines.push(word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SpPerMinute", { spPerMin: row.pointsPerMinute }));
+    return lines.join("\n");
+  }
+
+  /** The level's button clicked (_OnClick), then the contents read again (OnSkillQueueChanged, OnSkillsAvailable). */
+  async function levelAction(plan: OpenedPlan, row: SkillPlanContentRow): Promise<void> {
+    if (levelBusy || levelButtonOff(row.button)) return;
+    levelBusy = true;
+    try {
+      await flow.skillPlanLevelAction(row.skill, row.level, row.button);
+    } finally {
+      levelBusy = false;
+    }
+    if (selectedID === plan.id) await readContents(plan);
+  }
+
+  /** OnMissingSkillbooksButton: buy_missing_skills of the plan's books not held; then the contents read again. */
+  async function buyMissingBooks(plan: OpenedPlan, missing: readonly number[]): Promise<void> {
+    if (levelBusy) return;
+    levelBusy = true;
+    try {
+      await flow.buyMissingSkillBooks(missing);
+    } finally {
+      levelBusy = false;
+    }
+    if (selectedID === plan.id) await readContents(plan);
+  }
+
   /** OnTrackButton, _ToggleTracked */
   async function toggleTracked(plan: OpenedPlan): Promise<void> {
     if (!read) return;
@@ -709,9 +769,16 @@
                   </span>
                   <span class="skill-plan-row-name">{word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill: row.skill, level: romanLevel(row.level), levelColor: "#ffffff" })}</span>
                   <span class="skill-plan-row-time">{row.ticks === null ? "–" : interval(row.ticks, "minute")}</span>
+                  <button type="button" class="skill-plan-row-button {row.button}" disabled={levelButtonOff(row.button) || levelBusy}
+                    title={levelHint(row)} aria-label={levelHint(row)} onclick={() => void levelAction(plan, row)}>{LEVEL_BUTTON_MARKS[row.button]}</button>
                 </li>
               {/each}
             </ul>
+          {/if}
+          {#if contents !== undefined && contents.planID === plan.id && contents.detail !== null && contents.detail.missingBooks.length > 0}
+            {@const missing = contents.detail.missingBooks}
+            <button type="button" class="skill-plan-buy-books" disabled={levelBusy}
+              onclick={() => void buyMissingBooks(plan, missing)}>{word("UI/SkillPlan/BuyMissingSkillbooks", { numMissing: missing.length })}</button>
           {/if}
         </div>
       {/if}
@@ -895,6 +962,11 @@
   .skill-plan-row { display: flex; align-items: center; gap: 0.75rem; min-height: 2rem; padding: 0 0.5rem; background: rgba(255, 255, 255, 0.04); }
   .skill-plan-row-name { flex: 1; }
   .skill-plan-row-time { opacity: 0.35; }
+  /* SkillLevelEntryPrimaryButton: 36 wide at the row's right; DANGER for a book to buy, MONETIZATION for omega. */
+  .skill-plan-row-button { min-width: 2.25rem; }
+  .skill-plan-row-button.book { color: #e05a4f; }
+  .skill-plan-row-button.omega { color: #e8b34a; }
+  .skill-plan-buy-books { display: block; width: 100%; margin-top: 0.5rem; color: #e05a4f; }
   .skill-plan-foot { display: flex; flex-direction: column; align-items: stretch; gap: 0.5rem; }
   .skill-plan-locks { display: flex; justify-content: center; align-items: center; gap: 1rem; }
   /* The lock buttons (lockButton.py): the books' framed white, PRIMARY_BLUE where locked, with the count on HOT_RED;
