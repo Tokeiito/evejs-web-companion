@@ -101,6 +101,9 @@ const TABLES = Object.freeze({
   // The dogma attributes' own records (dogma/data.py get_attribute: dogmaAttributes.fsdbinary), each with its name's
   // and its tooltip's messages, its unit, its icon, whether it is published, shown at nought and better high, and its
   // data type and default: what the compare tool shows an attribute by (comparableAttribute.py).
+  // A picture's res: path by its icon number (fsdBuiltData/common/iconIDs.py GetIconFile: the icon's iconFile), which
+  // an attribute is drawn with (skillsPanelUtil.AttributeCont: get_attribute_icon_id, then GetIconFile).
+  iconFiles: Object.freeze({ loader: "iconIDsLoader", resource: "res:/staticdata/iconids.fsdbinary", attribute: "iconFile" }),
   dogmaAttributes: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary" }),
   // A type's dogma attributes (dogma/data.py get_type_dogma: typeDogma.fsdbinary, its dogmaAttributes), and a type's
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk

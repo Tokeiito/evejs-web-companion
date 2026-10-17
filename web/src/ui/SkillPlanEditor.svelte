@@ -51,10 +51,17 @@
   //   a catalogue skill  SkillGroupSkillEntry: its menu (GetMenu: GetMenuForSkill, SkillRowMenu) and its tooltip below it
   //                   (LoadSkillEntryTooltipInfoOnly, SkillRowTip; none while dragging)
   //
+  //   the catalogue's rest  SkillGroupSkillEntry: the skill's bar (SkillBar) and its next level's own time, dimmed
+  //                   (UpdateTrainingTimeLabel); SkillGroupEntry's tooltip (SkillGroupTip); the pilot's skill points above
+  //                   them (skillPointsLabel: GetTotalSkillPointsForCharacter, then every two seconds while a skill trains
+  //                   GetEstimatedTotalSkillPoints); all read again as the queue or the skills change (_OnSkillsStateChanged)
+  //
   // Not done: the end line while an item is dragged over (its type is not readable before the drop), fittings dragged
-  // as text links, a milestone's level changed in its tooltip, the ring, a group's tooltip, a skill's bar and the time
-  // of its next level, the skill points label.
-  import { onMount } from "svelte";
+  // as text links, a milestone's level changed in its tooltip, the ring, the group tooltip's certificates.
+  import { onMount, untrack } from "svelte";
+  import SkillGroupTip from "./SkillGroupTip.svelte";
+  import { serverNow, trainingReadout } from "../bridge/skills.ts";
+  import { shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { portal } from "./portal.ts";
   import SkillRowMenu from "./SkillRowMenu.svelte";
   import SkillRowTip from "./SkillRowTip.svelte";
@@ -83,7 +90,7 @@
     MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, canRemoveLevel, canSavePlan, catalogueGroups, catalogueSearch,
     editedPlanDiffers, highestPlanLevel, nextPlanLevel, withLevelAppended, withLevelRemoved, type CatalogueGroup,
     insertionIsValid, moveIsValid, planLevelIndex, withLevelInserted, withLevelMoved, withLevelsAppended,
-    CATALOGUE_FILTERS, catalogueSkillPasses, groupProgress, type CatalogueFilter, type CatalogueSkillState,
+    CATALOGUE_FILTERS, catalogueSkillPasses, groupProgress, type CatalogueFilter, type CatalogueSkillRow, groupSummary,
     withNeedsOfTypesAppended,
   } from "../bridge/skillPlanEditor.ts";
 
@@ -109,6 +116,7 @@
   let categoryID = $state(corp?.categoryID ?? 0);
 
   const OWN: Readonly<Record<string, string>> = {
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillPoints": "{[numeric]skillPoints, useGrouping} skill points",
     // SkillFilterCombo's options.
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowAllSkills": "Every skill",
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyCurrentSkills": "Skills you have",
@@ -190,7 +198,61 @@
     }
   }
   /** The catalogue's skills as the skill controllers answer them; none until read (the filters then keep all). */
-  let catalogueStates = $state<ReadonlyMap<number, CatalogueSkillState>>(new Map());
+  let catalogueStates = $state<ReadonlyMap<number, CatalogueSkillRow>>(new Map());
+  async function readCatalogueStates(): Promise<void> {
+    if (!groups) return;
+    const states = await flow.skillCatalogueStates(groups.flatMap((group) => group.skills.map((skill) => skill.typeID)));
+    if (states !== null) catalogueStates = states;
+  }
+
+  // _OnSkillsStateChanged: the entries read again as the queue or the skills change (the first read is the mount's).
+  // svelte-ignore state_referenced_locally
+  const skillsSheet = store.skills;
+  let statesFor: string | null = null;
+  $effect(() => {
+    const sheet = $skillsSheet;
+    const key = (sheet.queue?.entries ?? []).map((entry) => entry.typeID + ":" + entry.toLevel).join(",") + "|" + (sheet.totalSkillPoints ?? "");
+    untrack(() => {
+      if (statesFor === null) {
+        statesFor = key;
+        return;
+      }
+      if (key === statesFor) return;
+      statesFor = key;
+      void readCatalogueStates();
+    });
+  });
+
+  // skillPointsLabel: SkillPoints with GetTotalSkillPointsForCharacter (the points of every skill, lapsed counted, and
+  // the free ones); while a skill trains, every two seconds GetEstimatedTotalSkillPoints (that skill's points as the
+  // service holds them taken off, its estimate now put on).
+  let pointsClock = $state(Date.now());
+  const skillPointsShown = $derived.by(() => {
+    const sheet = $skillsSheet;
+    if (sheet.totalSkillPoints === null) return null;
+    const readout = trainingReadout(sheet.queue, serverNow(sheet.clockOffsetMs, pointsClock));
+    if (readout === null) return sheet.totalSkillPoints;
+    const cached = catalogueStates.get(readout.typeID)?.cachedPoints;
+    return cached === undefined ? sheet.totalSkillPoints : sheet.totalSkillPoints - cached + Math.trunc(readout.skillPoints);
+  });
+
+  /** FormatTimeIntervalShortWritten, day to minute. */
+  function interval(ticks: number): string {
+    const written = shortWrittenInterval(BigInt(Math.trunc(ticks)), $words.templates, "day", "minute");
+    if (written !== null) return written;
+    const minutes = Math.ceil(ticks / 600_000_000);
+    const [days, hours, mins] = [Math.floor(minutes / 1440), Math.floor((minutes % 1440) / 60), minutes % 60];
+    return [days > 0 ? days + "d" : "", hours > 0 ? hours + "h" : "", mins + "m"].filter(Boolean).join(" ");
+  }
+
+  // SkillGroupEntry.LoadTooltipPanel: below the group, with its attributes' names and pictures read once.
+  let groupTip = $state<{ readonly groupID: number; readonly top: number; readonly left: number } | null>(null);
+  let attributeShown = $state<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }>>(new Map());
+  function showGroupTip(groupID: number, event: Event): void {
+    if (dragging !== null || !(event.currentTarget instanceof HTMLElement)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    groupTip = { groupID, top: rect.bottom + 6, left: rect.left };
+  }
   const passes = (typeID: number): boolean => catalogueSkillPasses(catalogueStates.get(typeID), catalogueFilterID);
   const shownSkills = $derived(
     (!groups ? [] : catalogueFilter !== "" ? catalogueSearch(groups, catalogueFilter) : groups.find((group) => group.groupID === selectedGroupID)?.skills ?? [])
@@ -571,11 +633,14 @@
       const catalogue = await flow.skillCatalogue();
       groups = catalogue ? catalogueGroups(catalogue.skills, (typeID) => catalogue.held.has(typeID)) : null;
       if (groups && groups.length > 0) selectedGroupID = groups[0]!.groupID;
-      if (groups) {
-        const states = await flow.skillCatalogueStates(groups.flatMap((group) => group.skills.map((skill) => skill.typeID)));
-        if (states !== null) catalogueStates = states;
-      }
+      await readCatalogueStates();
     })();
+    void flow.attributeDisplay([164, 165, 166, 167, 168]).then((shown) => {
+      if (shown !== null) attributeShown = shown;
+    });
+    const pointsTimer = setInterval(() => {
+      pointsClock = Date.now();
+    }, 2000);
     void readRequiring();
     // GetCopy: an edited plan's milestones, copied.
     if (plan) {
@@ -588,6 +653,7 @@
         await readTypeFacts(read.milestones.map((milestone) => milestone.typeID));
       })();
     }
+    return () => clearInterval(pointsTimer);
   });
 
   /** A skill level, or a skill, dragged (skillPlanUtil: SkillLevelDragData, or a type's). */
@@ -779,6 +845,9 @@
         </select>
         <input type="search" bind:value={catalogueFilter} aria-label="Filter skills" />
       </div>
+      {#if skillPointsShown !== null}
+        <p class="plan-editor-points">{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SkillPoints", { skillPoints: skillPointsShown })}</p>
+      {/if}
       {#if groups === undefined}
         <p class="note">Reading the skills…</p>
       {:else if groups === null}
@@ -791,7 +860,8 @@
             {@const icon = skillGroupIcon(group.groupID)}
             <button type="button" role="tab" class="plan-editor-group" aria-selected={catalogueFilter === "" && selectedGroupID === group.groupID}
               class:selected={catalogueFilter === "" && selectedGroupID === group.groupID} class:none={count === 0}
-              onclick={() => { catalogueFilter = ""; selectedGroupID = group.groupID; }}>
+              onclick={() => { catalogueFilter = ""; selectedGroupID = group.groupID; }}
+              onmouseenter={(event) => showGroupTip(group.groupID, event)} onmouseleave={() => { if (groupTip?.groupID === group.groupID) groupTip = null; }}>
               {#if icon !== null}<img class="plan-editor-group-icon" src={icon} alt="" width="32" height="32" />{/if}
               <span class="plan-editor-group-name">{group.name}</span>
               <span class="plan-editor-group-count">{count === 0 ? "" : count}</span>
@@ -802,16 +872,32 @@
             </button>
           {/each}
         </div>
+        {#if groupTip !== null}
+          {@const tipGroup = groups.find((group) => group.groupID === groupTip?.groupID)}
+          {#if tipGroup !== undefined}
+            <SkillGroupTip {store} {flow} groupID={tipGroup.groupID} name={tipGroup.name} summary={groupSummary(tipGroup.skills, catalogueStates)}
+              attributes={attributeShown} top={groupTip.top} left={groupTip.left} />
+          {/if}
+        {/if}
         <ul class="plan-editor-skills">
           {#each shownSkills as skill (skill.typeID)}
             {@const next = nextPlanLevel(requirements, skill.typeID)}
             {@const full = highestPlanLevel(requirements, skill.typeID) === 5}
+            {@const row = catalogueStates.get(skill.typeID)}
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <li draggable="true" ondragstart={(event) => { catalogueTip = null; dragStart(event, skill.typeID, null); }} ondragend={dragEnd}
               oncontextmenu={(event) => void openCatalogueMenu(skill.typeID, event)}
               onmouseenter={(event) => void showCatalogueTip(skill.typeID, event)} onmouseleave={() => hideCatalogueTip(skill.typeID)}
               ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) showInfo({ kind: "type", typeID: skill.typeID }); }}>
-              <span>{skill.name}</span>
+              <span class="plan-editor-skill-bar" aria-hidden="true">
+                {#each row?.boxes ?? [] as one, box (box)}
+                  <span class="skill-box {one.box}" class:partial={one.partial}></span>
+                {/each}
+              </span>
+              <span class="plan-editor-skill-name">{skill.name}</span>
+              {#if row !== undefined && row.nextTicks !== null}
+                <span class="plan-editor-skill-time">{interval(row.nextTicks)}</span>
+              {/if}
               <button type="button" class="plan-editor-add" disabled={full || working}
                 title={full ? word("UI/SkillPlan/AllLevelsInPlan") : word("UI/SkillPlan/AddSkillLevelToPlan", { skillLevel: next ?? 1 })}
                 aria-label={full ? word("UI/SkillPlan/AllLevelsInPlan") : word("UI/SkillPlan/AddSkillLevelToPlan", { skillLevel: next ?? 1 })}
@@ -950,6 +1036,20 @@
   .plan-editor-milestone-name { flex: 1; }
   .plan-editor-milestone-slot { text-align: center; opacity: 0.5; padding: 0.3rem; border: 1px dotted var(--line, #555); }
   .plan-editor-skills li[draggable="true"], .plan-editor-rows li[draggable="true"] { cursor: grab; }
+  .plan-editor-points { margin: 0; }
+  .plan-editor-skill-bar { display: inline-flex; gap: 2px; flex: none; }
+  .plan-editor-skill-name { flex: 1; min-width: 0; }
+  .plan-editor-skill-time { opacity: 0.35; flex: none; }
+  .skill-box { width: 8px; height: 8px; box-sizing: border-box; }
+  .skill-box.none { visibility: hidden; }
+  .skill-box.trained { background: rgba(204, 204, 204, 1); }
+  .skill-box.training { background: rgba(204, 204, 204, 0.6); outline: 1px solid rgba(204, 204, 204, 1); }
+  .skill-box.queued { background: #3ea8d9; }
+  .skill-box.untrained { background: rgba(255, 255, 255, 0.3); }
+  .skill-box.small { width: 4px; height: 4px; margin: 2px; background: rgba(255, 255, 255, 0.3); }
+  .skill-box.trained-omega { background: rgba(252, 194, 7, 0.8); }
+  .skill-box.small-omega { width: 4px; height: 4px; margin: 2px; background: rgba(252, 194, 7, 0.6); }
+  .skill-box.partial { outline: 1px solid rgba(204, 204, 204, 1); }
   /* DragIndicatorLine: VALID_LINE_COLOR (0.8 grey) where the drop is a valid move, INVALID_LINE_COLOR (0.7 red) where not. */
   .plan-editor-rows li.drop-above { box-shadow: inset 0 2px 0 #cccccc; }
   .plan-editor-rows li.drop-above.drop-invalid { box-shadow: inset 0 2px 0 #b30000; }

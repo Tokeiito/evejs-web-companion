@@ -25,7 +25,7 @@
 // The milestones' rules are skillPlanEditorMilestones.ts.
 
 import { validateSkillPlan, type SkillLevel, type SkillPlanValidationFacts } from "./skillPlanValidation.ts";
-import type { RequiredSkills } from "./missingSkills.ts";
+import type { RequiredSkills, SkillLevelBox } from "./missingSkills.ts";
 import { requiredSkillsRecursiveAsDict } from "./skillPlanMilestones.ts";
 
 /** skillConst.skill_group_ids (inventorycommon/const.py): the skill groups the catalogue lists. */
@@ -333,3 +333,77 @@ export function groupProgress(skills: readonly CatalogueEntry[], states: Readonl
   }
   return { trained: trained / total, disabled: disabled / total };
 }
+
+/**
+ * A catalogue skill as its entry shows it (SkillGroupSkillEntry) and its group's tooltip sums it: its skill bar's boxes
+ * (SkillBar with no level asked: all five), the next level to add to the queue (GetNextLevelToAddToQueue: the first
+ * neither trained nor queued, none past V) and that level's own training time (GetTrainingTimeForLevelText: no
+ * boosters; in ticks, null where it cannot be reckoned); its points (GetSkillpointsTrained: lapsed counted) and those
+ * of all five levels (GetSkillPointsTotal; null where its rank is not known); and its points as the skill service
+ * holds them (GetSkill's trainedSkillPoints, not lapsed), for the estimate of the total while it trains
+ * (GetEstimatedTotalSkillPoints).
+ */
+export interface CatalogueSkillRow extends CatalogueSkillState {
+  readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
+  readonly nextLevel: number | null;
+  readonly nextTicks: number | null;
+  readonly points: number;
+  readonly totalPoints: number | null;
+  readonly cachedPoints: number;
+}
+
+/**
+ * The group tooltip's figures (LoadSkillGroupTooltipPanel, SkillGroupController): the levels of its injected skills
+ * (GetAccumulatedLevelsTrainedAndEnabled), of all its skills, five each (GetAccumulatedLevelsTotal), and those above
+ * the clone's ceiling (GetAccumulatedLevelsTrainedAndDisabled); the points of its injected skills
+ * (GetAccumulatedSkillPointsTrained) and of all its skills' five levels (GetAccumulatedSkillPointsTotal; null where a
+ * rank is not known).
+ */
+export function groupSummary(skills: readonly CatalogueEntry[], states: ReadonlyMap<number, CatalogueSkillRow>): {
+  readonly levelsTrained: number;
+  readonly levelsTotal: number;
+  readonly levelsDisabled: number;
+  readonly pointsTrained: number;
+  readonly pointsTotal: number | null;
+} {
+  let levelsTrained = 0;
+  let levelsDisabled = 0;
+  let pointsTrained = 0;
+  let pointsTotal: number | null = 0;
+  for (const skill of skills) {
+    const state = states.get(skill.typeID);
+    if (state === undefined) {
+      pointsTotal = null;
+      continue;
+    }
+    if (state.injected) {
+      levelsTrained += state.level;
+      levelsDisabled += state.disabledLevels;
+      pointsTrained += state.points;
+    }
+    pointsTotal = pointsTotal === null || state.totalPoints === null ? null : pointsTotal + state.totalPoints;
+  }
+  return { levelsTrained, levelsTotal: skills.length * MAX_LEVEL, levelsDisabled, pointsTrained, pointsTotal };
+}
+
+/** skills/skillConst.py DESCRIPTION_BY_GROUPID: each skill group's description, by its label. */
+const GROUP_DESCRIPTION = "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/skillGroups/description";
+export const SKILL_GROUP_DESCRIPTIONS: ReadonlyMap<number, string> = new Map(([
+  [1210, "Armor"], [266, "CorporationManagement"], [273, "Drones"], [272, "ElectronicSystems"], [1216, "Engineering"],
+  [255, "Gunnery"], [258, "Leadership"], [256, "Missiles"], [275, "Navigation"], [1220, "NeuralEnhancement"],
+  [1241, "PlanetManagement"], [268, "Production"], [4734, "SKINSequencing"], [1218, "ResourceProcessing"], [269, "Rigging"],
+  [1217, "Scanning"], [270, "Science"], [1209, "Shields"], [278, "Social"], [257, "SpaceshipCommand"],
+  [1545, "StructureManagement"], [1240, "Subsystems"], [1213, "Targeting"], [274, "Trade"],
+] as const).map(([groupID, name]) => [groupID, GROUP_DESCRIPTION + name] as const));
+
+/**
+ * skills/skillConst.py ATTRIBUTES_BY_GROUPID: each skill group's primary and secondary attributes (164 charisma,
+ * 165 intelligence, 166 memory, 167 perception, 168 willpower).
+ */
+export const SKILL_GROUP_ATTRIBUTES: ReadonlyMap<number, readonly [number, number]> = new Map([
+  [1210, [165, 166]], [266, [166, 164]], [273, [166, 167]], [272, [165, 166]], [1216, [165, 166]],
+  [255, [167, 168]], [258, [164, 168]], [256, [167, 168]], [275, [165, 167]], [1220, [165, 166]],
+  [1241, [165, 166]], [268, [166, 165]], [1218, [166, 165]], [269, [165, 166]], [1217, [165, 166]],
+  [270, [165, 166]], [1209, [165, 166]], [278, [164, 165]], [257, [167, 168]], [1545, [166, 168]],
+  [1240, [165, 166]], [1213, [165, 166]], [274, [164, 166]], [4734, [164, 167]],
+]);

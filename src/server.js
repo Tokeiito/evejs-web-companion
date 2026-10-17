@@ -13393,6 +13393,42 @@ app.get("/api/client-data/ship-traits", requireAuth, async (req, res, next) => {
 // (evetypes.IsDynamicType); the records of the attributes they carry, of the two the tool adds itself (the estimated
 // price, attributeEstimatedPrice 5617, and the clone grade's, attributeCloneGradeRestriction 5618) and of those a value
 // names (unitAttributeID, 119); each unit's name's message (units.get_display_name). At most 50 types at once.
+// Dogma attributes as the client draws one by itself (skillsPanelUtil.AttributeCont): its name, the number of its
+// message (dogma/data.py get_attribute_display_name: displayNameID), and its picture's res: path
+// (get_attribute_icon_id, then fsdBuiltData iconIDs GetIconFile). At most 32 at once.
+app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.attributeIDs) || "").split(",")) {
+      const attributeID = Number(part);
+      if (Number.isSafeInteger(attributeID) && attributeID > 0 && !asked.includes(attributeID)) asked.push(attributeID);
+    }
+    const [attributeRows, iconFiles] = await Promise.all([
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("iconFiles"),
+    ]);
+    if (!attributeRows) {
+      res.json({ ok: true, available: false, attributes: {} });
+      return;
+    }
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const attributes = {};
+    for (const attributeID of asked.slice(0, 32)) {
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") {
+        attributes[attributeID] = null;
+        continue;
+      }
+      const iconID = whole(row.iconID);
+      const iconFile = iconID !== null && iconFiles ? iconFiles[String(iconID)] : null;
+      attributes[attributeID] = { displayNameID: whole(row.displayNameID), iconFile: typeof iconFile === "string" ? iconFile : null };
+    }
+    res.json({ ok: true, available: true, attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

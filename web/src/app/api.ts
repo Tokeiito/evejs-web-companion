@@ -3945,6 +3945,35 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
   return { available: data.available === true, types, metaGroupNameIDs };
 }
 
+/**
+ * Dogma attributes as the client draws one by itself (GET /api/client-data/attribute-display): its name as the number
+ * of its message, and its picture's res: path; null for one the client's tables have not. At most 32 at once.
+ */
+export async function getAttributeDisplay(
+  attributeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly attributes: ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null } | null> }> {
+  const data = await getJson(`/api/client-data/attribute-display?attributeIDs=${attributeIDs.join(",")}`, options);
+  const raw = typeof data.attributes === "object" && data.attributes !== null && !Array.isArray(data.attributes)
+    ? (data.attributes as Record<string, JsonValue>)
+    : {};
+  const attributes = new Map<number, { readonly displayNameID: number | null; readonly iconFile: string | null } | null>();
+  for (const [key, value] of Object.entries(raw)) {
+    const attributeID = Number(key);
+    if (!Number.isSafeInteger(attributeID) || attributeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      attributes.set(attributeID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    attributes.set(attributeID, {
+      displayNameID: typeof row.displayNameID === "number" && Number.isSafeInteger(row.displayNameID) ? row.displayNameID : null,
+      iconFile: typeof row.iconFile === "string" ? row.iconFile : null,
+    });
+  }
+  return { available: data.available === true, attributes };
+}
+
 /** What the compare tool reads of some types (GET /api/client-data/type-attributes). */
 export interface TypeAttributesRead {
   readonly available: boolean;
