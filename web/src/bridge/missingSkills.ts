@@ -188,17 +188,28 @@ export function trainingTimeForSkills(
     const had = includingLapsed.get(skill);
     if (had !== undefined && had.trainedSkillLevel >= toLevel) continue;
     for (let level = (had?.trainedSkillLevel ?? 0) + 1; level <= toLevel; level += 1) {
-      // GetRawTrainingTimeForSkillLevel: the level's points less those the pilot has toward it, at the pilot's rate.
-      const rank = facts.rank(skill);
-      const rate = facts.rate(skill);
-      if (rank === null || rate === null || !(rate > 0)) return null;
-      const toTrain = skillPointsForLevel(rank, level);
-      const mine = skills.get(skill);
-      const existing = mine === undefined ? 0 : level - 1 === mine.trainedSkillLevel ? facts.pointsNow(skill) : skillPointsForLevel(rank, level - 1);
-      if (existing <= toTrain) total += ((toTrain - existing) / rate) * MINUTE_TICKS;
+      const time = rawTrainingTimeForSkillLevel(skill, level, skills, facts);
+      if (time === null) return null;
+      total += time;
     }
   }
   return Math.trunc(total);
+}
+
+/**
+ * skillsvc.GetRawTrainingTimeForSkillLevel (708 to 724): the time, in ticks, to train the skill's level at the facts'
+ * rate: the level's points less those the pilot has toward it (the prior level's, or where the prior level is the one
+ * trained, the points it has now; none where the skill is not held), nought where it has more. Null where the rank or
+ * the rate is not known.
+ */
+export function rawTrainingTimeForSkillLevel(skill: number, level: number, skills: PilotSkills, facts: SkillTrainingFacts): number | null {
+  const rank = facts.rank(skill);
+  const rate = facts.rate(skill);
+  if (rank === null || rate === null || !(rate > 0)) return null;
+  const toTrain = skillPointsForLevel(rank, level);
+  const mine = skills.get(skill);
+  const existing = mine === undefined ? 0 : level - 1 === mine.trainedSkillLevel ? facts.pointsNow(skill) : skillPointsForLevel(rank, level - 1);
+  return existing > toTrain ? 0 : ((toTrain - existing) / rate) * MINUTE_TICKS;
 }
 
 /** SkillActionContainer.GetSkillsMissingToUseItemExpandedList: each level of each skill listed above the one trained. */

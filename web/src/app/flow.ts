@@ -200,12 +200,12 @@ import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridg
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
   allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
-  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
+  rawTrainingTimeForSkillLevel, requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import {
-  bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
-  type PersonalSkillPlansRead,
+  NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanContentRow,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
@@ -2450,6 +2450,17 @@ export interface AppFlow {
    * the public gateway; true where it was deleted, false on No. A refusal is thrown.
    */
   deletePersonalSkillPlan(id: string): Promise<boolean>;
+  /**
+   * A plan's contents as SkillPlanContents lists them: each of its skill levels in the plan's order, whether it is
+   * trained, its skill bar and its training time (bridge/skillPlans.ts SkillPlanContentRow); the skills' names asked
+   * for. Null where the pilot's skills could not be read.
+   */
+  skillPlanContents(plan: PersonalSkillPlan): Promise<readonly SkillPlanContentRow[] | null>;
+  /**
+   * skillPlanService.SetTrackedSkillPlanID: SetActive on the public gateway, the plan's id or, for none, the nought
+   * uuid; the plan tracked after it (null for none). A refusal is thrown.
+   */
+  setTrackedSkillPlan(id: string | null): Promise<string | null>;
   /**
    * The compare tool's reading of types (comparableType.py), from the client's own tables and kept: each type's dogma
    * attributes and facts, the attributes' records and the units' names, all that is held; the words and the names
@@ -6942,7 +6953,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
     const pointsNow = (skill: number): number =>
       sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
-    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, pointsNow };
+    // GetSkillpointsPerMinute(includeBoosters=True): the attributes as the server has them, boosters and all, halved
+    // for an alpha clone (the skill service's training time calculator, and GetRawTrainingTimeForSkillLevel's default).
+    const rateWithBoosters = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        const value = attributeID === undefined ? undefined : attributes.get(attributeID);
+        return value === undefined || !Number.isFinite(value) ? null : graded(value);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, rateWithBoosters, pointsNow };
   }
 
   /**
@@ -6965,7 +6986,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     listed: readonly (readonly [number, number])[],
   ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">> {
     const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
-    const [{ mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, pointsNow }, lists] = await Promise.all([
+    const [{ mine, lapsed, queueAnswer, queued, training, omega, ceilings, rank, rate, rateWithBoosters, pointsNow }, lists] = await Promise.all([
       pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer),
       api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
     ]);
@@ -7012,15 +7033,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // What the Apply Skill Points window goes by: the training at the pilot's own rate, boosters and all (the skill
     // service's training time calculator), for the time its points save.
-    const trainingRate = (skill: number): number | null => {
-      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
-        const attributeID = typeAttributes[skill]?.[which];
-        const value = attributeID === undefined ? undefined : attributes.get(attributeID);
-        return value === undefined || !Number.isFinite(value) ? null : graded(value);
-      });
-      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
-    };
-    skillWindowFacts = { rank, pointsNow, trainingRate, mine, queued };
+    skillWindowFacts = { rank, pointsNow, trainingRate: rateWithBoosters, mine, queued };
     const free = Number(Array.isArray(queueAnswer) ? queueAnswer[1] : 0);
     return {
       rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books,
@@ -7573,9 +7586,46 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       plans: plans.map((plan) => ({
         ...plan,
         completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
-        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, facts),
+        // GetTrainingTimeForSkills asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted.
+        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
       })),
     };
+  }
+
+  async function skillPlanContents(plan: PersonalSkillPlan): Promise<readonly SkillPlanContentRow[] | null> {
+    const skillTypes = [...new Set(plan.requirements.map(([skill]) => skill))];
+    requestNames(skillTypes.map((skill) => ({ kind: "type" as const, id: skill })));
+    if (skillTypes.length === 0) return [];
+    let skillsAnswer: JsonValue;
+    let allSkillsAnswer: JsonValue;
+    try {
+      [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    } catch {
+      return null;
+    }
+    // The skills' own needs, for whether a level can be trained (the bar's boxes); without the client's table, none.
+    const [facts, needs] = await Promise.all([
+      pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null),
+      api.getRequiredSkills(skillTypes, callOptions).catch(() => null),
+    ]);
+    if (facts === null) return null;
+    const required: RequiredSkills = needs !== null && needs.available ? needs.required : {};
+    return plan.requirements.map(([skill, level]) => {
+      const held = facts.mine.get(skill);
+      return {
+        skill,
+        level,
+        trained: held !== undefined && held.trainedSkillLevel >= level,
+        boxes: skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0),
+        // SkillController.GetTrainingTimeForLevelText: GetTimeLeftToTrain(level, includeBoosters=False).
+        ticks: rawTrainingTimeForSkillLevel(skill, level, facts.mine, facts),
+      };
+    });
+  }
+
+  async function setTrackedSkillPlan(id: string | null): Promise<string | null> {
+    await gatewayAsk("eve_public.character.skill.plan.SetActiveRequest", { skill_plan: { uuid: bytesFromUuid(id ?? NO_SKILL_PLAN) } }, true);
+    return id;
   }
 
   async function deletePersonalSkillPlan(id: string): Promise<boolean> {
@@ -22118,6 +22168,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestShipTraits,
     personalSkillPlans,
     deletePersonalSkillPlan,
+    skillPlanContents,
+    setTrackedSkillPlan,
     comparisonTypes,
     cfgAveragePrices,
     typeFacts,

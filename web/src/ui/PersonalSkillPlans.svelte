@@ -9,20 +9,39 @@
   // and its menu's Delete (the client's DeleteSkillPlan question, then Delete). With none, the panel's hint "no
   // personal plans"; where the gateway could not be had, the client's connection error (_GetSkillPlans).
   //
-  // Not done: the menu's Edit and the Create button (the plan editor), a plan opened by a click (the selected plan's
-  // view, where a plan is tracked), the progress gauge, the omega mark, the tooltip, dragging a plan, and the
-  // Certified and Corporation plans.
+  // A plan clicked opens (SkillPlanEntry.OnClick; selectedPlan/selectedSkillPlanContainer.py), in the list's place:
+  // the caption Skill Plan and the plan's name (MilestoneIndicatorHeader), its close; Delete (its hint DeletePlan,
+  // the same question) and Track (OnTrackButton, _ToggleTracked: SetActive with the plan, or with none where it is
+  // tracked; its hint TrackPlanHint or UntrackPlanHint, its icon look_at or camera_untrack); Show and Hide Skill Plan
+  // Contents; the Skill Plan Completed banner where the plan is completed; and the description. The contents
+  // (contents/skillPlanContents.py): the caption, Hide Trained Skills (settings.char.ui SkillPlanContentsHideTrained,
+  // on unless turned off), the filter on the skill's name, and each of the plan's skill levels in its order
+  // (SkillPlanContentsSkillEntry): the skill bar for the level, "skill level" (RequiredSkillNameAndLevel) and the
+  // level's training time, faint (GetTrainingTimeForLevelText: from the day to the minute); with none shown,
+  // NoSkillsMatchingFilters.
+  //
+  // Not done: the menu's Edit, the Create and Edit buttons (the plan editor), Save and Share, Start Training and the
+  // locked panel, the progress gauge and milestones, the faction and career icons, the omega mark and banner, the
+  // missing books' button, a level's add-to-queue button, a skill row's selection, menu, tooltip and drag, the
+  // contents' menu (copy to clipboard), the tooltip and drag of an entry, and the Certified and Corporation plans.
   import { onMount } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { resolvedName } from "../store/names.ts";
+  import { romanLevel } from "../bridge/skills.ts";
   import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
-  import { sortPlansByName, timeLeftShowTo, type PersonalSkillPlanEntry, type PersonalSkillPlansRead } from "../bridge/skillPlans.ts";
+  import {
+    skillPlanRowVisible, sortPlansByName, timeLeftShowTo,
+    type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow,
+  } from "../bridge/skillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
 
   /** The page's own words, where the install's are not to hand. */
   const OWN: Readonly<Record<string, string>> = {
@@ -33,6 +52,17 @@
     "UI/SkillPlan/Completed": "All trained",
     "UI/SkillPlan/TrackedSkillPlan": "The plan you are following",
     "UI/Common/Buttons/Delete": "Delete",
+    "UI/SkillPlan/SkillPlan": "Plan",
+    "UI/SkillPlan/DeletePlan": "Delete this plan for good.",
+    "UI/SkillPlan/TrackPlanHint": "Follow this plan's progress.",
+    "UI/SkillPlan/UntrackPlanHint": "Stop following this plan's progress.",
+    "UI/SkillPlan/SkillPlanCompleted": "Every skill in this plan is trained",
+    "UI/SkillPlan/ShowSkillPlanContents": "Show the skills",
+    "UI/SkillPlan/HideSkillPlanContents": "Hide the skills",
+    "UI/SkillPlan/SkillPlanOverview": "Its skills",
+    "UI/SkillPlan/HideTrainedSkills": "Leave out those trained",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters": "No skill shown with these filters",
+    "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
   };
 
   onMount(() => {
@@ -40,10 +70,10 @@
     void load();
   });
 
-  function word(label: string): string {
+  function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
     const template = $words.templates[label];
     const text = typeof template === "string" ? template : OWN[label];
-    return text === undefined ? "" : plainText(formatTemplate(text, {}, { nameOf: () => "" }));
+    return text === undefined ? "" : plainText(formatTemplate(text, args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
   }
 
   let read = $state<PersonalSkillPlansRead | null | undefined>(undefined);
@@ -61,16 +91,19 @@
 
   const plans = $derived(read ? sortPlansByName(read.plans) : []);
 
-  /** GetTotalTrainingTimeLeftText */
-  function timeLeft(plan: PersonalSkillPlanEntry): string {
-    if (plan.completed) return word("UI/SkillPlan/Completed");
-    const ticks = plan.trainingTicks;
-    if (ticks === null) return "–";
-    const written = shortWrittenInterval(BigInt(Math.trunc(ticks)), $words.templates, "day", timeLeftShowTo(ticks));
+  /** FormatTimeIntervalShortWritten from the day to `showTo`, in the install's words; the page's own otherwise. */
+  function interval(ticks: number, showTo: "hour" | "minute" | "second"): string {
+    const written = shortWrittenInterval(BigInt(Math.trunc(ticks)), $words.templates, "day", showTo);
     if (written !== null) return written;
     const minutes = Math.ceil(ticks / 600_000_000);
     const [days, hours, mins] = [Math.floor(minutes / 1440), Math.floor((minutes % 1440) / 60), minutes % 60];
     return [days > 0 ? `${days}d` : "", hours > 0 ? `${hours}h` : "", `${mins}m`].filter(Boolean).join(" ");
+  }
+
+  /** GetTotalTrainingTimeLeftText */
+  function timeLeft(plan: PersonalSkillPlanEntry): string {
+    if (plan.completed) return word("UI/SkillPlan/Completed");
+    return plan.trainingTicks === null ? "–" : interval(plan.trainingTicks, timeLeftShowTo(plan.trainingTicks));
   }
 
   // The entry's menu (SkillPlanEntry.GetMenu), one open at a time; kept while it closes so nothing reads it gone.
@@ -106,12 +139,86 @@
     menuUp = false;
     error = "";
     try {
-      if (await flow.deletePersonalSkillPlan(plan.id)) await load();
+      if (await flow.deletePersonalSkillPlan(plan.id)) {
+        if (selectedID === plan.id) selectedID = null;
+        await load();
+      }
     } catch {
       // _DeletePersonal: message_player(ConnectionError).
       error = word("UI/SkillPlan/ConnectionError");
     }
   }
+
+  // --- A plan opened ---------------------------------------------------------------------------------------------
+
+  let selectedID = $state<string | null>(null);
+  const selected = $derived(read && selectedID !== null ? read.plans.find((plan) => plan.id === selectedID) ?? null : null);
+  let contentsShown = $state(false);
+  /** The contents read for the plan opened: undefined while read, null where they could not be. */
+  let contents = $state<{ readonly planID: string; readonly rows: readonly SkillPlanContentRow[] | null } | undefined>(undefined);
+  let filter = $state("");
+
+  const HIDE_TRAINED_KEY = "evejs.SkillPlanContentsHideTrained";
+  function hideTrainedSetting(): boolean {
+    try {
+      return localStorage.getItem(HIDE_TRAINED_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  }
+  let hideTrained = $state(hideTrainedSetting());
+  function setHideTrained(on: boolean): void {
+    hideTrained = on;
+    try {
+      localStorage.setItem(HIDE_TRAINED_KEY, on ? "true" : "false");
+    } catch {
+      // Kept for this page only.
+    }
+  }
+
+  function open(plan: PersonalSkillPlanEntry): void {
+    selectedID = plan.id;
+    contents = undefined;
+    if (contentsShown) void readContents(plan);
+  }
+
+  function close(): void {
+    selectedID = null;
+    contents = undefined;
+  }
+
+  async function readContents(plan: PersonalSkillPlanEntry): Promise<void> {
+    contents = undefined;
+    const rows = await flow.skillPlanContents(plan).catch(() => null);
+    if (selectedID === plan.id) contents = { planID: plan.id, rows };
+  }
+
+  /** OnToggleContents */
+  function toggleContents(plan: PersonalSkillPlanEntry): void {
+    contentsShown = !contentsShown;
+    if (contentsShown && contents?.planID !== plan.id) void readContents(plan);
+  }
+
+  /** OnTrackButton, _ToggleTracked */
+  async function toggleTracked(plan: PersonalSkillPlanEntry): Promise<void> {
+    if (!read) return;
+    error = "";
+    const want = read.trackedID === plan.id ? null : plan.id;
+    try {
+      const tracked = await flow.setTrackedSkillPlan(want);
+      if (read) read = { ...read, trackedID: tracked };
+    } catch {
+      // _SetTrackedPlanID: message_player(ConnectionError), and nothing tracked after it.
+      error = word("UI/SkillPlan/ConnectionError");
+      if (read) read = { ...read, trackedID: null };
+    }
+  }
+
+  const shownRows = $derived(
+    contents && contents.rows
+      ? contents.rows.filter((row) => skillPlanRowVisible(row, hideTrained, filter, resolvedName($names.resolved, "type", row.skill, "")))
+      : [],
+  );
 </script>
 
 <section>
@@ -128,20 +235,79 @@
     <p class="note">Reading your skill plans…</p>
   {:else if read === null}
     <p class="error">{word("UI/SkillPlan/ConnectionError")}</p>
+  {:else if selected !== null}
+    {@const plan = selected}
+    {@const tracked = read.trackedID === plan.id}
+    <div class="skill-plan-view">
+      <div class="skill-plan-view-head">
+        <span class="skill-plan-caption">{word("UI/SkillPlan/SkillPlan")}</span>
+        <span class="skill-plan-view-name">{plan.name}</span>
+        <button type="button" class="skill-plan-close" aria-label="Close" onclick={close}>✕</button>
+      </div>
+      <div class="skill-plan-view-buttons">
+        <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
+        <button type="button" class="skill-plan-track" class:tracked
+          title={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
+          aria-label={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
+          aria-pressed={tracked} onclick={() => void toggleTracked(plan)}>👁</button>
+      </div>
+      <button type="button" class="skill-plan-toggle" onclick={() => toggleContents(plan)}>
+        {contentsShown ? "◂" : "▸"} {word(contentsShown ? "UI/SkillPlan/HideSkillPlanContents" : "UI/SkillPlan/ShowSkillPlanContents")}
+      </button>
+      {#if plan.completed}
+        <div class="skill-plan-completed"><span aria-hidden="true">✔</span> {word("UI/SkillPlan/SkillPlanCompleted")}</div>
+      {/if}
+      {#if plan.description}
+        <p class="skill-plan-description">{plan.description}</p>
+      {/if}
+      {#if contentsShown}
+        <div class="skill-plan-contents">
+          <h3>{word("UI/SkillPlan/SkillPlanOverview")}</h3>
+          <div class="skill-plan-filters">
+            <label><input type="checkbox" checked={hideTrained} onchange={(event) => setHideTrained((event.currentTarget as HTMLInputElement).checked)} />
+              {word("UI/SkillPlan/HideTrainedSkills")}</label>
+            <input type="search" bind:value={filter} aria-label="Filter" />
+          </div>
+          {#if contents === undefined || contents.planID !== plan.id}
+            <p class="note">Reading the plan's skills…</p>
+          {:else if contents.rows === null}
+            <p class="error">Your skills could not be read.</p>
+          {:else if shownRows.length === 0}
+            <p class="empty">{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters")}</p>
+          {:else}
+            <ul class="skill-plan-rows">
+              {#each shownRows as row, at (at)}
+                <li class="skill-plan-row">
+                  <span class="skill-bar" aria-hidden="true">
+                    {#each row.boxes as one, box (box)}
+                      <span class="skill-box {one.box}" class:partial={one.partial}></span>
+                    {/each}
+                  </span>
+                  <span class="skill-plan-row-name">{word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill: row.skill, level: romanLevel(row.level), levelColor: "#ffffff" })}</span>
+                  <span class="skill-plan-row-time">{row.ticks === null ? "–" : interval(row.ticks, "minute")}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+    </div>
   {:else if plans.length === 0}
     <p class="empty">{word("UI/SkillPlan/NoPersonalSkillPlans")}</p>
   {:else}
     <ul class="skill-plan-cards">
       {#each plans as plan (plan.id)}
-        <li class="skill-plan-card" oncontextmenu={(event) => openMenu(plan, event)}>
-          <span class="skill-plan-name">{plan.name}</span>
-          {#if read.trackedID === plan.id}
-            <span class="skill-plan-tracked" title={word("UI/SkillPlan/TrackedSkillPlan")} aria-label={word("UI/SkillPlan/TrackedSkillPlan")}>👁</span>
-          {/if}
-          <span class="skill-plan-time" class:completed={plan.completed}>
-            {timeLeft(plan)}
-            {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
-          </span>
+        <li>
+          <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => openMenu(plan, event)}>
+            <span class="skill-plan-name">{plan.name}</span>
+            {#if read.trackedID === plan.id}
+              <span class="skill-plan-tracked" title={word("UI/SkillPlan/TrackedSkillPlan")} aria-label={word("UI/SkillPlan/TrackedSkillPlan")}>👁</span>
+            {/if}
+            <span class="skill-plan-time" class:completed={plan.completed}>
+              {timeLeft(plan)}
+              {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
+            </span>
+          </button>
         </li>
       {/each}
     </ul>
@@ -157,11 +323,43 @@
 <style>
   /* SkillPlanScroll: as many to a row as fit at 325 wide, each entry 134 high. */
   .skill-plan-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
-  .skill-plan-card { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 0.5rem; min-height: 5.5rem;
-    padding: 0.75rem 2rem 0.75rem 1rem; border: 1px solid var(--line, #333); background: var(--panel-raised, rgba(255, 255, 255, 0.04)); }
+  .skill-plan-card { position: relative; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 0.5rem;
+    min-height: 5.5rem; padding: 0.75rem 2rem 0.75rem 1rem; text-align: left; font: inherit; color: inherit; cursor: pointer;
+    border: 1px solid var(--line, #333); background: var(--panel-raised, rgba(255, 255, 255, 0.04)); }
+  .skill-plan-card:hover { background: rgba(255, 255, 255, 0.08); }
   .skill-plan-name { font-size: 1.15rem; overflow-wrap: anywhere; }
   .skill-plan-tracked { position: absolute; top: 0.6rem; right: 0.7rem; }
   .skill-plan-time { display: flex; justify-content: space-between; align-items: center; }
   /* TextColor.SUCCESS where the plan is completed. */
   .skill-plan-time.completed { color: #4caf50; }
+
+  .skill-plan-view { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem 1rem 1rem; border: 1px solid var(--line, #333); background: rgba(0, 0, 0, 0.6); }
+  .skill-plan-view-head { display: flex; align-items: baseline; gap: 0.75rem; }
+  .skill-plan-caption { font-size: 0.8rem; text-transform: uppercase; opacity: 0.7; }
+  .skill-plan-view-name { flex: 1; font-size: 1.3rem; overflow-wrap: anywhere; }
+  .skill-plan-view-buttons { display: flex; gap: 0.4rem; }
+  .skill-plan-track.tracked { outline: 1px solid currentColor; }
+  .skill-plan-toggle { align-self: stretch; text-align: left; }
+  /* PlanCompletedBanner: the completed mark on COPPER_OXIDE_GREEN, the words black on white. */
+  .skill-plan-completed { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.75rem; color: #000; background: #fff; border-left: 2.6rem solid #3c8a5e; }
+  .skill-plan-description { margin: 0; white-space: pre-wrap; }
+  .skill-plan-contents { display: flex; flex-direction: column; gap: 0.5rem; }
+  .skill-plan-contents h3 { margin: 0; }
+  .skill-plan-filters { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+  .skill-plan-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  .skill-plan-row { display: flex; align-items: center; gap: 0.75rem; min-height: 2rem; padding: 0 0.5rem; background: rgba(255, 255, 255, 0.04); }
+  .skill-plan-row-name { flex: 1; }
+  .skill-plan-row-time { opacity: 0.35; }
+  /* The skill bar's boxes, as the skill requirement window draws them (skillLevel.py). */
+  .skill-bar { display: inline-flex; gap: 2px; }
+  .skill-box { width: 8px; height: 8px; box-sizing: border-box; }
+  .skill-box.none { visibility: hidden; }
+  .skill-box.trained { background: rgba(204, 204, 204, 1); }
+  .skill-box.training { background: rgba(204, 204, 204, 0.6); outline: 1px solid rgba(204, 204, 204, 1); }
+  .skill-box.queued { background: #3ea8d9; }
+  .skill-box.untrained { background: rgba(255, 255, 255, 0.3); }
+  .skill-box.small { width: 4px; height: 4px; margin: 2px; background: rgba(255, 255, 255, 0.3); }
+  .skill-box.trained-omega { background: rgba(252, 194, 7, 0.8); }
+  .skill-box.small-omega { width: 4px; height: 4px; margin: 2px; background: rgba(252, 194, 7, 0.6); }
+  .skill-box.partial { outline: 1px solid rgba(204, 204, 204, 1); }
 </style>

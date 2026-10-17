@@ -9,6 +9,9 @@
 //   its entry      browser/skillPlanEntry.py: the name, the time left to train it (GetTotalTrainingTimeLeftText), or
 //                  Completed; the tracked mark; Edit and Delete in its menu
 //   the order      SkillPlanScroll.ConstructSkillPlanEntries: localization.util.Sort by name
+//   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py
+
+import type { SkillLevelBox } from "./missingSkills.ts";
 
 /** The nought uuid: SetActive's "none" (skillPlanRequestsMessenger.set_active), GetActive's answer with none tracked. */
 export const NO_SKILL_PLAN = "00000000-0000-0000-0000-000000000000";
@@ -120,4 +123,25 @@ export interface PersonalSkillPlanEntry extends PersonalSkillPlan {
 export interface PersonalSkillPlansRead {
   readonly plans: readonly PersonalSkillPlanEntry[];
   readonly trackedID: string | null;
+}
+
+/** One of a plan's skill levels as its contents list it (SkillPlanContentsSkillEntry). */
+export interface SkillPlanContentRow {
+  readonly skill: number;
+  readonly level: number;
+  /** skillsvc.GetMyLevel(skill) >= level: the trained level, the skill held (a lapsed one is not). */
+  readonly trained: boolean;
+  /** The skill bar's five boxes for the level (SkillBar with requiredLevel). */
+  readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
+  /** GetTrainingTimeForLevelText's time: the level alone (GetRawTrainingTimeForSkillLevel, no boosters); null unknown. */
+  readonly ticks: number | null;
+}
+
+/**
+ * SkillPlanContents.IsSkillVisible: with Hide Trained Skills on (its setting's default), a level trained is not shown;
+ * with a filter, a skill whose name does not hold it, case aside, is not.
+ */
+export function skillPlanRowVisible(row: SkillPlanContentRow, hideTrained: boolean, filter: string, name: string): boolean {
+  if (hideTrained && row.trained) return false;
+  return filter === "" || name.toLowerCase().includes(filter.toLowerCase());
 }

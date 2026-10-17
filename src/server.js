@@ -13384,6 +13384,7 @@ const PUBLIC_GATEWAY_READS = new Set([
 ]);
 const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.DeleteRequest",
+  "eve_public.character.skill.plan.SetActiveRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
