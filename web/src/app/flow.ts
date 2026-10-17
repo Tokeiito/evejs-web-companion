@@ -205,6 +205,10 @@ import {
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
 import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, planUpdates, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import {
+  milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
+  type MilestoneEntry,
+} from "../bridge/skillPlanMilestones.ts";
 import type { CatalogueSkill } from "./api.ts";
 import {
   MAX_PERSONAL_PLANS, NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
@@ -2485,6 +2489,17 @@ export interface AppFlow {
   saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number): Promise<boolean>;
   /** The editor's Back where the plan was changed (ShouldContinueAfterAskingAboutLeavingEditor): AskCloseSkillPlanEditor; true on Yes. */
   askLeaveSkillPlanEditor(): Promise<boolean>;
+  /**
+   * An opened plan's milestones (bridge/skillPlanMilestones.ts), read as the client reads them: GetAll; each one not
+   * valid deleted on the server (_PrimeCacheForSkillPlan); the skills they need that the plan lacks put in it and the
+   * plan's skills set so (_AddSkillsMissingForMilestones: requirements is then the plan's list as it now is, else
+   * null). Each with its kind, whether it is completed and the time left to train what its type needs
+   * (GetSkillTrainingTimeLeftToUseType, no boosters). The types' names asked for. Null where they could not be read.
+   */
+  skillPlanMilestones(plan: PersonalSkillPlan): Promise<{
+    readonly milestones: readonly MilestoneEntry[];
+    readonly requirements: readonly (readonly [number, number])[] | null;
+  } | null>;
   /**
    * skillPlanService.SetTrackedSkillPlanID: SetActive on the public gateway, the plan's id or, for none, the nought
    * uuid; the plan tracked after it (null for none). A refusal is thrown.
@@ -7800,6 +7815,66 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       else sayDialog("UnableToSaveSkillPlan", null, "The skill plan could not be saved.");
       return false;
     }
+  }
+
+  async function skillPlanMilestones(plan: PersonalSkillPlan): ReturnType<AppFlow["skillPlanMilestones"]> {
+    const uuid = bytesFromUuid(plan.id);
+    let read;
+    try {
+      read = milestonesFromGetAll(await gatewayAsk("eve_public.character.skill.plan.milestone.GetAllRequest", { skill_plan: { uuid } }));
+    } catch {
+      return null;
+    }
+    const types = [...new Set(read.map((milestone) => milestone.typeID))];
+    if (types.length === 0) return { milestones: [], requirements: null };
+    requestNames(types.map((typeID) => ({ kind: "type" as const, id: typeID })));
+    const [meta, dogma, needs] = await Promise.all([
+      api.getTypeMeta(types, callOptions),
+      api.fetchTypeDogma(types, [ATTRIBUTE_SKILL_IS_OBSOLETE], callOptions),
+      api.getRequiredSkills(types, callOptions),
+    ]);
+    if (!meta.available || !needs.available) return null;
+    const factsOf = (typeID: number) => {
+      const facts = meta.types.get(typeID);
+      return facts ? { published: facts.published, categoryID: facts.categoryID, obsolete: Boolean(dogma[typeID]?.[ATTRIBUTE_SKILL_IS_OBSOLETE]) } : null;
+    };
+    // Each not valid deleted (its failure left as the client leaves it: logged, the milestone not kept).
+    const valid = [];
+    for (const milestone of read) {
+      if (milestoneValid(milestone, factsOf(milestone.typeID))) valid.push(milestone);
+      else await gatewayAsk("eve_public.character.skill.plan.milestone.DeleteRequest", { milestone: { uuid: bytesFromUuid(milestone.id) } }, true).catch(() => null);
+    }
+    // The skills they need that the plan lacks, put in it.
+    let requirements: (readonly [number, number])[] | null = null;
+    const missing = milestonesMissingRequirements(valid, skillRequirementsDict(plan), needs.order);
+    if (missing.length > 0) {
+      const updated: PlanSkillLevel[] = [...plan.requirements, ...missing.flatMap((each) => each.missing)];
+      const validation = await skillPlanValidationFacts([...new Set(updated.map(([skill]) => skill))]).catch(() => null);
+      if (validation !== null) {
+        validateSkillPlan(updated, validation);
+        requirements = updated;
+        // uthread.new(SetRequiredSkills): not waited on, its failure only logged.
+        void setPlanSkillRequirements(plan.id, updated).catch(() => {});
+      }
+    }
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const needed = valid.map((milestone) => milestoneRequiredSkills(milestone, needs.order));
+    const skillTypes = [...new Set(valid.flatMap((milestone) => [...requiredSkillsRecursive(milestone.typeID, needs.order).keys()]))];
+    const training = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    return {
+      requirements,
+      milestones: valid.map((milestone, at): MilestoneEntry => ({
+        ...milestone,
+        subType: milestoneSubType(factsOf(milestone.typeID)?.categoryID ?? null),
+        needs: needed[at]!,
+        completed: milestoneCompleted(needed[at]!, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+        // GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the milestone's type's needs (a skill
+        // milestone's skill's, its own level aside).
+        trainingTicks: training === null ? null : trainingTimeLeft(milestone.typeID, needs.order, mine, lapsed, training),
+      })),
+    };
   }
 
   function askLeaveSkillPlanEditor(): Promise<boolean> {
@@ -22369,6 +22444,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillsRequiring,
     saveSkillPlan,
     askLeaveSkillPlanEditor,
+    skillPlanMilestones,
     setTrackedSkillPlan,
     comparisonTypes,
     cfgAveragePrices,

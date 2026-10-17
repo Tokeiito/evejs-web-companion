@@ -51,6 +51,7 @@
     skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
+  import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -93,6 +94,13 @@
     "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as can be kept.",
     "UI/SkillPlan/EditPlan": "Change this plan",
     "UI/Neocom/Edit": "Edit",
+    "UI/SkillPlan/Milestones": "Milestones",
+    "UI/SkillPlan/SkillMilestonesDescText": "Points of the plan worth reaching on the way.",
+    "UI/SkillPlan/MilestoneShip": "Ship",
+    "UI/SkillPlan/MilestoneSkill": "Skill",
+    "UI/SkillPlan/MilestoneModule": "Module",
+    "UI/SkillPlan/MilestoneOther": "Other",
+    "UI/SkillPlan/TotalTrainingTime": "Time to train:",
   };
 
   onMount(() => {
@@ -236,13 +244,40 @@
     selectedID = plan.id;
     notice = "";
     void readContents(plan);
+    void readMilestones(plan);
   }
 
   function close(): void {
     selectedID = null;
     contents = undefined;
+    milestones = undefined;
     notice = "";
   }
+
+  // The opened plan's milestones (flow.skillPlanMilestones): undefined while read, a null list where they could not be.
+  let milestones = $state<{ readonly planID: string; readonly list: readonly MilestoneEntry[] | null } | undefined>(undefined);
+
+  async function readMilestones(plan: PersonalSkillPlanEntry): Promise<void> {
+    milestones = undefined;
+    const read_ = await flow.skillPlanMilestones(plan).catch(() => null);
+    if (selectedID !== plan.id) return;
+    milestones = { planID: plan.id, list: read_ ? read_.milestones : null };
+    // _AddSkillsMissingForMilestones put skills in the plan: the plan as it now is, and its view read again.
+    if (read_ && read_.requirements !== null && read) {
+      const requirements = read_.requirements;
+      read = { ...read, plans: read.plans.map((each) => (each.id === plan.id ? { ...each, requirements } : each)) };
+      const updated = read.plans.find((each) => each.id === plan.id);
+      if (updated) await readContents(updated);
+    }
+  }
+
+  /** The milestone kinds' words (MilestoneInfoTooltip._GetTypeLabel). */
+  const MILESTONE_KIND_LABELS = {
+    ship: "UI/SkillPlan/MilestoneShip",
+    module: "UI/SkillPlan/MilestoneModule",
+    skill: "UI/SkillPlan/MilestoneSkill",
+    other: "UI/SkillPlan/MilestoneOther",
+  } as const;
 
   async function readContents(plan: PersonalSkillPlanEntry): Promise<void> {
     contents = undefined;
@@ -337,6 +372,30 @@
       {/if}
       {#if plan.description}
         <p class="skill-plan-description">{plan.description}</p>
+      {/if}
+      <!-- The milestones (SkillPlanProgressIndicator's, with MilestoneInfoTooltip's facts): each one's kind, its type or
+           its skill and level, Completed where it is, else the time left to train what its type needs. Listed in the
+           order the plan reaches them (GetMilestoneLastSkillIndex); the client's ring places them by a dict's order. -->
+      {#if milestones !== undefined && milestones.planID === plan.id && milestones.list !== null && milestones.list.length > 0}
+        {@const ordered = [...milestones.list].sort((a, b) => milestoneLastSkillIndex(a.needs, plan.requirements) - milestoneLastSkillIndex(b.needs, plan.requirements))}
+        <div class="skill-plan-milestones">
+          <h3 title={word("UI/SkillPlan/SkillMilestonesDescText")}>{word("UI/SkillPlan/Milestones")}</h3>
+          <ul>
+            {#each ordered as milestone (milestone.id)}
+              <li class:completed={milestone.completed}>
+                <span class="skill-plan-milestone-kind">{word(MILESTONE_KIND_LABELS[milestone.subType])}</span>
+                <span class="skill-plan-milestone-name">{milestone.kind === "skill"
+                  ? word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill: milestone.typeID, level: romanLevel(milestone.level), levelColor: "#ffffff" })
+                  : resolvedName($names.resolved, "type", milestone.typeID, "")}</span>
+                {#if milestone.completed}
+                  <span class="skill-plan-milestone-time"><span aria-hidden="true">✔</span> {word("UI/SkillPlan/Completed")}</span>
+                {:else if milestone.trainingTicks !== null && milestone.trainingTicks > 0}
+                  <span class="skill-plan-milestone-time">{word("UI/SkillPlan/TotalTrainingTime")} {interval(milestone.trainingTicks, "second")}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
       {#if contentsShown}
         <div class="skill-plan-contents">
@@ -450,6 +509,12 @@
   /* PlanCompletedBanner: the completed mark on COPPER_OXIDE_GREEN, the words black on white. */
   .skill-plan-completed { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.75rem; color: #000; background: #fff; border-left: 2.6rem solid #3c8a5e; }
   .skill-plan-description { margin: 0; white-space: pre-wrap; }
+  .skill-plan-milestones h3 { margin: 0 0 0.35rem; }
+  .skill-plan-milestones ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+  .skill-plan-milestones li { display: flex; align-items: center; gap: 0.75rem; padding: 0.3rem 0.5rem; background: rgba(255, 255, 255, 0.04); }
+  .skill-plan-milestone-kind { min-width: 5rem; font-size: 0.8rem; text-transform: uppercase; opacity: 0.7; }
+  .skill-plan-milestone-name { flex: 1; }
+  .skill-plan-milestones li.completed .skill-plan-milestone-time { color: #4caf50; }
   .skill-plan-contents { display: flex; flex-direction: column; gap: 0.5rem; }
   .skill-plan-contents h3 { margin: 0; }
   .skill-plan-filters { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
