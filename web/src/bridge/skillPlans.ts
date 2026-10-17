@@ -14,7 +14,10 @@
 //                  (SkillPlanEntryTooltip): Skill Plan, the description, SkillbooksMissing2 with their count where any
 //                  is not held, RequireOmega with the count of skills an alpha may not train where the pilot is not omega
 //   the order      SkillPlanScroll.ConstructSkillPlanEntries: localization.util.Sort by name
-//   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py
+//   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py: a row
+//                  clicked selected and the others marked by how they stand to it (OnEntryClicked,
+//                  skillPlanUtil.GetRequirementStateForEntry); the contents' menu's Copy Skills to Clipboard
+//                  (GetRequirementsClipboardText)
 
 import { requiredSkillsRecursive, type QueuedLevel, type RequiredSkills, type SkillLevelBox } from "./missingSkills.ts";
 import type { LevelButtonState } from "./skillPlanLevelButton.ts";
@@ -188,6 +191,37 @@ export function planProgressAt(progress: PlanProgress, now: number): { readonly 
     ticksGone = Math.min(elapsed, until) * 10_000;
   }
   return { progress: trained / progress.total, inTraining: inTraining / progress.total, ticksGone };
+}
+
+/** How a contents row stands to the row clicked (skillPlanConst IS_PREREQ, REQUIRED_FOR; NO_REQ is null). */
+export type PlanRowRequirement = "prereq" | "required-for" | null;
+
+/**
+ * skillPlanUtil.GetRequirementStateForEntry: a row's standing to the level clicked (skill, level). prereqs is
+ * get_dogma_required_skills of the clicked skill (its own needs, not deeper); requiredFor GetSkillsRequiring(skill,
+ * level): the skills (marketCategorySkills) that need it at that very level. Level I of one of those is required for it;
+ * a lower level of the same skill a prerequisite and a higher one required for it; the level a need asks of a skill a
+ * prerequisite; anything else nothing.
+ */
+export function planRowRequirement(
+  clicked: { readonly skill: number; readonly level: number },
+  row: { readonly skill: number; readonly level: number },
+  prereqs: ReadonlyMap<number, number>,
+  requiredFor: ReadonlySet<number>,
+): PlanRowRequirement {
+  if (requiredFor.has(row.skill) && row.level === 1) return "required-for";
+  if (row.skill === clicked.skill) {
+    if (row.level < clicked.level) return "prereq";
+    if (row.level > clicked.level) return "required-for";
+    return null;
+  }
+  const needLevel = prereqs.get(row.skill);
+  return needLevel !== undefined && row.level === needLevel ? "prereq" : null;
+}
+
+/** GetRequirementsClipboardText: each of the plan's levels in its order, "name level" and a new line. */
+export function requirementsClipboardText(plan: PersonalSkillPlan, nameOf: (typeID: number) => string): string {
+  return plan.requirements.map(([typeID, level]) => `${nameOf(typeID)} ${level}\n`).join("");
 }
 
 export function timeLeftShowTo(ticks: number): "hour" | "minute" | "second" {

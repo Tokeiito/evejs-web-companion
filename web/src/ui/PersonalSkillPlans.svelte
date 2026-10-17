@@ -76,7 +76,7 @@
   //
   // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the clone upgrade
   // window (the store), the faction and career icons, a skill row's selection,
-  // menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry, and a notice kept
+  // menu, tooltip and drag (its selection is done), the tooltip and drag of an entry, and a notice kept
   // while the session does not match it yet (the client's notice routing cache).
   import { onMount, untrack } from "svelte";
   import { portal } from "./portal.ts";
@@ -89,7 +89,7 @@
   import { romanLevel } from "../bridge/skills.ts";
   import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import {
-    planProgressAt, skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
+    planProgressAt, planRowRequirement, requirementsClipboardText, skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
@@ -176,6 +176,7 @@
     "UI/SkillPlan/SkillbooksMissing2": "Books not held",
     "UI/SkillPlan/RequireOmega": "Needs omega",
     "UI/CloneState/UpgradeCloneState": "Upgrade the clone",
+    "UI/SkillPlan/CopySkillsToClipboard": "Copy the plan's skills",
     "UI/SkillPlan/ClickToBuyMissingSkillAndRequirements": "A book for this skill, or for one it needs, is not held: buy them.",
     "UI/SkillPlan/RemoveFromQueue": "This level is queued: take it out.",
     "UI/SkillPlan/RemoveFromQueueLocked": "This level is queued, and another queued skill needs it.",
@@ -577,6 +578,8 @@
 
   function open(plan: OpenedPlan): void {
     tip = null;
+    rowSelection = null;
+    contentsMenu = null;
     selectedID = plan.id;
     notice = "";
     void readContents(plan);
@@ -725,6 +728,75 @@
    */
   function withoutStore(hint: string): string {
     return `${hint} (The page has no store.)`;
+  }
+
+  // A contents row clicked (OnEntryClicked): it selected, the others marked by how they stand to it
+  // (GetRequirementStateForEntry: a prerequisite or required for it, both drawn alike, SkillEntryUnderlay's hover look).
+  // Ctrl and a click on the selected row: none selected and nothing marked. Kept for the plan it was made in.
+  let rowSelection = $state<{
+    readonly planID: string;
+    readonly skill: number;
+    readonly level: number;
+    readonly prereqs: ReadonlyMap<number, number>;
+    readonly requiredFor: ReadonlySet<number>;
+  } | null>(null);
+
+  async function selectRow(plan: OpenedPlan, row: SkillPlanContentRow, ctrlKey: boolean): Promise<void> {
+    const selectedNow = rowSelection !== null && rowSelection.planID === plan.id && rowSelection.skill === row.skill && rowSelection.level === row.level;
+    if (ctrlKey && selectedNow) {
+      rowSelection = null;
+      return;
+    }
+    // GetPreReqsAndRequiredForSkillLevel: get_dogma_required_skills and GetSkillsRequiring(skill, level).
+    const [facts, requiring] = await Promise.all([
+      flow.skillPlanTypeFacts([row.skill]).catch(() => null),
+      flow.skillsRequiring([row.skill]).catch(() => null),
+    ]);
+    if (selectedID !== plan.id) return;
+    rowSelection = {
+      planID: plan.id,
+      skill: row.skill,
+      level: row.level,
+      prereqs: new Map(facts?.required[row.skill] ?? []),
+      requiredFor: new Set(requiring?.get(row.skill)?.get(row.level) ?? []),
+    };
+  }
+
+  function rowMark(plan: OpenedPlan, row: SkillPlanContentRow): "selected" | "marked" | null {
+    const selection = rowSelection;
+    if (selection === null || selection.planID !== plan.id) return null;
+    if (selection.skill === row.skill && selection.level === row.level) return "selected";
+    return planRowRequirement(selection, row, selection.prereqs, selection.requiredFor) === null ? null : "marked";
+  }
+
+  // The contents' menu (GetUtilMenu): Copy Skills to Clipboard. Its GM's Train All Skills is not the page's.
+  let contentsMenu = $state<{ readonly left: number; readonly top: number } | null>(null);
+  function openContentsMenu(event: MouseEvent): void {
+    if (contentsMenu !== null) {
+      contentsMenu = null;
+      return;
+    }
+    if (!(event.currentTarget instanceof HTMLElement)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    contentsMenu = { left: Math.max(8, rect.right - 220), top: rect.bottom + 4 };
+  }
+  $effect(() => {
+    if (contentsMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".skill-plan-contents-menu, .skill-plan-contents-menu-button"))) contentsMenu = null;
+    };
+    const timer = setTimeout(() => window.addEventListener("pointerdown", close));
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+    };
+  });
+
+  /** CopySkillsToClipboard: GetRequirementsClipboardText, the skills by their names. */
+  function copySkills(plan: OpenedPlan): void {
+    contentsMenu = null;
+    const text = requirementsClipboardText(plan, (typeID) => resolvedName($names.resolved, "type", typeID, String(typeID)));
+    void navigator.clipboard.writeText(text).catch(() => {});
   }
 
   /** GetTooltipText; add's with the points the level lacks and the pilot's points a minute (LoadTooltipPanel). */
@@ -913,7 +985,18 @@
       {/if}
       {#if contentsShown}
         <div class="skill-plan-contents">
-          <h3>{word("UI/SkillPlan/SkillPlanOverview")}</h3>
+          <div class="skill-plan-contents-head">
+            <h3>{word("UI/SkillPlan/SkillPlanOverview")}</h3>
+            <!-- The UtilMenu at the caption's right. -->
+            <button type="button" class="skill-plan-contents-menu-button" aria-haspopup="menu" aria-expanded={contentsMenu !== null}
+              aria-label={word("UI/SkillPlan/CopySkillsToClipboard")} title={word("UI/SkillPlan/CopySkillsToClipboard")}
+              onclick={openContentsMenu}>☰</button>
+          </div>
+          {#if contentsMenu !== null}
+            <span class="hull-menu skill-plan-contents-menu" role="menu" use:portal style:left={`${contentsMenu.left}px`} style:top={`${contentsMenu.top}px`}>
+              <button type="button" role="menuitem" onclick={() => copySkills(plan)}>{word("UI/SkillPlan/CopySkillsToClipboard")}</button>
+            </span>
+          {/if}
           <div class="skill-plan-filters">
             <label><input type="checkbox" checked={hideTrained} onchange={(event) => setHideTrained((event.currentTarget as HTMLInputElement).checked)} />
               {word("UI/SkillPlan/HideTrainedSkills")}</label>
@@ -928,7 +1011,11 @@
           {:else}
             <ul class="skill-plan-rows">
               {#each shownRows as row, at (at)}
-                <li class="skill-plan-row">
+                {@const mark = rowMark(plan, row)}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <li class="skill-plan-row" class:selected={mark === "selected"} class:marked={mark === "marked"} aria-current={mark === "selected" ? "true" : undefined}
+                  onclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) void selectRow(plan, row, event.ctrlKey); }}
+                  onkeydown={(event) => { if (event.key === "Enter") void selectRow(plan, row, event.ctrlKey); }}>
                   <span class="skill-bar" aria-hidden="true">
                     {#each row.boxes as one, box (box)}
                       <span class="skill-box {one.box}" class:partial={one.partial}></span>
@@ -1154,6 +1241,11 @@
   .skill-plan-row { display: flex; align-items: center; gap: 0.75rem; min-height: 2rem; padding: 0 0.5rem; background: rgba(255, 255, 255, 0.04); }
   .skill-plan-row-name { flex: 1; }
   .skill-plan-row-time { opacity: 0.35; }
+  /* ListEntryUnderlay: the selected row, and a row marked (SkillEntryUnderlay's hover look). */
+  .skill-plan-row { cursor: pointer; }
+  .skill-plan-row.selected { background: rgba(255, 255, 255, 0.16); outline: 1px solid rgba(255, 255, 255, 0.35); }
+  .skill-plan-row.marked { background: rgba(255, 255, 255, 0.1); }
+  .skill-plan-contents-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   /* SkillLevelEntryPrimaryButton: 36 wide at the row's right; DANGER for a book to buy, MONETIZATION for omega. */
   .skill-plan-row-button { min-width: 2.25rem; }
   .skill-plan-row-button.book { color: #e05a4f; }
