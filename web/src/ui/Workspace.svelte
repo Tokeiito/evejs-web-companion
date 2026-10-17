@@ -25,6 +25,11 @@
   import DroneRecoveryNotice from "./DroneRecoveryNotice.svelte";
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
+  import { marketDetailsTarget } from "./marketDetails.ts";
+  import { assetsSearchTarget } from "./assetsSearch.ts";
+  import { contractsSearchTarget } from "./contractsSearch.ts";
+  import { typeCompareTarget } from "./typeCompare.ts";
+  import { fittingWindowTarget } from "./fittingWindowTarget.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -208,6 +213,15 @@
   );
   const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
   const close = (id: TabID): void => {
+    // The Fitting window's close (fittingWnd.Close, 887 to 905): with a simulation shown, the client's question first
+    // (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning, where it was changed); on No the window
+    // stays; else it closes, and the simulation ends with it.
+    if (id === "fitting") {
+      void flow.exitSimulation().then((leave) => {
+        if (leave) wins = closeWindow(wins, id);
+      }).catch(() => {});
+      return;
+    }
     wins = closeWindow(wins, id);
     // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
@@ -281,6 +295,63 @@
     // Skip the initial reading: a restored session must not pop an info window
     // nobody asked for.
     if (count > 0) open("showInfo");
+  });
+
+  // A type's market details asked for from outside the market window (marketDetails.ts: marketutils.ShowMarketDetails,
+  // as the skill windows ask for the Skill Injector's): the market window opened, which takes the type and reads its
+  // market. It watches the request counter, as the Show Info effect above does, and starts at the count it finds, so
+  // that a workspace mounted later does not answer a request made before it.
+  // A search of the pilot's things asked for from outside the assets window (assetsSearch.ts: FindInPersonalAssets):
+  // the assets window opened, which takes the text and searches; watched as the market's details are, below.
+  let servedAssetsSearches = assetsSearchTarget.requests.get();
+  const assetsSearchRequests = assetsSearchTarget.requests;
+  $effect(() => {
+    const count = $assetsSearchRequests;
+    if (count === servedAssetsSearches) return;
+    servedAssetsSearches = count;
+    open("assets");
+  });
+
+  // Contracts of a type asked for from outside the contracts window (contractsSearch.ts: contracts.FindRelated): the
+  // contracts window opened, which takes the type and searches.
+  let servedContractsSearches = contractsSearchTarget.requests.get();
+  const contractsSearchRequests = contractsSearchTarget.requests;
+  $effect(() => {
+    const count = $contractsSearchRequests;
+    if (count === servedContractsSearches) return;
+    servedContractsSearches = count;
+    open("contracts");
+  });
+
+  // Types asked to be compared from outside the compare tool (typeCompare.ts: menusvc.CompareType): the tool opened,
+  // which takes the types and adds them.
+  let servedCompareRequests = typeCompareTarget.requests.get();
+  const compareRequests = typeCompareTarget.requests;
+  $effect(() => {
+    const count = $compareRequests;
+    if (count === servedCompareRequests) return;
+    servedCompareRequests = count;
+    open("compare");
+  });
+
+  // The Fitting window asked for from outside it (fittingWindowTarget.ts: the fitting display window's Simulate): opened,
+  // or raised where it is open (FittingWindow.Maximize).
+  let servedFittingWindowRequests = fittingWindowTarget.requests.get();
+  const fittingWindowRequests = fittingWindowTarget.requests;
+  $effect(() => {
+    const count = $fittingWindowRequests;
+    if (count === servedFittingWindowRequests) return;
+    servedFittingWindowRequests = count;
+    open("fitting");
+  });
+
+  let servedMarketRequests = marketDetailsTarget.requests.get();
+  const marketRequests = marketDetailsTarget.requests;
+  $effect(() => {
+    const count = $marketRequests;
+    if (count === servedMarketRequests) return;
+    servedMarketRequests = count;
+    open("market");
   });
 
   // A panel App asked to be opened on THIS desktop — today, the Bot Builder,

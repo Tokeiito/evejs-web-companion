@@ -68,3 +68,58 @@ export function decodeItemAttributeChanges(
   }
   return found.size > 0 ? found : null;
 }
+
+/** One change of an item's attribute, as the server tells of it. */
+export interface AttributeChange {
+  readonly itemID: number;
+  readonly attributeID: number;
+  readonly value: number;
+}
+
+/**
+ * The changes the client's dogma location hears (clientDogmaLocation.OnModuleAttributeChanges), in the order it takes
+ * them: an OnModuleAttributeChanges batch, sorted by the changes' times; and those riding an OnMultiEvent, which godma
+ * takes a moment at a time (OnMultiEvent: grouped by when they were made) and passes on as a batch of the last change
+ * of each owner, item and attribute, sorted by time (BroadcastFilteredMAC). An OnModuleAttributeChange alone is
+ * godma's only. A change of a sublocation (a charge in a slot) is left out.
+ */
+export function locationAttributeChanges(method: string | null, args: readonly unknown[]): readonly AttributeChange[] {
+  type Told = { readonly owner: string; readonly change: AttributeChange; readonly time: bigint };
+  const told = (change: readonly unknown[] | null): Told | null => {
+    if (!change || change[0] !== "OnModuleAttributeChange") return null;
+    const item = unwrapLong(change[2]);
+    const attributeID = unwrapLong(change[3]);
+    const value = numberOf(change[5]);
+    if (item === null || attributeID === null || value === null) return null;
+    return {
+      owner: String(unwrapLong(change[1])),
+      change: { itemID: Number(item), attributeID: Number(attributeID), value },
+      time: unwrapLong(change[4]) ?? 0n,
+    };
+  };
+  const byTime = (left: Told, right: Told): number => (left.time < right.time ? -1 : left.time > right.time ? 1 : 0);
+  if (method === "OnModuleAttributeChanges") {
+    const batch = (itemsOf(args[0]) ?? []).map((change) => told(itemsOf(change))).filter((change) => change !== null);
+    return batch.sort(byTime).map((entry) => entry.change);
+  }
+  if (method !== "OnMultiEvent") return [];
+  const moments: { readonly when: bigint; readonly change: Told }[] = [];
+  for (const entry of itemsOf(args[0]) ?? []) {
+    const pair = itemsOf(entry);
+    const change = told(itemsOf(pair?.[0]));
+    if (change) moments.push({ when: unwrapLong(pair?.[1]) ?? 0n, change });
+  }
+  moments.sort((left, right) => (left.when < right.when ? -1 : left.when > right.when ? 1 : 0));
+  const heard: AttributeChange[] = [];
+  for (let start = 0; start < moments.length; ) {
+    let end = start;
+    while (end < moments.length && moments[end]!.when === moments[start]!.when) end += 1;
+    const last = new Map<string, Told>();
+    for (const { change } of moments.slice(start, end).sort((left, right) => byTime(left.change, right.change))) {
+      last.set(`${change.owner}|${change.change.itemID}|${change.change.attributeID}`, change);
+    }
+    heard.push(...[...last.values()].sort(byTime).map((entry) => entry.change));
+    start = end;
+  }
+  return heard;
+}

@@ -19,12 +19,14 @@
   // hull bonuses and in-space effects already applied — taken straight from the
   // server's post-dogma map and never recomputed in the browser.
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
   import {
     SLOT_FAMILY_LABELS,
     SLOT_FAMILY_ORDER,
     chargeLooksCompatible,
     isChargeRow,
     isFittableRow,
+    slotFlagOf,
     slotsOfFamily,
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
@@ -43,6 +45,8 @@
     encodeDrag,
     type DragPayload,
   } from "./dragDrop.ts";
+  import { startFittingDrag, startFittingSourceDrag } from "./fittingDrag.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -58,6 +62,19 @@
   import { LAYERS, type LayerName, type Stat, unavailable } from "../bridge/shipStats.ts";
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { hullTree, NON_EMPIRE, type HullFacts, type ShipTraitBonus, type ShipTraits } from "../bridge/hullBrowser.ts";
+  import { showInfo } from "./showInfo.ts";
+  import type { JsonValue } from "../bridge/wire.ts";
+  import { showMarketDetails } from "./marketDetails.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { findInContracts } from "./contractsSearch.ts";
+  import { compareType, compareTypes } from "./typeCompare.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
   let {
     store,
@@ -78,8 +95,66 @@
   const dogma = store.dogma;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const savedFittings = flow.savedFittings;
+  // svelte-ignore state_referenced_locally
+  const communityFittingsEnabled = flow.communityFittingsEnabled;
+  // svelte-ignore state_referenced_locally
+  const hullBrowser = flow.hullBrowser;
+  // svelte-ignore state_referenced_locally
+  const maxShipsToFit = flow.maxShipsToFit;
+  // svelte-ignore state_referenced_locally
+  const fittingsDeletable = flow.fittingsDeletable;
+  /** GetDeletableNodes (fittingUtil.CanDeleteFit): the pilot's own, and the corporation's or the alliance's where it may. */
+  const deletable = (source: string): boolean => source === "personal" || (source === "corporation" && $fittingsDeletable.corporation) || (source === "alliance" && $fittingsDeletable.alliance);
+  // The browser's selection, as its scroll keeps one (scroll.SelectNode, 550 to 598): a click on a fitting selects it
+  // alone; Ctrl, it added or taken out; Shift, the run of rows from the last clicked to it, alone (and the last
+  // clicked kept), or with Ctrl added to what is selected. By the fittings' numbers, the run by the rows as shown.
+  let selectedFittings = $state<readonly number[]>([]);
+  let lastSelectedFitting: number | null = null;
+  let browserSection = $state<HTMLElement | null>(null);
+  /** The fittings' rows as the browser shows them now, in order (the scroll's nodes). */
+  const shownFittingIDs = (): number[] => [...(browserSection?.querySelectorAll<HTMLElement>("[data-fitting-id]") ?? [])].map((row) => Number(row.dataset.fittingId));
+  function selectFitting(fittingID: number, event: MouseEvent): void {
+    const control = event.ctrlKey || event.metaKey;
+    const shift = event.shiftKey;
+    // fittingBrowser.OnFittingClicked: a click with neither Shift nor Ctrl simulates the fitting too.
+    if (!control && !shift) simulateSaved(fittingID);
+    const rows = shownFittingIDs();
+    const from = lastSelectedFitting === null ? -1 : rows.indexOf(lastSelectedFitting);
+    const to = rows.indexOf(fittingID);
+    const run = from >= 0 && to >= 0 && from !== to ? rows.slice(Math.min(from, to), Math.max(from, to) + 1) : null;
+    if (!control && !shift) selectedFittings = [fittingID];
+    else if (control && !shift) {
+      selectedFittings = selectedFittings.includes(fittingID) ? selectedFittings.filter((id) => id !== fittingID) : [...selectedFittings, fittingID];
+    } else if (!control && shift) {
+      if (run !== null) {
+        selectedFittings = run;
+        return;
+      }
+      selectedFittings = [fittingID];
+    } else if (run !== null) selectedFittings = [...new Set([...selectedFittings, ...run])];
+    lastSelectedFitting = fittingID;
+  }
+  // A fitting no longer kept goes from the selection.
+  $effect(() => {
+    const kept = new Set(($savedFittings ?? []).map((fitting) => fitting.fittingID));
+    if (selectedFittings.some((id) => !kept.has(id))) selectedFittings = selectedFittings.filter((id) => kept.has(id));
+  });
+  /** GetDeletableNodes of the selection: those of it CanDeleteFit lets go. */
+  const selectedDeletable = $derived(selectedFittings.filter((id) => {
+    const fitting = ($savedFittings ?? []).find((each) => each.fittingID === id);
+    return fitting !== undefined && deletable(fitting.source);
+  }));
+  /** inventorycommon/const.py categoryStructure. */
+  const CATEGORY_STRUCTURE = 65;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
 
   let busy = $state(false);
+  let importExportOpen = $state(false);
   let error = $state("");
   /** Which module the player picked to fit, and where it is coming from. */
   let pickedItemID = $state<number | null>(null);
@@ -115,9 +190,12 @@
     }
   }
 
+  /** The slots shown: the simulation's while the window simulates the ship, the ship's own otherwise. */
+  const shownSlots = $derived.by(() => ($fitting.simulation ? $fitting.simulation.slots : $fitting.slots));
+
   /** The sockets to draw, with each one's placement and what is in it. */
   const sockets = $derived.by(() => {
-    const counts = countByFamily($fitting.slots);
+    const counts = countByFamily(shownSlots);
     const placed: {
       slot: FittingSlot;
       xPercent: number;
@@ -125,7 +203,7 @@
     }[] = [];
     for (const family of SLOT_FAMILY_ORDER) {
       const placements = placeFamily(family, counts[family], OUTER_RADIUS_PERCENT);
-      const familySlots = slotsOfFamily($fitting.slots, family);
+      const familySlots = slotsOfFamily(shownSlots, family);
       for (const placement of placements) {
         const slot = familySlots[placement.index];
         if (slot) {
@@ -140,10 +218,10 @@
     return placed;
   });
 
-  /** A key per family for the legend: label, how many, how many filled. */
+  /** A key per family for the legend: label, how many, how many filled; of the slots the ship has (not one gone). */
   const legend = $derived.by(() =>
     SLOT_FAMILY_ORDER.map((family) => {
-      const familySlots = slotsOfFamily($fitting.slots, family);
+      const familySlots = slotsOfFamily(shownSlots, family).filter((slot) => slot.present !== false);
       return {
         family,
         label: SLOT_FAMILY_LABELS[family],
@@ -205,6 +283,587 @@
     return `${slotName(slot)}, ${name}, ${slot.module.online ? "online" : "offline"}${loaded}`;
   }
 
+  // The fitting window's browser of saved fittings (fittingScreen/browsers/fittingBrowser.py), as far as the page has
+  // it: its tree of ship groups, races and hulls with the fittings under each hull (bridge/hullBrowser.ts), and of a
+  // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
+  // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), its import and export menu's Import
+  // from Clipboard and Export to Clipboard (not its Simulate from Clipboard, its files nor Copy All Skills), and the
+  // tooltips of a fitting and of a hull (its traits with them), a hull's menu (Show Info, View Market Details, Find in
+  // Contracts, Find Personal Assets and Compare), and the selection's Delete Fitting for several at once
+  // (DeleteManyFittings). Its words are the install's; the page's own stand in. Not done: a hull's Simulate button, the
+  // menu's Simulate Fitting, a fitting clicked (simulated), and an unsupported fitting shown whole to a game master. A
+  // group's or a race's menu is the client's ShipParentGroup's: Compare, then Expand or Collapse. Delete Fitting is offered as GetDeletableNodes offers it (the
+  // corporation's and the alliance's by role). The tree's open groups are kept while the window is.
+  const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
+    // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
+    "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
+    // A hull's traits in its tooltip (traits.TraitsContainer) and its menu (menusvc.GetMenuFromItemIDTypeID).
+    "UI/ShipTree/SkillNameCaption": "With each level of {skillName}:",
+    "UI/ShipTree/RoleBonus": "By its role:",
+    "UI/ShipTree/MiscBonus": "Besides:",
+    "UI/InfoWindow/TraitWithNumber": "{value}{unit} {bonusText}",
+    "UI/InfoWindow/TraitWithoutNumber": "- {bonusText}",
+    "UI/Commands/ShowInfo": "About it",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
+    "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
+    "UI/Compare/CompareButton": "Side by side",
+    // A group's menu after its Compare (ListGroup.GetMenu, 299 to 304).
+    "UI/Common/Expand": "Open it",
+    "UI/Common/Collapse": "Close it",
+    // The asset search's exact-type keyword (assetSearchUtil, KeywordTypeExact): a word the search reads, not shown.
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
+    "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
+    // The fitting window's own button (hullAndHardwareTypeBrowser.py 577).
+    "UI/Fitting/FittingWindow/SaveFitAs": "Save this ship's fitting",
+    "UI/Fitting/FittingWindow/FitFittingToActiveShip": "Fit to this ship",
+    "UI/Fitting/FittingWindow/FittingManagement/DeleteFitting": "Delete it",
+    "UI/Fitting/FittingWindow/FittingManagement/OpenMultifit": "Fit several ships",
+    // The browser's import and export menu (hullAndHardwareTypeBrowser.py 680 to 694).
+    "UI/Fitting/FittingWindow/ImportAndExport": "Import and export",
+    "UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboard": "Read a fitting from the clipboard",
+    "UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboardHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard": "Copy this ship's fitting as text",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint": "",
+    // Said by the import (flow.ts importFittingFromClipboard): asked here, where it is made.
+    "UI/SkillQueue/CouldNotReadLines": "",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    "UI/Common/NothingFound": "None found",
+    // The browser's filter buttons' hints (hullAndHardwareTypeBrowser.py 406 to 413, LoadFilterBtnTooltipPanel).
+    "UI/Fitting/FittingWindow/FilterPersonalFittings": "Your own fittings {numFittings}",
+    "UI/Fitting/FittingWindow/FilterCorpFittings": "Your corporation's fittings {numFittings}",
+    "UI/Fitting/FittingWindow/FilterCurrentHull": "Only for the ship you are in",
+    "UI/Fitting/FittingWindow/FilterSkillsForFitting": "Only those you have the skills for",
+    "UI/Fitting/FilterCommunityFittings": "Fittings shared with everyone",
+    "UI/Fitting/FittingWindow/FilterAllianceFittings": "Your alliance's fittings {numFittings}",
+    "UI/Fitting/AllianceFittingHint": "Your alliance's fitting",
+    "UI/Fitting/FittingWindow/SavedAllianceFittings": "Your alliance's fittings",
+    // A fitting's tooltip (entries/fitting.py FittingEntry.LoadTooltipPanel, 87 to 98) and a hull's
+    // (fittingBrowser.py HullTypeListGroup.LoadTooltipPanel, 705 to 738).
+    "UI/Fitting/FittingLastSavedHint": "Saved {timestamp}",
+    "/Carbon/UI/Common/DateTime/SimpleDateUTC": "",
+    "UI/Fitting/FittingWindow/SavedFittings": "Saved fittings",
+    "UI/Fitting/FittingWindow/PersonalFittingsNum": "Your own: {numFittings}",
+    "UI/Fitting/FittingWindow/PersonalFittingsNumShort": "Own: {numFittings}",
+    "UI/Fitting/FittingWindow/CorpFittingsNum": "Your corporation's: {numFittings}",
+    "UI/Fitting/FittingWindow/CorpFittingsNumShort": "Corporation: {numFittings}",
+    "UI/Fitting/FittingWindow/CommunityFittingsNum": "Shared with everyone: {numFittings}",
+    "UI/Fitting/FittingWindow/CommunityFittingsNumShort": "Shared: {numFittings}",
+    "UI/Fitting/FittingWindow/AllianceFittingsNum": "Your alliance's: {numFittings}",
+    "UI/Fitting/FittingWindow/AllianceFittingsNumShort": "Alliance: {numFittings}",
+    "UI/Fitting/FittingWindow/NoFittingsSaved": "No fittings saved for it",
+    // The tree's own groups (fittingBrowser.py 131 to 182, GetNameAndIconIDForRace).
+    "UI/Fitting/FittingWindow/NonEmpireFaction": "Other factions",
+    "UI/Fitting/FittingWindow/SpecialEditionShips": "Special ships",
+    "UI/Fitting/FittingWindow/UnsupportedShip": "Hulls no longer had",
+    "UI/Fitting/FittingWindow/UnknownShipType": "an unknown hull",
+    // A fitting's owner mark (entries/fitting.py FittingEntry.Load, 58 to 70) and a hull's counts by owner
+    // (fittingBrowser.py ShipTypeGroup, 630 to 650).
+    "UI/Fitting/CorpFittingHint": "Your corporation's fitting",
+    "UI/Fitting/CommunityFittingHint": "A fitting shared with everyone",
+    "UI/Fitting/FittingWindow/SavedPersonalFittings": "Your own fittings",
+    "UI/Fitting/FittingWindow/SavedCorpFittings": "Your corporation's fittings",
+    "UI/Fitting/FittingWindow/SavedCommunityFittings": "Fittings shared with everyone",
+    // Said as a fitting is loaded (flow.ts loadSavedFitting): asked here, where it is loaded from.
+    "UI/Fitting/ShipHasRigsAlready": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning": "",
+  };
+  const fitWord = (label: string): string => {
+    const template = $words.templates[label];
+    return plainText(typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "");
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(FITTING_BROWSER_WORDS));
+  });
+
+  // The capacitor panel's words (capacitorPanel.py), the client's from the player's install; the page's own where it
+  // has none.
+  const CAPACITOR_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/Stable": "Stable",
+    "UI/Fitting/FittingWindow/CapacitorNotStable": "Empty after {[timeinterval]time.shortForm, from=hour, to=second}",
+    "UI/Fitting/FittingWindow/ModulesSustainable": "Your modules can run without stopping",
+    "UI/Fitting/FittingWindow/ModulesNotSustainable": "Your modules drain the capacitor faster than it recharges",
+    "UI/Fitting/FittingWindow/CapacitorDelta": "{[numeric]delta, decimalPlaces=1} GJ/s spare ({[numeric]percentage, decimalPlaces=1}%)",
+    "UI/Fitting/FittingWindow/ExcessCapacitor": "Recharge left over",
+    "UI/Fitting/FittingWindow/CapSustainableBy": "Settles at {[numeric]balance, decimalPlaces=1}% of its capacity",
+    "UI/Fitting/FittingWindow/CapRunsOutBy": "Lasts {[timeinterval]ttl, from=hour, to=second}",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords([...Object.keys(CAPACITOR_WORDS), ...INTERVAL_WORD_LABELS, ...SHORT_INTERVAL_WORD_LABELS]);
+  });
+  /** A capacitor label filled: the client's template where the install has it, the page's own otherwise. */
+  function capacitorWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : CAPACITOR_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+      ...intervalWriters($words.templates),
+    }));
+  }
+  type CapacitorSimulation = NonNullable<typeof stats.capacitor.simulator>;
+  /** capacitorPanel.SetHeaderText: Stable where it settles, else when it runs dry (its TTL, a whole number of ticks). */
+  function capacitorHeadline(simulation: CapacitorSimulation): string {
+    return simulation.loadBalance > 0
+      ? capacitorWord("UI/Fitting/FittingWindow/Stable")
+      : capacitorWord("UI/Fitting/FittingWindow/CapacitorNotStable", { time: Math.trunc(simulation.ttl ?? 0) });
+  }
+  // The targeting and navigation panels' words (targetingPanel.py, navigationPanel.py), the client's from the install;
+  // the page's own where it has none.
+  const SHIP_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/TargetingHeader": "{[numeric]maxRange, useGrouping} km",
+    "UI/Fitting/FittingWindow/ScanResolution": "{[numeric]resolution} mm",
+    "UI/Fitting/FittingWindow/MaxLockedTargets": "{[numeric]maxTargets} at once",
+    "UI/Fitting/FittingWindow/TargetingRange": "{[numeric]range.distance, decimalPlaces=1}",
+    "UI/Fitting/FittingWindow/SensorStrength": "{[numeric]points} {[numeric]points -> \"point\", \"points\"}",
+    "UI/Fitting/FittingWindow/MassTonnes": "{[numeric]mass, useGrouping} tonnes",
+    "UI/Fitting/FittingWindow/MassKg": "{[numeric]mass, useGrouping} kilograms",
+    "UI/Fitting/FittingWindow/ColoredMaxVelocity": "{[numeric]maxVelocity, decimalPlaces=1} metres a second",
+    "UI/Fitting/FittingWindow/InertiaModifier": "{[numeric]value, decimalPlaces=4} times",
+    "UI/Fitting/FittingWindow/AlignTime": "{[numeric]value, decimalPlaces=2} seconds",
+    "UI/Fitting/FittingWindow/WarpSpeed": "{distText} a second",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords([...Object.keys(SHIP_WORDS), ...DISTANCE_WORD_LABELS]);
+  });
+  const say = $derived(distanceSay($words.templates));
+  /** A targeting or navigation label filled: the client's template where the install has it, the page's own otherwise. */
+  function shipWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SHIP_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+      writeDistance: (metres, decimals) => fmtDist(metres, decimals, say),
+    }));
+  }
+  /** const.AU, in metres. */
+  const METRES_PER_AU = 149_597_870_700;
+  /** The worded figure of a known statistic; "—" where it is not known. */
+  function knownWord(stat: Stat, word: (value: number) => string): string {
+    return stat.known ? word(stat.value) : "—";
+  }
+
+  // The defense panel's words (defensePanel.py), the client's from the install; the page's own where it has none.
+  const DEFENSE_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/ColoredEffectiveHp": "{[numeric]effectiveHp, useGrouping} effective hit points",
+    "UI/Fitting/FittingWindow/ColoredResistanceLabel": "{[numeric]number}%",
+    "UI/Fitting/FittingWindow/ColoredHitpointsAndRechargeTime2": "{hp} hit points, back in {[numeric]rechargeTime, useGrouping} s",
+    "UI/Fitting/FittingWindow/ColoredHp2": "{hp} hit points",
+    "UI/Fitting/FittingWindow/ColoredPassiveRepairRate": "{[numeric]hpPerSec, decimalPlaces=1} hit points a second",
+    "UI/Fitting/FittingWindow/NoModule": "None fitted",
+    "UI/Fitting/FittingWindow/ArmorRepairRate": "Armor repaired",
+    "UI/Fitting/FittingWindow/HullRepairRate": "Structure repaired",
+    "UI/Fitting/FittingWindow/ShieldBoostRate": "Shield boosted",
+    "UI/Fitting/FittingWindow/PassiveShieldRecharge": "Shield recharging by itself",
+    "UI/Common/Shield": "Shield",
+    "UI/Common/Armor": "Armor",
+    "UI/Fitting/Structure": "Structure",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(DEFENSE_WORDS));
+  });
+  /** A defense label filled: the client's template where the install has it, the page's own otherwise. */
+  function defenseWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : DEFENSE_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }).replace(/<br\s*\/?>/gi, " "));
+  }
+  type DefenseSimulation = NonNullable<typeof stats.defense>;
+  /** defensePanel._GetFormattedValue: the hit points' whole part, grouped (a short form past a hundred million). */
+  function hitPoints(value: number): string {
+    const whole = Math.trunc(value);
+    return whole > 100_000_000 ? `${Math.round(whole / 1_000_000).toLocaleString()}M` : whole.toLocaleString();
+  }
+  /** SetDefenseLayerText: the shield with its recharge time, the others alone. */
+  function layerText(simulation: DefenseSimulation, layer: "shield" | "armor" | "structure"): string {
+    const hp = hitPoints(simulation.layers[layer].hp);
+    return layer === "shield"
+      ? defenseWord("UI/Fitting/FittingWindow/ColoredHitpointsAndRechargeTime2", { hp, rechargeTime: simulation.shieldRechargeSeconds, startColorTag1: "", startColorTag2: "", endColorTag: "" })
+      : defenseWord("UI/Fitting/FittingWindow/ColoredHp2", { hp });
+  }
+  /** UpdateBestRepair's choices: the passive recharge, and each kind of repairer's rate and count (or none). */
+  function repairLines(simulation: DefenseSimulation): { readonly label: string; readonly text: string }[] {
+    const rate = (repair: { readonly hpPerSec: number; readonly modules: number } | null): string =>
+      repair === null
+        ? defenseWord("UI/Fitting/FittingWindow/NoModule")
+        : `${repair.hpPerSec ? defenseWord("UI/Fitting/FittingWindow/ColoredPassiveRepairRate", { hpPerSec: repair.hpPerSec }) : "0"} (${repair.modules})`;
+    return [
+      { label: defenseWord("UI/Fitting/FittingWindow/PassiveShieldRecharge"), text: defenseWord("UI/Fitting/FittingWindow/ColoredPassiveRepairRate", { hpPerSec: simulation.passiveShieldRecharge }) },
+      { label: defenseWord("UI/Fitting/FittingWindow/ShieldBoostRate"), text: rate(simulation.repairs.shieldBoost) },
+      { label: defenseWord("UI/Fitting/FittingWindow/ArmorRepairRate"), text: rate(simulation.repairs.armorRepair) },
+      { label: defenseWord("UI/Fitting/FittingWindow/HullRepairRate"), text: rate(simulation.repairs.hullRepair) },
+    ];
+  }
+  const DEFENSE_LAYERS = [
+    { layer: "shield", label: "UI/Common/Shield" },
+    { layer: "armor", label: "UI/Common/Armor" },
+    { layer: "structure", label: "UI/Fitting/Structure" },
+  ] as const;
+
+  // The offense panel's words (offensePanel.py), the client's from the install; the page's own where it has none.
+  const OFFENSE_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/DpsLabel": "{[numeric]dps, decimalPlaces=1} damage a second",
+    "UI/Fitting/FittingWindow/DpsLabelWithRange": "{[numeric]dps, decimalPlaces=1} to {[numeric]maxDps, decimalPlaces=1} damage a second",
+    "UI/Fitting/FittingWindow/TurretsDps": "Guns",
+    "UI/Fitting/FittingWindow/MissilesDps": "Launchers",
+    "UI/Fitting/FittingWindow/DotDps": "Damage over time",
+    "UI/Fitting/FittingWindow/SmartbombsDps": "Area weapons",
+    "UI/Fitting/FittingWindow/DronesDps": "Drones",
+    "UI/Fitting/FittingWindow/NumDronesActive": "{[numeric]numDrones} active",
+    "UI/Fitting/FittingWindow/WithReloadTimeText": "counting reloads",
+    // The fighter panel (fighterPanel.py), a structure's in the drones' place.
+    "UI/Common/Fighters": "Fighters",
+    "UI/Fitting/FittingWindow/NumFullSquadrons": "{[numeric]numSquadrons} full squadrons",
+    "UI/Fitting/FittingWindow/NumPartialSquadrons": "{[numeric]numSquadrons} squadrons short of full",
+    "UI/Fitting/FittingWindow/FighterBay": "Fighter bay",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(OFFENSE_WORDS));
+  });
+  /** An offense label filled: the client's template where the install has it, the page's own otherwise. */
+  function offenseWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : OFFENSE_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** offensePanel._GetDpsText: the damage a second (a range where a spool's top differs), and with reloading where that differs. */
+  function dpsText(dps: number, withReload: number | null, maxDps: number | null = null, maxWithReload: number | null = null): { readonly text: string; readonly withReload: string | null } {
+    const label = maxDps ? "UI/Fitting/FittingWindow/DpsLabelWithRange" : "UI/Fitting/FittingWindow/DpsLabel";
+    const text = offenseWord(label, { dps, maxDps: maxDps ?? 0 });
+    const reload = withReload && withReload !== dps ? `(${offenseWord(label, { dps: withReload, maxDps: maxWithReload ?? 0 })})` : null;
+    return { text, withReload: reload };
+  }
+  type OffenseSimulation = NonNullable<typeof stats.firepower.simulator>;
+  /** _UpdateOffenseStats: the total, with reloading beside it where that differs. */
+  function offenseHeadline(simulation: OffenseSimulation): string {
+    const total = offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.totalDps });
+    return simulation.totalDpsWithReload && simulation.totalDpsWithReload !== simulation.totalDps
+      ? `${total} (${offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.totalDpsWithReload })})`
+      : total;
+  }
+  /** LoadDpsTooltipPanel's lines: each kind of weapon that does damage, with its damage a second. */
+  function offenseLines(simulation: OffenseSimulation): { readonly label: string; readonly text: string; readonly withReload: string | null }[] {
+    const lines: { label: string; text: string; withReload: string | null }[] = [];
+    if (simulation.turretDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/TurretsDps"), ...dpsText(simulation.turretDps, simulation.turretDpsWithReload, simulation.maxTurretDps, simulation.maxTurretDpsWithReload) });
+    if (simulation.missileDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/MissilesDps"), ...dpsText(simulation.missileDps, simulation.missileDpsWithReload) });
+    if (simulation.dotDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/DotDps"), ...dpsText(simulation.dotDps, null) });
+    if (stats.drones?.dps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/DronesDps"), ...dpsText(stats.drones.dps, null) });
+    if (simulation.aoeDps) lines.push({ label: offenseWord("UI/Fitting/FittingWindow/SmartbombsDps"), ...dpsText(simulation.aoeDps, null) });
+    return lines;
+  }
+
+  /** capacitorPanel.ColorPowerCore's hint: the share it settles at, or how long it lasts. */
+  function capacitorBalance(simulation: CapacitorSimulation): string {
+    return simulation.loadBalance === 0
+      ? capacitorWord("UI/Fitting/FittingWindow/CapRunsOutBy", { ttl: Math.trunc(simulation.ttl ?? 0) })
+      : capacitorWord("UI/Fitting/FittingWindow/CapSustainableBy", { balance: simulation.loadBalance * 100 });
+  }
+  // The fittings read once the window has a ship (fittingSvc.PrimeFittings).
+  let fittingsAsked = false;
+  $effect(() => {
+    if (!$fitting.activeShipID || fittingsAsked) return;
+    fittingsAsked = true;
+    void flow.loadSavedFittings().catch(() => {});
+  });
+  // The browser's filters (hullAndHardwareTypeBrowser.construct_fitting_filter_buttons, 405 to 414;
+  // filterSettings.BrowserHullSettings): the pilot's own fittings, its corporation's, and only those for the ship it is
+  // in, each off until set (with no owner set, every owner's are shown: GetFittingScrolllist, 74 to 79); and the search
+  // (CharSettingString lastHullFilterString, the character's), which a fitting's name, its hull's name or the hull's
+  // group's holds (FilterOutFittings, TextMatched, 265 to 320). The toggles are the account's (UserSettingBool), kept
+  // here in this browser, as is the search for the character. The skills' filter lets through only the fittings the pilot has the skills for (FilterOutFittings,
+  // 283 to 289; the flow's fittingsWithSkills, fittingSvc.HasSkillForFit). The community's filter is on until unset
+  // (fittings_show_community, FILTER_DEFAULT_COMMUNITY_FITTING), and with the global config's community fittings off
+  // (AreCommunityFittingsEnabled) its button is not shown nor its fittings read (GetFittingScrolllist, 66 to 80). With no
+  // owner's filter set, every hull the market sells is listed that the search (its name or its group's), the
+  // current-hull filter and the skills filter (godma.CheckSkillRequirementsForType: the flow's hullsWithSkills) let
+  // through (GetAllShipGroupsAndShipsByGroupID, 359 to 383). The alliance's filter is off until set, and with the pilot in
+  // no alliance its button is not shown nor its fittings read (fittings_show_alliance; GetFittingScrolllist, 70).
+  const HULL_SETTINGS_KEPT = "evejs.BrowserHullSettings";
+  const HULL_FILTER_KEPT = "evejs.lastHullFilterString";
+  const keptHullSettings = ((): { personal: boolean; corp: boolean; alliance: boolean; community: boolean; currentShip: boolean; skills: boolean } => {
+    try {
+      const kept = JSON.parse(localStorage.getItem(HULL_SETTINGS_KEPT) ?? "null") as Record<string, unknown> | null;
+      return { personal: kept?.personal === true, corp: kept?.corp === true, alliance: kept?.alliance === true, community: kept?.community !== false, currentShip: kept?.currentShip === true, skills: kept?.skills === true };
+    } catch {
+      return { personal: false, corp: false, alliance: false, community: true, currentShip: false, skills: false };
+    }
+  })();
+  let allianceFilterSet = $state(keptHullSettings.alliance);
+  /** session.allianceid, as the page has it: null for none. */
+  const allianceID = $derived(((id) => (id !== null && id !== undefined && id > 0 ? id : null))($station.online?.allianceID));
+  /** showAllianceFittings: the alliance's filter, where the pilot is in one. */
+  const showAllianceFittings = $derived(allianceID !== null && allianceFilterSet);
+  let communityFilterSet = $state(keptHullSettings.community);
+  /** showCommunityFittings: the community's filter, where the global config has community fittings on. */
+  const showCommunityFittings = $derived($communityFittingsEnabled && communityFilterSet);
+  let onlyWithSkills = $state(keptHullSettings.skills);
+  /** The fittings the pilot has the skills for, as the flow last answered; null while none is answered. */
+  let fittingsWithSkills = $state<ReadonlySet<number> | null>(null);
+  $effect(() => {
+    if (!onlyWithSkills) return;
+    const ids = ($savedFittings ?? []).map((saved) => saved.fittingID);
+    void flow.fittingsWithSkills(ids).then((set) => { fittingsWithSkills = set; }).catch(() => {});
+  });
+  /** The market's hulls the pilot has the skills for, as the flow last answered; null while none is answered. */
+  let hullsWithSkills = $state<ReadonlySet<number> | null>(null);
+  $effect(() => {
+    const data = $hullBrowser;
+    if (!onlyWithSkills || ownerFilterIsSet || data === null || !data.available) return;
+    void flow.hullsWithSkills(data.hullTypeIDs).then((set) => { hullsWithSkills = set; }).catch(() => {});
+  });
+  // The browser's hulls read once there are fittings to place (the client's own data), with each fitting's hull.
+  $effect(() => {
+    if ($savedFittings === null) return;
+    void flow.loadHullBrowser([...new Set($savedFittings.map((saved) => saved.shipTypeID))]).catch(() => {});
+  });
+  let showPersonalFittings = $state(keptHullSettings.personal);
+  let showCorpFittings = $state(keptHullSettings.corp);
+  let onlyCurrentHull = $state(keptHullSettings.currentShip);
+  const hullFilterKey = (): string | null => {
+    const characterID = store.station.get().online?.characterID ?? null;
+    return characterID === null ? null : `${HULL_FILTER_KEPT}.${characterID}`;
+  };
+  let hullFilterText = $state(((): string => {
+    try {
+      const key = hullFilterKey();
+      return key === null ? "" : localStorage.getItem(key) ?? "";
+    } catch {
+      return "";
+    }
+  })());
+  function keepHullSettings(): void {
+    try {
+      localStorage.setItem(HULL_SETTINGS_KEPT, JSON.stringify({ personal: showPersonalFittings, corp: showCorpFittings, alliance: allianceFilterSet, community: communityFilterSet, currentShip: onlyCurrentHull, skills: onlyWithSkills }));
+      const key = hullFilterKey();
+      if (key !== null) localStorage.setItem(key, hullFilterText);
+    } catch {
+      // Storage refused: the filters hold while the window is open.
+    }
+  }
+  // The hulls' names and their groups' (every hull the market sells, where they are listed), for the tree and the
+  // search; and the races' names (the messages their records name).
+  $effect(() => {
+    const listed = !ownerFilterIsSet && $hullBrowser?.available ? $hullBrowser.hullTypeIDs : [];
+    const hulls = [...new Set([...($savedFittings ?? []).map((saved) => saved.shipTypeID), ...listed])];
+    if (hulls.length > 0) flow.requestNames(hulls.flatMap((id) => [{ kind: "type" as const, id }, { kind: "typeGroup" as const, id }]));
+  });
+  $effect(() => {
+    const races = Object.values($hullBrowser?.raceNameIDs ?? {}).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]));
+    if (races.length > 0) flow.requestWords(races);
+  });
+  /** A race's name (characterdata/races.py get_race_name), the non-empire factions' the browser's own label. */
+  function raceName(raceID: number): string {
+    if (raceID === NON_EMPIRE) return fitWord("UI/Fitting/FittingWindow/NonEmpireFaction");
+    const messageID = $hullBrowser?.raceNameIDs[raceID] ?? null;
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" && template !== "" ? plainText(template) : String(raceID);
+  }
+  // The tree's groups, races and hulls opened (the client's list groups' open state), while the window is open.
+  let opened = $state<Record<string, boolean>>({});
+  function toggled(id: string, event: Event): void {
+    const open = (event.currentTarget as HTMLDetailsElement).open;
+    if ((opened[id] === true) !== open) opened[id] = open;
+  }
+  /** A filter button's hint with the owner's count (LoadFilterBtnTooltipPanel: "(n/most)"). */
+  function filterHint(label: string, count: number, most: number): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "", { numFittings: `(${count}/${most})` }, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }));
+  }
+  const hullName = (typeID: number): string => String($names.resolved[nameKey("type", typeID)] ?? "");
+  const hullGroupName = (typeID: number): string => String($names.resolved[nameKey("typeGroup", typeID)] ?? "");
+  /** A label's words with its arguments, the page's own where the install's are not to hand. */
+  function fitWords(label: string, args: Record<string, string | number>): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "", args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }));
+  }
+  /**
+   * FittingEntry.LoadTooltipPanel (entries/fitting.py 87 to 98): the fitting's name, its hull's, its description where
+   * it has one, and when it was saved (FittingLastSavedHint, FmtDate: SimpleDateUTC) where it says. As a hint's lines;
+   * the description's markup as its text.
+   */
+  function fittingTooltip(saved: { readonly name: string; readonly shipTypeID: number; readonly description: string; readonly savedDate: bigint | null }): string {
+    const lines = [plainText(saved.name), hullName(saved.shipTypeID)];
+    if (saved.description) lines.push(plainText(saved.description));
+    if (saved.savedDate) {
+      const date = $words.templates["/Carbon/UI/Common/DateTime/SimpleDateUTC"];
+      const timestamp = typeof date === "string" && date !== "" ? plainText(formatTemplate(date, { datetime: saved.savedDate.toString() }, { nameOf: () => "" })) : "";
+      if (timestamp) lines.push(fitWords("UI/Fitting/FittingLastSavedHint", { timestamp }));
+    }
+    return lines.join("\n");
+  }
+  /**
+   * HullTypeListGroup.LoadTooltipPanel (fittingBrowser.py 705 to 738): the hull's name; then each owner's count of its
+   * fittings that has any, the community's only where community fittings are on and the alliance's only for a pilot
+   * in one, in short words under "Saved Fittings" where two owners or more have any; NoFittingsSaved where none has.
+   * Then the hull's traits, where it has any (HasTraits, TraitsContainer: traitLines).
+   */
+  // svelte-ignore state_referenced_locally
+  const shipTraits = flow.shipTraits;
+  /** A message of the client's by its number, made plain; none where the page has not got it. */
+  const messageText = (messageID: number | null): string => {
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" ? plainText(template) : "";
+  };
+  /**
+   * TraitsContainer (traits.py 34 to 125) as lines of a hint: a caption for each skill the bonuses go with, by the
+   * skill's number (SkillNameCaption), then for the role's (RoleBonus) and the others (MiscBonus); under each its bonuses
+   * by importance (_GetBonusText: TraitWithNumber, the bonus rounded to a tenth and a whole one as such, with its unit's
+   * name; TraitWithoutNumber where it has no number). The markup is made plain, its tab a space.
+   */
+  function traitLines(traits: ShipTraits): string[] {
+    const traitWords = (label: string, args: Record<string, JsonValue>): string => {
+      const template = $words.templates[label];
+      const text = typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "";
+      return plainText(formatTemplate(text.split("<t>").join(" "), args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }));
+    };
+    const bonusLine = (bonus: ShipTraitBonus): string => {
+      const bonusText = messageText(bonus.nameID);
+      if (bonus.bonus === null) return traitWords("UI/InfoWindow/TraitWithoutNumber", { color: "", bonusText });
+      // round(bonus, 1), and an int where int(bonus) == bonus (Python 2 rounds a half away from nought): given as a long,
+      // which the numeric tag writes as an int ("5", where the float would be "5.0").
+      const value: JsonValue = Number.isInteger(bonus.bonus)
+        ? { type: "long", value: String(bonus.bonus) }
+        : (Math.sign(bonus.bonus) * Math.round(Math.abs(bonus.bonus) * 10)) / 10;
+      const unit = messageText(bonus.unitID === null ? null : $shipTraits.unitNameIDs.get(bonus.unitID) ?? null);
+      return traitWords("UI/InfoWindow/TraitWithNumber", { color: "", value, unit, bonusText });
+    };
+    const lines: string[] = [];
+    const add = (caption: string, bonuses: readonly ShipTraitBonus[]): void => {
+      lines.push(caption);
+      for (const bonus of [...bonuses].sort((left, right) => left.importance - right.importance)) lines.push(`  ${bonusLine(bonus)}`);
+    };
+    for (const skill of [...traits.skills].sort((left, right) => left.skillTypeID - right.skillTypeID)) {
+      add(traitWords("UI/ShipTree/SkillNameCaption", { skillName: hullName(skill.skillTypeID) }), skill.bonuses);
+    }
+    if (traits.role.length > 0) add(fitWord("UI/ShipTree/RoleBonus"), traits.role);
+    if (traits.misc.length > 0) add(fitWord("UI/ShipTree/MiscBonus"), traits.misc);
+    return lines;
+  }
+  // A hull's menu (HullTypeListGroup.GetMenu, 693 to 695: menusvc.GetMenuFromItemIDTypeID(None, typeID,
+  // includeMarketDetails=True), 2281 to 2352) on its right click: Show Info, and View Market Details where the type has a
+  // market group, and where it is published Find in Contracts (contracts.FindRelated: the contracts window's search for
+  // the type, contractsSearch.ts) and Find Personal Assets (invItemFunctions.FindInPersonalAssets: the assets window's
+  // search for the type's exact name, assetsSearch.ts); and Compare, the type's category being among compareCategories
+  // (2347 to 2348: every hull's is; CompareType, the compare tool, typeCompare.ts). Not the page's: a GM's "GM / WM
+  // Extras".
+  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  function openHullMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    nodeMenu = null;
+    hullMenu = { typeID, x: event.clientX, y: event.clientY };
+  }
+  // A group's or a race's menu (ShipParentGroup.GetMenu, fittingBrowser.py 579 to 583): Compare, which compares the
+  // node's hulls in the order it holds them (menusvc.CompareTypes(node.typeIDs): the compare tool opened, typeCompare.ts);
+  // then the list group's own (ListGroup.GetMenu, 284 to 311): Expand or Collapse, the node being locked (no Change
+  // Label, no Delete Folder) and kept from a window of its own (BlockOpenWindow). The Special Edition Ships group is
+  // given its hulls as "typeIds" (fittingBrowser.py 138), so its typeIDs are None, and its Compare raises in CompareTypes
+  // before anything opens: here it does nothing (typeIDs null).
+  let nodeMenu = $state<{ readonly typeIDs: readonly number[] | null; readonly id: string; readonly x: number; readonly y: number } | null>(null);
+  function openNodeMenu(typeIDs: readonly number[] | null, id: string, event: MouseEvent): void {
+    event.preventDefault();
+    hullMenu = null;
+    nodeMenu = { typeIDs, id, x: event.clientX, y: event.clientY };
+  }
+  $effect(() => {
+    if (hullMenu === null && nodeMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".hull-menu"))) {
+        hullMenu = null;
+        nodeMenu = null;
+      }
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        hullMenu = null;
+        nodeMenu = null;
+      }
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+  function hullTooltip(typeID: number): string {
+    const count = fittingNumByTypeID.get(typeID) ?? { personal: 0, corporation: 0, community: 0, alliance: 0 };
+    const owners = [count.personal, count.corporation, count.community, count.alliance].filter((each) => each > 0).length;
+    const short = owners >= 2;
+    const lines = [hullName(typeID)];
+    if (short) lines.push(fitWord("UI/Fitting/FittingWindow/SavedFittings"));
+    const numAndPaths: [number, string][] = [
+      [count.personal, "UI/Fitting/FittingWindow/PersonalFittingsNum"],
+      [count.corporation, "UI/Fitting/FittingWindow/CorpFittingsNum"],
+      ...($communityFittingsEnabled ? [[count.community, "UI/Fitting/FittingWindow/CommunityFittingsNum"] as [number, string]] : []),
+      ...(allianceID !== null ? [[count.alliance, "UI/Fitting/FittingWindow/AllianceFittingsNum"] as [number, string]] : []),
+    ];
+    for (const [numFittings, path] of numAndPaths) {
+      if (numFittings) lines.push(fitWords(short ? `${path}Short` : path, { numFittings }));
+    }
+    if (!owners) lines.push(fitWord("UI/Fitting/FittingWindow/NoFittingsSaved"));
+    // HasTraits: then its traits (TraitsContainer), asked as the hull is pointed at.
+    const traits = $shipTraits.traits.get(typeID);
+    if (traits) lines.push("", ...traitLines(traits));
+    return lines.join("\n");
+  }
+  /** A hull's fittings of each owner, every one read (fittingBrowser.GetNumShipsByTypeID, 200 to 211). */
+  const fittingNumByTypeID = $derived.by(() => {
+    const counts = new Map<number, { personal: number; corporation: number; community: number; alliance: number }>();
+    for (const saved of $savedFittings ?? []) {
+      const count = counts.get(saved.shipTypeID) ?? { personal: 0, corporation: 0, community: 0, alliance: 0 };
+      counts.set(saved.shipTypeID, { ...count, [saved.source]: count[saved.source] + 1 });
+    }
+    return counts;
+  });
+  /** ownerFilterIsSet: an owner's fittings asked for (GetFittingScrolllist, 74). */
+  const ownerFilterIsSet = $derived(showPersonalFittings || showCorpFittings || showAllianceFittings || showCommunityFittings);
+  /** The fittings the filters let through (FilterOutFittings, 265 to 296). */
+  const shownFittings = $derived.by(() => {
+    const shownOwner = { personal: showPersonalFittings, corporation: showCorpFittings, community: showCommunityFittings, alliance: showAllianceFittings };
+    const text = hullFilterText.toLowerCase();
+    const shown = ($savedFittings ?? []).filter((saved) => {
+      if (ownerFilterIsSet && !shownOwner[saved.source]) return false;
+      if (onlyWithSkills && fittingsWithSkills !== null && !fittingsWithSkills.has(saved.fittingID)) return false;
+      if (onlyCurrentHull && activeShipTypeID !== null && saved.shipTypeID !== activeShipTypeID) return false;
+      return !text || saved.name.toLowerCase().includes(text) || hullName(saved.shipTypeID).toLowerCase().includes(text) || hullGroupName(saved.shipTypeID).toLowerCase().includes(text);
+    });
+    return shown;
+  });
+  /**
+   * The browser's tree (bridge/hullBrowser.ts): with no owner's filter set, the market's hulls the search (a hull's name
+   * or its group's), the current-hull filter (none at all with no ship: GetAllShipGroupsAndShipsByGroupID, 368 to
+   * 369) and the skills filter let through, besides the fittings'. Null where the client's data is not had.
+   */
+  const browserTree = $derived.by(() => {
+    const data = $hullBrowser;
+    if (data === null || !data.available) return null;
+    const text = hullFilterText.toLowerCase();
+    const marketHulls = ownerFilterIsSet ? [] : data.hullTypeIDs.filter((typeID) => {
+      if (text && !hullName(typeID).toLowerCase().includes(text) && !hullGroupName(typeID).toLowerCase().includes(text)) return false;
+      if (onlyCurrentHull && activeShipTypeID !== typeID) return false;
+      return !(onlyWithSkills && hullsWithSkills !== null && !hullsWithSkills.has(typeID));
+    });
+    return hullTree({
+      fittings: shownFittings,
+      ownerFilterIsSet,
+      marketHulls,
+      allMarketHulls: data.hullTypeIDs,
+      specialTypeIDs: data.specialTypeIDs,
+      facts: (typeID): HullFacts | null | undefined => (data.types.has(typeID) ? data.types.get(typeID) : undefined),
+      typeName: hullName,
+      groupName: hullGroupName,
+      raceName,
+      currentShipTypeID: activeShipTypeID,
+    });
+  });
+
   /** "160" — a stack count, grouped. A singleton charge reports -1; call it 1. */
   function chargeCount(quantity: number): string {
     return (quantity > 0 ? quantity : 1).toLocaleString();
@@ -222,7 +881,8 @@
     if ($fitting.activeShipID) {
       refs.push({ kind: "evelocation", id: $fitting.activeShipID });
     }
-    for (const slot of $fitting.slots) {
+    if ($fitting.simulation) refs.push({ kind: "type", id: $fitting.simulation.shipTypeID });
+    for (const slot of [...$fitting.slots, ...($fitting.simulation?.slots ?? [])]) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
         // The loaded charge needs a name too, or the socket description would
@@ -235,6 +895,13 @@
     for (const row of fittableRows()) {
       refs.push({ kind: "type", id: row.row.typeID });
     }
+    // The simulated drone bay's, cargo hold's and fighter bay's types and the tubes' squadrons, named in their pickers.
+    for (const entry of [...($fitting.simulation?.drones ?? []), ...($fitting.simulation?.cargo ?? []), ...($fitting.simulation?.fighterBayTypes ?? [])]) {
+      refs.push({ kind: "type", id: entry.typeID });
+    }
+    for (const tube of $fitting.simulation?.fighterTubes ?? []) {
+      if (tube.squadron) refs.push({ kind: "type", id: tube.squadron.typeID });
+    }
     if (refs.length > 0) {
       flow.requestNames(refs);
     }
@@ -243,13 +910,17 @@
   /** Modules sitting in the hangar or the ship's cargo that could be fitted. */
   function fittableRows(): { row: InventoryItemRow; source: "hangar" | "cargo" }[] {
     const rows: { row: InventoryItemRow; source: "hangar" | "cargo" }[] = [];
+    // In a simulation a charge, a drone and a fighter go into the ghost too (FitAmmoToLocation, TryFitModuleToOneSlot,
+    // TryFit's fakeFighters).
+    const takes = (categoryID: number | null): boolean =>
+      isFittableRow(categoryID) || ($fitting.simulation !== null && $fitting.simulation !== undefined && (categoryID === 8 || categoryID === 18 || categoryID === 87));
     for (const row of $inventory.hangar.rows) {
-      if (isFittableRow(row.categoryID)) {
+      if (takes(row.categoryID)) {
         rows.push({ row, source: "hangar" });
       }
     }
     for (const row of $inventory.cargo.rows) {
-      if (isFittableRow(row.categoryID)) {
+      if (takes(row.categoryID)) {
         rows.push({ row, source: "cargo" });
       }
     }
@@ -460,7 +1131,308 @@
     { key: "explosive", label: "Exp", cls: "dmg-exp" },
   ] as const;
 
-  const stats = $derived.by(() => $fitting.stats);
+  // Simulate Fitting (ghostFittingSvc): while the window simulates the ship, its figures are the simulation's.
+  const simulation = $derived.by(() => $fitting.simulation ?? null);
+  const stats = $derived.by(() => (simulation ? simulation.stats : $fitting.stats));
+  const resources = $derived.by(() => (simulation ? simulation.resources : $fitting.resources));
+
+  // The simulation's words: the ghost ship icon's (ghostShipIcon.py, simulationModeTooltip.py) and a module's state's
+  // (moduleStateUtil activationStateLabels), each the page's own where the install's are not to be had.
+  const SIMULATION_WORDS: Record<string, string> = {
+    "UI/Fitting/FittingWindow/Simulate": "Simulate",
+    "UI/Fitting/FittingWindow/ExitSimulation": "Exit simulation",
+    "UI/Fitting/FittingWindow/SimulateShipFitting": "Simulate this fitting",
+    // The simulated cargo hold's picker (itemPickerMenu CargoItemPickerMenu: emptyLabelPath, RemoveAll, the entry's
+    // count and its remove).
+    "UI/Fitting/FittingWindow/NoCargoItemsSimulated": "Nothing in the simulated cargo hold. Pick up an item and put it here.",
+    // Said by the flow as a type a fitting does not keep is put in the hold (FitAnItemToHold); asked here.
+    "UI/Fitting/FittingWindow/ItemAddedNotInFitting": "",
+    "UI/Fitting/FittingWindow/RemoveAll": "Take everything out",
+    "UI/Generic/RemoveItem": "Take it out",
+    "UI/Fitting/FittingWindow/ClickToEdit": "Change how many",
+    // The simulated fighter bay's picker (fighterPickerMenu FighterBayItemPickerMenu's emptyLabelPath; the tubes'
+    // squadron containers: an empty tube's action and hint, a squadron's hint and its simulated state; the classes' and
+    // the roles' hints, fighterConst HINTTEXT_BY_ROLE).
+    "UI/Fitting/FittingWindow/NoFightersSimulated": "No fighters in the simulated fighter bay. Pick up fighters and put them here.",
+    "UI/Inventory/Fighters/Open": "Open",
+    "UI/Inventory/Fighters/EmptyLaunchTube": "An empty launch tube",
+    "UI/Inventory/Fighters/SquadronHint": "{typeName}: {numFighters} in the squadron",
+    "UI/Fitting/FittingWindow/FightersSimulated": "Simulated",
+    "UI/Fighters/Class/Light": "Light fighters",
+    "UI/Fighters/Class/Support": "Support fighters",
+    "UI/Fighters/Class/Heavy": "Heavy fighters",
+    "UI/Inventory/Fighters/RoleNoneHint": "",
+    "UI/Inventory/Fighters/RoleAntiFighterHint": "Fights other fighters",
+    "UI/Inventory/Fighters/RoleGeneralHint": "General attack",
+    "UI/Inventory/Fighters/RoleEwarHint": "Electronic warfare",
+    "UI/Inventory/Fighters/RoleTorpedoBomberHint": "Torpedoes against big targets",
+    "UI/Inventory/Fighters/RoleAOEBomberHint": "Bombs that hit an area",
+    // The fit-name label's tooltip (fittingWnd: SetTooltipHeaderAndDescription, ShipName_description).
+    "Tooltips/FittingWindow/ShipName_description": "Click to see the fitting as it stands and save it; drag it into a chat to link it.",
+    "Tooltips/FittingWindow/SimulateShipFittingDescription": "Try the ship's modules in every state without touching the ship itself.",
+    "UI/Fitting/FittingWindow/ExitSimulationMode": "Leave the simulation",
+    "Tooltips/FittingWindow/ExitSimulationModeDescription": "Show the ship as it really is again.",
+    "UI/Fitting/FittingWindow/ModuleMode": "Module state",
+    "UI/Fitting/FittingWindow/ModuleModeHint": "Click to go to the next state; shift-click to go back.",
+    "UI/Fitting/FittingWindow/ModuleModeOffline": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflinePassive": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflineRig": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflineSubsystem": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnline": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnlinePassive": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnlineRig": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeActive": "Active",
+    "UI/Fitting/FittingWindow/ModuleModeOverheated": "Overheated",
+    // FeedbackLabelCont: why a module would not fit in the simulation.
+    "UI/Fitting/FittingWindow/WarningNotForThisHullCategory": "That is not something this kind of hull takes.",
+    "UI/Fitting/FittingWindow/WarningHullCantFitThisModule": "This hull cannot take that module.",
+    "UI/Fitting/FittingWindow/WarningModuleTooBig": "That module is too big for this hull.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughLauncherSlots": "No launcher hardpoint is free.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughTurretSlotsFree": "No turret hardpoint is free.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughRigSlots": "No rig slot is free.",
+    "UI/Fitting/FittingWindow/WarningRigNotRightSize": "That rig is not this hull's size.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughFreeSlots": "No slot of that kind is free.",
+    "UI/Fitting/FittingWindow/WarningIncorrectSlotForModule": "That module does not go in that slot.",
+    "UI/Fitting/FittingWindow/WarningModuleSlotInUse": "That slot is taken.",
+    "UI/Fitting/FittingWindow/WarningMaxGroupFitted": "No more than {extraInfo} of that group may be fitted.",
+    "UI/Fitting/FittingWindow/WarningMaxTypeFitted": "No more than {extraInfo} of that module may be fitted.",
+    "UI/Fitting/FittingWindow/WarningModuleCouldntBeFitted": "The module could not be fitted.",
+    "UI/Fitting/FittingWindow/ActiveDronesLimitWarning": "No more than {limit} drones may be active.",
+    "UI/Fitting/FittingWindow/ActiveDroneBandwithWarning": "The ship has not the bandwidth for another drone.",
+    "UI/Fitting/FittingWindow/SimulateFitting": "Try it out",
+    "UI/Fitting/FittingWindow/SimulateShip": "Try this hull out",
+    "UI/Fitting/FittingWindow/SimulatedShipName": "A simulated {[item]typeID.name}",
+    "UI/Fitting/FittingWindow/LoadngOfShipCancelled": "The ship was not loaded.",
+  };
+  /** FeedbackLabelCont's errorDict and errorLabelPathDictWithVariables, by FIT_ERRORS key. */
+  const FIT_ERROR_LABELS: Readonly<Record<number, string>> = {
+    13: "WarningNotForThisHullCategory",
+    1: "WarningHullCantFitThisModule",
+    2: "WarningModuleTooBig",
+    5: "WarningNotEnoughLauncherSlots",
+    6: "WarningNotEnoughTurretSlotsFree",
+    7: "WarningNotEnoughRigSlots",
+    8: "WarningRigNotRightSize",
+    9: "WarningNotEnoughFreeSlots",
+    10: "WarningIncorrectSlotForModule",
+    11: "WarningModuleSlotInUse",
+    3: "WarningMaxGroupFitted",
+    4: "WarningMaxTypeFitted",
+  };
+  /** The simulation's feedback line (FeedbackLabelCont.SetText): why the last module would not fit. */
+  let fitFeedback = $state("");
+  function showFitError(fitError: { readonly errorKey: number; readonly extraInfo: number | null } | null): void {
+    if (!fitError) {
+      fitFeedback = "";
+      return;
+    }
+    const label = `UI/Fitting/FittingWindow/${FIT_ERROR_LABELS[fitError.errorKey] ?? "WarningModuleCouldntBeFitted"}`;
+    const template = $words.templates[label];
+    fitFeedback = plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { extraInfo: fitError.extraInfo ?? 0 }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** The picked module's type, where one is picked. */
+  function pickedTypeID(): number | null {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.typeID ?? null;
+  }
+  /** The picked item's category, where one is picked. */
+  function pickedCategoryID(): number | null {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.categoryID ?? null;
+  }
+  /** A picked charge loaded into a simulated module (dropped on it: FitAmmoToLocation). */
+  function loadSimulated(flagID: number): void {
+    const typeID = pickedTypeID();
+    if (typeID === null) return;
+    pickedItemID = null;
+    void run(async () => {
+      // FitAmmoToLocation returns nothing where the module does not take the charge, and the window says nothing.
+      await flow.loadSimulatedCharge(flagID, typeID);
+      fitFeedback = "";
+    });
+  }
+  /** The tracker's warning, said (SelectedDroneTracker: ActiveDronesLimitWarning, ActiveDroneBandwithWarning). */
+  function droneWarning(refused: { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null): string {
+    if (refused === null) return "";
+    const { warning, limit } = refused;
+    const label = warning === "limit" ? "UI/Fitting/FittingWindow/ActiveDronesLimitWarning" : "UI/Fitting/FittingWindow/ActiveDroneBandwithWarning";
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { limit }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** A simulated drone type's selected count changed (dronePickerMenu.ChangeActiveNum). */
+  function setActiveDrones(typeID: number, wanted: number): void {
+    fitFeedback = droneWarning(flow.setSimulatedActiveDrones(typeID, wanted));
+  }
+  /** A simulated drone type's count in the bay changed (dronePickerMenu.ChangeNumDrones). */
+  function setDrones(typeID: number, wanted: number): void {
+    fitFeedback = "";
+    void run(() => flow.setSimulatedDrones(typeID, wanted));
+  }
+  /** A picked module fitted in the simulation, in the slot named or the first it fits. */
+  function fitSimulated(flagID: number | null): void {
+    const typeID = pickedTypeID();
+    if (typeID === null) return;
+    pickedItemID = null;
+    void run(async () => showFitError(await flow.fitSimulatedModule(typeID, flagID)));
+  }
+  /** A simulated module right-clicked: unfitted (the ghost slot's Unfit). */
+  function unfitSimulated(slot: FittingSlot, event: MouseEvent): void {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (!simulation || !slot.module || flagID === null) return;
+    event.preventDefault();
+    simulationError = null;
+    flow.unfitSimulatedModule(flagID);
+  }
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(SIMULATION_WORDS));
+  });
+  /** A saved fitting simulated (SimulateFitting), from the browser. */
+  function simulateSaved(fittingID: number): void {
+    const saved = ($savedFittings ?? []).find((each) => each.fittingID === fittingID);
+    if (!saved) return;
+    simulationError = null;
+    fitFeedback = "";
+    void run(() => flow.simulateFitting({
+      shipTypeID: saved.shipTypeID,
+      fitData: saved.modules.map((item) => ({ typeID: item.typeID, flagID: item.flagID, quantity: item.quantity })),
+      name: saved.name,
+      fittingID: saved.fittingID,
+      ownerID: saved.ownerID,
+      browserClick: true,
+    }));
+  }
+  /** A hull simulated alone (the hull browser's ShipFittingSimulationButton: SimulateFitting with no fitData). */
+  function simulateHull(typeID: number): void {
+    simulationError = null;
+    fitFeedback = "";
+    void run(() => flow.simulateFitting({ shipTypeID: typeID, fitData: [], name: null }));
+  }
+  /** The hull the ring shows: the simulated one while simulating, with its fitting's name or SimulatedShipName. */
+  const ringTypeID = $derived.by(() => (simulation ? simulation.shipTypeID : activeShipTypeID));
+  const ringName = $derived.by(() => {
+    if (!simulation) return activeShipName;
+    if (simulation.name) return simulation.name;
+    if (simulation.shipID !== null) return activeShipName;
+    return simulationWord("UI/Fitting/FittingWindow/SimulatedShipName", { typeID: simulation.shipTypeID });
+  });
+  /**
+   * The fit-name label's name (fittingWnd.GetFitName and UpdateShipName): the ship's own while not simulating; while
+   * simulating, GetShipName, the ring's name with "*" before it once the simulation has been changed.
+   */
+  const fitName = $derived.by(() => (simulation?.changed ? `*${ringName}` : ringName));
+  /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
+  const HYPERLINK_ICON = clientTexture("res:/UI/Texture/classes/HyperNet/hyperlink_icon.png");
+  /** A simulation word: the client's where the install has it, the page's own otherwise. */
+  function simulationWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** activationStateLabels: a module's state's label, by its state and its kind (PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
+  const MODULE_MODE_LABELS: Readonly<Record<string, string>> = {
+    "0:1": "ModuleModeOffline",
+    "0:0": "ModuleModeOfflinePassive",
+    "0:2": "ModuleModeOfflineRig",
+    "1:3": "ModuleModeOfflineSubsystem",
+    "1:1": "ModuleModeOnline",
+    "1:0": "ModuleModeOnlinePassive",
+    "1:2": "ModuleModeOnlineRig",
+    "2:1": "ModuleModeActive",
+    "2:0": "ModuleModeOnlinePassive",
+    "3:1": "ModuleModeOverheated",
+  };
+  /** A simulated module's state (OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3), by its slot; null where there is none. */
+  function simulatedState(slot: FittingSlot): number | null {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (!simulation || !slot.module || flagID === null) return null;
+    return simulation.moduleStates[flagID] ?? null;
+  }
+  /** GetTextForCurrentStateForDogmaItem: the simulated module's state, said. */
+  function simulatedStateText(slot: FittingSlot): string | null {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    const state = simulatedState(slot);
+    if (!simulation || state === null || flagID === null) return null;
+    const label = MODULE_MODE_LABELS[`${state}:${simulation.moduleKinds[flagID] ?? 1}`];
+    return label ? simulationWord(`UI/Fitting/FittingWindow/${label}`) : null;
+  }
+  /** A simulated socket said: its slot, its module and the module's simulated state (not the ship's own online state). */
+  function simulatedSocketDescription(slot: FittingSlot): string {
+    if (!slot.module) return socketDescription(slot);
+    const loaded = slot.module.charge ? `, loaded with ${chargeCount(slot.module.charge.quantity)} ${moduleName(slot.module.charge.typeID)}` : "";
+    return `${slotName(slot)}, ${moduleName(slot.module.typeID)}, ${simulatedStateText(slot) ?? ""}${loaded}`;
+  }
+  /** The ghost ship icon's tooltip (LoadSimulationIconTooltip): its header and its description. */
+  const simulateHint = $derived.by(() =>
+    simulation
+      ? `${simulationWord("UI/Fitting/FittingWindow/ExitSimulationMode")}: ${simulationWord("Tooltips/FittingWindow/ExitSimulationModeDescription")}`
+      : `${simulationWord("UI/Fitting/FittingWindow/SimulateShipFitting")}: ${simulationWord("Tooltips/FittingWindow/SimulateShipFittingDescription")}`,
+  );
+  /** The ghost ship icon clicked (ToggleGhostFitting): into the simulation, or out of it. */
+  function toggleSimulation(): void {
+    simulationError = null;
+    fitFeedback = "";
+    void run(async () => {
+      if (simulation) flow.exitSimulation();
+      else await flow.simulateShip();
+    });
+  }
+  /**
+   * A simulated module clicked (OnClickSimulated): its next state, backwards with shift. Where it cannot be put in it,
+   * the client's UserError is said: its dialog's title and body.
+   */
+  function clickSimulated(slot: FittingSlot, event: MouseEvent): void {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (flagID === null) return;
+    error = "";
+    simulationError = null;
+    // A picked drone goes into the drone bay; a picked charge onto a module is loaded into it.
+    if (pickedItemID !== null && pickedCategoryID() === 18) {
+      fitSimulated(null);
+      return;
+    }
+    if (!slot.module) {
+      if (pickedItemID !== null && pickedCategoryID() !== 8) fitSimulated(flagID);
+      return;
+    }
+    if (pickedItemID !== null && pickedCategoryID() === 8) {
+      loadSimulated(flagID);
+      return;
+    }
+    // A picked module put on a module (FittingSlotController.OnDropData: Add): fitted there where it may be, a subsystem
+    // in the place of the one in its slot, any other refused as the slot is in use.
+    if (pickedItemID !== null) {
+      fitSimulated(flagID);
+      return;
+    }
+    try {
+      flow.switchSimulatedModule(flagID, event.shiftKey);
+    } catch (cause) {
+      const key = cause instanceof Error ? cause.message : String(cause);
+      const values = (cause as { values?: Readonly<Record<string, number>> }).values ?? {};
+      simulationError = { key, typeID: slot.module.typeID, values };
+      flow.requestWords([`dialog:${key}/title`, `dialog:${key}/body`]);
+    }
+  }
+  /** The last UserError a simulated module's click met, and the module's type. */
+  let simulationError = $state<{ readonly key: string; readonly typeID: number; readonly values: Readonly<Record<string, number>> } | null>(null);
+  const simulationErrorText = $derived.by(() => {
+    if (!simulationError) return "";
+    const { key, typeID, values } = simulationError;
+    const args = { modulename: typeID, moduleName: typeID, module: typeID, type: typeID, ...values };
+    const fill = (part: "title" | "body"): string => {
+      const template = $words.templates[`dialog:${key}/${part}`];
+      return typeof template === "string" && template !== ""
+        ? plainText(formatTemplate(template, args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }))
+        : "";
+    };
+    const title = fill("title");
+    const body = fill("body");
+    return title || body ? [title, body].filter(Boolean).join(": ") : key;
+  });
 
   /** The resistance grid: one row per layer, four damage types across. */
   const defenceRows = $derived.by(() =>
@@ -493,6 +1465,119 @@
 
   // --- the bottom read-outs -------------------------------------------------
 
+  // The simulated cargo hold (minihangar CargoCargoSlots, simulated): a click shows its items (the itemUtilMenu's
+  // CargoItemPickerMenu); a picked item put on it is put in the hold (OnDropData: AddSimulatedCargo).
+  let simCargoOpen = $state(false);
+  function clickSimulatedCargo(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      if (typeID === null) return;
+      pickedItemID = null;
+      void run(() => flow.addSimulatedCargo(typeID));
+      return;
+    }
+    simCargoOpen = !simCargoOpen;
+  }
+  function setSimulatedCargo(typeID: number, wanted: number): void {
+    if (!Number.isFinite(wanted)) return;
+    void run(() => flow.setSimulatedCargo(typeID, wanted));
+  }
+  // The simulated fighter bay (minihangar CargoFighterSlots, simulated), in the drone bay's place where the hull has one
+  // (ContructDroneAndFighterIcons: HasFighterBay): a click shows its picker (fittingWnd GetFighterMenu:
+  // FighterBayItemPickerMenu); a picked item put on it, one of each fighter (AddSimulatedFighters: GetQtyByTypeIDs,
+  // fighters only), goes to a tube or the bay (TryFitFightersToTubeOrBay).
+  let simFightersOpen = $state(false);
+  function clickSimulatedFighterBay(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      const fighter = pickedCategoryID() === 87;
+      pickedItemID = null;
+      if (typeID !== null && fighter) void run(() => flow.addSimulatedFighters(typeID, 1));
+      return;
+    }
+    simFightersOpen = !simFightersOpen;
+  }
+  /** The picked item's stack (a dropped item's stacksize). */
+  function pickedQuantity(): number {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.quantity ?? 1;
+  }
+  type SimulatedTubeEntry = NonNullable<typeof simulation>["fighterTubes"][number];
+  /** A fighter dragged in the picker: a tube's squadron (GetSquadronDragData) or a bay's type (ItemPickerBase.GetDragData). */
+  type FighterDrag = { readonly from: "tube"; readonly flagID: number; readonly typeID: number } | { readonly from: "bay"; readonly typeID: number };
+  let fighterDrag: FighterDrag | null = null;
+  function startFighterDrag(event: DragEvent, drag: FighterDrag): void {
+    fighterDrag = drag;
+    event.dataTransfer?.setData("application/x-evejs-simulated-fighter", String(drag.typeID));
+  }
+  /**
+   * A tube given a fighter (SingleTube.OnDropDataOnTube): a picked one, a bay's type or a tube's squadron put on it, a full
+   * squadron of its type (FitFighterToTube, GetMaxSquadronSize; a tube's squadron dropped stays in its own tube). A tube
+   * past the ship's is disabled.
+   */
+  function clickSimulatedTube(tube: SimulatedTubeEntry): void {
+    if (pickedItemID === null || !tube.present) return;
+    const typeID = pickedTypeID();
+    if (typeID === null || pickedCategoryID() !== 87) return;
+    pickedItemID = null;
+    void run(() => flow.fitSimulatedFighterToTube(typeID, tube.flagID));
+  }
+  function dropOnTube(event: DragEvent, tube: SimulatedTubeEntry): void {
+    const drag = fighterDrag;
+    fighterDrag = null;
+    if (!drag || !tube.present) return;
+    event.preventDefault();
+    void run(() => flow.fitSimulatedFighterToTube(drag.typeID, tube.flagID));
+  }
+  /**
+   * The fighter bay's list given fighters (OnDroppedInList): a tube's squadron dropped on it, out of its tube and into the
+   * bay (_TryRemoveItemsFromTube, _TryAddToFighterBay); a picked stack put on it, as many as it holds, a fighter only.
+   */
+  function clickFighterBayList(): void {
+    if (pickedItemID === null) return;
+    const typeID = pickedTypeID();
+    const qty = pickedQuantity();
+    const fighter = pickedCategoryID() === 87;
+    pickedItemID = null;
+    if (typeID !== null && fighter) void run(() => flow.addSimulatedFighterBay(typeID, qty));
+  }
+  function dropOnFighterBayList(event: DragEvent): void {
+    const drag = fighterDrag;
+    fighterDrag = null;
+    if (drag?.from !== "tube") return;
+    event.preventDefault();
+    void run(() => flow.moveSimulatedSquadronToBay(drag.flagID));
+  }
+  function setSimulatedFighterBay(typeID: number, wanted: number): void {
+    if (!Number.isFinite(wanted)) return;
+    void run(() => flow.setSimulatedFighterBay(typeID, wanted));
+  }
+  /** The picker's fightersAllowedCont: the light, support and heavy squadrons (fighterInvCont SquadronTypeContainer). */
+  const FIGHTER_CLASSES = [
+    { kind: "light", label: "UI/Fighters/Class/Light", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterLight.png") },
+    { kind: "support", label: "UI/Fighters/Class/Support", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterMedium.png") },
+    { kind: "heavy", label: "UI/Fighters/Class/Heavy", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterHeavy.png") },
+  ] as const;
+  /** fighterConst TEXTURE_BY_ROLE and HINTTEXT_BY_ROLE: a squadron's role icon (none for ROLE_NONE) and its hint. */
+  const FIGHTER_ROLES: Readonly<Record<number, { readonly icon: string | null; readonly hint: string }>> = {
+    0: { icon: null, hint: "UI/Inventory/Fighters/RoleNoneHint" },
+    1: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Interceptor.png"), hint: "UI/Inventory/Fighters/RoleAntiFighterHint" },
+    2: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_General.png"), hint: "UI/Inventory/Fighters/RoleGeneralHint" },
+    3: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Support.png"), hint: "UI/Inventory/Fighters/RoleEwarHint" },
+    4: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_AntiCapital.png"), hint: "UI/Inventory/Fighters/RoleTorpedoBomberHint" },
+    5: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Bomber.png"), hint: "UI/Inventory/Fighters/RoleAOEBomberHint" },
+  };
+  /** GetSortedItemsInfo: the hold's types by their names. */
+  function cargoByName(entries: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[]) {
+    return [...entries].sort((a, b) => {
+      const [left, right] = [moduleName(a.typeID), moduleName(b.typeID)];
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  }
+  /** The active ship's own fighter bay (CargoFighterSlots, not simulated), where the hull has one. */
+  const realFighterBay = $derived.by(() => {
+    const bay = $fitting.fighterBay ?? null;
+    return bay !== null && bay.shipID === $fitting.activeShipID ? bay : null;
+  });
   /** The cargo hold's used / total, from the inventory slice's own capacity read. */
   const cargoBayText = $derived.by<string>(() => {
     const cap = $inventory.cargo.capacity;
@@ -633,6 +1718,10 @@
     if (itemID === null) {
       return;
     }
+    if (simulation) {
+      fitSimulated(slotFlagOf(slot.family, slot.index));
+      return;
+    }
     const source = pickedSource;
     void run(async () => {
       await flow.fitModule(itemID, source, { family: slot.family, index: slot.index });
@@ -644,6 +1733,10 @@
   function fitAnywhere(): void {
     const itemID = pickedItemID;
     if (itemID === null) {
+      return;
+    }
+    if (simulation) {
+      fitSimulated(null);
       return;
     }
     const source = pickedSource;
@@ -755,52 +1848,137 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Capacitor</span>
-        <span class="fit-sec-headline">
-          {@render statValue(stats.capacitor.stability, (v) => (v > 0 ? "Stable" : "Unstable"))}
-        </span>
+        {#if stats.capacitor.simulator}
+          <span
+            class="fit-sec-headline"
+            title={capacitorWord(stats.capacitor.simulator.loadBalance > 0
+              ? "UI/Fitting/FittingWindow/ModulesSustainable"
+              : "UI/Fitting/FittingWindow/ModulesNotSustainable")}
+          >{capacitorHeadline(stats.capacitor.simulator)}</span>
+        {:else}
+          <span class="fit-sec-headline">
+            {@render statValue(stats.capacitor.stability, (v) => (v > 0 ? "Stable" : "Unstable"))}
+          </span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
             {@render statRow("Capacity", stats.capacitor.capacity, (v) => `${whole(v)} GJ`)}
             {@render statRow("Recharge time", stats.capacitor.rechargeSeconds, asSeconds)}
-            {@render statRow("Net change per second", stats.capacitor.deltaPerSecond, whole)}
-            {@render statRow("Lasts for", stats.capacitor.lastsForSeconds, asSeconds)}
+            {#if !stats.capacitor.simulator}
+              {@render statRow("Net change per second", stats.capacitor.deltaPerSecond, whole)}
+              {@render statRow("Lasts for", stats.capacitor.lastsForSeconds, asSeconds)}
+            {/if}
           </tbody>
         </table>
-        <p class="note">
-          Whether a fit runs its capacitor dry needs each module's drain, which
-          this window cannot read yet — so it is left unsaid, not guessed.
-        </p>
+        {#if stats.capacitor.simulator}
+          <p class="fit-cap-delta" title={capacitorWord("UI/Fitting/FittingWindow/ExcessCapacitor")}>
+            {capacitorWord("UI/Fitting/FittingWindow/CapacitorDelta", {
+              delta: stats.capacitor.simulator.delta,
+              percentage: stats.capacitor.simulator.deltaPercentage,
+            })}
+          </p>
+          <p class="note fit-cap-balance">{capacitorBalance(stats.capacitor.simulator)}</p>
+        {:else}
+          <p class="note">
+            Whether a fit runs its capacitor dry needs each module's drain, which
+            this window cannot read yet — so it is left unsaid, not guessed.
+          </p>
+        {/if}
       </div>
     </details>
 
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Offense</span>
-        <span class="fit-sec-headline">{@render statValue(stats.firepower.dps, (v) => `${whole(v)} dps`)}</span>
+        {#if stats.firepower.simulator}
+          <span class="fit-sec-headline">{offenseHeadline(stats.firepower.simulator)}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.firepower.dps, (v) => `${whole(v)} dps`)}</span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
-        <table class="guests">
-          <tbody>
-            {@render statRow("Damage per second", stats.firepower.dps, whole)}
-            {@render statRow("Drone damage per second", stats.firepower.droneDps, whole)}
-            {@render statRow("Volley damage", stats.firepower.volley, whole)}
-            {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
-          </tbody>
-        </table>
-        <p class="note">
-          Damage summed across your guns, drones or miners needs each module's
-          own stats — click a weapon below to read its effective figures.
-        </p>
+        {#if stats.firepower.simulator}
+          <table class="guests">
+            <tbody>
+              {#each offenseLines(stats.firepower.simulator) as line (line.label)}
+                <tr>
+                  <th scope="row">{line.label}</th>
+                  <td>
+                    {line.text}
+                    {#if line.withReload}<br /><span class="muted">{offenseWord("UI/Fitting/FittingWindow/WithReloadTimeText")} {line.withReload}</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+              <!-- offensePanel: the alpha strike, a whole number of hit points (int(round(alpha))). -->
+              <tr><th scope="row">Volley damage</th><td>{whole(Math.round(stats.firepower.simulator.alphaStrike))} HP</td></tr>
+              {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
+            </tbody>
+          </table>
+        {:else}
+          <table class="guests">
+            <tbody>
+              {@render statRow("Damage per second", stats.firepower.dps, whole)}
+              {@render statRow("Drone damage per second", stats.firepower.droneDps, whole)}
+              {@render statRow("Volley damage", stats.firepower.volley, whole)}
+              {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
+            </tbody>
+          </table>
+          <p class="note">
+            Damage summed across your guns, drones or miners needs each module's
+            own stats — click a weapon below to read its effective figures.
+          </p>
+        {/if}
       </div>
     </details>
 
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Defense</span>
-        <span class="fit-sec-headline">{@render statValue(stats.totalEhp, (v) => `${whole(v)} ehp`)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{defenseWord("UI/Fitting/FittingWindow/ColoredEffectiveHp", { effectiveHp: Math.trunc(stats.defense.effectiveHp) })}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.totalEhp, (v) => `${whole(v)} ehp`)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <div class="fit-sec-body">
+          <div class="table-wrap overflow-x-auto">
+            <table class="guests defence-grid">
+              <thead>
+                <tr>
+                  <th>Layer</th>
+                  <th class="num">HP</th>
+                  {#each DAMAGE_TYPES as dt (dt.key)}
+                    <th class="num"><span class="dmg-chip {dt.cls}">{dt.label}</span></th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each DEFENSE_LAYERS as row (row.layer)}
+                  <tr>
+                    <td data-label="Layer"><span class="layer-{row.layer === 'structure' ? 'hull' : row.layer}">{defenseWord(row.label)}</span></td>
+                    <td class="num" data-label="HP">{layerText(stats.defense, row.layer)}</td>
+                    {#each DAMAGE_TYPES as dt (dt.key)}
+                      <td class="num" data-label={dt.label}>
+                        {defenseWord("UI/Fitting/FittingWindow/ColoredResistanceLabel", { number: stats.defense.layers[row.layer].resistances[dt.key] })}
+                      </td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <table class="guests">
+            <tbody>
+              {#each repairLines(stats.defense) as line (line.label)}
+                <tr><th scope="row">{line.label}</th><td>{line.text}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <p class="note">
           Effective hit points are worked out against an even {damageProfileText}
@@ -858,13 +2036,35 @@
           to read its effective boost or repair amount.
         </p>
       </div>
+      {/if}
     </details>
 
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Targeting</span>
-        <span class="fit-sec-headline">{@render statValue(stats.targeting.maxTargetRange, asDistance)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{knownWord(stats.targeting.maxTargetRange, (v) => shipWord("UI/Fitting/FittingWindow/TargetingHeader", { maxRange: v / 1000.0 }))}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.targeting.maxTargetRange, asDistance)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <!-- targetingPanel.UpdateTargetingPanel: the strongest sensor, the scan resolution's whole part, the targets
+             rounded up, the signature radius as a distance. -->
+        <div class="fit-sec-body">
+          <table class="guests">
+            <tbody>
+              <tr>
+                <th scope="row">{stats.targeting.sensorName ? `${stats.targeting.sensorName} sensor strength` : "Sensor strength"}</th>
+                <td>{knownWord(stats.targeting.sensorStrength, (v) => shipWord("UI/Fitting/FittingWindow/SensorStrength", { points: v }))}</td>
+              </tr>
+              <tr><th scope="row">Scan resolution</th><td>{knownWord(stats.targeting.scanResolution, (v) => shipWord("UI/Fitting/FittingWindow/ScanResolution", { resolution: Math.trunc(v) }))}</td></tr>
+              <tr><th scope="row">Signature radius</th><td>{knownWord(stats.navigation.signatureRadius, (v) => shipWord("UI/Fitting/FittingWindow/TargetingRange", { range: v }))}</td></tr>
+              <tr><th scope="row">Targets at once</th><td>{knownWord(stats.targeting.maxLockedTargets, (v) => shipWord("UI/Fitting/FittingWindow/MaxLockedTargets", { maxTargets: Math.ceil(v) }))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
@@ -881,13 +2081,37 @@
           </tbody>
         </table>
       </div>
+      {/if}
     </details>
 
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Navigation</span>
-        <span class="fit-sec-headline">{@render statValue(stats.navigation.maxVelocity, (v) => `${toFixed(v, 1)} m/s`)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{knownWord(stats.navigation.maxVelocity, (v) => shipWord("UI/Fitting/FittingWindow/ColoredMaxVelocity", { maxVelocity: v }))}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.navigation.maxVelocity, (v) => `${toFixed(v, 1)} m/s`)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <!-- navigationPanel.UpdateNavigationPanel: the mass in tonnes past ten thousand kilograms, the inertia modifier,
+             the align time, the warp speed as a distance a second (base times multiplier times an AU). -->
+        <div class="fit-sec-body">
+          <table class="guests">
+            <tbody>
+              <tr>
+                <th scope="row">Mass</th>
+                <td>{knownWord(stats.navigation.mass, (v) => (v > 10000.0
+                  ? shipWord("UI/Fitting/FittingWindow/MassTonnes", { mass: v / 1000.0 })
+                  : shipWord("UI/Fitting/FittingWindow/MassKg", { mass: v })))}</td>
+              </tr>
+              <tr><th scope="row">Inertia modifier</th><td>{knownWord(stats.navigation.inertiaModifier, (v) => shipWord("UI/Fitting/FittingWindow/InertiaModifier", { value: v }))}</td></tr>
+              <tr><th scope="row">Time to align</th><td>{knownWord(stats.navigation.alignTimeSeconds, (v) => shipWord("UI/Fitting/FittingWindow/AlignTime", { value: v }))}</td></tr>
+              <tr><th scope="row">Warp speed</th><td>{knownWord(stats.navigation.warpSpeedAuPerSecond, (v) => shipWord("UI/Fitting/FittingWindow/WarpSpeed", { distText: fmtDist(v * METRES_PER_AU, 2, say) }))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
@@ -899,22 +2123,74 @@
           </tbody>
         </table>
       </div>
+      {/if}
     </details>
 
+    {#if simulation?.structure}
+      <!-- A structure's fighter panel in the drones' place (statsPanel.GetMenuData: the drones' panel where the
+           controller has one, else the fighters'; fighterPanel.UpdateFighterStats and SetFighterDpsText): the squadrons
+           in the tubes' damage a second, how many are full and how many short of full. -->
+      <details class="fit-sec" open>
+        <summary class="fit-sec-head">
+          <span class="fit-sec-name">{offenseWord("UI/Common/Fighters")}</span>
+          <span class="fit-sec-headline">{offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.fighterDps })}</span>
+        </summary>
+        <div class="fit-sec-body">
+          <p class="note">{offenseWord("UI/Fitting/FittingWindow/NumFullSquadrons", { numSquadrons: simulation.fighterSquadrons.full })}</p>
+          <p class="note">{offenseWord("UI/Fitting/FittingWindow/NumPartialSquadrons", { numSquadrons: simulation.fighterSquadrons.partial })}</p>
+        </div>
+      </details>
+    {:else}
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Drones</span>
-        <span class="fit-sec-headline">{@render statValue(stats.firepower.droneDps, (v) => `${whole(v)} dps`)}</span>
+        {#if stats.drones}
+          <!-- dronePanel.SetDroneDpsText: the active drones' damage a second. -->
+          <span class="fit-sec-headline">{offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: stats.drones.dps })}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.firepower.droneDps, (v) => `${whole(v)} dps`)}</span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
-            {@render statRow("Bandwidth", stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}
+            {#if stats.drones}
+              <!-- dronePanel.UpdateDroneStats: how many are active, the bandwidth they use of the ship's (FmtAmt of
+                   the used, the ship's as its attribute is shown), the pilot's control range. -->
+              <tr><th scope="row">Active drones</th><td>{offenseWord("UI/Fitting/FittingWindow/NumDronesActive", { numDrones: stats.drones.activeDrones })}</td></tr>
+              <tr>
+                <th scope="row">Bandwidth</th>
+                <td>{Math.round(stats.drones.bandwidthUsed).toLocaleString()}/{knownWord(stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}</td>
+              </tr>
+            {:else}
+              {@render statRow("Bandwidth", stats.bays.droneBandwidth, (v) => `${toFixed(v, 0)} Mbit/s`)}
+            {/if}
             {@render statRow("Control range", stats.bays.droneControlRange, asDistance)}
             {@render statRow("Drone bay", stats.bays.droneCapacity, asVolume)}
           </tbody>
         </table>
-        {#if showInventory}
+        {#if simulation}
+          <!-- The simulated drone bay (dronePickerMenu): each type, how many of it are active of how many, and both
+               changed a drone at a time. -->
+          {#if simulation.drones.length === 0}
+            <p class="note">No drones in the simulated drone bay. Pick up drones from the hangar to add them.</p>
+          {:else}
+            <ul class="fit-sim-drones">
+              {#each simulation.drones as entry (entry.typeID)}
+                <li>
+                  <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
+                  <span class="fit-sim-drone-count">{entry.active} of {entry.total} active</span>
+                  <span class="row-actions">
+                    <button type="button" class="minor" disabled={busy || entry.active === 0} onclick={() => setActiveDrones(entry.typeID, entry.active - 1)}>Fewer active</button>
+                    <button type="button" class="minor" disabled={busy || entry.active === entry.total} onclick={() => setActiveDrones(entry.typeID, entry.active + 1)}>More active</button>
+                    <button type="button" class="minor" disabled={busy} onclick={() => setDrones(entry.typeID, entry.total - 1)}>One fewer</button>
+                    <button type="button" class="minor" disabled={busy} onclick={() => setDrones(entry.typeID, entry.total + 1)}>One more</button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if showInventory}
           <p class="controls">
             <button type="button" class="minor" onclick={() => showInventory?.()}>
               Manage drones
@@ -927,6 +2203,7 @@
         </p>
       </div>
     </details>
+    {/if}
   </div>
 {/snippet}
 
@@ -939,54 +2216,194 @@
       <div class="hud-gauge cpu">
         <div class="hud-head">
           <span class="hud-label">CPU</span>
-          <span class="hud-value">{resourceText($fitting.resources.cpu, "tf")}</span>
+          <span class="hud-value">{resourceText(resources.cpu, "tf")}</span>
         </div>
         <div
           class="hud-track"
           role="meter"
           aria-label="CPU"
-          aria-valuenow={percent($fitting.resources.cpu) ?? 0}
+          aria-valuenow={percent(resources.cpu) ?? 0}
           aria-valuemin="0"
           aria-valuemax="100"
         >
-          <span class="hud-fill" style={`width: ${percent($fitting.resources.cpu) ?? 0}%`}></span>
+          <span class="hud-fill" style={`width: ${percent(resources.cpu) ?? 0}%`}></span>
         </div>
       </div>
       <div class="hud-gauge powergrid">
         <div class="hud-head">
           <span class="hud-label">Power grid</span>
-          <span class="hud-value">{resourceText($fitting.resources.powergrid, "MW")}</span>
+          <span class="hud-value">{resourceText(resources.powergrid, "MW")}</span>
         </div>
         <div
           class="hud-track"
           role="meter"
           aria-label="Power grid"
-          aria-valuenow={percent($fitting.resources.powergrid) ?? 0}
+          aria-valuenow={percent(resources.powergrid) ?? 0}
           aria-valuemin="0"
           aria-valuemax="100"
         >
-          <span class="hud-fill" style={`width: ${percent($fitting.resources.powergrid) ?? 0}%`}></span>
+          <span class="hud-fill" style={`width: ${percent(resources.powergrid) ?? 0}%`}></span>
         </div>
       </div>
     </div>
     <dl class="fit-readouts">
       <div>
         <dt>Calibration</dt>
-        <dd>{resourceText($fitting.resources.calibration, "")}</dd>
+        <dd>{resourceText(resources.calibration, "")}</dd>
       </div>
       <div>
         <dt>Cargo hold</dt>
-        <dd>{cargoBayText}</dd>
+        {#if simulation}
+          <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
+          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
+            {toFixed(simulation.cargoCapacity.used, 1)} / {toFixed(simulation.cargoCapacity.capacity, 1)} m³</button></dd>
+        {:else}
+          <dd>{cargoBayText}</dd>
+        {/if}
       </div>
-      <div>
-        <dt>Drone bay</dt>
-        <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
-      </div>
+      {#if simulation?.fighterBay}
+        <!-- The simulated fighter bay (minihangar CargoFighterSlots) in the drone bay's place, where the hull has one
+             (ContructDroneAndFighterIcons: HasFighterBay): its use and capacity (GetCapacity(flagFighterBay)); a click
+             shows its picker, a picked fighter put on it goes to a tube or the bay. -->
+        <div>
+          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
+          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
+            {toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</button></dd>
+        </div>
+      {:else if !simulation && realFighterBay}
+        <!-- The ship's own fighter bay in the drone bay's place (CargoFighterSlots: its inventory's use, over
+             GetFighterCapacity). -->
+        <div>
+          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
+          <dd>{realFighterBay.used === null ? "—" : toFixed(realFighterBay.used, 1)} / {toFixed(realFighterBay.capacity, 1)} m³</dd>
+        </div>
+      {:else}
+        <div>
+          <dt>Drone bay</dt>
+          <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
+        </div>
+      {/if}
       <div class="fit-readout-value">
         <dt>Fit value</dt>
         <dd>{@render statValue(fitValue, whole)}</dd>
       </div>
     </dl>
+    {#if simulation && simCargoOpen}
+      <!-- CargoItemPickerMenu: each type by its name, how many (its count edited, from none to what the room left allows:
+           UpdateNodes' intRange), taken out; Remove All. -->
+      <div class="fit-sim-cargo">
+        {#if simulation.cargo.length === 0}
+          <p class="note">{simulationWord("UI/Fitting/FittingWindow/NoCargoItemsSimulated")}</p>
+        {:else}
+          <ul class="fit-sim-drones">
+            {#each cargoByName(simulation.cargo) as entry (entry.typeID)}
+              <li>
+                <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
+                <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
+                  title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
+                  onchange={(event) => setSimulatedCargo(entry.typeID, Number(event.currentTarget.value))} />
+                <button type="button" class="minor" disabled={busy} title={simulationWord("UI/Generic/RemoveItem")} aria-label={simulationWord("UI/Generic/RemoveItem")}
+                  onclick={() => setSimulatedCargo(entry.typeID, 0)}>✕</button>
+              </li>
+            {/each}
+          </ul>
+          <p class="controls">
+            <button type="button" class="minor" disabled={busy} onclick={() => flow.emptySimulatedCargo()}>{simulationWord("UI/Fitting/FittingWindow/RemoveAll")}</button>
+          </p>
+        {/if}
+      </div>
+    {/if}
+    {#if simulation?.fighterBay && simFightersOpen}
+      <!-- FighterBayItemPickerMenu: each kind's squadrons allowed and had (fightersAllowedCont; a kind the ship takes none
+           of not shown); the five tubes (SingleTube, one past the ship's disabled): the tube's number, its squadron (its
+           icon, its role's, a dash for each it may hold, lit as many as it has; taken out, one fewer, one more) or Open,
+           a fighter put in it a full squadron; the bay's types by name as the cargo's, double-clicked into the first empty
+           tube; Remove All, where the bay or a tube holds any. -->
+      <div class="fit-sim-fighters">
+        <p class="fit-sim-squadron-slots">
+          {#each FIGHTER_CLASSES as fighterKind (fighterKind.kind)}
+            {#if simulation.squadronSlots[fighterKind.kind].total}
+              <span class="fit-sim-squadron-slot" title={simulationWord(fighterKind.label)}>
+                <img src={fighterKind.icon} alt={simulationWord(fighterKind.label)} width="16" height="16" />:{simulation.squadronSlots[fighterKind.kind].used}/{simulation.squadronSlots[fighterKind.kind].total}
+              </span>
+            {/if}
+          {/each}
+        </p>
+        <ol class="fit-sim-tubes">
+          {#each simulation.fighterTubes as tube (tube.flagID)}
+            <li class="fit-sim-tube" class:disabled={!tube.present}>
+              <button type="button" class="fit-sim-tube-slot" data-tube-flag={tube.flagID} disabled={busy || !tube.present}
+                title={tube.squadron
+                  ? simulationWord("UI/Inventory/Fighters/SquadronHint", { typeName: moduleName(tube.squadron.typeID), numFighters: tube.squadron.size })
+                  : simulationWord("UI/Inventory/Fighters/EmptyLaunchTube")}
+                draggable={tube.squadron !== null}
+                ondragstart={(event) => { if (tube.squadron) startFighterDrag(event, { from: "tube", flagID: tube.flagID, typeID: tube.squadron.typeID }); }}
+                ondragend={() => (fighterDrag = null)}
+                ondragover={(event) => { if (fighterDrag) event.preventDefault(); }}
+                ondrop={(event) => dropOnTube(event, tube)}
+                onclick={() => clickSimulatedTube(tube)}>
+                <span class="fit-sim-tube-number">{tube.number}</span>
+                {#if tube.squadron}
+                  <TypeIcon typeID={tube.squadron.typeID} name={moduleName(tube.squadron.typeID)} size="md" />
+                  {#if FIGHTER_ROLES[tube.squadron.role]?.icon}
+                    <img class="fit-sim-tube-role" src={FIGHTER_ROLES[tube.squadron.role]?.icon} width="16" height="16"
+                      alt={simulationWord(FIGHTER_ROLES[tube.squadron.role]?.hint ?? "")} title={simulationWord(FIGHTER_ROLES[tube.squadron.role]?.hint ?? "")} />
+                  {/if}
+                  <span class="fit-sim-tube-dashes" aria-hidden="true">
+                    {#each Array.from({ length: tube.squadron.max }, (_, at) => at < (tube.squadron?.size ?? 0)) as lit, at (at)}
+                      <span class={lit ? "lit" : ""}></span>
+                    {/each}
+                  </span>
+                  <span class="fit-sim-tube-action">{simulationWord("UI/Fitting/FittingWindow/FightersSimulated")}</span>
+                {:else}
+                  <span class="fit-sim-tube-action">{tube.present ? simulationWord("UI/Inventory/Fighters/Open") : ""}</span>
+                {/if}
+              </button>
+              {#if tube.squadron && tube.present}
+                <span class="row-actions">
+                  <button type="button" class="minor" disabled={busy} aria-label={simulationWord("UI/Generic/RemoveItem")} title={simulationWord("UI/Generic/RemoveItem")}
+                    onclick={() => flow.removeSimulatedSquadron(tube.flagID)}>✕</button>
+                  <button type="button" class="minor" disabled={busy} aria-label="One fewer"
+                    onclick={() => tube.squadron && void run(() => flow.setSimulatedSquadronSize(tube.flagID, Math.max(0, (tube.squadron?.size ?? 0) - 1)))}>−</button>
+                  <button type="button" class="minor" disabled={busy} aria-label="One more"
+                    onclick={() => tube.squadron && void run(() => flow.setSimulatedSquadronSize(tube.flagID, (tube.squadron?.size ?? 0) + 1))}>+</button>
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <div class="fit-sim-fighter-bay" role="group" aria-label={offenseWord("UI/Fitting/FittingWindow/FighterBay")}
+          ondragover={(event) => { if (fighterDrag?.from === "tube") event.preventDefault(); }}
+          ondrop={dropOnFighterBayList}
+          onclick={clickFighterBayList}>
+          {#if simulation.fighterBayTypes.length === 0}
+            <p class="note">{simulationWord("UI/Fitting/FittingWindow/NoFightersSimulated")}</p>
+          {:else}
+            <ul class="fit-sim-drones">
+              {#each cargoByName(simulation.fighterBayTypes) as entry (entry.typeID)}
+                <li>
+                  <button type="button" class="fit-sim-drone-name fit-sim-fighter-name" draggable="true" disabled={busy}
+                    ondragstart={(event) => startFighterDrag(event, { from: "bay", typeID: entry.typeID })}
+                    ondragend={() => (fighterDrag = null)}
+                    ondblclick={() => void run(() => flow.fitSimulatedFighterToEmptyTube(entry.typeID))}>{moduleName(entry.typeID)}</button>
+                  <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
+                    title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
+                    onchange={(event) => setSimulatedFighterBay(entry.typeID, Number(event.currentTarget.value))} />
+                  <button type="button" class="minor" disabled={busy} title={simulationWord("UI/Generic/RemoveItem")} aria-label={simulationWord("UI/Generic/RemoveItem")}
+                    onclick={(event) => { event.stopPropagation(); flow.removeSimulatedFighterBayType(entry.typeID); }}>✕</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+        {#if simulation.fighterBayTypes.length > 0 || simulation.fighterTubes.some((tube) => tube.squadron !== null)}
+          <p class="controls">
+            <button type="button" class="minor" disabled={busy} onclick={() => flow.emptySimulatedFighterBay()}>{simulationWord("UI/Fitting/FittingWindow/RemoveAll")}</button>
+          </p>
+        {/if}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -1034,6 +2451,12 @@
   {#if $fitting.actionError && !$fitting.actionErrorSaid}
     <p class="error">Last change failed: {$fitting.actionError}</p>
   {/if}
+  {#if simulationErrorText}
+    <p class="error" role="alert">{simulationErrorText}</p>
+  {/if}
+  {#if simulation && fitFeedback}
+    <p class="note fit-feedback" role="status">{fitFeedback}</p>
+  {/if}
   {#if $fitting.resourcesError}
     <p class="error">The ship's readings could not be loaded: {$fitting.resourcesError}</p>
   {/if}
@@ -1079,7 +2502,13 @@
         <div class="fit-center">
           <div class="fit-topline">
             <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="sm" />
-            <span class="fit-ship-name">{activeShipName}</span>
+            <!-- The fit-name label (fittingWnd fitNameParent, 415 to 425): its link icon and name, a click that saves the
+                 fitting as it stands (OpenFittingForCurrentShip: DoSaveFitting), dragged the fitting the window shows
+                 (GetFittingDragData), its tooltip the name and ShipName_description. -->
+            <button type="button" class="fit-ship-name fit-name-link" draggable="true" disabled={busy}
+              title={`${fitName}\n${simulationWord("Tooltips/FittingWindow/ShipName_description")}`}
+              ondragstart={(event) => startFittingSourceDrag(event, "fittingWindow")}
+              onclick={() => void flow.saveFitAs().catch(() => {})}><img src={HYPERLINK_ICON} alt="" width="16" height="16" />{fitName}</button>
             {#if activeShipClass}<span class="fit-ship-class">{activeShipClass}</span>{/if}
             <span class="fit-info" title={`${activeShipName}${activeShipClass ? ` · ${activeShipClass}` : ""}`}
               aria-label={`Ship: ${activeShipName}${activeShipClass ? `, ${activeShipClass}` : ""}`}>ⓘ</span>
@@ -1097,7 +2526,25 @@
             <div class="fit-ring">
               <div class="fit-ring-guide" aria-hidden="true"></div>
               <div class="fit-hull">
-                <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="lg" />
+                <TypeIcon typeID={ringTypeID} name={ringName} size="lg" />
+                {#if simulation && simulation.shipID === null}
+                  <span class="fit-hull-name">{ringName}</span>
+                {/if}
+                <!-- The ghost ship icon (ghostShipIcon.py): Simulate, or Exit Simulation while simulating; dragged, the
+                     active ship's own fitting (GetDragData: GetFittingDictForActiveShip, named the ship's name). -->
+                <button
+                  type="button"
+                  draggable="true"
+                  ondragstart={(event) => startFittingSourceDrag(event, "activeShip")}
+                  class="fit-simulate"
+                  class:simulating={simulation !== null}
+                  title={simulateHint}
+                  aria-pressed={simulation !== null}
+                  disabled={busy}
+                  onclick={toggleSimulation}
+                >
+                  {simulation ? simulationWord("UI/Fitting/FittingWindow/ExitSimulation") : simulationWord("UI/Fitting/FittingWindow/Simulate")}
+                </button>
               </div>
 
               {#each sockets as socket (`${socket.slot.family}:${socket.slot.index}`)}
@@ -1111,12 +2558,17 @@
                     slot.family !== "rig" &&
                     slot.family !== "subsystem"}
                   class:armed={isSelected(slot)}
+                  class:sim-offline={simulatedState(slot) === 0}
+                  class:sim-online={simulatedState(slot) === 1}
+                  class:sim-active={simulatedState(slot) === 2}
+                  class:sim-overheated={simulatedState(slot) === 3}
                   style={`left: ${socket.xPercent}%; top: ${socket.yPercent}%`}
-                  title={socketDescription(slot)}
-                  aria-label={socketDescription(slot)}
+                  title={simulation && slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}. ${simulationWord("UI/Fitting/FittingWindow/ModuleMode")}: ${simulatedStateText(slot) ?? ""}. ${simulationWord("UI/Fitting/FittingWindow/ModuleModeHint")} Right-click takes it out.` : socketDescription(slot)}
+                  aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
-                  onclick={() => clickSocket(slot)}
+                  onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
+                  oncontextmenu={(event) => unfitSimulated(slot, event)}
                   ondragover={(event) => overSocket(event, slot)}
                   ondragleave={() => (dropSlot = null)}
                   ondrop={(event) => dropOnSocket(event, slot)}
@@ -1424,6 +2876,236 @@
       {@render statsPanel()}
     </section>
   {/if}
+
+  <!-- ===================== saved fittings ============================= -->
+  <section bind:this={browserSection}>
+    {#if hullMenu !== null}
+      {@const menuFor = hullMenu}
+      <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
+        {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+        {/if}
+        {#if $hullBrowser?.types.get(menuFor.typeID)?.published === true}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInContracts(typeID); }}>{fitWord("UI/Inventory/ItemActions/FindInContracts")}</button>
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), hullName(typeID))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+        {/if}
+        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
+      </span>
+    {/if}
+    {#if nodeMenu !== null}
+      {@const menuFor = nodeMenu}
+      <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+        <button type="button" role="menuitem" onclick={() => { const typeIDs = menuFor.typeIDs; nodeMenu = null; if (typeIDs !== null) compareTypes(typeIDs); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        <hr />
+        <button type="button" role="menuitem" onclick={() => { const id = menuFor.id; nodeMenu = null; opened[id] = opened[id] !== true; }}>{fitWord(opened[menuFor.id] === true ? "UI/Common/Collapse" : "UI/Common/Expand")}</button>
+      </span>
+    {/if}
+    <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
+    <p class="controls">
+      <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
+      <!-- hullAndHardwareTypeBrowser.AddExportImportMenu (680 to 694): Import from Clipboard and Export to Clipboard. -->
+      <span class="import-export">
+        <button type="button" class="minor" aria-haspopup="menu" aria-expanded={importExportOpen} title={fitWord("UI/Fitting/FittingWindow/ImportAndExport")}
+          onclick={() => (importExportOpen = !importExportOpen)}>⇅</button>
+        {#if importExportOpen}
+          <span class="import-export-menu" role="menu">
+            <button type="button" role="menuitem" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboardHint")}
+              onclick={() => { importExportOpen = false; void navigator.clipboard.readText().catch(() => null).then((text) => flow.importFittingFromClipboard(text)).catch(() => {}); }}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/ImportFromClipboard")}
+            </button>
+            <button type="button" role="menuitem" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint")}
+              onclick={() => { importExportOpen = false; void flow.currentFitText().then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}
+            </button>
+          </span>
+        {/if}
+      </span>
+    </p>
+    <p class="controls">
+      <button type="button" class={showPersonalFittings ? "active" : "minor"} aria-pressed={showPersonalFittings}
+        title={filterHint("UI/Fitting/FittingWindow/FilterPersonalFittings", ($savedFittings ?? []).filter((saved) => saved.source === "personal").length, 500)}
+        onclick={() => { showPersonalFittings = !showPersonalFittings; keepHullSettings(); }}>👤</button>
+      <button type="button" class={showCorpFittings ? "active" : "minor"} aria-pressed={showCorpFittings}
+        title={filterHint("UI/Fitting/FittingWindow/FilterCorpFittings", ($savedFittings ?? []).filter((saved) => saved.source === "corporation").length, 600)}
+        onclick={() => { showCorpFittings = !showCorpFittings; keepHullSettings(); }}>🏢</button>
+      {#if allianceID !== null}
+        <button type="button" class={allianceFilterSet ? "active" : "minor"} aria-pressed={allianceFilterSet}
+          title={filterHint("UI/Fitting/FittingWindow/FilterAllianceFittings", ($savedFittings ?? []).filter((saved) => saved.source === "alliance").length, 600)}
+          onclick={() => { allianceFilterSet = !allianceFilterSet; keepHullSettings(); }}>🛡</button>
+      {/if}
+      {#if $communityFittingsEnabled}
+        <button type="button" class={communityFilterSet ? "active" : "minor"} aria-pressed={communityFilterSet}
+          title={fitWord("UI/Fitting/FilterCommunityFittings")}
+          onclick={() => { communityFilterSet = !communityFilterSet; keepHullSettings(); }}>🌐</button>
+      {/if}
+      <button type="button" class={onlyCurrentHull ? "active" : "minor"} aria-pressed={onlyCurrentHull}
+        title={fitWord("UI/Fitting/FittingWindow/FilterCurrentHull")}
+        onclick={() => { onlyCurrentHull = !onlyCurrentHull; keepHullSettings(); }}>⛴</button>
+      <button type="button" class={onlyWithSkills ? "active" : "minor"} aria-pressed={onlyWithSkills}
+        title={fitWord("UI/Fitting/FittingWindow/FilterSkillsForFitting")}
+        onclick={() => { onlyWithSkills = !onlyWithSkills; keepHullSettings(); }}>📘</button>
+      <input type="search" bind:value={hullFilterText} oninput={keepHullSettings} aria-label="Search fittings" />
+    </p>
+    <!-- A fitting's name as the client's label draws it (FittingEntry, Generic's label: its markup read as the
+         client's text reads it, bridge/mailMarkup.ts mailBodyLines): bold, italic, underlined or a link as its tags say,
+         on one line. -->
+    {#snippet markedText(text: string)}
+      {#each mailBodyLines(text) as line, place (place)}{#if place > 0}{" "}{/if}{#each line as segment, at (at)}<span class="marked-run" class:bold={segment.bold} class:italic={segment.italic} class:underline={segment.underline || segment.link !== null}>{segment.text}</span>{/each}{/each}
+    {/snippet}
+    {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
+        <!-- Draggable (FittingEntry.GetDragData): the skill plan editor takes a fitting dropped on its skills, and the
+             chat's text takes it as a link. -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <p class="controls saved-fitting" class:selected={selectedFittings.includes(saved.fittingID)} data-fitting-id={saved.fittingID}
+          draggable="true" ondragstart={(event) => startFittingDrag(event, {
+            fittingID: saved.fittingID,
+            shipTypeID: saved.shipTypeID,
+            fitData: saved.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: saved.name,
+          })}>
+          {#if saved.source === "corporation"}
+            <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
+          {:else if saved.source === "community"}
+            <span title={fitWord("UI/Fitting/CommunityFittingHint")}>🌐</span>
+          {:else if saved.source === "alliance"}
+            <span title={fitWord("UI/Fitting/AllianceFittingHint")}>🛡</span>
+          {/if}
+          <button type="button" class="fitting-name" title={fittingTooltip(saved)} aria-pressed={selectedFittings.includes(saved.fittingID)}
+            onclick={(event) => selectFitting(saved.fittingID, event)}>{@render markedText(saved.name)}</button>
+          {#if selectedFittings.length > 1 && selectedFittings.includes(saved.fittingID)}
+            <!-- GetFittingMenu with more than one selected (506 to 528): Delete Fitting alone, for those of them
+                 GetDeletableNodes lets go, in the browser's order. -->
+            {#if selectedDeletable.length > 0}
+              <button type="button" class="minor" onclick={() => void flow.deleteFittings(shownFittingIDs().filter((id) => selectedDeletable.includes(id))).catch(() => {})}>
+                {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+              </button>
+            {/if}
+          {:else}
+          <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
+            {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
+          </button>
+          <!-- GetFittingMenu (512): Simulate Fitting, as a click on the fitting does. -->
+          <button type="button" class="minor" disabled={busy} onclick={() => simulateSaved(saved.fittingID)}>
+            {simulationWord("UI/Fitting/FittingWindow/SimulateFitting")}
+          </button>
+          <!-- GetFittingMenu (513 to 516): no Fit to Active Ship for a structure's fitting (categoryStructure); Open
+               Multifit only where the config allows any (GetMaxShipsToFit) and the pilot is docked. -->
+          {#if $hullBrowser?.types.get(saved.shipTypeID)?.categoryID !== CATEGORY_STRUCTURE}
+            <button type="button" disabled={busy} onclick={() => void flow.fitFittingToActiveShip(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FitFittingToActiveShip")}
+            </button>
+          {/if}
+          <button type="button" class="minor" onclick={() => void flow.buyFit(saved.fittingID).catch(() => {})}>
+            {fitWord("UI/Market/MarketQuote/BuyAll")}
+          </button>
+          {#if $maxShipsToFit > 0 && ($inventory.stationID ?? $inventory.structureID ?? null) !== null}
+            <button type="button" class="minor" onclick={() => void flow.openMultiFit(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}
+            </button>
+          {/if}
+          {#if deletable(saved.source)}
+            <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
+              {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+            </button>
+          {/if}
+          {/if}
+        </p>
+    {/snippet}
+    {#snippet hullEntry(hull: NonNullable<typeof browserTree>["groups"][number]["races"][number]["hulls"][number])}
+      {@const id = `h:${hull.typeID}`}
+      {@const count = fittingNumByTypeID.get(hull.typeID)}
+      <details class="browser-node" class:current-hull={hull.isCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
+        <summary title={hullTooltip(hull.typeID)} onpointerenter={() => void flow.requestShipTraits([hull.typeID]).catch(() => {})}
+          oncontextmenu={(event) => openHullMenu(hull.typeID, event)}>
+          <TypeIcon typeID={hull.typeID} name={hullName(hull.typeID)} size="sm" />
+          <strong>{hullName(hull.typeID)}</strong>
+          {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}
+          {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCorpFittings")}>🏢 {count.corporation}</small>{/if}
+          {#if count?.community && $communityFittingsEnabled}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedCommunityFittings")}>🌐 {count.community}</small>{/if}
+          <!-- HullTypeListGroup.Load (683 to 686) shows the alliance's count where the corporation has any fittings for
+               the hull (allianceCont.display = bool(numCorp)), its number nought where the alliance has none. -->
+          {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedAllianceFittings")}>🛡 {count.alliance}</small>{/if}
+          <!-- HullTypeListGroup's ShipFittingSimulationButton (fittingBrowser 747 to 755): the hull simulated alone. -->
+          <button type="button" class="minor fit-simulate-hull" title={simulationWord("UI/Fitting/FittingWindow/SimulateShip")}
+            aria-label={`${simulationWord("UI/Fitting/FittingWindow/SimulateShip")}: ${hullName(hull.typeID)}`} disabled={busy}
+            onclick={(event) => { event.preventDefault(); event.stopPropagation(); simulateHull(hull.typeID); }}>⧉</button>
+        </summary>
+        {#if opened[id] === true}
+          {#each hull.fittings as saved (saved.fittingID)}
+            {@render fittingRow(saved)}
+          {/each}
+        {/if}
+      </details>
+    {/snippet}
+    {#snippet groupEntry(group: NonNullable<typeof browserTree>["groups"][number], prefix: string)}
+      {@const id = `${prefix}g:${group.groupID}`}
+      <details class="browser-node" class:holds-current={group.hasCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
+        <summary oncontextmenu={(event) => openNodeMenu(group.compareTypeIDs, id, event)}>{hullGroupName(group.namedBy)}</summary>
+        {#if opened[id] === true}
+          {#each group.races as race (race.raceID)}
+            {@const raceID = `${id}_${race.raceID}`}
+            <details class="browser-node" class:holds-current={race.hasCurrent} open={opened[raceID] === true} ontoggle={(event) => toggled(raceID, event)}>
+              <summary oncontextmenu={(event) => openNodeMenu(race.compareTypeIDs, raceID, event)}>{raceName(race.raceID)}</summary>
+              {#if opened[raceID] === true}
+                {#each race.hulls as hull (hull.typeID)}
+                  {@render hullEntry(hull)}
+                {/each}
+              {/if}
+            </details>
+          {/each}
+        {/if}
+      </details>
+    {/snippet}
+    {#if $savedFittings === null || $hullBrowser === null}
+      <p class="note">…</p>
+    {:else if browserTree === null}
+      <!-- The client's data is not had here: the fittings let through, by name, each with its hull. -->
+      {#if shownFittings.length === 0}
+        <p class="note">{fitWord("UI/Common/NothingFound")}</p>
+      {:else}
+        {#each shownFittings as saved (saved.fittingID)}
+          <small class="note">{hullName(saved.shipTypeID)}</small>
+          {@render fittingRow(saved)}
+        {/each}
+      {/if}
+    {:else if browserTree.nothingFound}
+      <p class="note">{fitWord("UI/Common/NothingFound")}</p>
+    {:else}
+      <div class="browser-tree">
+        {#each browserTree.groups as group (group.groupID)}
+          {@render groupEntry(group, "")}
+        {/each}
+        {#if browserTree.special.length > 0}
+          <details class="browser-node" class:holds-current={browserTree.specialHasCurrent} open={opened.special === true} ontoggle={(event) => toggled("special", event)}>
+            <summary oncontextmenu={(event) => openNodeMenu(null, "special", event)}>{fitWord("UI/Fitting/FittingWindow/SpecialEditionShips")}</summary>
+            {#if opened.special === true}
+              {#each browserTree.special as group (group.groupID)}
+                {@render groupEntry(group, "special")}
+              {/each}
+            {/if}
+          </details>
+        {/if}
+        {#if browserTree.unsupported.length > 0}
+          <details class="browser-node" open={opened.unsupported === true} ontoggle={(event) => toggled("unsupported", event)}>
+            <summary>{fitWord("UI/Fitting/FittingWindow/UnsupportedShip")}</summary>
+            {#if opened.unsupported === true}
+              {#each browserTree.unsupported as saved (saved.fittingID)}
+                <p class="controls saved-fitting">
+                  <span>{@render markedText(`${saved.name} (${$hullBrowser?.types.get(saved.shipTypeID) ? hullName(saved.shipTypeID) : fitWord("UI/Fitting/FittingWindow/UnknownShipType")}) - unsupported`)}</span>
+                  {#if deletable(saved.source)}
+                    <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
+                      {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+                    </button>
+                  {/if}
+                </p>
+              {/each}
+            {/if}
+          </details>
+        {/if}
+      </div>
+    {/if}
+  </section>
 
   <!-- ===================== modules you can fit ======================== -->
   <section>

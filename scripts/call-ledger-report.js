@@ -3,8 +3,9 @@
 // The game-port transport's call ledger, as a report.
 //
 // While a BFF has pilots on the game port, its transport tallies every call it
-// makes by "service.method" and by how that call compares with the retail
-// client's (src/gamePort/retailCalls.js). `app.locals.gamePortPilots.callLedger()`
+// asks for by "service.method" and by how that call compares with the retail
+// client's (src/gamePort/retailCalls.js), and every call its sessions put on
+// the wire. `app.locals.gamePortPilots.callLedger()`
 // gives the rows; a BFF started for a live check writes them to a JSON file.
 // This turns such a file into docs/game-port-call-ledger.md: the measured list
 // of what the web client calls, and of what is still to be read against the
@@ -30,10 +31,15 @@ function worst(statuses) {
   return ORDER.find((status) => statuses[status] > 0) ?? "unchecked";
 }
 
+/** What the session sent of a row; a ledger written before sends were counted has its askings alone. */
+const sentOf = (row) => (typeof row.sent === "number" ? row.sent : row.calls);
+
 function report(rows, { what = "", generatedOn = new Date().toISOString().slice(0, 10) } = {}) {
   const groups = new Map(ORDER.map((status) => [status, []]));
   for (const row of rows) groups.get(worst(row.statuses)).push(row);
-  const calls = (list) => list.reduce((sum, row) => sum + row.calls, 0);
+  const calls = (list) => list.reduce((sum, row) => sum + sentOf(row), 0);
+  const asked = (list) => list.reduce((sum, row) => sum + row.calls, 0);
+  const carried = (list) => list.reduce((sum, row) => sum + (row.carried ?? 0), 0);
   const lines = [
     "# Game-port call ledger",
     "",
@@ -43,10 +49,15 @@ function report(rows, { what = "", generatedOn = new Date().toISOString().slice(
       "for the same thing. The comparisons are in `src/gamePort/retailCalls.js`, each with the client file it was read from. " +
       "A pair is listed under the worst status it was seen with.",
     "",
-    "| Status | Pairs | Calls | Meaning |",
-    "|---|---|---|---|",
-    ...ORDER.map((status) => `| ${status} | ${groups.get(status).length} | ${calls(groups.get(status))} | ${MEANING[status]} |`),
-    `| **total** | **${rows.length}** | **${calls(rows)}** | ${Object.keys(RETAIL_CALLS).length} pairs have an entry in the registry. |`,
+    "**Sent** is what the sessions put on the wire. A call a bind carried (MachoBindObject(params, (method, args, " +
+      "keywords))) is counted under its own pair as well as the bind's, so the packets are the sent less the carried " +
+      `(${calls(rows) - carried(rows)} here, ${carried(rows)} carried). **Asked** is how often the transport asked for the pair: ` +
+      "a call shared with the same one already out, as the client's are, is asked and not sent.",
+    "",
+    "| Status | Pairs | Sent | Asked | Meaning |",
+    "|---|---|---|---|---|",
+    ...ORDER.map((status) => `| ${status} | ${groups.get(status).length} | ${calls(groups.get(status))} | ${asked(groups.get(status))} | ${MEANING[status]} |`),
+    `| **total** | **${rows.length}** | **${calls(rows)}** | **${asked(rows)}** | ${Object.keys(RETAIL_CALLS).length} pairs have an entry in the registry. |`,
     "",
   ];
   for (const status of ORDER) {
@@ -54,12 +65,12 @@ function report(rows, { what = "", generatedOn = new Date().toISOString().slice(
     if (list.length === 0) continue;
     lines.push(`## ${status} (${list.length})`, "");
     if (status === "unchecked") {
-      lines.push(list.map((row) => `\`${row.pair}\`${row.calls > 1 ? ` ×${row.calls}` : ""}`).join(", "), "");
+      lines.push(list.map((row) => `\`${row.pair}\`${sentOf(row) > 1 ? ` ×${sentOf(row)}` : ""}`).join(", "), "");
       continue;
     }
-    lines.push("| Pair | Calls | Read from | Note |", "|---|---|---|---|");
+    lines.push("| Pair | Sent | Asked | Read from | Note |", "|---|---|---|---|---|");
     for (const row of list) {
-      lines.push(`| \`${row.pair}\` | ${row.calls} | ${row.source ? `\`${row.source}\`` : ""} | ${String(row.note ?? "").replace(/\|/g, "\\|")} |`);
+      lines.push(`| \`${row.pair}\` | ${sentOf(row)} | ${row.calls} | ${row.source ? `\`${row.source}\`` : ""} | ${String(row.note ?? "").replace(/\|/g, "\\|")} |`);
     }
     lines.push("");
   }

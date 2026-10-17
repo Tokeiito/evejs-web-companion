@@ -641,12 +641,12 @@
 
   // --- the row menu ---------------------------------------------------------
   //
-  // ⚠ ABSOLUTE, NOT FIXED, AND OUTSIDE THE SCROLLER. `.stn-panel` carries
-  // `container-type: inline-size` for the width tiers, and a size container is
-  // a containing block for its `position: fixed` descendants — so a menu
-  // positioned against the VIEWPORT would land against the panel instead and
-  // appear in the wrong place. It is positioned against the panel deliberately,
-  // which is also what keeps it attached while the dock column is dragged. It
+  // ⚠ ABSOLUTE, NOT FIXED, AND OUTSIDE THE SCROLLER. It is positioned against
+  // the panel deliberately, which keeps it attached while the dock column is
+  // dragged. (The panel's `container-type: inline-size` is NOT what rules out
+  // `fixed`: measured 2026-10-17, a fixed child of an inline-size or size
+  // container lands where it is asked. `filter`, `backdrop-filter` and
+  // `contain: layout` are what move it, as inside a `.win`: ui/portal.ts.) It
   // is rendered at the panel's root rather than inside the scrolling list, so
   // opening it can never make the list taller.
   function openMenu(

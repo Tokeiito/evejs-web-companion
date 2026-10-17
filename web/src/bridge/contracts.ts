@@ -241,6 +241,106 @@ function decodeItemRow(row: JsonValue): ContractItemRow | null {
   };
 }
 
+/** A search's entry as the client's result list reads one (ContractEntrySearch): the contract, its items, its bids. */
+export interface ContractSearchEntry {
+  readonly contract: ContractRow;
+  readonly items: readonly ContractItemRow[];
+  readonly numBids: number;
+}
+
+/**
+ * A SearchContracts result read with each entry's items (the search entry's `items`: itemTypeID, quantity, inCrate),
+ * which an item exchange's or an auction's row is named by (GetContractTitle).
+ */
+export function decodeContractSearchEntries(result: JsonValue): { readonly entries: readonly ContractSearchEntry[]; readonly numFound: number } {
+  const entries: ContractSearchEntry[] = [];
+  for (const entry of listItems(readKeyVal(result, "contracts"))) {
+    const inner = readKeyVal(entry, "contract");
+    const contract = decodeContractRow(inner === undefined ? entry : inner);
+    if (!contract) continue;
+    const items: ContractItemRow[] = [];
+    for (const row of listItems(readKeyVal(entry, "items"))) {
+      const decoded = decodeItemRow(row);
+      if (decoded) items.push(decoded);
+    }
+    entries.push({ contract, items, numBids: toNumber(readKeyVal(entry, "numBids")) });
+  }
+  return { entries, numFound: toNumber(readKeyVal(result, "numFound")) };
+}
+
+/**
+ * eveformat.truncate_text_ignoring_tags (tags.py 88 to 109): the text's letters counted outside its tags, cut at
+ * `length` with the trail after; the trail is put on at the `length`-th letter even where nothing more follows.
+ */
+export function truncateIgnoringTags(text: string, length: number, trail: string): string {
+  let result = "";
+  let counter = 0;
+  let done = false;
+  for (const part of text.split(/(<.*?>)/)) {
+    if (part.startsWith("<")) {
+      result += part;
+      continue;
+    }
+    if (done) continue;
+    const plain = part.split("&gt;").join(">").split("&lt;").join("<").split("&amp;").join("&");
+    for (const letter of plain) {
+      result += letter === "&" ? "&amp;" : letter === "<" ? "&lt;" : letter === ">" ? "&gt;" : letter;
+      counter += 1;
+      if (counter === length) {
+        done = true;
+        result += trail;
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * contractscommon.GetContractTitle (133 to 161): an item exchange or an auction with items by them (a trade where it
+ * asks for some and gives some, MultipleItems where it gives several, the one type with its quantity where one), one
+ * with none by what it wants (WantAGift with no reward, else WantToBuy); a courier by its route and volume; any other
+ * by its title. Cut at 60 letters with MoreTrail; Unknown where nothing is left. `word` fills a label of the client's.
+ */
+export function contractTitle(contract: ContractRow, items: readonly ContractItemRow[], word: (label: string, args?: Readonly<Record<string, JsonValue>>) => string): string {
+  const ITEM_EXCHANGE = 1;
+  const AUCTION = 2;
+  const COURIER = 3;
+  let text = "";
+  if ((contract.type === ITEM_EXCHANGE || contract.type === AUCTION) && items.length > 0) {
+    const given = items.filter((item) => item.inCrate).length;
+    const asked = items.length - given;
+    if (contract.type === ITEM_EXCHANGE && asked > 0 && given > 0) text = word("UI/Contracts/ContractsWindow/WantToTrade");
+    else if (given > 1) text = word("UI/Contracts/ContractsWindow/MultipleItems");
+    else if (given === 1) {
+      text = items[0]!.quantity > 1
+        ? word("UI/Contracts/ContractsWindow/TypeNameWithQuantity", { typeID: items[0]!.typeID, quantity: items[0]!.quantity })
+        : word("UI/Contracts/ContractsWindow/TypeName", { typeID: items[0]!.typeID });
+    } else if (contract.type === ITEM_EXCHANGE) {
+      text = Number(contract.reward ?? 0) === 0 ? word("UI/Contracts/ContractsWindow/WantAGift") : word("UI/Contracts/ContractEntry/WantToBuy");
+    }
+  } else if (contract.type === COURIER) {
+    text = word("UI/Contracts/ContractsWindow/CourierContractTitleWIthVolume", { startSolarSystem: contract.startSolarSystemID, endSolarSystem: contract.endSolarSystemID, volume: contract.volume });
+  } else {
+    text = contract.title;
+  }
+  text = truncateIgnoringTags(text, 60, word("UI/Common/MoreTrail"));
+  return text.length === 0 ? word("UI/Common/Unknown") : text;
+}
+
+/** The labels contractTitle may use, for the page to ask the client's words of. */
+export const CONTRACT_TITLE_LABELS: readonly string[] = Object.freeze([
+  "UI/Contracts/ContractsWindow/WantToTrade",
+  "UI/Contracts/ContractsWindow/MultipleItems",
+  "UI/Contracts/ContractsWindow/TypeNameWithQuantity",
+  "UI/Contracts/ContractsWindow/TypeName",
+  "UI/Contracts/ContractsWindow/WantAGift",
+  "UI/Contracts/ContractEntry/WantToBuy",
+  "UI/Contracts/ContractsWindow/CourierContractTitleWIthVolume",
+  "UI/Common/MoreTrail",
+  "UI/Common/Unknown",
+]);
+
 /** Decode a GetContract detail bundle: the row, its items, its endpoints. */
 export function decodeContractDetail(result: JsonValue): ContractDetail | null {
   const contract = decodeContractRow(readKeyVal(result, "contract") ?? null);

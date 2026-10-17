@@ -56,6 +56,7 @@ const { GamePortSession } = require("./session");
 const packets = require("./packets");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
+const { noticeTargetMatches } = require("./publicGateway");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
@@ -451,6 +452,9 @@ const FACILITY_PLACES_KEPT_MS = 60_000;
  */
 const FACILITIES_KEPT_AS = Object.freeze({ GetFacilities: "region", GetMaxActivityModifiers: "largest" });
 const facilitiesKeptAs = (method, form) => (Object.hasOwn(FACILITIES_KEPT_AS, method) && form.args.length === 0 && form.kwargs === null ? FACILITIES_KEPT_AS[method] : null);
+const CONTRACT_PROXY = "contractProxy";
+/** contracts.NeocomBlink (190 to 206): GetLoginInfo(), nothing sent, asked once as the notifications are ready. */
+const loginInfoKeptAs = (method, form) => (method === "GetLoginInfo" && form.args.length === 0 && form.kwargs === null ? "loginInfo" : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -556,6 +560,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   [ONLINE_STATUS]: Object.freeze({
     keptAs: onlineKeptAs,
     notices: new Set(["OnContactLoggedOn", "OnContactLoggedOff"]),
+    writes: Object.freeze({}),
+  }),
+  // contracts (contracts.py 186 to 206): what of the pilot's contracts wants attention, asked once as its
+  // notifications are ready (OnNotificationUiReady, NeocomBlink) and never again in the session; the client keeps
+  // what it makes of it (contractsInProgress) and its windows ask by other calls. Here the answer is kept for the
+  // session, and an asking after (the page's contracts window) is answered from it.
+  [CONTRACT_PROXY]: Object.freeze({
+    keptAs: loginInfoKeptAs,
+    notices: new Set(),
     writes: Object.freeze({}),
   }),
 });
@@ -1114,6 +1127,9 @@ function createGamePortPilots({
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
+  // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
+  // consume); none read where it is not given.
+  gatewayNotices = null,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
@@ -1161,6 +1177,36 @@ function createGamePortPilots({
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
+  /**
+   * The calls the session makes of itself, never asked for by name here, in the client's form: the login's
+   * GetServiceInfo (machoNet.py 1702), the clock's GetTime (connectionService.py 208, 250), the idle connection's
+   * Ping (connectionService.py 189), a Moniker's MachoResolveObject and MachoBindObject (moniker.py 235, 143), a
+   * cached object's GetCachableObject (objectCaching.py 299). docs/game-port-client-reference.md A1 to A4, P7 and C3.
+   */
+  const SESSIONS_OWN = Object.freeze({ status: "same", source: "carbon/common/script/net/machoNet.py, moniker.py, objectCaching.py; carbon/client/script/remote/connectionService.py", note: null });
+  const sessionsOwn = (service, method) => method === "MachoResolveObject" || method === "MachoBindObject" ||
+    (service === "machoNet" && (method === "GetServiceInfo" || method === "GetTime")) || (service === "pingService" && method === "Ping") ||
+    (service === "objectCaching" && method === "GetCachableObject");
+  /**
+   * A call the session put on the wire, counted as sent (ledger.sent). What is asked and not sent is not: a call
+   * shared with the same one already out, an answer kept, a Moniker made and never called. The session's own calls
+   * are noted as they go, for nothing here asks them by name.
+   */
+  function noteSent(service, method, { carried = false } = {}) {
+    if (!carried && sessionsOwn(service, method)) ledger.note(service, method, SESSIONS_OWN);
+    ledger.sent(service, method, { carried });
+  }
+  /** A session on a transport, which tells the ledger each call it sends. */
+  const sessionOn = (transport) => {
+    const session = createSession(transport);
+    session.onSent = noteSent;
+    return session;
+  };
+  /** The object an answer gave, made known to the session as the service's that answered it (session.objectIsOf). */
+  const answeredObject = (session, service, answer) => {
+    const objectID = boundObjectID(answer);
+    return objectID && typeof session.objectIsOf === "function" ? session.objectIsOf(objectID, service) : objectID;
+  };
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
@@ -1284,6 +1330,34 @@ function createGamePortPilots({
     const frame = publish(entry, { kind: "notification", notification });
     entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
+  }
+
+  /**
+   * The pilot's public gateway notices, read for as long as the pilot is held (the client's NoticeConsumer). Those
+   * whose target group is the pilot's session's (NoticeConsumer._validate_target_group_against_session) go on its
+   * stream, each as {typeName, payload}; the rest the client logs and keeps a while in case the session comes to match
+   * them, which here is not done.
+   */
+  function startGatewayNotices(entry) {
+    if (typeof gatewayNotices !== "function") return;
+    try {
+      entry.gatewayNoticesStop = gatewayNotices({ userID: entry.accountID, characterID: entry.characterID }, (notice) => {
+        if (entry.ended) return;
+        const attributes = entry.session.attributes || {};
+        const forPilot = noticeTargetMatches(notice.targetGroup, {
+          applicationInstance: notice.applicationInstance,
+          solarSystemID: positive(attributes.solarsystemid2),
+          userID: positive(attributes.userid) ?? entry.accountID,
+          characterID: positive(attributes.charid) ?? entry.characterID,
+          corporationID: positive(attributes.corpid),
+          allianceID: positive(attributes.allianceid),
+        });
+        if (!forPilot) return;
+        publish(entry, { kind: "gateway-notice", notice: { typeName: notice.typeName, payload: notice.payload } });
+      });
+    } catch {
+      entry.gatewayNoticesStop = null;
+    }
   }
 
   /** One event on the pilot's stream, for whoever is listening now and whoever resumes from before it. */
@@ -1520,6 +1594,10 @@ function createGamePortPilots({
     entry.space = null;
     averagePricesThreadEnded(entry);
     warsThreadEnded(entry);
+    if (entry.gatewayNoticesStop) {
+      try { entry.gatewayNoticesStop(); } catch { /* Gone with the pilot either way. */ }
+      entry.gatewayNoticesStop = null;
+    }
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -1605,7 +1683,7 @@ function createGamePortPilots({
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
     }
-    const session = handed ? handed.session : createSession(transport);
+    const session = handed ? handed.session : sessionOn(transport);
     const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
@@ -1893,6 +1971,10 @@ function createGamePortPilots({
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // machoNet.OnGlobalConfigUpdated(key, value): the config kept changed, and what the client's services do at it.
+      if (notification.method === "OnGlobalConfigUpdated" && Array.isArray(notification.args) && notification.args.length === 2) {
+        globalConfigUpdated(entry, notification.args[0], notification.args[1]);
+      }
       // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a place's or a named item's row as it is now,
       // kept as cfg.evelocations keeps it, by its first column, the name its second.
       if (notification.method === "OnCfgDataChanged" && textOf((notification.args ?? [])[0]) === "evelocations") {
@@ -2200,8 +2282,9 @@ function createGamePortPilots({
       // project is enabled, which its client service asks once. In the retail client's own login, behind the pilot's
       // applications as the neocom is set up. A service that refuses fails no choosing.
       await discoveryEnabledRead(entry).catch(() => {});
-      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
-      await asks(entry, "contractProxy", "GetLoginInfo").catch(() => {});
+      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready,
+      // and kept (KEPT_UNTIL_CHANGED).
+      await keptRead(entry, CONTRACT_PROXY, "GetLoginInfo", shape(CONTRACT_PROXY, "GetLoginInfo", [], null, contextFor(entry))).catch(() => {});
       // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
       await keptRead(entry, NOTIFICATION_MGR, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
       // calendar.GetEventsNextXMonths: this month's events and the next's, by the server's clock, a month at a time.
@@ -2239,6 +2322,7 @@ function createGamePortPilots({
     closedByServerByCharacter.delete(characterID);
     sessions.set(entry.handle, entry);
     session.onClose((error) => end(entry, noteClosedByServer(entry, error) ? "closed_by_server" : "connection_closed"));
+    startGatewayNotices(entry);
     // A pilot that was left in space comes back in space.
     syncSpace(entry);
     return {
@@ -2260,6 +2344,14 @@ function createGamePortPilots({
         // none, and the roles a 64-bit mask, so as its digits. The page keeps them as the session's changes say.
         allianceID: attribute(entry, "allianceid"),
         corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
+        // session.role: the session's roles (carbon/common/script/sys/serviceConst.py), a 64-bit mask, so as its
+        // digits: what the client shows a GM's buttons by (missingItemsPopup.BuyAllMessageBox, ROLE_GML).
+        role: String(wholeOf(entry.session.attributes.role) ?? 0n),
+        // session.corpAccountKey: the corporation wallet division the pilot trades from, 1000 for the master wallet
+        // (corporation.GetMyCorpAccountName); none where the session has none.
+        corpAccountKey: attribute(entry, "corpAccountKey"),
+        // session.raceID: the character's race, by which an alpha clone's skills go (clonegrade.CloneGradeStorage).
+        raceID: attribute(entry, "raceID"),
         shipID: attribute(entry, "shipid"),
       },
     };
@@ -2305,6 +2397,9 @@ function createGamePortPilots({
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
     if (retailNeeds(service, method) === "fee" || retailNeeds(service, method) === "sale") await feeInputsRead(entry, feePlaces(method, args));
     if (retailNeeds(service, method) === "sale") await saleAveragesRead(entry, args);
+    // The multibuy window's items, each with the type's average its row has (buySellItemContainerBase: the quote
+    // service's GetAveragePrice), for how far each price is from it.
+    if (retailNeeds(service, method) === "buy") await saleAveragesRead(entry, [Array.isArray(args) ? args[1] : null]);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
@@ -2469,8 +2564,8 @@ function createGamePortPilots({
     // The selection screen's data: the client's character service keeps what it was answered at the choosing
     // (ccSvc.GetCharacterSelectionData), and whoever asks it again, as its queue service does to count the
     // account's characters in training, has that. Asked for by name with nothing, it is what was kept: nothing
-    // is sent, and nothing is counted.
-    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null) {
+    // is sent, and nothing is counted. (Where it was let go, at a character made or deleted, it is asked.)
+    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null && entry.selection !== undefined) {
       return { service, method, result: entry.selection, notifications: drain(entry) };
     }
     // The home station service's read: asked once and kept, until the server says the home station is another.
@@ -3729,16 +3824,53 @@ function createGamePortPilots({
    * once at a login, answered its chat domain, and no fallback, its global config naming the address.
    */
   /**
-   * The global config the server gave this pilot's client as it logged in (the login's config_vals, which machoNet
-   * keeps and globalConfig/getFunctions.py GetGlobalConfigValue reads), for the names asked: each one's value as
-   * given, a number or text, or null where it gave none.
+   * machoNet's globalConfig as the client keeps it (machoNet.py 1469 to 1477, 3355 to 3367): the config_vals the server
+   * gave as the client logged in, and each OnGlobalConfigUpdated(key, value) since set into it, or the key taken out
+   * where the value is None. The names to the values as they came.
+   */
+  function keptGlobalConfig(entry) {
+    if (!entry.globalConfig) {
+      const given = packets.dictGet(entry.session.loginResponse, "config_vals");
+      const entries = given && given.type === "dict" && Array.isArray(given.entries) ? given.entries : [];
+      entry.globalConfig = new Map(entries.map(([key, value]) => [packets.text(key), value]));
+    }
+    return entry.globalConfig;
+  }
+
+  /**
+   * machoNet.OnGlobalConfigUpdated(key, value) (3355 to 3367): the value set into the config kept, or the key taken out
+   * where the value is None; then the OnGlobalConfigChanged it scatters, as the client's services take it, one after
+   * another as ScatterEvent calls them. Those that ask the server: AirNpeController (storylines/client/airnpe.py 72 to
+   * 76) asks again whether the AIR tutorial is enabled; raffleSvc (raffles/client/raffle_service.py 182 to 192), where
+   * it has looked once (_is_available set: the login's look, raffleBanAsked), looks again, which asks AmIBanned. The
+   * rest keep to the client: the session change delay, the stackless settings, the community fittings let go, the
+   * PLEX store's mock settings, fast checkout's offers let go, the addiction warning's timer, the commands reloaded.
+   * Where the AIR tutorial is no longer enabled the client skips it, which on a session with a character first asks
+   * get_air_npe_state (85 to 88): not asked here, the operator's word of 2026-10-15 (no AIR state asked).
+   */
+  function globalConfigUpdated(entry, key, value) {
+    const name = packets.text(key);
+    if (name === null) return;
+    const kept = keptGlobalConfig(entry);
+    if (value === null || value === undefined) kept.delete(name);
+    else kept.set(name, value);
+    void (async () => {
+      await airNpeEnabledAsked(entry).catch(() => {});
+      if (entry.raffleBanned !== undefined && entry.raffleBanned !== null) await raffleBanAsked(entry).catch(() => {});
+    })();
+  }
+
+  /**
+   * The global config as this pilot's client keeps it (keptGlobalConfig), which globalConfig/getFunctions.py
+   * GetGlobalConfigValue reads, for the names asked: each one's value as given, a number or text, or null where it
+   * has none.
    */
   function globalConfigValues(names, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
-    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
+    const globalConfig = keptGlobalConfig(entry);
     const values = {};
     for (const name of Array.isArray(names) ? names : []) {
-      const value = packets.dictGet(globalConfig, name);
+      const value = globalConfig.get(name);
       values[name] = typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : packets.text(value);
     }
     return values;
@@ -3748,8 +3880,8 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     ledger.note(XMPP_CHAT_MGR, "Hostname", CHAT_HOSTNAME_AS_THE_CLIENT_ASKS);
     const hostname = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "Hostname", [], null));
-    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
-    let address = packets.text(packets.dictGet(globalConfig, EJABBERD_CLIENT_ADDRESS_CONFIG));
+    const globalConfig = keptGlobalConfig(entry);
+    let address = packets.text(globalConfig.get(EJABBERD_CLIENT_ADDRESS_CONFIG));
     if (address === null || address.length === 0) {
       ledger.note(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", CHAT_ADDRESS_AS_THE_CLIENT_ASKS);
       address = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", [], null));
@@ -3764,7 +3896,7 @@ function createGamePortPilots({
    * connection (xmppchatclient/xmppchatwindow.py 1344 to 1364).
    */
   function chatIdleSeconds(globalConfig) {
-    const configured = packets.dictGet(globalConfig, "maxChatChannelIdleTimeSeconds");
+    const configured = globalConfig.get("maxChatChannelIdleTimeSeconds");
     if (configured === undefined) return 180;
     if (typeof configured === "number" || typeof configured === "bigint") return Math.trunc(Number(configured));
     const written = packets.text(configured);
@@ -4066,7 +4198,7 @@ function createGamePortPilots({
       if (!item || positive(item.categoryID) !== CATEGORY_SHIP) return;
       // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
       ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-      const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
+      const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
       ledger.note("invbroker", "GetAvailableTurretSlots", shape("invbroker", "GetAvailableTurretSlots", [], null, contextFor(entry)));
       await entry.session.callBound(shipInventory, "GetAvailableTurretSlots", [], null);
     });
@@ -4123,7 +4255,7 @@ function createGamePortPilots({
       } catch {
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
-      line.session = createSession(transport);
+      line.session = sessionOn(transport);
       // The server hanging up, or anything else that ends it: the next thing asked opens another.
       line.unlisten = line.session.onClose(forget);
       await line.session.login(userName, passwordFor(userName));
@@ -4174,9 +4306,17 @@ function createGamePortPilots({
     const pilot = [...sessions.values()].find((candidate) => candidate.accountID === accountID && !candidate.ended);
     if (pilot) {
       const form = shape(service, method, args, kwargs, {});
+      // The selection screen's data is what the client's character service kept at the choosing, and whoever asks it
+      // again has that (ccSvc.GetCharacterSelectionData; the pilot's own asking of it, call): nothing is sent. A
+      // character made or deleted, or its deletion begun or let go, and it is let go, and asked when next wanted.
+      const selectionRead = service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null;
+      if (selectionRead && pilot.selection !== undefined) return { service, method, result: pilot.selection, notifications: [] };
       ledger.note(service, method, form);
       try {
-        return { service, method, result: wireToBridgeJson(await byName(pilot.session, service, method, form)), notifications: [] };
+        const result = wireToBridgeJson(await byName(pilot.session, service, method, form));
+        if (selectionRead) pilot.selection = result;
+        else if (service === "charUnboundMgr" && /^(Create|Delete|Prepare|Cancel)/.test(method)) pilot.selection = undefined;
+        return { service, method, result, notifications: [] };
       } catch (error) {
         throw failed(error);
       }
@@ -4874,6 +5014,15 @@ function createGamePortPilots({
     if (method === "SaveNewQueue") return skillsDoes(entry, () => saveOnHandler(entry, args, kwargs));
     // skillsvc.ApplyFreeSkillPoints: the points applied, with what the client's skill service does around it.
     if (method === "ApplyFreeSkillPoints") return skillsDoes(entry, () => freePointsApplied(entry, args, kwargs));
+    // skillQueueSvc.ApplyFreeSkillPointsToSkills: the points spread, and what the handler answers kept as the free
+    // points left, as the client's skill service has them from then on.
+    if (method === "ApplyFreeSkillPointsToSkills") {
+      return skillsDoes(entry, async () => {
+        const left = await onSkillHandler(entry, method, args, kwargs);
+        entry.skills.keep("freeSkillPoints", left);
+        return left;
+      });
+    }
     return onSkillHandler(entry, method, args, kwargs);
   }
 
@@ -5264,17 +5413,17 @@ function createGamePortPilots({
       if (asked !== (structureID ?? attribute(entry, "stationid"))) {
         throw fail("CALL_REFUSED", "The pilot is not docked there.");
       }
-      if (structureID !== null) return boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
-      return boundObjectID(await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
+      if (structureID !== null) return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
+      return answeredObject(session, "invbroker", await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
     }
     if (service === "invbroker" && method === "GetInventoryFromId") {
       // invCache.GetInventoryFromId(itemid, passive=0): both positional.
       const passive = kwargs && kwargs.passive !== undefined ? kwargs.passive : args[1] ?? 0;
-      return boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
+      return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
     }
     // A service's own method that answers with a bound object:
     // sm.RemoteSvc('scanMgr').GetSystemScanMgr(), sm.RemoteSvc('fleetObjectHandler').CreateFleet().
-    return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
+    return answeredObject(session, service, await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
   /** idCheckers.IsNPC(session.corpid): whether the pilot's corporation is an NPC one. */
@@ -5633,10 +5782,9 @@ function createGamePortPilots({
       entry.bound.set(handle, { objectID: heldObject, service, container });
       return { boundHandle: handle, service, method, notifications: drain(entry) };
     }
-    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
-      // nothing is sent until it is called.
+      // nothing is sent until it is called. Nor is anything counted: its bind is, as the session sends it (noteSent).
       const given = Array.isArray(args) ? args[0] : undefined;
       // The pilot's own fleet (none named, or the session's named) is asked of the one object fleetSvc keeps for
       // it, where it is held: no Moniker is made.
@@ -5650,6 +5798,7 @@ function createGamePortPilots({
       entry.bound.set(made, own ?? { objectID: null, service, params });
       return { boundHandle: made, service, method, notifications: drain(entry) };
     }
+    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     let objectID;
     try {
       const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
@@ -5720,7 +5869,7 @@ function createGamePortPilots({
       if (service === "invbroker" && method === "FitFitting" && object.params !== undefined) {
         // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
         ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-        const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
+        const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined

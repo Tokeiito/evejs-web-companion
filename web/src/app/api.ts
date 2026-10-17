@@ -32,6 +32,9 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
+import type { ExpertSystemData } from "../bridge/expertSystems.ts";
+import type { HullFacts, ShipTraitBonus, ShipTraits } from "../bridge/hullBrowser.ts";
+import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
 import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
@@ -377,6 +380,9 @@ export async function selectCharacter(
       corporationID: asNumberOrNull(character.corporationID),
       allianceID: asNumberOrNull(character.allianceID),
       corpRole: typeof character.corpRole === "string" && /^\d+$/.test(character.corpRole) ? character.corpRole : null,
+      role: typeof character.role === "string" && /^\d+$/.test(character.role) ? character.role : null,
+      corpAccountKey: asNumberOrNull(character.corpAccountKey),
+      raceID: asNumberOrNull(character.raceID),
     },
     station:
       typeof station === "object" && station !== null && !Array.isArray(station)
@@ -949,6 +955,26 @@ export async function combatUtilityTypes(typeIDs: readonly number[], options: Ap
  * which folds each of the 11 independent reads' {result}/{error} envelopes into
  * typed cells. The Fitting window consumes only `allInfo`.
  */
+/**
+ * The client's own static dogma data for types (GET /api/client-data/dogma-types): each type's attributes, effects,
+ * group, category and required skills; the effects' categories and modifierInfo; the attributes' records. What the
+ * page's own dogma reckons with (bridge/dogma/location.ts). At most 50 types and 200 further attributes at once.
+ */
+export async function getDogmaTypes(
+  typeIDs: readonly number[],
+  attributeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<import("../bridge/dogma/location.ts").DogmaStatic & { readonly available: boolean }> {
+  const query = `typeIDs=${typeIDs.join(",")}&attributeIDs=${attributeIDs.join(",")}`;
+  const data = (await getJson(`/api/client-data/dogma-types?${query}`, options)) as Record<string, unknown>;
+  return {
+    available: data.available === true,
+    types: (data.types ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["types"],
+    effects: (data.effects ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["effects"],
+    attributes: (data.attributes ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["attributes"],
+  };
+}
+
 export async function boundDogma(options: ApiOptions = {}): Promise<BoundDogma> {
   const data = await getJson("/api/bridge/bound-dogma", options);
   return decodeBoundDogma(data);
@@ -3503,69 +3529,6 @@ export async function loadBotCorpAssets(
   return getJson(`/api/bots/corp-assets?characterID=${characterID}&which=offices${location}`, options);
 }
 
-// --- R107 The hangar's training column, for pilots who are NOT signed in ----
-// GET /api/roster/training?characterIDs=a,b,c answers what each of those pilots
-// is training, read from the gateway's live queue snapshot.
-//
-// ⚠ IT REPLACES A FIELD THAT LIES. charUnboundMgr.GetCharacterSelectionData
-// carries skillTypeID / toLevel / trainingEndTime per character and the hangar
-// used to believe them; on this emulator they are always null, even for a pilot
-// with an active fifty-skill queue, so every training row read as IDLE. See the
-// route in src/server.js for the measurement.
-
-export interface RosterTrainingRow {
-  readonly characterID: number;
-  /** The skill being trained; null is the positive finding "the queue is empty". */
-  readonly skillTypeID: number | null;
-  /** Already resolved by the server — the roster needs no name lookup for it. */
-  readonly skillName: string | null;
-  readonly toLevel: number | null;
-  /** When the level completes, epoch ms, or null when nothing is training. */
-  readonly endsAtMs: number | null;
-}
-
-/**
- * What each of these pilots is training. Only pilots the server could actually
- * answer for come back: an id that is missing from the result was NOT answered
- * (not this account's, or the read failed), and the caller must keep whatever it
- * already had for it rather than reading the gap as an empty queue.
- */
-export async function loadRosterTraining(
-  characterIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<readonly RosterTrainingRow[]> {
-  const ids = characterIDs.filter((id) => Number.isFinite(id) && id > 0);
-  if (ids.length === 0) {
-    return [];
-  }
-  const data = await getJson(
-    `/api/roster/training?characterIDs=${encodeURIComponent(ids.join(","))}`,
-    options,
-  );
-  if (!Array.isArray(data.training)) {
-    return [];
-  }
-  const rows: RosterTrainingRow[] = [];
-  for (const entry of data.training as JsonValue[]) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      continue;
-    }
-    const row = entry as Record<string, JsonValue>;
-    const characterID = asNumberOrNull(row.characterID);
-    if (characterID === null) {
-      continue;
-    }
-    rows.push({
-      characterID,
-      skillTypeID: asNumberOrNull(row.skillTypeID),
-      skillName: typeof row.skillName === "string" ? row.skillName : null,
-      toLevel: asNumberOrNull(row.toLevel),
-      endsAtMs: asNumberOrNull(row.endsAtMs),
-    });
-  }
-  return rows;
-}
-
 // --- A module type's overload effect (static reference data) -----------------
 // GET /api/types/overload-effects?typeIDs=... answers { overloadEffectID }: for
 // each type the ID of its effect of the overload category, or null where it has
@@ -3662,8 +3625,8 @@ export async function loadCompressedTypes(
 }
 
 // --- A type's volume (static reference data) ---------------------------------
-// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³, or null where the static
-// tables have none. A client has it in its own static data; the page asks here, once for a type, where it lists
+// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³ (nought where it is nought, as
+// the client has it), or null where the static tables do not know the type. A client has it in its own static data; the page asks here, once for a type, where it lists
 // what the server listed by its own call (the BFF's routes that list items send it beside their answer still).
 // Not a bridge call, and no live session: it cannot vary by player.
 
@@ -3673,6 +3636,8 @@ const TYPE_VOLUMES_PER_REQUEST = 400;
 export interface TypeVolumesResult {
   /** typeID -> m³, or null where the tables have no volume for the type. A type not answered for is absent. */
   readonly volumes: Readonly<Record<number, number | null>>;
+  /** typeID -> its packaged volume in m³ (GetPackagedVolume), or null where it is not known. */
+  readonly packaged: Readonly<Record<number, number | null>>;
 }
 
 export async function loadTypeVolumes(
@@ -3680,6 +3645,7 @@ export async function loadTypeVolumes(
   options: ApiOptions = {},
 ): Promise<TypeVolumesResult> {
   const volumes: Record<number, number | null> = {};
+  const packaged: Record<number, number | null> = {};
   for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
     const data = await getJson(
       `/api/types/volumes?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
@@ -3694,10 +3660,19 @@ export async function loadTypeVolumes(
       if (!Number.isSafeInteger(typeID) || typeID <= 0) {
         continue;
       }
-      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    }
+    const packedRaw =
+      typeof data.packaged === "object" && data.packaged !== null && !Array.isArray(data.packaged)
+        ? (data.packaged as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(packedRaw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+      packaged[typeID] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
     }
   }
-  return { volumes };
+  return { volumes, packaged };
 }
 
 // --- R24 slice C: module cycle times (static reference data) ----------------
@@ -3767,7 +3742,12 @@ export async function loadBaseCycleTimes(
 export async function getRequiredSkills(
   typeIDs: readonly number[],
   options: ApiOptions = {},
-): Promise<{ readonly available: boolean; readonly required: Readonly<Record<number, Readonly<Record<number, number>>>> }> {
+): Promise<{
+  readonly available: boolean;
+  readonly required: Readonly<Record<number, Readonly<Record<number, number>>>>;
+  /** Each type's needs as [skill, level] in the order the client's table iterates them (get_dogma_required_skills). */
+  readonly order: Readonly<Record<number, readonly (readonly [number, number])[]>>;
+}> {
   const data = await getJson(`/api/client-data/required-skills?typeIDs=${typeIDs.join(",")}`, options);
   const raw =
     typeof data.required === "object" && data.required !== null && !Array.isArray(data.required)
@@ -3784,7 +3764,23 @@ export async function getRequiredSkills(
     }
     required[typeID] = bySkill;
   }
-  return { available: data.available === true, required };
+  const rawOrder =
+    typeof data.order === "object" && data.order !== null && !Array.isArray(data.order)
+      ? (data.order as Record<string, JsonValue>)
+      : {};
+  const order: Record<number, (readonly [number, number])[]> = {};
+  for (const [typeKey, pairs] of Object.entries(rawOrder)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || !Array.isArray(pairs)) continue;
+    order[typeID] = pairs.flatMap((pair) => {
+      if (!Array.isArray(pair)) return [];
+      const [skillID, level] = pair;
+      return typeof skillID === "number" && Number.isSafeInteger(skillID) && skillID > 0 && typeof level === "number" && Number.isSafeInteger(level)
+        ? [[skillID, level] as const]
+        : [];
+    });
+  }
+  return { available: data.available === true, required, order };
 }
 
 /**
@@ -3795,7 +3791,19 @@ export async function getRequiredSkills(
 export async function getTypePrices(
   typeIDs: readonly number[],
   options: ApiOptions = {},
-): Promise<{ readonly available: boolean; readonly basePrice: Readonly<Record<number, number | null>>; readonly published: Readonly<Record<number, boolean | null>> }> {
+): Promise<{
+  readonly available: boolean;
+  readonly basePrice: Readonly<Record<number, number | null>>;
+  readonly published: Readonly<Record<number, boolean | null>>;
+  /** Each type's portion size (evetypes.GetPortionSize), or null. */
+  readonly portionSize: Readonly<Record<number, number | null>>;
+  /** Each type's group (evetypes.GetGroupID), or null. */
+  readonly groupID: Readonly<Record<number, number | null>>;
+  /** Each type's category (evetypes.GetCategoryID), or null. */
+  readonly categoryID: Readonly<Record<number, number | null>>;
+  /** Whether each type is a dynamic one, made by a mutaplasmid (evetypes.IsDynamicType), or null. */
+  readonly dynamic: Readonly<Record<number, boolean | null>>;
+}> {
   const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
     typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
@@ -3803,7 +3811,449 @@ export async function getTypePrices(
   const published: Record<number, boolean | null> = {};
   for (const [key, value] of Object.entries(record(data.basePrice))) basePrice[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
   for (const [key, value] of Object.entries(record(data.published))) published[Number(key)] = typeof value === "boolean" ? value : null;
-  return { available: data.available === true, basePrice, published };
+  const portionSize: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.portionSize))) portionSize[Number(key)] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  const groupID: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.groupID))) groupID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  const categoryID: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.categoryID))) categoryID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  const dynamic: Record<number, boolean | null> = {};
+  for (const [key, value] of Object.entries(record(data.dynamic))) dynamic[Number(key)] = typeof value === "boolean" ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize, groupID, categoryID, dynamic };
+}
+
+/**
+ * The fitting browser's hulls (GET /api/client-data/hull-browser): every hull the market sells, the special edition
+ * ships, each hull's facts and those of each type asked (null for a type the client has not), and each race's name as
+ * the number of its message; `available` false where the client's data could not be read.
+ */
+/**
+ * Each fighter type's three ability slots as the client's data has them (fighterAbilitiesByType.static): each slot's
+ * ability, cooldown and charges, or null; null for a type with none; `available` false where the data could not be
+ * read. At most 50 types an asking.
+ */
+export async function getFighterAbilities(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly available: boolean;
+  readonly types: Readonly<Record<number, readonly ({ readonly abilityID: number; readonly cooldownSeconds: number | null; readonly chargeCount: number | null; readonly rearmTimeSeconds: number | null } | null)[] | null>>;
+}> {
+  const data = await getJson(`/api/client-data/fighter-abilities?typeIDs=${typeIDs.join(",")}`, options);
+  const types: Record<number, ({ readonly abilityID: number; readonly cooldownSeconds: number | null; readonly chargeCount: number | null; readonly rearmTimeSeconds: number | null } | null)[] | null> = {};
+  const record = typeof data.types === "object" && data.types !== null && !Array.isArray(data.types) ? (data.types as Record<string, JsonValue>) : {};
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  for (const [key, value] of Object.entries(record)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    types[typeID] = Array.isArray(value)
+      ? value.map((slot) => {
+          if (typeof slot !== "object" || slot === null || Array.isArray(slot)) return null;
+          const facts = slot as Record<string, JsonValue>;
+          const abilityID = orNull(facts.abilityID);
+          return abilityID === null ? null : { abilityID, cooldownSeconds: orNull(facts.cooldownSeconds), chargeCount: orNull(facts.chargeCount), rearmTimeSeconds: orNull(facts.rearmTimeSeconds) };
+        })
+      : null;
+  }
+  return { available: data.available === true, types };
+}
+
+export async function getHullBrowser(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly available: boolean;
+  readonly hullTypeIDs: readonly number[];
+  readonly specialTypeIDs: readonly number[];
+  readonly types: Readonly<Record<number, HullFacts | null>>;
+  readonly raceNameIDs: Readonly<Record<number, number | null>>;
+}> {
+  const data = await getJson(`/api/client-data/hull-browser?typeIDs=${typeIDs.join(",")}`, options);
+  const numbers = (value: JsonValue | undefined): number[] => (Array.isArray(value) ? value.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0) : []);
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const types: Record<number, HullFacts | null> = {};
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      types[typeID] = null;
+      continue;
+    }
+    const facts = value as Record<string, JsonValue>;
+    types[typeID] = { groupID: orNull(facts.groupID), categoryID: orNull(facts.categoryID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true, marketGroupID: orNull(facts.marketGroupID) };
+  }
+  const raceNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.raceNameIDs))) {
+    const raceID = Number(key);
+    if (Number.isSafeInteger(raceID) && raceID > 0) raceNameIDs[raceID] = orNull(value);
+  }
+  return { available: data.available === true, hullTypeIDs: numbers(data.hullTypeIDs), specialTypeIDs: numbers(data.specialTypeIDs), types, raceNameIDs };
+}
+
+/**
+ * Ships' traits (GET /api/client-data/ship-traits, the client's infobubbles): each type's bonuses per skill, its role's and
+ * the others (null for a type with none), and each unit's name as the number of its message. At most 50 at once.
+ */
+export async function getShipTraits(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly traits: Readonly<Record<number, ShipTraits | null>>; readonly unitNameIDs: Readonly<Record<number, number | null>> }> {
+  const data = await getJson(`/api/client-data/ship-traits?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const bonuses = (value: JsonValue | undefined): ShipTraitBonus[] => (Array.isArray(value) ? value : []).map((each) => {
+    const bonus = record(each);
+    return { bonus: orNull(bonus.bonus), importance: orNull(bonus.importance) ?? 0, nameID: orNull(bonus.nameID), unitID: orNull(bonus.unitID) };
+  });
+  const traits: Record<number, ShipTraits | null> = {};
+  for (const [key, value] of Object.entries(record(data.traits))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      traits[typeID] = null;
+      continue;
+    }
+    const entry = value as Record<string, JsonValue>;
+    const skills = (Array.isArray(entry.skills) ? entry.skills : []).map((each) => {
+      const skill = record(each);
+      return { skillTypeID: Number(skill.skillTypeID), bonuses: bonuses(skill.bonuses) };
+    }).filter((skill) => Number.isSafeInteger(skill.skillTypeID) && skill.skillTypeID > 0);
+    traits[typeID] = { skills, role: bonuses(entry.role), misc: bonuses(entry.misc) };
+  }
+  const unitNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.unitNameIDs))) {
+    const unitID = Number(key);
+    if (Number.isSafeInteger(unitID) && unitID > 0) unitNameIDs[unitID] = orNull(value);
+  }
+  return { available: data.available === true, traits, unitNameIDs };
+}
+
+/**
+ * A solar system's region and its NPC stations, each with its celestialIndex and orbitIndex (GET
+ * /api/map/system-stations/:id: the client's map data, cfg.GetLocationsLocalBySystem). Static reference data.
+ */
+export async function getSystemStations(
+  solarSystemID: number,
+  options: ApiOptions = {},
+): Promise<{ readonly regionID: number | null; readonly stations: readonly { readonly stationID: number; readonly celestialIndex: number | null; readonly orbitIndex: number | null }[] }> {
+  const data = await getJson(`/api/map/system-stations/${solarSystemID}`, options);
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const stations = (Array.isArray(data.stations) ? data.stations : []).flatMap((each) => {
+    if (each === null || typeof each !== "object" || Array.isArray(each)) return [];
+    const row = each as Record<string, JsonValue>;
+    const stationID = orNull(row.stationID);
+    return stationID === null ? [] : [{ stationID, celestialIndex: orNull(row.celestialIndex), orbitIndex: orNull(row.orbitIndex) }];
+  });
+  return { regionID: orNull(data.regionID), stations };
+}
+
+/** A type's facts from the client's types record (GET /api/client-data/type-meta). */
+export interface TypeMetaFacts {
+  readonly metaLevel: number | null;
+  readonly metaGroupID: number | null;
+  readonly techLevel: number | null;
+  readonly marketGroupID: number | null;
+  readonly published: boolean;
+  /** evetypes.GetDescriptionID: the message its description is; null where it has none. */
+  readonly descriptionID: number | null;
+  readonly groupID: number | null;
+  readonly categoryID: number | null;
+}
+
+/** Types' meta level, meta group, tech level, market group, group and category, and the meta groups' names' messages. */
+export interface TypeMetaRead {
+  readonly available: boolean;
+  readonly types: ReadonlyMap<number, TypeMetaFacts | null>;
+  readonly metaGroupNameIDs: ReadonlyMap<number, number | null>;
+}
+
+/** The client's types records' meta level, meta group and tech level, at most 500 types at once. */
+export async function getTypeMeta(typeIDs: readonly number[], options: ApiOptions = {}): Promise<TypeMetaRead> {
+  const data = await getJson(`/api/client-data/type-meta?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const numberOrNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const types = new Map<number, TypeMetaFacts | null>();
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    const row = value === null || typeof value !== "object" || Array.isArray(value) ? null : (value as Record<string, JsonValue>);
+    types.set(typeID, row === null ? null : {
+      metaLevel: numberOrNull(row.metaLevel),
+      metaGroupID: numberOrNull(row.metaGroupID),
+      techLevel: numberOrNull(row.techLevel),
+      marketGroupID: numberOrNull(row.marketGroupID),
+      published: row.published === true,
+      descriptionID: numberOrNull(row.descriptionID),
+      groupID: numberOrNull(row.groupID),
+      categoryID: numberOrNull(row.categoryID),
+    });
+  }
+  const metaGroupNameIDs = new Map<number, number | null>();
+  for (const [key, value] of Object.entries(record(data.metaGroupNameIDs))) {
+    const metaGroupID = Number(key);
+    if (Number.isSafeInteger(metaGroupID) && metaGroupID > 0) metaGroupNameIDs.set(metaGroupID, numberOrNull(value));
+  }
+  return { available: data.available === true, types, metaGroupNameIDs };
+}
+
+/**
+ * Dogma attributes as the client draws one by itself (GET /api/client-data/attribute-display): its name as the number
+ * of its message, and its picture's res: path; null for one the client's tables have not. At most 32 at once.
+ */
+export async function getAttributeDisplay(
+  attributeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly attributes: ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null } | null> }> {
+  const data = await getJson(`/api/client-data/attribute-display?attributeIDs=${attributeIDs.join(",")}`, options);
+  const raw = typeof data.attributes === "object" && data.attributes !== null && !Array.isArray(data.attributes)
+    ? (data.attributes as Record<string, JsonValue>)
+    : {};
+  const attributes = new Map<number, { readonly displayNameID: number | null; readonly iconFile: string | null } | null>();
+  for (const [key, value] of Object.entries(raw)) {
+    const attributeID = Number(key);
+    if (!Number.isSafeInteger(attributeID) || attributeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      attributes.set(attributeID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    attributes.set(attributeID, {
+      displayNameID: typeof row.displayNameID === "number" && Number.isSafeInteger(row.displayNameID) ? row.displayNameID : null,
+      iconFile: typeof row.iconFile === "string" ? row.iconFile : null,
+    });
+  }
+  return { available: data.available === true, attributes };
+}
+
+/** The expert systems as the client's data has them (GET /api/client-data/expert-systems); null where not read. */
+export async function getExpertSystems(options: ApiOptions = {}): Promise<ReadonlyMap<number, ExpertSystemData> | null> {
+  const data = await getJson("/api/client-data/expert-systems", options);
+  if (data.available !== true) return null;
+  const raw = typeof data.expertSystems === "object" && data.expertSystems !== null && !Array.isArray(data.expertSystems)
+    ? (data.expertSystems as Record<string, JsonValue>)
+    : {};
+  const out = new Map<number, ExpertSystemData>();
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const row = value as Record<string, JsonValue>;
+    const skills = (Array.isArray(row.skills) ? row.skills : []).flatMap((pair) =>
+      Array.isArray(pair) && Number.isSafeInteger(Number(pair[0])) ? [[Number(pair[0]), Number(pair[1]) || 0] as const] : []);
+    const ships = (Array.isArray(row.ships) ? row.ships : []).map(Number).filter((ship) => Number.isSafeInteger(ship) && ship > 0);
+    out.set(typeID, { typeID, durationDays: Number(row.durationDays) || 0, hidden: row.hidden === true, retired: row.retired === true, skills, ships });
+  }
+  return out;
+}
+
+/**
+ * The certificates filed under skill groups (GET /api/client-data/skill-group-certificates): by group, each
+ * certificate's skills with the level each of its five grades asks (nought where it asks none).
+ */
+export async function getSkillGroupCertificates(
+  groupIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<ReadonlyMap<number, readonly { readonly certificateID: number; readonly skills: readonly (readonly [number, readonly number[]])[] }[]>> {
+  const data = await getJson("/api/client-data/skill-group-certificates?groupIDs=" + groupIDs.join(","), options);
+  const raw = typeof data.certificates === "object" && data.certificates !== null && !Array.isArray(data.certificates)
+    ? (data.certificates as Record<string, JsonValue>)
+    : {};
+  const out = new Map<number, { readonly certificateID: number; readonly skills: readonly (readonly [number, readonly number[]])[] }[]>();
+  for (const [key, value] of Object.entries(raw)) {
+    const groupID = Number(key);
+    if (!Number.isSafeInteger(groupID) || groupID <= 0 || !Array.isArray(value)) continue;
+    out.set(groupID, value.flatMap((certificate) => {
+      if (certificate === null || typeof certificate !== "object" || Array.isArray(certificate)) return [];
+      const record = certificate as Record<string, JsonValue>;
+      const skills = (Array.isArray(record.skills) ? record.skills : []).flatMap((skill) => {
+        if (!Array.isArray(skill) || !Array.isArray(skill[1])) return [];
+        const typeID = Number(skill[0]);
+        return Number.isSafeInteger(typeID) && typeID > 0 ? [[typeID, (skill[1] as JsonValue[]).map((level) => Number(level) || 0)] as const] : [];
+      });
+      return [{ certificateID: Number(record.certificateID) || 0, skills }];
+    }));
+  }
+  return out;
+}
+
+/** What the compare tool reads of some types (GET /api/client-data/type-attributes). */
+export interface TypeAttributesRead {
+  readonly available: boolean;
+  /** By type: its dogma attributes and facts, or null for a type the client's tables have not. */
+  readonly types: ReadonlyMap<number, ComparisonTypeData | null>;
+  /** The records of the attributes they carry and of those the tool adds or a value names; null for one not had. */
+  readonly attributes: ReadonlyMap<number, DogmaAttributeRecord | null>;
+  /** Each unit's name as the number of its message. */
+  readonly unitNameIDs: ReadonlyMap<number, number | null>;
+}
+
+/**
+ * Types as the compare tool reads them, from the client's own tables: each type's dogma attributes (get_type_attributes'
+ * rows), group, category, published and dynamic; the attributes' records; the units' names. At most 50 at once.
+ */
+export async function getTypeAttributes(typeIDs: readonly number[], options: ApiOptions = {}): Promise<TypeAttributesRead> {
+  const data = await getJson(`/api/client-data/type-attributes?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const numberOrNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const types = new Map<number, ComparisonTypeData | null>();
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      types.set(typeID, null);
+      continue;
+    }
+    const entry = value as Record<string, JsonValue>;
+    const attributes = (Array.isArray(entry.attributes) ? entry.attributes : []).flatMap((row) => {
+      if (!Array.isArray(row)) return [];
+      const attributeID = Number(row[0]);
+      return Number.isSafeInteger(attributeID) && attributeID > 0 ? [[attributeID, numberOrNull(row[1])] as const] : [];
+    });
+    types.set(typeID, {
+      attributes,
+      groupID: numberOrNull(entry.groupID),
+      categoryID: numberOrNull(entry.categoryID),
+      published: entry.published === true,
+      dynamic: entry.dynamic === true,
+    });
+  }
+  const attributes = new Map<number, DogmaAttributeRecord | null>();
+  for (const [key, value] of Object.entries(record(data.attributes))) {
+    const attributeID = Number(key);
+    if (!Number.isSafeInteger(attributeID) || attributeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      attributes.set(attributeID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    attributes.set(attributeID, {
+      name: typeof row.name === "string" ? row.name : null,
+      displayNameID: numberOrNull(row.displayNameID),
+      tooltipDescriptionID: numberOrNull(row.tooltipDescriptionID),
+      unitID: numberOrNull(row.unitID),
+      iconID: numberOrNull(row.iconID),
+      published: row.published === true,
+      displayWhenZero: row.displayWhenZero === true,
+      highIsGood: row.highIsGood === true,
+      dataType: numberOrNull(row.dataType),
+      defaultValue: numberOrNull(row.defaultValue),
+    });
+  }
+  const unitNameIDs = new Map<number, number | null>();
+  for (const [key, value] of Object.entries(record(data.unitNameIDs))) {
+    const unitID = Number(key);
+    if (Number.isSafeInteger(unitID) && unitID > 0) unitNameIDs.set(unitID, numberOrNull(value));
+  }
+  return { available: data.available === true, types, attributes, unitNameIDs };
+}
+
+/**
+ * Dogma effects' names as the numbers of their messages (GET /api/client-data/effect-names: the effect's displayNameID),
+ * null for an effect with none; `available` false where the client's data could not be read.
+ */
+export async function getEffectDisplayNameIDs(
+  effectIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly displayNameIDs: Readonly<Record<number, number | null>> }> {
+  const data = await getJson(`/api/client-data/effect-names?effectIDs=${effectIDs.join(",")}`, options);
+  const raw = typeof data.displayNameIDs === "object" && data.displayNameIDs !== null && !Array.isArray(data.displayNameIDs)
+    ? (data.displayNameIDs as Record<string, JsonValue>)
+    : {};
+  const displayNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const effectID = Number(key);
+    if (Number.isSafeInteger(effectID) && effectID > 0) displayNameIDs[effectID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  return { available: data.available === true, displayNameIDs };
+}
+
+/**
+ * An alpha clone's skills and their highest levels for a race (GET /api/client-data/clone-grade): each skill's level, a
+ * skill not listed 0; `available` false where the client's data could not be read.
+ */
+export async function getCloneGrade(
+  raceID: number,
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly levels: ReadonlyMap<number, number> }> {
+  const data = await getJson(`/api/client-data/clone-grade?raceID=${raceID}`, options);
+  const raw = typeof data.levels === "object" && data.levels !== null && !Array.isArray(data.levels) ? (data.levels as Record<string, JsonValue>) : {};
+  const levels = new Map<number, number>();
+  for (const [key, value] of Object.entries(raw)) {
+    const skill = Number(key);
+    if (Number.isSafeInteger(skill) && skill > 0 && typeof value === "number") levels.set(skill, value);
+  }
+  return { available: data.available === true, levels };
+}
+
+/**
+ * A fitting read from text as the client's fitting window reads one from the clipboard (POST
+ * /api/client-data/fitting-import; fittingSvc.ImportFittingFromClipboard, shipfitting/importFittingUtil.py): the ship's
+ * type, the fitting's name, its entries and the lines it could not read; or the client's ImportingErrorFromClipboard.
+ */
+export async function importFitting(
+  text: string,
+  options: ApiOptions = {},
+): Promise<
+  | { readonly error: string }
+  | { readonly shipTypeID: number; readonly name: string; readonly fitData: readonly (readonly [number, number, number])[]; readonly errorLines: readonly string[] }
+> {
+  const data = await postJson("/api/client-data/fitting-import", { text }, options);
+  const shipTypeID = Number(data.shipTypeID);
+  if (typeof data.error === "string" || !Number.isSafeInteger(shipTypeID) || shipTypeID <= 0) {
+    return { error: typeof data.error === "string" ? data.error : "ImportingErrorFromClipboard" };
+  }
+  const fitData: (readonly [number, number, number])[] = [];
+  for (const entry of Array.isArray(data.fitData) ? (data.fitData as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const flagID = Number(entry[1]);
+    const qty = Number(entry[2]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(flagID) && Number.isSafeInteger(qty)) fitData.push([typeID, flagID, qty]);
+  }
+  const errorLines = Array.isArray(data.errorLines) ? (data.errorLines as JsonValue[]).map((line) => String(line)) : [];
+  return { shipTypeID, name: typeof data.name === "string" ? data.name : "", fitData, errorLines };
+}
+
+/**
+ * A list of skills read as the client's skill plan editor reads one from the clipboard (POST
+ * /api/client-data/skillplan-import; textImporting.importSkillplan GetSkillsAndLevelsFromText): each line's skill and
+ * level, in order, and the lines it could not read.
+ */
+export async function importSkillPlanText(
+  text: string,
+  options: ApiOptions = {},
+): Promise<{ readonly skillsAndLevels: readonly (readonly [number, number])[]; readonly failed: readonly string[] }> {
+  const data = await postJson("/api/client-data/skillplan-import", { text }, options);
+  const skillsAndLevels: (readonly [number, number])[] = [];
+  for (const entry of Array.isArray(data.skillsAndLevels) ? (data.skillsAndLevels as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const level = Number(entry[1]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(level) && level >= 1 && level <= 5) skillsAndLevels.push([typeID, level]);
+  }
+  const failed = Array.isArray(data.failed) ? (data.failed as JsonValue[]).map((line) => String(line)) : [];
+  return { skillsAndLevels, failed };
+}
+
+/**
+ * A shopping list read as the client's multibuy window reads one from the clipboard (POST
+ * /api/client-data/multibuy-import; textImporting.importMultibuy): each market type it names with its quantity, in the
+ * order the client adds them, and the lines it could not read.
+ */
+export async function importMultibuy(
+  text: string,
+  options: ApiOptions = {},
+): Promise<{ readonly found: readonly (readonly [number, number])[]; readonly failedLines: readonly string[] }> {
+  const data = await postJson("/api/client-data/multibuy-import", { text }, options);
+  const found: (readonly [number, number])[] = [];
+  for (const entry of Array.isArray(data.found) ? (data.found as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const qty = Number(entry[1]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(qty)) found.push([typeID, qty]);
+  }
+  const failedLines = Array.isArray(data.failedLines) ? (data.failedLines as JsonValue[]).map((line) => String(line)) : [];
+  return { found, failedLines };
 }
 
 /**
@@ -3818,6 +4268,26 @@ export async function getGlobalConfig(
   const data = await getJson(`/api/bridge/global-config?names=${encodeURIComponent(names.join(","))}`, options);
   const values = typeof data.values === "object" && data.values !== null && !Array.isArray(data.values) ? (data.values as Record<string, JsonValue>) : {};
   return { available: data.available === true, values };
+}
+
+/**
+ * GET /api/types/passive-effects?typeIDs=...: each type's passive effects as the client's dogma static service
+ * filters them (GetPassiveFilteredEffectsByType), or null where the tables do not know the type.
+ */
+export async function loadPassiveEffects(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, readonly number[] | null>>> {
+  if (typeIDs.length === 0) return {};
+  const data = await getJson(`/api/types/passive-effects?typeIDs=${encodeURIComponent(typeIDs.join(","))}`, options);
+  const raw = typeof data.effects === "object" && data.effects !== null && !Array.isArray(data.effects) ? (data.effects as Record<string, JsonValue>) : {};
+  const effects: Record<number, readonly number[] | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    effects[typeID] = Array.isArray(value) ? value.map(Number).filter((id) => Number.isSafeInteger(id)) : null;
+  }
+  return effects;
 }
 
 export async function fetchTypeDogma(
@@ -4859,4 +5329,115 @@ export async function startMiningOperation(
 
 export async function stopMiningOperation(operationID: string, options: ApiOptions = {}): Promise<MiningOperationsPayload> {
   return miningOperationsPayload(await postJson(`/api/mining-operations/${encodeURIComponent(operationID)}/stop`, {}, options));
+}
+
+/** The public gateway's answer to one of the client's eve_public requests: its status and its payload, decoded. */
+export interface PublicGatewayAnswer {
+  readonly statusCode: number;
+  readonly statusMessage: string;
+  readonly typeName: string | null;
+  readonly payload: JsonValue | null;
+}
+
+/**
+ * One of the client's eve_public requests made on the public gateway for the page's pilot (the BFF's
+ * POST /api/public-gateway/request), as its client makes it; a write with confirm said.
+ */
+export async function publicGatewayRequest(request: string, payload: Record<string, JsonValue>, options: ApiOptions & { confirm?: boolean } = {}): Promise<PublicGatewayAnswer> {
+  const data = await postJson("/api/public-gateway/request", { request, payload, ...(options.confirm ? { confirm: true } : {}) }, options);
+  return {
+    statusCode: typeof data.statusCode === "number" ? data.statusCode : 0,
+    statusMessage: typeof data.statusMessage === "string" ? data.statusMessage : "",
+    typeName: typeof data.typeName === "string" ? data.typeName : null,
+    payload: data.payload ?? null,
+  };
+}
+
+/** A skill type as the server's static data has it (GET /api/static/skill-catalogue). */
+export interface CatalogueSkill {
+  readonly typeID: number;
+  readonly name: string;
+  readonly groupID: number;
+  readonly groupName: string;
+  readonly published: boolean;
+}
+
+/** Every skill type, for the skill plan editor's catalogue. */
+export async function getSkillCatalogue(options: ApiOptions = {}): Promise<readonly CatalogueSkill[]> {
+  const data = await getJson("/api/static/skill-catalogue", options);
+  const skills = Array.isArray(data.skills) ? data.skills : [];
+  return skills.flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const typeID = Number(row.typeID);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) return [];
+    return [{
+      typeID,
+      name: typeof row.name === "string" ? row.name : "",
+      groupID: Number(row.groupID) || 0,
+      groupName: typeof row.groupName === "string" ? row.groupName : "",
+      published: row.published === true,
+    }];
+  });
+}
+
+/**
+ * The skills that need each of these skills at each level (skillPlanUtil.GetSkillsRequiring, the client's
+ * requiredSkillsIndex): skill to level to the skills. `available` is false where the client's table could not be read.
+ */
+export async function getSkillsRequiring(typeIDs: readonly number[], options: ApiOptions = {}): Promise<{
+  readonly available: boolean;
+  readonly requiring: ReadonlyMap<number, ReadonlyMap<number, readonly number[]>>;
+}> {
+  const data = await getJson(`/api/client-data/skills-requiring?typeIDs=${typeIDs.join(",")}`, options);
+  const raw = typeof data.requiring === "object" && data.requiring !== null && !Array.isArray(data.requiring) ? (data.requiring as Record<string, JsonValue>) : {};
+  const requiring = new Map<number, ReadonlyMap<number, readonly number[]>>();
+  for (const [typeKey, byLevel] of Object.entries(raw)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeof byLevel !== "object" || byLevel === null || Array.isArray(byLevel)) continue;
+    const levels = new Map<number, readonly number[]>();
+    for (const [levelKey, skills] of Object.entries(byLevel as Record<string, JsonValue>)) {
+      if (Array.isArray(skills)) levels.set(Number(levelKey), skills.map(Number).filter((skill) => Number.isSafeInteger(skill)));
+    }
+    requiring.set(typeID, levels);
+  }
+  return { available: data.available === true, requiring };
+}
+
+/** The certified skill plans and the career paths, from the client's own data (GET /api/client-data/certified-skill-plans). */
+export async function getCertifiedSkillPlans(options: ApiOptions = {}): Promise<{
+  readonly available: boolean;
+  readonly plans: readonly import("../bridge/certifiedSkillPlans.ts").CertifiedPlanData[];
+  readonly careerPaths: readonly import("../bridge/certifiedSkillPlans.ts").CareerPath[];
+}> {
+  const data = await getJson("/api/client-data/certified-skill-plans", options);
+  const num = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const plans = (Array.isArray(data.plans) ? data.plans : []).flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const planID = num(row.planID);
+    if (planID === null) return [];
+    return [{
+      planID,
+      nameID: num(row.nameID),
+      descriptionID: num(row.descriptionID),
+      careerPathID: num(row.careerPathID),
+      factionID: num(row.factionID),
+      npcCorporationDivision: num(row.npcCorporationDivision),
+      requirements: (Array.isArray(row.requirements) ? row.requirements : []).flatMap((pair) =>
+        Array.isArray(pair) && typeof pair[0] === "number" && typeof pair[1] === "number" ? [[pair[0], pair[1]] as const] : []),
+      milestones: (Array.isArray(row.milestones) ? row.milestones : []).flatMap((m) => {
+        if (typeof m !== "object" || m === null || Array.isArray(m)) return [];
+        const typeID = num((m as Record<string, JsonValue>).typeID);
+        return typeID === null ? [] : [{ typeID, level: num((m as Record<string, JsonValue>).level) }];
+      }),
+    }];
+  });
+  const careerPaths = (Array.isArray(data.careerPaths) ? data.careerPaths : []).flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const careerPathID = num(row.careerPathID);
+    return careerPathID === null ? [] : [{ careerPathID, nameID: num(row.nameID), descriptionID: num(row.descriptionID) }];
+  });
+  return { available: data.available === true, plans, careerPaths };
 }

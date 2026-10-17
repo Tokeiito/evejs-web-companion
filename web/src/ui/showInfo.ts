@@ -33,20 +33,30 @@
 //                   already applied) — the only place real numbers exist.
 //   • `character` — a pilot. Adds the standing we hold toward them, when we
 //                   have one.
+//   • `corporation`, `alliance` — an owner, by its number: what the client's window reads of it
+//                   (corpmgr.GetPublicInfo, allianceRegistry.GetAlliancePublicInfo;
+//                   bridge/ownerInfo.ts).
 //
-// There is deliberately no `station`, `corporation` or `blueprint` kind: nothing
-// in this client can currently say anything about those beyond a name, and a
-// window that opens to a name and the word "unknown" is worse than no window.
-// Add a kind when there is a read to fill it.
+// There is deliberately no `station` or `blueprint` kind: nothing in this client can
+// currently say anything about those beyond a name, and a window that opens to a
+// name and the word "unknown" is worse than no window. Add a kind when there is a
+// read to fill it.
 
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
+import { CHARACTER_TYPES, OWNER_AND_PLACE_TYPES, parseShowInfoUrl } from "../bridge/showInfoLink.ts";
+
+/** inventorycommon/const.py: typeCorporation and typeAlliance. */
+const TYPE_CORPORATION = 2;
+const TYPE_ALLIANCE = 16159;
 
 /** What the info window is looking at. */
 export type InfoSubject =
   | { readonly kind: "type"; readonly typeID: number }
   | { readonly kind: "spaceObject"; readonly itemID: number; readonly typeID: number | null }
   | { readonly kind: "module"; readonly itemID: number; readonly typeID: number }
-  | { readonly kind: "character"; readonly characterID: number };
+  | { readonly kind: "character"; readonly characterID: number }
+  | { readonly kind: "corporation"; readonly corporationID: number }
+  | { readonly kind: "alliance"; readonly allianceID: number };
 
 /** The window's subject, and the one way to change it. */
 export interface ShowInfoTarget {
@@ -85,6 +95,22 @@ export function createShowInfoTarget(): ShowInfoTarget {
 /** The app's one info window subject. */
 export const showInfoTarget: ShowInfoTarget = createShowInfoTarget();
 
+/**
+ * A "showinfo:" link's subject (handle_show_info_link: ShowInfo(type, item)), where the page has one: a pilot's link a
+ * character, a corporation's (typeCorporation) a corporation and an alliance's (typeAlliance) an alliance; any other a
+ * type (an item's own state the page does not read, so its type). None for a faction or a place on the map, which the
+ * page's window does not show yet, nor for a link the client's own parse refuses.
+ */
+export function subjectOfShowInfoLink(url: string): InfoSubject | null {
+  const parsed = parseShowInfoUrl(url);
+  if (parsed === null) return null;
+  if (CHARACTER_TYPES.has(parsed.typeID)) return parsed.itemID === null ? null : { kind: "character", characterID: parsed.itemID };
+  if (parsed.typeID === TYPE_CORPORATION) return parsed.itemID === null ? null : { kind: "corporation", corporationID: parsed.itemID };
+  if (parsed.typeID === TYPE_ALLIANCE) return parsed.itemID === null ? null : { kind: "alliance", allianceID: parsed.itemID };
+  if (OWNER_AND_PLACE_TYPES.has(parsed.typeID)) return null;
+  return { kind: "type", typeID: parsed.typeID };
+}
+
 /** Convenience: open Show Info on a subject. */
 export function showInfo(subject: InfoSubject): void {
   showInfoTarget.show(subject);
@@ -112,6 +138,10 @@ export function sameSubject(a: InfoSubject | null, b: InfoSubject | null): boole
       return a.itemID === (b as typeof a).itemID;
     case "character":
       return a.characterID === (b as typeof a).characterID;
+    case "corporation":
+      return a.corporationID === (b as typeof a).corporationID;
+    case "alliance":
+      return a.allianceID === (b as typeof a).allianceID;
   }
 }
 
@@ -133,6 +163,8 @@ export function subjectTypeID(subject: InfoSubject | null): number | null {
     case "spaceObject":
       return subject.typeID;
     case "character":
+    case "corporation":
+    case "alliance":
       return null;
   }
 }

@@ -217,11 +217,15 @@ export interface StructureMapEntry {
   readonly groupID: number;
   readonly itemName: string;
   readonly solarSystemID: number;
-  readonly ownerID: number;
+  /** The celestial it orbits: the system's star, as Tranquility's rows carry it (never its owner). */
+  readonly orbitID: number;
   readonly connector: boolean;
   readonly x: number;
   readonly y: number;
   readonly z: number;
+  /** The row's celestialIndex and orbitIndex: None for a structure on Tranquility (the multibuy sorts by them). */
+  readonly celestialIndex: number | null;
+  readonly orbitIndex: number | null;
 }
 
 /**
@@ -230,8 +234,9 @@ export interface StructureMapEntry {
  * `unwrapCachedResult` (market.ts) reads the cache substream, then the rows live
  * on the objectex2's `list` (packedrows, name-keyed here; positional tolerated).
  * ⚠ The columns are the MAP shape, so `itemID` is the structureID, `locationID`
- * is the solarSystemID and `orbitID` is the ownerID — NO fuel/reinforce column
- * exists. Sorted by structureID. `[]` is a real "no structures in system".
+ * is the solarSystemID and `orbitID` the system's star (Tranquility's row, LOGS/Archive/Undock citadel and
+ * stopping ship.txt: orbitID 40344201, Henebene's star; EveJS put the owner there until eve.js 8a2ce7e63) — NO
+ * fuel/reinforce column exists, and no owner. Sorted by structureID. `[]` is a real "no structures in system".
  */
 export function decodeStructureMapData(
   result: JsonValue | null | undefined,
@@ -256,11 +261,13 @@ export function decodeStructureMapData(
       groupID: toNumber(readRowField(row, "groupID")),
       itemName: readText(readRowField(row, "itemName")),
       solarSystemID: toNumber(readRowField(row, "locationID")),
-      ownerID: toNumber(readRowField(row, "orbitID")),
+      orbitID: toNumber(readRowField(row, "orbitID")),
       connector: readRowField(row, "connector") === true,
       x: toNumber(readRowField(row, "x")),
       y: toNumber(readRowField(row, "y")),
       z: toNumber(readRowField(row, "z")),
+      celestialIndex: toNullableNumber(readRowField(row, "celestialIndex")),
+      orbitIndex: toNullableNumber(readRowField(row, "orbitIndex")),
     });
   }
   return rows.sort((left, right) => left.structureID - right.structureID);

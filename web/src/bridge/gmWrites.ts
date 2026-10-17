@@ -23,6 +23,15 @@
 
 import type { Ask } from "./ask.ts";
 
+/** carbon/common/script/sys/serviceConst.py ROLE_GML (33) and ROLE_WORLDMOD (63): the roles a GM's buttons go by. */
+export const ROLE_GML = 18014398509481984n;
+export const ROLE_WORLDMOD = 4096n;
+
+/** session.role & role == role: whether the session has that role (its roles a 64-bit mask, as its digits). */
+export function sessionHasRole(sessionRole: string | null | undefined, role: bigint): boolean {
+  return typeof sessionRole === "string" && /^\d+$/.test(sessionRole) && (BigInt(sessionRole) & role) === role;
+}
+
 /** Sends one line to the world as a GM's command and answers the world's reply ("" where it said nothing). */
 export async function runSlashCommand(act: Ask, command: string): Promise<string> {
   const line = command.trim();

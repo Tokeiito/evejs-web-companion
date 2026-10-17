@@ -65,6 +65,18 @@ export interface OnlineCharacterState {
    * does not say them.
    */
   readonly corpRole?: string | null;
+  /**
+   * session.role: the session's own roles (carbon/common/script/sys/serviceConst.py: a GM's among them), a 64-bit mask
+   * as its digits; null where the transport does not say them.
+   */
+  readonly role?: string | null;
+  /**
+   * session.corpAccountKey: the corporation wallet division the pilot trades from (1000 the master wallet, 1001 to
+   * 1006 the second to the seventh); null where the session has none or the transport does not say it.
+   */
+  readonly corpAccountKey?: number | null;
+  /** session.raceID: the character's race (an alpha clone's skills go by it); null where the transport does not say it. */
+  readonly raceID?: number | null;
 }
 
 /**
@@ -364,6 +376,8 @@ export interface FittingSlot {
   readonly family: SlotFamily;
   readonly index: number;
   readonly module: FittedModule | null;
+  /** False for a slot the ship no longer has (a subsystem taken away), drawn for the module it still holds. */
+  readonly present?: boolean;
 }
 
 /** One used-vs-total reading (CPU, powergrid, capacitor, calibration). */
@@ -412,6 +426,58 @@ export interface FittingState {
    * its reason instead of a number; see `bridge/shipStats.ts`.
    */
   readonly stats: ShipStats;
+  /**
+   * Where `resources` and `stats` came from: the server's attributes of the ship ("server"), or the page's own dogma
+   * of it ("page": bridge/dogma/location.ts, as the client's Fitting window reads its own dogma location). The
+   * server's notices of the ship's attributes change the figures only where they are the server's.
+   */
+  readonly statsFrom?: "server" | "page";
+  /**
+   * The active ship's fighter bay as the window's readout gives it, where the hull has one (the page's reckoning,
+   * flow.reckonActiveShip): its capacity (GetFighterCapacity) and its use (the ship's inventory; null where unread).
+   */
+  readonly fighterBay?: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null;
+  /**
+   * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
+   * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
+   * moduleStates.ts: OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3). Absent or null where it is not.
+   */
+  readonly simulation?: {
+    /** The pilot's own ship it simulates; null for a saved fitting or a hull alone. */
+    readonly shipID: number | null;
+    /** The simulated hull's type, and its name (the fitting's; null for the hull's own). */
+    readonly shipTypeID: number;
+    readonly name: string | null;
+    /** ghostFittingSvc.simulationChanged: changed since it was loaded (GetShipName puts "*" before the name). */
+    readonly changed: boolean;
+    readonly resources: FittingResources;
+    readonly stats: ShipStats;
+    readonly moduleStates: Readonly<Record<number, number>>;
+    /** Each simulated module's kind by its slot (moduleStateUtil: PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
+    readonly moduleKinds: Readonly<Record<number, number>>;
+    /** The simulated ship's slots: the ship's own, with what the simulation has fitted in each. */
+    readonly slots: readonly FittingSlot[];
+    /** The simulated drone bay by type: how many drones of it, how many selected. */
+    readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
+    /** The simulated cargo hold by type: how many, and the most it may be made (its count and the room left). */
+    readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+    /** The simulated cargo hold's capacity and what is in it takes (GetCapacity), m³. */
+    readonly cargoCapacity: { readonly capacity: number; readonly used: number };
+    /** The simulated fighter bay's capacity and use (GetCapacity(flagFighterBay)), m³; null for a hull with none (HasFighterBay). */
+    readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+    /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
+    readonly fighterSquadrons: { readonly full: number; readonly partial: number };
+    /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */
+    readonly fighterDps: number;
+    /** A structure simulated: its window shows the Fighters section in the drones' place (HasDronePanel false). */
+    readonly structure: boolean;
+    /** The five tubes (the fighter bay's picker, SingleTube): its number, whether the ship has it, its squadron. */
+    readonly fighterTubes: readonly { readonly flagID: number; readonly number: number; readonly present: boolean; readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null }[];
+    /** Each kind's squadrons the ship may have in its tubes and has there (the picker's fightersAllowedCont). */
+    readonly squadronSlots: Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>>;
+    /** The simulated fighter bay by type: how many, and the most it may be made (its count and the room left). */
+    readonly fighterBayTypes: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+  } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the
    * active ship and every fitted module with the SERVER's post-dogma attribute
@@ -3131,14 +3197,33 @@ export interface SkillQueueEntry {
   readonly endTimeMs: number | null;
   /** Non-zero only for the head: a later entry's rate is not knowable yet. */
   readonly skillPointsPerMinute: number;
+  /**
+   * The level's own training time as the client reckons it (skillQueueSvc.GetAllTrainingLengths), a booster running
+   * out on the way; null or absent where it is not reckoned (the web gateway's sheet).
+   */
+  readonly lengthMs?: number | null;
+  /** A skill accelerator runs as the level begins (its isAccelerated). */
+  readonly accelerated?: boolean;
 }
 
 export interface SkillQueueState {
   readonly active: boolean;
   readonly entries: readonly SkillQueueEntry[];
   readonly endTimeMs: number | null;
+  /** When the queue ends as the client reckons it (GetTrainingEndTimeOfQueue); null or absent where not reckoned. */
+  readonly reckonedEndMs?: number | null;
   /** The server's own cap on queue length, shown rather than enforced here. */
   readonly maxEntries: number;
+  /**
+   * GetEstimatedSkillPointsTrained's reckoning of the skill in training (bridge/skillTraining.ts TrainingEstimate): its
+   * points, the queue's start, the rate then and from each booster's expiry; null or absent where not reckoned.
+   */
+  readonly estimate?: {
+    readonly startingPoints: number;
+    readonly startMs: number;
+    readonly rate: number;
+    readonly changes: readonly { readonly offsetMs: number; readonly rate: number }[];
+  } | null;
 }
 
 /** The decoded GET /api/bridge/skills payload. */

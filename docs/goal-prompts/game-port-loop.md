@@ -19,6 +19,9 @@ the EveJS server the way the retail client (build 3396210) does, so that the ser
 two apart, and that does what the retail client does. They are away and have asked for this to be
 worked until it is done.
 
+The operator restated it on 2026-10-17, restarting the loop self-directed: the goal is still the
+EVE web app companion, plus fixing anything found wrong in the EveJS repository.
+
 The route is already planned and partly walked. Phases 0 to 2 are complete: there is a game-port
 session that logs in and stays connected as the retail client does, and a measured answer to "can
 the browser's decoders read what the game port sends". What remains is moving the pilot off the
@@ -96,23 +99,52 @@ From that day, in this loop:
   rarely writing tests" is taken as "no test is skipped or put aside, and tests are written
   rarely". If it meant that more are to be written, the third point changes and the rest stands.
 
+**The operator's word of 2026-10-17**, restarting the loop:
+
+> if needed, you can update any tests or AI harness testing we have, as you fix things. I
+> wouldn't want a future session to get confused on what a test is testing or is wrong, if we
+> have updated the code it tests. I still don't trust the old tests.
+
+So, from that day: **a test (a unit test, or one of `eve.js`'s AI gameplay-harness scenarios) whose
+code a unit changes is brought into line with the change in the same commit**, so that it says
+what the code now does and why, with the client's lines or the recording named. Where what it
+asserted was the old, wrong behaviour, its assertion is changed and its title and comments say
+the new rule; where it tested only this repository's own plumbing, it may be taken out. The log
+names each test touched. Old tests are still not evidence, and the suite is still not run as a
+check of a unit.
+
 ## Where the truth is
 
 Consult in this order. When two disagree, a recording of the real thing settles it.
 
 1. **The decompiled client**: `eve.js/tools/ClientCodeGrabber/Latest` (and `ClientCodeGrabberV2`).
    What the client does and when. Decompile more with those tools when a module is missing.
+   The decompiled Python can be wrong: each `.py` has its `.pyc` beside it, and a suspicious
+   constant is read in the `.pyc`'s bytes (2026-10-16: `fittingUtil.py` reads `u'\u0x2022 '`, the
+   `.pyc` holds two spaces, U+2022 and a space). The client's own devtools (`eve/devtools/script/*`)
+   show what it expects of the server (`svc_fittingspawner` assembles the ship `/createitem`
+   answers, so CCP's server makes it packaged).
 2. **CCP's own source, on this machine** under `C:\Users\ryanf\Documents\GitHub`:
    `destiny` (the ballpark simulation the client runs: `Ball.cpp`, `Ballpark.cpp`), `blue` (the
    marshaller, `src/Marshal.cpp`, and the Python runtime glue), `io` (socket I/O and compression),
    `core`, `fsd`, `trinity`. For anything in space, `destiny` is the specification: port it, do not
    approximate it.
 3. **The client install**: `D:\EVE Online - 3396210 - Copy\tq`. Its `python27.dll` answers
-   questions about Python itself (`scripts/py27-oracle.py`). Its other binaries can be decompiled
-   when neither of the above answers.
+   questions about Python itself (`scripts/py27-oracle.py`): a dict's order, a hash, a float's
+   print. The models checked against it are `src/gamePort/py27.js` and
+   `web/src/bridge/py27DictOrder.ts` (`IntDict`); a merge (`d.update`, `dict(d)`, `d.copy()`) grows
+   the table to above four times the count, as measured, not twice. Its texts (the localization
+   labels, `dialogs.static`) are read through `src/clientData/clientWords.js`; its static data
+   (`.fsdbinary`) through its own loaders, `scripts/client-built-data.py`
+   (`src/clientData/clientBuiltData.js`, a `TABLES` line a table). Its other binaries can be
+   decompiled when neither of the above answers. Never grep the whole install (it hangs).
 4. **The EveJS server source**, `eve.js/server/src`: what the server accepts and sends.
 5. **The server's logs**, `eve.js/_local/logs`: real client sessions by call name, handshake
-   details, and `[PKT] ERR` lines, which are the only trace when a call answers None.
+   details, and `[PKT] ERR` lines, which are the only trace when a call answers None. Mark
+   `server.log` with `wc -l`, act, and read what came after: `[PKT] IN`/`OUT` lines, the method,
+   a GM command's text; bound calls show `N=`. `eve.js/doc` has the server's own parity ledgers
+   (`PARITY_*.md`, `CHAT_COMMAND_REFERENCE.md`): read the topic's section before changing the
+   server, and write to it when you do.
 6. **Recordings of the retail client on Tranquility**: `D:\SSDSync\EveBadStuff\LOGS` (index in
    `LOG_MANIFEST.md`, missions under `Missions/`). The client's own log of sessions against CCP's
    server, every packet printed as a `MarshalStream` repr. This is what CCP's server really
@@ -153,7 +185,14 @@ whether the explosion's entry came, and the stamps of its target's damage),
 The operator has given the run of this machine for this work (2026-10-08):
 
 - Start, stop and restart the EveJS server. Reset game data. Edit the database. Stage whatever a
-  test needs. Use Docker if it helps.
+  test needs. **Not Docker** (the operator, 2026-10-16: "Don't touch Docker, that is there always
+  because we need it but never change the market code"): never stop, restart or change a
+  container, and never edit the market daemon's code.
+- Profile the server where a pause or a slow answer is the question (`eve.js` since 2026-10-17,
+  `doc/PAUSE_PROFILING.md`): `EVEJS_PAUSE_PROFILE=1` (with `EVEJS_PAUSE_PROFILE_SECONDS`) and
+  `EVEJS_TICK_PROFILE=1` set when the server starts write CPU, GC and scene-tick profiles under
+  `_local/logs/pause-profiles/`; `ProfileServer.bat` does the same with Windows counters. Remove the
+  flags at the next ordinary start.
 - Read and decompile anything on the machine.
 - Take the recommended path at a fork and carry on, recording the decision in the log.
 
@@ -222,7 +261,11 @@ the marshaller refuses, so every client gets None (plan, Phase 2).
   character evict each other, and in space that is an emergency-warp logoff.
 - **Other sessions share the `eve.js` checkout.** Changes there that are not yours are someone
   else's work in progress: do not stage, revert, stash or "fix" them. If they stop the server
-  booting, work on what needs no server and look again next iteration.
+  booting, work on what needs no server and look again next iteration. Since 2026-10-16 another
+  agent also switches this checkout to its own `codex/review-*` branches and back: read
+  `git rev-parse --abbrev-ref HEAD` before a server fix, commit only on `main`, and commit right
+  after the edit, before the live proof, so a switch cannot carry the change off. The running
+  server runs whatever was checked out at its last start.
 - Do not edit `src/gameProtocol/*` by hand (`npm run vendor:marshal -- --write`), or generated
   reports and fixtures (run their scripts).
 - Do not weaken a test to make it pass, or call something done that you have not seen work.
@@ -353,23 +396,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   between the two test pilots (`contracts-stage.js` in the scratchpad shows how: give items,
   `/api/bridge/contracts/create` and `accept` through the gateway BFF), a search differed and
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
-- **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-10, as Test Two,
-  docked): 20 identical, 14 tolerated, nothing moved, nothing divergent, and the tool exits 0.
-  (It was 21 and 13 until the colonies route was read as the client reads it: that row is
-  tolerated now, for the time a colony is reckoned up to.)
-  Anything else is news: read it. The count is that pilot's. As Test Pilot, who is in no
-  alliance, two passes read 23 identical, 10 tolerated and 1 moved (2026-10-09, before that): the alliance's
-  reads are refused alike on both transports, and `/api/bridge/flight/status` had a notice in
-  the game port's answer both times. I took the other pilot's count for a fault and spent a
-  while finding out it was not: say which pilot a pass was of.
+- **What a pass of the parity tool reads when nothing is wrong** (2026-10-16, docked, the tool
+  exiting 0): as Test Two (`test2 140000002`), 19 identical and 15 tolerated; as Test Pilot
+  (`test 140000001`), who is in no alliance, 22 identical and 12 tolerated. Nothing moved,
+  nothing divergent. Anything else is news: read it. The count is the pilot's: I once took the
+  other pilot's for a fault and spent a while finding out it was not, so say which pilot a pass
+  was of. (Test Two's was 20 and 14 from 2026-10-10 until the flight's hull group, the server's
+  sets of rows and a named refusal were read for what they are, on 2026-10-16.)
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock, and the tool leaves the server's own (`serverNowMs`) and a search's own
   time (`searchTime`) out; a count of none against two is not. A read that takes what it reads
-  (`skillHandler.GetSkillChangesForISIS`) reads "moved" for whichever transport asks second:
-  run the pass again. And the first route of a pass, `/api/bridge/flight/status`, now and then
-  reads "moved" with a count of notices: a notice that reached the game port's session at login
-  (`OnModuleAttributeChanges`, seen 2026-10-09) goes out with the first answer.
+  (`skillHandler.GetSkillChangesForISIS`, which this server forgets at the fourth asking) is
+  read as `taken-by-the-first-reader`, not moved. The notices a session gets at login are
+  taken before the first route (the pilot's state read until two reads bring none) and printed
+  on the transport's line, so they no longer ride the first route's answer: the game port gets
+  `OnModuleAttributeChanges` twice and `OnServerBrainUpdated`, the gateway none.
 - **Print the whole of a pass, and make the first pass after a restart one of the two.** A pass
   read "1 moved" straight after the game-port BFF was restarted, and I had printed its last
   line only. It was `searchTime`, which the tool was meant to leave out and did not: the

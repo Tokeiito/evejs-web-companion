@@ -54,13 +54,9 @@ export interface KnownCharacter {
 }
 
 /**
- * What one pilot is training, read from the LIVE queue rather than from the
- * character-selection tuple. See app/rosterRefresh.ts: the tuple's own
- * `skillTypeID` / `toLevel` / `trainingEndTime` are null for every pilot on this
- * emulator, so a roster that trusted them called every pilot idle.
- *
- * `skillTypeID: null` is a POSITIVE finding — the queue really is empty. A pilot
- * nobody could read is left OUT of the map instead, and keeps the row it had.
+ * What one pilot is training, as the client's character selection screen has it: the selection tuple's
+ * `skillTypeID`, `toLevel` and `trainingEndTime` (charselData.py GetSkillInTrainingInfo, 185 to 191, shown by
+ * characterSlots.py 501 to 507). `skillTypeID: null` is the finding that nothing is training.
  */
 export interface RosterTraining {
   readonly skillTypeID: number | null;
@@ -72,18 +68,11 @@ export interface RosterTraining {
 /**
  * The half of a roster row the sign-in itself cannot fill. Kept apart from
  * `CharacterSummary` because the sign-in hands back IDs and something else
- * entirely has to turn them into words — or, for training, has to ask a
- * different call altogether (app/rosterRefresh.ts).
+ * entirely has to turn them into words (app/rosterRefresh.ts).
  */
 export interface ResolvedRosterNames {
   readonly locationName: string | null;
   readonly trainingSkillName: string | null;
-  /**
-   * The live queue for this pilot. ABSENT means nobody could ask, and the
-   * selection tuple's own fields are used instead; PRESENT wins outright — an
-   * empty queue included — because the whole point of it is that it is true.
-   */
-  readonly training?: RosterTraining;
 }
 
 const STORAGE_VERSION = 1;
@@ -239,7 +228,7 @@ export function rememberCharacters(
     const locationRefID = c.stationID ?? c.solarSystemID ?? null;
     const prior = before.get(c.characterID);
     const lookedUp = resolved.get(c.characterID) ?? null;
-    const training = resolveTraining(c, lookedUp?.training, prior);
+    const training = resolveTraining(c, prior);
     const trainingSkillTypeID = training.skillTypeID;
     return {
       accountName: name,
@@ -263,52 +252,22 @@ export function rememberCharacters(
 }
 
 /**
- * What to record in one row's four training fields, in order of authority.
+ * What to record in one row's four training fields: the selection tuple's, as the client's selection screen shows
+ * them (RosterTraining), an empty one included, for the tuple is the server's word of the pilot now. (Until
+ * 2026-10-16 the hangar read the gateway's store for it, the tuple having come back empty for every pilot when it was
+ * measured on 2026-09-09; measured again on 2026-10-16, after a cold start too, it carries the training.) Stale
+ * entries retire themselves: app/hangar.ts reads a queue whose end time has passed as not training.
  *
- *  1. THE LIVE QUEUE, when the caller could read it. It wins outright, an empty
- *     queue included — "present and empty" is an observation, and the only thing
- *     that may turn a row IDLE.
- *  2. THE SELECTION TUPLE, when it says anything at all. On this emulator it
- *     never does (every one of its three training fields comes back null for
- *     every pilot), but a server where it works is answering about right now.
- *  3. WHAT THE ROW ALREADY HAD. Neither source spoke, so nothing was learned,
- *     and a caller that could not ask must never be able to blank a column a
- *     caller that could ask filled in. This is the ordinary character-select
- *     sign-in (ui/Onboarding.svelte), which passes no resolved map at all.
- *     Stale entries retire themselves: app/hangar.ts reads a queue whose end
- *     time has passed as not training.
- *
- * The skill NAME carries over across 2 and 3 for as long as it still names the
- * same skill — a name whose type ID has changed is a lie, and is dropped.
+ * The skill NAME carries over for as long as it still names the same skill — a name whose type ID has changed is a
+ * lie, and is dropped.
  */
 function resolveTraining(
   row: CharacterSummary,
-  live: RosterTraining | undefined,
   prior: KnownCharacter | undefined,
 ): RosterTraining {
-  if (live) {
-    return {
-      ...live,
-      skillName:
-        live.skillName ??
-        (live.skillTypeID !== null && prior && prior.trainingSkillTypeID === live.skillTypeID
-          ? (prior.trainingSkillName ?? null)
-          : null),
-    };
-  }
   const skillTypeID = row.skillTypeID ?? null;
   const toLevel = row.toLevel ?? null;
   const endsAtMs = filetimeToUnixMs(row.trainingEndTime ?? null);
-  if (skillTypeID === null && toLevel === null && endsAtMs === null) {
-    return prior
-      ? {
-          skillTypeID: prior.trainingSkillTypeID ?? null,
-          skillName: prior.trainingSkillName ?? null,
-          toLevel: prior.trainingToLevel ?? null,
-          endsAtMs: prior.trainingEndsAtMs ?? null,
-        }
-      : { skillTypeID: null, skillName: null, toLevel: null, endsAtMs: null };
-  }
   return {
     skillTypeID,
     toLevel,

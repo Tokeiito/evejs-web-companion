@@ -11,7 +11,12 @@ const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
+const { createClientTextures } = require("./clientData/clientTextures");
+const { createMultibuyImport } = require("./clientData/importMultibuy");
+const { createSkillplanImport } = require("./clientData/importSkillplan");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
+const { hullBrowserData } = require("./clientData/hullBrowser");
+const { readFitting } = require("./clientData/importFitting");
 const { createClientConstants } = require("./clientData/clientConstants");
 const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
 const { STATION_CAPACITY, capacityAnswer, packagedVolume, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
@@ -24,6 +29,7 @@ const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = requir
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
+const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
 const { attachPilotSocket } = require("./pilotSocket");
 const { createInProcessFetch, hostedBotReach } = require("./inProcessFetch");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
@@ -186,6 +192,8 @@ const gamePortPilots = options.gamePortPilots !== undefined
     ? createGamePortPilots({
       // "Released" is said once the server itself has the character offline.
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
+      // Each pilot's public gateway notices, on the connection its gateway requests go on (gamePort/publicGateway.js).
+      gatewayNotices: (pilot, onNotice) => sharedPublicGateway().consume(pilot, onNotice),
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
       // The client's travel effects, from its own data (clientBuiltData, made below; asked for once a pilot is in space).
@@ -239,6 +247,9 @@ const clientNotificationFormats = options.clientNotificationFormats || createCli
   python: config.clientPython,
   onError: (error) => console.warn(`[client-data] the client's notification formats could not be read: ${error && error.message}`),
 });
+// The retail client's own pictures, by their res: path, from the same install
+// (src/clientData/clientTextures.js).
+const clientTextures = options.clientTextures || createClientTextures({ clientRoot: config.clientRoot });
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
 const gameClientFactory = options.gameClientFactory || ((endpoint) => new GameClient(endpoint));
@@ -1779,6 +1790,13 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
         corpRole: typeof outcome.session.corpRole === "string" && /^\d+$/.test(outcome.session.corpRole)
           ? outcome.session.corpRole
           : null,
+        // session.role, the session's own roles (a GM's among them), where the transport says them: the game port
+        // does.
+        role: typeof outcome.session.role === "string" && /^\d+$/.test(outcome.session.role)
+          ? outcome.session.role
+          : null,
+        corpAccountKey: Number.isSafeInteger(outcome.session.corpAccountKey) ? outcome.session.corpAccountKey : null,
+        raceID: Number.isSafeInteger(outcome.session.raceID) ? outcome.session.raceID : null,
       },
       station: buildStationStatic(outcome.session.stationID),
       notifications: outcome.notifications,
@@ -2229,7 +2247,16 @@ async function boundCall(held, webSessionID, bindSpec, method, args, kwargs, bin
   }
 }
 
-/** A type's own volume from the static tables, or null when they do not know it. */
+/**
+ * A type's own volume in m³ from the static tables, nought where it is nought (956 published types: blueprints,
+ * some modules and more), as the client's GetItemVolume has it; null only where the tables do not know the type.
+ * The hold reckoning (usedOfListed), the routes that list items (readTypeVolumes) and GET /api/types/volumes all go
+ * by it.
+ *
+ * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an enrichment: without it a panel shows "—" and
+ * a bot hands the server the whole stack to judge, both of which are defined behaviours. A static table that cannot
+ * answer therefore says null, never a 500 on a read the player asked for.
+ */
 function staticTypeVolume(typeID) {
   if (typeof staticData.getType !== "function") return null;
   const type = staticData.getType(typeID);
@@ -4165,14 +4192,16 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // (flow.loadMarketTransactions). Asked with every market read, they went twice where the client asks once.
     // Nor the pilot's ISK: the client's wallet service asks it once and keeps it as OnAccountChange says (walletSvc.py
     // 41 to 49, 81 to 100); the page keeps it so (walletReads.wealth) and the market window shows that.
-    const [book, ownOrders, history, escrow, priceHistory, priceHistoryOld] =
+    // Nor its escrow: the client asks GetCharEscrow only for its market progression, kept in the character's settings
+    // and asked again at most each twelve hours (playerprogression/marketprogressionnotifier.py); the page keeps it so
+    // (flow.watchMarketProgression).
+    const [book, ownOrders, history, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
           : Promise.resolve({ result: null }),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
         heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
-        heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
@@ -4183,7 +4212,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
           : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, escrow, priceHistory, priceHistoryOld];
+    const settled = [book, ownOrders, history, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -4223,7 +4252,6 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },
-      escrow: { result: valueOf(escrow), error: codeOf(escrow) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
       priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage
@@ -6522,8 +6550,8 @@ function readModuleChargeFits(result) {
  * Per-type volume (m³) for every type in a ListStationItems result.
  *
  * Reads the NAME-KEYED packedrow variant this handler builds. Types the static
- * tables do not know are simply absent from the map — never zero, which the
- * page would have to render as a real measurement.
+ * tables do not know are simply absent from the map; a volume of nought is
+ * there as nought, as the client has it (staticTypeVolume).
  */
 function readTypeVolumes(result, packaged = null) {
   const volumes = {};
@@ -6556,25 +6584,6 @@ function readTypeVolumes(result, packaged = null) {
 /** The client's packaged volumes (src/clientData/clientConstants.js), or null where they cannot be read. */
 function packagedTablesOrNull() {
   return clientConstants.packagedVolumes().catch(() => null);
-}
-
-/**
- * A type's volume in m³ as static data has it, or null where it has none: never nought, which a page would have
- * to show as a real measurement. The routes that list items and GET /api/types/volumes both go by it.
- *
- * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an
- * enrichment: without it a panel shows "—" and a bot hands the server the
- * whole stack to judge, both of which are defined behaviours. A static table
- * that cannot answer therefore says null, never a 500 on a read the
- * player asked for.
- */
-function staticTypeVolume(typeID) {
-  if (typeof staticData.getType !== "function") {
-    return null;
-  }
-  const type = staticData.getType(typeID);
-  const volume = Number(type && type.volume);
-  return Number.isFinite(volume) && volume > 0 ? volume : null;
 }
 
 /**
@@ -11068,7 +11077,7 @@ async function skillSheetFor(account, characterID, held = null, webSessionID = n
 }
 
 /**
- * A pilot's skill sheet for a read the ACCOUNT makes of it: the hangar's roster, Pilot Training, mining
+ * A pilot's skill sheet for a read the ACCOUNT makes of it: the PI boards, Pilot Training, mining
  * preparation. Such a read does not come from the web session that is flying the pilot, and may be of a pilot
  * nobody is flying.
  *
@@ -11103,41 +11112,6 @@ async function answerWithSkillSheet(res, account, characterID, extra = {}, held 
   res.json({ ok: true, ...extra, skills });
 }
 
-/**
- * The Pilot Hangar's training column, for pilots who are NOT signed in (R107).
- *
- * ⚠ WHY THIS ROUTE EXISTS AT ALL. The hangar used to take training straight out
- * of charUnboundMgr.GetCharacterSelectionData, which carries `skillTypeID`,
- * `toLevel` and `trainingEndTime` per character and is the one call the screen
- * already makes. On this emulator those three fields are ALWAYS null — measured
- * against a live server on 2026-09-09, every pilot on every account, including
- * pilots whose stored queue was active with fifty-odd entries. charService fills
- * them from `buildTrainingSelectionInfo`, which answers off a runtime snapshot
- * the selection path does not have warm, so the tuple is honest about nothing.
- * The hangar rendered that null as IDLE / "not training" and was wrong for every
- * pilot that was in fact training.
- *
- * The gateway's own GET /skills is the authority that does answer:
- * `skillQueueRuntime.getQueueSnapshot`, resolved to plain JSON with the skill
- * NAME and the queue's instants already in epoch milliseconds — and, like the
- * skill panel's read above, it needs no bridge session, because reading what a
- * character is training is not an act of piloting. So this route asks it once
- * per pilot and answers the three values the hangar row prints.
- *
- * OWNERSHIP IS THE GATEWAY'S. `characterIDs` comes from the browser, and every
- * one of them is passed to getSkills with the CALLER's accountID; the gateway's
- * validateOwnedCharacter refuses any character that account does not own. A
- * refused (or failed) id is simply left OUT of the answer rather than reported —
- * see below for why that is the useful shape.
- *
- * A MISSING ROW IS NOT AN IDLE ROW. The client keeps whatever it already had for
- * any id this route does not answer for, so one pilot's failed read can never
- * blank a column that was right a moment ago. Present-with-`skillTypeID: null`
- * is the positive statement "this queue is empty", and only that turns a row
- * IDLE.
- */
-const ROSTER_TRAINING_MAX_IDS = 12;
-
 /** A roster route's `characterIDs`: comma-separated, junk and repeats dropped. */
 function rosterCharacterIDs(value) {
   const characterIDs = [];
@@ -11154,7 +11128,8 @@ function rosterCharacterIDs(value) {
 // GetCharacterSelectionData), read without logging the account in on the game port. A launcher lists an account's
 // characters without a game login; a login closes the account's other client (EveJS's accountLoginClose.js, after
 // sessionMgr.CloseUserSessions), so the hangar opening would put off a retail client playing on the account. Asked of
-// the gateway as the account and no character, as the roster's training read below is.
+// the gateway as the account and no character. What each pilot is training is read from it too, as the client's
+// selection screen reads it (charselData.py GetSkillInTrainingInfo, 185 to 191; web/src/app/knownCharacters.ts).
 app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
   try {
     const outcome = await gateway.callMethod(
@@ -11166,63 +11141,6 @@ app.get("/api/roster/characters", requireAuth, async (req, res, next) => {
       undefined,
     );
     res.json({ ok: true, result: outcome ? outcome.result ?? null : null });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/roster/training", requireAuth, async (req, res, next) => {
-  const characterIDs = rosterCharacterIDs(req.query.characterIDs);
-  if (characterIDs.length === 0) {
-    res.json({ ok: true, training: [] });
-    return;
-  }
-  if (characterIDs.length > ROSTER_TRAINING_MAX_IDS) {
-    res.status(400).json({
-      ok: false,
-      error: "TOO_MANY_CHARACTERS",
-      message: `Ask about at most ${ROSTER_TRAINING_MAX_IDS} pilots at a time.`,
-    });
-    return;
-  }
-  try {
-    // An account holds three pilots, so these go together rather than one after
-    // the other — the hangar already walks its accounts sequentially, and three
-    // reads inside one account do not need the same restraint.
-    const rows = await Promise.all(
-      characterIDs.map(async (characterID) => {
-        let skills = null;
-        try {
-          skills = await accountSkillSheet(req.account.accountID, characterID);
-        } catch (error) {
-          // Not ours, not there, or the gateway stumbled. Say nothing about this
-          // pilot; the client keeps the row it had.
-          void error;
-          return null;
-        }
-        if (!skills) {
-          return null;
-        }
-        const queue = skills.queue && typeof skills.queue === "object" ? skills.queue : null;
-        const entries = queue && Array.isArray(queue.entries) ? queue.entries : [];
-        const head = queue && queue.active === true ? entries[0] || null : null;
-        if (!head) {
-          return { characterID, skillTypeID: null, skillName: null, toLevel: null, endsAtMs: null };
-        }
-        const skillTypeID = Number(head.typeID) || null;
-        const named = Array.isArray(skills.skills)
-          ? skills.skills.find((row) => Number(row.typeID) === skillTypeID)
-          : null;
-        return {
-          characterID,
-          skillTypeID,
-          skillName: named && typeof named.name === "string" ? named.name : null,
-          toLevel: Number(head.toLevel) || null,
-          endsAtMs: Number.isFinite(head.endTimeMs) ? head.endTimeMs : null,
-        };
-      }),
-    );
-    res.json({ ok: true, training: rows.filter((row) => row !== null) });
   } catch (error) {
     next(error);
   }
@@ -12039,7 +11957,7 @@ app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
  * table that was present and empty. Selecting a character is for ACTING on a
  * colony, and that goes through the bot host, never through here.
  *
- * The shape is /api/roster/training's, deliberately: `characterIDs` from the
+ * The shape is deliberately the roster's: `characterIDs` from the
  * browser, each asked with the CALLER's accountID so the gateway refuses what
  * the account does not own, and a refused or failed pilot LEFT OUT — the board
  * keeps the reading it had rather than wiping a farmer's colonies on one bad
@@ -12697,6 +12615,22 @@ app.get("/api/map/station/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+// A solar system's region and its NPC stations with their celestialIndex and orbitIndex (staticData.getSystemStations:
+// the client's own map data, cfg.GetLocationsLocalBySystem), for the multibuy's station list. Static reference data.
+app.get("/api/map/system-stations/:id", requireAuth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id) || 0;
+    if (id <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_ID", message: "A positive id is required." });
+      return;
+    }
+    const system = staticData.getSolarSystem(id);
+    res.json({ ok: true, regionID: system && Number(system.regionID) > 0 ? Number(system.regionID) : null, stations: staticData.getSystemStations(id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Map name search (goal R7a): let a player set a travel destination by NAME
 // instead of a raw EVE ID. Searches the static solar-system + station tables by
 // name and returns capped matches the client hands to startRoute (the R5b route
@@ -13155,7 +13089,90 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
 // get_dogma_required_skills: the requiredSkillsForTypes table), for the types asked and every skill they lead to, so
 // that whoever asks walks them as the client's skill service walks them (skillsvc.py 534 to 595). A type that needs
 // none has {}. `available` is false when the table could not be read (no client install, or no Python to host the
-// client's loader); `required` is then empty. At most 50 types are asked at once.
+// client's loader); `required` is then empty. At most 50 types are asked at once. `order` has each type's needs as
+// [[skill, level], ...] in the order the client's table iterates them (its requiredSkill1, 2, 3...), which `required`'s
+// object loses on the way: the client's skill plan validation walks them in it.
+// The skills that need each of these skills at each level (skillPlanUtil.GetSkillsRequiring: the requiredSkillsIndex
+// table's row for the skill, its level's market category 150, every meta group's types together), for the skill plan
+// editor's remove lock (EditableSkillPlanController.CanRemoveSkillRequirement). A skill no skill needs has {}.
+// `available` is false when the table could not be read. At most 100 skills at once.
+app.get("/api/client-data/skills-requiring", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const rows = asked.length === 0 ? {} : await clientBuiltData.rows("requiredSkillsIndex", asked.slice(0, 100));
+    const requiring = {};
+    if (rows) {
+      for (const typeID of asked.slice(0, 100)) {
+        const row = rows[String(typeID)];
+        const byLevel = {};
+        if (row && typeof row === "object") {
+          for (const [level, byCategory] of Object.entries(row)) {
+            const skills = byCategory && typeof byCategory === "object" ? byCategory["150"] : null;
+            if (!skills || typeof skills !== "object") continue;
+            byLevel[level] = Object.values(skills).flatMap((types) => (Array.isArray(types) ? types.map(Number).filter(Number.isSafeInteger) : []));
+          }
+        }
+        requiring[typeID] = byLevel;
+      }
+    }
+    res.json({ ok: true, available: Boolean(rows), requiring });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The certified skill plans and the career paths, as the client's own data has them (skillPlanFSDLoader.get_skill_plans,
+// careerpath.get_career_paths): each plan's id, name and description messages, career path, faction, NPC corporation
+// division, skill requirements ([typeID, level] in order) and milestones ({typeID, level: null for a type}); the career
+// paths in the order the client's table iterates them, each its id and name and description messages. `available`
+// is false where a table could not be read.
+app.get("/api/client-data/certified-skill-plans", requireAuth, async (req, res, next) => {
+  try {
+    const [plans, careers] = await Promise.all([clientBuiltData.table("skillPlans"), clientBuiltData.table("careerPaths")]);
+    if (!plans || !careers) {
+      res.json({ ok: true, available: false, plans: [], careerPaths: [] });
+      return;
+    }
+    const numberOrNull = (value) => (Number.isSafeInteger(Number(value)) && value !== null && value !== undefined ? Number(value) : null);
+    res.json({
+      ok: true,
+      available: true,
+      plans: Object.entries(plans).map(([planID, plan]) => ({
+        planID: Number(planID),
+        nameID: numberOrNull(plan.nameID),
+        descriptionID: numberOrNull(plan.descriptionID),
+        careerPathID: numberOrNull(plan.careerPathID),
+        factionID: numberOrNull(plan.factionID),
+        npcCorporationDivision: numberOrNull(plan.npcCorporationDivision),
+        requirements: (Array.isArray(plan.skillRequirements) ? plan.skillRequirements : []).map((skill) => [Number(skill.typeID), Number(skill.level)]),
+        milestones: (Array.isArray(plan.milestones) ? plan.milestones : []).map((milestone) => ({ typeID: Number(milestone.typeID), level: numberOrNull(milestone.level) })),
+      })),
+      careerPaths: (Array.isArray(careers["#order"]) ? careers["#order"] : []).map((careerPathID) => ({
+        careerPathID,
+        nameID: numberOrNull(careers[String(careerPathID)] && careers[String(careerPathID)].nameID),
+        descriptionID: numberOrNull(careers[String(careerPathID)] && careers[String(careerPathID)].descriptionID),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Every skill type, by the server's static data: its type, name, group and group's name, and whether it is published.
+// The skill plan editor's catalogue (skillsvc._ConstructSkillControllers: the skill category's types, published or
+// held, by group) is made of it.
+app.get("/api/static/skill-catalogue", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, skills: staticData.listSkillTypes ? staticData.listSkillTypes() : [] });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -13165,27 +13182,34 @@ app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) 
     }
     const table = await clientBuiltData.table("requiredSkillsForTypes");
     const required = {};
+    const order = {};
     const walk = (typeID) => {
       if (Object.prototype.hasOwnProperty.call(required, typeID)) return;
-      const row = table && table[typeID] && typeof table[typeID] === "object" ? table[typeID] : {};
+      const row = table && Array.isArray(table[typeID]) ? table[typeID] : [];
       const skills = {};
-      for (const [skillID, level] of Object.entries(row)) {
+      const inOrder = [];
+      for (const [skillID, level] of row) {
         const skill = Number(skillID);
         const atLevel = Number(level);
-        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) skills[skill] = atLevel;
+        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) {
+          skills[skill] = atLevel;
+          inOrder.push([skill, atLevel]);
+        }
       }
       required[typeID] = skills;
-      for (const skillID of Object.keys(skills)) walk(Number(skillID));
+      order[typeID] = inOrder;
+      for (const [skill] of inOrder) walk(skill);
     };
     if (table) for (const typeID of asked.slice(0, 50)) walk(typeID);
-    res.json({ ok: true, available: Boolean(table), required });
+    res.json({ ok: true, available: Boolean(table), required, order });
   } catch (error) {
     next(error);
   }
 });
 
 // A type's base price and whether it is published, as the client's own data has them (evetypes.GetBasePrice and
-// IsPublished: the typeBasePrices and typePublished tables), for the types asked: what a skill book bought directly
+// IsPublished: the typeBasePrices and typePublished tables; and GetPortionSize, typePortionSizes, by which the
+// market's average falls back to the base price), for the types asked: what a skill book bought directly
 // costs (characterskills/common/purchase.py get_direct_purchase_price: the base price and 30 in a hundred more) and
 // whether it is sold so (evetypes.IsSkillAvailableForPurchase, with the type list of books for sale). A type the
 // client's data lacks has null. `available` is false when a table could not be read. At most 50 types at once.
@@ -13196,15 +13220,661 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
       const typeID = Number(part);
       if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
     }
-    const [prices, published] = await Promise.all([clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished")]);
+    const [prices, published, portions, dynamicTypes] = await Promise.all([
+      clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished"), clientBuiltData.table("typePortionSizes"),
+      clientBuiltData.table("typeDynamic"),
+    ]);
     const basePrice = {};
     const isPublished = {};
+    const portionSize = {};
+    // evetypes.GetGroupID: each type's group, as the static tables have it (a skill's group picks its icon:
+    // skills/skillConst.py ICON_BY_GROUPID). And evetypes.GetCategoryID, its category (a saved fitting's cargo
+    // entry is an implant by it: shipfitting/fitting.py _IsImplant).
+    const groupID = {};
+    const categoryID = {};
+    // evetypes.IsDynamicType: bool of the type's isDynamicType, false where the type has none; null where the table
+    // could not be read.
+    const dynamic = {};
     for (const typeID of asked.slice(0, 50)) {
+      dynamic[typeID] = dynamicTypes ? Boolean(Number(dynamicTypes[typeID] || 0)) : null;
+      const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+      groupID[typeID] = type && Number.isSafeInteger(Number(type.groupID)) ? Number(type.groupID) : null;
+      categoryID[typeID] = type && Number.isSafeInteger(Number(type.categoryID)) ? Number(type.categoryID) : null;
       const price = prices ? Number(prices[typeID]) : NaN;
       basePrice[typeID] = prices && prices[typeID] !== undefined && Number.isFinite(price) ? price : null;
       isPublished[typeID] = published && published[typeID] !== undefined ? Boolean(Number(published[typeID])) : null;
+      const portion = portions ? Number(portions[typeID]) : NaN;
+      portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
-    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished });
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID, categoryID, dynamic });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A shopping list read as the client's multibuy window reads one from the clipboard (buyMultiFromBase
+// ImportShoppingList; textImporting.importMultibuy, src/clientData/importMultibuy.js): the market's types it names,
+// each with its quantity, in the order the client adds them, and the lines it could not read. The names are the
+// market's types' English names (getMarketTypeNames). No session: the market's names do not vary by player.
+const MULTIBUY_IMPORT_MAX_TEXT = 100_000;
+let multibuyImport = null;
+app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A list is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    if (multibuyImport === null) multibuyImport = createMultibuyImport(staticData.getMarketTypeNames());
+    res.json({ ok: true, ...multibuyImport.getTypesAndQty(text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A list of skills read as the client's skill plan editor reads one from the clipboard (ImportSkillsFromClipboard;
+// textImporting.importSkillplan GetSkillsAndLevelsFromText, src/clientData/importSkillplan.js): each line's skill and
+// level, in order, and the lines it could not read. The names are the skill types' English ones (getSkillImportNames).
+// No session: they do not vary by player.
+let skillplanImport = null;
+app.post("/api/client-data/skillplan-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A list is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    if (skillplanImport === null) skillplanImport = createSkillplanImport(staticData.getSkillImportNames(), (typeID) => staticData.isSkillType(typeID));
+    res.json({ ok: true, ...skillplanImport.getSkillsAndLevelsFromText(text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A fitting read from text as the client's fitting window reads one from the clipboard (fittingSvc
+// ImportFittingFromClipboard; shipfitting/importFittingUtil.py, src/clientData/importFitting.js): the ship's type, the
+// fitting's name, its entries and the lines it could not read; or ImportingErrorFromClipboard where the client's
+// reading fails. The names are the types' English ones (getFittingImportNames). No session: they do not vary by player.
+app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A fitting is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    const { names, listed } = staticData.getFittingImportNames();
+    res.json({ ok: true, ...readFitting(text, { names, listed, typeOf: (typeID) => staticData.getType(typeID), dogmaOf: (typeID) => staticData.getTypeDogma(typeID) }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An alpha clone's skills and their highest levels for a race, as the client's clone grade storage has them
+// (clonegrade.CloneGradeStorage()[raceID]; src/clientData/clientBuiltData.js cloneGrades): a skill not listed is 0.
+// The client goes by them for an alpha (clone_grade_svc.get_max_skill_level). `available` false where the client's
+// data could not be read. No session: they do not vary by player.
+// Dogma effects' names, as the numbers of their messages (dogma.data.get_effect_display_name: the effect's
+// displayNameID), for the effects asked; null for an effect with none. `available` false where the client's data
+// could not be read. No session: they do not vary by player.
+// The fitting browser's hulls (src/clientData/hullBrowser.js): every hull the market sells, its special edition
+// ships, each hull's group, faction, meta group, category and whether it is published, the same of each type asked (a saved
+// fitting's hull; null for a type the client does not have), and each race's name as the number of its message.
+// `available` false where the client's data could not be read. No session: they do not vary by player.
+app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const names = ["marketGroupParents", "typeMarketGroups", "typePublished", "typeGroups", "typeFactions", "typeMetaGroups", "raceNameIDs", "groupCategories"];
+    const read = await Promise.all(names.map((name) => clientBuiltData.table(name)));
+    if (read.some((table) => !table)) {
+      res.json({ ok: true, available: false });
+      return;
+    }
+    const tables = Object.fromEntries(names.map((name, at) => [name, read[at]]));
+    res.json({ ok: true, available: true, ...hullBrowserData(tables, asked.slice(0, 500)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A ship's traits as the client's data has them (infobubbles: get_info_bubble_type_bonuses), for the types asked: its
+// bonuses per skill, its role bonuses and its other bonuses, each {bonus, importance, nameID, unitID} (traits.py
+// TraitsContainer); null for a type with none (infobubbles.has_traits). With them, each unit's name as the number of its
+// message (dogma/units.py get_display_name). `available` is false when the client's data could not be read. At most 50.
+app.get("/api/client-data/ship-traits", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const [bonuses, unitNames] = await Promise.all([clientBuiltData.infoBubbleTypeBonuses(), clientBuiltData.table("unitDisplayNames")]);
+    if (!bonuses) {
+      res.json({ ok: true, available: false, traits: {}, unitNameIDs: {} });
+      return;
+    }
+    const bonusOf = (value) => ({
+      bonus: Number.isFinite(Number(value && value.bonus)) && value.bonus !== undefined && value.bonus !== null ? Number(value.bonus) : null,
+      importance: Number(value && value.importance) || 0,
+      nameID: Number(value && value.nameID) || null,
+      unitID: Number(value && value.unitID) || null,
+    });
+    const listOf = (value) => (Array.isArray(value) ? value.map(bonusOf) : []);
+    const traits = {};
+    const units = new Set();
+    for (const typeID of asked.slice(0, 50)) {
+      const entry = bonuses[String(typeID)];
+      if (!entry || typeof entry !== "object") {
+        traits[typeID] = null;
+        continue;
+      }
+      const skills = Object.entries(entry.types && typeof entry.types === "object" ? entry.types : {})
+        .map(([skillTypeID, list]) => ({ skillTypeID: Number(skillTypeID), bonuses: listOf(list) }));
+      traits[typeID] = { skills, role: listOf(entry.roleBonuses), misc: listOf(entry.miscBonuses) };
+      for (const bonus of [...skills.flatMap((skill) => skill.bonuses), ...traits[typeID].role, ...traits[typeID].misc]) {
+        if (bonus.unitID !== null) units.add(bonus.unitID);
+      }
+    }
+    const unitNameIDs = {};
+    for (const unitID of units) unitNameIDs[unitID] = unitNames && unitNames[String(unitID)] !== undefined ? Number(unitNames[String(unitID)]) || null : null;
+    res.json({ ok: true, available: true, traits, unitNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The compare tool's types (comparisonWindow.py, comparableType.py), from the client's own tables: each type's dogma
+// attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order, then its mass,
+// capacity, volume and radius from its types record: evetypes.GetMass and the rest), its group and category
+// (evetypes.GetGroupID, GetCategoryIDByGroup), whether it is published and whether it is a dynamic type
+// (evetypes.IsDynamicType); the records of the attributes they carry, of the two the tool adds itself (the estimated
+// price, attributeEstimatedPrice 5617, and the clone grade's, attributeCloneGradeRestriction 5618) and of those a value
+// names (unitAttributeID, 119); each unit's name's message (units.get_display_name). At most 50 types at once.
+// Dogma attributes as the client draws one by itself (skillsPanelUtil.AttributeCont): its name, the number of its
+// message (dogma/data.py get_attribute_display_name: displayNameID), and its picture's res: path
+// (get_attribute_icon_id, then fsdBuiltData iconIDs GetIconFile). At most 32 at once.
+app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.attributeIDs) || "").split(",")) {
+      const attributeID = Number(part);
+      if (Number.isSafeInteger(attributeID) && attributeID > 0 && !asked.includes(attributeID)) asked.push(attributeID);
+    }
+    const [attributeRows, iconFiles] = await Promise.all([
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("iconFiles"),
+    ]);
+    if (!attributeRows) {
+      res.json({ ok: true, available: false, attributes: {} });
+      return;
+    }
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const attributes = {};
+    for (const attributeID of asked.slice(0, 32)) {
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") {
+        attributes[attributeID] = null;
+        continue;
+      }
+      const iconID = whole(row.iconID);
+      const iconFile = iconID !== null && iconFiles ? iconFiles[String(iconID)] : null;
+      attributes[attributeID] = { displayNameID: whole(row.displayNameID), iconFile: typeof iconFile === "string" ? iconFile : null };
+    }
+    res.json({ ok: true, available: true, attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The expert systems as the client's data has them (expertSystems/data.py ExpertSystem): by type, its days, whether
+// it is hidden or retired, and the skills it gives with their levels (skillsGranted, in the order the client's loader
+// iterates its dict).
+app.get("/api/client-data/expert-systems", requireAuth, async (req, res, next) => {
+  try {
+    const rows = await clientBuiltData.table("expertSystems");
+    if (!rows) {
+      res.json({ ok: true, available: false, expertSystems: {} });
+      return;
+    }
+    const expertSystems = {};
+    for (const [key, row] of Object.entries(rows)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0 || !row || typeof row !== "object") continue;
+      // (The table keeps skillsGranted as [[skill, level], ...] in the loader's order: innerOrder.)
+      const granted = Array.isArray(row.skillsGranted) ? row.skillsGranted : row.skillsGranted && typeof row.skillsGranted === "object" ? Object.entries(row.skillsGranted) : [];
+      expertSystems[typeID] = {
+        durationDays: Number(row.durationDays) || 0,
+        hidden: Boolean(Number(row.esHidden || 0)),
+        retired: Boolean(Number(row.esRetired || 0)),
+        skills: granted.map(([skill, level]) => [Number(skill), Number(level) || 0]).filter(([skill]) => skill > 0),
+        // associatedShipTypes: the ships it goes with, in its list's order.
+        ships: (Array.isArray(row.associatedShipTypes) ? row.associatedShipTypes : []).map(Number).filter((typeID) => typeID > 0),
+      };
+    }
+    res.json({ ok: true, available: true, expertSystems });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The certificates filed under skill groups (certificateSvc.GetCertificatesByGroupID), each with its skills and the
+// level each grade asks of them (src/staticData.js getSkillGroupCertificates). At most 64 groups at once.
+app.get("/api/client-data/skill-group-certificates", requireAuth, (req, res, next) => {
+  try {
+    const asked = String((req.query && req.query.groupIDs) || "").split(",").map(Number).filter((groupID) => Number.isSafeInteger(groupID) && groupID > 0).slice(0, 64);
+    res.json({ ok: true, certificates: staticDataModule.getSkillGroupCertificates(asked) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const wanted = asked.slice(0, 50);
+    const [dogmaRows, typeRows, attributeRows, unitNames, groupCategories] = await Promise.all([
+      clientBuiltData.rows("typeDogma", wanted),
+      clientBuiltData.rows("types", wanted),
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("unitDisplayNames"),
+      clientBuiltData.table("groupCategories"),
+    ]);
+    if (!dogmaRows || !typeRows || !attributeRows) {
+      res.json({ ok: true, available: false, types: {}, attributes: {}, unitNameIDs: {} });
+      return;
+    }
+    const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const recordOf = (attributeID) => {
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") return null;
+      return {
+        name: typeof row.name === "string" ? row.name : null,
+        displayNameID: whole(row.displayNameID),
+        tooltipDescriptionID: whole(row.tooltipDescriptionID),
+        unitID: whole(row.unitID),
+        iconID: whole(row.iconID),
+        published: Boolean(Number(row.published || 0)),
+        displayWhenZero: Boolean(Number(row.displayWhenZero || 0)),
+        highIsGood: Boolean(Number(row.highIsGood || 0)),
+        dataType: whole(row.dataType),
+        defaultValue: number(row.defaultValue),
+      };
+    };
+    const types = {};
+    const attributes = {};
+    const units = new Set();
+    const keep = (attributeID) => {
+      if (Object.hasOwn(attributes, attributeID)) return;
+      const record = recordOf(attributeID);
+      attributes[attributeID] = record;
+      if (record && record.unitID !== null) units.add(record.unitID);
+    };
+    keep(5617);
+    keep(5618);
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      if (!type || typeof type !== "object") {
+        types[typeID] = null;
+        continue;
+      }
+      const dogma = dogmaRows[String(typeID)];
+      const listed = dogma && Array.isArray(dogma.dogmaAttributes) ? dogma.dogmaAttributes : [];
+      const rows = listed
+        .map((row) => [whole(row && row.attributeID), number(row && row.value)])
+        .filter(([attributeID]) => attributeID !== null && attributeID > 0);
+      rows.push([4, number(type.mass)], [38, number(type.capacity)], [161, number(type.volume)], [162, number(type.radius)]);
+      for (const [attributeID, value] of rows) {
+        keep(attributeID);
+        const record = attributes[attributeID];
+        if (record && record.unitID === 119 && value !== null && Number.isSafeInteger(Math.trunc(value))) keep(Math.trunc(value));
+      }
+      const groupID = whole(type.groupID);
+      const categoryID = groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null;
+      types[typeID] = {
+        attributes: rows,
+        groupID,
+        categoryID,
+        published: Boolean(Number(type.published || 0)),
+        dynamic: Boolean(Number(type.isDynamicType || 0)),
+      };
+    }
+    const unitNameIDs = {};
+    for (const unitID of units) unitNameIDs[unitID] = unitNames && unitNames[String(unitID)] !== undefined ? Number(unitNames[String(unitID)]) || null : null;
+    res.json({ ok: true, available: true, types, attributes, unitNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// What the page's own dogma reckons a type's item with (the Fitting window's simulation: FittingDogmaLocation on
+// baseDogmaLocation), from the client's own tables, for at most 50 types at once:
+//   each type      its attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order,
+//                  then its mass, capacity, volume and radius), its effects (its typeDogma dogmaEffects, in their
+//                  order), its group and category, and the skills it requires (get_dogma_required_skills: the item's
+//                  reqSkills, which a location's required-skill modifiers go by)
+//   each effect    of those types: its category, the attribute a fitting's chance goes by
+//                  (fittingUsageChanceAttributeID), its modifierInfo (null where it has none: the compiler makes
+//                  it a neutral effect, baseEffectCompiler SetupDogmaEffects), and the attributes it goes by for its
+//                  cycle, drain, range, falloff and tracking; each type's default effect besides
+//   each attribute the types carry, the effects name, and those asked (attributeIDs, at most 200): what Attribute and
+//                  itemAttributeFactory go by (stackable, dataType, defaultValue, highIsGood, the cap and floor
+//                  attributes, whether it is a charged one), and the cap and floor attributes' own records
+app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
+  try {
+    const listed = (name, most) => {
+      const out = [];
+      for (const part of String((req.query && req.query[name]) || "").split(",")) {
+        const id = Number(part);
+        if (Number.isSafeInteger(id) && id > 0 && !out.includes(id)) out.push(id);
+      }
+      return out.slice(0, most);
+    };
+    const wanted = listed("typeIDs", 50);
+    const askedAttributes = listed("attributeIDs", 200);
+    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills] = await Promise.all([
+      clientBuiltData.rows("typeDogma", wanted),
+      clientBuiltData.rows("types", wanted),
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("groupCategories"),
+      clientBuiltData.table("requiredSkillsForTypes"),
+    ]);
+    if (!dogmaRows || !typeRows || !attributeRows) {
+      res.json({ ok: true, available: false, types: {}, effects: {}, attributes: {} });
+      return;
+    }
+    const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const types = {};
+    const effectIDs = [];
+    const attributeIDs = new Set(askedAttributes);
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      if (!type || typeof type !== "object") {
+        types[typeID] = null;
+        continue;
+      }
+      const dogma = dogmaRows[String(typeID)];
+      const rows = (dogma && Array.isArray(dogma.dogmaAttributes) ? dogma.dogmaAttributes : [])
+        .map((row) => [whole(row && row.attributeID), number(row && row.value)])
+        .filter(([attributeID]) => attributeID !== null && attributeID > 0);
+      rows.push([4, number(type.mass)], [38, number(type.capacity)], [161, number(type.volume)], [162, number(type.radius)]);
+      for (const [attributeID] of rows) attributeIDs.add(attributeID);
+      const effectRowsOfType = dogma && Array.isArray(dogma.dogmaEffects) ? dogma.dogmaEffects : [];
+      const effects = effectRowsOfType
+        .map((row) => whole(row && row.effectID))
+        .filter((effectID) => effectID !== null && effectID > 0);
+      // The type's default effect (baseDogmaStaticSvc.LoadTypeEffects: the effect marked isDefault; the last one where
+      // more are).
+      let defaultEffectID = null;
+      for (const row of effectRowsOfType) if (row && Number(row.isDefault || 0) && whole(row.effectID)) defaultEffectID = whole(row.effectID);
+      for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
+      const groupID = whole(type.groupID);
+      const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
+      // The ship groups and types it may be fitted to (baseDogmaStaticSvc GetCanFitShipGroups and GetCanFitShipTypes):
+      // the values of its attributes whose data type is a group (dgmAttrCatGroup, 12: get_attribute_list_by_data_type)
+      // named canFitShipGroup..., and a type (dgmAttrCatType, 11) named canFitShipType... or fitsToShipType.
+      const fitsShipGroups = [];
+      const fitsShipTypes = [];
+      // The charge groups it takes (GetChargeGroupAttributes: those of the group data type named chargeGroup...).
+      const chargeGroups = [];
+      for (const [attributeID, value] of rows) {
+        const record = attributeRows[String(attributeID)];
+        const name = record && typeof record.name === "string" ? record.name : "";
+        const category = record ? whole(record.dataType) : null;
+        if (value === null) continue;
+        if (category === 12 && name.startsWith("canFitShipGroup")) fitsShipGroups.push(value);
+        else if (category === 12 && name.startsWith("chargeGroup")) chargeGroups.push(value);
+        else if (category === 11 && (name === "fitsToShipType" || name.startsWith("canFitShipType"))) fitsShipTypes.push(value);
+      }
+      types[typeID] = {
+        attributes: rows,
+        effects,
+        defaultEffectID,
+        fitsShipGroups,
+        fitsShipTypes,
+        chargeGroups,
+        groupID,
+        categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
+        requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
+      };
+    }
+    const effectRows = effectIDs.length > 0 ? await clientBuiltData.rows("dogmaEffects", effectIDs) : {};
+    const effects = {};
+    for (const effectID of effectIDs) {
+      const row = effectRows ? effectRows[String(effectID)] : null;
+      if (!row || typeof row !== "object") {
+        effects[effectID] = null;
+        continue;
+      }
+      const modifiers = Array.isArray(row.modifierInfo) && row.modifierInfo.length > 0
+        ? row.modifierInfo.map((info) => ({
+          func: typeof info.func === "string" ? info.func : null,
+          domain: typeof info.domain === "string" ? info.domain : null,
+          modifiedAttributeID: whole(info.modifiedAttributeID),
+          modifyingAttributeID: whole(info.modifyingAttributeID),
+          operation: whole(info.operation),
+          skillTypeID: whole(info.skillTypeID),
+          groupID: whole(info.groupID),
+        }))
+        : null;
+      for (const info of modifiers || []) {
+        if (info.modifiedAttributeID) attributeIDs.add(info.modifiedAttributeID);
+        if (info.modifyingAttributeID) attributeIDs.add(info.modifyingAttributeID);
+      }
+      const chanceAttributeID = whole(row.fittingUsageChanceAttributeID);
+      if (chanceAttributeID) attributeIDs.add(chanceAttributeID);
+      // The attributes the effect goes by: its cycle, what it drains, its range, falloff and tracking.
+      const named = {};
+      for (const field of ["durationAttributeID", "dischargeAttributeID", "rangeAttributeID", "falloffAttributeID", "trackingSpeedAttributeID"]) {
+        named[field] = whole(row[field]) || null;
+        if (named[field]) attributeIDs.add(named[field]);
+      }
+      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
+    }
+    const attributes = {};
+    const keep = (attributeID) => {
+      if (Object.hasOwn(attributes, attributeID)) return;
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") {
+        attributes[attributeID] = null;
+        return;
+      }
+      const record = {
+        stackable: Boolean(Number(row.stackable || 0)),
+        dataType: whole(row.dataType),
+        defaultValue: number(row.defaultValue),
+        highIsGood: Boolean(Number(row.highIsGood || 0)),
+        maxAttributeID: whole(row.maxAttributeID) || null,
+        minAttributeID: whole(row.minAttributeID) || null,
+        chargeRechargeTimeID: whole(row.chargeRechargeTimeID) || null,
+      };
+      attributes[attributeID] = record;
+      if (record.maxAttributeID) keep(record.maxAttributeID);
+      if (record.minAttributeID) keep(record.minAttributeID);
+    };
+    for (const attributeID of attributeIDs) keep(attributeID);
+    res.json({ ok: true, available: true, types, effects, attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Types' meta level, meta group and tech level from the client's types records (evetypes.GetMetaLevel, GetMetaGroupID,
+// GetTechLevel: null where a record has none), and each meta group's name as the number of its message
+// (metaGroups.get_name): what the assets search's metalevel, metagroup and techlevel keywords read
+// (assetSearchUtil.py 437 to 475). With them each type's market group, whether it is published, its group and its
+// category (evetypes.GetMarketGroupID, IsPublished, GetGroupID, GetCategoryIDByGroup): what a type's menu offers by
+// (menusvc.GetMenuFromItemIDTypeID) and what the market's quickbar fades a type by (QuickbarItem.Load). At most 500.
+// The public gateway (gamePort/publicGateway.js): one of the client's own eve_public requests made for the page's
+// pilot as its client makes it (send_character_request: the pilot's account as the authenticated user, the pilot as
+// the active identity), and the gateway's answer: {statusCode, statusMessage, typeName, payload}, the payload decoded
+// by the client's own message of that type. The requests are those the page makes; a write among them only with
+// confirm said. The pilot is the held session's, never the page's to name.
+const PUBLIC_GATEWAY_READS = new Set([
+  // skills/skillplan/grpc/message_bus/skillPlanRequestsMessenger.py
+  "eve_public.character.skill.plan.GetAllRequest",
+  "eve_public.character.skill.plan.GetRequest",
+  "eve_public.character.skill.plan.GetActiveRequest",
+  // skills/skillplan/grpc/message_bus/milestoneRequestsMessenger.py
+  "eve_public.character.skill.plan.milestone.GetAllRequest",
+  // corpSkillPlanRequestsMessenger.py, corpMilestoneRequest.py
+  "eve_public.corporation.skill.plan.GetAllRequest",
+  "eve_public.corporation.skill.plan.GetRequest",
+  "eve_public.corporation.skill.plan.milestone.GetAllRequest",
+  "eve_public.character.skill.plan.GetSharedRequest",
+  "eve_public.corporation.skill.plan.GetSharedRequest",
+]);
+const PUBLIC_GATEWAY_WRITES = new Set([
+  "eve_public.character.skill.plan.DeleteRequest",
+  "eve_public.character.skill.plan.SetActiveRequest",
+  "eve_public.character.skill.plan.SetSkillRequirementsRequest",
+  "eve_public.character.skill.plan.CreateRequest",
+  "eve_public.character.skill.plan.SetNameRequest",
+  "eve_public.character.skill.plan.SetDescriptionRequest",
+  "eve_public.character.skill.plan.milestone.DeleteRequest",
+  "eve_public.character.skill.plan.milestone.CreateRequest",
+  "eve_public.corporation.skill.plan.SetSkillRequirementsRequest",
+  "eve_public.corporation.skill.plan.DeleteRequest",
+  "eve_public.corporation.skill.plan.milestone.DeleteRequest",
+  "eve_public.corporation.skill.plan.CreateRequest",
+  "eve_public.corporation.skill.plan.SetNameRequest",
+  "eve_public.corporation.skill.plan.SetDescriptionRequest",
+  "eve_public.corporation.skill.plan.SetCategoryRequest",
+  "eve_public.corporation.skill.plan.milestone.CreateRequest",
+]);
+let publicGatewayClient = null;
+/** The one public gateway client: the page's requests and each pilot's notices go on its connections. */
+function sharedPublicGateway() {
+  if (!publicGatewayClient) publicGatewayClient = createPublicGateway({ url: publicGatewayUrl(process.env, gameEndpoint(process.env).host) });
+  return publicGatewayClient;
+}
+app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const request = typeof body.request === "string" ? body.request : "";
+    const write = PUBLIC_GATEWAY_WRITES.has(request);
+    if (!write && !PUBLIC_GATEWAY_READS.has(request)) {
+      res.status(400).json({ ok: false, error: "GATEWAY_REQUEST_REFUSED", message: `${request || "That"} is no request the page makes on the public gateway.` });
+      return;
+    }
+    if (write && body.confirm !== true) {
+      res.status(403).json({ ok: false, error: "GATEWAY_WRITE_REFUSED", message: `${request} is a write: it is made only with confirm said.` });
+      return;
+    }
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload) ? body.payload : {};
+    let answer;
+    try {
+      answer = await sharedPublicGateway().request({ userID: held.accountID, characterID: held.characterID }, request, payload);
+    } catch (error) {
+      if (!String(error && error.code).startsWith("GATEWAY_")) throw error;
+      res.status(502).json({ ok: false, error: error.code, message: error.message });
+      return;
+    }
+    res.json({ ok: true, ...answer });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const wanted = asked.slice(0, 500);
+    const [typeRows, metaGroupNames, groupCategories] = await Promise.all([
+      clientBuiltData.rows("types", wanted), clientBuiltData.table("metaGroupNameIDs"), clientBuiltData.table("groupCategories"),
+    ]);
+    if (!typeRows || !metaGroupNames) {
+      res.json({ ok: true, available: false, types: {}, metaGroupNameIDs: {} });
+      return;
+    }
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const types = {};
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      types[typeID] = type && typeof type === "object"
+        ? {
+          metaLevel: whole(type.metaLevel),
+          metaGroupID: whole(type.metaGroupID),
+          techLevel: whole(type.techLevel),
+          marketGroupID: whole(type.marketGroupID),
+          published: Boolean(Number(type.published || 0)),
+          // evetypes.GetDescriptionID: the message the type's description is (GetDescription words it).
+          descriptionID: whole(type.descriptionID),
+          groupID: whole(type.groupID),
+          categoryID: whole(type.groupID) !== null && groupCategories && groupCategories[String(type.groupID)] !== undefined ? whole(groupCategories[String(type.groupID)]) : null,
+        }
+        : null;
+    }
+    const metaGroupNameIDs = {};
+    for (const [metaGroupID, nameID] of Object.entries(metaGroupNames)) metaGroupNameIDs[metaGroupID] = whole(nameID);
+    res.json({ ok: true, available: true, types, metaGroupNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.effectIDs) || "").split(",")) {
+      const effectID = Number(part);
+      if (Number.isSafeInteger(effectID) && effectID > 0 && !asked.includes(effectID)) asked.push(effectID);
+    }
+    const names = await clientBuiltData.table("effectDisplayNames");
+    const displayNameIDs = {};
+    for (const effectID of asked.slice(0, 50)) {
+      const messageID = names ? Number(names[effectID]) : NaN;
+      displayNameIDs[effectID] = Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;
+    }
+    res.json({ ok: true, available: Boolean(names), displayNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Each fighter type's three ability slots as the client's data has them (fighters.IterTypeAbilities: TypeStorage,
+// fighterAbilitiesByType.static), for the types asked: [slot0, slot1, slot2], each {abilityID, cooldownSeconds,
+// chargeCount, rearmTimeSeconds} or null; null for a type with none. `available` is false when the client's data could
+// not be read. At most 50.
+app.get("/api/client-data/fighter-abilities", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = typeof clientBuiltData.fighterAbilitiesByType === "function" ? await clientBuiltData.fighterAbilitiesByType() : null;
+    const types = {};
+    for (const typeID of asked.slice(0, 50)) types[typeID] = table ? table[String(typeID)] ?? null : null;
+    res.json({ ok: true, available: table !== null, types });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/client-data/clone-grade", requireAuth, async (req, res, next) => {
+  const raceID = Number(req.query && req.query.raceID);
+  if (!Number.isSafeInteger(raceID) || raceID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A race is a whole number." });
+    return;
+  }
+  try {
+    const grades = typeof clientBuiltData.cloneGrades === "function" ? await clientBuiltData.cloneGrades() : null;
+    res.json({ ok: true, available: grades !== null, levels: grades ? grades[String(raceID)] ?? {} : {} });
   } catch (error) {
     next(error);
   }
@@ -13742,13 +14412,22 @@ app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
       }
     }
     const volumes = {};
+    // And each type's packaged volume (inventorycommon/util.py GetPackagedVolume: the client's own override for the
+    // type, else for its group, else the type's own; src/clientData/holdCapacity.js), where the client's tables can be
+    // read; null where they cannot, or the type is not known. The multibuy window's volume is so reckoned.
+    const packagedTables = await packagedTablesOrNull();
+    const packaged = {};
     for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
       volumes[String(typeID)] = staticTypeVolume(typeID);
+      const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+      const packed = packagedTables && type ? packagedVolume(typeID, Number(type.groupID), staticTypeVolume, packagedTables) : null;
+      packaged[String(typeID)] = typeof packed === "number" && Number.isFinite(packed) ? packed : null;
     }
     res.json({
       ok: true,
       source: "static-data",
       volumes,
+      packaged,
       // Said, not hidden: a type past the limit is not in the answer at all,
       // and a caller that asked for it must not take that for "has none".
       capped: asked.length > TYPE_VOLUME_TYPE_LIMIT,
@@ -13801,6 +14480,31 @@ app.get("/api/types/default-effects", requireAuth, async (req, res, next) => {
       capped: asked.length > OVERLOAD_EFFECT_TYPE_LIMIT,
       limit: OVERLOAD_EFFECT_TYPE_LIMIT,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * A type's passive effects, as the client's dogma static service filters them (GetPassiveFilteredEffectsByType), from
+ * static reference data: what the client asks to tell a booster a skill accelerator (dogma/effects IsBoosterSkillAccelerator).
+ * Null for a type the tables do not know. No gateway call and no live session: it cannot vary by player.
+ */
+const PASSIVE_EFFECT_TYPE_LIMIT = 500;
+app.get("/api/types/passive-effects", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const effects = {};
+    for (const typeID of asked.slice(0, PASSIVE_EFFECT_TYPE_LIMIT)) {
+      effects[String(typeID)] = typeof staticData.getPassiveFilteredEffects === "function" ? staticData.getPassiveFilteredEffects(typeID) : null;
+    }
+    res.json({ ok: true, source: "static-data", effects, capped: asked.length > PASSIVE_EFFECT_TYPE_LIMIT, limit: PASSIVE_EFFECT_TYPE_LIMIT });
   } catch (error) {
     next(error);
   }
@@ -15944,6 +16648,22 @@ app.post("/api/icons/cache", requireAuth, (req, res) => {
 // only reason a missing icon answers 404: without it the request falls through
 // to the catch-all, the browser receives index.html with a 200, `<img onerror>`
 // never fires, and every uncached icon becomes a permanently broken image.
+// The client's own textures by their res: path, for the page to draw what the client draws with them (a skill
+// group's icon, a skill book's mark): /client-res/ui/texture/... answers the PNG the install's index names for
+// res:/ui/texture/..., or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
+// player. Above the catch-all, for the same reason as the icon cache below.
+app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.png)$/, (req, res) => {
+  const file = clientTextures.fileFor(`res:/${req.params[0]}`);
+  if (!file) {
+    res.status(404).end();
+    return;
+  }
+  res.set("Cache-Control", "public, max-age=2592000, immutable");
+  res.type("png").sendFile(file, (error) => {
+    if (error && !res.headersSent) res.status(404).end();
+  });
+});
+
 app.use(config.iconCacheUrlPath, express.static(config.iconCacheDir, {
   fallthrough: false,
   immutable: true,

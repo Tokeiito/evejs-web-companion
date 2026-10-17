@@ -70,8 +70,8 @@ test("the DOCKED default is the inventory dock content (station services live in
 
 test("docked shows fitting + travel + bots and hides the in-space-only tabs", () => {
   const docked = idsOf(true);
-  // fitting and now travel + bots are docked-only. (Station services are not a
-  // Neocom tab at all — they are a tab inside the Inventory & Ship dock panel.)
+  // (Station services are not a Neocom tab at all — they are a tab inside the
+  // Inventory & Ship dock panel.)
   for (const shown of ["fitting", "travel", "bots"] as const) {
     assert.ok(docked.includes(shown), `${shown} must be visible while docked`);
   }
@@ -87,14 +87,14 @@ test("the Mining window is offered docked as well as in space: its unloading and
   assert.ok(idsOf(false).includes("mining"), "a pilot in space must reach the window that shows the holds");
 });
 
-test("in space shows the flight tabs and hides fitting + travel", () => {
+test("in space shows the flight tabs, and fitting and travel too", () => {
   const space = idsOf(false);
   for (const shown of ["flight", "mining", "scanner", "drones", "shots", "equipment"] as const) {
     assert.ok(space.includes(shown), `${shown} must be visible in space`);
   }
-  for (const hidden of ["fitting"] as const) {
-    assert.equal(space.includes(hidden), false, `${hidden} must be hidden in space`);
-  }
+  // The client's Fitting window opens in space (eveCommands._OpenNewFittingWnd:
+  // only a docked pilot needs the station's fitting service).
+  assert.ok(space.includes("fitting"), "a flying pilot must reach the Fitting window");
   // ⚠ TRAVEL IS NOT HIDDEN ANY MORE. It reads no docked state at all, and when
   // the old cockpit went it took the only in-space way to route yourself
   // somewhere off this grid with it — the "Somewhere else…" row at the bottom
@@ -120,9 +120,8 @@ test("the 'both' tabs (including Activity, Fleet and both wallets) show in eithe
 test("a now-hidden selected tab falls back to the state default", () => {
   // Was on Flight (in-space only), then docked -> falls back to the dock default.
   assert.equal(resolvePage("flight", true), "inventory");
-  // Was on Fitting (docked only), then undocked -> falls back to the in-space
-  // default, which is Flight now that the overview is fixed chrome.
-  assert.equal(resolvePage("fitting", false), "flight");
+  // Fitting is shown in space too now, so a selection of it is kept on undocking.
+  assert.equal(resolvePage("fitting", false), "fitting");
 });
 
 test("a still-visible selection is kept across a state change", () => {
@@ -175,7 +174,8 @@ test("the sweep is not vacuous: each where-bucket has members the filter selects
   const dockedOnly = TABS.filter((t) => t.where === "docked");
   const spaceOnly = TABS.filter((t) => t.where === "in-space");
   const both = TABS.filter((t) => t.where === "both");
-  assert.ok(dockedOnly.length > 0 && dockedOnly.some((t) => t.id === "fitting"));
+  // No tab is docked only since the Fitting window opens in space too (the client's does).
+  assert.equal(dockedOnly.length, 0);
   assert.ok(spaceOnly.length > 0 && spaceOnly.some((t) => t.id === "flight"));
   assert.ok(both.length > 0 && both.some((t) => t.id === "wallet"));
   // And the derived visible sets differ by exactly the state-specific tabs.

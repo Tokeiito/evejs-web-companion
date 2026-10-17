@@ -1968,6 +1968,33 @@
     opacity: 0.6;
     border-color: var(--color-warn);
   }
+  /* A simulated module's state (moduleStateUtil COLOR_BY_ACTIVATION_STATE): offline grey and faint, online light
+   * grey, active green, overheated red. The socket's name says the state too. */
+  .fit-socket.sim-offline {
+    opacity: 0.45;
+    border-color: rgb(128 128 128);
+  }
+  .fit-socket.sim-online {
+    border-color: rgb(153 153 153);
+  }
+  .fit-socket.sim-active {
+    border-color: rgb(140 222 33);
+    box-shadow: 0 0 0 2px rgb(140 222 33 / 0.3);
+  }
+  .fit-socket.sim-overheated {
+    border-color: rgb(255 43 38);
+    box-shadow: 0 0 0 2px rgb(255 43 38 / 0.35);
+  }
+  /* The ghost ship icon's Simulate / Exit Simulation, under the hull. */
+  .fit-simulate {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 0.15rem 0.5rem;
+  }
+  .fit-simulate.simulating {
+    border-color: rgb(140 222 33);
+  }
   /* The socket a pending action is armed on. */
   .fit-socket.armed {
     border-color: var(--color-danger);
@@ -2115,6 +2142,21 @@
     margin-bottom: 0.4rem;
     border-bottom: 1px solid var(--color-line);
   }
+  .fit-name-link { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */
+  .fit-sim-squadron-slots { display: flex; gap: 0.8rem; margin: 0 0 0.4rem; font-size: 11px; color: var(--color-muted); }
+  .fit-sim-squadron-slot { display: inline-flex; align-items: center; gap: 0.15rem; }
+  .fit-sim-tubes { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.5rem; padding: 0; list-style: none; }
+  .fit-sim-tube { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; width: 92px; }
+  .fit-sim-tube.disabled { opacity: 0.3; }
+  .fit-sim-tube-slot { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; width: 100%; min-height: 96px; padding: 0.3rem; border: 1px solid var(--color-line); background: none; color: rgb(158 158 158); font: inherit; cursor: pointer; }
+  .fit-sim-tube-number { position: absolute; top: 2px; left: 4px; font-size: 10px; }
+  .fit-sim-tube-role { position: absolute; top: 2px; right: 4px; }
+  .fit-sim-tube-dashes { display: flex; gap: 2px; }
+  .fit-sim-tube-dashes span { width: 6px; height: 3px; background: var(--color-line); }
+  .fit-sim-tube-dashes span.lit { background: var(--color-text-bright); }
+  .fit-sim-tube-action { font-size: 10px; }
+  .fit-sim-fighter-name { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: grab; }
   .fit-ship-name {
     color: var(--color-text-bright);
     font-weight: 600;
@@ -2383,6 +2425,27 @@
 
   /* Up / Down / Remove on a queued skill. Wraps on desktop, stacks on a phone
    * through the same .row-actions rules the overview uses. */
+  /* A drop onto the skill queue: the line where it would land (ShowPosIndicator: COLOR_TRAININGALLOWED white at 0.9,
+     COLOR_TRAININGNOTALLOWED red), and the purchase overlay over the queue (SkillPurchaseOverlay). */
+  .queue-drop { position: relative; min-height: 2.5rem; }
+  .queue-drop:has(.queue-purchase) { min-height: 10rem; }
+  .queue-drop tr.drop-above td { box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.9); }
+  .queue-drop tr.drop-below td { box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.9); }
+  .queue-drop tr.drop-above.drop-refused td { box-shadow: inset 0 2px 0 rgb(156, 13, 1); }
+  .queue-drop tr.drop-below.drop-refused td { box-shadow: inset 0 -2px 0 rgb(156, 13, 1); }
+  .queue-drop .empty.drop-end { box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.9); }
+  .queue-drop .empty.drop-end.drop-refused { box-shadow: inset 0 -2px 0 rgb(156, 13, 1); }
+  .queue-drop tr[draggable="true"] { cursor: grab; }
+  .queue-drop tr.drop-above.drop-move td { box-shadow: inset 0 2px 0 rgba(77, 77, 77, 0.5); }
+  .queue-drop tr.drop-below.drop-move td { box-shadow: inset 0 -2px 0 rgba(77, 77, 77, 0.5); }
+  .queue-drop tr.selected td { background: rgba(255, 255, 255, 0.08); }
+  .queue-drop:focus-visible { outline: 1px solid rgba(255, 255, 255, 0.3); }
+  .queue-purchase { position: absolute; inset: 0; z-index: 5; padding: 1rem; background: rgba(0, 0, 0, 0.9); text-align: center; }
+  /* Its message and buttons, 340 wide, kept in view where the queue runs long. */
+  .queue-purchase-box { position: sticky; top: 1rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; max-width: 340px; margin: 1rem auto; }
+  .queue-purchase p { margin: 0; }
+  .queue-purchase-buttons { display: flex; gap: 4px; }
+  .queue-purchase-buttons button { min-width: 120px; }
   .queue-controls {
     display: flex;
     flex-wrap: wrap;
@@ -4623,6 +4686,19 @@
     overflow-wrap: anywhere;
   }
   .show-info h3 { margin-top: 0.8rem; }
+  /* A corporation's and an alliance's window: the CEO beside the picture (corporationInfoWindow.py
+   * construct_ceo_picture_info), the description's and the URL's lines with their links, a row with more to say
+   * (LabelTextSidesMoreInfo) hinted, a list of names one under another. */
+  .info-ceo { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 0.1rem; font-size: 12px; }
+  .info-ceo-label { color: var(--color-muted); }
+  .info-description { font-size: 12px; overflow-wrap: anywhere; }
+  .show-info .info-line { margin: 0 0 0.25rem; min-height: 1em; }
+  .show-info dd .info-line { margin: 0; }
+  .info-bold { font-weight: 700; }
+  .info-italic { font-style: italic; }
+  .info-underline { text-decoration: underline; }
+  .info-more { cursor: help; }
+  .info-part { display: block; }
   .show-info .controls { margin-top: 0.7rem; }
 
   /* ============================================ the dock / undock fade (R75) --
@@ -8035,9 +8111,10 @@
    * question about THIS panel and never about the browser window. Asking the
    * viewport is exactly the bug R85 fixed.
    *
-   * ⚠ AND `container-type` MAKES A PANEL A CONTAINING BLOCK for its
-   * `position: fixed` descendants, so every popover here is `absolute` against
-   * its own panel root on purpose.
+   * ⚠ EVERY POPOVER HERE IS `absolute` AGAINST ITS OWN PANEL ROOT, on purpose: it
+   * moves with the panel when the column is dragged. (`container-type` does NOT
+   * make a panel a containing block for `position: fixed` — measured 2026-10-17;
+   * `filter`, `backdrop-filter` and `contain: layout` do, see ui/portal.ts.)
    * ==================================================================== */
 
   /* The palette, declared ONCE for both roots. The Station panel and the
@@ -8858,8 +8935,8 @@
    * for the Type and Group columns" is a question about THIS panel and never
    * about the browser window.
    *
-   * ⚠ AND `container-type` MAKES THIS A CONTAINING BLOCK for `position: fixed`
-   * descendants, so the range menu is `absolute` against this root on purpose.
+   * ⚠ THE RANGE MENU IS `absolute` AGAINST THIS ROOT on purpose, as in § 6
+   * (`container-type` does not trap `position: fixed`; measured 2026-10-17).
    * ==================================================================== */
 
   .spc-panel {
@@ -9677,3 +9754,42 @@
 .mission-page-card { display: flex; flex-direction: column; }
 .mission-page-card-line.minor { opacity: 0.7; }
 .mission-page-card-line.standing.low { color: var(--danger, #e3170d); font-weight: 600; }
+
+/* The fitting browser's tree of groups, races and hulls (ui/Fitting.svelte). A group or race holding the ship the
+   pilot is in is marked green, as is that hull (fittingBrowser.py ShipParentGroup.Load, HullTypeListGroup's
+   myShipSelection). */
+.browser-tree .browser-node { margin-left: 0.9rem; }
+.browser-tree > .browser-node { margin-left: 0; }
+.browser-node > summary { cursor: pointer; padding: 0.1rem 0; }
+.browser-node.holds-current > summary { color: var(--ok, #5aba56); }
+.browser-node.current-hull > summary { background: rgba(0, 128, 0, 0.12); }
+.browser-node > summary small { margin-left: 0.4rem; }
+/* A fitting's name drawn by its markup (ui/Fitting.svelte markedText). */
+.marked-run.bold { font-weight: 700; }
+.marked-run.italic { font-style: italic; }
+.marked-run.underline { text-decoration: underline; }
+/* The fitting browser's import and export menu (ui/Fitting.svelte). */
+.import-export { position: relative; display: inline-block; }
+.import-export-menu { position: absolute; left: 0; top: 100%; z-index: 5; display: flex; flex-direction: column; white-space: nowrap;
+  background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; }
+/* A fitting's row in the browser, its name the selecting click (ui/Fitting.svelte selectFitting), and a row selected
+   (the scroll's selection). */
+.saved-fitting .fitting-name { background: none; border: none; padding: 0 0.2rem; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.saved-fitting.selected { background: rgba(120, 160, 220, 0.18); }
+/* The loading service's progress window (ui/ClientDialogs.svelte, loading.ProgressWnd). */
+.progress-wnd { min-width: 18rem; }
+.progress-wnd progress { width: 100%; }
+/* A hull's menu in the fitting browser, at its right click (ui/Fitting.svelte, HullTypeListGroup.GetMenu). */
+/* A link followed as the client's link registry follows it (ui/linkFollowers.ts), in a chat message or a mail's body.
+   evelink/client/color.py: default_link_color_info (#d98d00, hovered #ffb732) for skill plans and fittings
+   (registered with no colour of their own) and Show Info; external_link_color_info (#ffe400, hovered
+   TextColor.HIGHLIGHT) for the web.
+   The registry's links are bold (register: bold=True). */
+/* A link in a line of text, as tall as the text (the buttons' 40px minimum would open the line up). */
+.evelink { padding: 0; border: 0; background: none; font: inherit; font-weight: 700; color: #d98d00; cursor: pointer; min-height: 0; vertical-align: baseline; }
+.evelink:hover { color: #ffb732; }
+.evelink.web { color: #ffe400; }
+.evelink.web:hover { color: #ffffff; }
+
+.hull-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; white-space: nowrap;
+  background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; }

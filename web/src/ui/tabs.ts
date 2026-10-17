@@ -29,6 +29,7 @@ export type TabID =
   | "industry"
   | "contracts"
   | "assets"
+  | "compare"
   | "agents"
   | "finder"
   | "skills"
@@ -78,11 +79,14 @@ export interface TabDef {
 // order of this list (state-specific tabs first, then the shared ones).
 export const TABS: readonly TabDef[] = [
   { id: "provisioning", label: "Ready Fit", where: "both" },
-  // Docked only — fitting needs a station; route planning is set up while
-  // docked. (Station services + guests are NOT a Neocom tab: they live as a
-  // tab INSIDE the docked Inventory & Ship dock panel, next to the hangars,
-  // so the station never duplicates itself into a separate window.)
-  { id: "fitting", label: "Fitting", where: "docked" },
+  // The Fitting window opens in space as well as docked, as the client's does
+  // (eveCommands._OpenNewFittingWnd: `session.stationid is None or
+  // HasServiceAccess('fitting')`): in space it shows the ship's figures as the
+  // client reckons them (flow.reckonActiveShip) and simulates. (Station services +
+  // guests are NOT a Neocom tab: they live as a tab INSIDE the docked Inventory &
+  // Ship dock panel, next to the hangars, so the station never duplicates itself
+  // into a separate window.)
+  { id: "fitting", label: "Fitting", where: "both" },
   // ⚠ TRAVEL IS REACHABLE IN SPACE NOW, and that is a restored capability
   // rather than a new one. The old cockpit's overview list ended in a synthetic
   // "Somewhere else…" row: a way to set a destination that is NOT on this grid,
@@ -165,6 +169,9 @@ export const TABS: readonly TabDef[] = [
   { id: "industry", label: "Industry", where: "both" },
   { id: "contracts", label: "Contracts", where: "both" },
   { id: "assets", label: "Personal Assets", where: "both" },
+  // The client's Compare Tool (comparisonWindow.py), which its Neocom offers too: types side by side, attribute by
+  // attribute. A type's menu (Compare) adds one to it.
+  { id: "compare", label: "Compare Tool", where: "both" },
   { id: "agents", label: "Agents & Missions", where: "both" },
   { id: "finder", label: "Agent Finder", where: "both" },
   { id: "skills", label: "Skills", where: "both" },

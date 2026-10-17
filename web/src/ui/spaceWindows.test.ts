@@ -267,15 +267,15 @@ test("R7d: no bare numeric ID reaches the shots window", () => {
 
 // --- the one capability that had no home ------------------------------------
 
-test("⚠ A MODULE CAN STILL BE POWERED UP IN SPACE — Fitting is docked-only", () => {
+test("⚠ A MODULE CAN STILL BE POWERED UP IN SPACE, from the equipment window", () => {
   // This is the whole reason the equipment window exists, and the failure it
   // guards against leaves no red test behind: `ModuleRack` on the HUD is a
-  // different instrument (it fires modules, it cannot online them), and the
-  // Fitting window is not reachable out here at all. Delete the cockpit with
-  // nothing carrying this, and the capability is simply gone.
+  // different instrument (it fires modules, it cannot online them). The
+  // Fitting window opens in space now (as the client's does), and the
+  // equipment window keeps its Power up all the same.
   const fitting = TABS.find((tab) => tab.id === "fitting");
   assert.ok(fitting, "there is no fitting tab");
-  assert.equal(fitting.where, "docked", "this test's premise no longer holds — re-read it");
+  assert.equal(fitting.where, "both", "this test's premise no longer holds — re-read it");
 
   const store = createClientStore();
   store.apply({

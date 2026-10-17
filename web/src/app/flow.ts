@@ -14,6 +14,7 @@ import {
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
+import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
 import { FREIGHT_BAYS, planLootTransfers, splitNeverFits } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -27,8 +28,67 @@ import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
-import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
-import { deriveShipStats } from "../bridge/shipStats.ts";
+import { decodeItemAttributeChanges, locationAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
+import { deriveShipStats, known, unavailable, type ShipStats } from "../bridge/shipStats.ts";
+import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
+import { offense } from "../bridge/dogma/offense.ts";
+import { defense } from "../bridge/dogma/defense.ts";
+import { ownShipDrones, type DroneReading } from "../bridge/dogma/drones.ts";
+import { fighterClass, fullAndPartialSquadrons, maxSquadronSize, totalFighterDps, type FighterAbilitySlot } from "../bridge/dogma/fighters.ts";
+import {
+  fitToOneSlot,
+  fitToSimulation,
+  simulateFitData,
+  simulatedSlotLayout,
+  loadChargeToSimulation,
+  setActiveDronesOfType,
+  setDronesOfType,
+  simulateCurrentShip,
+  simulatedDrones,
+  simulatedDroneTypes,
+  simulatedMaxActiveDrones,
+  simulatedShipItems,
+  isOnlineable,
+  emptyCargo,
+  fitItemsToCargo,
+  setCargoQuantity,
+  simulatedCargoCapacity,
+  simulatedCargoRoomFor,
+  simulatedFighterBayCapacity,
+  emptyFighterBay,
+  fighterBayRoomFor,
+  fitFighterToEmptyTube,
+  fitFighterToTube,
+  fitItemsToFighterBay,
+  removeFighterBayType,
+  removeSquadron,
+  setFighterBayQuantity,
+  setSquadronSize,
+  simulatedFighterBayTypes,
+  simulatedFighterTubes,
+  simulatedSquadronSlots,
+  squadronDragged,
+  type HoldFacts,
+  type SimulationUserError,
+  unfitFromSimulation,
+  type FitError,
+  type SimulatedShip,
+} from "../bridge/dogma/simulation.ts";
+import { moduleInSlot, moduleKind, moduleState, offlineSlots, RIG_SLOT_FLAGS, switchModuleState } from "../bridge/dogma/moduleStates.ts";
+import {
+  DAMAGE_STATE_ATTRIBUTES,
+  decodeBrain,
+  type DogmaItem,
+  type DogmaLocation,
+  instanceRowAttributes,
+  loadSimulatedFitting,
+  type DogmaAttributeRecord as DogmaLocationAttributeRecord,
+  type DogmaEffectFacts,
+  type DogmaStatic,
+  type DogmaTypeFacts,
+  type SimulatedCharge,
+  type SimulatedModule,
+} from "../bridge/dogma/location.ts";
 import {
   decodeBlueprints,
   decodeDefinition,
@@ -41,7 +101,15 @@ import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInv
 import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
+  averagePriceOf,
+  bestAskInRange,
+  bestAskInStation,
+  RANGE_REGION,
+  RANGE_SOLAR_SYSTEM,
+  RANGE_STATION,
   decodeEscrow,
+  orderDelta,
+  priceDelta,
   decodeOrderBook,
   decodeOwnOrders,
   decodePriceHistory,
@@ -113,16 +181,35 @@ import {
   decodeContractDetail,
   decodeContractList,
   decodeContractSearch,
+  decodeContractSearchEntries,
   decodeContractSummary,
+  type ContractSearchEntry,
 } from "../bridge/contracts.ts";
-import { decodeAssetItems } from "../bridge/personalAssets.ts";
+import { decodeAssetItems, decodeAssetSearchItems } from "../bridge/personalAssets.ts";
+import {
+  ASSET_SEARCH_KEYWORDS,
+  ASSET_SEARCH_OPTION_LABELS,
+  AssetSearchStopped,
+  META_KEYWORDS,
+  PLACE_KEYWORDS,
+  assetSearchConditions,
+  assetSearchKinds,
+  parseAssetSearch,
+  searchAssets,
+  type AssetSearchFacts,
+  type AssetSearchItem,
+  type AssetSearchLocation,
+  type AssetSearchNames,
+  type AssetSearchOption,
+} from "../bridge/assetSearch.ts";
+import { shownSecurity } from "../bridge/systemSecurity.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
 import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
 import { filetimeOf } from "../bridge/journalWords.ts";
-import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
+import { readAllAssets, readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   arrivalAwaited,
   decodeMissionInfo,
@@ -167,18 +254,109 @@ import {
   decodeTransactions as decodeWalletTransactions,
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
-import { createWalletReads } from "../bridge/walletReads.ts";
+import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
-import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
-import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsPerMinute } from "../bridge/skillSheet.ts";
+import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
-  allLevelsQueued, booksToBuy, directPurchasePrice, isSkillRequirementMet, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
-  requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeLeft,
-  type RequiredSkills, type SkillLevelBox, type SkillRowMark,
+  allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
+  rawTrainingTimeForSkillLevel, requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
+  isSkillInjected, type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
+import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
+import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, certificateLevel, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import { browsableExpertSystems, installedExpertSystems, skillsToTrain, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
+import {
+  milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
+  type MilestoneEntry,
+} from "../bridge/skillPlanMilestones.ts";
+import { adjustedMilestones, type EditorMilestones } from "../bridge/skillPlanEditorMilestones.ts";
+import {
+  PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
+} from "../bridge/certifiedSkillPlans.ts";
+
+import { levelButtonState, levelsForSkillAndRequirements, nextLevelToQueue, queueInsertionRefusal, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
+import { highestQueuedLevel, queueAfter, type SkillMenuEntry } from "../bridge/skillMenu.ts";
+import type { SkillRowInfo } from "../bridge/skillPlans.ts";
+import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
+
+/** A skill plan link followed: its plan's id (a certified plan's a whole number, the others' a uuid) and owner. */
+/**
+ * What was dropped onto the skill queue (skillQueuePanelNew.DoDropData's kinds): a type's drag (TypeDragData: the plan
+ * editor's catalogue and levels), a skill entry (listentry.SkillEntry: a plan's contents row; trained where the pilot
+ * has it), or one of the queue's own entries (SkillQueueSkillEntry, its level).
+ */
+export type SkillQueueDrop =
+  | { readonly kind: "type"; readonly typeID: number }
+  | { readonly kind: "skillEntry"; readonly typeID: number; readonly trained: boolean }
+  /**
+   * A queue entry (SkillQueueSkillEntry.GetDragData: the scroll's selected nodes, the one dragged selected first):
+   * the first of them, and where more than one is dragged, all of them with their places as dragged, top first.
+   */
+  | {
+    readonly kind: "queueEntry";
+    readonly typeID: number;
+    readonly level: number;
+    readonly selection?: readonly { readonly typeID: number; readonly level: number; readonly idx: number }[];
+  }
+  /** An inventory's item (xtriui.InvItem, listentry.InvItem): taken where it is a skill book. */
+  | { readonly kind: "invItem"; readonly itemID: number; readonly typeID: number };
+
+export interface SkillPlanLinkFollowed {
+  readonly n: number;
+  readonly skillPlanID: number | string;
+  readonly ownerID: number | null;
+}
+import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, inPlayerCorporation, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
+
+/** A public gateway notice: its message type (eve_public.…Notice) and its message as decoded (bytes as base64). */
+export interface GatewayNotice {
+  readonly n: number;
+  readonly typeName: string;
+  readonly payload: JsonValue | null;
+}
+
+/** A corporation plan's save: the category chosen in the editor (0 for None), and the saved plan's (null for a new one). */
+export interface CorpPlanSave {
+  readonly categoryID: number;
+  readonly savedCategoryID: number | null;
+}
+
+/** A corporation plan as its entry shows it. */
+export type CorpPlanEntry = CorpPlanSummary & {
+  readonly requirements: readonly (readonly [number, number])[];
+  readonly corp: true;
+  readonly completed: boolean;
+  readonly trainingTicks: number | null;
+};
+
+/** A certified plan as its entry shows it: its name and description are messages (nameID, descriptionID). */
+export type CertifiedPlanEntry = CertifiedPlanData & {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly certified: true;
+  readonly milestoneList: readonly Milestone[];
+  readonly completed: boolean;
+  readonly trainingTicks: number | null;
+};
+import type { Milestone } from "../bridge/skillPlanMilestones.ts";
+
+/** The editor's milestones at Save, and the plan's own as they were read (AdjustMilestonesToAddAndDeletedIDs). */
+export interface SavedMilestones {
+  readonly milestones: EditorMilestones;
+  readonly persisted: readonly Milestone[];
+}
+import type { CatalogueSkill } from "./api.ts";
+import {
+  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, planProgressFrom, restrictedForAlpha, type PersonalSkillPlanEntry, type PlanProgress, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
+} from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
-import { applyFreePoints, pauseTraining, purchaseSkills, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
+import {
+  applyFreePoints, applyFreePointsToSkills, freePointsAppliedToSkills, pauseTraining, purchaseSkills, saveQueue, type QueuePlace, type SkillLevel,
+} from "../bridge/skillWrites.ts";
 import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { setSafetyLevel as setSafetyLevelCall } from "../bridge/crimewatchWrites.ts";
 import { acceptContract as acceptContractCall } from "../bridge/contractWrites.ts";
@@ -227,6 +405,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -238,7 +417,9 @@ const OWNER_SYSTEM = 1;
 const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
+import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
+import type { FittingResources, MarketEscrow } from "../store/types.ts";
 import type {
   ActivityRead,
   AgentAction,
@@ -270,7 +451,7 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
-import { itemHasActivationCycle } from "../bridge/boundDogma.ts";
+import { decodeInstanceRows, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
@@ -292,7 +473,7 @@ import {
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
 import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotMap, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
 import { availableJumpGateJumps, type JumpGateJump } from "../nav/jumpGates.ts";
-import { decodeJumpBridgesWithMyAccess } from "../bridge/structures.ts";
+import { decodeJumpBridgesWithMyAccess, decodeStructureMapData } from "../bridge/structures.ts";
 import {
   AVOIDING_DIALOGS,
   autopilotSettingsFrom,
@@ -450,6 +631,8 @@ import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall,
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
+  buyMultipleItems,
+  ordersListed,
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
   placeBuyOrder as placeBuyOrderCall,
@@ -470,7 +653,19 @@ import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
-import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
+import { type HullBrowserData, type ShipTraitsHeld } from "../bridge/hullBrowser.ts";
+import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
+import type { TypeMetaFacts } from "./api.ts";
+import { marketDockableLocations, multiBuyStationList as multiBuyStationList_, type SystemItem } from "../bridge/multiBuyStations.ts";
+import { createFittingData, fittingContents, fittingTypesForSkillPlan, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
+import { shiftHeld } from "./keyState.ts";
+import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl, simpleHtmlUnescape, typeIDsInFittingString, type FittingLinkTypeFacts } from "../bridge/fittingLink.ts";
+import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
+import { fittingEftString } from "../bridge/fittingExport.ts";
+import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
+import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import { classifySalvageModules } from "../nav/salvageModules.ts";
 import { addToKnownFolders, moveBookmarks as fileBookmarksCall, updateKnownFolderState } from "../bridge/bookmarkFolders.ts";
@@ -513,7 +708,7 @@ export interface WalletSharesRead {
   readonly holdings: readonly ShareHolding[];
   readonly error: string | null;
 }
-import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
+import { readAllianceFittings, readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
@@ -533,11 +728,12 @@ import {
 import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { assembleShip as assembleShipCall, boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
-import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
+import { activityIDOf, averagePrices, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
+import { IntDict, intDictOf } from "../bridge/py27DictOrder.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -856,6 +1052,15 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+  /** The hint label's arguments, where it takes any (UI/Common/SetQtyBetween's min and max). */
+  readonly hintArgs?: Readonly<Record<string, JsonValue>>;
+  /** The window's caption, a label of the client's with the page's own words; UI/Common/SetQuantity where none. */
+  readonly captionLabel?: string;
+  readonly caption?: string;
+  /** QtyPopup's label beside the field (a labeltext row), a label of the client's, its arguments and the page's own words. */
+  readonly labelLabel?: string;
+  readonly labelArgs?: Readonly<Record<string, JsonValue>>;
+  readonly label?: string;
 }
 
 /** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
@@ -899,12 +1104,213 @@ export interface SkillsRequired {
     | null;
   /** Each skill listed: whether its book is sold (evetypes.IsSkillAvailableForPurchase) and its base price (or null). */
   readonly books: Readonly<Record<number, { readonly sold: boolean; readonly basePrice: number | null }>>;
+  /** The pilot's free points, as the skill service has them (GetFreeSkillPoints), when the window opened. */
+  readonly freeSkillPoints: number;
+  /**
+   * The apply-points button's levels (SkillActionContainer: each level to train of the skills held), and whether it
+   * offers them where the pilot has free points (offer_injection: no book is missing).
+   */
+  readonly applyLevels: readonly SkillLevel[];
+  readonly offerInjection: boolean;
+  /**
+   * An alpha clone short of what the type needs for want of omega (ItemObject.NeedsOmegaUpgrade): the time row says
+   * so and offers the upgrade, and no action is offered (AddSkillAction).
+   */
+  readonly omegaRestricted: boolean;
+}
+
+/** One row of the Apply Skill Points window (ApplySkillPointsListEntry): a skill at a level and its two gauges. */
+export interface ApplyPointsEntry {
+  readonly skill: number;
+  readonly level: number;
+  /** The skill's group (evetypes.GetGroupID), which picks its icon (SetSkillGroupIcon); null where not known. */
+  readonly groupID: number | null;
+  /** How far toward the level it is trained now (GetProgress), nought to one. */
+  readonly progress: number;
+  /** How far toward it with the free points (AdjustProgressWithFreePoints), nought to one. */
+  readonly progressWithFreePoints: number;
+  /** The training time the points save, in ticks (GetTimeSaved); null where it could not be reckoned. */
+  readonly timeSavedTicks: number | null;
+}
+
+/** The client's Apply Skill Points window open now (applySkillPointsWindow.py). */
+export interface ApplyPointsAsk {
+  readonly n: number;
+  readonly entries: readonly ApplyPointsEntry[];
+  /** The points the window would use (skillPointsToBeUsed). */
+  readonly points: number;
+  /** Whether Confirm is offered (the asking answered any points). */
+  readonly canConfirm: boolean;
+  /** Spent: the points applied, the buttons one Close. */
+  readonly finished: boolean;
 }
 
 /**
  * The client's books window open now (MissingSkillbooksWnd): the books it lists as sold (Buy and Inject) and as not,
  * and what those sold cost (its price label). The sold ones are gone from it once bought.
  */
+/** A row of the client's multibuy window (buytItemEntry.BuyItemContainer): a type, how many, and its best price. */
+export interface MultiBuyRow {
+  readonly typeID: number;
+  /** How many in each order (the row's quantity field). */
+  readonly qty: number;
+  /** GetBestAskPriceInStationAndNumberOrders for qty times the orders: the price, null where the station's orders do not hold it. */
+  readonly price: number | null;
+  readonly numOrders: number | null;
+  /** The price being read again (isUpdating). */
+  readonly loading: boolean;
+  /** The type's average price over the week (the row's averagePrice: marketQuote.GetAveragePrice); null until read. */
+  readonly average: number | null;
+  /**
+   * The cheapest single unit at the window's station, in its system and in the region (the row's delta tooltip:
+   * GetBestMatchText, marketQuote.GetBestAskInRange for each range); null where there is none, or nowhere to buy.
+   */
+  readonly bestInStation: number | null;
+  readonly bestInSystem: number | null;
+  readonly bestInRegion: number | null;
+  /** inventorycommon/util.py GetPackagedVolume for the type, in m³ (the total's tooltip); null where it is not known. */
+  readonly packagedVolume: number | null;
+}
+
+/** The client's multibuy window open now (buyMultiFromBase.MultiBuy). */
+export interface MultiBuyAsk {
+  readonly n: number;
+  /**
+   * Where it buys (baseStationID): at first the station or structure the pilot is docked in, or the list's first where
+   * it is docked nowhere (LoadStationOptions); then the one picked from its station list (OnStationChanged).
+   */
+  readonly stationID: number | null;
+  /** Where the pilot is docked (session.stationid or structureid), the list's "Current Station"; null where nowhere. */
+  readonly currentStationID: number | null;
+  /**
+   * The station list's others (buyMultiFromBase.GetStations, bridge/multiBuyStations.ts): the region's markets in the
+   * pilot's system besides where it is docked, sorted as the client sorts them, each with its name; null while read.
+   */
+  readonly stationList: readonly { readonly id: number; readonly name: string }[] | null;
+  /** The number of orders (orderMultiplierEdit): each row's quantity is bought this many times over. */
+  readonly multiplier: number;
+  readonly rows: readonly MultiBuyRow[];
+  /** A buy under way. */
+  readonly busy: boolean;
+  /**
+   * The window greyed after a buy, until every order it made has run out (ChangeOrderUIState, orderDisabled): its
+   * Buy is not offered meanwhile.
+   */
+  readonly disabled: boolean;
+  /**
+   * The corporation wallet the window offers to buy from (buySellMultiBase._CanTradeForCorp, 148 to 153): its
+   * division, 1 the master wallet to 7, and the name the corporation gave it (none for the master wallet, which has
+   * the client's word); null where the pilot may not trade for its corporation or the session names no account.
+   */
+  readonly corpAccount: { readonly division: number; readonly name: string | null } | null;
+  /** The box ticked (TradingForCorp): the buy is paid from the corporation's wallet. */
+  readonly useCorp: boolean;
+  /**
+   * The fitting the window was opened for (BuyMultipleTypesWithQty's fitting, the Buy All box's): its Buy and Fit is
+   * offered (AddBuyAndFitBtn), and after it the fitting is loaded again as the orders run out.
+   */
+  readonly fitting: SourcedFitting | null;
+}
+
+/** The client's multifit window open now (fitting/multiFitWnd.py MultiFitWnd), for a saved fitting. */
+export interface MultiFitAsk {
+  readonly n: number;
+  readonly fitting: SourcedFitting;
+  /** GetMaxShipsToFit: the most the count may be. */
+  readonly maxShips: number;
+  /** The count asked (numToFitEdit), one to maxShips. */
+  readonly numToFit: number;
+  /** The ships' name (fitNameEdit), the fitting's to begin with. */
+  readonly fitName: string;
+  /** The equipment's place (equipmentLocationCombo): null for the item hangar, else one of the pilot's containers. */
+  readonly locationID: number | null;
+  /** The pilot's own containers in the hangar (FindPersonalContainers), each with its type. */
+  readonly containers: readonly { readonly itemID: number; readonly typeID: number }[];
+  /** Whether the rigs are fitted (rigCB, fitting_rigCB: on until unset). */
+  readonly fitRigs: boolean;
+  /** Whether the fitting has rigs (the box is shown only then). */
+  readonly rigsToFit: boolean;
+  /** IsInvalidT3Fit: a strategic cruiser's fitting without its four subsystems, or with one of another hull. */
+  readonly invalidT3: boolean;
+  /** SetInventoryStatus's reckoning; null while it is read. */
+  readonly status: {
+    /** The hangar's packaged ships of the hull. */
+    readonly packagedShips: number;
+    /** The rounds of the fitting the equipment's place holds; null where the fitting needs nothing. */
+    readonly maxAvailableFitting: number | null;
+    /** How many can be fitted: the fewest of the count, the ships and the rounds. */
+    readonly canFitNum: number;
+    readonly missingShips: readonly { readonly typeID: number; readonly qty: number }[];
+    readonly missingEquipment: readonly { readonly typeID: number; readonly qty: number }[];
+  } | null;
+  /** While the ships are fitted (isFitting), and how many have been so far (OnItemChange). */
+  readonly isFitting: boolean;
+  readonly progress: number;
+}
+
+/** The client's fitting display window open now (fittingMgmtWindow.ViewFitting, FittingMgmtContInStandalone). */
+export interface ViewFittingAsk {
+  readonly n: number;
+  /** Its windowID (DisplayFitting): ViewFitting, or with Shift held the fitting's own, of its sorted fitData. */
+  readonly windowID: string;
+  /** How many times a fitting has been loaded into it (Open, then each ReloadWnd): what it shows is set afresh with each. */
+  readonly loaded: number;
+  readonly fitting: SourcedFitting;
+  /** Its contents by heading (fittingSvc.GetFittingInfoForScrollList); null while they are reckoned. */
+  readonly contents: readonly FittingContentsGroup[] | null;
+  /** Each slot kind's effect's name, as the number of its message (get_effect_display_name); null where none is had. */
+  readonly effectNames: Readonly<Record<number, number | null>>;
+  /** Each type's marks, by the type, as its entry draws them (FittingModuleEntry.Load); null while they are read. */
+  readonly marks: Readonly<Record<number, ViewFittingTypeMark>> | null;
+  /** The hull's category (evetypes.GetCategoryID): Fit is disabled for a structure's (LoadNewFitting); null while read. */
+  readonly shipCategoryID: number | null;
+  /** A fitting read from a link cut short (GetFittingFromString): the window's truncated mark (LoadNewFitting). */
+  readonly truncated: boolean;
+}
+
+/** A link or a fitting dropped on a text (eveEditPlainText.OnDropData): a link's url and text, or a fitting's own. */
+export type DroppedLink =
+  | { readonly kind: "link"; readonly url: string; readonly text: string }
+  | { readonly kind: "fitting"; readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string }
+  /** A fitting the Fitting window gives, read as it is dropped: its ghost ship icon's or its fit-name label's. */
+  | { readonly kind: "fittingSource"; readonly source: "activeShip" | "fittingWindow" };
+
+/** The text a link is dropped on: its length now (its tags counted), how much of it is selected, its most. */
+export interface LinkDropRoom {
+  readonly length: number;
+  readonly selected: number;
+  readonly max: number | null;
+}
+
+/**
+ * What a fitting display entry is marked by (fittingSvc._GetDataForFittingEntry, 963 to 966; FittingModuleEntry.Load,
+ * fitting.py 121 to 160): an obsolete type's mark; else the skills' mark, then a frame for a type under Other Items
+ * (isValidGroup) or, for a dynamic type, the Abyssal module's frame and mark.
+ */
+export interface ViewFittingTypeMark {
+  /** godma.CheckSkillRequirementsForType; null where the client's table of required skills could not be had. */
+  readonly skillsMet: boolean | null;
+  /** clientDogmaStaticSvc.GetTypeAttribute(typeID, attributeModuleIsObsolete), as a bool. */
+  readonly obsolete: boolean;
+  /** dynamicitemattributes.IsDynamicType: a type made by a mutaplasmid. */
+  readonly dynamic: boolean;
+}
+
+/** The client's Buy All box (missingItemsPopup.BuyAllMessageBox): what a fitting could not load, each type and how many. */
+/** The loading service's progress window (loading.ProgressWnd): its title, its text, and how far of how many. */
+export interface ProgressWndShown {
+  readonly title: string;
+  readonly text: string;
+  readonly portion: number;
+  readonly total: number;
+}
+
+export interface BuyAllAsk {
+  readonly n: number;
+  readonly missing: readonly { readonly typeID: number; readonly qty: number }[];
+  readonly fitting: SourcedFitting;
+}
+
 export interface SkillBooksAsk {
   readonly n: number;
   readonly available: readonly number[];
@@ -928,8 +1334,11 @@ export interface SaidDialog {
   readonly values: JsonValue | null;
   /** What the page says where the install has not the dialog. */
   readonly fallback: string;
-  /** A question the client puts with Yes and No (uiconst.YESNO), answered by AppFlow.answerDialog; else OK alone. */
-  readonly answers?: "yesno";
+  /**
+   * A question the client puts with Yes and No (uiconst.YESNO), or with OK and Cancel (uiconst.OKCANCEL), answered by
+   * AppFlow.answerDialog (Yes and OK true); else OK alone.
+   */
+  readonly answers?: "yesno" | "okcancel";
 }
 
 export interface AppFlow {
@@ -1092,6 +1501,65 @@ export interface AppFlow {
   unfitModule(itemID: number): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
+  /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
+  simulateShip(): Promise<void>;
+  /** Leave the simulation (asked first where it was changed): the ship's own figures shown again; false where not left. */
+  exitSimulation(): Promise<boolean>;
+  /** A module of a type fitted in the simulation, in the slot named or, with none, the first it fits; why not, else null. */
+  fitSimulatedModule(typeID: number, flagID: number | null): Promise<FitError | null>;
+  /** The simulated module in a slot unfitted. */
+  unfitSimulatedModule(flagID: number): void;
+  /** A charge loaded into the simulated module in a slot; false where it does not take it. */
+  loadSimulatedCharge(flagID: number, chargeTypeID: number): Promise<boolean>;
+  /** A saved fitting simulated, or a hull alone with no fitData (ghostFittingSvc.SimulateFitting). */
+  simulateFitting(fitting: {
+    readonly shipTypeID: number;
+    readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
+    readonly name: string | null;
+    /** The saved fitting's number and owner (lastLoadedFitInfo); none for one not saved. */
+    readonly fittingID?: number;
+    readonly ownerID?: number;
+    /** From the fitting browser's click or menu (OnFittingClicked: a fitting of old subsystems is shown instead). */
+    readonly browserClick?: boolean;
+  }): Promise<void>;
+  /** As many drones of a type in the simulated drone bay as wanted. */
+  setSimulatedDrones(typeID: number, wanted: number): Promise<void>;
+  /**
+   * A type put in the simulated cargo hold (CargoCargoSlots.AddSimulatedCargo: one of it, as each thing dropped counts;
+   * with Shift held the client's quantity question first, up to the room left).
+   */
+  addSimulatedCargo(typeID: number): Promise<void>;
+  /** As many of a type in the simulated cargo hold as wanted (BaseHoldItemPickerMenu.ChangeNumItems); none takes it out. */
+  setSimulatedCargo(typeID: number, wanted: number): Promise<void>;
+  /** The simulated cargo hold emptied (BaseHoldItemPickerMenu.RemoveAll). */
+  emptySimulatedCargo(): void;
+  /**
+   * Fighters put on the simulated ship (TryFitFightersToTubeOrBay of one type: FitAFighterToTubeOrBay): a full squadron
+   * in the first empty tube; where there is none, or no tube for its class, as many as given in the fighter bay.
+   */
+  addSimulatedFighters(typeID: number, qty: number): Promise<void>;
+  /** Fighters put in the simulated fighter bay (FighterBayItemPickerMenu._TryAddToFighterBay: as many as given; Shift asks). */
+  addSimulatedFighterBay(typeID: number, qty: number): Promise<void>;
+  /** A full squadron of a type put in a simulated tube (SingleTube.OnDropDataOnTube: FitFighterToTube). */
+  fitSimulatedFighterToTube(typeID: number, tubeFlagID: number): Promise<void>;
+  /** A full squadron of a fighter bay's type put in the first empty tube (ItemFighterPicker.OnDblClick). */
+  fitSimulatedFighterToEmptyTube(typeID: number): Promise<void>;
+  /** A simulated tube's squadron made as many as wanted (SingleTube.ChangeNumFighters: ModifyFighterStackSize). */
+  setSimulatedSquadronSize(tubeFlagID: number, wanted: number): Promise<void>;
+  /** A simulated tube's squadron taken out (SimulatedSquadronCont.RemoveSquadron). */
+  removeSimulatedSquadron(tubeFlagID: number): void;
+  /** A tube's squadron dropped on the fighter bay's list (OnDroppedInList: out of its tube, then into the bay). */
+  moveSimulatedSquadronToBay(tubeFlagID: number): Promise<void>;
+  /** As many of a type in the simulated fighter bay as wanted (ChangeNumItems: ModifyHoldItemStackSize); none takes it out. */
+  setSimulatedFighterBay(typeID: number, wanted: number): Promise<void>;
+  /** A type taken out of the simulated fighter bay (ItemPickerMenu.RemoveItemClicked). */
+  removeSimulatedFighterBayType(typeID: number): void;
+  /** The simulated fighter bay and its tubes emptied (FighterBayItemPickerMenu.RemoveAll). */
+  emptySimulatedFighterBay(): void;
+  /** As many of a type's simulated drones selected as wanted; "limit" or "bandwidth" where the selection is refused. */
+  setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null;
+  /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
+  switchSimulatedModule(flagID: number, backwards: boolean): void;
   /**
    * Load charges into modules, then re-read the fit so the panel shows what the
    * SERVER put in them. Compatibility is the server's call — an incompatible
@@ -1148,6 +1616,11 @@ export interface AppFlow {
    * escrow, their price history and their ISK — plus every NAME those need.
    */
   loadMarket(typeID: number | null): Promise<void>;
+  /**
+   * The pilot's escrow watched as the client's market progression is (MarketProgressionNotifier.register_subscriber):
+   * the kept value said, asked again where due and every twelve hours while watched. Answers the watch's end.
+   */
+  watchMarketProgression(): () => void;
   /**
    * Search tradable items by NAME — how the player picks what to look at.
    * Static reference data, so it answers even when the market daemon does not.
@@ -1571,6 +2044,11 @@ export interface AppFlow {
   loadContracts(page: number): Promise<void>;
   /** Open one contract in full: its items and its route endpoints, by name. */
   openContract(contractID: number): Promise<void>;
+  /**
+   * contracts.FindRelated for a type (the type menu's Find in Contracts): the public item exchanges and auctions of
+   * that type, in every region, cheapest first, as the contract search sends it.
+   */
+  findContractsOfType(typeID: number): Promise<{ readonly entries: readonly ContractSearchEntry[]; readonly numFound: number }>;
   /** Close the open contract without touching the server. */
   closeContract(): void;
   /**
@@ -1592,6 +2070,11 @@ export interface AppFlow {
    * containers in the browser to rebuild it.
    */
   loadPersonalAssets(): Promise<void>;
+  /**
+   * The assets window's search (assetsWindow.Search_thread): the stations of what matches the text, and the keywords
+   * typed that the page does not search by.
+   */
+  searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean }>;
   /**
    * Expand one asset location and read what is there; null collapses it and
    * touches no server. A read that fails is recorded against that station
@@ -2119,8 +2602,443 @@ export interface AppFlow {
   buySkillsRequired(): Promise<void>;
   /** The client's books window open now (ClientDialogs.svelte shows it); null with none. */
   readonly skillBooksAsked: ReadableSignal<SkillBooksAsk | null>;
+  /**
+   * The newest public gateway notice for the pilot (the BFF's Notices/Consume, those for the pilot's session, as the
+   * client's NoticeConsumer hands them to its subscribers): n counts them, so the same notice twice is two. Null until
+   * one comes.
+   */
+  readonly gatewayNotices: ReadableSignal<GatewayNotice | null>;
+  /**
+   * The newest skill plan link followed (link.py handle_link: parse_skillPlanID_url), for the Skills window to open
+   * (OpenSkillPlanWnd); n counts them. Null until one is.
+   */
+  readonly skillPlanLinks: ReadableSignal<SkillPlanLinkFollowed | null>;
+  /**
+   * evelink's web handler (handlers/web.py handle_web_link): an http or https link followed, after the client's
+   * ExternalLinkWarning (OK and Cancel, its answer kept where the pilot says so), in a tab of its own.
+   */
+  followWebLink(url: string): Promise<void>;
+  /**
+   * shipfitting/client/link.py handle_fitting_link: a "fitting:" url followed with its link's text, the fitting it
+   * holds shown in the display window (DisplayFittingFromString); nothing where the client's own reading raises.
+   */
+  followFittingLink(url: string, text: string | null): Promise<void>;
+  /**
+   * A link or a fitting dropped on a text (eveEditPlainText.OnDropData, AddLink): the markup to put in at the caret,
+   * after the client's checks of the room left; null where it is not put in (the client's word said).
+   */
+  droppedLinkMarkup(dropped: DroppedLink, room: LinkDropRoom): Promise<string | null>;
+  /**
+   * The fitting the Fitting window gives as it is dragged: its ghost ship icon's (the active ship's own) or its fit-name
+   * label's (the one it shows); null with no ship.
+   */
+  draggedFittingOf(source: "activeShip" | "fittingWindow"): Promise<{ readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string } | null>;
+  /** GetShipName: the name the Fitting window's fit-name label shows (GetFitName). */
+  fittingWindowShipName(): Promise<string>;
+  /** handle_link: a "skillPlan:" url followed; nothing where the client's own parse would refuse it. */
+  openSkillPlanLink(url: string): void;
+  /** The link followed and not yet opened, taken by whoever opens it (null where none is waiting). */
+  takeSkillPlanLink(): SkillPlanLinkFollowed | null;
+  /**
+   * skillPlanService.GetOwnedByOther: a plan that is not the pilot's, by its link's owner: a player corporation's by the
+   * corporation's GetShared (its skills by the corporation's Get, as CorpSkillPlanController reads them), anyone
+   * else's by the personal GetShared, its skills put right as on reading (ValidateSkillPlan, and the personal
+   * SetRequiredSkills where that changed them, as _GetPersonalSkillPlanController does). As its entry shows it, marked
+   * linked. Where none is had (any failure: GetOwnedByOther catches them all) the client's SkillPlanNotFound is said
+   * and null answered.
+   */
+  sharedSkillPlan(skillPlanID: string, ownerID: number | null): Promise<(PersonalSkillPlanEntry & { readonly linked: true }) | null>;
+  /**
+   * A skill menu's entry chosen (bridge/skillMenu.ts; skillQueueSvc's AddSkillToQueue, RemoveHighestLevelFromQueue,
+   * AddAllLevels and UseFreeSkillPoints), on the queue as the server has it now: the queue saved after it, or the
+   * client's refusal said; Apply Skill Points asks how many first. The type menu's own entries are the window's.
+   */
+  skillMenuChoose(typeID: number, entry: SkillMenuEntry): Promise<void>;
+  /**
+   * Show Info on a corporation (corporationInfoWindow.py reconstruct_info_window; infosvc.UpdateDataCorp): its public
+   * record (corpmgr.GetPublicInfo), its friendly fire (the corp service's GetAggressionSettings, corpmgr's) and, for a
+   * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
+   * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
+   */
+  corporationShowInfo(corporationID: number): Promise<CorporationShowInfo | null>;
+  /**
+   * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
+   * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
+   */
+  allianceShowInfo(allianceID: number): Promise<AllianceInfoExtra | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
-  answerSkillBooks(n: number, answer: "buy" | "close"): Promise<void>;
+  answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
+  /**
+   * What a drop onto the skill queue is judged by while it is dragged (IsMoveAllowed): whether the drop would put its
+   * level in at a place (the end where null). False for a type's drag, which shows no line. Null where unread.
+   */
+  skillQueueDropFacts(typeIDs: readonly number[]): Promise<{ readonly queueLength: number; readonly allowed: (drop: SkillQueueDrop, place: number | null) => boolean } | null>;
+  /**
+   * A drop onto the skill queue (skillQueuePanelNew.DoDropData) at a place (the end where null): a queue entry moved
+   * (MoveSkillToPosition; with Shift, its next level added); a skill entry's next level added
+   * (AddSkillThroughSkillEntry); a type's next level added (AddSkillsThroughOtherEntry); an inventory's skill book
+   * injected, then its level I added; a refusal said as the client says it. A skill not had answers it as missing, for
+   * the purchase overlay.
+   */
+  skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): Promise<{ readonly missing: { readonly typeID: number; readonly position: number } | null }>;
+  /**
+   * The queue's selected levels taken out (skillQueuePanelNew.DoRemove, from the scroll's Delete: the selection
+   * bottom first; RemoveSkillsFromQueue): each in turn where CheckCanRemoveSkillFromQueue lets it, stopping at the
+   * first refusal, which is said; those taken out are committed.
+   */
+  removeQueuedLevels(levels: readonly { readonly typeID: number; readonly level: number }[]): Promise<void>;
+  /** The purchase overlay's facts (SkillPurchaseOverlayController): sold directly, its price, its needs trained. */
+  skillPurchaseOffer(typeID: number): Promise<{ readonly sold: boolean; readonly price: number | null; readonly requirementsTrained: boolean } | null>;
+  /** buy_skill (trainAt null) and buy_and_train_skill (level I put in at that place once bought). */
+  buySkillFromOverlay(typeID: number, trainAt: number | null): Promise<void>;
+  /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly multiBuyAsked: ReadableSignal<MultiBuyAsk | null>;
+  /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
+  openMultiBuy(wanted: ReadonlyMap<number, number>): Promise<void>;
+  /** A row's quantity, the number of orders, or a row taken out; each row's price then read again. */
+  editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean } | { readonly stationID: number }): Promise<void>;
+  /** Its Buy, its Buy and Fit (BuyAndFit: the buy, then the fitting loaded again as its orders run out), or Cancel. */
+  answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void>;
+  /** A fitting's contents by heading and its slot kinds' effects' names (GetFittingInfoForScrollList), for a tooltip. */
+  fittingInfo(fitting: SourcedFitting): Promise<{ readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> }>;
+  /** The saved fittings, the pilot's, its corporation's, the community's and its alliance's (fittingSvc.GetFittings), as last read; null before. */
+  readonly savedFittings: ReadableSignal<readonly SourcedFitting[] | null>;
+  /** globalConfig.AreCommunityFittingsEnabled, as looked at with the fittings read. */
+  readonly communityFittingsEnabled: ReadableSignal<boolean>;
+  /** Reads them (fittingSvc.GetAllFittingsForCharacter: each owner's fitting manager's GetFittings, and GetCommunityFittings). */
+  loadSavedFittings(): Promise<void>;
+  /**
+   * A saved fitting's Fit to Active Ship (fittingBrowser.FitToActiveShip, fittingSvc
+   * LoadFittingFromFittingIDAndGetBuyOptionOnFailure): the fitting loaded, and the Buy All box for what it could not.
+   */
+  fitFittingToActiveShip(fittingID: number): Promise<void>;
+  /** A saved fitting's Buy All (fittingBrowser.BuyItemsForFit, multiBuyUtil.BuyFit): the multibuy window with its ship and its items. */
+  buyFit(fittingID: number): Promise<void>;
+  /** The client's Buy All box open now (ClientDialogs.svelte shows it); null with none. */
+  readonly buyAllAsked: ReadableSignal<BuyAllAsk | null>;
+  /**
+   * Its Buy All (the multibuy window with what is missing, for the fitting), its GM: Give all (GiveAllGM: a GM's
+   * /create of each, the box shown only to a session with ROLE_GML), or Close.
+   */
+  answerBuyAll(n: number, answer: "buy" | "gm-give-all" | "close"): Promise<void>;
+  /** The loading service's progress window up now (ClientDialogs.svelte shows it); null with none. */
+  readonly progressWnd: ReadableSignal<ProgressWndShown | null>;
+  /**
+   * The fitting display windows open now, the one in front last (ClientDialogs.svelte shows them): the one window
+   * DisplayFitting reloads, and one for each fitting it was asked for with Shift held.
+   */
+  readonly viewFittingsAsked: ReadableSignal<readonly ViewFittingAsk[]>;
+  /** A display window clicked, brought in front of the others (Window.SetOrder on a click). */
+  raiseViewFitting(n: number): void;
+  /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
+  viewFitting(fittingID: number): Promise<void>;
+  /**
+   * Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed, else the simulation left), its
+   * Buy (multiBuyUtil.BuyFit), its Simulate (fittingMgmtCont.SimulateFitting: the fitting simulated; the Fitting window
+   * is the caller's to open), or closed.
+   */
+  answerViewFitting(n: number, answer: "fit" | "buy" | "simulate" | "multifit" | "close"): Promise<void>;
+  /**
+   * Its menu's Export to Clipboard (ViewFitting._AddCustomMenuOptions, fittingSvc.ExportFittingToClipboard): the
+   * fitting as the text the client copies (GetFittingEFTString), its types named first; null with no window.
+   */
+  viewFittingText(n: number): Promise<string | null>;
+  /** The fitting window's Export to Clipboard: the ship's fitting as it stands, as the client's text; null with no ship. */
+  currentFitText(): Promise<string | null>;
+  /** The fitting window's Import from Clipboard, of the clipboard's text (null where the browser would not give it). */
+  importFittingFromClipboard(text: string | null): Promise<void>;
+  /** The multifit window open now (ClientDialogs.svelte shows it); null with none. */
+  readonly multiFitAsked: ReadableSignal<MultiFitAsk | null>;
+  /** GetMaxShipsToFit, as last read: nought where the config allows no multifit. */
+  readonly maxShipsToFit: ReadableSignal<number>;
+  /** A saved fitting's Open Multifit (fittingBrowser.DoBulkFit, OpenOrLoadMultiFitWnd): the window opened on it, or reloaded with it. */
+  openMultiFit(fittingID: number): Promise<void>;
+  /** The window's count, name, equipment's place or rigs box changed; its reckoning made again. */
+  editMultiFit(n: number, edit: { readonly numToFit: number } | { readonly fitName: string } | { readonly locationID: number | null } | { readonly fitRigs: boolean }): Promise<void>;
+  /**
+   * Its Fit Ships (DoFitShips), its refresh (OnRefreshClicked), the fitting shown (OpenFitting), Buy All for what is
+   * missing (AddBuyAllBtn: all, the ships' or the equipment's), or Close.
+   */
+  answerMultiFit(n: number, answer: "fit" | "refresh" | "view" | "buy-missing" | "buy-ships" | "buy-equipment" | "close"): Promise<void>;
+  /**
+   * A GM's buttons beside its Buy All (AddBuyAllBtn): GM: Give all (/create, for ROLE_WORLDMOD) and GM: Load me all
+   * (/load me, for ROLE_GML) of what is missing: all, the ships' or the equipment's.
+   */
+  multiFitGm(n: number, which: "missing" | "ships" | "equipment", slashCmd: "create" | "load me"): Promise<void>;
+  /**
+   * Its Save (fittingMgmtCont.Save, SaveExistingFitting, fittingSvc.ChangeNameAndDescription) for the pilot's own
+   * fitting: the name and the description as edited, and the window closed.
+   */
+  saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void>;
+  /** Whether the window's Save menu offers Save for Alliance (the pilot's corporation its alliance's executor). */
+  saveForAllianceOffered(): Promise<boolean>;
+  /** session.corprole & corpRoleFittingManager: whether Save's tooltip panel is shown (LoadSaveBtnTooltipPanel). */
+  hasFittingManagerRole(): boolean;
+  /** The window's setting useFittingNameForShips: a ship named after a fitting loaded on it. */
+  readonly useFittingNameForShips: ReadableSignal<boolean>;
+  setUseFittingNameForShips(on: boolean): void;
+  /** Which owners' fittings the browser offers Delete Fitting for (fittingUtil.CanDeleteFit), besides the pilot's own. */
+  readonly fittingsDeletable: ReadableSignal<{ readonly corporation: boolean; readonly alliance: boolean }>;
+  /** The fitting window's Save Fit As (fittingSvc.DoSaveFitting): the display window opened on the ship's fit as it stands. */
+  saveFitAs(): Promise<void>;
+  /** Of saved fittings, those the pilot has the skills for (fittingSvc.HasSkillForFit), kept until the skills change. */
+  fittingsWithSkills(fittingIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** Of hulls, those the pilot has the skills for (godma.CheckSkillRequirementsForType), kept until the skills change. */
+  hullsWithSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number>>;
+  /** The fitting browser's hulls and their facts, as read; null before. */
+  readonly hullBrowser: ReadableSignal<HullBrowserData | null>;
+  /** Reads them where not had, with the facts of each type named that is not had (a saved fitting's hull). */
+  loadHullBrowser(typeIDs: readonly number[]): Promise<void>;
+  /** Ships' traits as read (a hull's tooltip shows them: HullTypeListGroup.LoadTooltipPanel, TraitsContainer). */
+  readonly shipTraits: ReadableSignal<ShipTraitsHeld>;
+  /** Asks the traits of the ships named that are not asked yet, with the words and names they are written with. */
+  requestShipTraits(typeIDs: readonly number[]): Promise<void>;
+  /**
+   * The pilot's personal skill plans (bridge/skillPlans.ts), read as the client's skill plan service primes them, on
+   * the public gateway: GetAll, then each plan by Get (one whose Get fails left out), and the tracked plan by
+   * GetActive; with each plan's time left to train and whether it is completed. Null where the gateway could not be
+   * had (the client's SkillPlanConnectionError).
+   */
+  personalSkillPlans(): Promise<PersonalSkillPlansRead | null>;
+  /**
+   * The certified skill plans (bridge/certifiedSkillPlans.ts), from the client's own table, as their entries show them;
+   * the career paths in the table's order; whether the AIR plan is done (HasFinishedAIRSkillPlan) and the faction of
+   * the pilot's race. Their names' and the career paths' messages, and the factions' names, asked for. Null where the
+   * client's data could not be read.
+   */
+  /**
+   * The opened plan's Save (SelectedSkillPlanContainer.SaveSkillPlan, GetSkillPlanCopy): SkillPlanCopied said, then the
+   * plan saved as a new personal plan (SaveCopyOfPlanAsPersonalSkillPlan, _SaveNewPersonalSkillPlan: the plans counted,
+   * CreateRequest with its name, description and skills, then its milestones created). The copy's id; null where it
+   * was not saved (its refusal said as the client says it). planCount null: the personal plans could not be read.
+   */
+  copySkillPlan(
+    plan: { readonly name: string; readonly description: string; readonly requirements: readonly (readonly [number, number])[]; readonly milestones: readonly Milestone[] },
+    planCount: number | null,
+  ): Promise<string | null>;
+  /** A certified plan's milestones (the client's table's), as the opened plan shows them. Null without the client's data. */
+  certifiedPlanMilestones(milestones: readonly Milestone[]): Promise<readonly MilestoneEntry[] | null>;
+  certifiedSkillPlans(): Promise<{
+    readonly plans: readonly CertifiedPlanEntry[];
+    readonly careerPaths: readonly CareerPath[];
+    readonly airFinished: boolean;
+    readonly raceFactionID: number | null;
+  } | null>;
+  /**
+   * SkillPlanEntry.Delete (skillPlanService._DeletePersonal): the client's DeleteSkillPlan question, then Delete on
+   * the public gateway; true where it was deleted, false on No. A refusal is thrown.
+   */
+  deletePersonalSkillPlan(id: string): Promise<boolean>;
+  /**
+   * An opened plan as its view reckons it (bridge/skillPlans.ts SkillPlanDetail): its contents' rows (each of its
+   * skill levels in the plan's order, whether it is trained, its skill bar and its training time), the books missing,
+   * the omega lock and the levels left to queue; the skills' names asked for. Null where the pilot's skills could not
+   * be read.
+   */
+  skillPlanDetail(plan: PersonalSkillPlan): Promise<SkillPlanDetail | null>;
+  /**
+   * skills/client/util.buy_missing_skills: the books of these skills not held (lapsed counted held) bought in the books
+   * window (skillsvc.PurchaseSkills: refused where buying is switched off), then waited for among the pilot's skills
+   * (WaitUntilSkillsAreAvailable). True where none was missing or any was bought.
+   */
+  buyMissingSkillBooks(typeIDs: readonly number[]): Promise<boolean>;
+  /**
+   * An opened plan's level button clicked (SkillLevelEntryPrimaryButton._OnClick), by the state its row was read in
+   * (bridge/skillPlanLevelButton.ts): book buys the books of the skill and of what it needs (BuyAllRequiredSkillbooks);
+   * remove takes the level out of the queue (RemoveSkillsFromQueue: CheckCanRemoveSkillFromQueue's refusal said as the
+   * client says it); add queues the level and what it needs (AddSkillAndRequirementsToQueue). A change of the queue is
+   * committed as the client commits it (OnClientQueueModified). The omega state's window and the off states do
+   * nothing here.
+   */
+  skillPlanLevelAction(skill: number, level: number, state: LevelButtonState): Promise<void>;
+  /**
+   * The opened plan's Start Training (SelectedSkillPlanContainer.TrainSkills): the plan's levels left to train added
+   * to the end of the queue and the queue saved started (AddToTrainingQueue: skillQueueSvc.AddSkillsToQueue, then
+   * OnClientQueueModified's commit); then the plan tracked (_CheckSetCurrentSkillPlanAsTracked): at once where none
+   * is tracked, on the client's AskTrackPlan question where another is. The levels added (null where the queue was
+   * refused: its refusal is said as any queue's is, and nothing is tracked) and the plan tracked after it. A plan that
+   * cannot be tracked (IsTrackable: a corporation's) is copied first, whatever is tracked (GetSkillPlanCopy:
+   * trackedCopy, the copy's id, null where it was not saved and nothing is tracked), and the copy is the one tracked.
+   */
+  trainSkillPlan(
+    plan: PersonalSkillPlan,
+    trackedID: string | null,
+    trackedCopy?: () => Promise<string | null>,
+  ): Promise<{ readonly added: number | null; readonly trackedID: string | null }>;
+  /**
+   * The skill plan editor's catalogue (bridge/skillPlanEditor.ts): every skill type, and which the pilot holds (the
+   * catalogue lists a skill published or held). Kept once read. Null where it could not be read.
+   */
+  skillCatalogue(): Promise<{ readonly skills: readonly CatalogueSkill[]; readonly held: ReadonlySet<number> } | null>;
+  /** What the client's skill plan validation reads, for these skills (and every skill they lead to). Null without the client's data. */
+  skillPlanValidationFor(skillTypes: readonly number[]): Promise<SkillPlanValidationFacts | null>;
+  /**
+   * The skill plan editor's Import Skills from Clipboard: the text read as the skill queue's importer reads it
+   * (GetSkillPlanImporter().GetSkillsAndLevelsFromText, the BFF's port), each line's skill and level in order. Null
+   * where it could not be read.
+   */
+  skillPlanImportText(text: string): Promise<readonly (readonly [number, number])[] | null>;
+  /**
+   * Skills' row tooltips and menus (bridge/skillPlans.ts SkillRowInfo), read for those asked: the editor's catalogue's
+   * entries (SkillGroupSkillEntry: LoadTooltipPanel, GetMenu). Null where the pilot's skills could not be read.
+   */
+  skillRowInfoFor(typeIDs: readonly number[]): Promise<ReadonlyMap<number, SkillRowInfo> | null>;
+  /**
+   * The editor's catalogue's skills as the skill controllers answer them (bridge/skillPlanEditor.ts
+   * CatalogueSkillState): their levels, whether injected, trainable now or with their needs met, and the levels above
+   * an alpha clone's ceiling; for SkillFilterCombo's filters and the groups' bars. And as their entries show them and
+   * the groups' tooltips sum them (CatalogueSkillRow): the skill bar, the next level and its time, the points. Null
+   * where they could not be read.
+   */
+  skillCatalogueStates(typeIDs: readonly number[]): Promise<ReadonlyMap<number, CatalogueSkillRow> | null>;
+  /**
+   * Dogma attributes as the client draws one by itself (skillsPanelUtil.AttributeCont): the number of its name's
+   * message (asked for) and its picture's res: path. Null where the client's tables could not be read.
+   */
+  attributeDisplay(attributeIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }> | null>;
+  /**
+   * Each skill group's certificates claimed (SkillGroupController GetAccumulatedCertificateLevelsTrained: each of its
+   * certificates' levels, Certificate.GetLevel, summed) of all (GetAccumulatedCertificateLevelsTotal: five each). Null
+   * where they could not be read.
+   */
+  skillGroupCertificates(groupIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly claimed: number; readonly total: number }> | null>;
+  /**
+   * The character sheet's expert systems page (expertSystems/client/ui/character_sheet/home): the pilot's expert
+   * systems by when they were installed (GetMyExpertSystems), the client's data of every expert system, and for each
+   * skill an installed one gives, its skill bar at the level given (SkillRow: SkillBar with requiredLevel). Their
+   * names asked for. Null where they could not be read.
+   */
+  expertSystemsHome(): Promise<{
+    readonly installed: readonly InstalledExpertSystem[];
+    readonly data: ReadonlyMap<number, ExpertSystemData>;
+    readonly boxes: ReadonlyMap<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>;
+    /** By installed expert system: whether it has skills to train (ExpertSystem.can_train_skills). */
+    readonly canTrain: ReadonlyMap<number, boolean>;
+  } | null>;
+  /**
+   * The page's Train Skills (PageController.train_selected_skills: train_expert_system_skills, buy_and_train_skills):
+   * the skills to train (get_skills_to_train), the books of those not had bought (buy_missing_skills: the page's
+   * buyMissingSkillBooks), then each level put at the queue's end (AddSkillsToQueue): one already there, past the
+   * queue's length, or refused where it would go, and nothing is committed (its exception is only logged); else the
+   * queue committed.
+   */
+  trainExpertSystemSkills(typeID: number): Promise<void>;
+  /**
+   * The expert systems page's browse page (character_sheet/browse PageController.expert_systems: get_expert_systems,
+   * hidden and retired left out), and for each skill they give, its skill bar at the level given. Their names, their
+   * skills' and their ships' asked for. Null where they could not be read.
+   */
+  expertSystemsBrowse(): Promise<{
+    readonly systems: readonly ExpertSystemData[];
+    readonly boxes: ReadonlyMap<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>;
+  } | null>;
+  /**
+   * The page's Remove (PageController.remove_selected): the client's question (prompt_remove_expert_system:
+   * CustomQuestion, RemovePromptTitle, RemovePromptBody and RemoveWarning); on Yes RemoveMyExpertSystem, a refusal said
+   * as the client says one. True where it was taken out.
+   */
+  removeExpertSystem(typeID: number): Promise<boolean>;
+  /**
+   * expertSystemSvc.on_expert_systems_updated: counts each OnExpertSystemsUpdated the server sends, whose dict is from
+   * then on the pilot's expert systems (the service keeps it, and the page loads again from it, asking nothing).
+   */
+  readonly expertSystemsChanged: ReadableSignal<number>;
+  /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
+  skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
+  /**
+   * The editor's Save (skillPlanService.Save): a new plan (saved null) created, the plans counted first
+   * (CheckNumPersonalSkillPlans: MaxPersonalPlansReached at ten); an edited one sent what differs from the saved one
+   * (_GetCallsToUpdate). A refusal said as the client says it (_RaiseErrorMessageOnSave). True where it was saved.
+   * A corporation plan (corp given) is saved by the corporation's requests: created with the category chosen, the
+   * corporation's plans counted first (CheckNumCorpSkillPlans: MaxCorpPlansReached at a hundred, planCount theirs);
+   * an edited one sent what differs, its category among it (SetCategory); its milestones the corporation's.
+   */
+  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones, corp?: CorpPlanSave): Promise<boolean>;
+  /**
+   * What the editor's milestones read of types (skillPlanUtil.IsTypeValidMilestone, AddAllSkillsRequiredFor): each
+   * one's category and its needs in the client's table's order (and every skill they lead to). Null without the
+   * client's data.
+   */
+  skillPlanTypeFacts(typeIDs: readonly number[]): Promise<{ readonly required: RequiredSkills; readonly categoryID: ReadonlyMap<number, number | null> } | null>;
+  /**
+   * A fitting's types as the skill plan editor takes them when it is dropped there (_OnDropFitting, by GetTypesByRack's
+   * kinds: bridge/fittingContents.ts fittingTypesForSkillPlan), saved or not; null where its types' facts could not be
+   * read.
+   */
+  skillPlanFittingTypes(fitting: { readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[] }): Promise<readonly number[] | null>;
+  /** A type dropped that is no milestone (SkillPlanProgressIndicatorEditable._OnDataDropped): CantAddAsMilestone. */
+  sayCantAddAsMilestone(): void;
+  /** A milestone dropped on one (OnMilestoneDataDropped): ReplaceMilestoneWithNewMilestone; true on Yes. */
+  askReplaceMilestone(oldName: string, newName: string): Promise<boolean>;
+  /** The editor's Back where the plan was changed (ShouldContinueAfterAskingAboutLeavingEditor): AskCloseSkillPlanEditor; true on Yes. */
+  askLeaveSkillPlanEditor(): Promise<boolean>;
+  /**
+   * An opened plan's milestones (bridge/skillPlanMilestones.ts), read as the client reads them: GetAll; each one not
+   * valid deleted on the server (_PrimeCacheForSkillPlan); the skills they need that the plan lacks put in it and the
+   * plan's skills set so (_AddSkillsMissingForMilestones: requirements is then the plan's list as it now is, else
+   * null). Each with its kind, whether it is completed and the time left to train what its type needs
+   * (GetSkillTrainingTimeLeftToUseType, no boosters). The types' names asked for. Null where they could not be read.
+   */
+  /**
+   * The corporation's skill plans (bridge/corpSkillPlans.ts), read as the client reads them: GetAll, each plan's skills
+   * by Get, put right as on reading (CorpSkillPlanController.skillRequirements: ValidateSkillPlan, SetRequiredSkills
+   * where it changed them); as their entries show them; and whether the pilot may edit them (IsEditable: its
+   * corporation's, and corpRoleSkillPlanManager). Null where they could not be read.
+   */
+  corpSkillPlans(): Promise<{ readonly plans: readonly CorpPlanEntry[]; readonly canEdit: boolean } | null>;
+  /** skillPlanService._DeleteCorp: the client's DeleteSkillPlan question, then Delete; true where deleted. A refusal is thrown. */
+  deleteCorpSkillPlan(id: string): Promise<boolean>;
+  skillPlanMilestones(plan: PersonalSkillPlan, scope?: "character" | "corporation"): Promise<{
+    readonly milestones: readonly MilestoneEntry[];
+    readonly requirements: readonly (readonly [number, number])[] | null;
+  } | null>;
+  /**
+   * skillPlanService.SetTrackedSkillPlanID: SetActive on the public gateway, the plan's id or, for none, the nought
+   * uuid; the plan tracked after it (null for none). A refusal is thrown.
+   */
+  setTrackedSkillPlan(id: string | null): Promise<string | null>;
+  /**
+   * The compare tool's reading of types (comparableType.py), from the client's own tables and kept: each type's dogma
+   * attributes and facts, the attributes' records and the units' names, all that is held; the words and the names
+   * they are written with asked for. Null where the client's tables could not be read.
+   */
+  comparisonTypes(typeIDs: readonly number[]): Promise<{
+    readonly types: ReadonlyMap<number, ComparisonTypeData | null>;
+    readonly attributes: ReadonlyMap<number, DogmaAttributeRecord | null>;
+    readonly unitNameIDs: ReadonlyMap<number, number | null>;
+  } | null>;
+  /**
+   * The cfg's table of average prices (typeHelpers.GetAveragePrice: config.GetAverageMarketPrices, which the cfg asks
+   * once), read once it is had; null where it is not had yet.
+   */
+  cfgAveragePrices(): Promise<ReadonlyMap<number, number | null> | null>;
+  /**
+   * Types' facts from the client's types records (evetypes: market group, published, group, category, meta and tech),
+   * kept: static data. All that is held of those asked; null where the client's tables could not be read.
+   */
+  typeFacts(typeIDs: readonly number[]): Promise<ReadonlyMap<number, TypeMetaFacts | null> | null>;
+  /**
+   * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
+   * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
+   */
+  deleteFitting(fittingID: number): Promise<void>;
+  /**
+   * The browser's Delete Fitting with fittings selected (fittingBrowser.GetFittingMenu, GetDeletableNodes and
+   * fittingUtil.DeleteFittings), given in the browser's order: one as deleteFitting; more, the question for many,
+   * each owner's DeleteManyFittings, and DeletedManyFittings said.
+   */
+  deleteFittings(fittingIDs: readonly number[]): Promise<void>;
+  /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
+  importMultiBuy(n: number, text: string | null): Promise<void>;
+  /**
+   * The requirement window's apply-points button where the pilot has free points (ApplySkillPointsButton.ClickFunc):
+   * the window put away and the Apply Skill Points window opened for its levels.
+   */
+  applySkillPointsRequired(): Promise<void>;
+  /** The client's Apply Skill Points window open now; null with none. */
+  readonly applyPointsAsked: ReadableSignal<ApplyPointsAsk | null>;
+  /** Its answers: Confirm (the points spread), or Cancel and Close (put away). */
+  answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void>;
   /** The client's ship naming window open now (ClientDialogs.svelte shows it); null with none. */
   readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
   /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
@@ -3079,6 +3997,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "live/question", question, epoch, sequence });
       return;
     }
+    // A public gateway notice for the pilot (game-port pilots): handed to whatever on the page listens for its type.
+    if (event.kind === "gateway-notice") {
+      const notice = (event.notice ?? {}) as Record<string, JsonValue>;
+      if (typeof notice.typeName === "string") {
+        gatewayNoticesHeard += 1;
+        gatewayNoticesSignal.set({ n: gatewayNoticesHeard, typeName: notice.typeName, payload: notice.payload ?? null });
+      }
+      return;
+    }
     if (event.kind === "question-closed") {
       if (typeof event.id === "string") {
         store.apply({ type: "live/question-closed", id: event.id, epoch, sequence });
@@ -3242,6 +4169,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // is told of at the server's next tick, after the re-read of the fit on the call's answer
     // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
     applyShipAttributeChanges(method, args);
+    // clientDogmaLocation.OnServerBrainUpdated: the pilot's brain is new, so the ship is reckoned with it again
+    // (the BFF's godma holds the new brain, src/gamePort/pilotDogma.js).
+    if (method === "OnServerBrainUpdated") scheduleShipReckoning();
     // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a named item's or a place's row as it is now, its
     // name the second column: the names kept of named items follow it (the panel's ships, the Fitting window's title).
     if (method === "OnCfgDataChanged" && args[0] === "evelocations") {
@@ -3436,6 +4366,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // expertSystemSvc.OnExpertSystemsUpdated(expertSystems, expertSystemAdded, expertSystemTypeID): the dict kept as the
+    // pilot's expert systems, and the page told (on_expert_systems_updated). (Not here: the fanfare of one added.)
+    if (method === "OnExpertSystemsUpdated") {
+      expertSystemsHeld = (args[0] ?? null) as JsonValue | null;
+      expertSystemsSignal.set(expertSystemsSignal.get() + 1);
+      return;
+    }
+    // fittingSvc.OnSkillsChanged (1050 to 1052): what is kept of the fittings' skills let go, at the server's word of the
+    // skills (skillsvc's OnServerSkillsChanged and OnServerSkillsRemoved scatter it), and at its own.
+    if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") {
+      hasSkillByFittingID.clear();
+      hasSkillByTypeID.clear();
+    }
+    // fittingSvc.OnCommunityFittingsUpdated and OnGlobalConfigChanged (machoNet's, at OnGlobalConfigUpdated): the
+    // community's fittings let go, and read again.
+    if (method === "OnCommunityFittingsUpdated" || method === "OnGlobalConfigUpdated") {
+      void communityFittingsChanged().catch(() => {});
+      if (method === "OnCommunityFittingsUpdated") return;
+    }
+    // fittingSvc.OnFittingDeleted(ownerID, fittingID): the fitting let go from those kept.
+    if (method === "OnFittingDeleted") {
+      const fittingID = Number(args[1]);
+      if (Number.isSafeInteger(fittingID) && fittingID > 0) fittingLetGo(fittingID);
+      return;
+    }
+    // fittingSvc.OnManyFittingsDeleted(ownerID, fitIDs) (1085 to 1095): each let go from those kept. The client lets
+    // its many deleted go by this alone (DeleteManyFittings keeps none of its own).
+    if (method === "OnManyFittingsDeleted") {
+      const fitIDs = Array.isArray(args[1]) ? (args[1] as readonly unknown[]) : isListValue(args[1]) ? args[1].items : [];
+      for (const each of fitIDs) {
+        const fittingID = Number(each);
+        if (Number.isSafeInteger(fittingID) && fittingID > 0) fittingLetGo(fittingID);
+      }
+      return;
+    }
+    // MarketProgressionNotifier.OnMarketEscrowChanged: the kept escrow is to be asked again (once its last asking is
+    // twelve hours old).
+    if (method === "OnMarketEscrowChanged") {
+      keepMarketProgression("requires_update", true);
+      return;
+    }
     // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus) (598 to 600): the pilot's own status is what the
     // server says, with nothing asked.
     if (method === "OnSecurityStatusUpdate") {
@@ -3451,8 +4422,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       planetLaunchesChanged();
     }
     // marketSvc.OnOwnOrdersChanged (33 to 35): the trades kept are let go, and read again when the tab is next chosen.
+    // And the multibuy window's orders that ran out (buyMultiFromBase.OnOwnOrdersChanged).
     if (method === "OnOwnOrdersChanged") {
       marketTransactionsFor = null;
+      void multiBuyOrdersChanged(args[0], args[1]).catch(() => {});
     }
     // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
     // corporation, once the tab has been chosen.
@@ -3464,7 +4437,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
-    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole")) {
+    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey" || name === "role")) {
       const ownerOf = (value: unknown): number | null => {
         const id = Number(wholeDigits(value) ?? Number.NaN);
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -3474,6 +4447,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpid") ? { corporationID: ownerOf(sessionChangeValue(method, args, "corpid")) } : {}),
         ...(sessionNames.includes("allianceid") ? { allianceID: ownerOf(sessionChangeValue(method, args, "allianceid")) } : {}),
         ...(sessionNames.includes("corprole") ? { corpRole: wholeDigits(sessionChangeValue(method, args, "corprole")) } : {}),
+        ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
+        ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
@@ -3653,6 +4628,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // MultiFitWnd.OnItemChange and OnMultipleItemChange (530 to 557): a ship fitted counted while the window fits, and
+    // the window's reckoning made again (at most twice a second) while it does not.
+    if (method === "OnItemsChanged" || method === "OnItemChange") multiFitItemsChanged(method, args);
     if (method === "OnItemsChanged" || method === "OnItemChange") {
       // (The mission tracker's OnItemsChanged, which the client's inventory cache raises for both.)
       const first = (args as readonly JsonValue[])[0];
@@ -3685,6 +4663,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // not been measured.
       if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
         scheduleDroneRefresh();
+      }
+      // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
+      // reckoned again where they are the page's, as the client's drone panel takes its drones again
+      // (clientDogmaLocation.GetActiveDrones).
+      const fittingNow = store.fitting.get();
+      if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
+      // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
+      // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
+      // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
+      else if (fittingNow.statsFrom === "page" && fittingNow.fighterBay?.shipID === fittingNow.activeShipID) {
+        const places = itemChangeLocations(args);
+        if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
       }
       // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
       // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
@@ -4739,8 +5729,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R12 Ship fitting ----------------------------------------------------
 
+  /**
+   * The damage-state changes the client's dogma location has taken since (OnModuleAttributeChanges: an item's damage,
+   * armour damage and shield charge, each set as it is heard), the last of each item and attribute, in the order they
+   * were heard, each with the moment by the server's clock.
+   */
+  const damageStateHeard = new Map<string, { readonly itemID: number; readonly attributeID: number; readonly value: number; readonly at: number }>();
+
+  /** The ship attributes whose change alone the Fitting window's figures are not reckoned again for: damage, armour damage, the charges. */
+  const RECKONING_IGNORES: ReadonlySet<number> = new Set([3, 266, 264, 18]);
+
   /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
   function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
+    for (const change of locationAttributeChanges(method, args)) {
+      if (!DAMAGE_STATE_ATTRIBUTES.has(change.attributeID)) continue;
+      const key = `${change.itemID}|${change.attributeID}`;
+      damageStateHeard.delete(key);
+      damageStateHeard.set(key, { ...change, at: serverNow() });
+    }
     const current = store.fitting.get();
     if (current.activeShipID === null || current.shipAttributes === undefined) return;
     const changed = decodeItemAttributeChanges(method, args, current.activeShipID);
@@ -4749,6 +5755,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
     );
     for (const [attributeID, value] of changed) attributes.set(attributeID, value);
+    // Where the figures are the page's own dogma's, the change is reckoned again from what godma holds now; not for a
+    // change of damage or a charge alone (the shield's charge in combat), which none of them is made of.
+    if (current.statsFrom === "page" && [...changed.keys()].some((attributeID) => !RECKONING_IGNORES.has(attributeID))) scheduleShipReckoning();
     store.apply({
       type: "fitting/ship-attributes",
       shipID: current.activeShipID,
@@ -4832,6 +5841,818 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       allInfo: decoded.allInfo.value,
       error: decoded.allInfo.error,
     });
+    void reckonActiveShip().catch(() => {});
+  }
+
+  // The client's own static dogma data as it has been read: what the page's own dogma reckons with.
+  const dogmaStaticKept: {
+    types: Record<number, DogmaTypeFacts | null>;
+    effects: Record<number, DogmaEffectFacts | null>;
+    attributes: Record<number, DogmaLocationAttributeRecord | null>;
+  } = { types: {}, effects: {}, attributes: {} };
+
+  /** The static dogma data for these types and attributes, read where it is not held yet; null where it cannot be read. */
+  async function dogmaStaticFor(typeIDs: readonly number[], attributeIDs: readonly number[]): Promise<DogmaStatic | null> {
+    let types = [...new Set(typeIDs)].filter((typeID) => !Object.hasOwn(dogmaStaticKept.types, typeID));
+    let attributes = [...new Set(attributeIDs)].filter((attributeID) => !Object.hasOwn(dogmaStaticKept.attributes, attributeID));
+    while (types.length > 0 || attributes.length > 0) {
+      const read = await api.getDogmaTypes(types.slice(0, 50), attributes.slice(0, 200), callOptions);
+      if (!read.available) return null;
+      Object.assign(dogmaStaticKept.types, read.types);
+      Object.assign(dogmaStaticKept.effects, read.effects);
+      Object.assign(dogmaStaticKept.attributes, read.attributes);
+      types = types.slice(50);
+      attributes = attributes.slice(200).filter((attributeID) => !Object.hasOwn(dogmaStaticKept.attributes, attributeID));
+    }
+    return dogmaStaticKept;
+  }
+
+  /** Python's round(value, 10), as GetStatsInfo rounds each figure: halves away from nought. */
+  function roundTo10(value: number): number {
+    return (Math.sign(value) * Math.floor(Math.abs(value) * 1e10 + 0.5)) / 1e10;
+  }
+
+  /**
+   * What the client's dogma location of the pilot's own ship is made of: godma's GetAllInfo (the hull, its modules and
+   * their online state, its charges, the instance rows, the brain), the drone bay, and the static data. Null where any
+   * is not to be had.
+   */
+  async function ownShipInputs() {
+    const allInfo = store.dogma.get().allInfo;
+    const shipID = store.fitting.get().activeShipID;
+    if (!allInfo || shipID === null) return null;
+    const brain = decodeBrain(allInfo.charBrain);
+    const characterID = Number(allInfo.characterID);
+    const pilotTypeID = allInfo.character?.typeID ?? null;
+    const shipInfo = allInfo.ships.find((item) => Number(item.itemID) === shipID && item.sublocation == null);
+    if (!brain || !shipInfo || shipInfo.typeID === null || !Number.isSafeInteger(characterID) || pilotTypeID === null) return null;
+    // The instance rows the client's dogma location loads the ship and its items with (the ship's state).
+    const instances = decodeInstanceRows(allInfo.shipState);
+    const instanceOf = (itemID: number | string | null): Map<number, number> | undefined => {
+      const row = itemID === null ? undefined : instances.get(String(itemID));
+      return row ? instanceRowAttributes(row) : undefined;
+    };
+    const modules: SimulatedModule[] = [];
+    const charges: SimulatedCharge[] = [];
+    for (const item of allInfo.ships) {
+      if (item === shipInfo || item.typeID === null || item.flagID === null) continue;
+      if (item.sublocation || item.categoryID === 8) {
+        charges.push({ flagID: item.flagID, typeID: item.typeID });
+        continue;
+      }
+      // Online where its online effect is among its active effects (the row's activeEffects, as godma keeps them).
+      const online = readDictPairs(item.activeEffects).some(([effectID]) => Number(effectID) === 16);
+      modules.push({ key: String(item.itemID), typeID: item.typeID, flagID: item.flagID, online, instance: instanceOf(item.itemID) });
+    }
+    // The pilot's security status as the ship's row carries it (pilotSecurityStatus).
+    const security = shipInfo.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
+    // The drone bay's stacks, which the client's dogma location loads with the ship's other items
+    // (LoadItemsInLocation: invCache's list of the ship, the drone bay a valid flag).
+    // A bay that cannot be read leaves the drones out, and the rest is reckoned all the same.
+    // And its drones out in space under its control (the client's ship's drones, their location the solar system).
+    const droneRead = await api.getDrones(callOptions)
+      .then((answer) => ({
+        bay: decodeDroneBay(answer.bay) ?? [],
+        inSpace: (decodeDronesInSpace(answer.inSpace) ?? []).filter((drone) => drone.controlled && drone.typeID !== null),
+      }))
+      .catch(() => ({ bay: [], inSpace: [] }));
+    const bay = droneRead.bay;
+    const inSpace = droneRead.inSpace.map((drone) => ({ itemID: drone.itemID, typeID: drone.typeID as number }));
+    // The squadrons of its tubes, in them or out in space, as the client's ship fighter state holds them
+    // (fighterMgr.GetFightersForShip; clientDogmaLocation.GetFightersForTube: each tube's). None where unread.
+    const squadrons = await bridgeAsk("fighterMgr", "GetFightersForShip", [])
+      .then((answer) => squadronsByTube(decodeShipFighters(answer)))
+      .catch(() => []);
+    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID), ...inSpace.map((drone) => drone.typeID), ...squadrons.map((squadron) => squadron.typeID)];
+    const attributeIDs = [
+      ...shipInfo.attributes.map((attribute) => attribute.attributeID),
+      ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
+      458,
+    ];
+    const [staticData] = await Promise.all([dogmaStaticFor(typeIDs, attributeIDs), ensureFighterAbilities(squadrons.map((squadron) => squadron.typeID))]);
+    if (!staticData || store.fitting.get().activeShipID !== shipID) return null;
+    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, squadrons, staticData };
+  }
+
+  /**
+   * The Fitting window's figures for the active ship as the client gives them when it is not simulating. Its dogma
+   * location then is clientDogmaIM's (fittingController.SetDogmaLocation), which the page makes of what godma holds
+   * (GetAllInfo: the hull, its modules in their slots and their online state, its charges and the pilot's brain;
+   * bridge/dogma/location.ts). But for the session's own ship each panel reads as the client reads it:
+   *
+   *   the controller's figures   godma's (fittingController.GetAttribute: GetShipAttributeWithDogmaLocation, godma's
+   *                              item where the ship is the session's), each as GetStatsInfo gives it, rounded to
+   *                              ten places: the resources, navigation, targeting, the layers, the effective hit
+   *                              points, the passive recharge; align time off godma's agility and mass as they are
+   *                              (GetAlignTimeForShip)
+   *   the dogma location's       the capacitor simulation, each damage, the repairers (GetAccurateAttributeValue:
+   *                              docked, the location's own), the pilot's drone control range (GetDroneControlRange)
+   *   godma's again              the weapons' rates, multipliers and reloads (GetTurretMissileAndAoeDps:
+   *                              GetGodmaAttributeValue)
+   *
+   * A figure godma's row does not list is read off the dogma location. The ship and its modules are loaded with the
+   * server's instance rows (the ship's state: MakeShipActive), at the moment they were the server's (the ship's row's
+   * time: godma was primed with both), and the location runs by the server's clock from then: the charged attributes
+   * (the capacitor's and the shield's charge) are brought up to each moment they are read. No panel shows them, and
+   * the window's figures leave them out.
+   *
+   * Docked and in space alike. In space GetAccurateAttributeValue is godma's for every item godma holds, and the active
+   * drones are the ship's drones out in space under its control (clientDogmaLocation.GetActiveDrones); a module's
+   * running effects are godma's figures, the location's holding only its online state (IsModuleIncludedInCalculation).
+   */
+  async function reckonActiveShip(): Promise<void> {
+    const status = store.flight.get().status;
+    if (status?.docked !== true && status?.inSpace !== true) return;
+    const docked = status.docked === true;
+    const inputs = await ownShipInputs();
+    if (!inputs) return;
+    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, squadrons, staticData } = inputs;
+    // Loaded at the moment the ship's state was the server's (MakeShipActive), read at each moment after.
+    let loadingAt: number | null = infoTimeMs(shipInfo.time) ?? serverNow();
+    const reckoned = loadSimulatedFitting(
+      staticData,
+      shipTypeID,
+      { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+      brain,
+      modules,
+      charges,
+      { clock: () => loadingAt ?? serverNow(), shipInstance: instanceOf(shipInfo.itemID), pilotInstance: instanceOf(characterID) },
+    );
+    for (const stack of bay) reckoned.location.loadDrone(reckoned.ship, String(stack.itemID), stack.typeID, stack.quantity);
+    const dronesOut = inSpace.map((drone) => reckoned.location.loadDrone(reckoned.ship, String(drone.itemID), drone.typeID, 1));
+    // Each tube's squadron, a fighter of the pilot's in the location (FighterDogmaItem), for its damage (GetFighterDamage).
+    for (const squadron of squadrons) {
+      reckoned.location.loadFighter(reckoned.ship, String(squadron.itemID), squadron.typeID, squadron.tubeFlagID, squadron.squadronSize);
+    }
+    // What the location has taken since: each damage-state change heard after the ship's state was the server's, set
+    // on its item (where it is loaded) at the moment it was heard.
+    const loadedAt = loadingAt;
+    for (const [key, heard] of damageStateHeard) {
+      if (heard.at < loadedAt) {
+        damageStateHeard.delete(key);
+        continue;
+      }
+      const item = heard.itemID === shipID ? reckoned.ship : reckoned.modules.get(String(heard.itemID));
+      if (!item) continue;
+      loadingAt = heard.at;
+      reckoned.location.setBaseValue(item, heard.attributeID, heard.value);
+    }
+    loadingAt = null;
+    // Godma's rows: the ship's, its modules' and charges' (keyed as the location keys them), the pilot's.
+    const godmaRows = new Map<string, Map<number, number>>();
+    const rowOf = (attributes: readonly { readonly attributeID: number; readonly value: number | boolean | null }[]): Map<number, number> =>
+      new Map(attributes.filter((attribute) => typeof attribute.value === "number").map((attribute) => [attribute.attributeID, attribute.value as number]));
+    for (const item of allInfo.ships) {
+      if (item.typeID === null || (item.flagID === null && item !== shipInfo)) continue;
+      const key = item === shipInfo
+        ? reckoned.ship.key
+        : item.sublocation || item.categoryID === 8
+          ? `${reckoned.ship.key}|${item.flagID}|${item.typeID}`
+          : String(item.itemID);
+      godmaRows.set(key, rowOf(item.attributes));
+    }
+    if (allInfo.character) godmaRows.set(reckoned.pilot.key, rowOf(allInfo.character.attributes));
+    /** The controller's GetAttribute for the session's own ship: godma's, else the location's. */
+    const shipValue = (attributeID: number): number =>
+      godmaRows.get(reckoned.ship.key)?.get(attributeID) ?? reckoned.location.value(reckoned.ship, attributeID);
+    // GetAccurateAttributeValue: docked, the location's own; in space, godma's where godma holds the item.
+    const accurate = (item: DogmaItem, attributeID: number): number =>
+      (docked ? undefined : godmaRows.get(item.key)?.get(attributeID)) ?? reckoned.location.value(item, attributeID);
+    const figures = panelFigures({
+      location: reckoned.location,
+      ship: reckoned.ship,
+      pilot: reckoned.pilot,
+      staticData,
+      accurate,
+      listed: new Set([...shipInfo.attributes.map((attribute) => attribute.attributeID), ...reckoned.location.values(reckoned.ship).keys()]),
+      shipValue,
+      // The offense panel's rates, multipliers and reloads off godma, the pilot's missile damage multiplier among them.
+      gav: (item, attributeID) => godmaRows.get(item.key)?.get(attributeID) ?? reckoned.location.value(item, attributeID),
+      // clientDogmaLocation.IsModuleIncludedInCalculation: the modules online; every repairer counted for the ship
+      // itself (IncludeModuleInHpCalculation); no spool (GetMaxDamageMultiplier: 1).
+      included: isOnlineModule,
+      hpIncluded: () => true,
+      maxDamageMultiplier: () => 1.0,
+      // The drone panel's (clientDogmaLocation.GetActiveDrones): those out in space, else the bay's best set.
+      drones: ownShipDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
+        accurate,
+        value: (item, attributeID) => reckoned.location.value(item, attributeID),
+      }, dronesOut),
+      // GetTotalFighterDps of the location's tubes, their figures as GetAccurateAttributeValue gives them.
+      fighterDps: totalFighterDps(reckoned.location, reckoned.ship, fighterAbilitiesOf, accurate),
+    });
+    // The fighter bay's readout, in the drone bay's place where the hull has one (fittingWnd.ContructDroneAndFighterIcons:
+    // HasFighterBay, GetAccurateAttributeValue(fighterCapacity)): its use as the ship's inventory gives it
+    // (CargoFighterSlots.GetCapacity: invCtrl.ShipFighterBay(shipID).GetCapacity()), over GetFighterCapacity (GetStatsInfo:
+    // the controller's GetAttribute, to ten places). Its use is unknown where the inventory cannot be read.
+    let fighterBay: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null = null;
+    if (accurate(reckoned.ship, 2055)) {
+      const used = await api.getShipBays(shipID, callOptions, ["fighter"])
+        .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === "fighter")?.capacity?.used ?? null)
+        .catch(() => null);
+      if (store.fitting.get().activeShipID !== shipID) return;
+      fighterBay = { shipID, capacity: roundTo10(shipValue(2055)), used };
+    }
+    store.apply({ type: "fitting/reckoned", shipID, ...figures, fighterBay });
+  }
+
+  /**
+   * The Fitting window's figures of a ship, each read as the window reads it (the panels: bridge/dogma/*). `view` says
+   * where from: the controller's GetAttribute (`shipValue`), the offense panel's rates (`gav`), which modules the
+   * capacitor, offense and repairs count (IsModuleIncludedInCalculation, IncludeModuleInHpCalculation), the spool
+   * (GetMaxDamageMultiplier) and the drones. Each figure as GetStatsInfo gives it, rounded to ten places; the align time
+   * off agility and mass as they are (GetAlignTimeForShip); the charged attributes left out. The drones' damage is part
+   * of the offense's total (GetAllDpsInfo).
+   */
+  function panelFigures(view: {
+    readonly location: DogmaLocation;
+    readonly ship: DogmaItem;
+    readonly pilot: DogmaItem;
+    readonly staticData: DogmaStatic;
+    /** GetAccurateAttributeValue; the location's own where it is not said. */
+    readonly accurate?: (item: DogmaItem, attributeID: number) => number;
+    readonly listed: Iterable<number>;
+    readonly shipValue: (attributeID: number) => number;
+    readonly gav: (item: DogmaItem, attributeID: number) => number;
+    readonly included: (module: DogmaItem) => boolean;
+    readonly hpIncluded: (module: DogmaItem) => boolean;
+    readonly maxDamageMultiplier: (item: DogmaItem) => number;
+    readonly drones: DroneReading;
+    /** GetTotalFighterDps: the squadrons in the tubes' damage a second; none where it is not said. */
+    readonly fighterDps?: number;
+  }): { readonly resources: FittingResources; readonly stats: ShipStats } {
+    const { location, ship, pilot, staticData, shipValue, drones } = view;
+    const fighterDps = view.fighterDps ?? 0;
+    const accurate = view.accurate ?? ((item: DogmaItem, attributeID: number): number => location.value(item, attributeID));
+    const attributes = new Map<number, number>();
+    for (const attributeID of view.listed) {
+      if (staticData.attributes[attributeID]?.chargeRechargeTimeID) continue;
+      attributes.set(attributeID, roundTo10(shipValue(attributeID)));
+    }
+    const pilotAttributes = new Map<number, number>([[458, roundTo10(location.value(pilot, 458))]]);
+    const derived = deriveShipStats(attributes, undefined, pilotAttributes);
+    // GetAlignTimeForShip: -ln(0.25) * agility * mass / 1e6.
+    const alignTime = (-Math.log(0.25) * shipValue(70) * shipValue(4)) / 1_000_000;
+    const simulator = capSimulatorValues(capacitorSimulator(location, ship, view.included, accurate));
+    const weapons = offense(location, ship, pilot, { accurate, gav: view.gav, included: view.included, maxDamageMultiplier: view.maxDamageMultiplier });
+    const layers = defense(location, ship, {
+      stat: (attributeID) => roundTo10(shipValue(attributeID)),
+      attribute: shipValue,
+      accurate,
+      included: view.hpIncluded,
+    });
+    return {
+      resources: resourcesOf(attributes),
+      stats: {
+        ...derived,
+        defense: layers,
+        navigation: { ...derived.navigation, alignTimeSeconds: known(alignTime), inertiaModifier: known(attributes.get(70) ?? 0) },
+        drones,
+        firepower: {
+          ...derived.firepower,
+          // GetTurretMissileAndAoeDps: the drones' and the fighters' added to the total (dpsInfo.totalDps += droneDps +
+          // totalFighterDps), with reload and without.
+          dps: known(weapons.totalDps + drones.dps + fighterDps),
+          droneDps: known(drones.dps),
+          volley: known(weapons.alphaStrike),
+          simulator: { ...weapons, totalDps: weapons.totalDps + drones.dps + fighterDps, totalDpsWithReload: weapons.totalDpsWithReload + drones.dps + fighterDps },
+        },
+        capacitor: {
+          ...derived.capacitor,
+          deltaPerSecond: known(simulator.delta),
+          stability: known(simulator.loadBalance),
+          lastsForSeconds: simulator.ttl === null ? unavailable("it does not run out") : known(simulator.ttl / 10_000_000),
+          simulator,
+        },
+      },
+    };
+  }
+
+  /** The Fitting window's simulation of the pilot's own ship (ghostFittingSvc), while there is one, and the ship it is of. */
+  let simulation: {
+    /** The pilot's own ship it simulates; null for a fitting or a hull alone. */
+    readonly shipID: number | null;
+    readonly simulated: SimulatedShip;
+    /** ghostFittingSvc.fittingName: the ship's name, or the fitting's; null for the hull's own. */
+    readonly name: string | null;
+    /** ghostFittingSvc.lastLoadedFitInfo: the saved fitting it was loaded from (LoadSimulatedFitting), its owner and number. */
+    readonly loadedFit: { readonly ownerID: number; readonly fittingID: number } | null;
+  } | null = null;
+
+  /**
+   * ToggleGhostFitting into a simulation (LoadCurrentShip): the pilot's own ship simulated from what godma holds of it
+   * and its drone bay (bridge/dogma/simulation.ts), its modules switched on as loading switches them, then shown.
+   */
+  async function simulateShip(): Promise<void> {
+    const inputs = await ownShipInputs();
+    if (!inputs) throw new Error("The ship's own dogma has not been read yet.");
+    const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay } = inputs;
+    // LoadCurrentShip: the ship's own visible items in its cargo hold and its fighter bay, each its stack, and each
+    // squadron in its tubes with its size (invCache's list of the ship).
+    const shipItems = await listShip(bridgeAsk, shipID).catch(() => []);
+    const cargoItems = shipItems
+      .filter((item) => item.flagID === 5 || (item.flagID !== null && item.flagID >= 158 && item.flagID <= 163))
+      .map((item) => ({ typeID: item.typeID, flagID: item.flagID as number, quantity: item.quantity }));
+    const [staticData, facts] = await Promise.all([
+      cargoItems.length > 0 ? dogmaStaticFor(cargoItems.map((item) => item.typeID), []) : Promise.resolve(inputs.staticData),
+      holdFactsFor(cargoItems.map((item) => item.typeID)),
+      ensureFighterAbilities(cargoItems.filter((item) => item.flagID !== 5).map((item) => item.typeID)),
+    ]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    const notInFitting: number[] = [];
+    const errors: SimulationUserError[] = [];
+    simulation = {
+      shipID,
+      name: null,
+      loadedFit: null,
+      simulated: simulateCurrentShip(
+        staticData,
+        shipTypeID,
+        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+        brain,
+        modules.map((module) => ({ key: module.key, typeID: module.typeID, flagID: module.flagID })),
+        charges,
+        bay.map((stack) => ({ typeID: stack.typeID, quantity: stack.quantity })),
+        serverNow,
+        { items: cargoItems, facts, notInFitting, errors },
+      ),
+    };
+    sayNotInFitting(notInFitting);
+    await sayFighterErrors(errors);
+    showSimulation();
+  }
+
+  /**
+   * The simulation's figures, read as the window reads a simulated ship's: each off its own dogma location (the ghost is
+   * no item of godma's: GetShipAttributeWithDogmaLocation, GetTurretMissileAndAoeDps' GAV), the modules active counted
+   * (FittingDogmaLocation.IsModuleIncludedInCalculation, IncludeModuleInHpCalculation), a spool's top
+   * (damageMultiplierBonusMax), the drones selected; and each module's state by its slot.
+   */
+  function showSimulation(): void {
+    if (!simulation) return;
+    const { location, ship, pilot } = simulation.simulated;
+    const figures = panelFigures({
+      location,
+      ship,
+      pilot,
+      staticData: location.static,
+      listed: location.values(ship).keys(),
+      shipValue: (attributeID) => location.value(ship, attributeID),
+      gav: (item, attributeID) => location.value(item, attributeID),
+      included: (module) => location.isActive(module),
+      hpIncluded: (module) => location.isActive(module),
+      maxDamageMultiplier: (item) => (item.attributes.has(2734) ? 1.0 + location.value(item, 2734) : 1.0),
+      drones: simulatedDrones(simulation.simulated),
+      fighterDps: totalFighterDps(location, ship, fighterAbilitiesOf, (item, attributeID) => location.value(item, attributeID)),
+    });
+    const moduleStates: Record<number, number> = {};
+    const moduleKinds: Record<number, number> = {};
+    for (const item of ship.fitted.values()) {
+      if (item === ship || item.flagID === null || ship.subLocations.get(item.flagID) === item) continue;
+      moduleStates[item.flagID] = moduleState(location, item);
+      moduleKinds[item.flagID] = moduleKind(location, item);
+    }
+    // The simulated hull's slots, as many as it has of each kind, each with what the simulation has fitted in it.
+    const slots = simulatedSlotLayout(simulation.simulated).map(({ family, index, flagID, present }): FittingSlot => {
+      const slot = present ? { family, index } : { family, index, present };
+      const module = moduleInSlot(ship, flagID);
+      if (!module) return { ...slot, module: null };
+      const charge = ship.subLocations.get(flagID) ?? null;
+      return {
+        ...slot,
+        module: {
+          itemID: -flagID,
+          typeID: module.typeID,
+          groupID: module.groupID,
+          online: location.isOnline(module),
+          charge: charge ? { itemID: [0, flagID, charge.typeID], typeID: charge.typeID, quantity: charge.stacksize } : null,
+        },
+      };
+    });
+    // The simulated drone bay by type (dronePickerMenu): how many, how many selected.
+    const drones = simulatedDroneTypes(simulation.simulated).map((entry) => ({ typeID: entry.typeID, total: entry.drones.length, active: entry.active }));
+    // The simulated cargo hold (CargoItemPickerMenu): each type, how many, and the most it may be made (UpdateNodes:
+    // its count and the room left for more, GetMaxQty); and the hold's capacity and use (GetCapacity).
+    const cargo = [...simulation.simulated.cargo].map(([typeID, quantity]) => ({
+      typeID, quantity, most: quantity + (simulatedCargoRoomFor(simulation!.simulated, [typeID]) ?? 0),
+    }));
+    store.apply({
+      type: "fitting/simulated",
+      shipID: simulation.shipID,
+      shipTypeID: ship.typeID,
+      name: simulation.name,
+      changed: simulation.simulated.changed,
+      ...figures,
+      moduleStates,
+      moduleKinds,
+      slots,
+      drones,
+      cargo,
+      cargoCapacity: simulatedCargoCapacity(simulation.simulated),
+      // The fighter bay (CargoFighterSlots: GetCapacity(flagFighterBay)), where the hull has one (HasFighterBay); the
+      // squadrons in the tubes, full and partial (GetFullAndPartialSquadrons), and their damage (GetFighterDps).
+      fighterBay: location.value(ship, 2055) ? simulatedFighterBayCapacity(simulation.simulated) : null,
+      fighterSquadrons: fullAndPartialSquadrons(location, ship),
+      // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
+      fighterTubes: simulatedFighterTubes(simulation.simulated),
+      squadronSlots: simulatedSquadronSlots(simulation.simulated),
+      fighterBayTypes: simulatedFighterBayTypes(simulation.simulated),
+      structure: ship.categoryID === 65,
+      fighterDps: totalFighterDps(location, ship, fighterAbilitiesOf, (item, attributeID) => location.value(item, attributeID)),
+    });
+  }
+
+  /**
+   * SimulateFitting of a saved fitting, or of a hull alone (no fitData): where a simulation that was changed is shown,
+   * the client's question first (_LoadSimulatedShipFromData: LoadSimulatedShip; a no is LoadngOfShipCancelled); then
+   * the fitting simulated with the pilot's brain (bridge/dogma/simulation.ts simulateFitData) and shown. A type that is
+   * neither a ship nor a structure is let be.
+   */
+  async function simulateFitting(fitting: {
+    readonly shipTypeID: number;
+    readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
+    readonly name: string | null;
+    /** The saved fitting's number and owner, for lastLoadedFitInfo (LoadSimulatedFitting); none for one not saved. */
+    readonly fittingID?: number;
+    readonly ownerID?: number;
+    /** From the fitting browser's click or menu (OnFittingClicked), which shows a fitting of old subsystems instead. */
+    readonly browserClick?: boolean;
+  }): Promise<void> {
+    const allInfo = store.dogma.get().allInfo;
+    const brain = allInfo ? decodeBrain(allInfo.charBrain) : null;
+    const characterID = Number(allInfo?.characterID);
+    const pilotTypeID = allInfo?.character?.typeID ?? null;
+    if (!allInfo || !brain || !Number.isSafeInteger(characterID) || pilotTypeID === null) throw new Error("The ship's own dogma has not been read yet.");
+    const staticData = await dogmaStaticFor([fitting.shipTypeID, pilotTypeID, ...fitting.fitData.map((item) => item.typeID)], [
+      ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
+      458,
+    ]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    // fittingBrowser.OnFittingClicked: a fitting with the old electronic subsystems (groupElectronicSubSystems, 955)
+    // is shown (DisplayFitting), not simulated.
+    if (fitting.browserClick === true && fitting.fittingID !== undefined && fitting.fitData.some((item) => staticData.types[item.typeID]?.groupID === 955)) {
+      await viewFitting(fitting.fittingID);
+      return;
+    }
+    const categoryID = staticData.types[fitting.shipTypeID]?.categoryID ?? null;
+    if (categoryID !== 6 && categoryID !== 65) return;
+    if (simulation && simulation.simulated.changed) {
+      const { ship, pilot } = simulation.simulated;
+      const holds = [...ship.fitted.values()].some((item) => item !== ship && item !== pilot) || ship.drones.size > 0;
+      if (holds && !(await askDialog("LoadSimulatedShip", { type: "dict", entries: [] }, "Load another ship into the simulation? What was changed in it is not kept."))) {
+        // UserError('CustomNotify', LoadngOfShipCancelled): said as the client says a notify, and nothing loaded.
+        const notify = templateWords("UI/Fitting/FittingWindow/LoadngOfShipCancelled", {}, "Loading of the ship was cancelled.");
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+        return;
+      }
+    }
+    // The pilot's security status, as the active ship's row carries it (_ApplyPilotSecurityStatusToShip).
+    const shipID = store.fitting.get().activeShipID;
+    const security = allInfo.ships.find((item) => Number(item.itemID) === shipID)?.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
+    const [facts] = await Promise.all([
+      holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5 || item.flagID === 158).map((item) => item.typeID)),
+      ensureFighterAbilities(fitting.fitData.filter((item) => item.flagID >= 158 && item.flagID <= 163).map((item) => item.typeID)),
+    ]);
+    const notInFitting: number[] = [];
+    const errors: SimulationUserError[] = [];
+    simulation = {
+      shipID: null,
+      name: fitting.name,
+      loadedFit: (fitting.fittingID ?? 0) > 0 && (fitting.ownerID ?? 0) > 0 ? { ownerID: fitting.ownerID!, fittingID: fitting.fittingID! } : null,
+      simulated: simulateFitData(
+        staticData,
+        fitting.shipTypeID,
+        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+        brain,
+        fitting.fitData,
+        serverNow,
+        { facts, notInFitting, errors },
+      ),
+    };
+    sayNotInFitting(notInFitting);
+    await sayFighterErrors(errors);
+    showSimulation();
+  }
+
+  // Each fighter type's ability slots (fighterAbilitiesByType), read once a type.
+  const fighterAbilitiesKept = new Map<number, readonly (FighterAbilitySlot | null)[] | null>();
+  /** The ability slots of each fighter type named that are not held yet, read. */
+  async function ensureFighterAbilities(typeIDs: readonly number[]): Promise<void> {
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !fighterAbilitiesKept.has(typeID));
+    for (let at = 0; at < unknown.length; at += 50) {
+      const read = await api.getFighterAbilities(unknown.slice(at, at + 50), callOptions).catch(() => null);
+      if (!read?.available) return;
+      for (const typeID of unknown.slice(at, at + 50)) fighterAbilitiesKept.set(typeID, read.types[typeID] ?? null);
+    }
+  }
+  const fighterAbilitiesOf = (typeID: number): readonly (FighterAbilitySlot | null)[] | null => fighterAbilitiesKept.get(typeID) ?? null;
+
+  /** fighters classNameMessageByFighterClass: the label of each class's name. */
+  const FIGHTER_CLASS_NAME_LABELS: Readonly<Record<string, string>> = {
+    light: "UI/Fighters/Class/Light", support: "UI/Fighters/Class/Support", heavy: "UI/Fighters/Class/Heavy",
+    standupLight: "UI/Fighters/Class/StandupLight", standupSupport: "UI/Fighters/Class/StandupSupport", standupHeavy: "UI/Fighters/Class/StandupHeavy",
+  };
+
+  /**
+   * The fighters' refusals and words as the client says them (FitFighterToTube's UserErrors and its
+   * CannotLoadFighterTubeSquadronIsFull), their types named; NoTubesAvailableForClass with its class's name.
+   */
+  async function sayFighterErrors(errors: readonly SimulationUserError[]): Promise<void> {
+    if (errors.length === 0) return;
+    await resolveNamesNow(errors.flatMap((error) => Object.values(error.values)).map((id) => ({ kind: "type" as const, id })));
+    for (const error of errors) {
+      const entries: [string, JsonValue][] = Object.entries(error.values).map(([key, value]) => [key, value]);
+      if (error.key === "CannotLoadFighterTubeNoTubesAvailableForClass" && simulation) {
+        const kind = fighterClass(simulation.simulated.location, error.values.newType ?? 0);
+        const label = kind === null ? null : FIGHTER_CLASS_NAME_LABELS[kind] ?? null;
+        if (label !== null) entries.push(["className", templateWords(label, {}, kind ?? "")]);
+      }
+      const named = Object.values(error.values).map((typeID) => nameCache.get(nameKey("type", typeID)) ?? String(typeID)).join(", ");
+      sayDialog(error.key, { type: "dict", entries }, `The fighters could not be put in that tube (${named}).`);
+    }
+  }
+
+  /** A charge loaded into the simulated module in a slot (FitAmmoToLocation); false where the module does not take it. */
+  async function loadSimulatedCharge(flagID: number, chargeTypeID: number): Promise<boolean> {
+    if (!simulation) return false;
+    await dogmaStaticFor([chargeTypeID], []);
+    if (!simulation) return false;
+    const loaded = loadChargeToSimulation(simulation.simulated, flagID, chargeTypeID);
+    showSimulation();
+    return loaded;
+  }
+
+  /** What the simulated hold's rules go by of each type named: whether it is a dynamic one, the type lists it is on. */
+  async function holdFactsFor(typeIDs: readonly number[]): Promise<HoldFacts> {
+    const types = [...new Set(typeIDs)];
+    const dynamic = new Set<number>();
+    const [facts] = await Promise.all([
+      fittingTypeFacts(types).catch(() => new Map<number, TypeFacts>()),
+      (async () => {
+        for (let at = 0; at < types.length; at += 50) {
+          const read = await api.getTypePrices(types.slice(at, at + 50), callOptions).catch(() => null);
+          for (const [typeID, isDynamic] of Object.entries(read?.dynamic ?? {})) if (isDynamic === true) dynamic.add(Number(typeID));
+        }
+      })(),
+    ]);
+    return { dynamic: (typeID) => dynamic.has(typeID), lists: (typeID) => facts.get(typeID)?.lists ?? new Set() };
+  }
+
+  /** FitAnItemToHold's word for a type put in the hold that a fitting does not keep there (CustomNotify), one each. */
+  function sayNotInFitting(typeIDs: readonly number[]): void {
+    for (const _typeID of typeIDs) {
+      const notify = templateWords("UI/Fitting/FittingWindow/ItemAddedNotInFitting", {}, "That is in the hold now, but a fitting does not keep it.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+    }
+  }
+
+  async function addSimulatedCargo(typeID: number): Promise<void> {
+    if (!simulation) return;
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID])]);
+    if (!simulation) return;
+    const wanted = new Map([[typeID, 1]]);
+    // GetModifiedQtyDict: with Shift held, FindQty (QtyPopup up to GetMaxQty, from one), else as dropped; no room, none.
+    if (shiftHeld()) {
+      const most = simulatedCargoRoomFor(simulation.simulated, [typeID]);
+      if (most === null) return;
+      const qty = await askQuantity({
+        min: 1, max: most, value: 1,
+        hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+      });
+      if (qty === null || !simulation) return;
+      wanted.set(typeID, qty);
+    }
+    sayNotInFitting(fitItemsToCargo(simulation.simulated, wanted, facts));
+    showSimulation();
+  }
+
+  async function setSimulatedCargo(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID])]);
+    if (!simulation) return;
+    if (setCargoQuantity(simulation.simulated, typeID, Math.max(0, Math.trunc(wanted)), facts)) sayNotInFitting([typeID]);
+    showSimulation();
+  }
+
+  function emptySimulatedCargo(): void {
+    if (!simulation) return;
+    emptyCargo(simulation.simulated);
+    showSimulation();
+  }
+
+  /** A fighter type's static data, its abilities (for its damage) and what the holds' rules go by of it, read. */
+  async function fighterTypeReady(typeID: number): Promise<HoldFacts | null> {
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID]), ensureFighterAbilities([typeID])]);
+    return simulation ? facts : null;
+  }
+
+  /**
+   * GetModifiedQtyDict for the fighter bay, of one type: with Shift held, FindQty (QtyPopup up to GetMaxQty, from one),
+   * else as given; no room, or the question let go, none.
+   */
+  async function fighterBayQuantity(typeID: number, qty: number): Promise<number | null> {
+    if (!simulation || !shiftHeld()) return qty;
+    const most = fighterBayRoomFor(simulation.simulated, typeID);
+    if (most === null) return null;
+    return askQuantity({
+      min: 1, max: most, value: 1,
+      hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+    });
+  }
+
+  /** TryFitItemsToFighterBay of one type, as many as GetModifiedQtyDict gives; a type no fighter said (ItemAddedNotInFitting). */
+  async function fitToSimulatedFighterBay(typeID: number, qty: number, facts: HoldFacts): Promise<void> {
+    const wanted = await fighterBayQuantity(typeID, qty);
+    if (wanted === null || !simulation) return;
+    sayNotInFitting(fitItemsToFighterBay(simulation.simulated, new Map([[typeID, wanted]]), facts));
+  }
+
+  async function addSimulatedFighters(typeID: number, qty: number): Promise<void> {
+    if (!simulation) return;
+    const facts = await fighterTypeReady(typeID);
+    if (!facts || !simulation) return;
+    // FitAFighterToTubeOrBay: FitFighterToEmptyTube, its CannotLoadFighterTubeNoTubesAvailableForClass let pass; with no
+    // squadron put in a tube, the fighter bay; any other refusal said.
+    const tube = fitFighterToEmptyTube(simulation.simulated, typeID);
+    const toBay = tube === "noTube" || (tube !== null && tube.raised && tube.error.key === "CannotLoadFighterTubeNoTubesAvailableForClass");
+    if (toBay) await fitToSimulatedFighterBay(typeID, qty, facts);
+    showSimulation();
+    if (tube !== null && tube !== "noTube" && !toBay) await sayFighterErrors([tube.error]);
+  }
+
+  async function addSimulatedFighterBay(typeID: number, qty: number): Promise<void> {
+    if (!simulation) return;
+    const facts = await fighterTypeReady(typeID);
+    if (!facts || !simulation) return;
+    // _TryAddToFighterBay: a fighter only.
+    if (simulation.simulated.location.static.types[typeID]?.categoryID !== 87) return;
+    await fitToSimulatedFighterBay(typeID, qty, facts);
+    showSimulation();
+  }
+
+  async function fitSimulatedFighterToTube(typeID: number, tubeFlagID: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    const said = fitFighterToTube(simulation.simulated, typeID, tubeFlagID, maxSquadronSize(simulation.simulated.location, typeID));
+    showSimulation();
+    if (said) await sayFighterErrors([said.error]);
+  }
+
+  async function fitSimulatedFighterToEmptyTube(typeID: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    const said = fitFighterToEmptyTube(simulation.simulated, typeID);
+    showSimulation();
+    if (said !== null && said !== "noTube") await sayFighterErrors([said.error]);
+  }
+
+  async function setSimulatedSquadronSize(tubeFlagID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    // ChangeNumFighters: the tube's squadron's type; an empty tube, nothing.
+    const squadron = simulatedFighterTubes(simulation.simulated).find((tube) => tube.flagID === tubeFlagID)?.squadron ?? null;
+    if (!squadron) return;
+    const said = setSquadronSize(simulation.simulated, squadron.typeID, Math.max(0, Math.trunc(wanted)), tubeFlagID);
+    showSimulation();
+    if (said) await sayFighterErrors([said.error]);
+  }
+
+  function removeSimulatedSquadron(tubeFlagID: number): void {
+    if (!simulation) return;
+    removeSquadron(simulation.simulated, tubeFlagID);
+    showSimulation();
+  }
+
+  async function moveSimulatedSquadronToBay(tubeFlagID: number): Promise<void> {
+    if (!simulation) return;
+    const dragged = squadronDragged(simulation.simulated, tubeFlagID);
+    if (!dragged) return;
+    const facts = await fighterTypeReady(dragged.typeID);
+    if (!facts || !simulation) return;
+    // _TryRemoveItemsFromTube, then _TryAddToFighterBay of what it counts as.
+    removeSquadron(simulation.simulated, tubeFlagID);
+    showSimulation();
+    await fitToSimulatedFighterBay(dragged.typeID, dragged.quantity, facts);
+    showSimulation();
+  }
+
+  async function setSimulatedFighterBay(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    sayNotInFitting(setFighterBayQuantity(simulation.simulated, typeID, Math.max(0, Math.trunc(wanted))));
+    showSimulation();
+  }
+
+  function removeSimulatedFighterBayType(typeID: number): void {
+    if (!simulation) return;
+    removeFighterBayType(simulation.simulated, typeID);
+    showSimulation();
+  }
+
+  function emptySimulatedFighterBay(): void {
+    if (!simulation) return;
+    emptyFighterBay(simulation.simulated);
+    showSimulation();
+  }
+
+  /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
+  async function setSimulatedDrones(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    await dogmaStaticFor([typeID], []);
+    if (!simulation) return;
+    setDronesOfType(simulation.simulated, typeID, wanted);
+    showSimulation();
+  }
+
+  /** As many of a type's simulated drones selected as wanted (ChangeActiveNum); the tracker's warning where it refuses. */
+  function setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null {
+    if (!simulation) return null;
+    const warning = setActiveDronesOfType(simulation.simulated, typeID, wanted);
+    showSimulation();
+    return warning ? { warning, limit: simulatedMaxActiveDrones(simulation.simulated) } : null;
+  }
+
+  /**
+   * A module fitted in the simulation (FitModuleToShipAndChangeState; with no slot named, TryFitModuleToOneSlot): the
+   * simulation shown again. Why it does not fit where it does not, else null.
+   */
+  async function fitSimulatedModule(typeID: number, flagID: number | null): Promise<FitError | null> {
+    if (!simulation) return null;
+    // The type's static data read where it is not held yet: the simulation reckons with what the page has read.
+    await dogmaStaticFor([typeID], []);
+    if (!simulation) return null;
+    // TryFitModuleToOneSlot: a fighter to a tube or the bay, one of it (FitAFighterToTubeOrBay).
+    if (flagID === null && simulation.simulated.location.static.types[typeID]?.categoryID === 87) {
+      await addSimulatedFighters(typeID, 1);
+      return null;
+    }
+    // FittingSlotController.OnDropData: nothing put on a module in a slot the ship no longer has.
+    const { location, ship } = simulation.simulated;
+    if (flagID !== null && moduleInSlot(ship, flagID) !== null && !location.slotExists(ship, flagID)) return null;
+    const error = flagID === null ? fitToOneSlot(simulation.simulated, typeID) : fitToSimulation(simulation.simulated, typeID, flagID);
+    showSimulation();
+    return error;
+  }
+
+  /** A simulated module unfitted (UnfitModule), with its charge: the simulation shown again. */
+  function unfitSimulatedModule(flagID: number): void {
+    if (!simulation) return;
+    const module = moduleInSlot(simulation.simulated.ship, flagID);
+    if (!module) return;
+    unfitFromSimulation(simulation.simulated, module);
+    showSimulation();
+  }
+
+  /**
+   * A simulated module clicked (FittingSlotController.OnClickSimulated): one in a slot other than a rig's that cannot be
+   * online (IsOnlineable: its slot gone, or no online effect) only put offline; any other put in its next state, backwards with shift (SwitchBetweenModes). A state it
+   * cannot be put in fails with the client's UserError.
+   */
+  function switchSimulatedModule(flagID: number, backwards: boolean): void {
+    if (!simulation) return;
+    const { location, ship } = simulation.simulated;
+    const module = moduleInSlot(ship, flagID);
+    if (!module) return;
+    try {
+      if (!RIG_SLOT_FLAGS.includes(flagID) && !isOnlineable(simulation.simulated, module)) {
+        if (location.isOnline(module)) offlineSlots(location, ship, [flagID]);
+      } else {
+        switchModuleState(location, module, backwards);
+      }
+    } finally {
+      showSimulation();
+    }
+  }
+
+  /**
+   * ToggleGhostFitting out of the simulation: where it has been changed and holds more than the hull and the pilot,
+   * the client's question first (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning); then the ship's
+   * own figures shown again. False where the pilot stays.
+   */
+  async function exitSimulation(): Promise<boolean> {
+    if (!simulation) return true;
+    const { ship } = simulation.simulated;
+    const holds = [...ship.fitted.values()].some((item) => item !== ship && item !== simulation?.simulated.pilot) || ship.drones.size > 0;
+    if (simulation.simulated.changed && holds) {
+      const leave = await askDialog("ExitSimulationWarning", { type: "dict", entries: [] }, "Leave the simulation? What was changed in it is not kept.");
+      if (!leave) return false;
+    }
+    simulation = null;
+    store.apply({ type: "fitting/simulation-ended" });
+    return true;
+  }
+
+  let shipReckoningTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The ship reckoned again, a moment after what it is reckoned from has changed (a new brain, an attribute the server
+   * told of): what godma holds read again, then reckoned. Only where the Fitting window has been read.
+   */
+  function scheduleShipReckoning(): void {
+    if (!store.fitting.get().loaded) return;
+    if (shipReckoningTimer !== null) clearTimeout(shipReckoningTimer);
+    shipReckoningTimer = setTimeout(() => {
+      shipReckoningTimer = null;
+      void loadDogma().catch(() => {});
+    }, 500);
   }
 
   /**
@@ -5195,7 +7016,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       orderHistory,
       // The pilot's trades are the market service's, read once and kept (loadMarketTransactions), not the market read's.
       transactions: [],
-      escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
+      // The escrow as the client's market progression keeps it (watchMarketProgression), not the market read's: what is
+      // kept, or nought as the client's value is before its first asking.
+      escrow: marketProgressionKeptValue() ?? { isk: "0", items: 0 },
       // marketsvc.GetPriceHistory: the two halves joined, as the client joins them. A read with no old half at
       // all (nothing asked, or an older BFF) is the new half as it came.
       priceHistory: reads.priceHistoryOld.result === null
@@ -5527,6 +7350,102 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssalTimerSignal.set(null);
     collapseWarningSignal.set(null);
   }
+  // The client's market progression (playerprogression/marketprogressionnotifier.py, a TimedPlayerProgressionNotifier,
+  // marketsvc.py 108 to 110): the pilot's escrow kept in the character's settings (settings.char.ui 'market_value',
+  // 'market_last_update', 'market_requires_update'), here in this browser. It is asked again (GetMyMarketEscrow:
+  // marketProxy.GetCharEscrow) only where none is kept, or its last asking is twelve hours old and
+  // OnMarketEscrowChanged has said it changed (should_update_calculation); as a watcher begins, and every twelve hours
+  // while one watches (register_subscriber, _get_calculation_timed). The client's watcher is the character sheet's
+  // total net worth; the page's is its market window, which shows the escrow.
+  const MARKET_PROGRESSION_KEPT = "evejs.market";
+  const MARKET_UPDATE_NOT_RECENT_AFTER_MS = 12 * 60 * 60 * 1000;
+  function marketProgressionKept(name: "value" | "last_update" | "requires_update"): unknown {
+    const characterID = store.station.get().online?.characterID ?? null;
+    try {
+      const kept = characterID === null ? null : settingsStorage?.getItem(`${MARKET_PROGRESSION_KEPT}_${name}.${characterID}`) ?? null;
+      return kept === null ? undefined : JSON.parse(kept);
+    } catch {
+      return undefined;
+    }
+  }
+  function keepMarketProgression(name: "value" | "last_update" | "requires_update", value: unknown): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`${MARKET_PROGRESSION_KEPT}_${name}.${characterID}`, JSON.stringify(value));
+    } catch {
+      // Storage full or refused: asked again when next watched.
+    }
+  }
+  /** The kept escrow as it is, or null where none is (or it is not one). */
+  function marketProgressionKeptValue(): MarketEscrow | null {
+    const value = marketProgressionKept("value") as { isk_escrow?: unknown; items_escrow?: unknown } | undefined;
+    if (value === undefined || value === null || typeof value !== "object" || !("isk_escrow" in value) || !("items_escrow" in value)) return null;
+    const isk = Number(value.isk_escrow);
+    const items = Number(value.items_escrow);
+    return { isk: toAmountString(Number.isFinite(isk) ? isk : 0) ?? "0", items: Number.isFinite(items) ? items : 0 };
+  }
+  /** MarketProgressionNotifier.get_value: the kept escrow; where none is (or it is not one), nought, and an asking required. */
+  function marketProgressionValue(): MarketEscrow {
+    const kept = marketProgressionKeptValue();
+    if (kept !== null) return kept;
+    keepMarketProgression("requires_update", true);
+    return { isk: "0", items: 0 };
+  }
+  /** should_update_calculation: none asked yet; not if asked within twelve hours; else as OnMarketEscrowChanged left it. */
+  function marketProgressionDue(): boolean {
+    marketProgressionValue();
+    const last = marketProgressionKept("last_update");
+    if (typeof last !== "number") return true;
+    if (last + MARKET_UPDATE_NOT_RECENT_AFTER_MS > Date.now()) return false;
+    const required = marketProgressionKept("requires_update");
+    return required === undefined ? true : required === true;
+  }
+  /** _get_calculation: asked again where due (calculate_progression, GetMyMarketEscrow), and the kept value said. */
+  async function marketProgressionCalculation(): Promise<void> {
+    if (marketProgressionDue()) {
+      keepMarketProgression("last_update", Date.now());
+      keepMarketProgression("requires_update", false);
+      // GetMyMarketEscrow: each part a float of the answer's, nought where the asking fails.
+      let isk = 0;
+      let items = 0;
+      try {
+        const answer = await bridgeAsk("marketProxy", "GetCharEscrow", []);
+        const escrow = decodeEscrow(answer);
+        isk = Number(escrow.isk) || 0;
+        items = Number(escrow.items) || 0;
+      } catch (error) {
+        if (isSessionLost(error)) throw error;
+      }
+      keepMarketProgression("value", { isk_escrow: isk, items_escrow: items });
+    }
+    store.apply({ type: "market/escrow", escrow: marketProgressionValue() });
+  }
+  let marketProgressionTimer: ReturnType<typeof setInterval> | null = null;
+  let marketProgressionWatchers = 0;
+  /**
+   * A watcher of the market progression begun (register_subscriber): the kept value said at once, the reckoning made,
+   * and made again every twelve hours while any watches. Answers its end (unregister_subscriber).
+   */
+  function watchMarketProgression(): () => void {
+    marketProgressionWatchers += 1;
+    store.apply({ type: "market/escrow", escrow: marketProgressionValue() });
+    if (marketProgressionTimer === null) {
+      void marketProgressionCalculation().catch(() => {});
+      marketProgressionTimer = setInterval(() => void marketProgressionCalculation().catch(() => {}), MARKET_UPDATE_NOT_RECENT_AFTER_MS);
+    }
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      marketProgressionWatchers -= 1;
+      if (marketProgressionWatchers === 0 && marketProgressionTimer !== null) {
+        clearInterval(marketProgressionTimer);
+        marketProgressionTimer = null;
+      }
+    };
+  }
+
   // The key activation window (bridge/abyssalKeys.ts, ui/KeyActivationWindow.svelte): its combo kept for the character,
   // as the client keeps it in settings.char.ui 'abyssGameModeSetting', in this browser.
   const ABYSS_GAME_MODE_KEPT = "evejs.abyss.gameModeSetting";
@@ -6142,16 +8061,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
-  // answer; true on Yes.
+  // answer; true on Yes. With uiconst.OKCANCEL (answers "okcancel"): OK and Cancel, true on OK.
   const dialogAnswers = new Map<number, (yes: boolean) => void>();
-  function askDialog(dialog: string, values: JsonValue | null, fallback: string): Promise<boolean> {
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno"): Promise<boolean> {
     const kept = dialogAnswerKept(dialog);
-    if (kept !== null) return Promise.resolve(kept === "yes");
+    // A question's kept answer: Yes, or OK where the question is OK and Cancel (suppress=uiconst.ID_OK).
+    if (kept !== null) return Promise.resolve(kept === "yes" || kept === "ok");
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
     return new Promise((resolve) => {
       dialogAnswers.set(n, resolve);
-      putDialog({ n, dialog, values, fallback, answers: "yesno" });
+      putDialog({ n, dialog, values, fallback, answers });
     });
   }
 
@@ -6201,8 +8121,211 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
   // The client's books window (MissingSkillbooksWnd), one at a time; and what it has bought, which its end answers.
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
+  const gatewayNoticesSignal = createSignal<GatewayNotice | null>(null);
+  let gatewayNoticesHeard = 0;
+  const skillPlanLinksSignal = createSignal<SkillPlanLinkFollowed | null>(null);
+  let skillPlanLinksFollowed = 0;
+  let skillPlanLinkWaiting: SkillPlanLinkFollowed | null = null;
+
+  /** GetPowerEffectForType's effects, and the group, category and type lists, of each type named; null for a type the data has not. */
+  async function fittingLinkFacts(typeIDs: readonly number[]): Promise<(typeID: number) => FittingLinkTypeFacts | null> {
+    const [staticData, facts] = await Promise.all([dogmaStaticFor(typeIDs, []), fittingTypeFacts([...new Set(typeIDs)])]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    return (typeID) => {
+      const type = staticData.types[typeID] ?? null;
+      if (type === null) return null;
+      return { effects: type.effects, groupID: type.groupID, categoryID: type.categoryID, lists: facts.get(typeID)?.lists ?? new Set() };
+    };
+  }
+
+  /**
+   * handle_fitting_link (shipfitting/client/link.py 13 to 16) with the link's text (accept_link_text; the label's link
+   * text, its tags stripped): parse_fitting_url, then DisplayFittingFromString (fittingSvc.py 745 to 750):
+   * GetFittingFromString named the text or the hull's name; INVALID_FITTING_ID is FittingInvalidForViewing; else the
+   * display window on it (DisplayFitting), marked truncated where the link was cut short. Where the client's own
+   * reading raises (a type its data has not, no hull), nothing.
+   */
+  async function followFittingLink(url: string, text: string | null): Promise<void> {
+    let fittingString: string;
+    try {
+      fittingString = parseFittingUrl(url);
+    } catch (error) {
+      if (error instanceof FittingLinkError) return;
+      throw error;
+    }
+    const typeIDs = typeIDsInFittingString(fittingString);
+    const [facts] = await Promise.all([fittingLinkFacts(typeIDs), resolveNamesNow(typeIDs.map((id) => ({ kind: "type" as const, id })))]);
+    let read: ReturnType<typeof fittingFromString>;
+    try {
+      read = fittingFromString(fittingString, text, facts, (typeID) => nameCache.get(nameKey("type", typeID)) ?? "");
+    } catch (error) {
+      if (error instanceof FittingLinkError) return;
+      throw error;
+    }
+    if (read.kind === "invalid") {
+      sayDialog("FittingInvalidForViewing", null, "This fitting cannot be shown.");
+      return;
+    }
+    await openViewFitting({
+      fittingID: 0, ownerID: 0, name: read.fitting.name, description: "", shipTypeID: read.fitting.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitting.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    }, read.truncated);
+  }
+
+  /** eveEditPlainText.OnDropData's PADDING for a fitting's link. */
+  const FITTING_LINK_PADDING = 12;
+
+  /**
+   * eveEditPlainText.OnDropData (95 to 109) and AddLink (352 to 372). A fitting (listentry.FittingEntry): its link
+   * (format_fitting_url); where it would not leave PADDING (12) of the room left (RoomLeft: the most, with what is
+   * selected, less the length now, its tags counted), LinkTooLong with less than 14 left, else ConfirmTruncateLink
+   * (numchar, maxchar) and on Yes the link cut to the room; its text the fitting's name, unescaped
+   * (simple_html_unescape). Then AddLink of any link: its text without localized tags, its markup put in where it fits
+   * (IsEnoughRoomForInsert: the length now and the markup within the most), else uiwarning03.
+   */
+  async function droppedLinkMarkup(given: DroppedLink, room: LinkDropRoom): Promise<string | null> {
+    let url: string;
+    let text: string;
+    let dropped: Exclude<DroppedLink, { readonly kind: "fittingSource" }>;
+    if (given.kind === "fittingSource") {
+      const fitting = await draggedFittingOf(given.source);
+      if (fitting === null) return null;
+      dropped = { kind: "fitting", ...fitting };
+    } else dropped = given;
+    if (dropped.kind === "fitting") {
+      const facts = await fittingLinkFacts([dropped.shipTypeID, ...dropped.fitData.map(([typeID]) => typeID)]);
+      try {
+        url = formatFittingUrl({ shipTypeID: dropped.shipTypeID, fitData: dropped.fitData }, facts);
+      } catch (error) {
+        if (error instanceof FittingLinkError) return null;
+        throw error;
+      }
+      if (room.max !== null) {
+        const roomLeft = Math.max(0, room.max + room.selected - room.length) - FITTING_LINK_PADDING;
+        if (url.length >= roomLeft) {
+          if (roomLeft < 14) {
+            sayDialog("LinkTooLong", null, "There is not room enough for the link.");
+            return null;
+          }
+          const values: JsonValue = { type: "dict", entries: [["numchar", url.length], ["maxchar", roomLeft]] };
+          if (!(await askDialog("ConfirmTruncateLink", values, `The link is ${url.length} letters long and there is room for ${roomLeft}. Cut it short?`))) return null;
+          url = url.slice(0, roomLeft);
+        }
+      }
+      text = simpleHtmlUnescape(dropped.name);
+    } else {
+      url = dropped.url;
+      text = dropped.text;
+    }
+    // AddLink: StripTags(text, stripOnly=['localized']).
+    const markup = `<a href="${url}">${text.replace(/<\/?localized\b[^>]*>/gi, "")}</a>`;
+    if (room.max !== null && room.length + markup.length > room.max) {
+      sayDialog("uiwarning03", null, "There is no more room in this text.");
+      return null;
+    }
+    return markup;
+  }
+
+  async function followWebLink(url: string): Promise<void> {
+    if (!(await askDialog("ExternalLinkWarning", { type: "dict", entries: [["url", url]] }, `Open ${url} in a tab of its own?`, "okcancel"))) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function openSkillPlanLink(url: string): void {
+    const parsed = parseSkillPlanUrl(url);
+    if (parsed === null) return;
+    skillPlanLinksFollowed += 1;
+    skillPlanLinkWaiting = { n: skillPlanLinksFollowed, ...parsed };
+    skillPlanLinksSignal.set(skillPlanLinkWaiting);
+  }
+
+  function takeSkillPlanLink(): SkillPlanLinkFollowed | null {
+    const waiting = skillPlanLinkWaiting;
+    skillPlanLinkWaiting = null;
+    return waiting;
+  }
   let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
   let skillBooksPurchased: number[] = [];
+  // The client's multibuy window, one at a time, and the sell orders read for its types (the quote service's order
+  // cache), kept for as long as it is open.
+  const multiBuyAskedSignal = createSignal<MultiBuyAsk | null>(null);
+  const multiBuyBooks = new Map<number, ReturnType<typeof decodeOrderBook>["sells"]>();
+  // And each type's average over the week, as its row reads it as it is made.
+  const multiBuyAverages = new Map<number, number>();
+  // And each type's packaged volume (GetPackagedVolume), read once for the window.
+  const multiBuyVolumes = new Map<number, number | null>();
+  // The orders its buys made, still to run out (activeOrders), and those the server has said ran out, with what was
+  // left of each (expiredOrders).
+  const multiBuyActiveOrders = new Set<string>();
+  const multiBuyExpiredOrders = new Map<string, { readonly typeID: number | null; readonly volRemaining: number | null }>();
+  // Its Buy and Fit (buyAndFitClicked, set by Buy and Fit and cleared by Buy and Cancel) and a loading of the fitting
+  // waited for (fittingPending).
+  let multiBuyFitClicked = false;
+  let multiBuyFitPending = false;
+  // The saved fittings as last read (fittingSvc.fittings), and the Buy All box. A fitting under way (busyFitting).
+  const savedFittingsSignal = createSignal<readonly SourcedFitting[] | null>(null);
+  // globalConfig.AreCommunityFittingsEnabled, as last looked at with the fittings read (its default until then).
+  const communityFittingsEnabledSignal = createSignal<boolean>(true);
+  const buyAllAskedSignal = createSignal<BuyAllAsk | null>(null);
+  const viewFittingsAskedSignal = createSignal<readonly ViewFittingAsk[]>([]);
+  /** The display window of that number; null where it is not open. */
+  const viewFittingOf = (n: number): ViewFittingAsk | null => viewFittingsAskedSignal.get().find((view) => view.n === n) ?? null;
+  /** The display window of that number closed. */
+  const closeViewFitting = (n: number): void => viewFittingsAskedSignal.set(viewFittingsAskedSignal.get().filter((view) => view.n !== n));
+  function raiseViewFitting(n: number): void {
+    const windows = viewFittingsAskedSignal.get();
+    const view = windows.find((each) => each.n === n);
+    if (view === undefined || windows[windows.length - 1] === view) return;
+    viewFittingsAskedSignal.set([...windows.filter((each) => each !== view), view]);
+  }
+  let busyFitting = false;
+
+  /**
+   * A label of the client's in the words the page holds of it (the multibuy window asks them while it is open), filled
+   * with its arguments and made plain; the page's own words where it has none.
+   */
+  function templateWords(label: string, args: Readonly<Record<string, string | number>>, own: string): string {
+    const template = store.words.get().templates[label];
+    if (typeof template !== "string" || template === "") return own;
+    return plainText(formatTemplate(template, args, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) }));
+  }
+
+  /**
+   * The type's average price over the week as the client's row has it (buySellItemContainerBase: marketQuote
+   * .GetAveragePrice): its price history's two halves joined (GetHistoryRowList) and averaged; the base price over
+   * the portion size where nothing traded. Null where the history could not be read.
+   */
+  async function averagePriceFor(typeID: number): Promise<number | null> {
+    const kept = multiBuyAverages.get(typeID);
+    if (kept !== undefined) return kept;
+    try {
+      const [old, fresh, facts] = await Promise.all([
+        bridgeAsk("marketProxy", "GetOldPriceHistory", [typeID]),
+        bridgeAsk("marketProxy", "GetNewPriceHistory", [typeID]),
+        api.getTypePrices([typeID], callOptions).catch(() => null),
+      ]);
+      const now = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      const average = averagePriceOf(joinPriceHistory(decodePriceHistory(old), decodePriceHistory(fresh), now), now, {
+        basePrice: facts?.basePrice[typeID] ?? null,
+        portionSize: facts?.portionSize[typeID] ?? null,
+      });
+      multiBuyAverages.set(typeID, average);
+      return average;
+    } catch {
+      return null;
+    }
+  }
+  // The client's Apply Skill Points window, one at a time, and its levels.
+  const applyPointsAskedSignal = createSignal<ApplyPointsAsk | null>(null);
+  let applyPointsLevels: readonly SkillLevel[] = [];
+  /** What the requirement window last read of the pilot's skills, which its apply-points button's window goes by. */
+  let skillWindowFacts: {
+    readonly rank: (skill: number) => number | null;
+    readonly pointsNow: (skill: number) => number;
+    readonly trainingRate: (skill: number) => number | null;
+    readonly mine: ReturnType<typeof skillLevelsOf>;
+    readonly queued: readonly { readonly typeID: number; readonly toLevel: number }[];
+  } | null = null;
   let shipNameAnswer: ((name: string | null) => void) | null = null;
   /** The pilot's word not to be asked a name when assembling (settings.user.suppress 'suppress.ShipNameChangeOnAssemble'). */
   const SHIP_NAME_SUPPRESS = "ShipNameChangeOnAssemble";
@@ -6258,14 +8381,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]);
     if (!needs.available) return null;
     const mine = skillLevelsOf(skills);
-    if (missingSkills(typeID, needs.required, mine).size === 0) return null;
+    if (missingSkills(typeID, needs.order, mine).size === 0) return null;
     const lapsed = skillLevelsOf(allSkills);
-    const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
-    const rest = await skillWindowRest(typeID, needs.required, skills, allSkills, listed).catch(() => null);
+    const listed = missingSkillsRecursive(typeID, needs.order, mine, lapsed);
+    const rest = await skillWindowRest(typeID, needs.order, skills, allSkills, listed).catch(() => null);
     return {
       typeID,
       skills: listed,
-      totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
+      totalMissingLevels: totalMissingLevels(typeID, needs.order, mine),
       missingBooks: missingSkillBooks(listed, lapsed).length,
       rows: rest?.rows ?? [],
       omega: rest?.omega ?? true,
@@ -6273,6 +8396,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       skillPointsRequired: rest?.skillPointsRequired ?? null,
       action: rest?.action ?? null,
       books: rest?.books ?? {},
+      freeSkillPoints: rest?.freeSkillPoints ?? 0,
+      applyLevels: rest?.applyLevels ?? [],
+      offerInjection: rest?.offerInjection ?? false,
+      omegaRestricted: rest?.omegaRestricted ?? false,
     };
   }
 
@@ -6286,46 +8413,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const ALPHA_TRAINING_MULTIPLIER = 0.5;
 
   /**
-   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
-   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
-   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
-   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
-   *
-   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
-   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha. A booster
-   * is taken for a skill accelerator by the attribute bonuses its type carries; the client asks its effects
-   * (IsBoosterSkillAccelerator), which the page cannot read. An alpha clone's restricted skills and levels are not
-   * read (NeedsOmegaUpgrade, the bar's restricted boxes): the window goes as for a pilot with none.
+   * What the client's skill service reckons training by, for those skills: the pilot's levels (GetSkills, and
+   * GetAllSkills for the lapsed too), the queue (GetSkillQueueAndFreePoints), each skill's rank and the two attributes
+   * it trains by, and the rate, GetSkillpointsPerMinute(includeBoosters=False): each attribute (GetAttributes) halved
+   * for an alpha clone (GetCharacterAttribute), less what the pilot's skill accelerators (GetBoosters) add to it, halved
+   * too for an alpha; with an alpha clone's ceilings, and each skill's points now (the one in training counted).
    */
-  async function skillWindowRest(
-    typeID: number,
-    required: RequiredSkills,
-    skillsAnswer: JsonValue,
-    allSkillsAnswer: JsonValue,
-    listed: readonly (readonly [number, number])[],
-  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books">> {
+  async function pilotTrainingFacts(skillTypes: readonly number[], skillsAnswer: JsonValue, allSkillsAnswer: JsonValue) {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
-    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
-    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes, lists] = await Promise.all([
+    const [queueAnswer, attributesAnswer, boostersAnswer, typeAttributes] = await Promise.all([
       bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
       bridgeAsk("skillHandler", "GetAttributes", []),
       bridgeAsk("skillHandler", "GetBoosters", []),
-      api.fetchTypeDogma(skillTypes, [ATTRIBUTE_SKILL_TIME_CONSTANT, ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY], callOptions),
-      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
+      // (The route takes 500 types at a time; the skill catalogue holds more.)
+      (async () => {
+        const read: Record<number, Readonly<Record<number, number>>> = {};
+        for (let at = 0; at < skillTypes.length; at += 500) {
+          Object.assign(read, await api.fetchTypeDogma(skillTypes.slice(at, at + 500), [ATTRIBUTE_SKILL_TIME_CONSTANT, ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY], callOptions));
+        }
+        return read as Readonly<Record<number, Readonly<Record<number, number>>>>;
+      })(),
     ]);
-    // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
-    // client's data the list alone goes.
-    const prices = await api.getTypePrices(listed.map(([skill]) => skill), callOptions)
-      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>> }));
     const queue = Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null;
     const queued = queuedLevels(queue);
     const training = skillInTraining(queue);
-    const boosterTypes = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    // The boosters answer is keyed by the booster's type (attributes.py 93 to 95), and only the skill accelerators count.
+    const boostersHeld = readDictPairs(boostersAnswer).map(([key]) => Number(key)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const boosterEffects = boostersHeld.length === 0 ? {} : await api.loadPassiveEffects(boostersHeld, callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>));
+    const boosterTypes = boostersHeld.filter((booster) => isBoosterSkillAccelerator(boosterEffects[booster]));
     const boosterBonuses = boosterTypes.length === 0 ? {} : await api.fetchTypeDogma(boosterTypes, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
     const attributes = new Map(readDictPairs(attributesAnswer).map(([key, value]) => [Number(key), Number(value)] as const));
     const grade = store.station.get().cloneGrade;
     const omega = grade !== CLONE_GRADE_ALPHA;
+    // An alpha's ceilings, by its race (clone_grade_svc.get_max_skill_level: CloneGradeStorage()[session.raceID]); none
+    // for an omega, and none where the client's data or the race could not be had (then nothing is held back).
+    const raceID = store.station.get().online?.raceID ?? null;
+    const ceilings = omega || raceID === null
+      ? null
+      : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
     const graded = (value: number): number => (omega ? value : value * ALPHA_TRAINING_MULTIPLIER);
     /** skillsvc.GetCharacterAttribute(attributeID, includeBoosters=False) */
     const characterAttribute = (attributeID: number): number | null => {
@@ -6344,27 +8470,95 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
     };
     // The points each skill has now, the one in training at its true rate since it began (the Skills window's sheet).
+    // The accelerators with their expiries, for the points in training (GetEstimatedSkillPointsTrained).
+    const accelerators = boostersAnswered(boostersAnswer)
+      .filter((booster) => boosterTypes.includes(booster.typeID))
+      .map((booster) => ({
+        expiryMs: booster.expiryMs,
+        bonus: new Map([...ATTRIBUTE_BONUS_BY_ATTRIBUTE].map(([attributeID, bonusID]) => [attributeID, boosterBonuses[booster.typeID]?.[bonusID] ?? 0])),
+      }));
     const sheet = buildSkillSheet({
       characterID: 0,
       characterName: "",
       skills: skillsAnswer,
       allSkills: allSkillsAnswer,
       queue,
+      boosters: accelerators,
+      alpha: !omega,
       freeSkillPoints: 0,
       attributes: attributesAnswer,
       now: serverNow,
       typeName: () => null,
       typeGroupName: () => null,
       typeAttribute: (skill, attributeID) => typeAttributes[skill]?.[attributeID],
-    }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
+    }) as {
+      skills?: readonly { typeID: number | null; skillPoints: number }[];
+      queue?: { entries?: readonly { typeID: number; toLevel: number; lengthMs?: number | null }[] } | null;
+    };
     const pointsNow = (skill: number): number =>
       sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
+    // GetSkillpointsPerMinute(includeBoosters=True): the attributes as the server has them, boosters and all, halved
+    // for an alpha clone (the skill service's training time calculator, and GetRawTrainingTimeForSkillLevel's default).
+    const rateWithBoosters = (skill: number): number | null => {
+      const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => {
+        const attributeID = typeAttributes[skill]?.[which];
+        const value = attributeID === undefined ? undefined : attributes.get(attributeID);
+        return value === undefined || !Number.isFinite(value) ? null : graded(value);
+      });
+      return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    };
+    // GetTrainingLengthOfSkill(skill, level): the queue's time up to that level's end, each level's own time
+    // (GetAllTrainingLengths, the sheet's lengths) added in turn; null where the level is not queued or a time before it
+    // is not had. In ticks.
+    const untilTrained = (skill: number, level: number): number | null => {
+      let total = 0;
+      for (const entry of sheet.queue?.entries ?? []) {
+        if (entry.lengthMs === null || entry.lengthMs === undefined) return null;
+        total += entry.lengthMs;
+        if (entry.typeID === skill && entry.toLevel === level) return Math.round(total * 10_000);
+      }
+      return null;
+    };
+    // GetFreeSkillPoints: the queue answer's second.
+    const freePoints = Array.isArray(queueAnswer) ? Math.max(0, Math.trunc(Number(queueAnswer[1]) || 0)) : 0;
+    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, rateWithBoosters, pointsNow, untilTrained, freePoints };
+  }
+
+  /**
+   * The rest of the skill requirement window, reckoned as the client's skill services reckon it
+   * (bridge/missingSkills.ts): each skill's mark and boxes, the training time, the points the levels cost and the
+   * action. Out of the queue (GetSkillQueueAndFreePoints), the pilot's attributes (GetAttributes) and boosters
+   * (GetBoosters), the skills' ranks and the two attributes each trains by, and which books can be bought.
+   *
+   * The rate is GetSkillpointsPerMinute(includeBoosters=False): each attribute halved for an alpha clone
+   * (GetCharacterAttribute), less what the pilot's skill accelerators add to it, halved too for an alpha: the
+   * boosters whose type's passive effects hold one of the five that add to an attribute (_GetSkillAcceleratorBoosters,
+   * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's ceilings
+   * (CloneGradeStorage, by race) hold its levels back: the bar's omega boxes, NeedsOmegaUpgrade (no action then).
+   */
+  async function skillWindowRest(
+    typeID: number,
+    required: RequiredSkills,
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+    listed: readonly (readonly [number, number])[],
+  ): Promise<Pick<SkillsRequired, "rows" | "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">> {
+    const skillTypes = [...new Set([...requiredSkillsRecursive(typeID, required).keys(), ...listed.map(([skill]) => skill)])];
+    const [{ mine, lapsed, queueAnswer, queued, training, omega, ceilings, rank, rate, rateWithBoosters, pointsNow }, lists] = await Promise.all([
+      pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer),
+      api.loadTypeListsHolding(listed.map(([skill]) => skill).slice(0, 32), [SKILLS_FOR_PURCHASE_LIST], callOptions),
+    ]);
+    // evetypes.IsSkillAvailableForPurchase: published, and on the list; and each book's base price. Without the
+    // client's data the list alone goes.
+    // The type's own category is asked with them: a skill's is NeedsOmegaUpgrade's second half.
+    const prices = await api.getTypePrices([...new Set([...listed.map(([skill]) => skill), typeID])], callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>>, categoryID: {} as Readonly<Record<number, number | null>> }));
 
     const rows = listed.map(([skill, level]) => ({
       skill,
       level,
       mark: skillRowMark(skill, level, lapsed, lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)),
-      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill)),
+      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill), ceilings === null ? null : ceilings.get(skill) ?? 0),
     }));
     const ticks = trainingTimeLeft(typeID, required, mine, lapsed, { rank, rate, pointsNow });
     const books = Object.fromEntries(listed.map(([skill]) => [skill, {
@@ -6373,7 +8567,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }]));
     let action: SkillsRequired["action"] = null;
     let points: number | null = null;
-    if (!isSkillRequirementMet(typeID, required, mine)) {
+    let applyLevels: readonly SkillLevel[] = [];
+    let offerInjection = false;
+    /** inventorycommon/const.py categorySkill. */
+    const CATEGORY_SKILL = 16;
+    // MySkillLevelIncludingQueued (skillsvc.py 266 to 272), for a type that is a skill: the level trained, lapsed ones
+    // too, or queued, whichever is more; nought where the skill is not had.
+    const ownLevel = prices.categoryID[typeID] === CATEGORY_SKILL
+      ? (lapsed.has(typeID) ? Math.max(lapsed.get(typeID)?.trainedSkillLevel ?? 0, ...queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel)) : 0)
+      : null;
+    const omegaRestricted = needsOmegaUpgrade(typeID, required, mine, ceilings, ownLevel);
+    // AddSkillAction (skill_requirement.py 279 to 287): none where the type needs omega.
+    if (!omegaRestricted && !isSkillRequirementMet(typeID, required, mine)) {
       const notHeld = skillsNotHeld(listed, mine);
       const levels = levelsToTrain(listed, mine);
       points = skillPointsRequired(levels, mine, rank);
@@ -6381,8 +8586,2796 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       action = notHeld.length > 0
         ? { kind: "buy", levels, missing: notHeld }
         : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, queued) };
+      applyLevels = trainable;
+      offerInjection = notHeld.length === 0;
     }
-    return { rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books };
+    // What the Apply Skill Points window goes by: the training at the pilot's own rate, boosters and all (the skill
+    // service's training time calculator), for the time its points save.
+    skillWindowFacts = { rank, pointsNow, trainingRate: rateWithBoosters, mine, queued };
+    const free = Number(Array.isArray(queueAnswer) ? queueAnswer[1] : 0);
+    return {
+      rows, omega, trainingTicks: ticks !== null && ticks > 0 ? ticks : null, skillPointsRequired: points, action, books,
+      freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0, applyLevels, offerInjection, omegaRestricted,
+    };
+  }
+
+  /**
+   * The requirement window's apply-points button, with free points (ApplySkillPointsButton.ClickFunc): the window put
+   * away (its on_click), and the Apply Skill Points window opened for the button's levels
+   * (ApplySkillPointsWindow.Open(skillTypeIDsAndLevels=...)), as it reckons its rows: the points the handler would
+   * spread (GetFreeSkillPointsAppliedToSkills), each skill's level and progress with them
+   * (skillQueueSvc.GetSkillLevelAndProgressWithFreePoints), each row's progress now (GetProgress: of the level in
+   * training, the points trained of it so far), and the time saved (GetTimeSaved: the gain times the level's
+   * training time from its start at the pilot's rate).
+   */
+  async function applySkillPointsRequired(): Promise<void> {
+    const open = skillsRequiredSignal.get();
+    skillsRequiredSignal.set(null);
+    const facts = skillWindowFacts;
+    if (open === null || facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
+    const levels = open.applyLevels;
+    const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, levels);
+    const reached = new Map<number, readonly [number, number]>();
+    for (const [skill, points] of pointsBySkill) {
+      const rank = facts.rank(skill);
+      if (rank === null) continue;
+      const total = (facts.mine.get(skill)?.trainedSkillPoints ?? 0) + points;
+      reached.set(skill, [skillLevelRaw(total, rank), levelProgress(total, rank)]);
+    }
+    // Each skill's group, for its row's icon (ApplySkillPointsListEntry.SetSkillGroupIcon).
+    const groups = await api.getTypePrices([...new Set(levels.map(([skill]) => skill))], callOptions)
+      .then((answer) => answer.groupID).catch(() => ({} as Readonly<Record<number, number | null>>));
+    const entries: ApplyPointsEntry[] = [];
+    for (const [skill, level] of levels) {
+      if (entries.some((entry) => entry.skill === skill && entry.level === level)) continue;
+      const [levelReached, withPoints] = reached.get(skill) ?? [0, 0];
+      // AdjustProgressWithFreePoints: the level reached is whole; one below it, the progress made toward it.
+      const progressWithFreePoints = levelReached >= level ? 1.0 : levelReached + 1 < level ? 0.0 : withPoints;
+      const rank = facts.rank(skill);
+      // GetProgress: the level in training (one above the level trained, first in the queue), how far it is.
+      const inTraining = (facts.mine.get(skill)?.trainedSkillLevel ?? 0) === level - 1
+        && facts.queued[0]?.typeID === skill && facts.queued[0]?.toLevel === level;
+      const progress = inTraining && rank !== null ? levelProgress(facts.pointsNow(skill), rank) : 0;
+      const rate = facts.trainingRate(skill);
+      const levelTicks = rank === null || rate === null || !(rate > 0)
+        ? null
+        : ((skillPointsForLevel(rank, level) - skillPointsForLevel(rank, level - 1)) / rate) * 600_000_000;
+      entries.push({ skill, level, groupID: groups[skill] ?? null, progress, progressWithFreePoints, timeSavedTicks: levelTicks === null ? null : (progressWithFreePoints - progress) * levelTicks });
+    }
+    applyPointsLevels = levels;
+    dialogsSaidCount += 1;
+    const points = [...pointsBySkill.values()].reduce((sum, each) => sum + each, 0);
+    applyPointsAskedSignal.set({ n: dialogsSaidCount, entries, points, canConfirm: pointsBySkill.size > 0, finished: false });
+  }
+
+  /**
+   * The Apply Skill Points window's answers. Confirm (ApplySkillPoints): skillQueueSvc.ApplyFreeSkillPointsToSkills,
+   * the points asked again and spread where any, then the rows at their new progress and the buttons one Close.
+   * Cancel and Close: put away. The Skills window's sheet read again after the spreading.
+   */
+  /**
+   * multiBuyUtil.BuyMultipleTypesWithQty: the multibuy window opened with these types and quantities, or, where it is
+   * open, each added to it (AddToOrder: a type already in it has the quantity added to its row). Where the window
+   * opens it buys at the station or structure the pilot is docked in (LoadStationOptions: session.stationid first).
+   * Each row's price is then read (GetBestPrice).
+   */
+  async function openMultiBuy(wanted: ReadonlyMap<number, number>, fitting: SourcedFitting | null = null): Promise<void> {
+    const opened = multiBuyAskedSignal.get();
+    // AddToOrder: a fitting given makes it the window's.
+    const open = opened !== null && fitting !== null ? { ...opened, fitting } : opened;
+    const inventory = store.inventory.get();
+    const base: MultiBuyAsk = open ?? {
+      n: (dialogsSaidCount += 1),
+      stationID: inventory.stationID ?? inventory.structureID ?? null,
+      currentStationID: inventory.stationID ?? inventory.structureID ?? null,
+      stationList: null,
+      multiplier: 1,
+      rows: [],
+      busy: false,
+      disabled: false,
+      corpAccount: null,
+      useCorp: buyUseCorp(),
+      fitting,
+    };
+    if (open === null) {
+      multiBuyFitClicked = false;
+      multiBuyFitPending = false;
+      multiBuyBooks.clear();
+      multiBuyAverages.clear();
+      multiBuyVolumes.clear();
+      multiBuyActiveOrders.clear();
+      multiBuyExpiredOrders.clear();
+    }
+    const rows = [...base.rows];
+    for (const [typeID, qty] of wanted) {
+      const at = rows.findIndex((row) => row.typeID === typeID);
+      if (at >= 0) rows[at] = { ...rows[at]!, qty: rows[at]!.qty + qty, loading: true };
+      else rows.push({ typeID, qty: Math.max(1, Math.trunc(qty)), price: null, numOrders: null, loading: true, average: null, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume: null });
+    }
+    multiBuyAskedSignal.set({ ...base, rows });
+    if (open === null) {
+      // The box is drawn as the window is made (buySellMultiBase.ApplyAttributes, 87 to 89).
+      void multiBuyCorpAccount().then((corpAccount) => {
+        const now = multiBuyAskedSignal.get();
+        if (now !== null && now.n === base.n) multiBuyAskedSignal.set({ ...now, corpAccount });
+      }).catch(() => {});
+      // Its station list, as the window is made (LoadStationOptions, 215 to 228); where the pilot is docked nowhere,
+      // the list's first is where it buys.
+      void multiBuyStationList().then((stationList) => {
+        const now = multiBuyAskedSignal.get();
+        if (now === null || now.n !== base.n) return;
+        const first = now.stationID === null && stationList.length > 0 ? stationList[0]!.id : null;
+        multiBuyAskedSignal.set({ ...now, stationList, ...(first === null ? {} : { stationID: first, rows: now.rows.map((row) => ({ ...row, loading: true })) }) });
+        if (first !== null) void multiBuyPrices();
+      }).catch(() => {});
+    }
+    await multiBuyPrices();
+  }
+
+  // The region's markets as the client keeps them (GetMarketDockableLocationsInRegion: asked once for each region).
+  const multiBuyMarketsByRegion = new Map<number, ReadonlySet<number>>();
+
+  /**
+   * buyMultiFromBase.GetStations (382 to 400): the region's markets (GetMyCharacterStructures, those holding the market
+   * service) that are among the pilot's system's items (its stations from the client's map data, and
+   * GetStructureMapData's structures), besides where it is docked, sorted (bridge/multiBuyStations.ts), named.
+   */
+  async function multiBuyStationList(): Promise<readonly { readonly id: number; readonly name: string }[]> {
+    const online = store.station.get().online;
+    const solarSystemID = store.flight.get().status?.solarSystemID ?? online?.solarSystemID ?? null;
+    if (solarSystemID === null) return [];
+    const inventory = store.inventory.get();
+    const current = inventory.stationID ?? inventory.structureID ?? null;
+    const [systemStations, mapAnswer] = await Promise.all([
+      api.getSystemStations(solarSystemID, callOptions),
+      bridgeAsk("structureDirectory", "GetStructureMapData", [solarSystemID]),
+    ]);
+    const regionID = systemStations.regionID ?? 0;
+    let markets = multiBuyMarketsByRegion.get(regionID);
+    if (markets === undefined) {
+      markets = marketDockableLocations(await bridgeAsk("structureDirectory", "GetMyCharacterStructures", []));
+      multiBuyMarketsByRegion.set(regionID, markets);
+    }
+    await resolveNamesNow(systemStations.stations.map((station) => ({ kind: "station" as const, id: station.stationID })));
+    const stationName = (id: number): string => {
+      const name = nameCache.get(nameKey("station", id));
+      return typeof name === "string" ? name : "";
+    };
+    const items: SystemItem[] = [
+      ...systemStations.stations.map((station) => ({ itemID: station.stationID, itemName: stationName(station.stationID), celestialIndex: station.celestialIndex, orbitIndex: station.orbitIndex })),
+      ...decodeStructureMapData(mapAnswer).map((row) => ({ itemID: row.structureID, itemName: row.itemName, celestialIndex: row.celestialIndex, orbitIndex: row.orbitIndex })),
+    ];
+    return multiBuyStationList_(markets, items, current).map((item) => ({ id: item.itemID, name: item.itemName }));
+  }
+
+  /** appConst.corpRoleAccountant and corpRoleTrader: the roles that may buy for the corporation. */
+  const CORP_ROLES_THAT_TRADE = 256n | 18014398509481984n;
+  /**
+   * buySellMultiBase._CanTradeForCorp (148 to 153): with the accountant's or the trader's role, the account the session
+   * names (corporation.GetMyCorpAccountName: session.corpAccountKey, the division names' entry for it, 175 to 176 and
+   * 169 to 173), its name the corporation's own for it (bco_corporations.GetDivisionNames, the row's walletDivision2
+   * to walletDivision7; the master wallet the client's word). Null where the box is not drawn.
+   */
+  async function multiBuyCorpAccount(): Promise<MultiBuyAsk["corpAccount"]> {
+    const online = store.station.get().online;
+    const roles = online?.corpRole ?? null;
+    const key = online?.corpAccountKey ?? null;
+    if (roles === null || !/^\d+$/.test(roles) || (BigInt(roles) & CORP_ROLES_THAT_TRADE) === 0n || key === null) return null;
+    const division = key - 1000 + 1;
+    if (division < 1 || division > 7) return null;
+    const row = await bridgeAsk("corpRegistry", "GetCorporation", []).catch(() => null);
+    return { division, name: row === null ? null : divisionNamesOf(row)[String(division)] ?? null };
+  }
+
+  /** Each row's best price at the window's station for its quantity times the orders (BuyItemContainer.GetBestPrice). */
+  async function multiBuyPrices(): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null) return;
+    const priced = await Promise.all(asked.rows.map(async (row) => {
+      const packagedVolume = await multiBuyVolumeOf(row.typeID);
+      if (asked.stationID === null) return { ...row, price: null, numOrders: null, loading: false, bestInStation: null, bestInSystem: null, bestInRegion: null, packagedVolume };
+      let sells = multiBuyBooks.get(row.typeID);
+      if (sells === undefined) {
+        sells = await bridgeAsk("marketProxy", "GetOrders", [row.typeID]).then((answer) => decodeOrderBook(answer).sells).catch(() => []);
+        multiBuyBooks.set(row.typeID, sells);
+      }
+      const best = bestAskInStation(sells, asked.stationID, row.qty * asked.multiplier);
+      const average = row.average ?? await averagePriceFor(row.typeID);
+      // The window's station is the one the pilot is docked in, in the pilot's system.
+      const system = store.flight.get().status?.solarSystemID ?? null;
+      const cheapest = (range: number): number | null => { const order = bestAskInRange(sells!, asked.stationID!, system, range); return order === null ? null : Number(order.price); };
+      return {
+        ...row, price: best.price, numOrders: best.numOrders, loading: false, average,
+        bestInStation: cheapest(RANGE_STATION), bestInSystem: cheapest(RANGE_SOLAR_SYSTEM), bestInRegion: cheapest(RANGE_REGION), packagedVolume,
+      };
+    }));
+    const now = multiBuyAskedSignal.get();
+    if (now === null || now.n !== asked.n) return;
+    // A row edited while its price was read keeps its own quantity, and is read again with it.
+    const stale = now.rows.some((row) => { const was = asked.rows.find((each) => each.typeID === row.typeID); return was === undefined || was.qty !== row.qty; }) || now.multiplier !== asked.multiplier;
+    multiBuyAskedSignal.set({ ...now, rows: now.rows.map((row) => { const fresh = priced.find((each) => each.typeID === row.typeID); return fresh && fresh.qty === row.qty && !stale ? fresh : row; }) });
+    if (stale) await multiBuyPrices();
+  }
+
+  /** A type's packaged volume for the multibuy window, asked once (GET /api/types/volumes); null where it is not known. */
+  async function multiBuyVolumeOf(typeID: number): Promise<number | null> {
+    if (multiBuyVolumes.has(typeID)) return multiBuyVolumes.get(typeID) ?? null;
+    const volume = await api.loadTypeVolumes([typeID], callOptions).then((answer) => answer.packaged[typeID] ?? null).catch(() => null);
+    multiBuyVolumes.set(typeID, volume);
+    return volume;
+  }
+
+  /**
+   * buyMultiFromBase.ImportShoppingList (139 to 151): the clipboard's text read as a shopping list
+   * (textImporting.importMultibuy, the BFF's port of it), what it names added to the window (AddToOrder), and the
+   * lines it could not read said, under CouldNotReadLines (CustomInfo). An empty clipboard is one line not read. A
+   * clipboard the browser would not give is the page's own to say.
+   */
+  async function importMultiBuy(n: number, text: string | null): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n || asked.busy) return;
+    if (text === null) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", "The browser did not let the clipboard be read."]] }, "The browser did not let the clipboard be read.");
+      return;
+    }
+    const read = await api.importMultibuy(text, callOptions);
+    if (read.found.length > 0) await openMultiBuy(new Map(read.found));
+    if (read.failedLines.length > 0) {
+      const info = `${templateWords("UI/SkillQueue/CouldNotReadLines", {}, "These lines were not understood:")}<br>${read.failedLines.join("<br>")}`;
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    }
+  }
+
+  async function editMultiBuy(n: number, edit: { readonly typeID: number; readonly qty: number } | { readonly multiplier: number } | { readonly remove: number } | { readonly useCorp: boolean } | { readonly stationID: number }): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n || asked.busy) return;
+    if ("stationID" in edit) {
+      // OnStationChanged and UpdateStationID (545 to 556): where it buys, and every row's price read there.
+      multiBuyAskedSignal.set({ ...asked, stationID: edit.stationID, rows: asked.rows.map((row) => ({ ...row, loading: true })) });
+      await multiBuyPrices();
+      return;
+    }
+    if ("useCorp" in edit) {
+      // OnUseCorp (155 to 162): the box kept as it is ticked.
+      setBuyUseCorp(edit.useCorp);
+      multiBuyAskedSignal.set({ ...asked, useCorp: edit.useCorp });
+      return;
+    }
+    if ("remove" in edit) {
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.filter((row) => row.typeID !== edit.remove) });
+      return;
+    }
+    if ("multiplier" in edit) {
+      // orderMultiplierEdit: a whole number from 1 to 1000.
+      const multiplier = Math.min(1000, Math.max(1, Math.trunc(edit.multiplier) || 1));
+      multiBuyAskedSignal.set({ ...asked, multiplier, rows: asked.rows.map((row) => ({ ...row, loading: true })) });
+    } else {
+      // The row's quantity field: a whole number, 1 at least.
+      const qty = Math.max(1, Math.trunc(edit.qty) || 1);
+      multiBuyAskedSignal.set({ ...asked, rows: asked.rows.map((row) => (row.typeID === edit.typeID ? { ...row, qty, loading: true } : row)) });
+    }
+    await multiBuyPrices();
+  }
+
+  /**
+   * The multibuy window's Buy (_PerformTrade, 296 to 311): the rows with a price, each at it rounded to cents and its
+   * quantity times the orders (GetValidatedItem); none is the client's uiwarning03. Then
+   * GetMarketProxy().BuyMultipleItems(station, items, useCorp), and the window holds only the rows that had no price
+   * (CreateNewBuyOrder), the orders one again; with none left it is put away. Cancel puts it away.
+   */
+  async function answerMultiBuy(n: number, answer: "buy" | "buy-and-fit" | "cancel"): Promise<void> {
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    // BuyAndFit, PerformTrade and Cancel (283 to 294): only Buy and Fit leaves the fitting to be loaded.
+    multiBuyFitClicked = answer === "buy-and-fit";
+    if (answer === "cancel") {
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    if (asked.busy || asked.disabled || asked.rows.some((row) => row.loading)) return;
+    const buying = asked.rows.filter((row) => row.price !== null && row.price > 0 && row.qty * asked.multiplier >= 1);
+    if (asked.stationID === null || buying.length === 0) {
+      sayDialog("uiwarning03", null, "There is nothing in the window that can be bought here.");
+      return;
+    }
+    // ContinueAfterWarning (buySellMultiBase.py 336 to 362): where any row's price is more than its average again
+    // over (GetItemsWithBadDelta), or the whole order's is (GetOrderDeltaTextForWarning), the client asks first,
+    // its CustomQuestion under Warning, No the default.
+    const valued = buying.filter((row) => row.average !== null && row.average > 0);
+    const high = valued
+      .map((row) => ({ row, delta: priceDelta(row.price, row.average!) }))
+      .filter((each) => each.delta > 1.0)
+      .sort((left, right) => right.delta - left.delta);
+    const whole = valued.length === 0 ? 0 : orderDelta(valued.map((row) => ({
+      total: row.price! * row.qty * asked.multiplier, quantity: row.qty * asked.multiplier, average: row.average!,
+    })));
+    if (high.length > 0 || whole > 1.0) {
+      const percent = (delta: number): string => templateWords("UI/Common/Percentage", { percentage: Math.round(delta * 100) }, `${Math.round(delta * 100)}%`);
+      const lines: string[] = [];
+      if (whole > 1.0) lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverage", { percentage: percent(whole) }, `These are ${percent(whole)} above the average.`), "");
+      if (high.length > 0) {
+        lines.push(templateWords("UI/Market/MarketQuote/MultiBuyTypesAboveAverage", {}, "These are well above their average:"));
+        for (const { row, delta } of high) lines.push(`- ${nameCache.get(nameKey("type", row.typeID)) ?? `Type ${row.typeID}`} (${percent(delta)})`);
+        lines.push("");
+      }
+      lines.push(templateWords("UI/Market/MarketQuote/MultiBuyAboveAverageConfirmation", {}, "Buy them all the same?"));
+      const header = templateWords("UI/Generic/Warning", {}, "Warning");
+      const yes = await askDialog("CustomQuestion", { type: "dict", entries: [["header", header], ["question", lines.join("<br>")]] }, lines.join("\n"));
+      if (!yes) return;
+    }
+    multiBuyAskedSignal.set({ ...asked, busy: true });
+    let ordersMade: readonly { readonly orderID: string }[];
+    try {
+      ordersMade = await buyMultipleItems(bridgeDo, asked.stationID!, buying.map((row) => ({ typeID: row.typeID, price: row.price!, quantity: row.qty * asked.multiplier })), asked.corpAccount !== null && asked.useCorp);
+    } catch (error) {
+      const now = multiBuyAskedSignal.get();
+      if (now !== null && now.n === n) multiBuyAskedSignal.set({ ...now, busy: false });
+      if (isSessionLost(error)) throw error;
+      // A refusal is put up as the client puts up a UserError the call raises.
+      sayRefusalDialog(error, `Those items could not be bought: ${errorWords(error)}`);
+      return;
+    }
+    void loadInventory().catch(() => {});
+    // _PerformTrade (307 to 311): the orders made kept, and CreateNewBuyOrder (362 to 370): the window greyed and
+    // emptied, the orders one again, the rows that had no price put back; then any of the orders already said to
+    // have run out are taken (VerifyExpiredOrders).
+    for (const order of ordersMade) multiBuyActiveOrders.add(order.orderID);
+    const failed = asked.rows.filter((row) => !buying.includes(row));
+    multiBuyBooks.clear();
+    multiBuyAskedSignal.set({ ...asked, busy: false, disabled: true, multiplier: 1, rows: failed.map((row) => ({ ...row, qty: row.qty * asked.multiplier, loading: true })) });
+    if (failed.length > 0) await multiBuyPrices();
+    await multiBuyOrdersRunOut([...multiBuyExpiredOrders.keys()].filter((orderID) => multiBuyActiveOrders.has(orderID)));
+  }
+
+  /**
+   * buyMultiFromBase.OnOwnOrdersChanged (558 to 567): orders the server says ran out ('Expiry') kept with what was left
+   * of each, and those the window's buys made taken (_ProccessExpiredOrders).
+   */
+  async function multiBuyOrdersChanged(orders: unknown, reason: unknown): Promise<void> {
+    if (reason !== "Expiry" || multiBuyAskedSignal.get() === null) return;
+    const listed = ordersListed(orders);
+    for (const order of listed) multiBuyExpiredOrders.set(order.orderID, { typeID: order.typeID, volRemaining: order.volRemaining });
+    await multiBuyOrdersRunOut(listed.map((order) => order.orderID));
+  }
+
+  /**
+   * _ProccessExpiredOrders (569 to 590): each of the window's orders that ran out is no longer waited for, and what was
+   * left of it unbought is put back in the window (AddItems). With nothing put back and nothing in the window or
+   * waited for, the window is put away (CloseWnd); otherwise, once nothing is waited for, it is no longer greyed.
+   */
+  async function multiBuyOrdersRunOut(orderIDs: readonly string[]): Promise<void> {
+    const failed = new Map<number, number>();
+    const fitting = multiBuyAskedSignal.get()?.fitting ?? null;
+    for (const orderID of orderIDs) {
+      if (!multiBuyActiveOrders.has(orderID)) continue;
+      const order = multiBuyExpiredOrders.get(orderID);
+      if (order && order.typeID !== null && order.volRemaining !== null && order.volRemaining !== 0) failed.set(order.typeID, (failed.get(order.typeID) ?? 0) + order.volRemaining);
+      multiBuyActiveOrders.delete(orderID);
+      multiBuyFitBuffered(fitting);
+    }
+    const asked = multiBuyAskedSignal.get();
+    if (asked === null) return;
+    if (failed.size === 0 && asked.rows.length === 0 && multiBuyActiveOrders.size === 0) {
+      // CloseWnd (592 to 596).
+      if (multiBuyFitClicked && fitting !== null) multiBuyFitOnClosing(fitting);
+      multiBuyAskedSignal.set(null);
+      return;
+    }
+    if (asked.disabled && multiBuyActiveOrders.size === 0) multiBuyAskedSignal.set({ ...asked, disabled: false });
+    if (failed.size > 0) await openMultiBuy(failed);
+  }
+
+  /**
+   * TryApplyFittingToBuffer (676 to 685): after Buy and Fit, as each of the window's orders runs out, the fitting is
+   * loaded again two seconds on (_TryApplyFittingBuffered, BufferedCall(2000)), one such waited for at a time. (The
+   * client's progress window, Attempting to Fit Ship, is not drawn.)
+   */
+  function multiBuyFitBuffered(fitting: SourcedFitting | null): void {
+    if (!multiBuyFitClicked || fitting === null || multiBuyFitPending) return;
+    multiBuyFitPending = true;
+    setTimeout(() => void multiBuyTryFit(fitting), 2000);
+  }
+
+  /** TryApplyFittingOnClosing (691 to 696): the window closed after Buy and Fit; half a second on, unless one is waited for. */
+  function multiBuyFitOnClosing(fitting: SourcedFitting): void {
+    setTimeout(() => {
+      if (!multiBuyFitPending) void multiBuyTryFit(fitting);
+    }, 500);
+  }
+
+  /** TryApplyFitting and _TryApplyFitting (698 to 714): the fitting loaded again, and what it could not load said. */
+  async function multiBuyTryFit(fitting: SourcedFitting): Promise<void> {
+    multiBuyFitPending = false;
+    const failed = await loadSavedFitting(fitting);
+    if (failed !== null && failed.length > 0) {
+      const notify = templateWords("UI/Market/MarketQuote/SomeItemsCouldNotBeFitted", {}, "Some of the items could not be fitted.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+    } else if (failed !== null) {
+      // ghostFittingSvc.TryExitSimulation(): the simulation left, where there is one, after the question.
+      await exitSimulation();
+    }
+  }
+
+  // fittingSvc.hasSkillByFittingID: whether the pilot has the skills for a fitting, kept by its number until the
+  // skills change (OnSkillsChanged, 1050 to 1052).
+  const hasSkillByFittingID = new Map<number, boolean>();
+
+  /**
+   * fittingSvc.HasSkillForFit and CheckSkillRequirementsForFit (1010 to 1031), for the browser's skills filter: the
+   * ship's own required skills met at the pilot's effective levels (godma.CheckSkillRequirementsForType, 623 to 632:
+   * GetRequiredSkills, each skill's effectiveSkillLevel), and each type of the fitting's but a rig's. Answers the
+   * fittings, of those named, the pilot has the skills for. Where the client's table of required skills cannot be had,
+   * every one named.
+   */
+  async function fittingsWithSkills(fittingIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    const fittings = fittingIDs.map(savedFittingOf).filter((fitting): fitting is SourcedFitting => fitting !== null);
+    const unknown = fittings.filter((fitting) => !hasSkillByFittingID.has(fitting.fittingID));
+    if (unknown.length > 0) {
+      const typesOf = (fitting: SourcedFitting): number[] => [fitting.shipTypeID, ...fitting.modules.filter((module) => !RIG_SLOT_FLAGS.includes(module.flagID)).map((module) => module.typeID)];
+      const met = await typesMeetingSkills(unknown.flatMap(typesOf));
+      if (met === null) return new Set(fittingIDs);
+      for (const fitting of unknown) hasSkillByFittingID.set(fitting.fittingID, typesOf(fitting).every((typeID) => met.has(typeID)));
+    }
+    return new Set(fittings.filter((fitting) => hasSkillByFittingID.get(fitting.fittingID) === true).map((fitting) => fitting.fittingID));
+  }
+
+  // Whether the pilot has the skills for a type, kept until the skills change (as the fittings' answers are).
+  const hasSkillByTypeID = new Map<number, boolean>();
+
+  /**
+   * godma.CheckSkillRequirementsForType (623 to 632) for each type named: its required skills (the client's table,
+   * fifty types an asking) met at the pilot's effective levels. Answers those met; null where the table cannot be had.
+   */
+  async function typesMeetingSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number> | null> {
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !hasSkillByTypeID.has(typeID));
+    if (unknown.length > 0) {
+      const required: Record<number, Readonly<Record<number, number>>> = {};
+      for (let at = 0; at < unknown.length; at += 50) {
+        const read = await api.getRequiredSkills(unknown.slice(at, at + 50), callOptions);
+        if (!read.available) return null;
+        Object.assign(required, read.required);
+      }
+      const mine = skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", []));
+      for (const typeID of unknown) {
+        hasSkillByTypeID.set(typeID, Object.entries(required[typeID] ?? {}).every(([skill, level]) => (mine.get(Number(skill))?.effectiveSkillLevel ?? 0) >= Number(level)));
+      }
+    }
+    return new Set(typeIDs.filter((typeID) => hasSkillByTypeID.get(typeID) === true));
+  }
+
+  /**
+   * The fitting browser's skills filter for the market's hulls (GetAllShipGroupsAndShipsByGroupID, 377 to 378:
+   * godma.CheckSkillRequirementsForType): those named the pilot has the skills for; every one named where the table
+   * cannot be had.
+   */
+  async function hullsWithSkills(typeIDs: readonly number[]): Promise<ReadonlySet<number>> {
+    return (await typesMeetingSkills(typeIDs)) ?? new Set(typeIDs);
+  }
+
+  // The fitting browser's hulls (GET /api/client-data/hull-browser), read once and kept: static data. A saved
+  // fitting's hull not among them is asked after.
+  const hullBrowserSignal = createSignal<HullBrowserData | null>(null);
+  let hullBrowserRead: Promise<void> | null = null;
+
+  /** The browser's hulls read where they are not had, with the facts of each type named that is not had. */
+  async function loadHullBrowser(typeIDs: readonly number[]): Promise<void> {
+    while (hullBrowserRead !== null) await hullBrowserRead.catch(() => {});
+    const held = hullBrowserSignal.get();
+    if (held !== null && !held.available) return;
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !(held?.types.has(typeID) ?? false));
+    if (held !== null && unknown.length === 0) return;
+    hullBrowserRead = (async () => {
+      const read = await api.getHullBrowser(unknown, callOptions);
+      if (!read.available) {
+        hullBrowserSignal.set({ available: false, hullTypeIDs: [], specialTypeIDs: new Set(), types: new Map(), raceNameIDs: {} });
+        return;
+      }
+      const types = new Map(held?.types ?? []);
+      for (const [key, facts] of Object.entries(read.types)) types.set(Number(key), facts);
+      hullBrowserSignal.set({ available: true, hullTypeIDs: read.hullTypeIDs, specialTypeIDs: new Set(read.specialTypeIDs), types, raceNameIDs: read.raceNameIDs });
+    })();
+    try {
+      await hullBrowserRead;
+    } finally {
+      hullBrowserRead = null;
+    }
+  }
+
+  // Ships' traits (the client's infobubbles), asked type by type as a hull is pointed at, and kept: static data.
+  const shipTraitsSignal = createSignal<ShipTraitsHeld>({ traits: new Map(), unitNameIDs: new Map() });
+  const shipTraitsAsked = new Set<number>();
+
+  /**
+   * The traits of the ships not asked yet (GET /api/client-data/ship-traits), kept; and the words they are written with
+   * (traits.TraitsContainer: each bonus's words and its unit's name by their messages, the skills' names).
+   */
+  async function requestShipTraits(typeIDs: readonly number[]): Promise<void> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !shipTraitsAsked.has(typeID)).slice(0, 50);
+    if (wanted.length === 0) return;
+    for (const typeID of wanted) shipTraitsAsked.add(typeID);
+    const read = await api.getShipTraits(wanted, callOptions).catch(() => null);
+    if (read === null || !read.available) {
+      for (const typeID of wanted) shipTraitsAsked.delete(typeID);
+      return;
+    }
+    const held = shipTraitsSignal.get();
+    const traits = new Map(held.traits);
+    const unitNameIDs = new Map(held.unitNameIDs);
+    for (const [key, value] of Object.entries(read.traits)) traits.set(Number(key), value);
+    for (const [key, value] of Object.entries(read.unitNameIDs)) unitNameIDs.set(Number(key), value);
+    shipTraitsSignal.set({ traits, unitNameIDs });
+    const all = Object.values(read.traits).flatMap((each) => (each === null ? [] : [...each.skills.flatMap((skill) => skill.bonuses), ...each.role, ...each.misc]));
+    requestWords([
+      ...all.flatMap((bonus) => (bonus.nameID === null ? [] : [`#${bonus.nameID}`])),
+      ...Object.values(read.unitNameIDs).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
+    ]);
+    requestNames(Object.values(read.traits).flatMap((each) => (each === null ? [] : each.skills.map((skill) => ({ kind: "type" as const, id: skill.skillTypeID })))));
+  }
+
+  // The public gateway: one of the client's eve_public requests for the pilot; the payload where it answered 200
+  // (requestsMessenger._check_response_status), else a refusal with its status.
+  async function gatewayAsk(request: string, payload: Record<string, JsonValue> = {}, confirm = false): Promise<JsonValue | null> {
+    const answer = await api.publicGatewayRequest(request, payload, { ...callOptions, confirm });
+    if (answer.statusCode !== 200) {
+      throw Object.assign(new Error(`${request} was answered ${answer.statusCode}${answer.statusMessage ? `: ${answer.statusMessage}` : ""}.`), { statusCode: answer.statusCode });
+    }
+    return answer.payload;
+  }
+
+  async function personalSkillPlans(): Promise<PersonalSkillPlansRead | null> {
+    let ids: readonly string[];
+    try {
+      ids = planIDsFromGetAll(await gatewayAsk("eve_public.character.skill.plan.GetAllRequest"));
+    } catch {
+      return null;
+    }
+    const [read, trackedID, skillsAnswer, allSkillsAnswer] = await Promise.all([
+      Promise.all(ids.map((id) => gatewayAsk("eve_public.character.skill.plan.GetRequest", { skill_plan: { uuid: bytesFromUuid(id) } })
+        .then((payload) => planFromGet(id, payload))
+        .catch(() => null))),
+      gatewayAsk("eve_public.character.skill.plan.GetActiveRequest").then(trackedPlanFromGetActive).catch(() => null),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    // _GetPersonalSkillPlanController: each plan's list put right by ValidateSkillPlan, and where that changed it, the
+    // plan's skills set so on the server (SetRequiredSkills); a plan either fails on is left out (it returns None).
+    // Without the client's data for it, a plan is taken as it is read.
+    const asRead = read.filter((plan) => plan !== null);
+    const validation = await skillPlanValidationFacts([...new Set(asRead.flatMap((plan) => plan.requirements.map(([skill]) => skill)))]).catch(() => null);
+    const plans: PersonalSkillPlan[] = [];
+    for (const plan of asRead) {
+      if (validation === null) {
+        plans.push(plan);
+        continue;
+      }
+      const requirements: PlanSkillLevel[] = plan.requirements.map(([skill, level]) => [skill, level] as const);
+      try {
+        if (validateSkillPlan(requirements, validation)) await setPlanSkillRequirements(plan.id, requirements);
+      } catch {
+        continue;
+      }
+      plans.push({ ...plan, requirements });
+    }
+    return { trackedID, plans: await planEntries(plans, skillsAnswer, allSkillsAnswer) };
+  }
+
+  /**
+   * Plans as their entries show them (SkillPlanEntry): IsCompleted, and GetTotalTrainingTimeLeft
+   * (GetTrainingTimeForSkills, which asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted).
+   */
+  async function planEntries<P extends PersonalSkillPlan>(
+    plans: readonly P[],
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+  ): Promise<(P & {
+    readonly completed: boolean;
+    readonly trainingTicks: number | null;
+    readonly progress: PlanProgress | null;
+    readonly omegaMark: boolean;
+    readonly missingBooks: number;
+    readonly numOmegaSkills: number;
+  })[]> {
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
+    const facts = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    // CheckShowOmegaIndicator: for an alpha only (is_omega_with_grace_period), each skill's needs however deep.
+    const alphaCeilings = facts !== null && !facts.omega ? facts.ceilings : null;
+    const required = alphaCeilings === null ? null : await requiredSkillsFor(skillTypes).catch(() => null);
+    const restricted = (skill: number): boolean =>
+      alphaCeilings !== null && required !== null && restrictedForAlpha(skill, (need) => alphaCeilings.get(need) ?? 0, required);
+    // The gauge's skill in training: the queue's head where it trains, its rate a minute (boosters counted, as the
+    // server trains it), and the level its place takes it to.
+    const at = Date.now();
+    const head = facts === null ? undefined : facts.queued[0];
+    const perMinute = facts === null || facts.training === null ? null : facts.rateWithBoosters(facts.training);
+    const training = facts !== null && facts.training !== null && head !== undefined && head.typeID === facts.training && perMinute !== null
+      ? { skill: facts.training, perMs: perMinute / 60_000, toLevel: head.toLevel }
+      : null;
+    return plans.map((plan) => {
+      const planSkills = [...skillRequirementsDict(plan).keys()];
+      const numOmegaSkills = planSkills.filter(restricted).length;
+      return {
+        ...plan,
+        completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+        trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
+        progress: facts === null ? null : planProgressFrom(skillRequirementsDict(plan), facts.rank, facts.pointsNow, facts.queued, training, at),
+        omegaMark: numOmegaSkills > 0,
+        // GetMissingSkillbooks: GetMyLevelIncludingLapsed is None.
+        missingBooks: planSkills.filter((skill) => !lapsed.has(skill)).length,
+        numOmegaSkills,
+      };
+    });
+  }
+
+  let certifiedPlansHeld: { readonly plans: readonly CertifiedPlanData[]; readonly careerPaths: readonly CareerPath[] } | null = null;
+
+  async function certifiedSkillPlans(): ReturnType<AppFlow["certifiedSkillPlans"]> {
+    try {
+      if (certifiedPlansHeld === null) {
+        const read = await api.getCertifiedSkillPlans(callOptions);
+        if (!read.available) return null;
+        certifiedPlansHeld = read;
+      }
+    } catch {
+      return null;
+    }
+    const held = certifiedPlansHeld;
+    requestWords(held.plans.flatMap((plan) => [plan.nameID, plan.descriptionID]).concat(held.careerPaths.flatMap((career) => [career.nameID, career.descriptionID]))
+      .flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])));
+    requestNames(empireFactions().map((factionID) => ({ kind: "faction" as const, id: factionID })));
+    const [skillsAnswer, allSkillsAnswer, queueAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+    ]);
+    const mine = skillLevelsOf(skillsAnswer);
+    const queued = new Set(queuedLevels(Array.isArray(queueAnswer) ? queueAnswer[0] : null).map((entry) => `${entry.typeID}:${entry.toLevel}`));
+    const asPlans = held.plans.map((plan) => ({
+      ...plan,
+      id: certifiedPlanUuid(plan.planID),
+      name: "",
+      description: "",
+      certified: true as const,
+      milestoneList: certifiedMilestones(plan),
+    }));
+    return {
+      plans: await planEntries(asPlans, skillsAnswer, allSkillsAnswer),
+      careerPaths: held.careerPaths,
+      airFinished: airPlanFinished(held.plans.find((plan) => plan.planID === PLAN_ID_AIR), (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0, queued),
+      raceFactionID: factionOfRace(store.station.get().online?.raceID ?? null),
+    };
+  }
+
+  /** skillPlanRequestsMessenger.set_required_skills: SetSkillRequirements, each [skill, level] in the plan's order. */
+  async function setPlanSkillRequirements(id: string, requirements: readonly PlanSkillLevel[]): Promise<void> {
+    await gatewayAsk("eve_public.character.skill.plan.SetSkillRequirementsRequest", {
+      skill_plan: { uuid: bytesFromUuid(id) },
+      requirements: requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+    }, true);
+  }
+
+  /** dogma/const.py attributeSkillIsObsolete */
+  const ATTRIBUTE_SKILL_IS_OBSOLETE = 2450;
+  /** inventorycommon/const.py categorySkill */
+  const CATEGORY_SKILL_TYPES = 16;
+
+  /**
+   * What the client's skill plan validation reads (bridge/skillPlanValidation.ts): each skill's needs in its table's
+   * order (the BFF's required-skills, fifty asked at a time, with every skill they lead to), and which skills are
+   * valid (_IsSkillInvalid: among the skill types, evetypes.GetTypeIDsByCategory(categorySkill); published; not
+   * attributeSkillIsObsolete). Null where the client's data could not be had.
+   */
+  async function skillPlanValidationFacts(skillTypes: readonly number[]): Promise<SkillPlanValidationFacts | null> {
+    const order = new Map<number, readonly PlanSkillLevel[]>();
+    for (let at = 0; at < skillTypes.length; at += 50) {
+      const read = await api.getRequiredSkills(skillTypes.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      for (const [key, pairs] of Object.entries(read.order)) order.set(Number(key), pairs);
+    }
+    const all = [...new Set([...skillTypes, ...order.keys()])];
+    const types = new Map<number, TypeMetaFacts | null>();
+    const obsolete = new Set<number>();
+    for (let at = 0; at < all.length; at += 500) {
+      const batch = all.slice(at, at + 500);
+      const [meta, dogma] = await Promise.all([api.getTypeMeta(batch, callOptions), api.fetchTypeDogma(batch, [ATTRIBUTE_SKILL_IS_OBSOLETE], callOptions)]);
+      if (!meta.available) return null;
+      for (const [typeID, facts] of meta.types) types.set(typeID, facts);
+      for (const typeID of batch) if (dogma[typeID]?.[ATTRIBUTE_SKILL_IS_OBSOLETE]) obsolete.add(typeID);
+    }
+    return {
+      isValidSkill: (typeID) => {
+        const facts = types.get(typeID);
+        return facts !== undefined && facts !== null && facts.categoryID === CATEGORY_SKILL_TYPES && facts.published && !obsolete.has(typeID);
+      },
+      prerequisites: (typeID) => order.get(typeID) ?? [],
+    };
+  }
+
+  async function skillPlanDetail(plan: PersonalSkillPlan): Promise<SkillPlanDetail | null> {
+    const skillTypes = [...new Set(plan.requirements.map(([skill]) => skill))];
+    requestNames(skillTypes.map((skill) => ({ kind: "type" as const, id: skill })));
+    if (skillTypes.length === 0) return { rows: [], missingBooks: [], omegaLocked: false, numOmegaSkills: 0, untrained: [] };
+    let skillsAnswer: JsonValue;
+    let allSkillsAnswer: JsonValue;
+    try {
+      [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    } catch {
+      return null;
+    }
+    const facts = await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    if (facts === null) return null;
+    // The skills' own needs however deep, for whether a level can be trained (the bar's boxes, the books held), and the
+    // queued skills' (GetDependentSkills, whether a level may come out of the queue); without the client's table, none.
+    const required: RequiredSkills = (await requiredSkillsFor([...skillTypes, ...facts.queued.map((entry) => entry.typeID)]).catch(() => null)) ?? {};
+    // IsInjected and IsAllPrereqsInjected: held, lapsed counted, not an expert system's alone (skillsvc.IsSkillInjected).
+    const booksHeld = (skill: number): boolean =>
+      isSkillInjected(facts.lapsed, skill) && [...requiredSkillsRecursive(skill, required).keys()].every((need) => isSkillInjected(facts.lapsed, need));
+    // GetSkillPointsMissingForLevel: the level's points less those trained and enabled (GetMySkillPoints).
+    const pointsMissing = (skill: number, level: number): number | null => {
+      const rank = facts.rank(skill);
+      return rank === null || rank === undefined ? null : skillPointsForLevel(rank, level) - (facts.mine.get(skill)?.trainedSkillPoints ?? 0);
+    };
+    const rows = plan.requirements.map(([skill, level]) => {
+      const held = facts.mine.get(skill);
+      return {
+        skill,
+        level,
+        trained: held !== undefined && held.trainedSkillLevel >= level,
+        boxes: skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0),
+        // SkillController.GetTrainingTimeForLevelText: GetTimeLeftToTrain(level, includeBoosters=False).
+        ticks: rawTrainingTimeForSkillLevel(skill, level, facts.mine, facts),
+        button: levelButtonState(level, {
+          omega: facts.omega,
+          ceiling: facts.ceilings === null ? 0 : facts.ceilings.get(skill) ?? 0,
+          booksHeld: booksHeld(skill),
+          inQueue: facts.queued.some((entry) => entry.typeID === skill && entry.toLevel === level),
+          canRemove: queueRemovalRefusal(skill, level, facts.queued, required) === null,
+          myLevel: facts.lapsed.get(skill)?.trainedSkillLevel ?? 0,
+        }),
+        pointsMissing: pointsMissing(skill, level),
+        // GetSkillpointsPerMinute(skill), boosters counted.
+        pointsPerMinute: facts.rateWithBoosters(skill),
+      };
+    });
+    const planSkills = [...skillRequirementsDict(plan).keys()];
+    // IsOmega for an alpha clone (an omega's plan is never locked, IsOmegaLocked): clone_grade_svc.is_restricted_for_alpha,
+    // a skill an alpha cannot train at all (get_max_skill_level under 1), or one whose own needs, however deep, ask a
+    // level above an alpha's (is_requirements_restricted). Its ceilings are its race's (CloneGradeStorage).
+    const ceilings = facts.omega ? null : facts.ceilings;
+    const ceiling = (skill: number): number => ceilings?.get(skill) ?? 0;
+    const numOmegaSkills = ceilings === null ? 0 : planSkills.filter((skill) => restrictedForAlpha(skill, ceiling, required)).length;
+    const maxQueued = (typeID: number): number => Math.max(0, ...facts.queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
+    const skillInfo = await skillRowInfos(skillTypes, facts);
+    return {
+      rows,
+      missingBooks: planSkills.filter((skill) => !facts.lapsed.has(skill)),
+      omegaLocked: numOmegaSkills > 0,
+      numOmegaSkills,
+      untrained: untrainedSkills(plan, (typeID) => facts.lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued),
+      skillInfo,
+    };
+  }
+
+  /**
+   * Each skill's row tooltip and menu (a skill entry's LoadTooltipPanel and GetMenu, in a plan's contents and in the
+   * editor's catalogue): its type's description, market group, publishing and category (evetypes), and what the skill
+   * and queue services hold of it.
+   */
+  async function skillRowInfos(skillTypes: readonly number[], facts: Awaited<ReturnType<typeof pilotTrainingFacts>>): Promise<Map<number, SkillRowInfo>> {
+    const types = await typeFacts(skillTypes).catch(() => null);
+    const skillInfo = new Map<number, SkillRowInfo>();
+    for (const skill of skillTypes) {
+      const had = facts.lapsed.get(skill);
+      const rank = facts.rank(skill);
+      const highest = highestQueuedLevel(skill, facts.queued);
+      const type = types?.get(skill) ?? null;
+      const rate = facts.rateWithBoosters(skill);
+      // GetTrainingLengthOfSkill(skill, level + 1, 0): the next level from the points trained, at the front.
+      const nextPoints = had === undefined || rank === null || rank === undefined || had.trainedSkillLevel >= 5
+        ? null
+        : skillPointsForLevel(rank, had.trainedSkillLevel + 1);
+      const frontMinutes = nextPoints === null || rate === null || rate <= 0 ? null : Math.max(0, nextPoints - facts.pointsNow(skill)) / rate;
+      skillInfo.set(skill, {
+        descriptionID: type?.descriptionID ?? null,
+        level: had?.trainedSkillLevel ?? 0,
+        points: had?.trainedSkillPoints ?? 0,
+        totalPoints: rank === null || rank === undefined ? null : skillPointsForLevel(rank, 5),
+        // MySkillLevelIncludingQueued: the higher of the level trained and the highest queued.
+        queued: highest === null ? null : {
+          level: Math.max(highest, had?.trainedSkillLevel ?? 0),
+          ticks: facts.untilTrained(skill, Math.max(highest, had?.trainedSkillLevel ?? 0)),
+          rate,
+        },
+        menu: {
+          trainedLevel: had === undefined ? null : had.trainedSkillLevel,
+          queue: facts.queued,
+          inTraining: facts.training === skill,
+          frontTicks: frontMinutes === null ? null : Math.round(frontMinutes * 60 * 10_000_000),
+          freePoints: facts.freePoints,
+          // SkillpointsNextLevel + 0.5 - trainedSkillPoints.
+          pointsToNextLevel: nextPoints === null || had === undefined ? null : nextPoints + 0.5 - had.trainedSkillPoints,
+          marketGroupID: type?.marketGroupID ?? null,
+          published: type?.published === true,
+          categoryID: type?.categoryID ?? null,
+        },
+        virtualLevel: had?.virtualSkillLevel ?? 0,
+        expertSystems: [],
+      });
+    }
+    // should_add_expert_system_notification: a virtual level (and expert systems enabled, which the page takes them to
+    // be: its global config's default); then the expert systems that give it.
+    const virtual = [...skillInfo].filter(([, info]) => info.virtualLevel > 0).map(([skill]) => skill);
+    if (virtual.length > 0) {
+      const providing = await expertSystemsProviding(virtual);
+      for (const skill of virtual) skillInfo.set(skill, { ...skillInfo.get(skill)!, expertSystems: providing.get(skill) ?? [] });
+    }
+    requestWords([...skillInfo.values()].flatMap((info) => (info.descriptionID === null ? [] : [`#${info.descriptionID}`])));
+    return skillInfo;
+  }
+
+  /**
+   * get_active_expert_systems_providing_skill for each skill: the pilot's expert systems (GetMyExpertSystems' dict, as
+   * expertSystemSvc keeps it) whose data gives it (does_expert_system_provide_skill), in that dict's order. Their names
+   * asked for. Empty for every skill where they could not be read.
+   */
+  async function expertSystemsProviding(skills: readonly number[]): Promise<ReadonlyMap<number, readonly number[]>> {
+    const out = new Map<number, readonly number[]>();
+    try {
+      const [data, answer] = await Promise.all([
+        api.getExpertSystems(callOptions),
+        expertSystemsHeld !== null ? Promise.resolve(expertSystemsHeld) : bridgeAsk("expertSystemMgr", "GetMyExpertSystems", []),
+      ]);
+      expertSystemsHeld = answer as JsonValue;
+      if (data === null) return out;
+      const mine = readDictPairs(answer).map(([key]) => Number(key)).filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0);
+      requestNames(mine.map((typeID) => ({ kind: "type" as const, id: typeID })));
+      for (const skill of skills) out.set(skill, mine.filter((typeID) => (data.get(typeID)?.skills ?? []).some(([given]) => given === skill)));
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+    }
+    return out;
+  }
+
+  async function skillRowInfoFor(typeIDs: readonly number[]): ReturnType<AppFlow["skillRowInfoFor"]> {
+    const skills = [...new Set(typeIDs)];
+    if (skills.length === 0) return new Map();
+    try {
+      const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+      return await skillRowInfos(skills, await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer));
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillCatalogueStates(typeIDs: readonly number[]): ReturnType<AppFlow["skillCatalogueStates"]> {
+    try {
+      const [skillsAnswer, allSkillsAnswer] = await Promise.all([
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+      ]);
+      const facts = await pilotTrainingFacts(typeIDs, skillsAnswer, allSkillsAnswer);
+      const { mine, lapsed, queued } = facts;
+      // GetMaxSkillLevelsInQueue.
+      const inQueue = new Map<number, number>();
+      for (const entry of queued) inQueue.set(entry.typeID, Math.max(inQueue.get(entry.typeID) ?? 0, entry.toLevel));
+      const required = (await requiredSkillsFor(typeIDs)) ?? {};
+      // clone_grade_svc.get_max_skill_level: V for an omega; an alpha's ceilings by race (nought for a skill not listed).
+      const omega = store.station.get().cloneGrade !== CLONE_GRADE_ALPHA;
+      const raceID = store.station.get().online?.raceID ?? null;
+      const ceilings = omega || raceID === null
+        ? null
+        : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
+      const states = new Map<number, CatalogueSkillRow>();
+      for (const typeID of typeIDs) {
+        const had = lapsed.get(typeID);
+        // IsSkillRequirementMetIncludingSkillQueue: each of its own needs trained (MySkillLevel) or queued that high.
+        const needsMet = (required[typeID] ?? []).every(([skill, level]) => (mine.get(skill)?.trainedSkillLevel ?? 0) >= level || (inQueue.get(skill) ?? 0) >= level);
+        const rank = facts.rank(typeID);
+        // GetNextLevelToAddToQueue: FindNextLevel on the queue, none past V.
+        const next = nextLevelToQueue(typeID, lapsed, queued);
+        const nextLevel = next > 5 ? null : next;
+        states.set(typeID, {
+          ...catalogueSkillState({
+            // IsInjected (skillsvc.IsSkillInjected): an expert system's skill alone is not.
+            level: had === undefined || had.injected === false ? null : had.trainedSkillLevel,
+            points: had?.trainedSkillPoints ?? 0,
+            needsMet,
+            ceiling: ceilings === null ? 5 : ceilings.get(typeID) ?? 0,
+          }),
+          boxes: skillLevelBoxes(typeID, 0, required, mine, lapsed, queued, facts.training, rank, ceilings === null ? null : ceilings.get(typeID) ?? 0),
+          nextLevel,
+          // GetTrainingTimeForLevelText: GetTimeLeftToTrain(level, includeBoosters=False).
+          nextTicks: nextLevel === null ? null : rawTrainingTimeForSkillLevel(typeID, nextLevel, mine, facts),
+          points: had?.trainedSkillPoints ?? 0,
+          totalPoints: rank === null || rank === undefined ? null : skillPointsForLevel(rank, 5),
+          cachedPoints: mine.get(typeID)?.trainedSkillPoints ?? 0,
+        });
+      }
+      return states;
+    } catch {
+      return null;
+    }
+  }
+
+  // expertSystemSvc._myExpertSystems: GetMyExpertSystems' answer, asked once, and from then on what each
+  // OnExpertSystemsUpdated says (onServerNotice).
+  let expertSystemsHeld: JsonValue | null = null;
+  const expertSystemsSignal = createSignal<number>(0);
+
+  async function expertSystemsHome(): ReturnType<AppFlow["expertSystemsHome"]> {
+    try {
+      const [data, answer, skillsAnswer, allSkillsAnswer] = await Promise.all([
+        api.getExpertSystems(callOptions),
+        expertSystemsHeld !== null ? Promise.resolve(expertSystemsHeld) : bridgeAsk("expertSystemMgr", "GetMyExpertSystems", []),
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+      ]);
+      expertSystemsHeld = answer as JsonValue;
+      if (data === null) return null;
+      const installed = installedExpertSystems(answer);
+      const given = installed.flatMap((one) => data.get(one.typeID)?.skills ?? []);
+      const skills = [...new Set(given.map(([skill]) => skill))];
+      requestNames([...installed.map((one) => ({ kind: "type" as const, id: one.typeID })), ...skills.map((skill) => ({ kind: "type" as const, id: skill }))]);
+      const boxes = new Map<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>();
+      const canTrain = new Map<number, boolean>();
+      if (skills.length > 0) {
+        const facts = await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer);
+        const required = (await requiredSkillsFor(skills)) ?? {};
+        for (const [skill, level] of given) {
+          boxes.set(skill + ":" + level, skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0));
+        }
+        const including = levelIncludingQueuedOf(facts.lapsed, facts.queued);
+        for (const one of installed) {
+          canTrain.set(one.typeID, skillsToTrain(data.get(one.typeID)?.skills ?? [], including, (skill) => missingSkillsRecursive(skill, required, facts.mine, facts.lapsed)).size > 0);
+        }
+      }
+      return { installed, data, boxes, canTrain };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      return null;
+    }
+  }
+
+  /** MySkillLevelIncludingQueued: the level had (lapsed counted) or the highest queued, nought where not had. */
+  function levelIncludingQueuedOf(lapsed: ReadonlyMap<number, { readonly trainedSkillLevel: number }>, queued: readonly { readonly typeID: number; readonly toLevel: number }[]) {
+    return (skill: number): number => {
+      const had = lapsed.get(skill);
+      if (had === undefined) return 0;
+      return Math.max(had.trainedSkillLevel, ...queued.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel));
+    };
+  }
+
+  async function expertSystemsBrowse(): ReturnType<AppFlow["expertSystemsBrowse"]> {
+    try {
+      const data = await api.getExpertSystems(callOptions);
+      if (data === null) return null;
+      const systems = browsableExpertSystems(data.values());
+      const given = systems.flatMap((one) => one.skills);
+      const skills = [...new Set(given.map(([skill]) => skill))];
+      requestNames([...systems.flatMap((one) => [one.typeID, ...one.ships]), ...skills].map((id) => ({ kind: "type" as const, id })));
+      const boxes = new Map<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>();
+      if (skills.length > 0) {
+        const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+        const facts = await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer);
+        const required = (await requiredSkillsFor(skills)) ?? {};
+        for (const [skill, level] of given) {
+          boxes.set(skill + ":" + level, skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0));
+        }
+      }
+      return { systems, boxes };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      return null;
+    }
+  }
+
+  async function trainExpertSystemSkills(typeID: number): Promise<void> {
+    const data = (await api.getExpertSystems(callOptions))?.get(typeID);
+    if (data === undefined) return;
+    const skills = data.skills.map(([skill]) => skill);
+    const before = await queueDropRead(skills);
+    const wanted = skillsToTrain(data.skills, levelIncludingQueuedOf(before.includingLapsed, before.queue),
+      (skill) => missingSkillsRecursive(skill, before.required, before.mine, before.includingLapsed));
+    if (wanted.size === 0) return;
+    if (!(await buyMissingSkillBooks([...wanted.keys()]))) return;
+    const read = await queueDropRead([...wanted.keys()]);
+    const next = [...read.queue];
+    for (const [skill, level] of wanted) {
+      // (QueueSkillAlreadyPresent, QueueTooManySkills, CheckCanInsertSkillAtPosition's refusals: logged, nothing committed.)
+      if (next.some((entry) => entry.typeID === skill && entry.toLevel === level)) return;
+      if (next.length >= MAX_QUEUED_SKILLS) return;
+      if (queueInsertionRefusal(skill, level, next.length, next, read.includingLapsed, read.mine, read.required, read.ceiling) !== null) return;
+      next.push({ typeID: skill, toLevel: level });
+    }
+    await saveSkillQueueSaved(next, "Added to your skill queue", "those skills");
+  }
+
+  async function removeExpertSystem(typeID: number): ReturnType<AppFlow["removeExpertSystem"]> {
+    const labels = ["UI/ExpertSystem/RemovePromptTitle", "UI/ExpertSystem/RemovePromptBody", "UI/ExpertSystem/RemoveWarning"];
+    await wordsNow(labels).catch(() => {});
+    const name = nameCache.get(nameKey("type", typeID)) ?? "that expert system";
+    const header = templateWords("UI/ExpertSystem/RemovePromptTitle", {}, "Remove the expert system?");
+    const body = templateWords("UI/ExpertSystem/RemovePromptBody", { expert_system: typeID }, "Take " + name + " out?");
+    const warning = templateWords("UI/ExpertSystem/RemoveWarning", {}, "What is left of its time is lost.");
+    const yes = await askDialog("CustomQuestion", { type: "dict", entries: [["header", header], ["question", body + "<br><br>" + warning]] }, body + "\n\n" + warning);
+    if (!yes) return false;
+    try {
+      await bridgeDo("expertSystemMgr", "RemoveMyExpertSystem", [typeID]);
+      return true;
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const message = errorWords(error);
+      if (!sayRefusalDialog(error, message)) sayDialog("CustomNotify", { type: "dict", entries: [["notify", message]] }, message);
+      return false;
+    }
+  }
+
+  async function skillGroupCertificates(groupIDs: readonly number[]): ReturnType<AppFlow["skillGroupCertificates"]> {
+    try {
+      const [certificates, skillsAnswer] = await Promise.all([
+        api.getSkillGroupCertificates(groupIDs, callOptions),
+        bridgeAsk("skillHandler", "GetSkills", []),
+      ]);
+      const mine = skillLevelsOf(skillsAnswer);
+      const myLevel = (typeID: number): number => mine.get(typeID)?.trainedSkillLevel ?? 0;
+      const out = new Map<number, { readonly claimed: number; readonly total: number }>();
+      for (const groupID of groupIDs) {
+        const filed = certificates.get(groupID) ?? [];
+        out.set(groupID, {
+          claimed: filed.reduce((sum, certificate) => sum + certificateLevel(certificate.skills, myLevel), 0),
+          total: filed.length * 5,
+        });
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  async function attributeDisplay(attributeIDs: readonly number[]): ReturnType<AppFlow["attributeDisplay"]> {
+    const read = await api.getAttributeDisplay(attributeIDs, callOptions).catch(() => null);
+    if (read === null || !read.available) return null;
+    const shown = new Map<number, { readonly displayNameID: number | null; readonly iconFile: string | null }>();
+    for (const [attributeID, record] of read.attributes) if (record !== null) shown.set(attributeID, record);
+    requestWords([...shown.values()].flatMap((record) => (record.displayNameID === null ? [] : ["#" + record.displayNameID])));
+    return shown;
+  }
+
+  /** characterskills/queue.py SKILLQUEUE_MAX_NUM_SKILLS. */
+  const MAX_QUEUED_SKILLS = 150;
+
+  async function skillMenuChoose(typeID: number, entry: SkillMenuEntry): Promise<void> {
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    const queueRead = Array.isArray(answered) ? (answered[0] as JsonValue) : null;
+    if (entry.kind === "applyPoints") {
+      // UseFreeSkillPoints: none into the skill in training (CannotApplyFreePointsWhileTrainingSkill); else a quantity
+      // asked, up to the free points, begun at those the next level needs.
+      if (skillInTraining(queueRead) === typeID) {
+        sayDialog("CannotApplyFreePointsWhileTrainingSkill", null, "That skill is training. Pause the queue first.");
+        return;
+      }
+      const free = Array.isArray(answered) ? Math.max(0, Math.trunc(Number(answered[1]) || 0)) : 0;
+      const needed = Math.trunc(entry.points);
+      const points = await askQuantity({
+        min: 0,
+        max: free,
+        value: needed,
+        // QtyPopup: its hint, as none is given, SetQtyBetween with FmtAmt's figures.
+        hintLabel: "UI/Common/SetQtyBetween",
+        hint: `From 0 to ${free.toLocaleString("en-US")}.`,
+        hintArgs: { min: "0", max: free.toLocaleString("en-US") },
+        captionLabel: "UI/SkillQueue/AddSkillMenu/ApplySkillPoints",
+        caption: "Apply skill points",
+        labelLabel: "UI/SkillQueue/AddSkillMenu/UseSkillPointsWindow",
+        labelArgs: { skill: typeID, skillPoints: needed },
+        label: `Points for the next level: ${needed.toLocaleString("en-US")}.`,
+      });
+      if (points === null || points <= 0) return;
+      await applyFreeSkillPoints(typeID, points);
+      return;
+    }
+    const queue = queuedLevels(queueRead);
+    if (entry.kind === "removeHighest") {
+      const required = (await requiredSkillsFor(queue.map((each) => each.typeID))) ?? {};
+      const refusal = queueRemovalRefusal(typeID, entry.level, queue, required);
+      if (refusal !== null) {
+        sayDialog(refusal, null, refusal === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+          ? "A higher level of this skill is still in the queue."
+          : "A skill in the queue needs this one.");
+        return;
+      }
+    }
+    const after = queueAfter(typeID, entry, queue, MAX_QUEUED_SKILLS);
+    if (after === null) return;
+    if ("refusal" in after) {
+      if (after.refusal === "QueueTooManySkills") {
+        sayDialog("QueueTooManySkills", { type: "dict", entries: [["num", MAX_QUEUED_SKILLS]] }, `The queue holds ${MAX_QUEUED_SKILLS} skills at most.`);
+      } else {
+        sayDialog("QueueSkillAlreadyPresent", null, "That level is in the queue already.");
+      }
+      return;
+    }
+    await saveSkillQueueSaved(after.queue, entry.kind === "removeHighest" ? "Removed from your skill queue" : "Added to your skill queue", "that skill");
+  }
+
+  /**
+   * The client's requiredSkillsForTypes for these types and every skill they need however deep, each type's needs in
+   * its table's order (the route walks fifty asked at a time). Null without the client's table.
+   */
+  async function requiredSkillsFor(typeIDs: readonly number[]): Promise<RequiredSkills | null> {
+    const asked = [...new Set(typeIDs)];
+    const out: Record<number, RequiredSkills[number]> = {};
+    for (let at = 0; at < asked.length; at += 50) {
+      const read = await api.getRequiredSkills(asked.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      Object.assign(out, read.order);
+    }
+    return out;
+  }
+
+  async function skillPlanLevelAction(skill: number, level: number, state: LevelButtonState): Promise<void> {
+    if (state === "book") {
+      // BuyAllRequiredSkillbooks: GetPrereqSkillsRecursive's skills, then the skill itself.
+      const required = await requiredSkillsFor([skill]);
+      await buyMissingSkillBooks([...(required === null ? [] : requiredSkillsRecursive(skill, required).keys()), skill]);
+      return;
+    }
+    if (state !== "remove" && state !== "add") return;
+    const [answered, skillsAnswer, allSkillsAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    if (state === "remove") {
+      const required = (await requiredSkillsFor(queue.map((entry) => entry.typeID))) ?? {};
+      const refusal = queueRemovalRefusal(skill, level, queue, required);
+      if (refusal !== null) {
+        sayDialog(refusal, null, refusal === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+          ? "A higher level of this skill is still in the queue."
+          : "A skill in the queue needs this one.");
+        return;
+      }
+      // InternalRemoveFromQueue, then OnClientQueueModified's commit.
+      await saveSkillQueueSaved(queue.filter((entry) => !(entry.typeID === skill && entry.toLevel === level)), "Removed from your skill queue", "that skill");
+      return;
+    }
+    const required = await requiredSkillsFor([skill]);
+    if (required === null) return;
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const { levels, stopped } = levelsForSkillAndRequirements(
+      skill,
+      level,
+      missingSkillsRecursive(skill, required, skillLevelsOf(skillsAnswer), lapsed),
+      lapsed,
+      queue,
+      (typeID) => requiredSkillsRecursive(typeID, required),
+    );
+    // QueueSkillAlreadyPresent stops the adding, logged and not committed; with nothing to add nothing changes.
+    if (stopped || levels.length === 0) return;
+    await saveSkillQueueSaved([...queue, ...levels.map(([typeID, toLevel]) => ({ typeID, toLevel }))], "Added to your skill queue", "that skill");
+  }
+
+  async function trainSkillPlan(
+    plan: PersonalSkillPlan,
+    trackedID: string | null,
+    trackedCopy?: () => Promise<string | null>,
+  ): Promise<{ readonly added: number | null; readonly trackedID: string | null }> {
+    const [answered, allSkillsAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const maxQueued = (typeID: number): number => Math.max(0, ...queue.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
+    const levels = untrainedSkills(plan, (typeID) => lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued);
+    const next = queueWithLevels(queue, levels);
+    // AddSkillsToQueue, then OnClientQueueModified: committed started unless every training slot is in use.
+    if (!(await saveSkillQueueSaved(next, "Added to your skill queue", "those skills"))) return { added: null, trackedID };
+    const trackID = trackedCopy ? await trackedCopy() : plan.id;
+    if (trackID === null) return { added: next.length - queue.length, trackedID };
+    let tracked = trackedID;
+    if (tracked === null) {
+      tracked = await setTrackedSkillPlan(trackID).catch(() => null);
+    } else if (tracked !== trackID && (await askDialog("AskTrackPlan", {}, "Follow this plan from now on?"))) {
+      tracked = await setTrackedSkillPlan(trackID).catch(() => null);
+    }
+    return { added: next.length - queue.length, trackedID: tracked };
+  }
+
+  let skillCatalogueHeld: readonly CatalogueSkill[] | null = null;
+  async function skillCatalogue(): Promise<{ readonly skills: readonly CatalogueSkill[]; readonly held: ReadonlySet<number> } | null> {
+    try {
+      if (skillCatalogueHeld === null) skillCatalogueHeld = await api.getSkillCatalogue(callOptions);
+      const held = new Set(skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])).keys());
+      return { skills: skillCatalogueHeld, held };
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null> {
+    const out = new Map<number, ReadonlyMap<number, readonly number[]>>();
+    for (let at = 0; at < typeIDs.length; at += 100) {
+      const read = await api.getSkillsRequiring(typeIDs.slice(at, at + 100), callOptions);
+      if (!read.available) return null;
+      for (const [typeID, byLevel] of read.requiring) out.set(typeID, byLevel);
+    }
+    return out;
+  }
+
+  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones, corp?: CorpPlanSave): Promise<boolean> {
+    // The plan's own request module: personalSkillPlanRequest, or corpSkillPlanRequest for a corporation plan.
+    const scope = corp ? "corporation" : "character";
+    const requirements = edited.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level }));
+    // OnSaveButton: AdjustMilestonesToAddAndDeletedIDs first.
+    const adjusted = milestones ? adjustedMilestones(milestones.milestones, milestones.persisted) : { toAdd: [], toDelete: [] };
+    try {
+      if (saved === null) {
+        // CheckNumCorpSkillPlans, CheckNumPersonalSkillPlans
+        if (corp && planCount >= MAX_CORP_PLANS) {
+          sayDialog("MaxCorpPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "Your corporation has as many skill plans as can be kept.");
+          return false;
+        }
+        if (!corp && planCount >= MAX_PERSONAL_PLANS) {
+          sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
+          return false;
+        }
+        const created = await gatewayAsk(`eve_public.${scope}.skill.plan.CreateRequest`, {
+          skill_plan: {
+            name: edited.name,
+            description: edited.description,
+            skill_requirements: requirements,
+            ...(corp ? { category: { uuid: categoryBytes(corp.categoryID) } } : {}),
+          },
+        }, true);
+        // _CreateAndCachePersonalController, _CreateAndCacheCorpController: SetMilestonesToAdd, SaveMilestones.
+        const planID = uuidFromBytes(String(((created as { skill_plan?: { uuid?: string } } | null)?.skill_plan?.uuid) ?? ""));
+        if (planID !== null) await saveMilestones(planID, adjusted, scope);
+        return true;
+      }
+      const uuid = bytesFromUuid(saved.id);
+      // _GetCallsToUpdate: the name, the description, the skills, and the category, where they differ.
+      const calls: Promise<unknown>[] = planUpdates(saved, edited).map((what) =>
+        what === "name"
+          ? gatewayAsk(`eve_public.${scope}.skill.plan.SetNameRequest`, { skill_plan: { uuid }, name: edited.name }, true)
+          : what === "description"
+            ? gatewayAsk(`eve_public.${scope}.skill.plan.SetDescriptionRequest`, { skill_plan: { uuid }, description: edited.description }, true)
+            : gatewayAsk(`eve_public.${scope}.skill.plan.SetSkillRequirementsRequest`, { skill_plan: { uuid }, requirements }, true));
+      if (corp && corp.categoryID !== corp.savedCategoryID) {
+        calls.push(gatewayAsk("eve_public.corporation.skill.plan.SetCategoryRequest", { skill_plan: { uuid }, category: { uuid: categoryBytes(corp.categoryID) } }, true));
+      }
+      await Promise.all(calls);
+      // _SaveExistingPersonalSkillPlan, _SaveExistingCorpSkillPlan: skillPlan.SaveMilestones().
+      await saveMilestones(saved.id, adjusted, scope);
+      return true;
+    } catch (error) {
+      saySkillPlanSaveRefused(error, edited);
+      return false;
+    }
+  }
+
+  /** _RaiseErrorMessageOnSave: requestsMessenger.send_request makes every failure a UserError; 412 is SkillPlansErrorInvalidData. */
+  function saySkillPlanSaveRefused(error: unknown, edited: { readonly name: string; readonly description: string }): void {
+    const invalid = (error as { statusCode?: number }).statusCode === 412;
+    if (invalid && edited.name.length > MAX_PLAN_NAME_LENGTH) sayDialog("UnableToSaveSkillPlanNameTooLong", null, "The plan's name is too long to save.");
+    else if (invalid && edited.description.length > MAX_PLAN_DESCRIPTION_LENGTH) sayDialog("UnableToSaveSkillPlanDescTooLong", null, "The plan's description is too long to save.");
+    else sayDialog("UnableToSaveSkillPlan", null, "The skill plan could not be saved.");
+  }
+
+  async function copySkillPlan(
+    plan: { readonly name: string; readonly description: string; readonly requirements: readonly (readonly [number, number])[]; readonly milestones: readonly Milestone[] },
+    planCount: number | null,
+  ): Promise<string | null> {
+    // GetSkillPlanCopy: SkillPlanCopied said (in its own tasklet, whatever comes of the save).
+    sayDialog("SkillPlanCopied", null, "A copy of the plan is now among your own.");
+    // CheckNumPersonalSkillPlans
+    if (planCount === null) {
+      sayDialog("UnableToFetchSkillPlans", null, "Your skill plans could not be read.");
+      return null;
+    }
+    if (planCount >= MAX_PERSONAL_PLANS) {
+      sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
+      return null;
+    }
+    let created: JsonValue | null;
+    try {
+      created = await gatewayAsk("eve_public.character.skill.plan.CreateRequest", {
+        skill_plan: {
+          name: plan.name,
+          description: plan.description,
+          skill_requirements: plan.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+        },
+      }, true);
+    } catch (error) {
+      saySkillPlanSaveRefused(error, plan);
+      return null;
+    }
+    const planID = uuidFromBytes(String(((created as { skill_plan?: { uuid?: string } } | null)?.skill_plan?.uuid) ?? ""));
+    if (planID === null) return null;
+    // _CreateAndCachePersonalController: SetMilestonesToAdd(GetMilestonesSet()), SaveMilestones.
+    await saveMilestones(planID, { toAdd: plan.milestones, toDelete: [] });
+    return planID;
+  }
+
+  // A corporation plan's milestones are the corporation's (CorpSkillPlanMilestoneService: corpMilestoneRequest); the
+  // skills they lack are set by the personal request even so (_AddSkillsMissingForMilestones calls
+  // personalSkillPlanRequest.SetRequiredSkills whatever the plan is), as the client does.
+  async function skillPlanMilestones(plan: PersonalSkillPlan, scope: "character" | "corporation" = "character"): ReturnType<AppFlow["skillPlanMilestones"]> {
+    const uuid = bytesFromUuid(plan.id);
+    let read;
+    try {
+      read = milestonesFromGetAll(await gatewayAsk(`eve_public.${scope}.skill.plan.milestone.GetAllRequest`, { skill_plan: { uuid } }));
+    } catch {
+      return null;
+    }
+    const types = [...new Set(read.map((milestone) => milestone.typeID))];
+    if (types.length === 0) return { milestones: [], requirements: null };
+    requestNames(types.map((typeID) => ({ kind: "type" as const, id: typeID })));
+    const [meta, dogma, needs] = await Promise.all([
+      api.getTypeMeta(types, callOptions),
+      api.fetchTypeDogma(types, [ATTRIBUTE_SKILL_IS_OBSOLETE], callOptions),
+      api.getRequiredSkills(types, callOptions),
+    ]);
+    if (!meta.available || !needs.available) return null;
+    const factsOf = (typeID: number) => {
+      const facts = meta.types.get(typeID);
+      return facts ? { published: facts.published, categoryID: facts.categoryID, obsolete: Boolean(dogma[typeID]?.[ATTRIBUTE_SKILL_IS_OBSOLETE]) } : null;
+    };
+    // Each not valid deleted (its failure left as the client leaves it: logged, the milestone not kept).
+    const valid = [];
+    for (const milestone of read) {
+      if (milestoneValid(milestone, factsOf(milestone.typeID))) valid.push(milestone);
+      else await gatewayAsk(`eve_public.${scope}.skill.plan.milestone.DeleteRequest`, { milestone: { uuid: bytesFromUuid(milestone.id) } }, true).catch(() => null);
+    }
+    // The skills they need that the plan lacks, put in it.
+    let requirements: (readonly [number, number])[] | null = null;
+    const missing = milestonesMissingRequirements(valid, skillRequirementsDict(plan), needs.order);
+    if (missing.length > 0) {
+      const updated: PlanSkillLevel[] = [...plan.requirements, ...missing.flatMap((each) => each.missing)];
+      const validation = await skillPlanValidationFacts([...new Set(updated.map(([skill]) => skill))]).catch(() => null);
+      if (validation !== null) {
+        validateSkillPlan(updated, validation);
+        requirements = updated;
+        // uthread.new(SetRequiredSkills): not waited on, its failure only logged.
+        void setPlanSkillRequirements(plan.id, updated).catch(() => {});
+      }
+    }
+    return { requirements, milestones: await milestoneEntriesWith(valid, needs.order, (typeID) => factsOf(typeID)?.categoryID ?? null) };
+  }
+
+  /** Milestones as the opened plan shows them: their kind, needs, IsCompleted and the time left to train their type. */
+  async function milestoneEntriesWith(milestones: readonly Milestone[], required: RequiredSkills, categoryOf: (typeID: number) => number | null): Promise<MilestoneEntry[]> {
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const mine = skillLevelsOf(skillsAnswer);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const needed = milestones.map((milestone) => milestoneRequiredSkills(milestone, required));
+    const skillTypes = [...new Set(milestones.flatMap((milestone) => [...requiredSkillsRecursive(milestone.typeID, required).keys()]))];
+    const training = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    return milestones.map((milestone, at): MilestoneEntry => ({
+      ...milestone,
+      subType: milestoneSubType(categoryOf(milestone.typeID)),
+      needs: needed[at]!,
+      completed: milestoneCompleted(needed[at]!, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
+      // GetSkillTrainingTimeLeftToUseType(typeID, includeBoosters=False): the milestone's type's needs (a skill
+      // milestone's skill's, its own level aside).
+      trainingTicks: training === null ? null : trainingTimeLeft(milestone.typeID, required, mine, lapsed, training),
+    }));
+  }
+
+  async function certifiedPlanMilestones(milestones: readonly Milestone[]): Promise<readonly MilestoneEntry[] | null> {
+    const types = [...new Set(milestones.map((milestone) => milestone.typeID))];
+    if (types.length === 0) return [];
+    requestNames(types.map((typeID) => ({ kind: "type" as const, id: typeID })));
+    const facts = await skillPlanTypeFacts(types).catch(() => null);
+    if (facts === null) return null;
+    return milestoneEntriesWith(milestones, facts.required, (typeID) => facts.categoryID.get(typeID) ?? null);
+  }
+
+  /**
+   * EditableSkillPlanController.SaveMilestones: the ids to delete deleted, then those to add created, each set at once
+   * (uthread.parallel), each one's failure only logged (_Delete, _Create).
+   */
+  async function saveMilestones(planID: string, milestones: EditorMilestones, scope: "character" | "corporation" = "character"): Promise<void> {
+    await Promise.all(milestones.toDelete.map((id) =>
+      gatewayAsk(`eve_public.${scope}.skill.plan.milestone.DeleteRequest`, { milestone: { uuid: bytesFromUuid(id) } }, true).catch(() => null)));
+    const skill_plan = { uuid: bytesFromUuid(planID) };
+    await Promise.all(milestones.toAdd.map((milestone) =>
+      gatewayAsk(`eve_public.${scope}.skill.plan.milestone.CreateRequest`, {
+        milestone: milestone.kind === "type"
+          ? { skill_plan, train_to_type: { sequential: String(milestone.typeID) } }
+          : { skill_plan, skill: { skill_type: { sequential: String(milestone.typeID) }, level: milestone.level } },
+      }, true).catch(() => null)));
+  }
+
+  async function skillPlanTypeFacts(typeIDs: readonly number[]): ReturnType<AppFlow["skillPlanTypeFacts"]> {
+    const required: Record<number, readonly (readonly [number, number])[]> = {};
+    for (let at = 0; at < typeIDs.length; at += 50) {
+      const read = await api.getRequiredSkills(typeIDs.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      Object.assign(required, read.order);
+    }
+    const meta = await api.getTypeMeta(typeIDs, callOptions);
+    if (!meta.available) return null;
+    return { required, categoryID: new Map(typeIDs.map((typeID) => [typeID, meta.types.get(typeID)?.categoryID ?? null])) };
+  }
+
+  async function skillPlanFittingTypes(fitting: Parameters<AppFlow["skillPlanFittingTypes"]>[0]): ReturnType<AppFlow["skillPlanFittingTypes"]> {
+    const facts = await fittingTypeFacts([...new Set(fitting.fitData.map(([typeID]) => typeID))]).catch(() => null);
+    if (facts === null) return null;
+    return fittingTypesForSkillPlan(
+      fitting.shipTypeID,
+      fitting.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+      (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
+    );
+  }
+
+  function sayCantAddAsMilestone(): void {
+    sayDialog("CantAddAsMilestone", null, "That can not be a milestone.");
+  }
+
+  function askReplaceMilestone(oldName: string, newName: string): Promise<boolean> {
+    return askDialog("ReplaceMilestoneWithNewMilestone", { type: "dict", entries: [["milestoneNameOld", oldName], ["milestoneNameNew", newName]] }, `Put ${newName} in the place of ${oldName}?`);
+  }
+
+  function askLeaveSkillPlanEditor(): Promise<boolean> {
+    return askDialog("AskCloseSkillPlanEditor", {}, "Leave the plan without saving what you changed?");
+  }
+
+  async function setTrackedSkillPlan(id: string | null): Promise<string | null> {
+    await gatewayAsk("eve_public.character.skill.plan.SetActiveRequest", { skill_plan: { uuid: bytesFromUuid(id ?? NO_SKILL_PLAN) } }, true);
+    return id;
+  }
+
+  async function corpSkillPlans(): ReturnType<AppFlow["corpSkillPlans"]> {
+    let summaries;
+    try {
+      summaries = corpPlansFromGetAll(await gatewayAsk("eve_public.corporation.skill.plan.GetAllRequest"));
+    } catch {
+      return null;
+    }
+    const read = await Promise.all(summaries.map((summary) =>
+      gatewayAsk("eve_public.corporation.skill.plan.GetRequest", { skill_plan: { uuid: bytesFromUuid(summary.id) } })
+        .then((payload) => ({ ...summary, requirements: corpPlanRequirements(payload) }))
+        .catch(() => ({ ...summary, requirements: [] as (readonly [number, number])[] }))));
+    const validation = await skillPlanValidationFacts([...new Set(read.flatMap((plan) => plan.requirements.map(([skill]) => skill)))]).catch(() => null);
+    const plans = read.map((plan) => {
+      if (validation === null) return plan;
+      const requirements: PlanSkillLevel[] = plan.requirements.map(([skill, level]) => [skill, level] as const);
+      try {
+        if (validateSkillPlan(requirements, validation)) {
+          void gatewayAsk("eve_public.corporation.skill.plan.SetSkillRequirementsRequest", {
+            skill_plan: { uuid: bytesFromUuid(plan.id) },
+            requirements: requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+          }, true).catch(() => null);
+        }
+      } catch {
+        return plan;
+      }
+      return { ...plan, requirements };
+    });
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const entries = await planEntries(plans, skillsAnswer, allSkillsAnswer);
+    return {
+      plans: entries.map((entry) => ({ ...entry, corp: true as const })),
+      canEdit: hasSkillPlanManagerRole(store.station.get().online?.corpRole ?? null),
+    };
+  }
+
+  async function sharedSkillPlan(skillPlanID: string, ownerID: number | null): ReturnType<AppFlow["sharedSkillPlan"]> {
+    let plan: PersonalSkillPlan | null = null;
+    try {
+      const uuid = bytesFromUuid(skillPlanID);
+      if (inPlayerCorporation(ownerID)) {
+        const shared = await gatewayAsk("eve_public.corporation.skill.plan.GetSharedRequest", { skill_plan: { uuid } });
+        const attributes = (shared as { skill_plan?: { name?: unknown; description?: unknown } } | null)?.skill_plan;
+        if (attributes) {
+          // CorpSkillPlanController.skillRequirements: the corporation's Get (where the plan is another corporation's,
+          // the gateway has none for the pilot, and nothing is had).
+          const requirements = corpPlanRequirements(await gatewayAsk("eve_public.corporation.skill.plan.GetRequest", { skill_plan: { uuid } }));
+          plan = {
+            id: skillPlanID,
+            name: typeof attributes.name === "string" ? attributes.name : "",
+            description: typeof attributes.description === "string" ? attributes.description : "",
+            requirements,
+          };
+        }
+      } else {
+        const shared = await gatewayAsk("eve_public.character.skill.plan.GetSharedRequest", { skill_plan: { uuid } });
+        // personalSkillPlanRequest.GetShared: none where the answer has no plan (HasField('skill_plan')).
+        if ((shared as { skill_plan?: unknown } | null)?.skill_plan) {
+          const read = planFromGet(skillPlanID, shared);
+          const requirements: PlanSkillLevel[] = read.requirements.map(([skill, level]) => [skill, level] as const);
+          const validation = await skillPlanValidationFacts([...new Set(requirements.map(([skill]) => skill))]).catch(() => null);
+          if (validation !== null && validateSkillPlan(requirements, validation)) {
+            void setPlanSkillRequirements(skillPlanID, requirements).catch(() => {});
+          }
+          plan = { ...read, requirements };
+        }
+      }
+    } catch {
+      plan = null;
+    }
+    if (plan === null) {
+      sayDialog("SkillPlanNotFound", null, "That skill plan is not there any more.");
+      return null;
+    }
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const [entry] = await planEntries([plan], skillsAnswer, allSkillsAnswer);
+    return entry ? { ...entry, linked: true as const } : null;
+  }
+
+  async function deleteCorpSkillPlan(id: string): Promise<boolean> {
+    if (!(await askDialog("DeleteSkillPlan", {}, "Delete this skill plan for good?"))) return false;
+    await gatewayAsk("eve_public.corporation.skill.plan.DeleteRequest", { skill_plan: { uuid: bytesFromUuid(id) } }, true);
+    return true;
+  }
+
+  async function deletePersonalSkillPlan(id: string): Promise<boolean> {
+    if (!(await askDialog("DeleteSkillPlan", {}, "Delete this skill plan for good?"))) return false;
+    await gatewayAsk("eve_public.character.skill.plan.DeleteRequest", { skill_plan: { uuid: bytesFromUuid(id) } }, true);
+    return true;
+  }
+
+  // The compare tool's types and their attributes' records, as read: static data, kept.
+  const comparisonTypesHeld = new Map<number, ComparisonTypeData | null>();
+  const comparisonRecordsHeld = new Map<number, DogmaAttributeRecord | null>();
+  const comparisonUnitNamesHeld = new Map<number, number | null>();
+
+  async function comparisonTypes(typeIDs: readonly number[]): ReturnType<AppFlow["comparisonTypes"]> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !comparisonTypesHeld.has(typeID));
+    for (let at = 0; at < wanted.length; at += 50) {
+      const read = await api.getTypeAttributes(wanted.slice(at, at + 50), callOptions).catch(() => null);
+      if (read === null || !read.available) return null;
+      for (const [typeID, type] of read.types) comparisonTypesHeld.set(typeID, type);
+      for (const [attributeID, record] of read.attributes) comparisonRecordsHeld.set(attributeID, record);
+      for (const [unitID, messageID] of read.unitNameIDs) comparisonUnitNamesHeld.set(unitID, messageID);
+      const records = [...read.attributes.values()].flatMap((record) => (record === null ? [] : [record]));
+      requestWords([
+        ...records.flatMap((record) => [record.displayNameID, record.tooltipDescriptionID].flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))),
+        ...[...read.unitNameIDs.values()].flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
+      ]);
+      // A type's name heads its column; a value of a type or a group (unitTypeID 116, unitGroupID 115) is written by its name.
+      const refs: NameRef[] = [];
+      for (const [typeID, type] of read.types) {
+        refs.push({ kind: "type", id: typeID });
+        for (const [attributeID, value] of type?.attributes ?? []) {
+          const unitID = comparisonRecordsHeld.get(attributeID)?.unitID ?? null;
+          if (value !== null && Number.isSafeInteger(Math.trunc(value)) && Math.trunc(value) > 0) {
+            if (unitID === 116) refs.push({ kind: "type", id: Math.trunc(value) });
+            if (unitID === 115) refs.push({ kind: "typeGroup", id: Math.trunc(value) });
+          }
+        }
+      }
+      requestNames(refs);
+    }
+    return { types: new Map(comparisonTypesHeld), attributes: new Map(comparisonRecordsHeld), unitNameIDs: new Map(comparisonUnitNamesHeld) };
+  }
+
+  const typeFactsHeld = new Map<number, TypeMetaFacts | null>();
+  async function typeFacts(typeIDs: readonly number[]): Promise<ReadonlyMap<number, TypeMetaFacts | null> | null> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !typeFactsHeld.has(typeID));
+    for (let at = 0; at < wanted.length; at += 500) {
+      const read = await api.getTypeMeta(wanted.slice(at, at + 500), callOptions).catch(() => null);
+      if (read === null || !read.available) return null;
+      for (const [typeID, facts] of read.types) typeFactsHeld.set(typeID, facts);
+    }
+    return new Map(typeIDs.map((typeID) => [typeID, typeFactsHeld.get(typeID) ?? null]));
+  }
+
+  let cfgPricesHeld: ReadonlyMap<number, number | null> | null = null;
+  async function cfgAveragePrices(): Promise<ReadonlyMap<number, number | null> | null> {
+    if (cfgPricesHeld === null) {
+      try {
+        cfgPricesHeld = averagePrices(await bridgeAsk("config", "GetAverageMarketPrices", []));
+      } catch {
+        cfgPricesHeld = null;
+      }
+    }
+    return cfgPricesHeld;
+  }
+
+  /** globalConfig/const.py SHOW_COMMUNITY_FITTINGS_CONFIG, and its default ('1'). */
+  const SHOW_COMMUNITY_FITTINGS_CONFIG = "show_community_fittings";
+
+  /**
+   * globalConfig.AreCommunityFittingsEnabled (getFunctions.py 56, GetGlobalConfigBooleanValue 14 to 19): the global
+   * config's value as the client keeps it, as a whole number (Python's int), not nought; on by default, where it gives
+   * none, where it is no whole number, or where the pilot's transport does not carry the config.
+   */
+  async function communityFittingsEnabled(): Promise<boolean> {
+    const config = await api.getGlobalConfig([SHOW_COMMUNITY_FITTINGS_CONFIG], callOptions).catch(() => null);
+    const value = config?.values[SHOW_COMMUNITY_FITTINGS_CONFIG];
+    if (value === null || value === undefined) return true;
+    const text = String(value).trim();
+    return /^[+-]?\d+$/.test(text) ? Number.parseInt(text, 10) !== 0 : true;
+  }
+
+  /**
+   * fittingSvc.GetCommunityFittings (400 to 412): none where the global config has them off; else
+   * corpFittingMgr.GetCommunityFittings(), the fittings of the community's corporation (COMMUNITY_FITTING_CORP), none
+   * where the call fails.
+   */
+  async function readCommunityFittings(enabled: boolean): Promise<readonly SourcedFitting[]> {
+    if (!enabled) return [];
+    const rows = await bridgeAsk("corpFittingMgr", "GetCommunityFittings", []).then(decodeCommunityFittings).catch(() => []);
+    return rows.map((row) => ({ ...row, source: "community" as const }));
+  }
+
+  /**
+   * fittingSvc.GetAllianceFittings (415 to 418): the alliance's fittings where the pilot is in one (session.allianceid),
+   * none else; none where the call fails.
+   */
+  async function readOwnAllianceFittings(): Promise<readonly SourcedFitting[]> {
+    const allianceID = store.station.get().online?.allianceID ?? null;
+    if (allianceID === null || !(allianceID > 0)) return [];
+    const rows = await readAllianceFittings(bridgeAsk, allianceID).then(decodeAllianceFittings).catch(() => []);
+    return rows.map((row) => ({ ...row, source: "alliance" as const }));
+  }
+
+  /** The fittings read, with more after them (a fitting already had kept once, by its number). */
+  function withFittingsAfter(library: readonly SourcedFitting[], more: readonly SourcedFitting[]): readonly SourcedFitting[] {
+    const seen = new Set(library.map((fitting) => fitting.fittingID));
+    return [...library, ...more.filter((fitting) => !seen.has(fitting.fittingID))];
+  }
+
+  /**
+   * fittingSvc.GetAllFittingsForCharacter (388 to 398): the pilot's fittings, its corporation's, the community's and
+   * its alliance's, read again.
+   */
+  async function loadSavedFittings(): Promise<void> {
+    // GetMaxShipsToFit, which the fittings' menus offer Open Multifit by (GetFittingMenu, 508 and 516).
+    void readMaxShipsToFit().catch(() => {});
+    const [library, enabled, alliance] = await Promise.all([loadRefitLibrary(), communityFittingsEnabled(), readOwnAllianceFittings()]);
+    const community = await readCommunityFittings(enabled);
+    communityFittingsEnabledSignal.set(enabled);
+    savedFittingsSignal.set(withFittingsAfter(withFittingsAfter(library, community), alliance));
+    void reckonFittingsDeletable().catch(() => {});
+  }
+
+  /**
+   * fittingSvc.ClearCommunityFittingCache (1274 to 1277), at OnCommunityFittingsUpdated and, where the global config has
+   * turned them off, at OnGlobalConfigChanged (1265 to 1272): the community's fittings let go; the browser reads them
+   * again as it loads, so they are read again here where any fittings are kept.
+   */
+  async function communityFittingsChanged(): Promise<void> {
+    const kept = savedFittingsSignal.get();
+    const enabled = await communityFittingsEnabled();
+    communityFittingsEnabledSignal.set(enabled);
+    if (kept === null) return;
+    const others = kept.filter((fitting) => fitting.source !== "community");
+    savedFittingsSignal.set(withFittingsAfter(others, await readCommunityFittings(enabled)));
+  }
+
+  /** A saved fitting by its number, from those last read (fittingSvc.fittings[ownerID][fittingID]); null where none. */
+  function savedFittingOf(fittingID: number): SourcedFitting | null {
+    return savedFittingsSignal.get()?.find((fitting) => fitting.fittingID === fittingID) ?? null;
+  }
+
+  /** inventorycommon/const.py rigSlotFlags, and dogma's attributeFitsToShipType; and eve's UE_TYPEID. */
+  const RIG_SLOT_FLAGS: readonly number[] = [92, 93, 94];
+  const ATTRIBUTE_FITS_TO_SHIP_TYPE = 1380;
+  /** dogma/const.py attributeModuleIsObsolete. */
+  const ATTRIBUTE_MODULE_IS_OBSOLETE = 2696;
+  const UE_TYPEID = 4;
+
+  /**
+   * fittingSvc.LoadFitting (554 to 618), getFailedDict: refused while one is under way (BusyFittingWarning), in space
+   * (CannotLoadFittingInSpace), for a fitting not had (FittingDoesNotExist) and for another type of ship
+   * (ShipTypeInFittingNotSameAsShip). A fitting with rigs: the ship's own fitted if they are the same or it is a
+   * strategic cruiser, the ship's left with a word if they differ, else asked (FitRigs), the rigs going to the cargo on
+   * No. Subsystems are checked as the client checks them. Then the hangar's stacks named and FitFitting asked of the
+   * ship's own inventory, and where useFittingNameForShips is set the ship named after the fitting (622 to 625). Answers
+   * what failed to load, or null where it was refused before the call.
+   */
+  async function loadSavedFitting(fitting: SourcedFitting | null): Promise<{ typeID: number; qty: number }[] | null> {
+    if (busyFitting) {
+      const info = templateWords("UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning", {}, "A fitting is already being loaded.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+      return null;
+    }
+    const inventory = store.inventory.get();
+    const dockedAt = inventory.stationID ?? inventory.structureID ?? null;
+    if (dockedAt === null) {
+      sayDialog("CannotLoadFittingInSpace", null, "A fitting can be loaded only while docked.");
+      return null;
+    }
+    if (fitting === null) {
+      sayDialog("FittingDoesNotExist", null, "That fitting is no longer there.");
+      return null;
+    }
+    const shipID = store.fitting.get().activeShipID ?? inventory.activeShipID;
+    if (shipID === null) return null;
+    busyFitting = true;
+    try {
+      const [hangar, shipItems] = await Promise.all([listHangar(bridgeAsk), listShip(bridgeAsk, shipID)]);
+      const shipTypeID = hangar.find((item) => item.itemID === shipID)?.typeID ?? null;
+      if (shipTypeID !== fitting.shipTypeID) {
+        sayDialog("ShipTypeInFittingNotSameAsShip", null, "That fitting is for another type of ship.");
+        return null;
+      }
+      const types = [...new Set([shipTypeID, ...fitting.modules.map((module) => module.typeID)])];
+      const facts = new Map<number, { groupID: number | null; categoryID: number | null }>();
+      for (let at = 0; at < types.length; at += 50) {
+        const read = await api.getTypePrices(types.slice(at, at + 50), callOptions);
+        for (const typeID of types.slice(at, at + 50)) facts.set(typeID, { groupID: read.groupID[typeID] ?? null, categoryID: read.categoryID[typeID] ?? null });
+      }
+      const fit = fittingForApplying(
+        fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+        shipItems,
+        (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null },
+      );
+      const modular = isModularShip(facts.get(shipTypeID)?.groupID ?? null);
+      let fitRigs = false;
+      const cargoItemsByType: Record<number, number> = {};
+      if (Object.keys(fit.rigsByFlag).length > 0) {
+        const fitted = fittedRigsByFlag(shipItems);
+        const rigMismatch = isThereRigMismatch(fitted, fit.rigsByFlag);
+        const sameRigsInSameSlots = Object.keys(fitted).length === Object.keys(fit.rigsByFlag).length
+          && Object.entries(fit.rigsByFlag).every(([flag, typeID]) => fitted[Number(flag)] === typeID);
+        if (rigMismatch && !modular) {
+          const notify = templateWords("UI/Fitting/ShipHasRigsAlready", {}, "The ship has other rigs fitted, so the fitting's rigs were left out.");
+          sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+        } else if (modular || sameRigsInSameSlots) {
+          fitRigs = true;
+        } else if (await askDialog("FitRigs", { type: "dict", entries: [] }, "Fit the fitting's rigs as well? A rig fitted cannot be taken off again.")) {
+          fitRigs = true;
+        } else {
+          for (const [flag, typeID] of Object.entries(fit.modulesByFlag)) {
+            if (RIG_SLOT_FLAGS.includes(Number(flag))) cargoItemsByType[typeID] = (cargoItemsByType[typeID] ?? 0) + 1;
+          }
+        }
+      }
+      const itemsToFit = itemsToFitFrom(hangar, fit.itemTypes);
+      if (fit.numSubSystems > 0) {
+        const alreadyFitted = new Set(shipItems.filter((item) => item.flagID !== null && VISIBLE_SUBSYSTEM_FLAGS.includes(item.flagID)).map((item) => item.typeID));
+        if (fit.numSubSystems !== VISIBLE_SUBSYSTEM_FLAGS.length) {
+          sayDialog("CantUnfitSubSystems", null, "A strategic cruiser's subsystems are changed all together.");
+          return null;
+        }
+        const subsystems = Object.entries(fit.modulesByFlag).filter(([flag]) => VISIBLE_SUBSYSTEM_FLAGS.includes(Number(flag))).map(([, typeID]) => typeID);
+        const fitsTo = await api.fetchTypeDogma(subsystems, [ATTRIBUTE_FITS_TO_SHIP_TYPE], callOptions);
+        for (const module of subsystems) {
+          if (alreadyFitted.has(module)) continue;
+          const valid = Math.trunc(fitsTo[module]?.[ATTRIBUTE_FITS_TO_SHIP_TYPE] ?? 0);
+          if (shipTypeID !== valid) {
+            const typed = (typeID: number): JsonValue => ({ type: "tuple", items: [UE_TYPEID, typeID] });
+            sayDialog("CannotFitSubSystemNotShip", { type: "dict", entries: [["subSystemName", typed(module)], ["validShipName", typed(valid)], ["shipName", typed(shipTypeID)]] }, "That subsystem is for another ship.");
+            return null;
+          }
+          if ((fit.itemTypes.get(module) ?? 0) > 0) {
+            sayDialog("CantUnfitSubSystems", null, "A strategic cruiser's subsystems are changed all together.");
+            return null;
+          }
+        }
+      }
+      const failed = await fitFitting(bridgeDo, shipID, shipTypeID, itemsToFit, dockedAt, {
+        chargesByType: fit.chargesByType, dronesByType: fit.dronesByType, fightersByTypeID: fit.fightersByType,
+        iceByType: fit.iceByType, modulesByFlag: fit.modulesByFlag, implantsByTypeID: fit.implantsByType,
+      }, cargoItemsByType, fitRigs);
+      // LoadFitting (622 to 625): where useFittingNameForShips is set, the ship named the fitting's name, its markup taken
+      // out (StripTags), 20 letters at most, by SetLabel on the inventory manager.
+      if (useFittingNameForShipsSignal.get()) {
+        await setLabelCall(bridgeDo, shipID, fitting.name.split(/<.*?>/).join("").slice(0, 20)).catch(() => {});
+      }
+      void loadInventory().catch(() => {});
+      void loadFitting().catch(() => {});
+      return failed;
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be loaded: ${errorWords(error)}`);
+      return null;
+    } finally {
+      busyFitting = false;
+    }
+  }
+
+  /**
+   * LoadFittingFromFittingListAndGetBuyOptionOnFailure (484 to 491): the fitting loaded, and where anything failed to
+   * load, the Buy All box with it (OpenBuyAllBox); with nothing failed, the simulation left (TryExitSimulation, its
+   * question asked).
+   */
+  async function fitFittingToActiveShip(fittingID: number): Promise<void> {
+    await fitToActiveShip(savedFittingOf(fittingID));
+  }
+
+  /**
+   * LoadFittingFromFittingListAndGetBuyOptionOnFailure, and fittingMgmtCont.Fit (268 to 279), of a fitting as it is
+   * held. Fit leaves the simulation only with the Fitting window open, and the client simulates only in that window.
+   */
+  async function fitToActiveShip(fitting: SourcedFitting | null): Promise<void> {
+    const failed = await loadSavedFitting(fitting);
+    if (failed !== null && failed.length === 0) {
+      // ghostFittingSvc.TryExitSimulation(askQuestion=True): the simulation left, where there is one, after the question.
+      await exitSimulation();
+      return;
+    }
+    if (failed === null || fitting === null) return;
+    dialogsSaidCount += 1;
+    buyAllAskedSignal.set({ n: dialogsSaidCount, missing: failed, fitting });
+  }
+
+  /** multiBuyUtil.BuyFit: each type of the fitting by how many, and the ship one. */
+  async function buyFit(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting !== null) await buyFitOf(fitting);
+  }
+
+  /** multiBuyUtil.BuyFit of a fitting as it is held. */
+  async function buyFitOf(fitting: SourcedFitting): Promise<void> {
+    const wanted = new Map<number, number>();
+    for (const module of fitting.modules) wanted.set(module.typeID, (wanted.get(module.typeID) ?? 0) + module.quantity);
+    wanted.set(fitting.shipTypeID, 1);
+    await openMultiBuy(wanted);
+  }
+
+  /**
+   * fittingSvc.DisplayFitting (752 to 766): the ViewFitting window opened on the fitting, or the one open reloaded with
+   * it (ReloadWnd). Its contents are reckoned as the client lists them (bridge/fittingContents.ts), from each type's
+   * group and category and the two type lists, and each slot kind is headed by its effect's name.
+   */
+  async function viewFitting(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting !== null) await openViewFitting(fitting);
+  }
+
+  /** What the fitting display goes by of types: each one's group and category, and which of the two type lists it is on. */
+  async function fittingTypeFacts(types: readonly number[]): Promise<Map<number, TypeFacts>> {
+    const facts = new Map<number, TypeFacts>();
+    for (let at = 0; at < types.length; at += 32) {
+      const chunk = types.slice(at, at + 32);
+      const [prices, lists] = await Promise.all([
+        api.getTypePrices(chunk, callOptions),
+        api.loadTypeListsHolding(chunk, [TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES], callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>)),
+      ]);
+      for (const typeID of chunk) facts.set(typeID, { groupID: prices.groupID[typeID] ?? null, categoryID: prices.categoryID[typeID] ?? null, lists: new Set(lists[typeID] ?? []) });
+    }
+    return facts;
+  }
+
+  /**
+   * fittingSvc.DisplayFitting (752 to 766) of a fitting as it is held, saved or not; truncated for one read from a link
+   * cut short. With Shift held (uicore.uilib.Key(VK_SHIFT)) the window is the fitting's own, its windowID made of its
+   * fitData sorted ('ViewFitting_%s'); else the one window, ViewFitting. Where that window is open it is reloaded with
+   * the fitting (ReloadWnd) and brought in front (Maximize); else it is opened, in front.
+   */
+  async function openViewFitting(fitting: SourcedFitting, truncated = false, ownWindowID: string | null = null): Promise<void> {
+    const sorted = fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const)
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    const windowID = ownWindowID ?? (shiftHeld() ? `ViewFitting_${JSON.stringify(sorted)}` : "ViewFitting");
+    const windows = viewFittingsAskedSignal.get();
+    const open = windows.find((view) => view.windowID === windowID) ?? null;
+    const n = open?.n ?? (dialogsSaidCount += 1);
+    const loaded = (open?.loaded ?? 0) + 1;
+    const effectNames = open?.effectNames ?? windows[0]?.effectNames ?? {};
+    const view: ViewFittingAsk = { n, windowID, loaded, fitting, contents: null, effectNames, marks: null, shipCategoryID: null, truncated };
+    viewFittingsAskedSignal.set([...windows.filter((each) => each.n !== n), view]);
+    const [{ contents, effectNames: names }, { marks, shipCategoryID }] = await Promise.all([fittingInfo(fitting), fittingTypeMarks(fitting)]);
+    viewFittingsAskedSignal.set(viewFittingsAskedSignal.get().map((each) => (each.n === n && each.loaded === loaded ? { ...each, contents, effectNames: names, marks, shipCategoryID } : each)));
+  }
+
+  /**
+   * What the display window's entries are marked by (fittingSvc._GetDataForFittingEntry, 963 to 966, and
+   * FittingModuleEntry.HasSkill, fitting.py 113 to 117): each type's skills (godma.CheckSkillRequirementsForType),
+   * whether it is obsolete (attributeModuleIsObsolete) and whether it is dynamic; and the hull's category.
+   */
+  async function fittingTypeMarks(fitting: SourcedFitting): Promise<{ readonly marks: Readonly<Record<number, ViewFittingTypeMark>>; readonly shipCategoryID: number | null }> {
+    const types = [...new Set(fitting.modules.map((module) => module.typeID))];
+    const asked = [...new Set([fitting.shipTypeID, ...types])];
+    const [met, attributes, prices] = await Promise.all([
+      typesMeetingSkills(types).catch(() => null),
+      types.length > 0
+        ? api.fetchTypeDogma(types, [ATTRIBUTE_MODULE_IS_OBSOLETE], callOptions).catch(() => ({} as Readonly<Record<number, Readonly<Record<number, number>>>>))
+        : Promise.resolve({} as Readonly<Record<number, Readonly<Record<number, number>>>>),
+      (async () => {
+        const dynamic: Record<number, boolean | null> = {};
+        const categoryID: Record<number, number | null> = {};
+        for (let at = 0; at < asked.length; at += 50) {
+          const read = await api.getTypePrices(asked.slice(at, at + 50), callOptions).catch(() => null);
+          if (read === null) continue;
+          Object.assign(dynamic, read.dynamic);
+          Object.assign(categoryID, read.categoryID);
+        }
+        return { dynamic, categoryID };
+      })(),
+    ]);
+    const marks: Record<number, ViewFittingTypeMark> = {};
+    for (const typeID of types) {
+      marks[typeID] = {
+        skillsMet: met === null ? null : met.has(typeID),
+        obsolete: Boolean(attributes[typeID]?.[ATTRIBUTE_MODULE_IS_OBSOLETE]),
+        dynamic: prices.dynamic[typeID] === true,
+      };
+    }
+    return { marks, shipCategoryID: prices.categoryID[fitting.shipTypeID] ?? null };
+  }
+
+  // The rack effects' names, as the numbers of their messages, read once.
+  let rackEffectNames: Readonly<Record<number, number | null>> | null = null;
+
+  /**
+   * fittingSvc.GetFittingInfoForScrollList: a fitting's contents by heading (fittingContents), with the names of the
+   * slot kinds' effects as their messages' numbers; what the display window and the fitting info tooltip
+   * (fittingInfoTooltip.LoadFittingInfoTooltip) list.
+   */
+  async function fittingInfo(fitting: SourcedFitting): Promise<{ readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> }> {
+    const facts = await fittingTypeFacts([...new Set(fitting.modules.map((module) => module.typeID))]);
+    const contents = fittingContents(
+      fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+      (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() },
+    );
+    if (rackEffectNames === null || Object.keys(rackEffectNames).length === 0) {
+      rackEffectNames = await api.getEffectDisplayNameIDs(Object.values(RACK_EFFECTS), callOptions).then((read) => read.displayNameIDs).catch(() => ({}));
+    }
+    return { contents, effectNames: rackEffectNames };
+  }
+
+  /**
+   * The fitting window's Save Fit As and its fit-name label's click (hullAndHardwareTypeBrowser.SaveFitting, with
+   * GetShipName; fittingWnd.OpenFittingForCurrentShip, with none: the same name, GetFittingForCurrentInWnd's own),
+   * fittingSvc.DoSaveFitting (1153 to 1164): the fitting the window shows (GetFittingForCurrentInWnd), in its own
+   * display window ('Save_ViewFitting_' and the hull's type), reloaded and brought in front where it is open.
+   */
+  async function saveFitAs(): Promise<void> {
+    const fitting = await currentShipFitting();
+    if (fitting === null) return;
+    await openViewFitting(fitting, false, `Save_ViewFitting_${fitting.shipTypeID}`);
+  }
+
+  /** The active ship's own name (cfg.evelocations), its type's where it has none; "" with no ship. */
+  async function activeShipName(): Promise<string> {
+    const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
+    if (shipID === null) return "";
+    const shipTypeID = store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null;
+    const named = await api.resolveNames([{ kind: "evelocation", id: shipID }, ...(shipTypeID === null ? [] : [{ kind: "type" as const, id: shipTypeID }])], callOptions)
+      .then((read) => read.names).catch(() => ({} as Readonly<Record<string, string | null>>));
+    return named[nameKey("evelocation", shipID)] ?? (shipTypeID === null ? null : named[nameKey("type", shipTypeID)]) ?? "";
+  }
+
+  /**
+   * ghostFittingSvc.GetShipName (1212 to 1218): simulated, its fittingName with "*" before it once the simulation has
+   * been changed (the fitting's name; the ship's own, LoadCurrentShip; or SimulatedShipName for a hull alone); else the
+   * active ship's name.
+   */
+  async function fittingWindowShipName(): Promise<string> {
+    if (!simulation) return activeShipName();
+    let name = simulation.name;
+    if (!name && simulation.shipID !== null) name = await activeShipName();
+    if (!name) {
+      const typeID = simulation.simulated.ship.typeID;
+      await resolveNamesNow([{ kind: "type", id: typeID }]);
+      name = templateWords("UI/Fitting/FittingWindow/SimulatedShipName", { typeID }, `Simulated ${nameCache.get(nameKey("type", typeID)) ?? ""}`);
+    }
+    return simulation.simulated.changed ? `*${name}` : name;
+  }
+
+  /**
+   * fittingSvc.GetFittingDictForActiveShip (120 to 138): each of the active ship's own visible items, and in space its
+   * drones out (its dogma location's drones not in it, each as one in the drone bay), made fitData by
+   * CreateFittingData with the modules' charges put in the hold; with its hull. Null with no ship.
+   */
+  async function activeShipFitData(): Promise<{ readonly shipTypeID: number; readonly fitData: [number, number, number][] } | null> {
+    const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
+    if (shipID === null) return null;
+    const [flight, shipItems] = await Promise.all([api.getFlightStatus(callOptions), listShip(bridgeAsk, shipID)]);
+    const shipTypeID = decodeFlightStatus(flight.flight).shipTypeID ?? null;
+    if (shipTypeID === null) return null;
+    const dronesOut = store.flight.get().status?.inSpace === true
+      ? await api.getDrones(callOptions)
+        .then((answer) => (decodeDronesInSpace(answer.inSpace) ?? []).filter((drone) => drone.controlled && drone.typeID !== null))
+        .catch(() => [])
+      : [];
+    const items = [...shipItems, ...dronesOut.map((drone) => ({ typeID: drone.typeID as number, flagID: 87, quantity: 1 }))];
+    const facts = await fittingTypeFacts([...new Set(items.map((item) => item.typeID))]);
+    return { shipTypeID, fitData: createFittingData(items, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() }) };
+  }
+
+  /**
+   * fittingSvc.GetFittingDictForCurrentFittingWindowShip (112 to 116): simulated, GetFittingDictForSimulatedShip (the
+   * simulated ship's own visible items and its drones, made fitData by CreateFittingData with the modules' charges in
+   * the hold); else the active ship's (activeShipFitData).
+   */
+  async function fittingWindowFitData(): Promise<{ readonly shipTypeID: number; readonly fitData: [number, number, number][] } | null> {
+    if (!simulation) return activeShipFitData();
+    const items = simulatedShipItems(simulation.simulated);
+    const facts = await fittingTypeFacts([...new Set(items.map((item) => item.typeID))]);
+    return { shipTypeID: simulation.simulated.ship.typeID, fitData: createFittingData(items, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() }) };
+  }
+
+  /**
+   * fittingSvc.GetFittingForCurrentInWnd (1166 to 1186): the fitting of the ship the window shows, as it stands
+   * (GetFittingDictForCurrentFittingWindowShip); simulated, named GetShipName and described as the saved fitting it was
+   * loaded from (lastLoadedFitInfo); else named the active ship's name, with no description; no number and no owner.
+   * Null with no ship.
+   */
+  async function currentShipFitting(): Promise<SourcedFitting | null> {
+    const read = await fittingWindowFitData();
+    if (read === null) return null;
+    const loaded = simulation?.loadedFit ?? null;
+    const original = loaded === null ? null : savedFittingOf(loaded.fittingID);
+    const description = original !== null && original.ownerID === loaded?.ownerID ? original.description : "";
+    return {
+      fittingID: 0, ownerID: 0, name: await fittingWindowShipName(), description, shipTypeID: read.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    };
+  }
+
+  /**
+   * A fitting the Fitting window gives as it is dragged: its fit-name label's (fittingUtil.GetFittingDragData, 79 to
+   * 96: the fitting the window shows, named GetShipName while simulated, else the active ship's name, with no
+   * description), or its ghost ship icon's (ghostShipIcon.GetDragData, 178 to 191: the active ship's own fitting,
+   * GetFittingDictForActiveShip, named the active ship's name, simulated or not). Null with no ship.
+   */
+  async function draggedFittingOf(source: "activeShip" | "fittingWindow"): Promise<{ readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string } | null> {
+    const read = source === "activeShip" ? await activeShipFitData() : await fittingWindowFitData();
+    if (read === null) return null;
+    const name = source === "fittingWindow" && simulation ? await fittingWindowShipName() : await activeShipName();
+    return { shipTypeID: read.shipTypeID, fitData: read.fitData, name };
+  }
+
+  /** The text of a fitting as the client copies it (GetFittingEFTString), its types named first. */
+  async function fittingText(fitting: SourcedFitting): Promise<string> {
+    await resolveNamesNow([...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])].map((id) => ({ kind: "type" as const, id })));
+    return fittingEftString(
+      { shipTypeID: fitting.shipTypeID, name: fitting.name, modules: fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })) },
+      (typeID) => nameCache.get(nameKey("type", typeID)) ?? "",
+    );
+  }
+
+  /**
+   * The fitting window's Export to Clipboard (hullAndHardwareTypeBrowser._copy_fitting_to_clipboard, 713 to 716): the
+   * ship's fitting as it stands (GetFittingForCurrentInWnd) as the client's text; null with no ship.
+   */
+  async function currentFitText(): Promise<string | null> {
+    const fitting = await currentShipFitting();
+    return fitting === null ? null : fittingText(fitting);
+  }
+
+  /**
+   * The fitting window's Import from Clipboard (fittingSvc.ImportFittingFromClipboard, 1111 to 1138): the clipboard's
+   * text read as the client reads a fitting (the BFF's port of importFittingUtil); where it fails,
+   * ImportingErrorFromClipboard; else the display window on the fitting read, not saved (DisplayFitting, an owner of
+   * nought), and the lines it could not read said under CouldNotReadLines (CustomInfo). A clipboard the browser would
+   * not give is the page's own to say.
+   */
+  async function importFittingFromClipboard(text: string | null): Promise<void> {
+    if (text === null) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", "The browser did not let the clipboard be read."]] }, "The browser did not let the clipboard be read.");
+      return;
+    }
+    const read = await api.importFitting(text, callOptions);
+    if ("error" in read) {
+      sayDialog("ImportingErrorFromClipboard", null, "No fitting could be read from the clipboard.");
+      return;
+    }
+    await openViewFitting({
+      fittingID: 0, ownerID: 0, name: read.name, description: "", shipTypeID: read.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    });
+    if (read.errorLines.length > 0) {
+      const info = `<b>${templateWords("UI/SkillQueue/CouldNotReadLines", {}, "These lines were not understood:")}</b><br>${read.errorLines.join("<br>")}`;
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    }
+  }
+
+  /** appConst.maxCharFittings and maxCorpFittings: the most fittings an owner may have. */
+  const MAX_CHAR_FITTINGS = 500;
+  const MAX_CORP_FITTINGS = 600;
+  /** appConst.corpRoleFittingManager. */
+  const CORP_ROLE_FITTING_MANAGER = 576460752303423488n;
+
+  /** session.corprole & corpRoleFittingManager: whether the pilot manages its corporation's fittings. */
+  function hasFittingManagerRole(): boolean {
+    const digits = store.station.get().online?.corpRole ?? null;
+    return digits !== null && /^\d+$/.test(digits) && (BigInt(digits) & CORP_ROLE_FITTING_MANAGER) !== 0n;
+  }
+
+  /**
+   * fittingSvc.GetFittingMgr (85 to 92): the pilot's fitting manager for its own fittings, its corporation's for the
+   * corporation's, its alliance's for the alliance's; with the kind of owner, for its name and its fittings' source.
+   */
+  function fittingOwner(ownerID: number): { readonly manager: string; readonly kind: "character" | "corporation" | "alliance"; readonly source: SourcedFitting["source"] } | null {
+    const online = store.station.get().online;
+    if (online === null || !(ownerID > 0)) return null;
+    if (ownerID === online.characterID) return { manager: "charFittingMgr", kind: "character", source: "personal" };
+    if (ownerID === online.corporationID) return { manager: "corpFittingMgr", kind: "corporation", source: "corporation" };
+    if ((online.allianceID ?? null) !== null && ownerID === online.allianceID) return { manager: "allianceFittingMgr", kind: "alliance", source: "alliance" };
+    return null;
+  }
+
+  /**
+   * fittingSvc.PersistFitting (268 to 313), the display window's Save of a fitting as new for an owner (SaveNewFitting,
+   * 332 to 337): no name is FittingNeedsToHaveAName; the name trimmed and cut to 50, the description to 500
+   * (maxLengthFittingName, maxLengthFittingDescription); the owner's fittings as they are kept (PrimeFittings), and at
+   * the most (600 for the corporation, 500 for any other owner) OwnerMaxFittings with the owner's name; VerifyFitting
+   * ("@@", nothing in it); a fitting of the owner's of that name for the ship asked about first (UpdateFitCorp for the
+   * corporation, UpdateFitPersonal for any other; Yes to go on, its description kept where the new one is none) and
+   * saved over (UpdateFitting with its number), else SaveFitting, on the owner's fitting manager; answered the
+   * fitting's number, the fitting then kept and the window closed (saveCallback).
+   */
+  async function persistFitting(n: number, ownerID: number, name: string, description: string, fit: SourcedFitting): Promise<void> {
+    if (name.trim() === "") {
+      sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
+      return;
+    }
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return;
+    const newName = name.trim().slice(0, 50);
+    let newDescription = description.slice(0, 500);
+    if (savedFittingsSignal.get() === null) await loadSavedFittings().catch(() => {});
+    const own = (savedFittingsSignal.get() ?? []).filter((each) => each.ownerID === ownerID);
+    const maxFittings = owner.kind === "corporation" ? MAX_CORP_FITTINGS : MAX_CHAR_FITTINGS;
+    if (own.length >= maxFittings) {
+      await resolveNamesNow([{ kind: owner.kind, id: ownerID }]);
+      const ownerName = nameCache.get(nameKey(owner.kind, ownerID)) ?? "";
+      sayDialog("OwnerMaxFittings", { type: "dict", entries: [["owner", ownerName], ["maxFittings", maxFittings]] }, `${ownerName} has ${maxFittings} fittings already.`);
+      return;
+    }
+    if (newName.includes("@@") || newDescription.includes("@@")) {
+      sayDialog("InvalidFittingInvalidCharacter", null, "A fitting's name and description may not hold \"@@\".");
+      return;
+    }
+    if (fit.modules.length === 0) {
+      sayDialog("ParseFittingFittingDataEmpty", null, "There is nothing in this fitting.");
+      return;
+    }
+    const existing = own.find((each) => each.shipTypeID === fit.shipTypeID && each.name === newName) ?? null;
+    if (existing !== null) {
+      const question = owner.kind === "corporation" ? "UpdateFitCorp" : "UpdateFitPersonal";
+      if (!(await askDialog(question, { type: "dict", entries: [["fittingName", newName]] }, `There is a fitting named ${newName} already. Save over it?`))) return;
+      if (!newDescription) newDescription = existing.description;
+    }
+    const fitting = { name: newName, description: newDescription, shipTypeID: fit.shipTypeID, fitData: fit.modules.map((module) => [module.typeID, module.flagID, module.quantity]), ownerID };
+    let fittingID: number;
+    try {
+      const answer = existing !== null
+        ? await bridgeDo(owner.manager, "UpdateFitting", [ownerID, fitting], { fittingID: existing.fittingID })
+        : await bridgeDo(owner.manager, "SaveFitting", [ownerID, fitting]);
+      fittingID = Number(answer);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be saved: ${errorWords(error)}`);
+      return;
+    }
+    if (!(Number.isSafeInteger(fittingID) && fittingID > 0)) return;
+    const saved: SourcedFitting = { fittingID, ownerID, name: newName, description: newDescription, shipTypeID: fit.shipTypeID, savedDate: null, modules: fit.modules, source: owner.source };
+    savedFittingsSignal.set([...(savedFittingsSignal.get() ?? []).filter((each) => each.fittingID !== fittingID), saved]);
+    closeViewFitting(n);
+  }
+
+  /**
+   * The display window's Save (fittingMgmtCont.Save, 281 to 285): SaveForOwner of the corporation for a fitting of the
+   * corporation's with its fitting manager's role, else of the pilot; and its menu's Save for Alliance, for
+   * Corporation and for the pilot (_get_save_sub_menu_data, 123 to 131): SaveForOwner of that owner (289 to 294). A
+   * fitting not saved yet, or saved for another owner, is saved new for this one (SaveNewFitting, PersistFitting: a
+   * copy). For the fitting's own owner it is SaveExistingFitting (311 to 330), fittingSvc.ChangeNameAndDescription (710
+   * to 724): no name is FittingNeedsToHaveAName; the name trimmed; where either is changed, "@@" in either is
+   * InvalidFittingInvalidCharacter, and UpdateNameAndDescription(fittingID, ownerID, name, description) on the owner's
+   * fitting manager, the kept fitting changed with it; then the window closed (its saveCallback, CloseByUser). The
+   * server refuses the corporation's and the alliance's without the role (and the alliance's to any but its executor).
+   */
+  async function saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void> {
+    const open = viewFittingOf(n);
+    const online = store.station.get().online;
+    if (open === null || online === null) return;
+    const corporationID = online.corporationID ?? 0;
+    const ownerID = forOwner === undefined
+      ? (open.fitting.ownerID === corporationID && hasFittingManagerRole() ? corporationID : online.characterID)
+      : forOwner === "corporation" ? corporationID : forOwner === "alliance" ? online.allianceID ?? 0 : online.characterID;
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return;
+    // SaveForOwner: a fitting not saved yet (no owner) is saved new; SaveExistingFitting: for another owner, a copy.
+    if (!open.fitting.ownerID || ownerID !== open.fitting.ownerID) {
+      await persistFitting(n, ownerID, name, description, open.fitting);
+      return;
+    }
+    const fitting = open.fitting;
+    if (name.trim() === "") {
+      sayDialog("FittingNeedsToHaveAName", null, "A fitting needs a name.");
+      return;
+    }
+    const newName = name.trim();
+    if (newName !== fitting.name || description !== fitting.description) {
+      if (newName.includes("@@") || description.includes("@@")) {
+        sayDialog("InvalidFittingInvalidCharacter", null, "A fitting's name and description may not hold \"@@\".");
+        return;
+      }
+      try {
+        await bridgeDo(owner.manager, "UpdateNameAndDescription", [fitting.fittingID, fitting.ownerID, newName, description]);
+      } catch (error) {
+        if (isSessionLost(error)) throw error;
+        sayRefusalDialog(error, `The fitting could not be saved: ${errorWords(error)}`);
+        return;
+      }
+      const kept = savedFittingsSignal.get();
+      if (kept !== null) {
+        savedFittingsSignal.set(kept.map((each) => (each.fittingID === fitting.fittingID ? { ...each, name: newName, description } : each)));
+      }
+    }
+    closeViewFitting(n);
+  }
+
+  /** The display window's Fit, Buy and Simulate (FittingMgmtContInStandalone's buttons), or the window closed. */
+  async function answerViewFitting(n: number, answer: "fit" | "buy" | "simulate" | "multifit" | "close"): Promise<void> {
+    const open = viewFittingOf(n);
+    if (open === null) return;
+    if (answer === "close") {
+      closeViewFitting(n);
+      return;
+    }
+    // ViewFitting._AddCustomMenuOptions (414 to 419): Open Multifit, docked, on a copy of the fitting shown.
+    if (answer === "multifit") await openMultiFitWith(open.fitting);
+    else if (answer === "fit") await fitToActiveShip(open.fitting);
+    // fittingMgmtCont.SimulateFitting (299 to 301): SimulateFitting(fitting), 405 to 413, the Fitting window raised or
+    // opened (the caller's), then ghostFittingSvc.SimulateFitting of the fitting as the window holds it.
+    else if (answer === "simulate") {
+      await simulateFitting({
+        shipTypeID: open.fitting.shipTypeID,
+        fitData: open.fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+        name: open.fitting.name,
+        ...(open.fitting.fittingID > 0 && open.fitting.ownerID > 0 ? { fittingID: open.fitting.fittingID, ownerID: open.fitting.ownerID } : {}),
+      });
+    } else await buyFitOf(open.fitting);
+  }
+
+  /**
+   * _get_save_sub_menu_data (123 to 131): whether the Save menu offers Save for Alliance, a pilot in an alliance whose
+   * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
+   * the alliance's moniker).
+   */
+  async function corporationShowInfo(corporationID: number): ReturnType<AppFlow["corporationShowInfo"]> {
+    const info = corporationPublicInfoOf(await bridgeAsk("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
+    if (info === null) return null;
+    const [aggression, enlistmentFactions] = await Promise.all([
+      bridgeAsk("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null),
+      isNpcCorporation(corporationID)
+        ? Promise.resolve(null)
+        : bridgeAsk("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null),
+    ]);
+    return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+  }
+
+  async function allianceShowInfo(allianceID: number): ReturnType<AppFlow["allianceShowInfo"]> {
+    return decodeAllianceInfo(await bridgeAsk("allianceRegistry", "GetAlliancePublicInfo", [allianceID]).catch(() => null));
+  }
+
+  async function saveForAllianceOffered(): Promise<boolean> {
+    const online = store.station.get().online;
+    const allianceID = online?.allianceID ?? null;
+    if (online === null || allianceID === null || !(allianceID > 0)) return false;
+    const alliance = decodeAllianceInfo(await bridgeAsk("allianceRegistry", "GetAlliance", [allianceID]).catch(() => null));
+    return alliance !== null && alliance.executorCorpID !== null && alliance.executorCorpID === online.corporationID;
+  }
+
+  /** fittingSvc.ExportFittingToClipboard(fitting) (1145 to 1148): GetFittingEFTString, the English names. */
+  async function viewFittingText(n: number): Promise<string | null> {
+    const open = viewFittingOf(n);
+    if (open === null) return null;
+    return fittingText(open.fitting);
+  }
+
+  /**
+   * fittingUtil.CanDeleteFit (354 to 364): the pilot's own fitting; with the fitting manager's role, its corporation's;
+   * and with it, its alliance's where its corporation is the alliance's executor (alliance.GetAlliance).
+   */
+  async function canDeleteFit(ownerID: number): Promise<boolean> {
+    const owner = fittingOwner(ownerID);
+    if (owner === null) return false;
+    if (owner.kind === "character") return true;
+    if (!hasFittingManagerRole()) return false;
+    if (owner.kind === "corporation") return true;
+    return saveForAllianceOffered();
+  }
+
+  // Which owners' fittings the browser offers Delete Fitting for (GetDeletableNodes), as last reckoned with the
+  // fittings read: the pilot's own always.
+  const fittingsDeletableSignal = createSignal<{ readonly corporation: boolean; readonly alliance: boolean }>({ corporation: false, alliance: false });
+
+  /** GetDeletableNodes' CanDeleteFit for the corporation's and the alliance's (the latter asked only where any is kept). */
+  async function reckonFittingsDeletable(): Promise<void> {
+    const online = store.station.get().online;
+    const corporation = online !== null && (online.corporationID ?? 0) > 0 && hasFittingManagerRole();
+    const anyAlliance = (savedFittingsSignal.get() ?? []).some((fitting) => fitting.source === "alliance");
+    const alliance = corporation && anyAlliance && (await saveForAllianceOffered().catch(() => false));
+    fittingsDeletableSignal.set({ corporation, alliance });
+  }
+
+  /**
+   * fittingUtil.DeleteFittings for one fitting (376 to 399), where CanDeleteFit lets it: the DeleteFitting question, Yes
+   * to go on; then fittingSvc.DeleteFitting (433 to 439): DeleteFitting(ownerID, fittingID) on the owner's fitting
+   * manager, and the fitting let go from those kept.
+   */
+  async function deleteFitting(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting === null) return;
+    const owner = fittingOwner(fitting.ownerID);
+    if (owner === null || !(await canDeleteFit(fitting.ownerID))) return;
+    if (!(await askDialog("DeleteFitting", { type: "dict", entries: [] }, "Delete this fitting for good?"))) return;
+    try {
+      await bridgeDo(owner.manager, "DeleteFitting", [fitting.ownerID, fitting.fittingID]);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fitting could not be deleted: ${errorWords(error)}`);
+      return;
+    }
+    fittingLetGo(fitting.fittingID);
+  }
+
+  // The bullet before each owner's line (fittingUtil._GetDeleteWarningText, fittingSvc.GetDeletedFittingsText): two
+  // spaces, U+2022 and a space, as the compiled files hold it (the decompiled source misreads it as "\u0x2022 ").
+  const OWNER_LINE_BULLET = "  \u2022 ";
+
+  /**
+   * GetDeletableNodes (fittingUtil.py 367 to 373) of the fittings selected, and fittingUtil.DeleteFittings (376 to
+   * 399): one, as deleteFitting; more, by owner (a defaultdict of lists, its keys in the order CPython iterates them),
+   * DeleteFittingsManyOneOwner with the owner's name, or DeleteFittingsMany with a line for each of the pilot, its
+   * corporation and its alliance that has any (_GetDeleteWarningText, 402 to 417), Yes to go on; then
+   * fittingSvc.DeleteManyFittings (441 to 460): each owner's DeleteManyFittings(ownerID, fittingIDs) at once
+   * (uthread.parallel), the fittings each deleted counted, and DeletedManyFittings said with the count and, for more
+   * than one owner, a line for each (GetDeletedFittingsText, 462 to 479). The fittings go from the browser by
+   * OnManyFittingsDeleted, as the client's do.
+   */
+  async function deleteFittings(fittingIDs: readonly number[]): Promise<void> {
+    const deletable: SourcedFitting[] = [];
+    for (const fittingID of fittingIDs) {
+      const fitting = savedFittingOf(fittingID);
+      if (fitting !== null && (await canDeleteFit(fitting.ownerID))) deletable.push(fitting);
+    }
+    if (deletable.length === 0) return;
+    if (deletable.length === 1) {
+      await deleteFitting(deletable[0]!.fittingID);
+      return;
+    }
+    const byOwner = new Map<number, number[]>();
+    for (const fitting of deletable) byOwner.set(fitting.ownerID, [...(byOwner.get(fitting.ownerID) ?? []), fitting.fittingID]);
+    const ownerIDs = intDictOf([...byOwner.keys()]).keys();
+    const kindOf = (ownerID: number) => fittingOwner(ownerID)?.kind ?? "character";
+    await resolveNamesNow(ownerIDs.map((ownerID) => ({ kind: kindOf(ownerID), id: ownerID })));
+    const ownerNameOf = (ownerID: number): string => nameCache.get(nameKey(kindOf(ownerID), ownerID)) ?? String(ownerID);
+    await wordsNow(["UI/Fitting/FittingWindow/OwnerAndFittingNum", "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNum", "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNumWithAttempted"]);
+    let asked: boolean;
+    if (ownerIDs.length === 1) {
+      const ownerText = ownerNameOf(ownerIDs[0]!);
+      asked = await askDialog("DeleteFittingsManyOneOwner", { type: "dict", entries: [["ownerText", ownerText], ["numFittings", deletable.length]] },
+        `Delete these ${deletable.length} fittings of ${ownerText} for good?`);
+    } else {
+      const online = store.station.get().online;
+      const lines: string[] = [];
+      for (const ownerID of [online?.characterID ?? null, online?.corporationID ?? null, online?.allianceID ?? null]) {
+        const own = ownerID === null || ownerID === 0 ? [] : byOwner.get(ownerID) ?? [];
+        if (own.length === 0) continue;
+        const ownerName = ownerNameOf(ownerID!);
+        lines.push(OWNER_LINE_BULLET + templateWords("UI/Fitting/FittingWindow/OwnerAndFittingNum", { ownerName, numFittings: own.length }, `${ownerName}, ${own.length} of them`));
+      }
+      asked = await askDialog("DeleteFittingsMany", { type: "dict", entries: [["ownerText", lines.join("<br>")], ["numFittings", deletable.length]] },
+        `Delete these ${deletable.length} fittings for good?\n${lines.join("\n")}`);
+    }
+    if (!asked) return;
+    let deleted: (readonly unknown[])[];
+    try {
+      deleted = await Promise.all(ownerIDs.map(async (ownerID) => {
+        const answer = await bridgeDo(fittingOwner(ownerID)!.manager, "DeleteManyFittings", [ownerID, byOwner.get(ownerID) ?? []]);
+        return Array.isArray(answer) ? (answer as readonly unknown[]) : isListValue(answer) ? answer.items : [];
+      }));
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fittings could not be deleted: ${errorWords(error)}`);
+      return;
+    }
+    const fittingsDeleted = deleted.reduce((sum, each) => sum + each.length, 0);
+    let ownerText = "";
+    if (ownerIDs.length > 1) {
+      const lines: string[] = [];
+      ownerIDs.forEach((ownerID, at) => {
+        const attempted = byOwner.get(ownerID)?.length ?? 0;
+        if (ownerID === 0 || attempted === 0) return;
+        const numDeleted = deleted[at]?.length ?? 0;
+        const label = numDeleted !== attempted ? "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNumWithAttempted" : "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNum";
+        const ownerName = ownerNameOf(ownerID);
+        lines.push(OWNER_LINE_BULLET + templateWords(label, { numFittings: numDeleted, ownerName, numAttempted: attempted },
+          numDeleted !== attempted ? `${ownerName}, ${numDeleted} of the ${attempted} asked` : `${ownerName}, ${numDeleted} of them`));
+      });
+      ownerText = lines.join("<br>");
+    }
+    sayDialog("DeletedManyFittings", { type: "dict", entries: [["numFittings", fittingsDeleted], ["ownerText", ownerText]] },
+      `${fittingsDeleted} fittings were deleted.${ownerText === "" ? "" : `\n${ownerText.split("<br>").join("\n")}`}`);
+  }
+
+  const multiFitAskedSignal = createSignal<MultiFitAsk | null>(null);
+  const maxShipsToFitSignal = createSignal<number>(maxShipsToFit(undefined));
+  let multiFitRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // The groups and categories of a fitting's types, by the fitting, while its window is open (Fitting.__init__).
+  let multiFitTypeFacts: { readonly fitting: SourcedFitting; readonly facts: Map<number, { groupID: number | null; categoryID: number | null }> } | null = null;
+  /** settings.user.ui fitting_rigCB: the multifit window's rigs box, on until unset. */
+  const MULTIFIT_RIGS_KEPT = "evejs.fitting_rigCB";
+
+  /** GetMaxShipsToFit (getFunctions.py 48): the global config's bulkFit_maxShips, read again. */
+  async function readMaxShipsToFit(): Promise<number> {
+    const config = await api.getGlobalConfig([BULK_FIT_SHIPS_CONFIG], callOptions).catch(() => null);
+    const most = maxShipsToFit(config?.values[BULK_FIT_SHIPS_CONFIG]);
+    maxShipsToFitSignal.set(most);
+    return most;
+  }
+
+  /** shipfitting/fitting.py Fitting(fitting.fitData, None): the fitting sorted, its types' groups and categories read. */
+  async function multiFitApplying(fitting: SourcedFitting): Promise<ReturnType<typeof fittingForApplying>> {
+    if (multiFitTypeFacts === null || multiFitTypeFacts.fitting !== fitting) {
+      const types = [...new Set([fitting.shipTypeID, ...fitting.modules.map((module) => module.typeID)])];
+      const facts = new Map<number, { groupID: number | null; categoryID: number | null }>();
+      for (let at = 0; at < types.length; at += 50) {
+        const read = await api.getTypePrices(types.slice(at, at + 50), callOptions);
+        for (const typeID of types.slice(at, at + 50)) facts.set(typeID, { groupID: read.groupID[typeID] ?? null, categoryID: read.categoryID[typeID] ?? null });
+      }
+      multiFitTypeFacts = { fitting, facts };
+    }
+    const facts = multiFitTypeFacts.facts;
+    return fittingForApplying(
+      fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+      [],
+      (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null },
+    );
+  }
+
+  /**
+   * MultiFitWnd.IsInvalidT3Fit (566 to 584): for a strategic cruiser's fitting, true where a subsystem is for another
+   * hull, or where any of the four subsystem slots has no subsystem that is not obsolete; false for any other hull.
+   */
+  async function isInvalidT3Fit(fitting: SourcedFitting): Promise<boolean> {
+    await multiFitApplying(fitting);
+    if (!isModularShip(multiFitTypeFacts?.facts.get(fitting.shipTypeID)?.groupID ?? null)) return false;
+    const subsystems = fitting.modules.filter((module) => VISIBLE_SUBSYSTEM_FLAGS.includes(module.flagID));
+    const attributes = subsystems.length > 0
+      ? await api.fetchTypeDogma([...new Set(subsystems.map((module) => module.typeID))], [ATTRIBUTE_MODULE_IS_OBSOLETE, ATTRIBUTE_FITS_TO_SHIP_TYPE], callOptions)
+      : {};
+    const missing = new Set(VISIBLE_SUBSYSTEM_FLAGS);
+    for (const module of subsystems) {
+      if (!missing.has(module.flagID)) continue;
+      if (!attributes[module.typeID]?.[ATTRIBUTE_MODULE_IS_OBSOLETE]) missing.delete(module.flagID);
+      if (Math.trunc(attributes[module.typeID]?.[ATTRIBUTE_FITS_TO_SHIP_TYPE] ?? 0) !== fitting.shipTypeID) return true;
+    }
+    return missing.size > 0;
+  }
+
+  /**
+   * OpenOrLoadMultiFitWnd (fittingMgmtWindow.py 461 to 470): refused while a fitting is under way
+   * (CheckBusyFittingAndRaiseIfNeeded: BusyFittingWarning); else the window opened, or the open one loaded with the
+   * fitting (LoadWindow: the count one, the name the fitting's), and its reckoning made (SetInventoryStatus).
+   */
+  async function openMultiFit(fittingID: number): Promise<void> {
+    const fitting = savedFittingOf(fittingID);
+    if (fitting !== null) await openMultiFitWith(fitting);
+  }
+
+  /** OpenOrLoadMultiFitWnd of a fitting as it is held, saved or not. */
+  async function openMultiFitWith(fitting: SourcedFitting): Promise<void> {
+    if (busyFitting) {
+      const info = templateWords("UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning", {}, "A fitting is already being loaded.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+      return;
+    }
+    const maxShips = await readMaxShipsToFit();
+    const open = multiFitAskedSignal.get();
+    const n = open?.n ?? (dialogsSaidCount += 1);
+    let fitRigs = true;
+    try {
+      fitRigs = settingsStorage?.getItem(MULTIFIT_RIGS_KEPT) !== "0";
+    } catch {
+      // Storage refused: the box's default.
+    }
+    multiFitAskedSignal.set({
+      n, fitting, maxShips, numToFit: 1, fitName: fitting.name.slice(0, 20), locationID: open?.locationID ?? null,
+      containers: open?.containers ?? [], fitRigs, rigsToFit: false, invalidT3: false, status: null, isFitting: false, progress: 0,
+    });
+    const invalidT3 = await isInvalidT3Fit(fitting).catch(() => false);
+    const now = multiFitAskedSignal.get();
+    if (now !== null && now.n === n && now.fitting === fitting) multiFitAskedSignal.set({ ...now, invalidT3 });
+    await refreshMultiFit(n);
+  }
+
+  /**
+   * MultiFitWnd.RefreshInventory (182 to 186): the pilot's containers listed again (LoadEquipCombo), then
+   * SetInventoryStatus (281 to 333): the hangar's packaged ships of the hull (GetQtyInLocationByTypeIDs, singletons
+   * passed over), the rounds of the fitting the equipment's place holds and what it lacks for the count
+   * (_GetMaxAvailabeAndMissingForFullFit: the rigs always counted), how many can be fitted, and the ships missing.
+   */
+  async function refreshMultiFit(n: number): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (open === null || open.n !== n || characterID === null) return;
+    const hangar = await listPlace(bridgeAsk, null);
+    const containers = personalContainers(hangar, characterID).map((item) => ({ itemID: item.itemID, typeID: item.typeID }));
+    const locationID = open.locationID !== null && containers.some((container) => container.itemID === open.locationID) ? open.locationID : null;
+    const place = locationID === null ? hangar : await listPlace(bridgeAsk, locationID);
+    const fit = await multiFitApplying(open.fitting);
+    const rigTypeIDs = new Set(Object.entries(fit.modulesByFlag).filter(([flag]) => isRigFlag(Number(flag))).map(([, typeID]) => typeID));
+    const { maxAvailableFitting, missingForFullFit } = maxAvailableAndMissing(true, fit.itemTypes, open.numToFit, qtyInPlaceByTypeIDs(place, fit.itemTypes.keys()), rigTypeIDs);
+    const shipTypeID = open.fitting.shipTypeID;
+    const packagedShips = qtyInPlaceByTypeIDs(hangar, [shipTypeID], true).get(shipTypeID) ?? 0;
+    const canFitNum = Math.min(packagedShips, open.numToFit, ...(maxAvailableFitting === null ? [] : [maxAvailableFitting]));
+    const missingNumShips = Math.max(0, open.numToFit - packagedShips);
+    const now = multiFitAskedSignal.get();
+    if (now === null || now.n !== n || now.fitting !== open.fitting || now.numToFit !== open.numToFit || now.locationID !== open.locationID) return;
+    multiFitAskedSignal.set({
+      ...now,
+      containers,
+      locationID,
+      rigsToFit: Object.keys(fit.rigsByFlag).length > 0,
+      status: {
+        packagedShips,
+        maxAvailableFitting,
+        canFitNum,
+        missingShips: missingNumShips > 0 ? [{ typeID: shipTypeID, qty: missingNumShips }] : [],
+        missingEquipment: [...missingForFullFit].map(([typeID, qty]) => ({ typeID, qty })),
+      },
+    });
+  }
+
+  /** The window's count (OnNumChanged, kept to one to the most), name, equipment's place (OnEquipLocationChanged) or rigs box (OnCbChanged, kept). */
+  async function editMultiFit(n: number, edit: { readonly numToFit: number } | { readonly fitName: string } | { readonly locationID: number | null } | { readonly fitRigs: boolean }): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.isFitting) return;
+    if ("numToFit" in edit) {
+      const numToFit = Math.min(Math.max(1, Math.trunc(edit.numToFit) || 1), Math.max(1, open.maxShips));
+      multiFitAskedSignal.set({ ...open, numToFit });
+    } else if ("fitName" in edit) {
+      multiFitAskedSignal.set({ ...open, fitName: edit.fitName.slice(0, 20) });
+      return;
+    } else if ("locationID" in edit) {
+      multiFitAskedSignal.set({ ...open, locationID: edit.locationID });
+    } else {
+      try {
+        settingsStorage?.setItem(MULTIFIT_RIGS_KEPT, edit.fitRigs ? "1" : "0");
+      } catch {
+        // Storage refused: the box holds while the window is open.
+      }
+      multiFitAskedSignal.set({ ...open, fitRigs: edit.fitRigs });
+    }
+    await refreshMultiFit(n);
+  }
+
+  /** MultiFitWnd.OnItemChange and RefreshOnItemChanged_throttled (530 to 557). */
+  function multiFitItemsChanged(method: string, args: readonly unknown[]): void {
+    const open = multiFitAskedSignal.get();
+    if (open === null) return;
+    if (open.isFitting) {
+      if (method === "OnItemChange" && isShipAssembled(args, open.fitting.shipTypeID)) multiFitAskedSignal.set({ ...open, progress: open.progress + 1 });
+      return;
+    }
+    if (multiFitRefreshTimer !== null) return;
+    multiFitRefreshTimer = setTimeout(() => {
+      multiFitRefreshTimer = null;
+      const now = multiFitAskedSignal.get();
+      if (now !== null && !now.isFitting) void refreshMultiFit(now.n).catch(() => {});
+    }, 500);
+  }
+
+  /**
+   * fittingSvc.ShowFailedToLoadMsg (631 to 644): what could not be loaded, each "qty x name" sorted by name, said in
+   * MissingItems.
+   */
+  async function sayFailedToLoad(failedToLoad: readonly { readonly typeID: number; readonly qty: number }[]): Promise<void> {
+    const failed = failedToLoad.filter((each) => each.qty > 0);
+    if (failed.length === 0) return;
+    await resolveNamesNow(failed.map((each) => ({ kind: "type" as const, id: each.typeID })));
+    const nameOf = (typeID: number): string => nameCache.get(nameKey("type", typeID)) ?? String(typeID);
+    const lines = failed
+      .map((each) => ({ key: nameOf(each.typeID).toLowerCase(), line: `${each.qty}x ${nameOf(each.typeID)}` }))
+      .sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+      .map((each) => each.line);
+    const info = templateWords("UI/Fitting/MissingItems", { types: lines.join("<br>") }, `These could not be loaded: ${lines.join(", ")}`);
+    sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+  }
+
+  /**
+   * MultiFitWnd.DoFitShips (363 to 405): the name the edit's, else the fitting's or its hull's, without markup; the
+   * rigs to the cargo where the box is unset; refused undocked; what is missing for that many reckoned again, and where
+   * anything is, the reckoning made again and uiwarning03 said. Else fittingSvc.DoFitManyShips (504 to 521): FitShips,
+   * and where it answers a ship it could not fit, that ship named BadFitFittingFailed (_RenameShip), and what failed
+   * to load said (ShowFailedToLoadMsg). Then ResetUIAfterFitting: the reckoning made again. (CheckCanAccessService for
+   * the fitting service, which the client asks first, is not the page's.)
+   */
+  async function fitMultiFit(n: number): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.status === null || open.isFitting || busyFitting) return;
+    const fitting = open.fitting;
+    const numToActuallyFit = open.status.canFitNum;
+    if (numToActuallyFit < 1 || open.invalidT3) return;
+    let fittingName = open.fitName;
+    if (fittingName.trim() === "") {
+      fittingName = plainText(fitting.name || (nameCache.get(nameKey("type", fitting.shipTypeID)) ?? ""));
+    }
+    const fit = await multiFitApplying(fitting);
+    const rigsToFit = Object.keys(fit.rigsByFlag).length > 0;
+    const cargoItemsByType: Record<number, number> = {};
+    if (!open.fitRigs && rigsToFit) {
+      for (const [flag, typeID] of Object.entries(fit.modulesByFlag)) {
+        if (isRigFlag(Number(flag))) cargoItemsByType[typeID] = (cargoItemsByType[typeID] ?? 0) + 1;
+      }
+    }
+    const inventory = store.inventory.get();
+    const dockedAt = inventory.stationID ?? inventory.structureID ?? null;
+    if (dockedAt === null) return;
+    const place = await listPlace(bridgeAsk, open.locationID);
+    const rigTypeIDs = new Set(Object.entries(fit.modulesByFlag).filter(([flag]) => isRigFlag(Number(flag))).map(([, typeID]) => typeID));
+    const { missingForFullFit } = maxAvailableAndMissing(true, fit.itemTypes, numToActuallyFit, qtyInPlaceByTypeIDs(place, fit.itemTypes.keys()), rigTypeIDs);
+    if (missingForFullFit.size > 0) {
+      await refreshMultiFit(n);
+      sayDialog("uiwarning03", null, "Not everything needed is there.");
+      return;
+    }
+    busyFitting = true;
+    multiFitAskedSignal.set({ ...open, isFitting: true, progress: 0 });
+    let failed: Awaited<ReturnType<typeof fitShips>> = null;
+    try {
+      failed = await fitShips(bridgeDo, {
+        shipTypeID: fitting.shipTypeID,
+        fitInfo: {
+          chargesByType: fit.chargesByType, dronesByType: fit.dronesByType, fightersByTypeID: fit.fightersByType,
+          iceByType: fit.iceByType, modulesByFlag: fit.modulesByFlag, implantsByTypeID: fit.implantsByType,
+        },
+        itemLocationID: dockedAt,
+        cargoItemsByType,
+        fitRigs: open.fitRigs,
+        name: fittingName,
+        numToFit: numToActuallyFit,
+        itemContainerID: open.locationID,
+      });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The ships could not be fitted: ${errorWords(error)}`);
+    } finally {
+      busyFitting = false;
+      if (failed !== null) {
+        if (failed.failedShipID !== null) {
+          const badFitName = templateWords("UI/Fitting/FittingWindow/FittingManagement/BadFitFittingFailed", {}, "Fitting failed");
+          await setLabelCall(bridgeDo, failed.failedShipID, badFitName).catch(() => {});
+        }
+        await sayFailedToLoad(failed.failedToLoad).catch(() => {});
+      }
+      const now = multiFitAskedSignal.get();
+      if (now !== null && now.n === n) multiFitAskedSignal.set({ ...now, isFitting: false, progress: 0 });
+      void loadInventory().catch(() => {});
+      await refreshMultiFit(n).catch(() => {});
+    }
+  }
+
+  async function answerMultiFit(n: number, answer: "fit" | "refresh" | "view" | "buy-missing" | "buy-ships" | "buy-equipment" | "close"): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n) return;
+    if (answer === "close") {
+      if (!open.isFitting) multiFitAskedSignal.set(null);
+      return;
+    }
+    if (answer === "fit") await fitMultiFit(n);
+    else if (answer === "refresh") await refreshMultiFit(n);
+    else if (answer === "view") await openViewFitting(open.fitting);
+    else if (open.status !== null) {
+      // AddBuyAllBtn: BuyMultipleTypesWithQty of what is missing (both, from the warning's tooltip; or one counter's).
+      const missing = answer === "buy-ships" ? open.status.missingShips : answer === "buy-equipment" ? open.status.missingEquipment : [...open.status.missingShips, ...open.status.missingEquipment];
+      if (missing.length > 0) await openMultiBuy(new Map(missing.map((each) => [each.typeID, each.qty])));
+    }
+  }
+
+  /**
+   * MultiFitWnd.GiveAllGM and LoadAllGM (507 to 515), from AddBuyAllBtn: GiveOrLoadAllGM of the missing dict, a
+   * counter's own (its missingDict, set type by type) or both (LoadMissingTooltip: an empty dict updated with the
+   * ships' and then the equipment's), in the dict's order.
+   */
+  async function multiFitGm(n: number, which: "missing" | "ships" | "equipment", slashCmd: "create" | "load me"): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.status === null) return;
+    const ships = intDictOf(open.status.missingShips.map((each) => each.typeID));
+    const equipment = intDictOf(open.status.missingEquipment.map((each) => each.typeID));
+    let order: number[];
+    if (which === "ships") order = ships.keys();
+    else if (which === "equipment") order = equipment.keys();
+    else {
+      const both = new IntDict();
+      both.update(ships);
+      both.update(equipment);
+      order = both.keys();
+    }
+    const qtyOf = new Map([...open.status.missingShips, ...open.status.missingEquipment].map((each) => [each.typeID, each.qty]));
+    if (order.length > 0) await giveOrLoadAllGM(order.map((typeID) => ({ typeID, qty: qtyOf.get(typeID) ?? 0 })), slashCmd);
+  }
+
+  /** A fitting no longer kept (fittingSvc.DeleteFitting, and its OnFittingDeleted): out of those kept. */
+  function fittingLetGo(fittingID: number): void {
+    const kept = savedFittingsSignal.get();
+    if (kept !== null) savedFittingsSignal.set(kept.filter((fitting) => fitting.fittingID !== fittingID));
+  }
+
+  /** BuyAllMessageBox.BuyAll: the multibuy window with what is missing, for the fitting, and the box closed; or Close. */
+  async function answerBuyAll(n: number, answer: "buy" | "gm-give-all" | "close"): Promise<void> {
+    const asked = buyAllAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    buyAllAskedSignal.set(null);
+    if (answer === "buy") await openMultiBuy(new Map(asked.missing.map((entry) => [entry.typeID, entry.qty])), asked.fitting);
+    // BuyAllMessageBox.GiveAllGM: GiveAllGM of what failed to load, and the box closed. That is the box's dict
+    // (OpenBuyAllBox: dict of the Counter, LoadFittingFromFittingListAndGetBuyOptionOnFailure's of a dict comprehension
+    // over what failed), so its order is theirs.
+    if (answer === "gm-give-all") {
+      const counter = new IntDict();
+      counter.update(intDictOf(asked.missing.map((entry) => entry.typeID)));
+      const faildToLoadInfo = new IntDict();
+      faildToLoadInfo.update(counter);
+      const qtyOf = new Map(asked.missing.map((entry) => [entry.typeID, entry.qty]));
+      await giveOrLoadAllGM(faildToLoadInfo.keys().map((typeID) => ({ typeID, qty: qtyOf.get(typeID) ?? 0 })), "create");
+    }
+  }
+
+  const progressWndSignal = createSignal<ProgressWndShown | null>(null);
+  let progressWndHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * loading.ProgressWnd (73 to 90): the window put up, or its title, text and count set; at the end of its count it
+   * goes three-quarters of a second later (CheckVisibility, DelayHide), unless counted again before.
+   */
+  function progressWnd(title: string, text: string, portion: number, total: number): void {
+    if (progressWndHideTimer !== null) clearTimeout(progressWndHideTimer);
+    progressWndHideTimer = null;
+    progressWndSignal.set({ title, text, portion: Math.max(0, portion), total: Math.max(0, total) });
+    if (portion >= total) {
+      progressWndHideTimer = setTimeout(() => {
+        progressWndHideTimer = null;
+        progressWndSignal.set(null);
+      }, 750);
+    }
+  }
+
+  /**
+   * missingItemsPopup.GiveOrLoadAllGM (97 to 114): for each type missing, in the order given (the dict's), a GM's
+   * "/create typeID qty" (or "/load me typeID qty") to the slash service, one after another, the progress window
+   * counting them under "GM Item Gift (create)"; a dynamic type (evetypes.IsDynamicType) passed over, and the
+   * CustomNotify said once at the end where any was. The window ends on "Done". The client shows no reply.
+   */
+  async function giveOrLoadAllGM(missing: readonly { readonly typeID: number; readonly qty: number }[], slashCmd: "create" | "load me"): Promise<void> {
+    const numToCountTo = missing.length + 1;
+    const header = `GM Item Gift (${slashCmd})`;
+    progressWnd(header, "", 1, numToCountTo);
+    const dynamic = new Map<number, boolean>();
+    const typeIDs = [...new Set(missing.map((entry) => entry.typeID))];
+    for (let at = 0; at < typeIDs.length; at += 50) {
+      const read = await api.getTypePrices(typeIDs.slice(at, at + 50), callOptions).catch(() => null);
+      for (const typeID of typeIDs.slice(at, at + 50)) dynamic.set(typeID, read?.dynamic[typeID] === true);
+    }
+    let counter = 1;
+    let itemsRemoved = false;
+    for (const { typeID, qty } of missing) {
+      if (dynamic.get(typeID) === true) {
+        itemsRemoved = true;
+        continue;
+      }
+      counter += 1;
+      progressWnd(header, "", counter, numToCountTo);
+      await runSlashCommand(bridgeDo, `/${slashCmd} ${typeID} ${qty}`).catch((error: unknown) => {
+        if (isSessionLost(error)) throw error;
+      });
+    }
+    progressWnd("Done", "", numToCountTo, numToCountTo);
+    if (itemsRemoved) sayDialog("CustomNotify", { type: "dict", entries: [["notify", "Not all items were created"]] }, "Not all items were created");
+    void loadInventory().catch(() => {});
+  }
+
+  async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
+    const asked = applyPointsAskedSignal.get();
+    if (asked === null || asked.n !== n) return;
+    if (answer === "close") {
+      applyPointsAskedSignal.set(null);
+      return;
+    }
+    if (asked.finished || !asked.canConfirm) return;
+    try {
+      const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, applyPointsLevels);
+      if (pointsBySkill.size > 0) await applyFreePointsToSkills(bridgeDo, applyPointsLevels);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `Those points could not be applied: ${errorWords(error)}`);
+      return;
+    }
+    applyPointsAskedSignal.set({ ...asked, finished: true, entries: asked.entries.map((entry) => ({ ...entry, progress: entry.progressWithFreePoints })) });
+    await loadSkills().catch(() => {});
   }
 
   /** globalConfig/const.py SKILL_PURCHASE_ENABLED_CONFIG, and its default. */
@@ -6390,9 +11383,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const SKILL_PURCHASE_ENABLED_DEFAULT = true;
 
   /**
-   * globalConfig.IsSkillPurchaseEnabled (getFunctions.py 126, 14 to 21): the login's global config's value, as a
-   * whole number, not nought; its default where it gives none or one that is not a number, or where the pilot's
-   * transport does not carry it.
+   * globalConfig.IsSkillPurchaseEnabled (getFunctions.py 126, 14 to 21): the global config's value as the client
+   * keeps it (the login's, with each OnGlobalConfigUpdated since: the transport keeps it so), as a whole number, not
+   * nought; its default where it gives none or one that is not a number, or where the pilot's transport does not
+   * carry it.
    */
   async function skillPurchaseEnabled(): Promise<boolean> {
     const config = await api.getGlobalConfig([SKILL_PURCHASE_ENABLED_CONFIG], callOptions).catch(() => null);
@@ -6432,18 +11426,63 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
     const purchased = await askSkillBooks(available, unavailable, priceOf);
     if (purchased.length === 0) return;
-    // WaitUntilSkillsAreAvailable: the skills read again until each bought one is among them (the server injects
-    // them before it answers; a few readings at most).
-    for (let reading = 0; reading < 5; reading += 1) {
-      const now = await skillsIncludingLapsedNow().catch(() => null);
-      if (now !== null && purchased.every((skill) => now.has(skill))) break;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+    await waitUntilSkillsAvailable(purchased);
     const stillMissing = action.missing.filter((skill) => !purchased.includes(skill));
     const toQueue = stillMissing.length === 0 ? action.levels : action.levels.filter(([skill]) => !stillMissing.includes(skill));
     const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
     const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
     await saveSkillQueue(queueWithLevels(queue, toQueue), "Added to your skill queue", "those skills", true);
+  }
+
+  /**
+   * WaitUntilSkillsAreAvailable: the skills read again until each bought one is among them (the server injects them
+   * before it answers; a few readings at most).
+   */
+  async function waitUntilSkillsAvailable(purchased: readonly number[]): Promise<void> {
+    for (let reading = 0; reading < 5; reading += 1) {
+      const now = await skillsIncludingLapsedNow().catch(() => null);
+      if (now !== null && purchased.every((skill) => now.has(skill))) return;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+
+  /**
+   * Each book's facts as the books window wants them: sold (evetypes.IsSkillAvailableForPurchase: published, and on
+   * the list; without the client's data the list alone goes), and its base price.
+   */
+  async function skillBookFacts(typeIDs: readonly number[]): Promise<Readonly<Record<number, { readonly sold: boolean; readonly basePrice: number | null }>>> {
+    const lists: Record<number, readonly number[] | null> = {};
+    for (let at = 0; at < typeIDs.length; at += 32) {
+      Object.assign(lists, await api.loadTypeListsHolding(typeIDs.slice(at, at + 32), [SKILLS_FOR_PURCHASE_LIST], callOptions));
+    }
+    const prices = await api.getTypePrices(typeIDs, callOptions)
+      .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>> }));
+    return Object.fromEntries(typeIDs.map((skill) => [skill, {
+      sold: lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true),
+      basePrice: prices.basePrice[skill] ?? null,
+    }]));
+  }
+
+  async function buyMissingSkillBooks(typeIDs: readonly number[]): Promise<boolean> {
+    // _is_skill_missing: not among the pilot's skills (lapsed ones counted), or its trained level None (an expert
+    // system's alone).
+    const lapsed = await skillsIncludingLapsedNow();
+    const missing = [...new Set(typeIDs)].filter((typeID) => !isSkillInjected(lapsed, typeID));
+    if (missing.length === 0) return true;
+    // skillsvc.PurchaseSkills (characterskills/client/purchase.py purchase_skills), as Buy and train makes it.
+    if (!(await skillPurchaseEnabled())) {
+      sayDialog("SkillPurchaseDisabled", null, "Skill books cannot be bought directly here.");
+      return false;
+    }
+    const books = await skillBookFacts(missing);
+    const { available, unavailable } = booksToBuy(missing, lapsed, () => true, (typeID) => books[typeID]?.sold === true);
+    const purchased = await askSkillBooks(available, unavailable, (skill) => {
+      const base = books[skill]?.basePrice ?? null;
+      return base === null ? null : directPurchasePrice(base);
+    });
+    if (purchased.length === 0) return false;
+    await waitUntilSkillsAvailable(purchased);
+    return true;
   }
 
   /** The books window opened (MissingSkillbooksWnd, modal); answers the skills it bought before it was put away. */
@@ -6472,36 +11511,323 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * GetSkillHandler().PurchaseSkills(those books). Bought, and none left that is not sold: the window put away;
    * otherwise kept, without the books bought.
    */
-  async function answerSkillBooks(n: number, answer: "buy" | "close"): Promise<void> {
+  /**
+   * Books bought as the client's purchase validates them (characterskills purchase: SkillPurchaseValidator, each a skill
+   * not had and the cost within the wallet; handle_skill_purchase_error saying a refusal): the skills bought, or null
+   * where it was refused (said).
+   */
+  async function purchaseBooksValidated(books: readonly number[], cost: number | null): Promise<readonly number[] | null> {
+    const lapsed = await skillsIncludingLapsedNow().catch(() => null);
+    // is_skill_injected (characterskills/client/purchase.py 129): skillsvc.IsSkillInjected, an expert system's skill alone not.
+    const injected = lapsed === null ? undefined : books.find((skill) => isSkillInjected(lapsed, skill));
+    if (injected !== undefined) {
+      sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
+      return null;
+    }
+    const wealth = await walletReads.wealth().catch(() => null);
+    const balance = wealth === null ? null : Number(toAmountString(wealth));
+    if (cost !== null && balance !== null && Number.isFinite(balance) && cost > balance) {
+      sayDialog("NotEnoughMoney", { type: "dict", entries: [["balance", balance], ["amount", cost]] }, "There is not enough ISK in the wallet for those books.");
+      return null;
+    }
+    try {
+      return await purchaseSkills(bridgeDo, books);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      if (!sayRefusalDialog(error, `Those books could not be bought: ${errorWords(error)}`)) {
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", `Those books could not be bought: ${errorWords(error)}`]] }, "Those books could not be bought.");
+      }
+      return null;
+    }
+  }
+
+  // ---- Drops onto the skill queue (skillQueuePanelNew.DoDropData) ------------------------------------------------------
+
+  /** What a drop onto the queue is judged by: the queue now, the pilot's skills, the needs, the clone's ceilings. */
+  async function queueDropRead(typeIDs: readonly number[]) {
+    const [skillsAnswer, allSkillsAnswer, queueAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null);
+    const required = (await requiredSkillsFor([...new Set([...typeIDs, ...queue.map((entry) => entry.typeID)])])) ?? {};
+    const omega = store.station.get().cloneGrade !== CLONE_GRADE_ALPHA;
+    const raceID = store.station.get().online?.raceID ?? null;
+    const ceilings = omega || raceID === null
+      ? null
+      : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
+    return {
+      queue,
+      mine: skillLevelsOf(skillsAnswer),
+      includingLapsed: skillLevelsOf(allSkillsAnswer),
+      required,
+      ceiling: (typeID: number): number => (ceilings === null ? 5 : ceilings.get(typeID) ?? 0),
+    };
+  }
+
+  async function skillQueueDropFacts(typeIDs: readonly number[]): ReturnType<AppFlow["skillQueueDropFacts"]> {
+    try {
+      const read = await queueDropRead(typeIDs);
+      // IsMoveAllowed(node, place): the level the drop would add (FindNextLevel for a skill entry, the entry's own level
+      // for a queue entry) inserted there, the length test left out (CheckCanInsertSkillAtPosition, check=1).
+      return {
+        queueLength: read.queue.length,
+        allowed: (drop: SkillQueueDrop, place: number | null): boolean => {
+          if (drop.kind === "type" || drop.kind === "invItem") return false;
+          const level = drop.kind === "queueEntry" ? drop.level : nextLevelToQueue(drop.typeID, read.includingLapsed, read.queue);
+          return queueInsertionRefusal(drop.typeID, level, place ?? read.queue.length, read.queue, read.includingLapsed, read.mine, read.required, read.ceiling) === null;
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The InvItem branch of DoDropData, up to its wait: nothing for an item that is no skill book (its rec.categoryID);
+   * skills.InjectSkillIntoBrain([item]): an unpublished one ItemNotASkill (the client's own check), else
+   * GetDogmaLM().InjectSkillIntoBrain([itemID]), a refusal put up as the client puts up a UserError; then
+   * SleepWallclock(500). True where it was injected.
+   */
+  async function injectDroppedBook(itemID: number, typeID: number): Promise<boolean> {
+    const meta = await api.getTypeMeta([typeID], callOptions);
+    const type = meta.available ? meta.types.get(typeID) : undefined;
+    if (type === undefined || type === null || type.categoryID !== CATEGORY_SKILL_TYPES) return false;
+    if (!type.published) {
+      sayDialog("ItemNotASkill", { type: "dict", entries: [["skillName", typeID]] }, "That is no skill book.");
+      return false;
+    }
+    try {
+      await bridgeDo("dogmaIM", "InjectSkillIntoBrain", [[itemID]]);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const message = errorWords(error);
+      if (!sayRefusalDialog(error, message)) sayDialog("CustomNotify", { type: "dict", entries: [["notify", message]] }, message);
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return true;
+  }
+
+  async function skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): ReturnType<AppFlow["skillQueueDrop"]> {
+    if (drop.kind === "invItem" && !(await injectDroppedBook(drop.itemID, drop.typeID))) return { missing: null };
+    const read = await queueDropRead([drop.typeID]);
+    const queue = read.queue;
+    const position = place === null || place < 0 ? queue.length : place;
+    // AddSkillToQueue(typeID, level, position): refused as the client refuses it, else the queue saved with the level in.
+    const addToQueue = async (typeID: number, level: number, at: number, from = queue): Promise<void> => {
+      if (level > 5) return;
+      if (from.some((entry) => entry.typeID === typeID && entry.toLevel === level)) {
+        sayDialog("QueueSkillAlreadyPresent", null, "That level is in the queue already.");
+        return;
+      }
+      if (from.length >= 150) {
+        sayDialog("QueueTooManySkills", { type: "dict", entries: [["num", 150]] }, "The queue holds 150 skills at most.");
+        return;
+      }
+      const refusal = queueInsertionRefusal(typeID, level, at, from, read.includingLapsed, read.mine, read.required, read.ceiling);
+      if (refusal !== null) {
+        sayDialog(refusal, refusal === "QueueCannotTrainOmegaRestrictedSkill" ? { type: "dict", entries: [["skillID", typeID]] } : null, "That level cannot go there in the queue.");
+        return;
+      }
+      const next = [...from];
+      next.splice(Math.min(at, next.length), 0, { typeID, toLevel: level });
+      await saveSkillQueueSaved(next, "Added to your skill queue", "that skill");
+    };
+    if (drop.kind === "queueEntry" && !shift) {
+      // DoDropData: the end's place is the queue's length. DoMove with one entry (_DoMoveOneEntry):
+      // MoveSkillToPosition(skill, level, place): checked where it would land, then taken out and put in there (a
+      // place below where it was one less once it is out).
+      const target = place === null || place < 0 ? queue.length : Math.max(0, place);
+      const selection = drop.selection ?? [];
+      if (selection.length > 1) {
+        await moveQueueEntries(selection, target, read);
+        return { missing: null };
+      }
+      const refusal = queueInsertionRefusal(drop.typeID, drop.level, target, queue, read.includingLapsed, read.mine, read.required, read.ceiling);
+      if (refusal !== null) {
+        sayDialog(refusal, null, "That level cannot go there in the queue.");
+        return { missing: null };
+      }
+      const current = queue.findIndex((entry) => entry.typeID === drop.typeID && entry.toLevel === drop.level);
+      if (current < 0) return { missing: null };
+      const without = queue.filter((_, at) => at !== current);
+      await addToQueue(drop.typeID, drop.level, current < target ? target - 1 : target, without);
+      return { missing: null };
+    }
+    if (drop.kind === "skillEntry" || drop.kind === "queueEntry") {
+      // AddSkillThroughSkillEntry: a skill not had opens the purchase overlay; past V, SkillFullyPlanned; a level the
+      // clone may not train, SkillRequiresCloneStateUpgrade; else its next level put in.
+      if (drop.kind === "skillEntry" && !drop.trained) return { missing: { typeID: drop.typeID, position } };
+      const nextLevel = nextLevelToQueue(drop.typeID, read.includingLapsed, queue);
+      // (CustomNotify with the label's words: GetByLabel.)
+      const notify = async (label: string, own: string): Promise<void> => {
+        await wordsNow([label]).catch(() => {});
+        const template = store.words.get().templates[label];
+        const text = typeof template === "string" && template !== "" ? plainText(template) : own;
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", text]] }, text);
+      };
+      if (nextLevel > 5) {
+        await notify("UI/SkillQueue/SkillFullyPlanned", "Every level of that skill is trained or queued.");
+        return { missing: null };
+      }
+      if (nextLevel > read.ceiling(drop.typeID)) {
+        await notify("UI/SkillQueue/SkillRequiresCloneStateUpgrade", "That level needs an omega clone.");
+        return { missing: null };
+      }
+      await addToQueue(drop.typeID, nextLevel, position);
+      return { missing: null };
+    }
+    // AddSkillsThroughOtherEntry: a type's drag (a catalogue skill, a plan's level): not had, the purchase overlay; else
+    // its next level put in, nothing past V. A book injected: level I (nextLevel=1).
+    if (!read.includingLapsed.has(drop.typeID)) return { missing: { typeID: drop.typeID, position } };
+    await addToQueue(drop.typeID, drop.kind === "invItem" ? 1 : nextLevelToQueue(drop.typeID, read.includingLapsed, queue), position);
+    return { missing: null };
+  }
+
+  /**
+   * _DoMoveManyEntries: those dragged from above the place, nearest first, each put at the lowest place above it that
+   * CheckCanInsertSkillAtPosition (check=True) lets it have, from the place up to the second (never the top); those
+   * from at or below it, top first, each at the highest from the place down; each by MoveSkillToPosition, the place
+   * kept next to those put in. The queue is then saved as it stands. A move AddSkillToQueue refuses after the level
+   * is out is said, and nothing is saved.
+   */
+  async function moveQueueEntries(
+    selection: readonly { readonly typeID: number; readonly level: number; readonly idx: number }[],
+    target: number,
+    read: Awaited<ReturnType<typeof queueDropRead>>,
+  ): Promise<void> {
+    const local = [...read.queue];
+    const length = local.length;
+    const refusalAt = (typeID: number, level: number, position: number): string | null =>
+      queueInsertionRefusal(typeID, level, position, local, read.includingLapsed, read.mine, read.required, read.ceiling);
+    // MoveSkillToPosition: taken out, then put in (one less where it was above), as AddSkillToQueue checks it.
+    const moveTo = (typeID: number, level: number, position: number): string | null => {
+      const current = local.findIndex((entry) => entry.typeID === typeID && entry.toLevel === level);
+      if (current < 0) return "QueueSkillNotPresent";
+      const at = current < position ? position - 1 : position;
+      const [entry] = local.splice(current, 1);
+      const refusal = refusalAt(typeID, level, at);
+      if (refusal !== null) return refusal;
+      local.splice(at, 0, entry!);
+      return null;
+    };
+    let skillPos = target;
+    const above = selection.filter((each) => each.idx < skillPos).reverse();
+    const below = selection.filter((each) => each.idx >= skillPos);
+    let nextSkillPos = skillPos;
+    for (const each of above) {
+      for (let testPos = nextSkillPos; testPos > 0; testPos -= 1) {
+        if (refusalAt(each.typeID, each.level, testPos) !== null) continue;
+        const refusal = moveTo(each.typeID, each.level, testPos);
+        if (refusal !== null) {
+          sayDialog(refusal, null, "That level cannot go there in the queue.");
+          return;
+        }
+        if (nextSkillPos === testPos) nextSkillPos -= 1;
+        break;
+      }
+    }
+    for (const each of below) {
+      for (let testPos = skillPos; testPos < length; testPos += 1) {
+        if (refusalAt(each.typeID, each.level, testPos) !== null) continue;
+        const refusal = moveTo(each.typeID, each.level, testPos);
+        if (refusal !== null) {
+          sayDialog(refusal, null, "That level cannot go there in the queue.");
+          return;
+        }
+        if (testPos === skillPos) skillPos += 1;
+        break;
+      }
+    }
+    const moved = local.some((entry, at) => entry.typeID !== read.queue[at]?.typeID || entry.toLevel !== read.queue[at]?.toLevel);
+    if (moved) await saveSkillQueueSaved(local, "Moved in your skill queue", "those skills");
+  }
+
+  async function removeQueuedLevels(levels: readonly { readonly typeID: number; readonly level: number }[]): Promise<void> {
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    let queue = queuedLevels(Array.isArray(answered) ? (answered[0] as JsonValue) : null);
+    const required = (await requiredSkillsFor(queue.map((entry) => entry.typeID))) ?? {};
+    let removed = 0;
+    let refused: string | null = null;
+    for (const { typeID, level } of levels) {
+      refused = queueRemovalRefusal(typeID, level, queue, required);
+      // InternalRemoveFromQueue: QueueSkillNotPresent where it is not there.
+      if (refused === null && !queue.some((entry) => entry.typeID === typeID && entry.toLevel === level)) refused = "QueueSkillNotPresent";
+      if (refused !== null) break;
+      queue = queue.filter((entry) => !(entry.typeID === typeID && entry.toLevel === level));
+      removed += 1;
+    }
+    // (finally: those taken out committed, OnClientQueueModified; then the refusal.)
+    if (removed > 0) await saveSkillQueueSaved(queue, "Removed from your skill queue", removed === 1 ? "that skill" : "those skills");
+    if (refused !== null) {
+      sayDialog(refused, null, refused === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+        ? "A higher level of this skill is still in the queue."
+        : refused === "QueueSkillNotPresent" ? "That level is not in the queue." : "A skill in the queue needs this one.");
+    }
+  }
+
+  async function skillPurchaseOffer(typeID: number): ReturnType<AppFlow["skillPurchaseOffer"]> {
+    try {
+      const [books, skillsAnswer, allSkillsAnswer, required] = await Promise.all([
+        skillBookFacts([typeID]),
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+        requiredSkillsFor([typeID]),
+      ]);
+      const book = books[typeID];
+      const base = book?.basePrice ?? null;
+      return {
+        sold: book?.sold === true,
+        // get_direct_purchase_price: the base price and the direct purchase tax.
+        price: book?.sold === true && base !== null ? directPurchasePrice(base) : null,
+        // are_requirements_trained: GetSkillsMissingToUseItemRecursive empty.
+        requirementsTrained: required !== null && missingSkillsRecursive(typeID, required, skillLevelsOf(skillsAnswer), skillLevelsOf(allSkillsAnswer)).length === 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function buySkillFromOverlay(typeID: number, trainAt: number | null): Promise<void> {
+    const price = await skillPurchaseOffer(typeID).then((offer) => offer?.price ?? null);
+    const bought = await purchaseBooksValidated([typeID], price);
+    if (bought === null || bought.length === 0) return;
+    await waitUntilSkillsAvailable(bought);
+    if (trainAt === null) return;
+    // buy_and_train_skill: AddSkillToQueue(type, 1, position).
+    const read = await queueDropRead([typeID]);
+    const at = Math.min(trainAt, read.queue.length);
+    const refusal = queueInsertionRefusal(typeID, 1, at, read.queue, read.includingLapsed, read.mine, read.required, read.ceiling);
+    if (refusal !== null) {
+      sayDialog(refusal, null, "That level cannot go there in the queue.");
+      return;
+    }
+    const next = [...read.queue];
+    next.splice(at, 0, { typeID, toLevel: 1 });
+    await saveSkillQueueSaved(next, "Added to your skill queue", "that skill");
+  }
+
+  async function answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void> {
     const asked = skillBooksAskedSignal.get();
     if (asked === null || asked.n !== n || skillBooksEnd === null) return;
     if (answer === "close") {
       skillBooksEnd(skillBooksPurchased);
       return;
     }
+    // Check on Market (_OnAvailableCheckMarketButton, _OnUnavailableCheckMarketButton, _OnSharedCheckMarketButton):
+    // the books of the section, or of both, one of each, into the multibuy window (the context's multibuy_*), and the
+    // window put away.
+    if (answer !== "buy") {
+      const books = answer === "market-available" ? asked.available : answer === "market-unavailable" ? asked.unavailable : [...asked.available, ...asked.unavailable];
+      skillBooksEnd(skillBooksPurchased);
+      await openMultiBuy(new Map(books.map((skill) => [skill, 1])));
+      return;
+    }
     if (asked.available.length === 0) return;
-    const lapsed = await skillsIncludingLapsedNow().catch(() => null);
-    const injected = lapsed === null ? undefined : asked.available.find((skill) => lapsed.has(skill));
-    if (injected !== undefined) {
-      sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
-      return;
-    }
-    const wealth = await walletReads.wealth().catch(() => null);
-    const balance = wealth === null ? null : Number(toAmountString(wealth));
-    if (asked.cost !== null && balance !== null && Number.isFinite(balance) && asked.cost > balance) {
-      sayDialog("NotEnoughMoney", { type: "dict", entries: [["balance", balance], ["amount", asked.cost]] }, "There is not enough ISK in the wallet for those books.");
-      return;
-    }
-    let bought: readonly number[];
-    try {
-      bought = await purchaseSkills(bridgeDo, asked.available);
-    } catch (error) {
-      if (isSessionLost(error)) throw error;
-      if (!sayRefusalDialog(error, `Those books could not be bought: ${errorWords(error)}`)) {
-        sayDialog("CustomNotify", { type: "dict", entries: [["notify", `Those books could not be bought: ${errorWords(error)}`]] }, "Those books could not be bought.");
-      }
-      return;
-    }
+    const bought = await purchaseBooksValidated(asked.available, asked.cost);
+    if (bought === null) return;
     skillBooksPurchased = [...skillBooksPurchased, ...bought];
     if (asked.unavailable.length === 0) {
       skillBooksEnd(skillBooksPurchased);
@@ -8760,6 +14086,55 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames(refs);
   }
 
+  /**
+   * contracts.FindRelated(typeID, None, None, None, None, None) (contracts.py 131 to 135): the search's type made
+   * auctions and item exchanges together (CONTYPE_AUCTIONANDITEMECHANGE, 10) and the window's FindRelated
+   * (contractsearch.py 1074 to 1110): public, its location set to all regions (7: none sent), the type's filters reset,
+   * the type's name with Exact Type ticked; then SearchContracts (1113 to 1367) with its twenty-six keywords: the one
+   * type ({typeID: None}, the exact match of GetTypesFromName), its name, the type 10, public (0), excludeMultiple as
+   * the box is (unticked: False), every other filter None, sorted by price, lowest first (SORT_PRICE, 0), from the first.
+   */
+  async function findContractsOfType(typeID: number): Promise<{ readonly entries: readonly ContractSearchEntry[]; readonly numFound: number }> {
+    await resolveNamesNow([{ kind: "type", id: typeID }]);
+    const typeName = nameCache.get(nameKey("type", typeID)) ?? null;
+    const answered = await bridgeAsk("contractProxy", "SearchContracts", [], {
+      itemTypes: { type: "dict", entries: [[typeID, null]] },
+      itemTypeName: typeName,
+      itemCategoryID: null,
+      itemGroupID: null,
+      contractType: 10,
+      securityClasses: null,
+      locationID: null,
+      endLocationID: null,
+      issuerID: null,
+      minPrice: null,
+      maxPrice: null,
+      minReward: null,
+      maxReward: null,
+      minCollateral: null,
+      maxCollateral: null,
+      minVolume: null,
+      maxVolume: null,
+      excludeTrade: null,
+      excludeMultiple: false,
+      excludeNoBuyout: null,
+      availability: 0,
+      description: null,
+      searchHint: null,
+      sortBy: 1,
+      sortDir: 0,
+      startNum: 0,
+    });
+    const decoded = decodeContractSearchEntries(answered);
+    requestNames(decoded.entries.flatMap((entry) => [
+      { kind: "system" as const, id: entry.contract.startSolarSystemID },
+      { kind: "station" as const, id: entry.contract.startStationID },
+      entry.contract.forCorp ? { kind: "owner" as const, id: entry.contract.issuerCorpID } : { kind: "character" as const, id: entry.contract.issuerID },
+      ...entry.items.map((item) => ({ kind: "type" as const, id: item.typeID })),
+    ]).filter((ref) => ref.id > 0));
+    return decoded;
+  }
+
   async function openContract(contractID: number): Promise<void> {
     let raw: Awaited<ReturnType<typeof api.loadContractDetail>>;
     try {
@@ -8847,6 +14222,113 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   // --- R37 Personal Assets --------------------------------------------------
+
+  // Everything of the pilot's as last listed for the assets search, kept five minutes as the client keeps it
+  // (invCache.inv5MinCacheContainer.ListIncludingContainers and _DeleteCachedItemsAll, 878 to 896).
+  let allAssetsKept: { readonly at: number; readonly items: readonly AssetSearchItem[] } | null = null;
+
+  /**
+   * assetsWindow.Search_thread (407 to 457): everything of the pilot's (bridge/assetReads.ts readAllAssets), the text
+   * lowercased and read by ParseString, the typed keywords' conditions (GetConditions), GetSearchResults with the names
+   * lowercased (SearchNamesHelper), and the stations the pilot's things are at (ListStations) to keep only stations.
+   * What the keywords typed read besides: the types' meta and tech (evetypes, the client's own data), and the stations'
+   * names, their systems', constellations' and regions' names and the systems' security (cfg and the map). `stopped`
+   * where the search ended as the client's thread does when a place keyword meets a thing in no station.
+   */
+  async function searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean }> {
+    const now = Date.now();
+    if (allAssetsKept === null || now - allAssetsKept.at > 5 * 60_000) {
+      allAssetsKept = { at: now, items: decodeAssetSearchItems(await readAllAssets(bridgeAsk)) };
+    }
+    const items = allAssetsKept.items;
+    const typeIDs = [...new Set(items.map((item) => item.typeID))];
+    await Promise.all([
+      resolveNamesNow(typeIDs.flatMap((id) => [{ kind: "type" as const, id }, { kind: "typeGroup" as const, id }, { kind: "typeCategory" as const, id }])),
+      wordsNow([...ASSET_SEARCH_KEYWORDS.map((keyword) => keyword.label), ...Object.values(ASSET_SEARCH_OPTION_LABELS)]),
+    ]);
+    const lowered = (kind: "type" | "typeGroup" | "typeCategory", id: number): string | null => {
+      const name = nameCache.get(nameKey(kind, id));
+      return typeof name === "string" ? name.toLowerCase() : null;
+    };
+    const names: AssetSearchNames = {
+      typeName: (id) => lowered("type", id),
+      groupName: (id) => lowered("typeGroup", id),
+      categoryName: (id) => lowered("typeCategory", id),
+    };
+    const wordOf = (label: string): string => {
+      const template = store.words.get().templates[label];
+      return typeof template === "string" ? plainText(template) : "";
+    };
+    const keywordWords = Object.fromEntries(ASSET_SEARCH_KEYWORDS.map((keyword) => [keyword.label, wordOf(keyword.label)]));
+    const { searchType, matches } = parseAssetSearch(text.toLowerCase());
+    const kinds = assetSearchKinds(matches, keywordWords);
+    const read = await readAssetStations(bridgeAsk);
+    const ownerStations = new Map(read.stations.map((row) => [row.stationID, { solarSystemID: row.solarSystemID }]));
+    // The keywords count only where no plain words were typed (GetSearchResults); then what they ask of is read.
+    const typeMeta = new Map<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>();
+    const metaGroupNameIDs = new Map<number, number | null>();
+    if (searchType === "" && [...kinds].some((kind) => META_KEYWORDS.has(kind))) {
+      for (let at = 0; at < typeIDs.length; at += 500) {
+        const facts = await api.getTypeMeta(typeIDs.slice(at, at + 500), callOptions);
+        if (!facts.available) throw new Error("The client's types could not be read for the search.");
+        for (const [typeID, meta] of facts.types) typeMeta.set(typeID, meta);
+        for (const [metaGroupID, nameID] of facts.metaGroupNameIDs) metaGroupNameIDs.set(metaGroupID, nameID);
+      }
+      await wordsNow([...metaGroupNameIDs.values()].flatMap((nameID) => (nameID === null ? [] : [`#${nameID}`])));
+    }
+    const systemSecurity = new Map<number, number | null>();
+    if (searchType === "" && [...kinds].some((kind) => PLACE_KEYWORDS.has(kind))) {
+      const systems = [...new Set([...ownerStations.values()].map((station) => station.solarSystemID))];
+      const [, security] = await Promise.all([
+        resolveNamesNow([
+          ...[...ownerStations.keys()].map((id) => ({ kind: "station" as const, id })),
+          ...systems.flatMap((id) => [{ kind: "system" as const, id }, { kind: "systemConstellation" as const, id }, { kind: "systemRegion" as const, id }]),
+        ]),
+        api.loadSystemSecurity(systems, callOptions),
+      ]);
+      store.apply({ type: "names/system-security", security });
+      for (const [systemID, level] of Object.entries(security)) systemSecurity.set(Number(systemID), level);
+    }
+    const lowerName = (kind: "station" | "system" | "systemConstellation" | "systemRegion", id: number): string => {
+      const name = nameCache.get(nameKey(kind, id));
+      return typeof name === "string" ? name.toLowerCase() : "";
+    };
+    const facts: AssetSearchFacts = {
+      metaLevel: (typeID) => typeMeta.get(typeID)?.metaLevel ?? null,
+      metaGroupID: (typeID) => typeMeta.get(typeID)?.metaGroupID ?? null,
+      techLevel: (typeID) => typeMeta.get(typeID)?.techLevel ?? null,
+      metaGroupName: (metaGroupID) => {
+        const nameID = metaGroupNameIDs.get(metaGroupID) ?? null;
+        return nameID === null ? "" : wordOf(`#${nameID}`).toLowerCase();
+      },
+      station: (stationID) => {
+        const station = stationID === null ? undefined : ownerStations.get(stationID);
+        if (stationID === null || station === undefined) return null;
+        const level = systemSecurity.get(station.solarSystemID) ?? null;
+        return {
+          stationName: lowerName("station", stationID),
+          systemName: lowerName("system", station.solarSystemID),
+          constellationName: lowerName("systemConstellation", station.solarSystemID),
+          regionName: lowerName("systemRegion", station.solarSystemID),
+          security: level === null ? null : shownSecurity(level),
+        };
+      },
+      options: Object.fromEntries(Object.entries(ASSET_SEARCH_OPTION_LABELS).map(([option, label]) => [option, wordOf(label)])) as Record<AssetSearchOption, string>,
+    };
+    const conditions = assetSearchConditions(matches, keywordWords, names, facts);
+    let locations: AssetSearchLocation[];
+    try {
+      locations = searchAssets(items, searchType, conditions, names, ownerStations);
+    } catch (error) {
+      if (error instanceof AssetSearchStopped) return { locations: [], stopped: true };
+      throw error;
+    }
+    requestNames(locations.flatMap((location) => [
+      { kind: "station" as const, id: location.stationID },
+      ...location.containers.map((each) => ({ kind: "type" as const, id: each.container.typeID })),
+    ]));
+    return { locations, stopped: false };
+  }
 
   async function loadPersonalAssets(): Promise<void> {
     let read: AssetStationsRead;
@@ -11591,8 +17073,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const online = store.station.get().online;
     const made = online === null
       ? null
-      : await readSkillSheet(bridgeAsk, { characterID: online.characterID, characterName: online.characterName, typeFacts: skillTypeFacts, now: serverNow });
+      : await readSkillSheet(bridgeAsk, {
+        characterID: online.characterID, characterName: online.characterName, typeFacts: skillTypeFacts, now: serverNow,
+        accelerators: skillAccelerators, alpha: store.station.get().cloneGrade === CLONE_GRADE_ALPHA,
+      });
     return made ?? (await api.getSkills(callOptions)).skills;
+  }
+
+  /**
+   * Of boosters' types, the skill accelerators and each one's bonus to each attribute (skillsvc._GetSkillAcceleratorBoosters:
+   * IsBoosterSkillAccelerator, by the type's passive effects; add_booster: the type's bonus attribute for each).
+   */
+  async function skillAccelerators(boosterTypeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, number>>> {
+    const effects = await api.loadPassiveEffects(boosterTypeIDs, callOptions).catch(() => ({} as Readonly<Record<number, readonly number[] | null>>));
+    const accelerators = boosterTypeIDs.filter((booster) => isBoosterSkillAccelerator(effects[booster]));
+    if (accelerators.length === 0) return new Map();
+    const bonuses = await api.fetchTypeDogma(accelerators, [...ATTRIBUTE_BONUS_BY_ATTRIBUTE.values()], callOptions);
+    return new Map(accelerators.map((booster) => [
+      booster,
+      new Map([...ATTRIBUTE_BONUS_BY_ATTRIBUTE].map(([attributeID, bonusID]) => [attributeID, bonuses[booster]?.[bonusID] ?? 0])),
+    ]));
   }
 
   async function loadSkills(): Promise<void> {
@@ -11620,6 +17120,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     context = "that skill",
     start = false,
   ): Promise<void> {
+    await saveSkillQueueSaved(entries, label, context, start);
+  }
+
+  /** saveSkillQueue, and whether the queue was saved (false where it was refused, its refusal said). */
+  async function saveSkillQueueSaved(
+    entries: readonly { readonly typeID: number; readonly toLevel: number }[],
+    label: string,
+    context = "that skill",
+    start = false,
+  ): Promise<boolean> {
     let raw: JsonValue;
     try {
       raw = await saveQueueAndRead(entries, start);
@@ -11643,12 +17153,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // showing an optimistic order — re-read so what is on screen is the
       // server's, not ours.
       await loadSkills().catch(() => {});
-      return;
+      return false;
     }
     // The sheet read after the save IS the confirmation. Landing it first means
     // the "saved" message can never be on screen next to a stale queue.
     applySkillSheet(raw);
     store.apply({ type: "skills/action", action: label });
+    return true;
   }
 
   /**
@@ -11939,6 +17450,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The autopilot's settings, as the client keeps them: with the character, on this machine. Read when the
   // pilot at the helm is first asked about, and kept here from then on.
   const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
+  // settings.user.ui useFittingNameForShips (the fitting display window's settings, fittingMgmtCont.SettingMenu): a ship
+  // named after a fitting loaded on it, off until set. Kept in this browser, as the client keeps it for the account.
+  const USE_FITTING_NAME_KEPT = "evejs.useFittingNameForShips";
+  const useFittingNameForShipsSignal = createSignal<boolean>(((): boolean => {
+    try {
+      return settingsStorage?.getItem(USE_FITTING_NAME_KEPT) === "1";
+    } catch {
+      return false;
+    }
+  })());
+  function setUseFittingNameForShips(on: boolean): void {
+    useFittingNameForShipsSignal.set(on);
+    try {
+      settingsStorage?.setItem(USE_FITTING_NAME_KEPT, on ? "1" : "0");
+    } catch {
+      // Storage refused: the setting holds while the page is open.
+    }
+  }
   let autopilotKept: { readonly characterID: number | null; readonly stored: StoredAutopilotSettings } = { characterID: null, stored: {} };
   const routeSettingsSignal = createSignal<StoredAutopilotSettings>({});
   function autopilotSettings(): StoredAutopilotSettings {
@@ -19408,6 +24937,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  /** The labels asked and their asking waited for (requestWords and the queue flushed now), for words wanted at once. */
+  async function wordsNow(labels: readonly string[]): Promise<void> {
+    requestWords(labels);
+    await flushWordsQueue();
+  }
+
   function requestWords(labels: readonly string[]): void {
     let queued = false;
     for (const label of labels) {
@@ -19634,7 +25169,105 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trainSkillsRequired,
     buySkillsRequired,
     skillBooksAsked: readonlySignal(skillBooksAskedSignal),
+    gatewayNotices: readonlySignal(gatewayNoticesSignal),
+    skillPlanLinks: readonlySignal(skillPlanLinksSignal),
+    followWebLink,
+    followFittingLink,
+    droppedLinkMarkup,
+    draggedFittingOf,
+    fittingWindowShipName,
+    openSkillPlanLink,
+    takeSkillPlanLink,
+    sharedSkillPlan,
+    skillMenuChoose,
+    corporationShowInfo,
+    allianceShowInfo,
     answerSkillBooks,
+    skillQueueDropFacts,
+    skillQueueDrop,
+    removeQueuedLevels,
+    skillPurchaseOffer,
+    buySkillFromOverlay,
+    applySkillPointsRequired,
+    applyPointsAsked: readonlySignal(applyPointsAskedSignal),
+    answerApplyPoints,
+    multiBuyAsked: readonlySignal(multiBuyAskedSignal),
+    openMultiBuy: (wanted: ReadonlyMap<number, number>) => openMultiBuy(wanted),
+    editMultiBuy,
+    answerMultiBuy,
+    fittingInfo,
+    importMultiBuy,
+    savedFittings: readonlySignal(savedFittingsSignal),
+    communityFittingsEnabled: readonlySignal(communityFittingsEnabledSignal),
+    loadSavedFittings,
+    fitFittingToActiveShip,
+    buyFit,
+    buyAllAsked: readonlySignal(buyAllAskedSignal),
+    answerBuyAll,
+    progressWnd: readonlySignal(progressWndSignal),
+    viewFittingsAsked: readonlySignal(viewFittingsAskedSignal),
+    raiseViewFitting,
+    viewFitting,
+    answerViewFitting,
+    viewFittingText,
+    currentFitText,
+    importFittingFromClipboard,
+    multiFitAsked: readonlySignal(multiFitAskedSignal),
+    maxShipsToFit: readonlySignal(maxShipsToFitSignal),
+    openMultiFit,
+    editMultiFit,
+    answerMultiFit,
+    multiFitGm,
+    saveViewFitting,
+    saveForAllianceOffered,
+    hasFittingManagerRole,
+    useFittingNameForShips: readonlySignal(useFittingNameForShipsSignal),
+    setUseFittingNameForShips,
+    fittingsDeletable: readonlySignal(fittingsDeletableSignal),
+    saveFitAs,
+    fittingsWithSkills,
+    hullsWithSkills,
+    hullBrowser: readonlySignal(hullBrowserSignal),
+    loadHullBrowser,
+    shipTraits: readonlySignal(shipTraitsSignal),
+    requestShipTraits,
+    personalSkillPlans,
+    certifiedSkillPlans,
+    certifiedPlanMilestones,
+    buyMissingSkillBooks,
+    skillPlanLevelAction,
+    corpSkillPlans,
+    deleteCorpSkillPlan,
+    copySkillPlan,
+    deletePersonalSkillPlan,
+    skillPlanDetail,
+    trainSkillPlan,
+    skillCatalogue,
+    skillPlanValidationFor: skillPlanValidationFacts,
+    skillRowInfoFor,
+    skillCatalogueStates,
+    attributeDisplay,
+    skillGroupCertificates,
+    expertSystemsHome,
+    removeExpertSystem,
+    trainExpertSystemSkills,
+    expertSystemsBrowse,
+    expertSystemsChanged: readonlySignal(expertSystemsSignal),
+    skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
+    skillsRequiring,
+    saveSkillPlan,
+    askLeaveSkillPlanEditor,
+    skillPlanMilestones,
+    skillPlanTypeFacts,
+    skillPlanFittingTypes,
+    sayCantAddAsMilestone,
+    askReplaceMilestone,
+    setTrackedSkillPlan,
+    comparisonTypes,
+    cfgAveragePrices,
+    typeFacts,
+    deleteFitting,
+    deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,
@@ -20033,6 +25666,72 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID));
     },
 
+    simulateShip() {
+      return simulateShip();
+    },
+    exitSimulation() {
+      return exitSimulation();
+    },
+    fitSimulatedModule(typeID, flagID) {
+      return fitSimulatedModule(typeID, flagID);
+    },
+    unfitSimulatedModule(flagID) {
+      unfitSimulatedModule(flagID);
+    },
+    loadSimulatedCharge(flagID, chargeTypeID) {
+      return loadSimulatedCharge(flagID, chargeTypeID);
+    },
+    simulateFitting(fitting) {
+      return simulateFitting(fitting);
+    },
+    setSimulatedDrones(typeID, wanted) {
+      return setSimulatedDrones(typeID, wanted);
+    },
+    addSimulatedCargo(typeID) {
+      return addSimulatedCargo(typeID);
+    },
+    setSimulatedCargo(typeID, wanted) {
+      return setSimulatedCargo(typeID, wanted);
+    },
+    emptySimulatedCargo() {
+      emptySimulatedCargo();
+    },
+    addSimulatedFighters(typeID, qty) {
+      return addSimulatedFighters(typeID, qty);
+    },
+    addSimulatedFighterBay(typeID, qty) {
+      return addSimulatedFighterBay(typeID, qty);
+    },
+    fitSimulatedFighterToTube(typeID, tubeFlagID) {
+      return fitSimulatedFighterToTube(typeID, tubeFlagID);
+    },
+    fitSimulatedFighterToEmptyTube(typeID) {
+      return fitSimulatedFighterToEmptyTube(typeID);
+    },
+    setSimulatedSquadronSize(tubeFlagID, wanted) {
+      return setSimulatedSquadronSize(tubeFlagID, wanted);
+    },
+    removeSimulatedSquadron(tubeFlagID) {
+      removeSimulatedSquadron(tubeFlagID);
+    },
+    moveSimulatedSquadronToBay(tubeFlagID) {
+      return moveSimulatedSquadronToBay(tubeFlagID);
+    },
+    setSimulatedFighterBay(typeID, wanted) {
+      return setSimulatedFighterBay(typeID, wanted);
+    },
+    removeSimulatedFighterBayType(typeID) {
+      removeSimulatedFighterBayType(typeID);
+    },
+    emptySimulatedFighterBay() {
+      emptySimulatedFighterBay();
+    },
+    setSimulatedActiveDrones(typeID, wanted) {
+      return setSimulatedActiveDrones(typeID, wanted);
+    },
+    switchSimulatedModule(flagID, backwards) {
+      switchSimulatedModule(flagID, backwards);
+    },
     async setModuleOnline(itemID, online) {
       // ⚠ NOT runFittingAction. That helper decides "declined" from the api
       // verb's `applied` flag, and setModuleOnline returns VOID — so its check
@@ -20178,6 +25877,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runIndustryAction(() => cancelIndustryJobCall(bridgeDo, jobAsRead(jobID)));
     },
     loadMarket,
+    watchMarketProgression,
     findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),
     listOreFamilies: () => api.listOreFamilies(callOptions),
     loadMarketGroups: (parentGroupID: number) => api.loadMarketGroups(parentGroupID, callOptions),
@@ -20374,9 +26074,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     sendMail,
     loadContracts,
     openContract,
+    findContractsOfType,
     closeContract,
     acceptContract,
     loadPersonalAssets,
+    searchPersonalAssets,
     openAssetStation,
     setDestinationToAssetStation,
 

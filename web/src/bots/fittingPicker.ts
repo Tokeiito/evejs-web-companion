@@ -2,13 +2,15 @@
 // narrowed by a free-text filter. Fit names are the player's own words and
 // often leave the hull out ("T1", "T1 Ore"), so the hull is the heading.
 
+import type { FittingSource } from "../bridge/sharedFittings.ts";
+
 /** One fit the picker can offer. `source` absent is a personal fit. */
 export interface PickerFitting {
   readonly fittingID: number;
   readonly name: string;
   readonly shipTypeID?: number;
   readonly shipName?: string | null;
-  readonly source?: "personal" | "corporation";
+  readonly source?: FittingSource;
 }
 
 export interface PickerGroup {

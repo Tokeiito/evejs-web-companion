@@ -12,7 +12,7 @@
 // they came back, owner-filtered, and a pilot on the same account with none came
 // back with a colony table that was present and empty.
 //
-// So this route is /api/roster/training's shape exactly: plural ids from the
+// So this route has the roster's shape: plural ids from the
 // browser, each asked with the CALLER's accountID, a refused id left OUT.
 //
 // What these pin, beyond the shape:

@@ -6,6 +6,11 @@
   // backlog poll: the panel polls the active channel on a modest interval while
   // it is open and stops when it closes (onDestroy). The browser never sees a
   // bridge session.
+  //
+  // A message is shown by its markup as the client's chat shows it (the editor's markup: bridge/mailMarkup.ts). Its
+  // links are followed when clicked as the client's link registry follows them (ui/linkFollowers.ts: skill plans, Show
+  // Info, the web), each in its colour and with its hint; any other link is underlined with its url as its hint. A link dragged onto the send box (a skill plan's share
+  // button: SkillPlanDragData.get_link) is put in at the caret as its markup.
   import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { createChatPoller } from "../app/chatPoll.ts";
@@ -16,8 +21,19 @@
   import type { ChatChannel } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
+  import { LINK_DRAG_TYPE } from "../bridge/skillPlanLink.ts";
+  import { droppedFittingDrag, isFittingDrag } from "./fittingDrag.ts";
+  import type { DroppedLink } from "../app/flow.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openSkillPlanLink = null }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** A skill plan's link in a message, clicked. */
+    openSkillPlanLink?: ((url: string) => void) | null;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const chat = store.chat;
@@ -58,6 +74,61 @@
   let busy = $state(false);
   let error = $state("");
   let draft = $state("");
+  let sendBox = $state<HTMLInputElement | undefined>(undefined);
+
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  function linkWord(label: string): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" ? template : LINK_WORDS[label] ?? "", {}, { nameOf: () => "" }));
+  }
+
+  /** How a link in a message is followed (ui/linkFollowers.ts: the client's link registry), or null where it is not. */
+  function followerOf(url: string, text: string) {
+    return linkFollowerOf(url, flow, openSkillPlanLink, linkWord, text);
+  }
+
+  /** chat/client/const.py MAX_MESSAGE_LENGTH: the most the chat's text holds, its tags counted (EditPlainText countWithTags). */
+  const MAX_MESSAGE_LENGTH = 1024;
+
+  /** A link or a fitting dragged over the send box is taken. */
+  function linkDragOver(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes(LINK_DRAG_TYPE) || isFittingDrag(event)) event.preventDefault();
+  }
+
+  /**
+   * A link or a fitting dropped on the send box (eveEditPlainText.OnDropData): its markup (<a href="url">text</a>,
+   * evelink.Link; a fitting's its link, format_fitting_url) put in at the caret, as the room left lets it
+   * (flow.droppedLinkMarkup). What was dropped is read before any await, as a drop's data can only be.
+   */
+  function linkDropped(event: DragEvent): void {
+    const fitting = droppedFittingDrag(event);
+    const raw = fitting === null ? event.dataTransfer?.getData(LINK_DRAG_TYPE) : null;
+    if (fitting === null && !raw) return;
+    event.preventDefault();
+    let dropped: DroppedLink;
+    if (fitting?.kind === "source") {
+      dropped = { kind: "fittingSource", source: fitting.source };
+    } else if (fitting !== null) {
+      dropped = { kind: "fitting", shipTypeID: fitting.fitting.shipTypeID, fitData: fitting.fitting.fitData, name: fitting.fitting.name };
+    } else {
+      let link: { readonly url?: unknown; readonly text?: unknown };
+      try {
+        link = JSON.parse(raw ?? "") as { readonly url?: unknown; readonly text?: unknown };
+      } catch {
+        return;
+      }
+      if (typeof link.url !== "string" || typeof link.text !== "string") return;
+      dropped = { kind: "link", url: link.url, text: link.text };
+    }
+    const at = sendBox?.selectionStart ?? draft.length;
+    const selected = Math.abs((sendBox?.selectionEnd ?? at) - at);
+    void flow.droppedLinkMarkup(dropped, { length: draft.length, selected, max: MAX_MESSAGE_LENGTH }).then((markup) => {
+      if (markup === null) return;
+      const place = Math.min(at, draft.length);
+      draft = draft.slice(0, place) + markup + draft.slice(place);
+    }).catch(() => {});
+  }
 
   const CHANNELS: readonly { id: ChatChannel; label: string }[] = [
     { id: "local", label: "Local" },
@@ -118,6 +189,7 @@
   }
 
   onMount(() => {
+    flow.requestWords(Object.keys(LINK_WORDS));
     void refresh();
     poller.start();
   });
@@ -191,7 +263,7 @@
             {#each active.messages as message, index (index)}
               <li>
                 <span class="author">{message.characterName}</span>:
-                <span class="body">{message.message}</span>
+                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button type="button" class="evelink {follower.kind}" title={follower.hint} onclick={follower.follow} draggable="true" ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
               </li>
             {/each}
           </ul>
@@ -214,8 +286,11 @@
     <form class="send-box" onsubmit={onSubmit}>
       <input
         type="text"
+        bind:this={sendBox}
         bind:value={draft}
-        maxlength="4096"
+        ondragover={linkDragOver}
+        ondrop={linkDropped}
+        maxlength={MAX_MESSAGE_LENGTH}
         placeholder={`Message ${$chat.activeChannel === "corp" ? "Corp" : "Local"}…`}
         disabled={busy}
       />
@@ -225,6 +300,9 @@
 </section>
 
 <style>
+  .chat-bold { font-weight: 700; }
+  .chat-italic { font-style: italic; }
+  .chat-underline { text-decoration: underline; }
   .chat-grid {
     display: grid;
     grid-template-columns: 1fr minmax(140px, 220px);

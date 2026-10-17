@@ -32,6 +32,8 @@
   import type { AssetStationRow } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import { assetsSearchTarget } from "./assetsSearch.ts";
+  import type { AssetSearchItem, AssetSearchLocation } from "../bridge/assetSearch.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -152,8 +154,46 @@
     else flow.clearWaypoints(row.stationID);
   }
 
+  // The window's tabs (assetsWindow._ReconstructTabs, 186 to 201): its list of where the pilot's things are, and Search.
+  // (Asset Safety, the third, is not the page's.)
+  const TAB_WORDS = {
+    allitems: "Tooltips/Neocom/PersonalAssets",
+    search: "UI/Common/Buttons/Search",
+    searchText: "UI/Common/SearchText",
+    searching: "UI/Common/Searching",
+    nothingFound: "UI/Common/NothingFound",
+  } as const;
+  let tab = $state<"allitems" | "search">("allitems");
+  // The Search tab (LoadSearch, Search_thread, _LoadSearch, GetSubContent): its text, and the stations of what matched.
+  let searchText = $state("");
+  let searching = $state(false);
+  let searchResults = $state.raw<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean } | null>(null);
+  function search(): void {
+    void run(async () => {
+      searching = true;
+      try {
+        searchResults = await flow.searchPersonalAssets(searchText);
+      } finally {
+        searching = false;
+      }
+    });
+  }
+  /** A thing's count as the search lists it: one for a thing assembled (its quantity -1). */
+  const searchUnits = (item: AssetSearchItem): number => (item.quantity < 0 ? 1 : item.quantity);
+  // A search asked for from outside (assetsSearch.ts, FindInPersonalAssets): the Search tab, with its text, searched.
+  // svelte-ignore state_referenced_locally
+  const assetsSearchRequests = assetsSearchTarget.requests;
+  $effect(() => {
+    void $assetsSearchRequests;
+    const wanted = assetsSearchTarget.take();
+    if (wanted === null) return;
+    tab = "search";
+    searchText = wanted;
+    search();
+  });
+
   onMount(() => {
-    flow.requestWords([...Object.values(ROUTE_WORDS), NO_ROUTE]);
+    flow.requestWords([...Object.values(ROUTE_WORDS), NO_ROUTE, ...Object.values(TAB_WORDS)]);
     void run(() => flow.loadPersonalAssets());
   });
 </script>
@@ -172,6 +212,11 @@
       </button>
     </p>
   </header>
+
+  <div class="controls asset-tabs" role="tablist">
+    <button type="button" role="tab" aria-selected={tab === "allitems"} class:minor={tab !== "allitems"} onclick={() => (tab = "allitems")}>{word(TAB_WORDS.allitems, "Personal Assets")}</button>
+    <button type="button" role="tab" aria-selected={tab === "search"} class:minor={tab !== "search"} onclick={() => (tab = "search")}>{word(TAB_WORDS.search, "Search")}</button>
+  </div>
 
   {#if error}
     <p class="error">{error}</p>
@@ -192,7 +237,48 @@
     <p class="error">{$travel.failureReason}</p>
   {/if}
 
-  {#if !$assets.loaded}
+  {#if tab === "search"}
+    <form class="controls" onsubmit={(event) => { event.preventDefault(); search(); }}>
+      <input type="search" maxlength="100" bind:value={searchText} placeholder={word(TAB_WORDS.searchText, "Search Text")} aria-label={word(TAB_WORDS.searchText, "Search Text")} />
+      <button type="submit" disabled={busy}>{word(TAB_WORDS.search, "Search")}</button>
+    </form>
+    {#if searching}
+      <p class="note">{word(TAB_WORDS.searching, "Searching")}</p>
+    {:else if searchResults !== null}
+      {#if searchResults.stopped}
+        <!-- The client's search thread raising out (assetSearchUtil._GetSolarSystemID with a row of no station): its
+             scroll is left with the Searching hint, and no results come. -->
+        <p class="note">{word(TAB_WORDS.searching, "Searching")}</p>
+        <p class="note">The search stopped: a place was asked of a thing lying in no station (in a ship, say), as the game's own search stops there.</p>
+      {:else if searchResults.locations.length === 0}
+        <p class="note">{word(TAB_WORDS.nothingFound, "Nothing found")}</p>
+      {:else}
+        <!-- _LoadSearch: a group for each station, its name and how many things matched there; within it, a group for
+             each container (GetContainerGroupEntries) and the things lying at the station (GetSubContent). -->
+        <div class="asset-search">
+          {#each searchResults.locations as location (location.stationID)}
+            <details class="asset-search-place">
+              <summary>{stationName(location.stationID)} <small class="note">{stackText(location.itemCount)}</small></summary>
+              {#each location.containers as held (held.container.itemID)}
+                <details class="asset-search-container">
+                  <summary>
+                    <span class="asset-place"><TypeIcon typeID={held.container.typeID} name={itemName(held.container.typeID)} size="sm" />{itemName(held.container.typeID)}</span>
+                    <small class="note">{stackText(held.items.length)}</small>
+                  </summary>
+                  {#each held.items as item (item.itemID)}
+                    <p class="asset-search-item"><span class="asset-place"><TypeIcon typeID={item.typeID} name={itemName(item.typeID)} size="sm" />{itemName(item.typeID)}</span> <span class="num">{formatUnits(searchUnits(item))}</span></p>
+                  {/each}
+                </details>
+              {/each}
+              {#each location.items as item (item.itemID)}
+                <p class="asset-search-item"><span class="asset-place"><TypeIcon typeID={item.typeID} name={itemName(item.typeID)} size="sm" />{itemName(item.typeID)}</span> <span class="num">{formatUnits(searchUnits(item))}</span></p>
+              {/each}
+            </details>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  {:else if !$assets.loaded}
     <p class="note">Looking for your things…</p>
   {:else if $assets.error}
     <!-- A FAILED read. Worded deliberately unlike the empty case below: "you
@@ -336,4 +422,8 @@
     gap: 0.5rem;
     min-width: 0;
   }
+  .asset-search-place > summary, .asset-search-container > summary { cursor: pointer; }
+  .asset-search-container { margin-left: 1rem; }
+  .asset-search-container > summary .asset-place { display: inline-flex; }
+  .asset-search-item { display: flex; justify-content: space-between; gap: 1rem; margin: 0.15rem 0 0.15rem 1rem; }
 </style>

@@ -78,7 +78,8 @@ function volumeFor(typeID: number, volumes: VolumeMap | undefined, packaged = fa
     return null;
   }
   const v = (packaged ? volumes[`p${typeID}`] : undefined) ?? volumes[String(typeID)];
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+  // Nought is a type's volume where its type's is nought (blueprints and others), as the client's GetItemVolume has it.
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap | undefined): InventoryItemRow {

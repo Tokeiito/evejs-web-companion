@@ -77,7 +77,8 @@ const DOCKING_ACCESS: JsonValue = { type: "list", items: [1030000000000, 1030000
 
 // GetStructureMapData -> CachedMethodCallResult wrapping a CRowset (objectex2). The
 // single row is the corp structure; itemID is the structureID, locationID the
-// solarSystemID, orbitID the ownerID. NO fuel/reinforce column exists.
+// solarSystemID, orbitID the system's star (Perimeter's, 40009228, as eve.js 8a2ce7e63 sends it). NO
+// fuel/reinforce column exists, and no owner.
 const STRUCTURE_MAP_DATA: JsonValue = {
   type: "object",
   name: { type: "rawstr", value: "carbon.common.script.net.objectCaching.CachedMethodCallResult" },
@@ -102,7 +103,7 @@ const STRUCTURE_MAP_DATA: JsonValue = {
               itemID: 1030000000001,
               itemName: { type: "wstring", value: "Perimeter - asdf" },
               locationID: 30000144,
-              orbitID: 98000001,
+              orbitID: 40009228,
               connector: false,
               x: 800382013408.2244,
               y: 54164076845.46208,
@@ -231,10 +232,14 @@ test("decodeStructureMapData unwraps the cache result + CRowset; no operational 
   const rows = decodeStructureMapData(STRUCTURE_MAP_DATA);
   assert.equal(rows.length, 1);
   const m = rows[0]!;
-  // itemID is the structureID, locationID the solarSystemID, orbitID the ownerID.
+  // itemID is the structureID, locationID the solarSystemID, orbitID the system's star: Tranquility's structure row
+  // carries the star there (LOGS/Archive/Undock citadel and stopping ship.txt: orbitID 40344201, Henebene's star), as
+  // EveJS has since 8a2ce7e63 (Perimeter's star, 40009228; the bytes were captured with the owner there before).
   assert.equal(m.structureID, 1030000000001);
   assert.equal(m.solarSystemID, 30000144);
-  assert.equal(m.ownerID, 98000001);
+  assert.equal(m.orbitID, 40009228);
+  assert.equal(m.celestialIndex, null);
+  assert.equal(m.orbitIndex, null);
   assert.equal(m.typeID, 35832);
   assert.equal(m.groupID, 1657);
   assert.equal(m.itemName, "Perimeter - asdf"); // wstring unwrapped

@@ -30,6 +30,7 @@
   import Travel from "./Travel.svelte";
   import RouteWindow from "./RouteWindow.svelte";
   import MissionTracker from "./MissionTracker.svelte";
+  import TypeCompare from "./TypeCompare.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
@@ -121,7 +122,8 @@
 {:else if tab === "scanner"}
   <Scanner {store} {flow} />
 {:else if tab === "mail"}
-  <Mail {store} {flow} />
+  <!-- A skill plan link in a mail, followed (link.py handle_link): the Skills window opens on it. -->
+  <Mail {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
 {:else if tab === "contacts"}
   <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "locations"}
@@ -205,7 +207,10 @@
   -->
   <ShowInfo {store} {flow} />
 {:else if tab === "chat"}
-  <Chat {store} {flow} />
+  <!-- A skill plan link in a message, followed (link.py handle_link): the Skills window opens on it. -->
+  <Chat {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
+{:else if tab === "compare"}
+  <TypeCompare {store} {flow} />
 {:else}
   <!-- Every tab in `tabs.ts` is named above; this is the arm for a `TabID` that
        does not exist yet, and it says so rather than guessing. -->

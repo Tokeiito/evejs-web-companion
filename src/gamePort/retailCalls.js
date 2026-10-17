@@ -210,6 +210,11 @@ const queueByPlace = (args, kwargs) => {
 const pointsForOneSkill = (args, kwargs) => (args.length === 2 && args.every((value) => Number.isSafeInteger(value) && value > 0) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client names one skill and how many points to put into it, more than none, and nothing else." });
+/** The Apply Skill Points window's levels (applySkillPointsWindow.py, skillTypeIDsAndLevels): one list of (typeID, level) pairs, and nothing else. */
+const levelsListed = (args) => ({
+  args: [list((Array.isArray(args[0]) ? args[0] : args[0] && Array.isArray(args[0].items) ? args[0].items : []).map((pair) => (Array.isArray(pair) ? pair : pair && Array.isArray(pair.items) ? pair.items : pair)))],
+  kwargs: {},
+});
 /** crimewatchSvc.SetSafetyLevel (343): one of the ship's three safety levels (crimewatch/const.py), and nothing else. */
 const oneSafetyLevel = (args, kwargs) => (args.length === 1 && [0, 1, 2].includes(args[0]) && Object.keys(kwargs).length === 0
   ? {}
@@ -640,6 +645,22 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "subscriptionMgr.GetCloneGrade",
   // An acceleration gate's activation, the keeper's (movementFunctions.py 553). The gateway's list has nothing of the keeper's.
   "keeper.ActivateAccelerationGate",
+  // A fitting saved, and one of the same name saved over (fittingSvc.PersistFitting, 302 and 304). The gateway's list
+  // has the fitting manager's SaveManyFittings and not these.
+  "charFittingMgr.SaveFitting", "charFittingMgr.UpdateFitting",
+  // The same, and the name and description changed, on the corporation's and the alliance's fitting managers
+  // (fittingSvc.GetFittingMgr, 85 to 92). The gateway's list has none of them.
+  "corpFittingMgr.SaveFitting", "corpFittingMgr.UpdateFitting", "corpFittingMgr.UpdateNameAndDescription",
+  "allianceFittingMgr.SaveFitting", "allianceFittingMgr.UpdateFitting", "allianceFittingMgr.UpdateNameAndDescription",
+  "corpFittingMgr.DeleteFitting", "allianceFittingMgr.DeleteFitting",
+  "corpFittingMgr.DeleteManyFittings", "allianceFittingMgr.DeleteManyFittings",
+  // Everything of the pilot's, for the assets window's search (invCache.py 880). The web gateway refuses it on purpose
+  // (a wider read than its assets panel wanted: evejsWebGatewayRuntime.js), so it goes on the game port alone.
+  "charMgr.ListIncludingContainers",
+  // The structures and NPC stations the pilot may dock at in its region (structureDirectory.py 65: the region's
+  // markets, GetMarketDockableLocationsInRegion, which the multibuy's station list reads). The web gateway refuses it
+  // (it once carried owners' timers; eve.js b5f7b0009 answers as Tranquility does), so it goes on the game port alone.
+  "structureDirectory.GetMyCharacterStructures",
   // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
   "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
@@ -707,6 +728,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // Skill books bought as the client's books window buys them, on the handler (characterskills/client/purchase.py
   // 100). The page makes it by name. The gateway's list has not got it.
   "skillHandler.PurchaseSkills",
+  // Free points spread over the levels of skills, as the client's Apply Skill Points window spreads them: what they
+  // would come to, and the spreading (skillQueueSvc.py 608 to 613). The page makes them by name. The gateway's list
+  // has neither.
+  "skillHandler.GetFreeSkillPointsAppliedToSkills", "skillHandler.ApplyFreeSkillPointsToSkills",
   // The account's extra training slots, which the client's queue service asks for to tell whether a change of
   // the queue may start it (skillQueueSvc.py 851). The gateway's list has nothing of the user service's.
   "userSvc.GetMultiCharactersTrainingSlots",
@@ -790,6 +815,13 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The ship turned toward a direction: a probe result's Align To (scanSvc.AlignToPosition, 459 to 465), and the
   // double click in space. The gateway's list has it not.
   "beyonce.CmdGotoDirection",
+  // The factions a player corporation's members may enlist with, the Permitted Faction Enlistments row of its Show Info
+  // (infosvc.UpdateDataCorp: fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions). The gateway's list has nothing of the
+  // enlistment manager's.
+  "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
+  // The pilot's expert systems and one of them taken out (expertSystems/client/service.py: GetMyExpertSystems,
+  // RemoveMyExpertSystem, on expertSystemMgr by its name). The gateway's list has nothing of the expert systems'.
+  "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
 ]);
 
 /**
@@ -835,6 +867,45 @@ const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFuncti
 const INV_ITEM_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
+/**
+ * fittingSvc.PersistFitting (268 to 300): the fitting a utillib.KeyVal() given its fields one at a time, the name
+ * (stripped, at most 50), the description (at most 500), the ship's type and fitData, then the owner, so that they go
+ * out in the order a dict of the five iterates; the name and the description typed text (typedText: the display
+ * window's edits), and fitData a list of (typeID, flag, qty) tuples. A route gives the fitting as a plain object of
+ * those fields. Null for anything else.
+ */
+function persistedFitting(fitting) {
+  if (!fitting || typeof fitting !== "object" || Array.isArray(fitting) || fitting.type !== undefined) return null;
+  const rows = Array.isArray(fitting.fitData) ? fitting.fitData : null;
+  if (rows === null || typeof fitting.name !== "string" || typeof fitting.description !== "string") return null;
+  if (!wholeAndPositive(fitting.shipTypeID) || !wholeAndPositive(fitting.ownerID)) return null;
+  if (!rows.every((row) => Array.isArray(row) && row.length === 3 && row.every((value) => Number.isSafeInteger(value)))) return null;
+  return keyVal(orderEntries([
+    ["name", typedText(fitting.name)],
+    ["description", typedText(fitting.description)],
+    ["shipTypeID", fitting.shipTypeID],
+    ["fitData", { type: "list", items: rows.map((row) => [...row]) }],
+    ["ownerID", fitting.ownerID],
+  ]));
+}
+/** SaveFitting(ownerID, fitting), as PersistFitting asks it (304). */
+function fittingSaved(args, kwargs) {
+  const [ownerID, fitting] = args;
+  const made = persistedFitting(fitting);
+  if (args.length !== 2 || !wholeAndPositive(ownerID) || made === null || Object.keys(kwargs).length > 0) {
+    return { status: "differs", note: "The client saves an owner's fitting as the KeyVal of five PersistFitting makes, and nothing else." };
+  }
+  return { args: [ownerID, made], status: "reshaped" };
+}
+/** UpdateFitting(ownerID, fitting, fittingID=...), as PersistFitting asks it (302), for the owner's fitting of that name. */
+function fittingUpdated(args, kwargs) {
+  const [ownerID, fitting] = args;
+  const made = persistedFitting(fitting);
+  if (args.length !== 2 || !wholeAndPositive(ownerID) || made === null || !wholeAndPositive(kwargs.fittingID) || Object.keys(kwargs).length !== 1) {
+    return { status: "differs", note: "The client updates an owner's fitting with the KeyVal of five PersistFitting makes and the fitting's number by keyword, and nothing else." };
+  }
+  return { args: [ownerID, made], kwargs: { fittingID: kwargs.fittingID }, status: "reshaped" };
+}
 const CLIENT_PLANET = "eve/client/script/environment/planet/clientPlanet.py";
 const IMPORT_EXPORT = "eve/client/script/ui/shared/planet/importExportUI.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
@@ -1574,6 +1645,7 @@ const CONTRACT_SORT_ID = 0;
 const CONTRACT_SORT_PRICE = 1;
 const DRONE_DAMAGE = "eveDrones/droneDamageTracker.py";
 const SKILL_SVC = "eve/client/script/ui/services/skillsvc.py";
+const EXPERT_SYSTEM_SVC = "expertSystems/client/service.py";
 const STANDING_SVC = "eve/client/script/ui/services/standingsvc.py";
 /**
  * A standing's detail, as the client's standings service asks for it: of an entity, with whoever's standing it is.
@@ -1856,6 +1928,21 @@ const RETAIL_CALLS = Object.freeze({
 
   // ── saved fittings ─────────────────────────────────────────────────────────
   "charFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("characterID", "character"), "GetFittingMgr(session.charid).GetFittings(session.charid)"),
+  "charFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description): fittingSvc.ChangeNameAndDescription, from the fitting display's Save (fittingMgmtCont.SaveExistingFitting) where the name or the description changed; the name stripped, both typed in the window's edits. In no recording."), [2, 3]),
+  "charFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting): fittingSvc.PersistFitting, from the fitting display's Save of a fitting not saved yet (the fitting window's Save Fit As, fittingSvc.DoSaveFitting); the fitting the KeyVal of five it makes (persistedFitting). Answered the fitting's number. In no recording."),
+  "charFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=existingFitting.fittingID): PersistFitting where the owner has a fitting of that name for the ship and the pilot said Yes to UpdateFitPersonal (289 to 299). Answered the fitting's number. In no recording."),
+  "charFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID): fittingSvc.DeleteFitting, from fittingUtil.DeleteFittings of one fitting (the browser's Delete Fitting, after DeleteFitting's Yes). In no recording."),
+  "corpFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID), the corporation's fitting manager, by one with the fitting manager's role (fittingUtil.CanDeleteFit). In no recording."),
+  "allianceFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID), the alliance's fitting manager, by one with the role whose corporation is the alliance's executor (fittingUtil.CanDeleteFit). In no recording."),
+  "charFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs): fittingSvc.DeleteManyFittings, one call for each owner at once (uthread.parallel), from fittingUtil.DeleteFittings of more than one (the browser's Delete Fitting with many selected, after DeleteFittingsManyOneOwner's or DeleteFittingsMany's Yes); the fittings deleted answered as a list. In no recording."),
+  "corpFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs), the corporation's fitting manager, for the corporation's fittings of the many selected, where fittingUtil.CanDeleteFit lets the pilot (GetDeletableNodes). In no recording."),
+  "allianceFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs), the alliance's fitting manager, for the alliance's fittings of the many selected, where fittingUtil.CanDeleteFit lets the pilot. In no recording."),
+  "corpFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description), the corporation's fitting manager for a fitting of the corporation's: as the pilot's (fittingMgmtCont.SaveExistingFitting, by one with the fitting manager's role). In no recording."), [2, 3]),
+  "corpFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting), the corporation's fitting manager: as the pilot's (the fitting display's Save for Corporation, fittingMgmtCont.SaveNewFitting). In no recording."),
+  "corpFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=...), the corporation's fitting manager: as the pilot's, where the pilot said Yes to UpdateFitCorp. In no recording."),
+  "allianceFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description), the alliance's fitting manager for a fitting of the alliance's: as the pilot's. In no recording."), [2, 3]),
+  "allianceFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting), the alliance's fitting manager: as the pilot's (the fitting display's Save for Alliance, offered to the executor corporation's). In no recording."),
+  "allianceFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=...), the alliance's fitting manager: as the pilot's, where the pilot said Yes to UpdateFitPersonal (PersistFitting asks UpdateFitCorp of the corporation's alone). In no recording."),
   "corpFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("corporationID", "corporation"), "GetFittingMgr(session.corpid).GetFittings(session.corpid)"),
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
@@ -1981,6 +2068,8 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "TrashItems([itemIDs], locationID)",
   ),
+  "invbroker.DestroyFitting": same("eve/client/script/ui/shared/fitting/fittingSlotController.py:262",
+    "parentInv.DestroyFitting(moduleID), on the ship's own inventory (invCache.GetInventoryFromId(the ship)): a rig taken off the ship from the Fitting window, after the RigUnFittingInfo dialog's OK, where the rig cannot be unfitted whole (Unfit, 245 to 266). In no recording."),
   "invbroker.SetLabel": typing(same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:343", "invCache.GetInventoryMgr().SetLabel(itemID, name), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr): an item named, from a ship's Change Name or a container's Set Name, the name the window answered with its line breaks made spaces. Recorded on Tranquility (SetLabel(itemID, u'LittleLittle')), the server's OnCfgDataChanged('evelocations', ...) after it."), [1]),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
@@ -2086,10 +2175,14 @@ const RETAIL_CALLS = Object.freeze({
   "stationSvc.GetStationItemBits": same("eve/client/script/ui/station/base.py:575", "RemoteSvc('stationSvc').GetStationItemBits(), no arguments, while the item it has is not that of the station the session is in; the transport keeps it so (pilotStation.js)"),
   "station.GetGuests": same("eve/client/script/ui/station/base.py:103", "RemoteSvc('station').GetGuests(), no arguments, once for a station and kept, then changed at OnCharNowInStation and OnCharNoLongerInStation (86, 93); the transport keeps it so (pilotStation.js)"),
   "map.GetStationInfo": same("eve/client/script/ui/services/uisvc.py:246", "RemoteSvc('map').GetStationInfo(), no arguments"),
+  "structureDirectory.GetMyCharacterStructures": same("eve/client/script/ui/services/structure/structureDirectory.py:65", "RemoteSvc('structureDirectory').GetMyCharacterStructures(), no arguments, kept by the client per region (GetMarketDockableLocationsInRegion) and for five seconds by the structure browser (GetStructures)"),
+  "structureDirectory.GetStructureMapData": same("eve/client/script/ui/services/structure/structureDirectory.py:76", "RemoteSvc('structureDirectory').GetStructureMapData(solarsystemID), the system's structures for its items (mapSvc.GetSolarsystemItems), kept three minutes (Memoize(3))"),
   "structureDirectory.GetStructureInfo": same("eve/client/script/ui/services/structure/structureDirectory.py:38", "RemoteSvc('structureDirectory').GetStructureInfo(structureID), kept by structure"),
   // ── the reprocessing plant (the reprocessing service's Moniker) ───────────
   "reprocessingSvc.GetQuotes": judged("reprocessing/ui/quotes.py:20", quotingReprocessing,
     "GetReprocessingSvc().GetQuotes(itemIDs, activeShipID): the window's own dict of its items, each row by its item's ID, and the ship the pilot is in. Answers the place's tax, its efficiency by type, and each item's quote."),
+  "inSpaceCompressionMgr.CompressItemInSpace": same("itemcompression/client/itemCompression.py:9",
+    "sm.RemoteSvc('inSpaceCompressionMgr').CompressItemInSpace(compressibleItem.itemID, compressionFacilityBallID): from the compression window (compression_window.py 99) and the menu's Compress; answered (sourceItemID, sourceTypeID, sourceQuantity, outputItemID, outputTypeID, outputQuantity), or None, after which the client says nothing. In no recording."),
   "reprocessingSvc.Reprocess": judged("reprocessing/ui/itemReprocessor.py:71", reprocessingItems,
     "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
   "structureSettings.CharacterGetService": judged("eve/client/script/ui/services/marketsvc.py:239", ofAStructuresMarket,
@@ -2104,6 +2197,9 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionKeywords": same(`${AGENTS}:633`, "GetAgentMoniker(agentID).GetMissionKeywords(contentID), on the agent's own object"),
 
   // ── a corporation's assets ────────────────────────────────────────────────
+  "corpmgr.GetPublicInfo": same("eve/client/script/ui/shared/info/corporationInfoWindow.py:49", "RemoteSvc('corpmgr').GetPublicInfo(item_id): Show Info on a corporation"),
+  "corpmgr.GetAggressionSettings": same(`${CORP_SVC}/base_corporation.py:259`, "RemoteSvc('corpmgr').GetAggressionSettings(corpID): the friendly fire row of a corporation's Show Info, kept per corporation"),
+  "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions": same("eve/client/script/ui/services/fwEnlistmentSvc.py:104", "RemoteSvc('fwCharacterEnlistmentMgr').GetCorpAllowedEnlistmentFactions(corporationID): a player corporation's Show Info"),
   "corpmgr.GetAssetInventory": same(`${CORP_ASSETS}:100`, "RemoteSvc('corpmgr').GetAssetInventory(session.corpid, which)"),
   "corpmgr.GetAssetInventoryForLocation": same(`${CORP_ASSETS}:423`, "RemoteSvc('corpmgr').GetAssetInventoryForLocation(session.corpid, locationID, which)"),
   "corpmgr.SearchAssets": Object.freeze({
@@ -2152,6 +2248,8 @@ const RETAIL_CALLS = Object.freeze({
   "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),
   "charMgr.ListStationItems": judged(`${INV_CACHE}:849`, oneStationAlone,
     "invCache's global container: self.moniker.ListStationItems(stationID), with the one station. No recording has one. The client keeps each station's answer five minutes; the page asks each time a station is opened in its assets window, and the transport keeps nothing of it."),
+  "charMgr.ListIncludingContainers": judged(`${INV_CACHE}:880`, sentWithNothing,
+    "invCache's global container: self.moniker.ListIncludingContainers(), with nothing, for the assets window's search (assetsWindow.py 415). No recording has one. The client keeps the answer five minutes (_DeleteCachedItemsAll); so does the page's flow."),
   "charMgr.ListStations": judged(`${INV_CACHE}:833`, sentWithNothing,
     "invCache's global container, Moniker('charMgr', (session.charid, const.containerGlobal)): self.moniker.ListStations(), with nothing. Recorded on Tranquility so, three times, twice riding the bind. The client keeps the answer five minutes; the page asks each time its assets window asks, and the transport keeps nothing of it."),
 
@@ -2276,6 +2374,8 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdReturnBay(droneIDs): the drones a list. Recorded on Tranquility so eleven times, each riding its own bind."),
   "entity.CmdMineRepeatedly": reshaped(`${DRONE_FUNCTIONS}:151`, dronesListed,
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
+  "entity.CmdReconnectToDrones": reshaped(`${DRONE_FUNCTIONS}:254`, dronesListed,
+    "eveMoniker.GetEntityAccess().CmdReconnectToDrones(droneCandidates), on a Moniker made for the order: the candidates a list of the balls in the park that are the pilot's drones and not under its control (ReconnectToDrones, 215 to 233, at most MAX_DRONE_RECONNECTS), from Reconnect to Lost Drones. It answers each failure as a UserError's name and values, which the client raises five seconds apart (256 to 258). In no recording."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
   "accessGroupBookmarkMgr.BookmarkStaticLocation": typing(Object.freeze({
@@ -2359,7 +2459,7 @@ const RETAIL_CALLS = Object.freeze({
       return whole ? { args: [], kwargs: sent } : { args: [], kwargs: sent, status: "reshaped" };
     },
   }),
-  "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the page asks with every opening of its panel."),
+  "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the game port keeps that answer for the session (pilots.js KEPT_UNTIL_CHANGED), and the page's contracts panel is answered from it."),
   "contractProxy.GetMyExpiredContractList": same(`${CONTRACTS_SVC}:748`, "ProxySvc('contractProxy').GetMyExpiredContractList(False), and (True) for the corporation's straight after: the client asks the two together and keeps them."),
   "contractProxy.GetContractListForOwner": Object.freeze({
     status: "same",
@@ -2383,6 +2483,16 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
   "skillHandler.ApplyFreeSkillPoints": judged(`${SKILL_SVC}:886`, pointsForOneSkill,
     "GetSkillHandler().ApplyFreeSkillPoints(skillTypeID, pointsToApply): free points put into one skill, from the skill's own menu (skillQueueSvc.UseFreeSkillPoints, 926). The service has the free points first, sends nothing for a skill in training, one not known, or no points, and takes what the handler answers for the free points left."),
+  "skillHandler.GetFreeSkillPointsAppliedToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:610",
+    levelsListed,
+    "GetSkillHandler().GetFreeSkillPointsAppliedToSkills(skillTypeIDsAndLevels): the levels as one list of (typeID, level). It answers the points each skill would take. Asked by the Apply Skill Points window as it opens (applySkillPointsWindow.py 123) and before the spreading. In no recording.",
+  ),
+  "skillHandler.ApplyFreeSkillPointsToSkills": reshaped(
+    "eve/client/script/ui/services/skillQueueSvc.py:612",
+    levelsListed,
+    "GetSkillHandler().ApplyFreeSkillPointsToSkills(skillTypeIDsAndLevels), where the asking before it answered any points: the levels as one list of (typeID, level). It answers the free points left. In no recording.",
+  ),
   "skillHandler.PurchaseSkills": reshaped(
     "characterskills/client/purchase.py:100",
     // GetSkillHandler().PurchaseSkills(skill_type_ids): the skills as one list, and nothing else.
@@ -2435,6 +2545,33 @@ const RETAIL_CALLS = Object.freeze({
       return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
     },
   }), "fee"),
+  "marketProxy.BuyMultipleItems": needing(Object.freeze({
+    status: "same",
+    source: `${MARKET_QUOTE}:271`,
+    note: "GetMarketProxy().BuyMultipleItems(stationID, itemList, useCorp) (marketsvc.BuyMulti, from the multibuy window's Buy, buyMultiFromBase.py 296 to 311): the station, a list of the items, each a util.KeyVal of six fields (marketutil/orderInfo.py GetBuyItemInfo: stationID, typeID, the price rounded to cents, quantity, minVolume 1, and delta, how far the price is from the type's average), and whether it is for the corporation. It answers the orders made. In no recording.",
+    shape: (args, kwargs, context) => {
+      const [stationID, given, useCorp] = args;
+      const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+      if (args.length !== 3 || !wholeAndPositive(stationID) || listed === null || listed.length === 0) {
+        return { args, kwargs, status: "differs", note: "The client sends three: the station, a list of the items, and whether it is for the corporation." };
+      }
+      if (listed.every((item) => item && typeof item === "object" && item.type === "object")) return { args, kwargs };
+      const items = listed.map((item) => {
+        if (!item || typeof item !== "object" || item.type !== undefined) return null;
+        if (!wholeAndPositive(item.typeID) || !wholeAndPositive(item.quantity) || typeof item.price !== "number" || !(item.price > 0)) return null;
+        const price = Math.round(item.price * 100) / 100;
+        const delta = item.delta !== undefined ? item.delta : deltaFrom(price, averagePriceOf(context, item.typeID));
+        return keyVal([
+          ["stationID", item.stationID ?? stationID], ["typeID", item.typeID], ["price", asFloat(price)], ["quantity", item.quantity],
+          ["minVolume", item.minVolume ?? 1], ["delta", asFloat(delta ?? 0)],
+        ]);
+      });
+      if (items.includes(null)) {
+        return { args, kwargs, status: "differs", note: "Each item the client sends has its type, a price above nought and how many; one of these has not." };
+      }
+      return { args: [stationID, { type: "list", items }, useCorp === true], kwargs: {}, status: "reshaped" };
+    },
+  }), "buy"),
   "marketProxy.PlaceMultiSellOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:276`,
@@ -2537,6 +2674,7 @@ const RETAIL_CALLS = Object.freeze({
     note: "GetMoniker().GetAlliance(), no arguments, on the alliance's moniker, for the session's own alliance; RemoteSvc('allianceRegistry').GetAlliance(allianceID) by name for any other (53)",
     shape: ofAnAlliance,
   }),
+  "allianceRegistry.GetAlliancePublicInfo": same(`${ALLIANCE_SVC}/all_cso.py:136`, "RemoteSvc('allianceRegistry').GetAlliancePublicInfo(allianceID), by name: Show Info on an alliance"),
   "allianceRegistry.GetAllianceContacts": same(`${ALLIANCE_SVC}/all_cso.py:243`, "GetMoniker().GetAllianceContacts(), no arguments, on the alliance's moniker: the address book asks it as the character is chosen, for a pilot in an alliance"),
   "allianceRegistry.GetApplications": same(`${ALLIANCE_SVC}/all_cso_applications.py:26`, "GetMoniker().GetApplications(), no arguments, on the alliance's moniker, kept"),
   "allianceRegistry.GetBulletins": same(`${ALLIANCE_SVC}/all_cso.py:231`, "GetMoniker().GetBulletins(), no arguments, on the alliance's moniker, kept for fifteen minutes"),
@@ -2562,6 +2700,13 @@ const RETAIL_CALLS = Object.freeze({
   "officeManager.HasCorpImpoundedItems": judged(`${CORP_SVC}/officeManager.py:143`, sentWithNothing, "Moniker('officeManager', stationID).HasCorpImpoundedItems(), no arguments, where a player's corporation has no office in the station (139 to 142). Recorded on Tranquility after an office was given up."),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
+  "expertSystemMgr.GetMyExpertSystems": same(`${EXPERT_SYSTEM_SVC}:42`, "GetMyExpertSystems(), no arguments (a Tranquility recording has it so)"),
+  "expertSystemMgr.RemoveMyExpertSystem": same(`${EXPERT_SYSTEM_SVC}:66`, "RemoveMyExpertSystem(expertSystemTypeID)"),
+  "dogmaIM.InjectSkillIntoBrain": reshaped(
+    `${SKILL_SVC}:784`,
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "GetDogmaLM().InjectSkillIntoBrain([itemID, ...]): the books' item ids, a list",
+  ),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
   "dogmaIM.Overload": needing(Object.freeze({
     status: "same",
@@ -2632,6 +2777,25 @@ const RETAIL_CALLS = Object.freeze({
     }),
     "GetShipAccess().AssembleShip(itemIDs, name=name, subSystems=subSystems), from a packaged ship's menu in the hangar (Assemble Ship, and Board Ship's first step): the ships as one list, the name the pilot gave in the naming window or None, and a modular ship's subsystems or None. In no recording.",
   ),
+  "ship.FitShips": reshaped(
+    `${FITTING_SVC}:510`,
+    // GetShipAccess().FitShips(shipTypeID=..., fitInfo=..., itemLocationID=..., cargoItemsByType=..., fitRigs=...,
+    // name=..., numToFit=..., itemContainerID=...): every argument a keyword, in that order.
+    (args, kwargs) => ({
+      args: [],
+      kwargs: {
+        shipTypeID: kwargs.shipTypeID ?? args[0] ?? null,
+        fitInfo: fittingKeyVal(kwargs.fitInfo ?? args[1] ?? {}),
+        itemLocationID: kwargs.itemLocationID ?? args[2] ?? null,
+        cargoItemsByType: quantitiesByType(kwargs.cargoItemsByType ?? args[3] ?? {}),
+        fitRigs: Boolean(kwargs.fitRigs ?? args[4]),
+        name: typedText(kwargs.name ?? args[5] ?? ""),
+        numToFit: kwargs.numToFit ?? args[6] ?? null,
+        itemContainerID: kwargs.itemContainerID ?? args[7] ?? null,
+      },
+    }),
+    "fittingSvc.DoFitManyShips: GetShipAccess().FitShips(shipTypeID=, fitInfo=, itemLocationID=session.stationid or session.structureid, cargoItemsByType=, fitRigs=, name=, numToFit=, itemContainerID=), from the multifit window's Fit (multiFitWnd.DoFitShips, 363 to 405): every argument a keyword; the fitting the util.KeyVal of six dicts its Fitting makes (shipfitting/fitting.py 119), the cargo a dict of the rigs by type where rigs are not fitted, the name the window's edit's (unicode) or the fitting's, the container the equipment's place or None for the item hangar. Answered None, or (failedToLoad, failedShipID). In no recording.",
+  ),
   "ship.Board": same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:209", "GetShipAccess().Board(shipID, session.shipid or session.stationid), through sessionMgr.PerformSessionChange('board', ...). Recorded on Tranquility in space as (shipID, the ship left), the bind carrying it."),
   "repairSvc.GetRepairQuotes": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:63", quotingRepairs, "GetRemoteRepairMgr().GetRepairQuotes(itemIDs): the items as a list, on a Moniker of repairSvc made for the one call (45 to 60). In no recording."),
   "repairSvc.RepairItemsInStation": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:67", repairingInAStation, "GetRemoteRepairMgr().RepairItemsInStation(itemIDs, payment), docked in a station: the items as a list and the payment a float, the amount the shop's window worked out (300 to 327). In no recording."),
@@ -2683,18 +2847,38 @@ const retailNeeds = (service, method) => RETAIL_CALLS[`${service}.${method}`]?.n
  */
 function createCallLedger() {
   const pairs = new Map();
+  const rowOf = (key) => pairs.get(key) ?? { pair: key, calls: 0, sent: 0, carried: 0, statuses: {}, source: null, note: null };
   return {
+    /**
+     * A pair the transport asked for, in the form it took: `calls` counts these. Not every asking is sent: one
+     * shared with the same call already out takes that call's answer (session.js _call).
+     */
     note(service, method, form) {
       const key = `${service}.${method}`;
-      const row = pairs.get(key) ?? { pair: key, calls: 0, statuses: {}, source: form.source, note: form.note };
+      const row = rowOf(key);
       row.calls += 1;
       row.statuses[form.status] = (row.statuses[form.status] ?? 0) + 1;
-      if (form.status !== "same" && form.note) row.note = form.note;
+      if (row.source === null) row.source = form.source ?? null;
+      if (row.note === null || (form.status !== "same" && form.note)) row.note = form.note ?? row.note;
       pairs.set(key, row);
     },
-    /** Every pair called, most called first. */
+    /**
+     * A pair the session put on the wire: `sent` counts these, and `carried` those of them a bind carried, which
+     * went in the bind's packet (MachoBindObject(params, (method, args, keywords))). A call on an object whose
+     * service the session does not know is counted under "(object)".
+     */
+    sent(service, method, { carried = false } = {}) {
+      const key = `${service ?? "(object)"}.${method}`;
+      const row = rowOf(key);
+      row.sent += 1;
+      if (carried) row.carried += 1;
+      pairs.set(key, row);
+    },
+    /** Every pair asked or sent, most sent first. */
     rows() {
-      return [...pairs.values()].sort((a, b) => b.calls - a.calls || a.pair.localeCompare(b.pair)).map((row) => ({ ...row, statuses: { ...row.statuses } }));
+      return [...pairs.values()]
+        .sort((a, b) => b.sent - a.sent || b.calls - a.calls || a.pair.localeCompare(b.pair))
+        .map((row) => ({ ...row, statuses: { ...row.statuses } }));
     },
   };
 }

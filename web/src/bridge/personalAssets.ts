@@ -40,6 +40,7 @@
 // else is its stacksize.
 
 import type { AssetItemRow, AssetStationRow } from "../store/types.ts";
+import type { AssetSearchItem } from "./assetSearch.ts";
 import type { JsonValue } from "./wire.ts";
 import { readRowField, unwrapLong } from "./wire.ts";
 
@@ -142,7 +143,7 @@ export function decodeAssetItems(
       singleton,
       categoryID: toNumber(readRowField(row, "categoryID")),
       groupID: toNumber(readRowField(row, "groupID")),
-      volume: Number.isFinite(volume) && volume > 0 ? volume : null,
+      volume: Number.isFinite(volume) && volume >= 0 && volumes[String(typeID)] !== null && volumes[String(typeID)] !== undefined ? volume : null,
     });
   }
   // Biggest stacks first, then by type, so the same station reads the same way
@@ -151,6 +152,29 @@ export function decodeAssetItems(
 }
 
 /** The total m³ of a station's contents; null when no row had a known volume. */
+/**
+ * charMgr.ListIncludingContainers' packed rows as the assets search reads them (assetSearching.GetFakeRowset): each
+ * thing's number, type, group, category, where it lies (location and flag) and its quantity (-1 for a thing assembled).
+ */
+export function decodeAssetSearchItems(result: JsonValue | null | undefined): AssetSearchItem[] {
+  const rows: AssetSearchItem[] = [];
+  for (const row of listRows(result)) {
+    const itemID = toNumber(readRowField(row, "itemID"));
+    const typeID = toNumber(readRowField(row, "typeID"));
+    if (itemID <= 0 || typeID <= 0) continue;
+    rows.push({
+      itemID,
+      typeID,
+      groupID: toNumber(readRowField(row, "groupID")),
+      categoryID: toNumber(readRowField(row, "categoryID")),
+      locationID: toNumber(readRowField(row, "locationID")),
+      flagID: toNumber(readRowField(row, "flagID")),
+      quantity: toNumber(readRowField(row, "quantity")),
+    });
+  }
+  return rows;
+}
+
 export function totalVolume(items: readonly AssetItemRow[]): number | null {
   let total = 0;
   let known = false;

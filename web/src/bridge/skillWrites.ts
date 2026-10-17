@@ -109,6 +109,44 @@ export async function purchaseSkills(act: Ask, skillTypeIDs: readonly number[]):
   return items.map((item) => (typeof item === "number" ? item : Number(item))).filter((skill) => Number.isSafeInteger(skill) && skill > 0);
 }
 
+// FREE POINTS SPREAD OVER SKILLS' LEVELS, the fifth. The client's Apply Skill Points window (applySkillPointsWindow.py),
+// which the skill requirement window's apply-points button opens where the pilot has free points, asks what the
+// points would come to and, on Confirm, spreads them (skillQueueSvc.ApplyFreeSkillPointsToSkills, 608 to 613):
+//
+//   skillHandler.GetFreeSkillPointsAppliedToSkills(skillTypeIDsAndLevels)
+//                                  the levels one list of (typeID, level): it answers the points each skill would
+//                                  take, a dict
+//   skillHandler.ApplyFreeSkillPointsToSkills(skillTypeIDsAndLevels)
+//                                  made where the asking answered any: it answers the free points left
+//
+// In no recording. The game port carries both.
+
+/** One level of a skill: the skill, and the level. */
+export type SkillLevel = readonly [number, number];
+
+const levelsArgument = (levels: readonly SkillLevel[]): JsonValue => ({ type: "list", items: levels.map(([skill, level]) => [skill, level]) });
+
+/** What free points would come to, spread over these levels: points by skill. Fails as the call fails. */
+export async function freePointsAppliedToSkills(ask: Ask, levels: readonly SkillLevel[]): Promise<ReadonlyMap<number, number>> {
+  const answered = await ask("skillHandler", "GetFreeSkillPointsAppliedToSkills", [levelsArgument(levels)]);
+  const entries = answered !== null && typeof answered === "object" && (answered as { type?: unknown }).type === "dict"
+    ? ((answered as { entries?: unknown }).entries as unknown[] | undefined) ?? []
+    : [];
+  const points = new Map<number, number>();
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    const skill = Number(entry[0]);
+    const value = Number(entry[1]);
+    if (Number.isSafeInteger(skill) && skill > 0 && Number.isFinite(value) && value > 0) points.set(skill, value);
+  }
+  return points;
+}
+
+/** Free points spread over these levels. Answers what the handler answers, the free points left. Fails as the call fails. */
+export async function applyFreePointsToSkills(act: Ask, levels: readonly SkillLevel[]): Promise<JsonValue> {
+  return act("skillHandler", "ApplyFreeSkillPointsToSkills", [levelsArgument(levels)]);
+}
+
 /** One place of a queue: a skill, and the level it is to be trained to. */
 export interface QueuePlace {
   readonly typeID: number;

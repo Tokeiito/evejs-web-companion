@@ -160,7 +160,34 @@ function logSince(mark, characterID) {
   }
 }
 
-/** Log in, select, read every route, log out. Answers {route: {status, payload}} and how the server saw the pilot. */
+/** The notices a route's answer carried, by name. */
+const noticesIn = (answer) => (answer && answer.payload && Array.isArray(answer.payload.notifications) ? answer.payload.notifications : [])
+  .map((notice) => String(notice && (notice.method ?? notice.name) ? notice.method ?? notice.name : "?"));
+
+/**
+ * The notices that reach a session as it logs in and is given its character are the login's, and come when the
+ * server sends them, not when a route asks: on the game port one went out with the first answer of a pass now and
+ * then (OnModuleAttributeChanges, OnServerBrainUpdated), and that route read "moved". So the pilot's state is read
+ * until two reads half a second apart bring none, and what they brought is the login's. Answers the last read and
+ * the notices, in the order they came.
+ */
+async function loginNoticesTaken(request) {
+  const notices = [];
+  let flight = null;
+  for (let quiet = 0, reads = 0; quiet < 2 && reads < 40; reads += 1) {
+    flight = await request("/api/bridge/flight/status");
+    const brought = noticesIn(flight);
+    notices.push(...brought);
+    quiet = brought.length === 0 ? quiet + 1 : 0;
+    await sleep(500);
+  }
+  return { flight, notices };
+}
+
+/**
+ * Log in, select, take the login's notices, read every route, log out. Answers {route: {status, payload}}, the
+ * login's notices, and how the server saw the pilot.
+ */
 async function pass(base, accountName, accountID, characterID, routes) {
   const request = client(base);
   const mark = logMark();
@@ -172,8 +199,11 @@ async function pass(base, accountName, accountID, characterID, routes) {
     await request("/api/bridge/drone-recovery/ready", { checkID: selected.payload.droneRecoveryCheckID });
   }
   const answers = {};
+  let notices = [];
   try {
-    const flight = await request("/api/bridge/flight/status");
+    const taken = await loginNoticesTaken(request);
+    notices = taken.notices;
+    const { flight } = taken;
     const shipID = flight.payload && flight.payload.flight ? flight.payload.flight.shipID : null;
     for (const route of routes) {
       answers[route] = await request(route.replace("{shipID}", String(shipID)));
@@ -186,7 +216,7 @@ async function pass(base, accountName, accountID, characterID, routes) {
     await sleep(250);
   }
   await sleep(300); // the log is written a moment behind the calls
-  return { answers, logged: logSince(mark, characterID) };
+  return { answers, notices, logged: logSince(mark, characterID) };
 }
 
 /**
@@ -197,6 +227,12 @@ async function pass(base, accountName, accountID, characterID, routes) {
  * difference there is one of the two being wrong, and is not data that moved.
  */
 const CLIENT_RECKONED = Object.freeze({
+  "/api/bridge/flight/status": Object.freeze({
+    under: /^\$\.flight\.shipGroupID$/,
+    // The hull's group, which the client's lobby tells a corvette by (corvetteButton.py, from its own type data): the
+    // game port says it from the ship's row (pilots.js readFlightStatus), and the gateway's flight never did.
+    own: /^\$\.flight\.shipGroupID$/,
+  }),
   "/api/bridge/inventory": Object.freeze({
     under: /^\$\.(hangar|cargo)\.capacity\./,
     // invCache.GetCapacity: a station's hangar has the client's own figure for a place with no limit.
@@ -273,16 +309,66 @@ const TUPLES_READ_EITHER_WAY = Object.freeze({
 });
 const READ_EITHER_WAY = "tuple-read-either-way";
 
+/**
+ * Reads that take what they read, by route and by where in the answer. GetSkillChangesForISIS hands over the skill
+ * points a training gave since the changes were recorded, and this server forgets them at the fourth asking
+ * (eve.js skillChangeTracker.js, MAX_FETCH_BUDGET; the client asks it at skillsvc.py 379, GetRecentlyTrainedSkills).
+ * A pass whose asking is the one that ends them leaves the other pass none: a difference there is the order of the
+ * askings, and not data that moved. (A GM's /giveskill records no change: two passes after one read alike.)
+ */
+const TAKEN_BY_THE_FIRST_READER = Object.freeze({
+  "/api/bridge/bound-skills": /^\$\.reads\.GetSkillChangesForISIS(\.|\[|$)/,
+});
+const TAKEN = "taken-by-the-first-reader";
+
+/**
+ * Where the page's reader takes a Python set of rows and a list of rows alike, by route and by where in the answer.
+ * Since eve.js `d6433cd2b` this server answers a flagged List and ListByFlags with a set, as Tranquility answers
+ * them; the gateway hands the set on as the server built it, and the game port's inventory reads it for its rows
+ * (src/gamePort/pilotInventory.js). The page's readers open a set (web/src/bridge/inventoryShip.ts and fitting.ts,
+ * unwrapRowList). A set there is opened on both sides before the two are compared, so that the rows are compared,
+ * and where one side alone was a set that is said, and tolerated.
+ */
+const SETS_READ_EITHER_WAY = Object.freeze({
+  "/api/bridge/inventory": /^\$\.(hangar|cargo)\.list$/,
+  "/api/bridge/fitting": /^\$\.slots$/,
+});
+const SET_READ_EITHER_WAY = "set-read-either-way";
+
+/** A value with every Python set at a path the pattern names opened to its list, and each such path noted in `opened`. */
+function setsOpened(value, pattern, opened, path = "$") {
+  if (Array.isArray(value)) return value.map((entry, index) => setsOpened(entry, pattern, opened, `${path}[${index}]`));
+  if (value === null || typeof value !== "object") return value;
+  const header = value.type === "objectex1" && Array.isArray(value.header) ? value.header : null;
+  if (pattern.test(path) && header && header[0] && header[0].value === "__builtin__.set" && Array.isArray(header[1])) {
+    opened.push(path);
+    return setsOpened(header[1][0] ?? { type: "list", items: [] }, pattern, opened, path);
+  }
+  return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, setsOpened(entry, pattern, opened, `${path}.${name}`)]));
+}
+
 function judge(gatewayAnswer, gamePortAnswer, route = null) {
   if (gatewayAnswer.status !== gamePortAnswer.status) {
     return { verdict: "status differs", detail: `${gatewayAnswer.status} against ${gamePortAnswer.status}: ${JSON.stringify(gamePortAnswer.payload).slice(0, 200)}` };
   }
   const references = [];
   const read = (route !== null && AS_THE_PAGE_READS[route]) || ((payload) => payload);
-  const differences = compare(
-    withEnvelopesOpened(withoutVolatile(read(gatewayAnswer.payload)), "$", references),
-    withEnvelopesOpened(withoutVolatile(read(gamePortAnswer.payload))),
-  );
+  const sets = route === null ? undefined : SETS_READ_EITHER_WAY[route];
+  const [gatewaySets, gamePortSets] = [[], []];
+  const seen = (payload, opened, found) => {
+    const opening = withEnvelopesOpened(withoutVolatile(read(payload)), "$", found);
+    return sets ? setsOpened(opening, sets, opened) : opening;
+  };
+  const differences = compare(seen(gatewayAnswer.payload, gatewaySets, references), seen(gamePortAnswer.payload, gamePortSets, []));
+  for (const path of [...gatewaySets.filter((each) => !gamePortSets.includes(each)), ...gamePortSets.filter((each) => !gatewaySets.includes(each))]) {
+    differences.push({ path, kind: SET_READ_EITHER_WAY, gateway: gatewaySets.includes(path) ? "a set" : "a list", wire: gamePortSets.includes(path) ? "a set" : "a list" });
+  }
+  // A refusal the server named (its UserError's key and values, which the client puts its dialog up by): the game
+  // port hands it on for the page's dialog (src/server.js dialogRefusalOf), and the gateway's refusal has only words.
+  const gatewayRefusal = gatewayAnswer.payload && typeof gatewayAnswer.payload === "object" ? gatewayAnswer.payload.refusal : undefined;
+  for (const difference of differences) {
+    if (difference.path === "$.refusal" && difference.kind === "keys" && gatewayRefusal === undefined) difference.kind = "gained";
+  }
   // What the page reads of such an answer is the same thing read two ways: a difference in it is one of them being wrong.
   for (const difference of route !== null && AS_THE_PAGE_READS[route] ? differences : []) {
     if (/\.implantsShown(\b|$)/.test(difference.path)) difference.kind = "read-differently";
@@ -300,7 +386,11 @@ function judge(gatewayAnswer, gamePortAnswer, route = null) {
   for (const difference of eitherWay ? differences : []) {
     if (difference.kind === "tuple-form" && eitherWay.test(difference.path)) difference.kind = READ_EITHER_WAY;
   }
-  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained" || difference.kind === "client-reckoned" || difference.kind === READ_EITHER_WAY;
+  const taken = route === null ? undefined : TAKEN_BY_THE_FIRST_READER[route];
+  for (const difference of taken ? differences : []) {
+    if (taken.test(difference.path)) difference.kind = TAKEN;
+  }
+  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained" || difference.kind === "client-reckoned" || difference.kind === READ_EITHER_WAY || difference.kind === TAKEN || difference.kind === SET_READ_EITHER_WAY;
   const verdict = differences.length === 0 ? "identical"
     : differences.every((difference) => MOVED.has(difference.kind)) ? "moved"
       : differences.every(settled) ? "tolerated"
@@ -326,8 +416,9 @@ async function main() {
   const said = (logged) => logged === null
     ? "the server's log could not be read"
     : `the server logged ${logged.gatewaySessions} gateway session(s) for this pilot and ${logged.gamePortCalls} game-port call(s)`;
-  console.log(`gateway BFF   ${gatewayBff}: ${said(viaGateway.logged)}`);
-  console.log(`game-port BFF ${gamePortBff}: ${said(viaGamePort.logged)}`);
+  const heard = (notices) => (notices.length === 0 ? "no notice at login" : `at login ${notices.join(", ")}`);
+  console.log(`gateway BFF   ${gatewayBff}: ${said(viaGateway.logged)}; ${heard(viaGateway.notices)}`);
+  console.log(`game-port BFF ${gamePortBff}: ${said(viaGamePort.logged)}; ${heard(viaGamePort.notices)}`);
   if (viaGateway.logged === null || viaGamePort.logged === null) {
     console.log("⚠ Without the server's log this cannot say which transport each BFF used.");
     process.exitCode = 1;
