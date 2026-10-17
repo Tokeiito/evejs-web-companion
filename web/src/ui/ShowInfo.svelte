@@ -227,8 +227,8 @@
   }
 
   /** A link in the owner's words (its description, its URL), followed as the client's link registry follows it. */
-  function followerOf(url: string) {
-    return linkFollowerOf(url, flow, null, (label) => word(label));
+  function followerOf(url: string, text: string) {
+    return linkFollowerOf(url, flow, null, (label) => word(label), text);
   }
 
   /** One of the Attributes tab's rows: its words, and an owner it opens (LabelTextSidesAttributes' typeID and itemID). */
@@ -437,7 +437,7 @@
 <!-- The client's markup (a description, a URL, bold words), its links followed as the link registry follows them. -->
 {#snippet markupLines(markup: string)}
   {#each mailBodyLines(markup) as line, place (place)}
-    <p class="info-line">{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link)}{#if follower !== null}<button
+    <p class="info-line">{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button
           type="button"
           class="evelink {follower.kind}"
           title={follower.hint}

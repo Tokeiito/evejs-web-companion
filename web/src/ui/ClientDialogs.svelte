@@ -58,6 +58,7 @@
   import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
   import { openFittingWindow } from "./fittingWindowTarget.ts";
   import { portal } from "./portal.ts";
+  import { startFittingDrag } from "./fittingDrag.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -174,8 +175,8 @@
   // executor corporation's), for Corporation and for the pilot; a fitting of another owner's is saved as a copy; and,
   // for one with the fitting manager's role, its tooltip of the same three. Its settings have Use Fitting Name for Ship
   // (the ship named after a fitting loaded on it). Not the page's: the ship's preview (the ship icon's click,
-  // preview.PreviewType), which has no 3D view here. Not done: the truncated mark, which only a fitting link's fitting
-  // has, and the page does not follow fitting links yet.
+  // preview.PreviewType), which has no 3D view here. A fitting read from a link cut short has the truncated label; the
+  // ship icon dragged is the fitting shown (FittingDraggableIcon2).
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
     // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
@@ -199,6 +200,8 @@
     "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting": "Your corporation's fitting",
     // TryAddSimulationBtn.
     "UI/Fitting/FittingWindow/Simulate": "Try it out",
+    // The truncated label (AddFittingNameElements).
+    "UI/Fitting/FittingWindow/FittingManagement/Truncated": "Cut short: not all of it came",
     // Each entry's marks (FittingModuleEntry.Startup and Load, fitting.py 104 to 160) and its info icon.
     "UI/Control/Entries/FittingModuleSkillMissing": "You lack a skill it needs",
     "UI/Control/Entries/FittingModuleSkillOK": "You have the skills it needs",
@@ -1247,7 +1250,15 @@
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerViewFitting(view.n, "close")}>✕</button>
       </span>
       <span class="multibuy-row view-fitting-name-row">
-        <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
+        <!-- The ship icon (FittingDraggableIcon2): dragged, the fitting shown (its GetDragData, a FittingEntry). Its click's
+             preview (ClickDragIcon) is not the page's. -->
+        <span class="view-fitting-ship" role="img" aria-label={nameOf("type", view.fitting.shipTypeID)} draggable="true"
+          ondragstart={(event) => startFittingDrag(event, {
+            fittingID: view.fitting.fittingID > 0 ? view.fitting.fittingID : null,
+            shipTypeID: view.fitting.shipTypeID,
+            fitData: view.fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: view.fitting.name,
+          })}><TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" /></span>
         <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
           title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
         <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship; and its info icon, the
@@ -1267,6 +1278,10 @@
         <button type="button" class="fit-entry-info" title={viewWord("UI/Commands/ShowInfo")} aria-label={viewWord("UI/Commands/ShowInfo")}
           onclick={() => showInfo({ kind: "type", typeID: view.fitting.shipTypeID })}><img src={VIEW_FITTING_INFO_ICON} alt="" width="16" height="16" /></button>
       </span>
+      {#if view.truncated}
+        <!-- AddFittingNameElements' truncated label, shown for a fitting read from a link cut short (LoadNewFitting). -->
+        <span class="view-fitting-truncated">{viewWord("UI/Fitting/FittingWindow/FittingManagement/Truncated")}</span>
+      {/if}
       <span class="answers">
         <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
         <button type="button" class:active={viewFittingTab === "description"} onclick={() => (viewFittingTab = "description")}>{viewWord("UI/Common/Description")}</button>
@@ -1729,6 +1744,8 @@
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
   /* The fitting display window's name row and entries: the name, then the marks and the info icon at the right. */
   .view-fitting-name-row { grid-template-columns: auto 1fr auto auto; }
+  .view-fitting-ship { cursor: grab; line-height: 0; }
+  .view-fitting-truncated { display: block; }
   .multibuy-row.fit-entry { display: flex; padding: 1px 2px; }
   .fit-entry .multibuy-name { flex: 1; min-width: 0; }
   /* FittingModuleEntry's ErrorFrame: red (1, 0, 0) for an obsolete type or one under Other Items, orange (1, 0.35, 0)

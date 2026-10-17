@@ -2620,10 +2620,16 @@
       {#each mailBodyLines(text) as line, place (place)}{#if place > 0}{" "}{/if}{#each line as segment, at (at)}<span class="marked-run" class:bold={segment.bold} class:italic={segment.italic} class:underline={segment.underline || segment.link !== null}>{segment.text}</span>{/each}{/each}
     {/snippet}
     {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
-        <!-- Draggable (FittingEntry.GetDragData): the skill plan editor takes a fitting dropped on its skills. -->
+        <!-- Draggable (FittingEntry.GetDragData): the skill plan editor takes a fitting dropped on its skills, and the
+             chat's text takes it as a link. -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <p class="controls saved-fitting" class:selected={selectedFittings.includes(saved.fittingID)} data-fitting-id={saved.fittingID}
-          draggable="true" ondragstart={(event) => startFittingDrag(event, saved.fittingID)}>
+          draggable="true" ondragstart={(event) => startFittingDrag(event, {
+            fittingID: saved.fittingID,
+            shipTypeID: saved.shipTypeID,
+            fitData: saved.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: saved.name,
+          })}>
           {#if saved.source === "corporation"}
             <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
           {:else if saved.source === "community"}

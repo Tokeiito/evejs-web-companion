@@ -106,8 +106,8 @@
    * How a link in the open mail's body is followed (ui/linkFollowers.ts: the client's link registry, as the reading
    * pane's label follows its links), or null where it is not.
    */
-  function followerOf(url: string) {
-    return linkFollowerOf(url, flow, openSkillPlanLink, (label) => word(label, LINK_WORDS[label] ?? ""));
+  function followerOf(url: string, text: string) {
+    return linkFollowerOf(url, flow, openSkillPlanLink, (label) => word(label, LINK_WORDS[label] ?? ""), text);
   }
 
   let busy = $state(false);
@@ -2540,7 +2540,7 @@
           <!-- The body's markup as the client's reading pane shows it: its lines, and in them runs as marked. -->
           <div class="mail-body">
             {#each mailBodyLines($mail.open.body) as line, place (place)}
-              <p class="mail-line">{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link)}{#if follower !== null}<button
+              <p class="mail-line">{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button
                     type="button"
                     class="evelink {follower.kind}"
                     class:mail-italic={run.italic}

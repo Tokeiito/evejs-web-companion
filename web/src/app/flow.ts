@@ -634,6 +634,7 @@ import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeCom
 import type { TypeMetaFacts } from "./api.ts";
 import { marketDockableLocations, multiBuyStationList as multiBuyStationList_, type SystemItem } from "../bridge/multiBuyStations.ts";
 import { createFittingData, fittingContents, fittingTypesForSkillPlan, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
+import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl, simpleHtmlUnescape, typeIDsInFittingString, type FittingLinkTypeFacts } from "../bridge/fittingLink.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
 import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
@@ -1231,6 +1232,20 @@ export interface ViewFittingAsk {
   readonly marks: Readonly<Record<number, ViewFittingTypeMark>> | null;
   /** The hull's category (evetypes.GetCategoryID): Fit is disabled for a structure's (LoadNewFitting); null while read. */
   readonly shipCategoryID: number | null;
+  /** A fitting read from a link cut short (GetFittingFromString): the window's truncated mark (LoadNewFitting). */
+  readonly truncated: boolean;
+}
+
+/** A link or a fitting dropped on a text (eveEditPlainText.OnDropData): a link's url and text, or a fitting's own. */
+export type DroppedLink =
+  | { readonly kind: "link"; readonly url: string; readonly text: string }
+  | { readonly kind: "fitting"; readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string };
+
+/** The text a link is dropped on: its length now (its tags counted), how much of it is selected, its most. */
+export interface LinkDropRoom {
+  readonly length: number;
+  readonly selected: number;
+  readonly max: number | null;
 }
 
 /**
@@ -2533,6 +2548,16 @@ export interface AppFlow {
    * ExternalLinkWarning (OK and Cancel, its answer kept where the pilot says so), in a tab of its own.
    */
   followWebLink(url: string): Promise<void>;
+  /**
+   * shipfitting/client/link.py handle_fitting_link: a "fitting:" url followed with its link's text, the fitting it
+   * holds shown in the display window (DisplayFittingFromString); nothing where the client's own reading raises.
+   */
+  followFittingLink(url: string, text: string | null): Promise<void>;
+  /**
+   * A link or a fitting dropped on a text (eveEditPlainText.OnDropData, AddLink): the markup to put in at the caret,
+   * after the client's checks of the room left; null where it is not put in (the client's word said).
+   */
+  droppedLinkMarkup(dropped: DroppedLink, room: LinkDropRoom): Promise<string | null>;
   /** handle_link: a "skillPlan:" url followed; nothing where the client's own parse would refuse it. */
   openSkillPlanLink(url: string): void;
   /** The link followed and not yet opened, taken by whoever opens it (null where none is waiting). */
@@ -7712,6 +7737,99 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let skillPlanLinksFollowed = 0;
   let skillPlanLinkWaiting: SkillPlanLinkFollowed | null = null;
 
+  /** GetPowerEffectForType's effects, and the group, category and type lists, of each type named; null for a type the data has not. */
+  async function fittingLinkFacts(typeIDs: readonly number[]): Promise<(typeID: number) => FittingLinkTypeFacts | null> {
+    const [staticData, facts] = await Promise.all([dogmaStaticFor(typeIDs, []), fittingTypeFacts([...new Set(typeIDs)])]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    return (typeID) => {
+      const type = staticData.types[typeID] ?? null;
+      if (type === null) return null;
+      return { effects: type.effects, groupID: type.groupID, categoryID: type.categoryID, lists: facts.get(typeID)?.lists ?? new Set() };
+    };
+  }
+
+  /**
+   * handle_fitting_link (shipfitting/client/link.py 13 to 16) with the link's text (accept_link_text; the label's link
+   * text, its tags stripped): parse_fitting_url, then DisplayFittingFromString (fittingSvc.py 745 to 750):
+   * GetFittingFromString named the text or the hull's name; INVALID_FITTING_ID is FittingInvalidForViewing; else the
+   * display window on it (DisplayFitting), marked truncated where the link was cut short. Where the client's own
+   * reading raises (a type its data has not, no hull), nothing.
+   */
+  async function followFittingLink(url: string, text: string | null): Promise<void> {
+    let fittingString: string;
+    try {
+      fittingString = parseFittingUrl(url);
+    } catch (error) {
+      if (error instanceof FittingLinkError) return;
+      throw error;
+    }
+    const typeIDs = typeIDsInFittingString(fittingString);
+    const [facts] = await Promise.all([fittingLinkFacts(typeIDs), resolveNamesNow(typeIDs.map((id) => ({ kind: "type" as const, id })))]);
+    let read: ReturnType<typeof fittingFromString>;
+    try {
+      read = fittingFromString(fittingString, text, facts, (typeID) => nameCache.get(nameKey("type", typeID)) ?? "");
+    } catch (error) {
+      if (error instanceof FittingLinkError) return;
+      throw error;
+    }
+    if (read.kind === "invalid") {
+      sayDialog("FittingInvalidForViewing", null, "This fitting cannot be shown.");
+      return;
+    }
+    await openViewFitting({
+      fittingID: 0, ownerID: 0, name: read.fitting.name, description: "", shipTypeID: read.fitting.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitting.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+    }, read.truncated);
+  }
+
+  /** eveEditPlainText.OnDropData's PADDING for a fitting's link. */
+  const FITTING_LINK_PADDING = 12;
+
+  /**
+   * eveEditPlainText.OnDropData (95 to 109) and AddLink (352 to 372). A fitting (listentry.FittingEntry): its link
+   * (format_fitting_url); where it would not leave PADDING (12) of the room left (RoomLeft: the most, with what is
+   * selected, less the length now, its tags counted), LinkTooLong with less than 14 left, else ConfirmTruncateLink
+   * (numchar, maxchar) and on Yes the link cut to the room; its text the fitting's name, unescaped
+   * (simple_html_unescape). Then AddLink of any link: its text without localized tags, its markup put in where it fits
+   * (IsEnoughRoomForInsert: the length now and the markup within the most), else uiwarning03.
+   */
+  async function droppedLinkMarkup(dropped: DroppedLink, room: LinkDropRoom): Promise<string | null> {
+    let url: string;
+    let text: string;
+    if (dropped.kind === "fitting") {
+      const facts = await fittingLinkFacts([dropped.shipTypeID, ...dropped.fitData.map(([typeID]) => typeID)]);
+      try {
+        url = formatFittingUrl({ shipTypeID: dropped.shipTypeID, fitData: dropped.fitData }, facts);
+      } catch (error) {
+        if (error instanceof FittingLinkError) return null;
+        throw error;
+      }
+      if (room.max !== null) {
+        const roomLeft = Math.max(0, room.max + room.selected - room.length) - FITTING_LINK_PADDING;
+        if (url.length >= roomLeft) {
+          if (roomLeft < 14) {
+            sayDialog("LinkTooLong", null, "There is not room enough for the link.");
+            return null;
+          }
+          const values: JsonValue = { type: "dict", entries: [["numchar", url.length], ["maxchar", roomLeft]] };
+          if (!(await askDialog("ConfirmTruncateLink", values, `The link is ${url.length} letters long and there is room for ${roomLeft}. Cut it short?`))) return null;
+          url = url.slice(0, roomLeft);
+        }
+      }
+      text = simpleHtmlUnescape(dropped.name);
+    } else {
+      url = dropped.url;
+      text = dropped.text;
+    }
+    // AddLink: StripTags(text, stripOnly=['localized']).
+    const markup = `<a href="${url}">${text.replace(/<\/?localized\b[^>]*>/gi, "")}</a>`;
+    if (room.max !== null && room.length + markup.length > room.max) {
+      sayDialog("uiwarning03", null, "There is no more room in this text.");
+      return null;
+    }
+    return markup;
+  }
+
   async function followWebLink(url: string): Promise<void> {
     if (!(await askDialog("ExternalLinkWarning", { type: "dict", entries: [["url", url]] }, `Open ${url} in a tab of its own?`, "okcancel"))) return;
     window.open(url, "_blank", "noopener,noreferrer");
@@ -9912,11 +10030,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return facts;
   }
 
-  /** fittingSvc.DisplayFitting of a fitting as it is held, saved or not. */
-  async function openViewFitting(fitting: SourcedFitting): Promise<void> {
+  /** fittingSvc.DisplayFitting of a fitting as it is held, saved or not; truncated for one read from a link cut short. */
+  async function openViewFitting(fitting: SourcedFitting, truncated = false): Promise<void> {
     const open = viewFittingAskedSignal.get();
     const n = open?.n ?? (dialogsSaidCount += 1);
-    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {}, marks: null, shipCategoryID: null });
+    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {}, marks: null, shipCategoryID: null, truncated });
     const [{ contents, effectNames }, { marks, shipCategoryID }] = await Promise.all([fittingInfo(fitting), fittingTypeMarks(fitting)]);
     const now = viewFittingAskedSignal.get();
     if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames, marks, shipCategoryID });
@@ -24490,6 +24608,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     gatewayNotices: readonlySignal(gatewayNoticesSignal),
     skillPlanLinks: readonlySignal(skillPlanLinksSignal),
     followWebLink,
+    followFittingLink,
+    droppedLinkMarkup,
     openSkillPlanLink,
     takeSkillPlanLink,
     sharedSkillPlan,
