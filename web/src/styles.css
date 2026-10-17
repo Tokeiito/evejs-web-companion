@@ -8035,9 +8035,10 @@
    * question about THIS panel and never about the browser window. Asking the
    * viewport is exactly the bug R85 fixed.
    *
-   * ⚠ AND `container-type` MAKES A PANEL A CONTAINING BLOCK for its
-   * `position: fixed` descendants, so every popover here is `absolute` against
-   * its own panel root on purpose.
+   * ⚠ EVERY POPOVER HERE IS `absolute` AGAINST ITS OWN PANEL ROOT, on purpose: it
+   * moves with the panel when the column is dragged. (`container-type` does NOT
+   * make a panel a containing block for `position: fixed` — measured 2026-10-17;
+   * `filter`, `backdrop-filter` and `contain: layout` do, see ui/portal.ts.)
    * ==================================================================== */
 
   /* The palette, declared ONCE for both roots. The Station panel and the
@@ -8858,8 +8859,8 @@
    * for the Type and Group columns" is a question about THIS panel and never
    * about the browser window.
    *
-   * ⚠ AND `container-type` MAKES THIS A CONTAINING BLOCK for `position: fixed`
-   * descendants, so the range menu is `absolute` against this root on purpose.
+   * ⚠ THE RANGE MENU IS `absolute` AGAINST THIS ROOT on purpose, as in § 6
+   * (`container-type` does not trap `position: fixed`; measured 2026-10-17).
    * ==================================================================== */
 
   .spc-panel {
