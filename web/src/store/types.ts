@@ -425,6 +425,12 @@ export interface FittingState {
    */
   readonly stats: ShipStats;
   /**
+   * Where `resources` and `stats` came from: the server's attributes of the ship ("server"), or the page's own dogma
+   * of it ("page": bridge/dogma/location.ts, as the client's Fitting window reads its own dogma location). The
+   * server's notices of the ship's attributes change the figures only where they are the server's.
+   */
+  readonly statsFrom?: "server" | "page";
+  /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the
    * active ship and every fitted module with the SERVER's post-dogma attribute
    * map, so a clicked module can show its EFFECTIVE stats. Null until the

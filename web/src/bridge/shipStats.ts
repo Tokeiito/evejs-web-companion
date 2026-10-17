@@ -354,10 +354,15 @@ const NEEDS_MODULE_READ =
 /** EveJS has no capacitor solver, and R20 established the oracle has none either. */
 const NO_CAP_SOLVER = "working out how long a capacitor lasts is not supported yet";
 
-/** Derive everything the fitting window shows from the ship's attribute map. */
+/**
+ * Derive everything the fitting window shows from the ship's attribute map. The drone control range is the pilot's
+ * (ghostControllerMixin.GetDroneControlRange: the character's droneControlDistance), read from `pilotAttributes`
+ * where they are given, else from the ship's map.
+ */
 export function deriveShipStats(
   attributes: Attributes,
   profile: DamageProfile = UNIFORM_DAMAGE_PROFILE,
+  pilotAttributes: Attributes | null = null,
 ): ShipStats {
   const hp: Record<LayerName, Stat> = {
     shield: readPositive(attributes, ATTR.shieldHP, "its shield strength"),
@@ -443,7 +448,7 @@ export function deriveShipStats(
       cargoCapacity: read(attributes, ATTR.cargoCapacity, "its cargo space"),
       droneCapacity: read(attributes, ATTR.droneCapacity, "its drone bay"),
       droneBandwidth: read(attributes, ATTR.droneBandwidth, "its drone bandwidth"),
-      droneControlRange: readPositive(attributes, ATTR.droneControlRange, "its drone control range"),
+      droneControlRange: readPositive(pilotAttributes ?? attributes, ATTR.droneControlRange, "its drone control range"),
     },
   };
 }

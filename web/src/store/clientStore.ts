@@ -1368,6 +1368,7 @@ export function createClientStore(): ClientStore {
           resources: event.resources,
           shipAttributes: event.shipAttributes,
           stats: event.stats,
+          statsFrom: "server",
           // The dogma snapshot rides a separate read that lands just after this
           // one; carry the previous one through so a refresh never blanks the
           // module stats in between.
@@ -1386,7 +1387,15 @@ export function createClientStore(): ClientStore {
       case "fitting/ship-attributes": {
         const current = fitting.get();
         if (current.activeShipID !== event.shipID) break;
-        fitting.set({ ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        fitting.set(current.statsFrom === "page"
+          ? { ...current, shipAttributes: event.shipAttributes }
+          : { ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        break;
+      }
+      case "fitting/reckoned": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page" });
         break;
       }
       case "fitting/charge-quantity": {

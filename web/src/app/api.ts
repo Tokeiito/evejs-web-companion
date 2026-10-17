@@ -955,6 +955,26 @@ export async function combatUtilityTypes(typeIDs: readonly number[], options: Ap
  * which folds each of the 11 independent reads' {result}/{error} envelopes into
  * typed cells. The Fitting window consumes only `allInfo`.
  */
+/**
+ * The client's own static dogma data for types (GET /api/client-data/dogma-types): each type's attributes, effects,
+ * group, category and required skills; the effects' categories and modifierInfo; the attributes' records. What the
+ * page's own dogma reckons with (bridge/dogma/location.ts). At most 50 types and 200 further attributes at once.
+ */
+export async function getDogmaTypes(
+  typeIDs: readonly number[],
+  attributeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<import("../bridge/dogma/location.ts").DogmaStatic & { readonly available: boolean }> {
+  const query = `typeIDs=${typeIDs.join(",")}&attributeIDs=${attributeIDs.join(",")}`;
+  const data = (await getJson(`/api/client-data/dogma-types?${query}`, options)) as Record<string, unknown>;
+  return {
+    available: data.available === true,
+    types: (data.types ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["types"],
+    effects: (data.effects ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["effects"],
+    attributes: (data.attributes ?? {}) as import("../bridge/dogma/location.ts").DogmaStatic["attributes"],
+  };
+}
+
 export async function boundDogma(options: ApiOptions = {}): Promise<BoundDogma> {
   const data = await getJson("/api/bridge/bound-dogma", options);
   return decodeBoundDogma(data);

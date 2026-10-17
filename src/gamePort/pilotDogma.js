@@ -1,5 +1,7 @@
 "use strict";
 
+const { marshalDecode } = require("../gameProtocol/marshal");
+
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
 //
@@ -272,6 +274,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const heat = new Map();
   /** godma's `session.charid in self.invByID`: whether a priming has brought the character. */
   let characterPrimed = false;
+  /**
+   * The brain the client's dogma location holds (clientDogmaLocation.brain): (version, charEffects, shipEffects,
+   * structureEffects), what the pilot's skills and implants do, as the server worked it out. Null until a priming
+   * brings it.
+   */
+  let brain = null;
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -343,6 +351,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (an empty
     // one, as Tranquility's and this server's are to a later priming in space) primes nothing of the character.
     if (items(all.get("charInfo")).length > 0) characterPrimed = true;
+    // 2427 to 2430: the brain, charInfo's second, given to the client's dogma location when it is made
+    // (clientDogmaIM.GetDogmaLocation: once, so a later priming's is not taken), its version -1
+    // (clientDogmaLocation.__init__: `initialBrain = (-1,) + charBrain[1:]`) so that any update the server sends
+    // after it is taken.
+    const charBrain = items(all.get("charInfo"))[1];
+    if (brain === null && Array.isArray(charBrain) && charBrain.length >= 4) brain = [-1, ...charBrain.slice(1)];
     // 2446: the character's attributes the ship changes, laid over what is held of the character.
     if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
     // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
@@ -510,7 +524,31 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       const info = infoNow(id);
       if (info) entries.push([kept.itemID, info]);
     }
-    return withField(withField(allInfo, "shipInfo", { type: "dict", entries }), "activeShipID", shipID);
+    const answer = withField(withField(allInfo, "shipInfo", { type: "dict", entries }), "activeShipID", shipID);
+    if (brain === null) return answer;
+    // charInfo as the client holds it now: the character godma holds (its row, with its attributes now) and the
+    // brain its dogma location holds, which the server's OnServerBrainUpdated keeps. A later priming's answer has
+    // neither (the character is not asked for again), and the client has both all the same.
+    const own = mine !== null && rows.has(mine) ? infoNow(mine) : null;
+    const characters = own
+      ? { type: "dict", entries: [[rows.get(mine).itemID, own]] }
+      : (items(fieldsOf(allInfo).get("charInfo"))[0] ?? { type: "dict", entries: [] });
+    return withField(answer, "charInfo", [characters, brain]);
+  }
+
+  /**
+   * clientDogmaLocation.OnServerBrainUpdated(brainData) (1313): a brain no newer than the one held is let go
+   * ("Update cancelled!"); otherwise ProcessBrainData: (version, grayMatter), the gray matter a marshal stream of
+   * (charEffects, shipEffects, structureEffects), and none where it is empty.
+   */
+  function brainUpdated(brainData) {
+    const [version, grayMatter] = Array.isArray(brainData) ? brainData : [];
+    const newVersion = number(version);
+    if (newVersion === null) return;
+    if (brain !== null && number(brain[0]) >= newVersion) return;
+    if (!Buffer.isBuffer(grayMatter) || grayMatter.length === 0) return;
+    const effects = marshalDecode(grayMatter);
+    if (Array.isArray(effects) && effects.length >= 3) brain = [newVersion, effects[0], effects[1], effects[2]];
   }
 
   /** godma.UpdateItem with what the server answered ItemGetInfo: the row of an item that is still held, in place of what was known of it. */
@@ -694,6 +732,14 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     }
     if (notification.method === "OnGodmaPrimeItem") {
       primeItem(Array.isArray(notification.args) ? notification.args : []);
+      return true;
+    }
+    if (notification.method === "OnServerBrainUpdated") {
+      try {
+        brainUpdated(Array.isArray(notification.args) ? notification.args[0] : null);
+      } catch {
+        // A brain that will not decode leaves the one held.
+      }
       return true;
     }
     if (notification.method === "OnItemsChanged" || notification.method === "OnItemChange") {

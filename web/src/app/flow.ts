@@ -30,6 +30,16 @@ import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, pl
 import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
+  decodeBrain,
+  loadSimulatedFitting,
+  type DogmaAttributeRecord as DogmaLocationAttributeRecord,
+  type DogmaEffectFacts,
+  type DogmaStatic,
+  type DogmaTypeFacts,
+  type SimulatedCharge,
+  type SimulatedModule,
+} from "../bridge/dogma/location.ts";
+import {
   decodeBlueprints,
   decodeDefinition,
   decodeFacilities,
@@ -3980,6 +3990,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // is told of at the server's next tick, after the re-read of the fit on the call's answer
     // (bridge/shipAttributeNotifications.ts). Nothing returns here: the same notices are others' too.
     applyShipAttributeChanges(method, args);
+    // clientDogmaLocation.OnServerBrainUpdated: the pilot's brain is new, so the ship is reckoned with it again
+    // (the BFF's godma holds the new brain, src/gamePort/pilotDogma.js).
+    if (method === "OnServerBrainUpdated") scheduleShipReckoning();
     // cfg.OnCfgDataChanged('evelocations', row) (cfg.py 146 to 161): a named item's or a place's row as it is now, its
     // name the second column: the names kept of named items follow it (the panel's ships, the Fitting window's title).
     if (method === "OnCfgDataChanged" && args[0] === "evelocations") {
@@ -5535,6 +5548,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
     );
     for (const [attributeID, value] of changed) attributes.set(attributeID, value);
+    // Where the figures are the page's own dogma's, the change is reckoned again from what godma holds now.
+    if (current.statsFrom === "page") scheduleShipReckoning();
     store.apply({
       type: "fitting/ship-attributes",
       shipID: current.activeShipID,
@@ -5618,6 +5633,115 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       allInfo: decoded.allInfo.value,
       error: decoded.allInfo.error,
     });
+    void reckonActiveShip().catch(() => {});
+  }
+
+  // The client's own static dogma data as it has been read: what the page's own dogma reckons with.
+  const dogmaStaticKept: {
+    types: Record<number, DogmaTypeFacts | null>;
+    effects: Record<number, DogmaEffectFacts | null>;
+    attributes: Record<number, DogmaLocationAttributeRecord | null>;
+  } = { types: {}, effects: {}, attributes: {} };
+
+  /** The static dogma data for these types and attributes, read where it is not held yet; null where it cannot be read. */
+  async function dogmaStaticFor(typeIDs: readonly number[], attributeIDs: readonly number[]): Promise<DogmaStatic | null> {
+    let types = [...new Set(typeIDs)].filter((typeID) => !Object.hasOwn(dogmaStaticKept.types, typeID));
+    let attributes = [...new Set(attributeIDs)].filter((attributeID) => !Object.hasOwn(dogmaStaticKept.attributes, attributeID));
+    while (types.length > 0 || attributes.length > 0) {
+      const read = await api.getDogmaTypes(types.slice(0, 50), attributes.slice(0, 200), callOptions);
+      if (!read.available) return null;
+      Object.assign(dogmaStaticKept.types, read.types);
+      Object.assign(dogmaStaticKept.effects, read.effects);
+      Object.assign(dogmaStaticKept.attributes, read.attributes);
+      types = types.slice(50);
+      attributes = attributes.slice(200).filter((attributeID) => !Object.hasOwn(dogmaStaticKept.attributes, attributeID));
+    }
+    return dogmaStaticKept;
+  }
+
+  /** Python's round(value, 10), as GetStatsInfo rounds each figure: halves away from nought. */
+  function roundTo10(value: number): number {
+    return (Math.sign(value) * Math.floor(Math.abs(value) * 1e10 + 0.5)) / 1e10;
+  }
+
+  /**
+   * The active ship as the client's own dogma reckons it: what its Fitting window reads when it is not simulating
+   * (fittingController.SetDogmaLocation: clientDogmaIM's dogma location, never godma's attributes), each figure as
+   * GetStatsInfo gives it (rounded to ten places). The hull, its modules in their slots and their online state, its
+   * charges and the pilot's brain, from what godma holds (GetAllInfo), reckoned by bridge/dogma/location.ts; the
+   * Fitting window's resources and statistics made of it. The charged attributes (capacitor and shield charge, which
+   * run by the clock) are not among them yet, and the drone control range is the pilot's.
+   *
+   * Docked only for now. In space a module may be running, and the running effects are a later part, so there the
+   * server's figures stand.
+   */
+  async function reckonActiveShip(): Promise<void> {
+    if (store.flight.get().status?.docked !== true) return;
+    const allInfo = store.dogma.get().allInfo;
+    const shipID = store.fitting.get().activeShipID;
+    if (!allInfo || shipID === null) return;
+    const brain = decodeBrain(allInfo.charBrain);
+    const characterID = Number(allInfo.characterID);
+    const pilotTypeID = allInfo.character?.typeID ?? null;
+    const shipInfo = allInfo.ships.find((item) => Number(item.itemID) === shipID && item.sublocation == null);
+    if (!brain || !shipInfo || shipInfo.typeID === null || !Number.isSafeInteger(characterID) || pilotTypeID === null) return;
+    const modules: SimulatedModule[] = [];
+    const charges: SimulatedCharge[] = [];
+    for (const item of allInfo.ships) {
+      if (item === shipInfo || item.typeID === null || item.flagID === null) continue;
+      if (item.sublocation || item.categoryID === 8) {
+        charges.push({ flagID: item.flagID, typeID: item.typeID });
+        continue;
+      }
+      // Online where its online effect is among its active effects (the row's activeEffects, as godma keeps them).
+      const online = readDictPairs(item.activeEffects).some(([effectID]) => Number(effectID) === 16);
+      modules.push({ key: String(item.itemID), typeID: item.typeID, flagID: item.flagID, online });
+    }
+    // The pilot's security status as the ship's row carries it (pilotSecurityStatus).
+    const security = shipInfo.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
+    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID)];
+    const attributeIDs = [
+      ...shipInfo.attributes.map((attribute) => attribute.attributeID),
+      ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
+      458,
+    ];
+    const staticData = await dogmaStaticFor(typeIDs, attributeIDs);
+    if (!staticData || store.fitting.get().activeShipID !== shipID) return;
+    const reckoned = loadSimulatedFitting(
+      staticData,
+      shipInfo.typeID,
+      { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+      brain,
+      modules,
+      charges,
+    );
+    const attributes = new Map<number, number>();
+    const listed = new Set([...shipInfo.attributes.map((attribute) => attribute.attributeID), ...reckoned.location.values(reckoned.ship).keys()]);
+    for (const attributeID of listed) {
+      if (staticData.attributes[attributeID]?.chargeRechargeTimeID) continue;
+      attributes.set(attributeID, roundTo10(reckoned.location.value(reckoned.ship, attributeID)));
+    }
+    const pilotAttributes = new Map<number, number>([[458, roundTo10(reckoned.location.value(reckoned.pilot, 458))]]);
+    store.apply({
+      type: "fitting/reckoned",
+      shipID,
+      resources: resourcesOf(attributes),
+      stats: deriveShipStats(attributes, undefined, pilotAttributes),
+    });
+  }
+
+  let shipReckoningTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The ship reckoned again, a moment after what it is reckoned from has changed (a new brain, an attribute the server
+   * told of): what godma holds read again, then reckoned. Only where the Fitting window has been read.
+   */
+  function scheduleShipReckoning(): void {
+    if (!store.fitting.get().loaded) return;
+    if (shipReckoningTimer !== null) clearTimeout(shipReckoningTimer);
+    shipReckoningTimer = setTimeout(() => {
+      shipReckoningTimer = null;
+      void loadDogma().catch(() => {});
+    }, 500);
   }
 
   /**

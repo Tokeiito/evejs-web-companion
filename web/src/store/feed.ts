@@ -269,6 +269,13 @@ export type FeedEvent =
       readonly resources: FittingResources;
       readonly stats: ShipStats;
     }
+  // The Fitting window's figures as the page's own dogma reckons the active ship (flow.reckonActiveShip).
+  | {
+      readonly type: "fitting/reckoned";
+      readonly shipID: number;
+      readonly resources: FittingResources;
+      readonly stats: ShipStats;
+    }
   // R21 slice B — the bound-dogma snapshot that accompanies the fit: the active
   // ship and every fitted module with the SERVER's post-dogma attributes. Its
   // own event because it rides a SEPARATE read that is a companion to the fit,
