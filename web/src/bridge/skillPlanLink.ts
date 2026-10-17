@@ -42,7 +42,8 @@ function pythonUuid(text: string): string | null {
  */
 export function parseSkillPlanUrl(url: string): { readonly skillPlanID: number | string; readonly ownerID: number | null } | null {
   const parts = url.split(":");
-  if (parts.length !== 3 || parts[0] !== SKILL_PLAN_SCHEME) return null;
+  // The registry keys a scheme in lower case (normalize_scheme), and handle_link reads the rest whatever it is.
+  if (parts.length !== 3 || parts[0]!.toLowerCase() !== SKILL_PLAN_SCHEME.toLowerCase()) return null;
   const asNumber = pythonInt(parts[1]!);
   const skillPlanID = asNumber !== null ? asNumber : pythonUuid(parts[1]!);
   if (skillPlanID === null) return null;

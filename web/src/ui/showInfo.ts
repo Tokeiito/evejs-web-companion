@@ -40,6 +40,7 @@
 // Add a kind when there is a read to fill it.
 
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
+import { CHARACTER_TYPES, OWNER_AND_PLACE_TYPES, parseShowInfoUrl } from "../bridge/showInfoLink.ts";
 
 /** What the info window is looking at. */
 export type InfoSubject =
@@ -84,6 +85,20 @@ export function createShowInfoTarget(): ShowInfoTarget {
 
 /** The app's one info window subject. */
 export const showInfoTarget: ShowInfoTarget = createShowInfoTarget();
+
+/**
+ * A "showinfo:" link's subject (handle_show_info_link: ShowInfo(type, item)), where the page has one: a pilot's link a
+ * character; any other a type (an item's own state the page does not read, so its type). None for a corporation, an
+ * alliance, a faction or a place on the map, which the page's window does not show yet, nor for a link the client's own
+ * parse refuses.
+ */
+export function subjectOfShowInfoLink(url: string): InfoSubject | null {
+  const parsed = parseShowInfoUrl(url);
+  if (parsed === null) return null;
+  if (CHARACTER_TYPES.has(parsed.typeID)) return parsed.itemID === null ? null : { kind: "character", characterID: parsed.itemID };
+  if (OWNER_AND_PLACE_TYPES.has(parsed.typeID)) return null;
+  return { kind: "type", typeID: parsed.typeID };
+}
 
 /** Convenience: open Show Info on a subject. */
 export function showInfo(subject: InfoSubject): void {

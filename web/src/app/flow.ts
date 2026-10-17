@@ -1198,8 +1198,11 @@ export interface SaidDialog {
   readonly values: JsonValue | null;
   /** What the page says where the install has not the dialog. */
   readonly fallback: string;
-  /** A question the client puts with Yes and No (uiconst.YESNO), answered by AppFlow.answerDialog; else OK alone. */
-  readonly answers?: "yesno";
+  /**
+   * A question the client puts with Yes and No (uiconst.YESNO), or with OK and Cancel (uiconst.OKCANCEL), answered by
+   * AppFlow.answerDialog (Yes and OK true); else OK alone.
+   */
+  readonly answers?: "yesno" | "okcancel";
 }
 
 export interface AppFlow {
@@ -2415,6 +2418,11 @@ export interface AppFlow {
    * (OpenSkillPlanWnd); n counts them. Null until one is.
    */
   readonly skillPlanLinks: ReadableSignal<SkillPlanLinkFollowed | null>;
+  /**
+   * evelink's web handler (handlers/web.py handle_web_link): an http or https link followed, after the client's
+   * ExternalLinkWarning (OK and Cancel, its answer kept where the pilot says so), in a tab of its own.
+   */
+  followWebLink(url: string): Promise<void>;
   /** handle_link: a "skillPlan:" url followed; nothing where the client's own parse would refuse it. */
   openSkillPlanLink(url: string): void;
   /** The link followed and not yet opened, taken by whoever opens it (null where none is waiting). */
@@ -6859,16 +6867,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
-  // answer; true on Yes.
+  // answer; true on Yes. With uiconst.OKCANCEL (answers "okcancel"): OK and Cancel, true on OK.
   const dialogAnswers = new Map<number, (yes: boolean) => void>();
-  function askDialog(dialog: string, values: JsonValue | null, fallback: string): Promise<boolean> {
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno"): Promise<boolean> {
     const kept = dialogAnswerKept(dialog);
-    if (kept !== null) return Promise.resolve(kept === "yes");
+    // A question's kept answer: Yes, or OK where the question is OK and Cancel (suppress=uiconst.ID_OK).
+    if (kept !== null) return Promise.resolve(kept === "yes" || kept === "ok");
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
     return new Promise((resolve) => {
       dialogAnswers.set(n, resolve);
-      putDialog({ n, dialog, values, fallback, answers: "yesno" });
+      putDialog({ n, dialog, values, fallback, answers });
     });
   }
 
@@ -6923,6 +6932,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const skillPlanLinksSignal = createSignal<SkillPlanLinkFollowed | null>(null);
   let skillPlanLinksFollowed = 0;
   let skillPlanLinkWaiting: SkillPlanLinkFollowed | null = null;
+
+  async function followWebLink(url: string): Promise<void> {
+    if (!(await askDialog("ExternalLinkWarning", { type: "dict", entries: [["url", url]] }, `Open ${url} in a tab of its own?`, "okcancel"))) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 
   function openSkillPlanLink(url: string): void {
     const parsed = parseSkillPlanUrl(url);
@@ -22966,6 +22980,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillBooksAsked: readonlySignal(skillBooksAskedSignal),
     gatewayNotices: readonlySignal(gatewayNoticesSignal),
     skillPlanLinks: readonlySignal(skillPlanLinksSignal),
+    followWebLink,
     openSkillPlanLink,
     takeSkillPlanLink,
     sharedSkillPlan,

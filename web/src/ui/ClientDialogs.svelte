@@ -559,7 +559,7 @@
     // No such dialog to be read: the page's own words, in a box.
     if (type === null) return { said: one, kind: "box", type: null };
     // A question waits on its answer: a box, whatever its type.
-    if (one.answers === "yesno") return { said: one, kind: "box", type };
+    if (one.answers === "yesno" || one.answers === "okcancel") return { said: one, kind: "box", type };
     return { said: one, kind: BOX_TYPES.has(type) ? "box" : STRIP_TYPES.has(type) ? "strip" : "none", type };
   }));
 
@@ -599,8 +599,8 @@
     const shownBox = box;
     if (shownBox === null) return;
     if (keepTicked && answerKept(shownBox.suppress, answer)) flow.keepDialogAnswer(shownBox.said.dialog, answer);
-    if (answer === "ok") flow.dismissDialog(shownBox.said.n);
-    else flow.answerDialog(shownBox.said.n, answer === "yes");
+    if (answer === "ok" && shownBox.said.answers !== "okcancel") flow.dismissDialog(shownBox.said.n);
+    else flow.answerDialog(shownBox.said.n, answer === "yes" || answer === "ok");
   }
 
   const strip = $derived.by(() => {
@@ -1488,13 +1488,17 @@
       {#if box.suppress !== null}
         <label class="keep">
           <input type="checkbox" bind:checked={keepTicked} />
-          {box.said.answers === "yesno" ? wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again") : wordOf(DO_NOT_SHOW_AGAIN_LABEL, "Do not show me this again")}
+          {box.said.answers === "yesno" || box.said.answers === "okcancel" ? wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again") : wordOf(DO_NOT_SHOW_AGAIN_LABEL, "Do not show me this again")}
         </label>
       {/if}
       <span class="answers">
         {#if box.said.answers === "yesno"}
           <button type="button" onclick={() => answerBox("yes")}>{wordOf("UI/Common/Buttons/Yes", "Yes")}</button>
           <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+        {:else if box.said.answers === "okcancel"}
+          <!-- uiconst.OKCANCEL: OK the question's yes, Cancel its no. -->
+          <button type="button" onclick={() => answerBox("ok")}>{wordOf("UI/Common/Buttons/OK", "OK")}</button>
+          <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
         {:else}
           <button type="button" onclick={() => answerBox("ok")}>OK</button>
         {/if}

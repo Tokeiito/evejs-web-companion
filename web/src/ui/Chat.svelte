@@ -7,9 +7,17 @@
   // it is open and stops when it closes (onDestroy). The browser never sees a
   // bridge session.
   //
-  // A message is shown by its markup as the client's chat shows it (the editor's markup: bridge/mailMarkup.ts), a link
-  // in it underlined with its url as its hint; a skill plan's link (bridge/skillPlanLink.ts) is followed when clicked
-  // (link.py handle_link: the Skills window opens on the plan). A link dragged onto the send box (a skill plan's share
+  // A message is shown by its markup as the client's chat shows it (the editor's markup: bridge/mailMarkup.ts). Its
+  // links are followed when clicked as the client's link registry follows them (evelink/client), each in its colour
+  // (evelink/client/color.py) with its hint:
+  //   skillPlan        link.py handle_link: the Skills window opens on the plan (registered with no colour of its own:
+  //                    default_link_color_info)
+  //   showinfo         handle_show_info_link: Show Info on the type, or on the pilot for a pilot's link
+  //                    (default_with_subtle_color_info); a corporation's, an alliance's, a faction's or a place's link
+  //                    the page's window does not show yet, and it is not followed
+  //   http, https      handle_web_link: ExternalLinkWarning, then a tab of its own (external_link_color_info; its hint
+  //                    the url)
+  // Any other link is underlined with its url as its hint. A link dragged onto the send box (a skill plan's share
   // button: SkillPlanDragData.get_link) is put in at the caret as its markup.
   import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -23,6 +31,9 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import { LINK_DRAG_TYPE, parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
+  import { linkScheme } from "../bridge/showInfoLink.ts";
+  import { showInfo, subjectOfShowInfoLink } from "./showInfo.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 
   let { store, flow, openSkillPlanLink = null }: {
     store: ClientStore;
@@ -71,6 +82,34 @@
   let error = $state("");
   let draft = $state("");
   let sendBox = $state<HTMLInputElement | undefined>(undefined);
+
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  /** The links' hints, the page's words where the install's are not to hand. */
+  const LINK_WORDS: Readonly<Record<string, string>> = {
+    "UI/SkillPlan/SkillPlan": "Skill plan",
+    "UI/Commands/ShowInfo": "Show information",
+  };
+  function linkWord(label: string): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" ? template : LINK_WORDS[label] ?? "", {}, { nameOf: () => "" }));
+  }
+
+  /** How a link in a message is followed (the client's link registry), or null where it is not. */
+  function followerOf(url: string): { readonly kind: "skillPlan" | "showInfo" | "web"; readonly hint: string; readonly follow: () => void } | null {
+    const scheme = linkScheme(url);
+    if (scheme === "skillplan" && openSkillPlanLink !== null && parseSkillPlanUrl(url) !== null) {
+      return { kind: "skillPlan", hint: linkWord("UI/SkillPlan/SkillPlan"), follow: () => openSkillPlanLink?.(url) };
+    }
+    if (scheme === "showinfo") {
+      const subject = subjectOfShowInfoLink(url);
+      return subject === null ? null : { kind: "showInfo", hint: linkWord("UI/Commands/ShowInfo"), follow: () => showInfo(subject) };
+    }
+    if (scheme === "http" || scheme === "https") {
+      return { kind: "web", hint: url, follow: () => void flow.followWebLink(url) };
+    }
+    return null;
+  }
 
   /** A link dragged over the send box is taken. */
   function linkDragOver(event: DragEvent): void {
@@ -153,6 +192,7 @@
   }
 
   onMount(() => {
+    flow.requestWords(Object.keys(LINK_WORDS));
     void refresh();
     poller.start();
   });
@@ -226,7 +266,7 @@
             {#each active.messages as message, index (index)}
               <li>
                 <span class="author">{message.characterName}</span>:
-                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const planLink = run.link !== null && openSkillPlanLink !== null && parseSkillPlanUrl(run.link) !== null ? run.link : null}{#if planLink !== null}<button type="button" class="chat-link" title={planLink} onclick={() => openSkillPlanLink?.(planLink)}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
+                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link)}{#if follower !== null}<button type="button" class="chat-link {follower.kind}" title={follower.hint} onclick={follower.follow}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
               </li>
             {/each}
           </ul>
@@ -263,9 +303,13 @@
 </section>
 
 <style>
-  /* evelink's link colour (link.py link_color_info: #94ccff, hovered #aed9ff). */
-  .chat-link { padding: 0; border: 0; background: none; font: inherit; color: #94ccff; text-decoration: underline; cursor: pointer; }
-  .chat-link:hover { color: #aed9ff; }
+  /* evelink/client/color.py: default_link_color_info (#d98d00, hovered #ffb732) for skill plans (registered with no
+     colour of their own; link.py's link_color_info is not passed) and Show Info; external_link_color_info (#ffe400,
+     hovered TextColor.HIGHLIGHT) for the web. The registry's links are bold (register: bold=True). */
+  .chat-link { padding: 0; border: 0; background: none; font: inherit; font-weight: 700; color: #d98d00; cursor: pointer; }
+  .chat-link:hover { color: #ffb732; }
+  .chat-link.web { color: #ffe400; }
+  .chat-link.web:hover { color: #ffffff; }
   .chat-bold { font-weight: 700; }
   .chat-italic { font-style: italic; }
   .chat-underline { text-decoration: underline; }
