@@ -205,7 +205,7 @@ import {
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
 import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, certificateLevel, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
-import { installedExpertSystems, skillsToTrain, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
+import { browsableExpertSystems, installedExpertSystems, skillsToTrain, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
 import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
@@ -2736,6 +2736,15 @@ export interface AppFlow {
    * queue committed.
    */
   trainExpertSystemSkills(typeID: number): Promise<void>;
+  /**
+   * The expert systems page's browse page (character_sheet/browse PageController.expert_systems: get_expert_systems,
+   * hidden and retired left out), and for each skill they give, its skill bar at the level given. Their names, their
+   * skills' and their ships' asked for. Null where they could not be read.
+   */
+  expertSystemsBrowse(): Promise<{
+    readonly systems: readonly ExpertSystemData[];
+    readonly boxes: ReadonlyMap<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>;
+  } | null>;
   /**
    * The page's Remove (PageController.remove_selected): the client's question (prompt_remove_expert_system:
    * CustomQuestion, RemovePromptTitle, RemovePromptBody and RemoveWarning); on Yes RemoveMyExpertSystem, a refusal said
@@ -8388,6 +8397,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (had === undefined) return 0;
       return Math.max(had.trainedSkillLevel, ...queued.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel));
     };
+  }
+
+  async function expertSystemsBrowse(): ReturnType<AppFlow["expertSystemsBrowse"]> {
+    try {
+      const data = await api.getExpertSystems(callOptions);
+      if (data === null) return null;
+      const systems = browsableExpertSystems(data.values());
+      const given = systems.flatMap((one) => one.skills);
+      const skills = [...new Set(given.map(([skill]) => skill))];
+      requestNames([...systems.flatMap((one) => [one.typeID, ...one.ships]), ...skills].map((id) => ({ kind: "type" as const, id })));
+      const boxes = new Map<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>();
+      if (skills.length > 0) {
+        const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+        const facts = await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer);
+        const required = (await requiredSkillsFor(skills)) ?? {};
+        for (const [skill, level] of given) {
+          boxes.set(skill + ":" + level, skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0));
+        }
+      }
+      return { systems, boxes };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      return null;
+    }
   }
 
   async function trainExpertSystemSkills(typeID: number): Promise<void> {
@@ -23856,6 +23889,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     expertSystemsHome,
     removeExpertSystem,
     trainExpertSystemSkills,
+    expertSystemsBrowse,
     expertSystemsChanged: readonlySignal(expertSystemsSignal),
     skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,

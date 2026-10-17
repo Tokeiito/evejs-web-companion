@@ -15,8 +15,17 @@
   //   its skills      SkillCountHint and the skills it gives by name, each with its skill bar at the level given
   //                   (SkillList, SkillRow)
   //
-  // Not here: the browse page (all the expert systems), the fanfare, the slot's ring of time left.
+  //   the browse page  an empty slot or the intro's Browse opens it (PageController.browse, on_browse:
+  //                   ExpertSystemsPanel.show_browse_page); its back button the home page again (BackToHome). Every
+  //                   expert system neither hidden nor retired, by name, the first selected (BrowsePage.load); each
+  //                   entry its name and, with ships, ShipUnlockHint. The selected one's name, its benefits (SkillCount,
+  //                   Duration, and the ships it goes with: four, and "+N" past five), View in Store (off: the store is
+  //                   not on this page), and its skills with their bars (browse/details.py ExpertSystemDetails)
+  //
+  // Not here: the fanfare, the slot's ring of time left, the browse entries' menu and drag.
   import { onMount, untrack } from "svelte";
+  import TypeIcon from "./TypeIcon.svelte";
+  import { clientTexture } from "./skillGroupIcons.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { shortWrittenInterval } from "../bridge/timeInterval.ts";
   import { resolvedName } from "../store/names.ts";
@@ -49,7 +58,47 @@
     "UI/ExpertSystem/TrainSkillsHint": "Queue its skills you lack, buying the books first.",
     "UI/ExpertSystem/TrainSkillsDisabledReasonNoSkills": "Every skill it gives is trained or queued.",
     "UI/ExpertSystem/SkillCountHint": "{skill_count} skills",
+    "UI/ExpertSystem/BackToHome": "Back",
+    "UI/ExpertSystem/BrowseHeader": "Expert systems",
+    "UI/ExpertSystem/ShipUnlockHint": "Goes with {ship_count} ships",
+    "UI/ExpertSystem/SkillCount": "{skill_count} skills",
+    "UI/ExpertSystem/Duration": "{days} days",
+    "UI/InfoWindow/ViewExpertSystemInStore": "View in the store",
   };
+
+  /** expertSystems/client/texture.py benefit_icon_skill, benefit_icon_duration, benefit_icon_ship_unlock. */
+  const BENEFIT_SKILL = clientTexture("res:/UI/Texture/classes/ExpertSystems/skill.png");
+  const BENEFIT_DURATION = clientTexture("res:/UI/Texture/classes/ExpertSystems/time.png");
+  const BENEFIT_SHIPS = clientTexture("res:/UI/Texture/classes/ExpertSystems/lock.png");
+
+  let page = $state<"home" | "browse">("home");
+  let browse = $state<Awaited<ReturnType<AppFlow["expertSystemsBrowse"]>> | undefined>(undefined);
+  let browseSelected = $state<number | null>(null);
+  /** sorted_by_name: the browse page's expert systems. */
+  const browseSorted = $derived(
+    [...(browse?.systems ?? [])].sort((left, right) =>
+      resolvedName($names.resolved, "type", left.typeID, "").localeCompare(resolvedName($names.resolved, "type", right.typeID, ""))),
+  );
+  const browseChosen = $derived(browseSorted.find((one) => one.typeID === browseSelected) ?? null);
+  const browseSkills = $derived(
+    [...(browseChosen?.skills ?? [])].sort(([left], [right]) =>
+      resolvedName($names.resolved, "type", left, "").localeCompare(resolvedName($names.resolved, "type", right, ""))),
+  );
+
+  /** PageController.browse: the browse page shown, read as it opens; the first by name selected. */
+  async function openBrowse(): Promise<void> {
+    page = "browse";
+    browse = undefined;
+    const read = await flow.expertSystemsBrowse();
+    browse = read;
+    browseSelected = null;
+  }
+  $effect(() => {
+    const first = browseSorted[0]?.typeID ?? null;
+    untrack(() => {
+      if (browseSelected === null && first !== null) browseSelected = first;
+    });
+  });
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
     const template = $words.templates[label];
@@ -158,7 +207,68 @@
 
 <section class="expert-systems">
   <h3>{word("Tooltips/CharacterSheet/ExpertSystems")}</h3>
-  {#if home === undefined}
+  {#if page === "browse"}
+    <div class="expert-browse-head">
+      <button type="button" class="expert-browse-back" title={word("UI/ExpertSystem/BackToHome")} aria-label={word("UI/ExpertSystem/BackToHome")}
+        onclick={() => { page = "home"; }}>‹</button>
+      <strong>{word("UI/ExpertSystem/BrowseHeader")}</strong>
+    </div>
+    {#if browse === undefined}
+      <p class="empty">Reading the expert systems…</p>
+    {:else if browse === null}
+      <p class="error">The expert systems could not be read.</p>
+    {:else}
+      <div class="expert-browse">
+        <ul class="expert-browse-list">
+          {#each browseSorted as one (one.typeID)}
+            <li>
+              <button type="button" class:selected={one.typeID === browseSelected} aria-pressed={one.typeID === browseSelected}
+                onclick={() => { browseSelected = one.typeID; }}>
+                <strong>{resolvedName($names.resolved, "type", one.typeID, "")}</strong>
+                {#if one.ships.length > 0}<small>{word("UI/ExpertSystem/ShipUnlockHint", { ship_count: one.ships.length })}</small>{/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#if browseChosen !== null}
+          {@const shown = browseChosen.ships.length > 5 ? browseChosen.ships.slice(0, 4) : browseChosen.ships}
+          <div class="expert-browse-details">
+            <strong class="expert-browse-name">{resolvedName($names.resolved, "type", browseChosen.typeID, "")}</strong>
+            <span class="expert-browse-benefits">
+              <span title={word("UI/ExpertSystem/SkillCountHint", { skill_count: browseChosen.skills.length })}>
+                <img src={BENEFIT_SKILL} alt="" width="16" height="16" />{word("UI/ExpertSystem/SkillCount", { skill_count: browseChosen.skills.length })}
+              </span>
+              <span><img src={BENEFIT_DURATION} alt="" width="16" height="16" />{word("UI/ExpertSystem/Duration", { days: browseChosen.durationDays })}</span>
+              {#if browseChosen.ships.length > 0}
+                <span title={word("UI/ExpertSystem/ShipUnlockHint", { ship_count: browseChosen.ships.length })}>
+                  <img src={BENEFIT_SHIPS} alt="" width="16" height="16" />
+                  {#each shown as ship (ship)}
+                    <TypeIcon typeID={ship} name={resolvedName($names.resolved, "type", ship, "")} />
+                  {/each}
+                  {#if browseChosen.ships.length > shown.length}
+                    <span title={browseChosen.ships.slice(shown.length).map((ship) => resolvedName($names.resolved, "type", ship, "")).join("\n")}>+{browseChosen.ships.length - shown.length}</span>
+                  {/if}
+                </span>
+              {/if}
+            </span>
+            <button type="button" disabled title="The New Eden Store is not on this page.">{word("UI/InfoWindow/ViewExpertSystemInStore")}</button>
+            <ul class="expert-system-skills">
+              {#each browseSkills as [skill, level] (skill)}
+                <li>
+                  <span class="skill-bar" aria-hidden="true">
+                    {#each browse.boxes.get(skill + ":" + level) ?? [] as one, box (box)}
+                      <span class="skill-box {one.box}" class:partial={one.partial}></span>
+                    {/each}
+                  </span>
+                  <span>{resolvedName($names.resolved, "type", skill, "")}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+      </div>
+    {/if}
+  {:else if home === undefined}
     <p class="empty">Reading your expert systems…</p>
   {:else if home === null}
     <p class="error">Your expert systems could not be read.</p>
@@ -166,7 +276,7 @@
     <div class="expert-system-slots">
       {#each slots as slot, at (at)}
         {#if slot === null}
-          <button type="button" class="expert-system-slot empty" disabled title={word("UI/ExpertSystem/BrowseExpertSystems") + "\n\nThe New Eden Store is not on this page."}>+</button>
+          <button type="button" class="expert-system-slot empty" title={word("UI/ExpertSystem/BrowseExpertSystems")} onclick={() => void openBrowse()}>+</button>
         {:else}
           <button type="button" class="expert-system-slot" class:selected={slot.typeID === selected} aria-pressed={slot.typeID === selected}
             onclick={() => { selected = slot.typeID; }}>
@@ -180,7 +290,7 @@
       <div class="expert-system-intro">
         <strong>{word("UI/ExpertSystem/IntroHeader")}</strong>
         <p>{word("UI/CharacterSheet/CharacterSheetWindow/ExpertSystems/ExpertSystemDescription")}</p>
-        <button type="button" disabled title="The New Eden Store is not on this page.">{word("UI/ExpertSystem/BrowseExpertSystems")}</button>
+        <button type="button" onclick={() => void openBrowse()}>{word("UI/ExpertSystem/BrowseExpertSystems")}</button>
       </div>
     {:else}
       <div class="expert-system-details">
@@ -215,6 +325,16 @@
   .expert-system-slot { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; min-width: 11rem; min-height: 3.5rem; padding: 0.4rem 0.6rem; text-align: left; }
   .expert-system-slot.empty { align-items: center; justify-content: center; font-size: 1.4rem; }
   .expert-system-slot.selected { outline: 1px solid #5ccbcb; }
+  .expert-browse-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .expert-browse-back { padding: 0 0.4rem; }
+  .expert-browse { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .expert-browse-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+  .expert-browse-list button { display: flex; flex-direction: column; align-items: flex-start; width: 100%; text-align: left; }
+  .expert-browse-list button.selected { outline: 1px solid #5ccbcb; }
+  .expert-browse-details { display: flex; flex-direction: column; gap: 0.4rem; }
+  .expert-browse-name { font-size: 1.1rem; }
+  .expert-browse-benefits { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+  .expert-browse-benefits > span { display: inline-flex; align-items: center; gap: 0.3rem; }
   .soon { color: #ffa64d; }
   .expert-system-intro, .expert-system-details { display: flex; flex-direction: column; gap: 0.3rem; }
   .expert-system-intro p { margin: 0; }

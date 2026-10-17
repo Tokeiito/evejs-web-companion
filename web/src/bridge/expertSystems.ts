@@ -27,6 +27,13 @@ export interface ExpertSystemData {
   readonly retired: boolean;
   /** skillsGranted: each skill and the level it gives, in the order the client's loader iterates them. */
   readonly skills: readonly (readonly [number, number])[];
+  /** associatedShipTypes: the ships it goes with. */
+  readonly ships: readonly number[];
+}
+
+/** data.py get_expert_systems() (hidden and retired left out, _filter_expert_systems): those to browse. */
+export function browsableExpertSystems(all: Iterable<ExpertSystemData>): ExpertSystemData[] {
+  return [...all].filter((one) => !one.hidden && !one.retired);
 }
 
 /** One of the pilot's: its type, and when it was installed and when it expires, in milliseconds. */

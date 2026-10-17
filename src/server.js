@@ -13450,6 +13450,8 @@ app.get("/api/client-data/expert-systems", requireAuth, async (req, res, next) =
         hidden: Boolean(Number(row.esHidden || 0)),
         retired: Boolean(Number(row.esRetired || 0)),
         skills: granted.map(([skill, level]) => [Number(skill), Number(level) || 0]).filter(([skill]) => skill > 0),
+        // associatedShipTypes: the ships it goes with, in its list's order.
+        ships: (Array.isArray(row.associatedShipTypes) ? row.associatedShipTypes : []).map(Number).filter((typeID) => typeID > 0),
       };
     }
     res.json({ ok: true, available: true, expertSystems });

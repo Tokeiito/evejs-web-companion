@@ -3989,7 +3989,8 @@ export async function getExpertSystems(options: ApiOptions = {}): Promise<Readon
     const row = value as Record<string, JsonValue>;
     const skills = (Array.isArray(row.skills) ? row.skills : []).flatMap((pair) =>
       Array.isArray(pair) && Number.isSafeInteger(Number(pair[0])) ? [[Number(pair[0]), Number(pair[1]) || 0] as const] : []);
-    out.set(typeID, { typeID, durationDays: Number(row.durationDays) || 0, hidden: row.hidden === true, retired: row.retired === true, skills });
+    const ships = (Array.isArray(row.ships) ? row.ships : []).map(Number).filter((ship) => Number.isSafeInteger(ship) && ship > 0);
+    out.set(typeID, { typeID, durationDays: Number(row.durationDays) || 0, hidden: row.hidden === true, retired: row.retired === true, skills, ships });
   }
   return out;
 }
