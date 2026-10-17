@@ -95,8 +95,9 @@ export function simulateCurrentShip(
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
   const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), changed: false, ghosts: 0 };
   const { location, ship } = simulation;
+  // _LoadSimulatedShipFromData: each module fitted as FitModuleToShip fits it, one that does not fit passed over.
   for (const module of [...modules].sort((left, right) => right.flagID - left.flagID)) {
-    location.fitModule(ship, module.key, module.typeID, module.flagID);
+    fitModuleChecked(simulation, module.typeID, module.flagID, module.key);
   }
   activateOnLoading(location, ship);
   // FitDrones: each one alone, while the drone bay has room for it.
@@ -342,12 +343,11 @@ function errorFittingInSlot(simulation: SimulatedShip, typeID: number, flagID: n
 }
 
 /**
- * FitModuleToShipAndChangeState: the slot to use (GetFlagIdToUse: the one asked where the type goes there, the first
- * free of its kind where any will do, 0); its fit checked; the module loaded in it (a ghost of its type), then put
- * online and activated, the fit errors passed over (a cloak or a mass entangler not activated). Null where it is
- * fitted, else why not.
+ * FitModuleToShip: the slot to use (GetFlagIdToUse: the one asked where the type goes there, the first free of its
+ * kind where any will do, 0); its fit checked (CanFitModuleInSlot); the module loaded in it (GetLoadedItem: a ghost of
+ * its type, or keyed as the item it stands for). The module, or why it does not fit.
  */
-export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagID: number): FitError | null {
+function fitModuleChecked(simulation: SimulatedShip, typeID: number, flagID: number, key?: string): DogmaItem | FitError {
   const { location, ship } = simulation;
   const slots = slotListForType(location, typeID);
   const used = new Set(fittedModules(simulation).map((item) => item.flagID));
@@ -357,7 +357,18 @@ export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagI
   const error = errorFittingInSlot(simulation, typeID, flag);
   if (error || flag === null) return error ?? { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
   simulation.ghosts += 1;
-  const module = location.fitModule(ship, `${ship.key}|module|${simulation.ghosts}`, typeID, flag);
+  return location.fitModule(ship, key ?? `${ship.key}|module|${simulation.ghosts}`, typeID, flag);
+}
+
+/**
+ * FitModuleToShipAndChangeState: the module fitted (FitModuleToShip), then put online and activated, the fit errors
+ * passed over (a cloak or a mass entangler not activated). Null where it is fitted, else why not.
+ */
+export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagID: number): FitError | null {
+  const { location } = simulation;
+  const fitted = fitModuleChecked(simulation, typeID, flagID);
+  if (!("key" in fitted)) return fitted;
+  const module = fitted;
   simulation.changed = true;
   eatingFitErrors(() => setModuleState(location, module, ONLINE));
   eatingFitErrors(() => {
@@ -496,6 +507,76 @@ export function unfitFromSimulation(simulation: SimulatedShip, item: DogmaItem):
   if (!ship.drones.has(item.key)) eatingFitErrors(() => setModuleState(location, item, OFFLINE));
   location.unfitItem(ship, item);
   simulation.changed = true;
+}
+
+/** ghostFittingSvc allSlots: the rigs, then the subsystems, the low, medium and high slots and the services. */
+const ALL_SLOT_FLAGS: ReadonlySet<number> = new Set([92, 93, 94, 125, 126, 127, 128, ...range(11, 24), ...range(164, 8)]);
+const FLAG_DRONE_BAY = 87;
+
+/** A saved fitting's item (fitData's ItemInfo): its type, its flag, how many. */
+export interface FitDataItem {
+  readonly typeID: number;
+  readonly flagID: number;
+  readonly quantity: number;
+}
+
+/**
+ * _LoadSimulatedShipFromData, for a fitting (SimulateFitting: a saved one, or a hull alone): a ghost of the hull with
+ * the pilot's brain; the fitting's modules fitted, the highest slot first, a subsystem in its own slot
+ * (attributeSubSystemSlot), one that does not fit passed over (FitModuleToShip); then the rigs activated, every module
+ * online, every module activated (_ActivateOnLoading); then its drones, each one alone while the bay has room, the most
+ * damage first selected (FitDrones: TryFitDronesToDroneBay, RegisterTopDpsDrones). Its cargo and fighters are not
+ * loaded here; its charges stay in its cargo (the browser's SimulateFitting loads none).
+ */
+export function simulateFitData(
+  staticData: DogmaStatic,
+  shipTypeID: number,
+  pilot: { readonly characterID: number; readonly typeID: number; readonly securityStatus: number },
+  brain: Brain | null,
+  fitData: readonly FitDataItem[],
+  clock: () => number,
+): SimulatedShip {
+  const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
+  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), changed: false, ghosts: 0 };
+  const { location, ship } = simulation;
+  const modules = fitData.filter((item) => ALL_SLOT_FLAGS.has(item.flagID)).sort((left, right) => right.flagID - left.flagID);
+  for (const item of modules) {
+    const subsystemSlot = location.static.types[item.typeID]?.attributes.find(([id]) => id === ATTRIBUTE_SUBSYSTEM_SLOT)?.[1];
+    fitModuleChecked(simulation, item.typeID, subsystemSlot ? Math.trunc(subsystemSlot) : item.flagID);
+  }
+  activateOnLoading(location, ship);
+  const quantities = new Map<number, number>();
+  for (const item of fitData) if (item.flagID === FLAG_DRONE_BAY) quantities.set(item.typeID, (quantities.get(item.typeID) ?? 0) + item.quantity);
+  const fitted: DogmaItem[] = [];
+  for (const [typeID, quantity] of quantities) {
+    for (let at = 0; at < quantity; at += 1) {
+      const drone = fitDrone(simulation, typeID);
+      if (!drone) break;
+      fitted.push(drone);
+    }
+  }
+  for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
+  simulation.changed = false;
+  return simulation;
+}
+
+/**
+ * The simulated hull's slots, as many of each kind as it has (its hiSlots, medSlots, lowSlots, rigSlots and
+ * maxSubSystems as the simulation reckons them), by family and index, with their flags.
+ */
+export function simulatedSlotLayout(simulation: SimulatedShip): { readonly family: "high" | "mid" | "low" | "rig" | "subsystem"; readonly index: number; readonly flagID: number }[] {
+  const { location, ship } = simulation;
+  const count = (attributeID: number, most: number) => Math.max(0, Math.min(most, Math.trunc(location.value(ship, attributeID))));
+  const layout: { family: "high" | "mid" | "low" | "rig" | "subsystem"; index: number; flagID: number }[] = [];
+  const add = (family: "high" | "mid" | "low" | "rig" | "subsystem", first: number, total: number) => {
+    for (let index = 0; index < total; index += 1) layout.push({ family, index, flagID: first + index });
+  };
+  add("high", 27, count(ATTRIBUTE_HI_SLOTS, 8));
+  add("mid", 19, count(ATTRIBUTE_MED_SLOTS, 8));
+  add("low", 11, count(ATTRIBUTE_LOW_SLOTS, 8));
+  add("rig", 92, count(ATTRIBUTE_RIG_SLOTS, 3));
+  add("subsystem", 125, count(ATTRIBUTE_MAX_SUBSYSTEMS, 4));
+  return layout;
 }
 
 /** The drone panel of a simulated ship: the drones selected, the bandwidth they take, their damage a second. */

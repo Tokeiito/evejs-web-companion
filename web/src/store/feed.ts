@@ -279,7 +279,9 @@ export type FeedEvent =
   // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
   | {
       readonly type: "fitting/simulated";
-      readonly shipID: number;
+      readonly shipID: number | null;
+      readonly shipTypeID: number;
+      readonly name: string | null;
       readonly resources: FittingResources;
       readonly stats: ShipStats;
       readonly moduleStates: Readonly<Record<number, number>>;

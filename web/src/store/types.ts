@@ -436,7 +436,11 @@ export interface FittingState {
    * moduleStates.ts: OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3). Absent or null where it is not.
    */
   readonly simulation?: {
-    readonly shipID: number;
+    /** The pilot's own ship it simulates; null for a saved fitting or a hull alone. */
+    readonly shipID: number | null;
+    /** The simulated hull's type, and its name (the fitting's; null for the hull's own). */
+    readonly shipTypeID: number;
+    readonly name: string | null;
     readonly resources: FittingResources;
     readonly stats: ShipStats;
     readonly moduleStates: Readonly<Record<number, number>>;

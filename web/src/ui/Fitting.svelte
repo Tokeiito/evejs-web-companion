@@ -119,6 +119,8 @@
   function selectFitting(fittingID: number, event: MouseEvent): void {
     const control = event.ctrlKey || event.metaKey;
     const shift = event.shiftKey;
+    // fittingBrowser.OnFittingClicked: a click with neither Shift nor Ctrl simulates the fitting too.
+    if (!control && !shift) simulateSaved(fittingID);
     const rows = shownFittingIDs();
     const from = lastSelectedFitting === null ? -1 : rows.indexOf(lastSelectedFitting);
     const to = rows.indexOf(fittingID);
@@ -873,6 +875,7 @@
     if ($fitting.activeShipID) {
       refs.push({ kind: "evelocation", id: $fitting.activeShipID });
     }
+    if ($fitting.simulation) refs.push({ kind: "type", id: $fitting.simulation.shipTypeID });
     for (const slot of [...$fitting.slots, ...($fitting.simulation?.slots ?? [])]) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
@@ -1155,6 +1158,10 @@
     "UI/Fitting/FittingWindow/WarningModuleCouldntBeFitted": "The module could not be fitted.",
     "UI/Fitting/FittingWindow/ActiveDronesLimitWarning": "No more than {limit} drones may be active.",
     "UI/Fitting/FittingWindow/ActiveDroneBandwithWarning": "The ship has not the bandwidth for another drone.",
+    "UI/Fitting/FittingWindow/SimulateFitting": "Try it out",
+    "UI/Fitting/FittingWindow/SimulateShip": "Try this hull out",
+    "UI/Fitting/FittingWindow/SimulatedShipName": "A simulated {[item]typeID.name}",
+    "UI/Fitting/FittingWindow/LoadngOfShipCancelled": "The ship was not loaded.",
   };
   /** FeedbackLabelCont's errorDict and errorLabelPathDictWithVariables, by FIT_ERRORS key. */
   const FIT_ERROR_LABELS: Readonly<Record<number, string>> = {
@@ -1241,10 +1248,37 @@
     if (!$fitting.activeShipID) return;
     flow.requestWords(Object.keys(SIMULATION_WORDS));
   });
+  /** A saved fitting simulated (SimulateFitting), from the browser. */
+  function simulateSaved(fittingID: number): void {
+    const saved = ($savedFittings ?? []).find((each) => each.fittingID === fittingID);
+    if (!saved) return;
+    simulationError = null;
+    fitFeedback = "";
+    void run(() => flow.simulateFitting({
+      shipTypeID: saved.shipTypeID,
+      fitData: saved.modules.map((item) => ({ typeID: item.typeID, flagID: item.flagID, quantity: item.quantity })),
+      name: saved.name,
+      fittingID: saved.fittingID,
+    }));
+  }
+  /** A hull simulated alone (the hull browser's ShipFittingSimulationButton: SimulateFitting with no fitData). */
+  function simulateHull(typeID: number): void {
+    simulationError = null;
+    fitFeedback = "";
+    void run(() => flow.simulateFitting({ shipTypeID: typeID, fitData: [], name: null }));
+  }
+  /** The hull the ring shows: the simulated one while simulating, with its fitting's name or SimulatedShipName. */
+  const ringTypeID = $derived.by(() => (simulation ? simulation.shipTypeID : activeShipTypeID));
+  const ringName = $derived.by(() => {
+    if (!simulation) return activeShipName;
+    if (simulation.name) return simulation.name;
+    if (simulation.shipID !== null) return activeShipName;
+    return simulationWord("UI/Fitting/FittingWindow/SimulatedShipName", { typeID: simulation.shipTypeID });
+  });
   /** A simulation word: the client's where the install has it, the page's own otherwise. */
-  function simulationWord(label: string): string {
+  function simulationWord(label: string, args: Record<string, string | number> = {}): string {
     const template = $words.templates[label];
-    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", {}, {
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", args, {
       nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
     }));
   }
@@ -2161,7 +2195,10 @@
             <div class="fit-ring">
               <div class="fit-ring-guide" aria-hidden="true"></div>
               <div class="fit-hull">
-                <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="lg" />
+                <TypeIcon typeID={ringTypeID} name={ringName} size="lg" />
+                {#if simulation && simulation.shipID === null}
+                  <span class="fit-hull-name">{ringName}</span>
+                {/if}
                 <!-- The ghost ship icon (ghostShipIcon.py): Simulate, or Exit Simulation while simulating. -->
                 <button
                   type="button"
@@ -2608,6 +2645,10 @@
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
           </button>
+          <!-- GetFittingMenu (512): Simulate Fitting, as a click on the fitting does. -->
+          <button type="button" class="minor" disabled={busy} onclick={() => simulateSaved(saved.fittingID)}>
+            {simulationWord("UI/Fitting/FittingWindow/SimulateFitting")}
+          </button>
           <!-- GetFittingMenu (513 to 516): no Fit to Active Ship for a structure's fitting (categoryStructure); Open
                Multifit only where the config allows any (GetMaxShipsToFit) and the pilot is docked. -->
           {#if $hullBrowser?.types.get(saved.shipTypeID)?.categoryID !== CATEGORY_STRUCTURE}
@@ -2645,6 +2686,10 @@
           <!-- HullTypeListGroup.Load (683 to 686) shows the alliance's count where the corporation has any fittings for
                the hull (allianceCont.display = bool(numCorp)), its number nought where the alliance has none. -->
           {#if count?.corporation}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedAllianceFittings")}>🛡 {count.alliance}</small>{/if}
+          <!-- HullTypeListGroup's ShipFittingSimulationButton (fittingBrowser 747 to 755): the hull simulated alone. -->
+          <button type="button" class="minor fit-simulate-hull" title={simulationWord("UI/Fitting/FittingWindow/SimulateShip")}
+            aria-label={`${simulationWord("UI/Fitting/FittingWindow/SimulateShip")}: ${hullName(hull.typeID)}`} disabled={busy}
+            onclick={(event) => { event.preventDefault(); event.stopPropagation(); simulateHull(hull.typeID); }}>⧉</button>
         </summary>
         {#if opened[id] === true}
           {#each hull.fittings as saved (saved.fittingID)}

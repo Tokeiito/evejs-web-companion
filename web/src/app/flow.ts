@@ -36,6 +36,8 @@ import { dockedDrones, type DroneReading } from "../bridge/dogma/drones.ts";
 import {
   fitToOneSlot,
   fitToSimulation,
+  simulateFitData,
+  simulatedSlotLayout,
   loadChargeToSimulation,
   setActiveDronesOfType,
   setDronesOfType,
@@ -1442,6 +1444,13 @@ export interface AppFlow {
   unfitSimulatedModule(flagID: number): void;
   /** A charge loaded into the simulated module in a slot; false where it does not take it. */
   loadSimulatedCharge(flagID: number, chargeTypeID: number): Promise<boolean>;
+  /** A saved fitting simulated, or a hull alone with no fitData (ghostFittingSvc.SimulateFitting). */
+  simulateFitting(fitting: {
+    readonly shipTypeID: number;
+    readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
+    readonly name: string | null;
+    readonly fittingID?: number;
+  }): Promise<void>;
   /** As many drones of a type in the simulated drone bay as wanted. */
   setSimulatedDrones(typeID: number, wanted: number): Promise<void>;
   /** As many of a type's simulated drones selected as wanted; "limit" or "bandwidth" where the selection is refused. */
@@ -5927,7 +5936,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /** The Fitting window's simulation of the pilot's own ship (ghostFittingSvc), while there is one, and the ship it is of. */
-  let simulation: { readonly shipID: number; readonly simulated: SimulatedShip } | null = null;
+  let simulation: {
+    /** The pilot's own ship it simulates; null for a fitting or a hull alone. */
+    readonly shipID: number | null;
+    readonly simulated: SimulatedShip;
+    /** ghostFittingSvc.fittingName: the ship's name, or the fitting's; null for the hull's own. */
+    readonly name: string | null;
+  } | null = null;
 
   /**
    * ToggleGhostFitting into a simulation (LoadCurrentShip): the pilot's own ship simulated from what godma holds of it
@@ -5939,6 +5954,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay, staticData } = inputs;
     simulation = {
       shipID,
+      name: null,
       simulated: simulateCurrentShip(
         staticData,
         shipTypeID,
@@ -5982,11 +5998,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       moduleStates[item.flagID] = moduleState(location, item);
       moduleKinds[item.flagID] = moduleKind(location, item);
     }
-    // The simulated ship's slots: the ship's own, each with what the simulation has fitted in it.
-    const slots = store.fitting.get().slots.map((slot): FittingSlot => {
-      const flagID = slotFlagOf(slot.family, slot.index);
-      const module = flagID === null ? null : moduleInSlot(ship, flagID);
-      if (!module || flagID === null) return { ...slot, module: null };
+    // The simulated hull's slots, as many as it has of each kind, each with what the simulation has fitted in it.
+    const slots = simulatedSlotLayout(simulation.simulated).map(({ family, index, flagID }): FittingSlot => {
+      const slot = { family, index };
+      const module = moduleInSlot(ship, flagID);
+      if (!module) return { ...slot, module: null };
       const charge = ship.subLocations.get(flagID) ?? null;
       return {
         ...slot,
@@ -6001,7 +6017,72 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // The simulated drone bay by type (dronePickerMenu): how many, how many selected.
     const drones = simulatedDroneTypes(simulation.simulated).map((entry) => ({ typeID: entry.typeID, total: entry.drones.length, active: entry.active }));
-    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds, slots, drones });
+    store.apply({
+      type: "fitting/simulated",
+      shipID: simulation.shipID,
+      shipTypeID: ship.typeID,
+      name: simulation.name,
+      ...figures,
+      moduleStates,
+      moduleKinds,
+      slots,
+      drones,
+    });
+  }
+
+  /**
+   * SimulateFitting of a saved fitting, or of a hull alone (no fitData): where a simulation that was changed is shown,
+   * the client's question first (_LoadSimulatedShipFromData: LoadSimulatedShip; a no is LoadngOfShipCancelled); then
+   * the fitting simulated with the pilot's brain (bridge/dogma/simulation.ts simulateFitData) and shown. A type that is
+   * neither a ship nor a structure is let be.
+   */
+  async function simulateFitting(fitting: {
+    readonly shipTypeID: number;
+    readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
+    readonly name: string | null;
+    readonly fittingID?: number;
+  }): Promise<void> {
+    const allInfo = store.dogma.get().allInfo;
+    const brain = allInfo ? decodeBrain(allInfo.charBrain) : null;
+    const characterID = Number(allInfo?.characterID);
+    const pilotTypeID = allInfo?.character?.typeID ?? null;
+    if (!allInfo || !brain || !Number.isSafeInteger(characterID) || pilotTypeID === null) throw new Error("The ship's own dogma has not been read yet.");
+    const staticData = await dogmaStaticFor([fitting.shipTypeID, pilotTypeID, ...fitting.fitData.map((item) => item.typeID)], [
+      ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
+      458,
+    ]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    // fittingBrowser.OnFittingClicked: a fitting with the old electronic subsystems (groupElectronicSubSystems, 955)
+    // is shown (DisplayFitting), not simulated.
+    if (fitting.fittingID !== undefined && fitting.fitData.some((item) => staticData.types[item.typeID]?.groupID === 955)) {
+      await viewFitting(fitting.fittingID);
+      return;
+    }
+    const categoryID = staticData.types[fitting.shipTypeID]?.categoryID ?? null;
+    if (categoryID !== 6 && categoryID !== 65) return;
+    if (simulation && simulation.simulated.changed) {
+      const { ship, pilot } = simulation.simulated;
+      const holds = [...ship.fitted.values()].some((item) => item !== ship && item !== pilot) || ship.drones.size > 0;
+      if (holds && !(await askDialog("LoadSimulatedShip", { type: "dict", entries: [] }, "Load another ship into the simulation? What was changed in it is not kept."))) {
+        throw new Error(templateWords("UI/Fitting/FittingWindow/LoadngOfShipCancelled", {}, "Loading of the ship was cancelled."));
+      }
+    }
+    // The pilot's security status, as the active ship's row carries it (_ApplyPilotSecurityStatusToShip).
+    const shipID = store.fitting.get().activeShipID;
+    const security = allInfo.ships.find((item) => Number(item.itemID) === shipID)?.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
+    simulation = {
+      shipID: null,
+      name: fitting.name,
+      simulated: simulateFitData(
+        staticData,
+        fitting.shipTypeID,
+        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+        brain,
+        fitting.fitData,
+        serverNow,
+      ),
+    };
+    showSimulation();
   }
 
   /** A charge loaded into the simulated module in a slot (FitAmmoToLocation); false where the module does not take it. */
@@ -24805,6 +24886,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     loadSimulatedCharge(flagID, chargeTypeID) {
       return loadSimulatedCharge(flagID, chargeTypeID);
+    },
+    simulateFitting(fitting) {
+      return simulateFitting(fitting);
     },
     setSimulatedDrones(typeID, wanted) {
       return setSimulatedDrones(typeID, wanted);
