@@ -454,6 +454,10 @@ export interface FittingState {
     readonly slots: readonly FittingSlot[];
     /** The simulated drone bay by type: how many drones of it, how many selected. */
     readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
+    /** The simulated cargo hold by type: how many, and the most it may be made (its count and the room left). */
+    readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+    /** The simulated cargo hold's capacity and what is in it takes (GetCapacity), m³. */
+    readonly cargoCapacity: { readonly capacity: number; readonly used: number };
   } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the

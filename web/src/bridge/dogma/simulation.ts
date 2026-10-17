@@ -18,6 +18,7 @@
 import { activeDroneBandwidth, activeDroneDps, type DroneReading } from "./drones.ts";
 import { loadSimulatedShip, type Brain, type DogmaItem, type DogmaLocation, type DogmaStatic, type SimulatedCharge } from "./location.ts";
 import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, offlineSlots, ONLINE, setModuleState } from "./moduleStates.ts";
+import { intDictOrder } from "../py27DictOrder.ts";
 
 const ATTRIBUTE_VOLUME = 161;
 const ATTRIBUTE_DRONE_CAPACITY = 283;
@@ -36,10 +37,143 @@ export interface SimulatedShip {
   readonly ship: DogmaItem;
   readonly pilot: DogmaItem;
   readonly selectedDrones: Map<DogmaItem, number>;
+  /**
+   * Its cargo hold (FittingDogmaLocation.GetHoldItems(flagCargo)): each type in it and how many, one item of each type
+   * (FitAnItemToHold adds to the one there), in the order they were put in.
+   */
+  readonly cargo: Map<number, number>;
   changed: boolean;
   /** How many ghost items it has made (GhostFittingDataObject's keys). */
   ghosts: number;
 }
+
+/** What the hold's rules go by that the static data does not hold: a dynamic type (an Abyssal one), the type lists. */
+export interface HoldFacts {
+  readonly dynamic: (typeID: number) => boolean;
+  readonly lists: (typeID: number) => ReadonlySet<number>;
+}
+
+/** fittingDogmaLocation.MAX_CARGO: a structure's simulated cargo hold. */
+const MAX_CARGO = 2000000000;
+/** itemPickerMenu.allowedCategories: what a simulated hold takes at all (IsAllowedToAddAtAll). */
+const ALLOWED_HOLD_CATEGORIES: ReadonlySet<number> = new Set([5, 34, 30, 25, 9, 8, 17, 35, 22, 18, 20, 4, 7, 43, 41, 42, 6, 91, 16, 39, 66, 32, 63, 87]);
+/** itemPickerMenu VALID_CHARGE_CATEGORIES, VALID_MODULE_CATEGORIES, VALID_CHARGE_GROUPS; the two type lists. */
+const VALID_CARGO_CATEGORIES: ReadonlySet<number> = new Set([8, 20, 7, 32]);
+const GROUP_ICE_PRODUCT = 423;
+const TYPE_LIST_FILAMENTS = 324;
+const TYPE_LIST_OTHER_CARGO_HOLD_TYPES = 518;
+
+/**
+ * FittingDogmaLocation.GetCapacity(shipID, None, flagCargo) (452 to 477): the cargo hold's capacity (a structure's
+ * MAX_CARGO), and what its items take, each its stacksize times its volume.
+ */
+export function simulatedCargoCapacity(simulation: SimulatedShip): { readonly capacity: number; readonly used: number } {
+  const { location, ship } = simulation;
+  const capacity = ship.categoryID === CATEGORY_STRUCTURE ? MAX_CARGO : location.value(ship, ATTRIBUTE_CAPACITY);
+  let used = 0;
+  for (const [typeID, quantity] of simulation.cargo) used += quantity * typeAttribute(location, typeID, ATTRIBUTE_VOLUME);
+  return { capacity, used };
+}
+
+/**
+ * itemPickerMenu.GetMaxQty (469 to 488): how many of the types together the hold has room for (its room left over
+ * their volumes added up); null where it has room for none of any of them.
+ */
+export function simulatedCargoRoomFor(simulation: SimulatedShip, typeIDs: readonly number[]): number | null {
+  const { capacity, used } = simulatedCargoCapacity(simulation);
+  const volumeLeft = capacity - used;
+  let maxQtyForType = 0;
+  let allTypeVol = 0;
+  for (const typeID of typeIDs) {
+    const typeVolume = typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME);
+    allTypeVol += typeVolume;
+    maxQtyForType = Math.max(maxQtyForType, Math.trunc(volumeLeft / typeVolume));
+  }
+  const maxQty = allTypeVol ? volumeLeft / allTypeVol : 0;
+  return maxQtyForType ? Math.trunc(maxQty) : null;
+}
+
+/** itemPickerMenu.IsValidForHold (538 to 555), for the cargo hold: what a fitting keeps in it. */
+function isValidForCargo(simulation: SimulatedShip, typeID: number, facts: HoldFacts): boolean {
+  const type = simulation.location.static.types[typeID];
+  if (type?.categoryID != null && VALID_CARGO_CATEGORIES.has(type.categoryID)) return true;
+  if (type?.groupID === GROUP_ICE_PRODUCT) return true;
+  const lists = facts.lists(typeID);
+  return lists.has(TYPE_LIST_FILAMENTS) || lists.has(TYPE_LIST_OTHER_CARGO_HOLD_TYPES);
+}
+
+/**
+ * ghostFittingSvc.FitAnItemToHold (170 to 183) for the cargo hold: to the type's stack there as many more as the hold
+ * has room for (GetMaxQty), nothing where none; else a stack of it where the hold has room for all of it
+ * (FitItemOrDroneToShip: the type's volume, 265 to 276), the simulation then changed. Answers whether it was put in, and
+ * whether it is a type a fitting does not keep there (IsValidForHold: ItemAddedNotInFitting is the caller's to say).
+ */
+function fitItemToCargo(simulation: SimulatedShip, typeID: number, qty: number, facts: HoldFacts): { readonly added: boolean; readonly notInFitting: boolean } {
+  const held = simulation.cargo.get(typeID);
+  let added: boolean;
+  if (held !== undefined) {
+    const more = Math.min(qty, simulatedCargoRoomFor(simulation, [typeID]) ?? 0);
+    if (!more) return { added: true, notInFitting: false };
+    simulation.cargo.set(typeID, held + more);
+    added = true;
+  } else {
+    const { capacity, used } = simulatedCargoCapacity(simulation);
+    added = used + typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME) * qty <= capacity;
+    if (added) {
+      simulation.cargo.set(typeID, qty);
+      // GetLoadedItem: FlagSimulationChanged.
+      simulation.changed = true;
+    }
+  }
+  return { added, notInFitting: added && !isValidForCargo(simulation, typeID, facts) };
+}
+
+/**
+ * ghostFittingSvc.TryFitItemsToHold (156 to 168) for the cargo hold, each type in its dict's order: one with no volume,
+ * or one the hold takes not at all (IsAllowedToAddAtAll: a dynamic type, a category not allowed), passed over; each
+ * other put in (FitAnItemToHold). Answers the types put in that a fitting does not keep there.
+ */
+export function fitItemsToCargo(simulation: SimulatedShip, qtyByTypeID: ReadonlyMap<number, number>, facts: HoldFacts): number[] {
+  const notInFitting: number[] = [];
+  for (const typeID of intDictOrder([...qtyByTypeID.keys()])) {
+    const qty = qtyByTypeID.get(typeID) ?? 0;
+    if (typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME) <= 0) continue;
+    const categoryID = simulation.location.static.types[typeID]?.categoryID ?? null;
+    if (facts.dynamic(typeID) || categoryID === null || !ALLOWED_HOLD_CATEGORIES.has(categoryID)) continue;
+    if (fitItemToCargo(simulation, typeID, qty, facts).notInFitting) notInFitting.push(typeID);
+  }
+  return notInFitting;
+}
+
+/**
+ * ghostFittingSvc.ModifyHoldItemStackSize (190 to 200) for the cargo hold: a type's stack made as many as wanted, no
+ * more than it and the room left take, taken out at none (UnfitModule: the simulation changed); a type not there put
+ * in (FitAnItemToHold). Answers whether a type a fitting does not keep there was put in.
+ */
+export function setCargoQuantity(simulation: SimulatedShip, typeID: number, wanted: number, facts: HoldFacts): boolean {
+  const held = simulation.cargo.get(typeID);
+  if (held === undefined) return fitItemToCargo(simulation, typeID, wanted, facts).notInFitting;
+  const maxExtra = simulatedCargoRoomFor(simulation, [typeID]) ?? 0;
+  const qty = Math.min(wanted, held + maxExtra);
+  if (qty <= 0) {
+    simulation.cargo.delete(typeID);
+    simulation.changed = true;
+  } else simulation.cargo.set(typeID, qty);
+  return false;
+}
+
+/** FittingDogmaLocation.RemoveAllItemsFromHold(flagCargo): the hold emptied. */
+export function emptyCargo(simulation: SimulatedShip): void {
+  simulation.cargo.clear();
+}
+
+/** The cargo hold's stacks of a fitting's or a ship's items (_GetItemInFlagQtyBytTypeID(fitData, flagCargo)), by type. */
+function cargoQuantities(items: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[]): Map<number, number> {
+  const quantities = new Map<number, number>();
+  for (const item of items) if (item.flagID === FLAG_CARGO) quantities.set(item.typeID, (quantities.get(item.typeID) ?? 0) + item.quantity);
+  return quantities;
+}
+const FLAG_CARGO = 5;
 
 /** A module of the ship as it is fitted: its key, type and slot. */
 export interface CurrentModule {
@@ -51,8 +185,8 @@ export interface CurrentModule {
 /**
  * fittingSvc.GetFittingDictForSimulatedShip (1188 to 1203): the items CreateFittingData is given of the simulated ship:
  * its fitted items (the modules and their charges, each charge's stacksize the rounds it holds fully loaded,
- * FitAmmoToLocation) and its drones (each stack's), each its type, flag and quantity. The page's simulation holds no
- * hold and no fighters.
+ * FitAmmoToLocation), its drones (each stack's) and its cargo hold's stacks, each its type, flag and quantity. The
+ * page's simulation holds no fighters yet.
  */
 export function simulatedShipItems(simulation: SimulatedShip): { readonly typeID: number; readonly flagID: number | null; readonly quantity: number }[] {
   const { ship, pilot } = simulation;
@@ -62,6 +196,7 @@ export function simulatedShipItems(simulation: SimulatedShip): { readonly typeID
     items.push({ typeID: item.typeID, flagID: item.flagID, quantity: item.stacksize });
   }
   for (const drone of ship.drones.values()) items.push({ typeID: drone.typeID, flagID: drone.flagID, quantity: drone.stacksize });
+  for (const [typeID, quantity] of simulation.cargo) items.push({ typeID, flagID: FLAG_CARGO, quantity });
   return items;
 }
 
@@ -108,9 +243,11 @@ export function simulateCurrentShip(
   charges: readonly SimulatedCharge[],
   drones: readonly { readonly typeID: number; readonly quantity: number }[],
   clock: () => number,
+  /** The ship's cargo, the hold's facts, and the types put in it a fitting does not keep there (for ItemAddedNotInFitting). */
+  hold: { readonly items: readonly { readonly typeID: number; readonly quantity: number }[]; readonly facts: HoldFacts; readonly notInFitting: number[] },
 ): SimulatedShip {
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
-  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), changed: false, ghosts: 0 };
+  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), cargo: new Map(), changed: false, ghosts: 0 };
   const { location, ship } = simulation;
   // _LoadSimulatedShipFromData: each module fitted as FitModuleToShip fits it, one that does not fit passed over.
   for (const module of [...modules].sort((left, right) => right.flagID - left.flagID)) {
@@ -127,6 +264,8 @@ export function simulateCurrentShip(
     }
   }
   for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
+  // AddItemsToCargo: the ship's own cargo (LoadCurrentShip: each visible item in its cargo hold, its stack).
+  hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(hold.items.map((item) => ({ ...item, flagID: FLAG_CARGO }))), hold.facts));
   for (const charge of charges) location.loadCharge(ship, charge.flagID, charge.typeID);
   // LoadCurrentShip: ResetSimulationChangedFlag.
   simulation.changed = false;
@@ -601,9 +740,11 @@ export function simulateFitData(
   brain: Brain | null,
   fitData: readonly FitDataItem[],
   clock: () => number,
+  /** The hold's facts, and the types put in it a fitting does not keep there (for ItemAddedNotInFitting). */
+  hold: { readonly facts: HoldFacts; readonly notInFitting: number[] },
 ): SimulatedShip {
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
-  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), changed: false, ghosts: 0 };
+  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), cargo: new Map(), changed: false, ghosts: 0 };
   const { location, ship } = simulation;
   const modules = fitData.filter((item) => ALL_SLOT_FLAGS.has(item.flagID)).sort((left, right) => right.flagID - left.flagID);
   for (const item of modules) {
@@ -622,6 +763,8 @@ export function simulateFitData(
     }
   }
   for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
+  // AddItemsToCargo: the fitting's cargo, each type as much as it holds (allowModifyQty False).
+  hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(fitData), hold.facts));
   simulation.changed = false;
   return simulation;
 }

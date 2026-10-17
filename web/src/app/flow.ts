@@ -47,6 +47,12 @@ import {
   simulatedMaxActiveDrones,
   simulatedShipItems,
   isOnlineable,
+  emptyCargo,
+  fitItemsToCargo,
+  setCargoQuantity,
+  simulatedCargoCapacity,
+  simulatedCargoRoomFor,
+  type HoldFacts,
   unfitFromSimulation,
   type FitError,
   type SimulatedShip,
@@ -1499,6 +1505,15 @@ export interface AppFlow {
   }): Promise<void>;
   /** As many drones of a type in the simulated drone bay as wanted. */
   setSimulatedDrones(typeID: number, wanted: number): Promise<void>;
+  /**
+   * A type put in the simulated cargo hold (CargoCargoSlots.AddSimulatedCargo: one of it, as each thing dropped counts;
+   * with Shift held the client's quantity question first, up to the room left).
+   */
+  addSimulatedCargo(typeID: number): Promise<void>;
+  /** As many of a type in the simulated cargo hold as wanted (BaseHoldItemPickerMenu.ChangeNumItems); none takes it out. */
+  setSimulatedCargo(typeID: number, wanted: number): Promise<void>;
+  /** The simulated cargo hold emptied (BaseHoldItemPickerMenu.RemoveAll). */
+  emptySimulatedCargo(): void;
   /** As many of a type's simulated drones selected as wanted; "limit" or "bandwidth" where the selection is refused. */
   setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null;
   /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
@@ -6052,7 +6067,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function simulateShip(): Promise<void> {
     const inputs = await ownShipInputs();
     if (!inputs) throw new Error("The ship's own dogma has not been read yet.");
-    const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay, staticData } = inputs;
+    const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay } = inputs;
+    // LoadCurrentShip: the ship's own visible items in its cargo hold, each its stack (invCache's list of the ship).
+    const shipItems = await listShip(bridgeAsk, shipID).catch(() => []);
+    const cargoItems = shipItems.filter((item) => item.flagID === 5).map((item) => ({ typeID: item.typeID, quantity: item.quantity }));
+    const [staticData, facts] = await Promise.all([
+      cargoItems.length > 0 ? dogmaStaticFor(cargoItems.map((item) => item.typeID), []) : Promise.resolve(inputs.staticData),
+      holdFactsFor(cargoItems.map((item) => item.typeID)),
+    ]);
+    if (!staticData) throw new Error("The client's static data could not be read.");
+    const notInFitting: number[] = [];
     simulation = {
       shipID,
       name: null,
@@ -6066,8 +6090,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         charges,
         bay.map((stack) => ({ typeID: stack.typeID, quantity: stack.quantity })),
         serverNow,
+        { items: cargoItems, facts, notInFitting },
       ),
     };
+    sayNotInFitting(notInFitting);
     showSimulation();
   }
 
@@ -6119,6 +6145,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // The simulated drone bay by type (dronePickerMenu): how many, how many selected.
     const drones = simulatedDroneTypes(simulation.simulated).map((entry) => ({ typeID: entry.typeID, total: entry.drones.length, active: entry.active }));
+    // The simulated cargo hold (CargoItemPickerMenu): each type, how many, and the most it may be made (UpdateNodes:
+    // its count and the room left for more, GetMaxQty); and the hold's capacity and use (GetCapacity).
+    const cargo = [...simulation.simulated.cargo].map(([typeID, quantity]) => ({
+      typeID, quantity, most: quantity + (simulatedCargoRoomFor(simulation!.simulated, [typeID]) ?? 0),
+    }));
     store.apply({
       type: "fitting/simulated",
       shipID: simulation.shipID,
@@ -6130,6 +6161,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       moduleKinds,
       slots,
       drones,
+      cargo,
+      cargoCapacity: simulatedCargoCapacity(simulation.simulated),
     });
   }
 
@@ -6180,6 +6213,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The pilot's security status, as the active ship's row carries it (_ApplyPilotSecurityStatusToShip).
     const shipID = store.fitting.get().activeShipID;
     const security = allInfo.ships.find((item) => Number(item.itemID) === shipID)?.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
+    const facts = await holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5).map((item) => item.typeID));
+    const notInFitting: number[] = [];
     simulation = {
       shipID: null,
       name: fitting.name,
@@ -6191,8 +6226,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         brain,
         fitting.fitData,
         serverNow,
+        { facts, notInFitting },
       ),
     };
+    sayNotInFitting(notInFitting);
     showSimulation();
   }
 
@@ -6204,6 +6241,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const loaded = loadChargeToSimulation(simulation.simulated, flagID, chargeTypeID);
     showSimulation();
     return loaded;
+  }
+
+  /** What the simulated hold's rules go by of each type named: whether it is a dynamic one, the type lists it is on. */
+  async function holdFactsFor(typeIDs: readonly number[]): Promise<HoldFacts> {
+    const types = [...new Set(typeIDs)];
+    const dynamic = new Set<number>();
+    const [facts] = await Promise.all([
+      fittingTypeFacts(types).catch(() => new Map<number, TypeFacts>()),
+      (async () => {
+        for (let at = 0; at < types.length; at += 50) {
+          const read = await api.getTypePrices(types.slice(at, at + 50), callOptions).catch(() => null);
+          for (const [typeID, isDynamic] of Object.entries(read?.dynamic ?? {})) if (isDynamic === true) dynamic.add(Number(typeID));
+        }
+      })(),
+    ]);
+    return { dynamic: (typeID) => dynamic.has(typeID), lists: (typeID) => facts.get(typeID)?.lists ?? new Set() };
+  }
+
+  /** FitAnItemToHold's word for a type put in the hold that a fitting does not keep there (CustomNotify), one each. */
+  function sayNotInFitting(typeIDs: readonly number[]): void {
+    for (const _typeID of typeIDs) {
+      const notify = templateWords("UI/Fitting/FittingWindow/ItemAddedNotInFitting", {}, "That is in the hold now, but a fitting does not keep it.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+    }
+  }
+
+  async function addSimulatedCargo(typeID: number): Promise<void> {
+    if (!simulation) return;
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID])]);
+    if (!simulation) return;
+    const wanted = new Map([[typeID, 1]]);
+    // GetModifiedQtyDict: with Shift held, FindQty (QtyPopup up to GetMaxQty, from one), else as dropped; no room, none.
+    if (shiftHeld()) {
+      const most = simulatedCargoRoomFor(simulation.simulated, [typeID]);
+      if (most === null) return;
+      const qty = await askQuantity({
+        min: 1, max: most, value: 1,
+        hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+      });
+      if (qty === null || !simulation) return;
+      wanted.set(typeID, qty);
+    }
+    sayNotInFitting(fitItemsToCargo(simulation.simulated, wanted, facts));
+    showSimulation();
+  }
+
+  async function setSimulatedCargo(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID])]);
+    if (!simulation) return;
+    if (setCargoQuantity(simulation.simulated, typeID, Math.max(0, Math.trunc(wanted)), facts)) sayNotInFitting([typeID]);
+    showSimulation();
+  }
+
+  function emptySimulatedCargo(): void {
+    if (!simulation) return;
+    emptyCargo(simulation.simulated);
+    showSimulation();
   }
 
   /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
@@ -25253,6 +25348,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     setSimulatedDrones(typeID, wanted) {
       return setSimulatedDrones(typeID, wanted);
+    },
+    addSimulatedCargo(typeID) {
+      return addSimulatedCargo(typeID);
+    },
+    setSimulatedCargo(typeID, wanted) {
+      return setSimulatedCargo(typeID, wanted);
+    },
+    emptySimulatedCargo() {
+      emptySimulatedCargo();
     },
     setSimulatedActiveDrones(typeID, wanted) {
       return setSimulatedActiveDrones(typeID, wanted);

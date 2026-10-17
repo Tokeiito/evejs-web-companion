@@ -890,6 +890,10 @@
     for (const row of fittableRows()) {
       refs.push({ kind: "type", id: row.row.typeID });
     }
+    // The simulated drone bay's and cargo hold's types, named in their pickers.
+    for (const entry of [...($fitting.simulation?.drones ?? []), ...($fitting.simulation?.cargo ?? [])]) {
+      refs.push({ kind: "type", id: entry.typeID });
+    }
     if (refs.length > 0) {
       flow.requestNames(refs);
     }
@@ -1129,6 +1133,14 @@
     "UI/Fitting/FittingWindow/Simulate": "Simulate",
     "UI/Fitting/FittingWindow/ExitSimulation": "Exit simulation",
     "UI/Fitting/FittingWindow/SimulateShipFitting": "Simulate this fitting",
+    // The simulated cargo hold's picker (itemPickerMenu CargoItemPickerMenu: emptyLabelPath, RemoveAll, the entry's
+    // count and its remove).
+    "UI/Fitting/FittingWindow/NoCargoItemsSimulated": "Nothing in the simulated cargo hold. Pick up an item and put it here.",
+    // Said by the flow as a type a fitting does not keep is put in the hold (FitAnItemToHold); asked here.
+    "UI/Fitting/FittingWindow/ItemAddedNotInFitting": "",
+    "UI/Fitting/FittingWindow/RemoveAll": "Take everything out",
+    "UI/Generic/RemoveItem": "Take it out",
+    "UI/Fitting/FittingWindow/ClickToEdit": "Change how many",
     // The fit-name label's tooltip (fittingWnd: SetTooltipHeaderAndDescription, ShipName_description).
     "Tooltips/FittingWindow/ShipName_description": "Click to see the fitting as it stands and save it; drag it into a chat to link it.",
     "Tooltips/FittingWindow/SimulateShipFittingDescription": "Try the ship's modules in every state without touching the ship itself.",
@@ -1427,6 +1439,30 @@
 
   // --- the bottom read-outs -------------------------------------------------
 
+  // The simulated cargo hold (minihangar CargoCargoSlots, simulated): a click shows its items (the itemUtilMenu's
+  // CargoItemPickerMenu); a picked item put on it is put in the hold (OnDropData: AddSimulatedCargo).
+  let simCargoOpen = $state(false);
+  function clickSimulatedCargo(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      if (typeID === null) return;
+      pickedItemID = null;
+      void run(() => flow.addSimulatedCargo(typeID));
+      return;
+    }
+    simCargoOpen = !simCargoOpen;
+  }
+  function setSimulatedCargo(typeID: number, wanted: number): void {
+    if (!Number.isFinite(wanted)) return;
+    void run(() => flow.setSimulatedCargo(typeID, wanted));
+  }
+  /** GetSortedItemsInfo: the hold's types by their names. */
+  function cargoByName(entries: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[]) {
+    return [...entries].sort((a, b) => {
+      const [left, right] = [moduleName(a.typeID), moduleName(b.typeID)];
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  }
   /** The cargo hold's used / total, from the inventory slice's own capacity read. */
   const cargoBayText = $derived.by<string>(() => {
     const cap = $inventory.cargo.capacity;
@@ -2086,7 +2122,13 @@
       </div>
       <div>
         <dt>Cargo hold</dt>
-        <dd>{cargoBayText}</dd>
+        {#if simulation}
+          <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
+          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
+            {toFixed(simulation.cargoCapacity.used, 1)} / {toFixed(simulation.cargoCapacity.capacity, 1)} m³</button></dd>
+        {:else}
+          <dd>{cargoBayText}</dd>
+        {/if}
       </div>
       <div>
         <dt>Drone bay</dt>
@@ -2097,6 +2139,31 @@
         <dd>{@render statValue(fitValue, whole)}</dd>
       </div>
     </dl>
+    {#if simulation && simCargoOpen}
+      <!-- CargoItemPickerMenu: each type by its name, how many (its count edited, from none to what the room left allows:
+           UpdateNodes' intRange), taken out; Remove All. -->
+      <div class="fit-sim-cargo">
+        {#if simulation.cargo.length === 0}
+          <p class="note">{simulationWord("UI/Fitting/FittingWindow/NoCargoItemsSimulated")}</p>
+        {:else}
+          <ul class="fit-sim-drones">
+            {#each cargoByName(simulation.cargo) as entry (entry.typeID)}
+              <li>
+                <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
+                <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
+                  title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
+                  onchange={(event) => setSimulatedCargo(entry.typeID, Number(event.currentTarget.value))} />
+                <button type="button" class="minor" disabled={busy} title={simulationWord("UI/Generic/RemoveItem")} aria-label={simulationWord("UI/Generic/RemoveItem")}
+                  onclick={() => setSimulatedCargo(entry.typeID, 0)}>✕</button>
+              </li>
+            {/each}
+          </ul>
+          <p class="controls">
+            <button type="button" class="minor" disabled={busy} onclick={() => flow.emptySimulatedCargo()}>{simulationWord("UI/Fitting/FittingWindow/RemoveAll")}</button>
+          </p>
+        {/if}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
