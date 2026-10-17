@@ -17,7 +17,7 @@
 
 import { activeDroneBandwidth, activeDroneDps, type DroneReading } from "./drones.ts";
 import { loadSimulatedShip, type Brain, type DogmaItem, type DogmaLocation, type DogmaStatic, type SimulatedCharge } from "./location.ts";
-import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, ONLINE, setModuleState } from "./moduleStates.ts";
+import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, offlineSlots, ONLINE, setModuleState } from "./moduleStates.ts";
 
 const ATTRIBUTE_VOLUME = 161;
 const ATTRIBUTE_DRONE_CAPACITY = 283;
@@ -238,7 +238,23 @@ function fittedModules(simulation: SimulatedShip): DogmaItem[] {
   return [...ship.fitted.values()].filter((item) => item !== ship && !(item.flagID !== null && ship.subLocations.get(item.flagID) === item));
 }
 
-/** GetErrorInfoFromHardware, with GetHardwareLayoutForShip and GetValidSlotsForType (subsystems' modifiers aside). */
+/** inventorycommon.util.IsSubsystemFlag: flagSubSystemSlot0 to 7. */
+function isSubsystemFlag(flagID: number): boolean {
+  return flagID >= 125 && flagID <= 132;
+}
+
+/**
+ * baseDogmaStaticSvc.shipHardwareModifierAttribs (111 to 119): each count of the hull's a fitted subsystem adds to,
+ * with the subsystem's attribute that adds it.
+ */
+const SHIP_HARDWARE_MODIFIER_ATTRIBUTES: readonly (readonly [number, number])[] = [
+  [ATTRIBUTE_HI_SLOTS, 1374], [ATTRIBUTE_MED_SLOTS, 1375], [ATTRIBUTE_LOW_SLOTS, 1376], [ATTRIBUTE_TURRET_SLOTS_LEFT, 1368], [ATTRIBUTE_LAUNCHER_SLOTS_LEFT, 1369],
+];
+
+/**
+ * GetErrorInfoFromHardware, with GetHardwareLayoutForShip (fittingStuff.py 15 to 70: the hull's counts, each fitted
+ * subsystem's modifiers added) and GetValidSlotsForType.
+ */
 function errorFromHardware(simulation: SimulatedShip, typeID: number, flagID: number | null): FitError | null {
   const { location, ship } = simulation;
   const shipTypeID = ship.typeID;
@@ -270,6 +286,13 @@ function errorFromHardware(simulation: SimulatedShip, typeID: number, flagID: nu
       if (isTurret && typeHasEffect(location, item.typeID, EFFECT_TURRET_FITTED)) turretsFitted += 1;
       else if (isLauncher && typeHasEffect(location, item.typeID, EFFECT_LAUNCHER_FITTED)) launchersFitted += 1;
     } else if (flag >= 92 && flag <= 99) rigsFitted += 1;
+    else if (isSubsystemFlag(flag)) {
+      // A subsystem fitted: its modifiers added to the counts asked of the hull (shipHardwareModifierAttribs).
+      for (const [attributeID, modifyingAttributeID] of SHIP_HARDWARE_MODIFIER_ATTRIBUTES) {
+        const held = layout.get(attributeID);
+        if (held !== undefined) layout.set(attributeID, held + typeAttribute(location, item.typeID, modifyingAttributeID));
+      }
+    }
   }
   if (has(EFFECT_LAUNCHER_FITTED) && (layout.get(ATTRIBUTE_LAUNCHER_SLOTS_LEFT) ?? 0) - launchersFitted < 1) {
     return { errorKey: FIT_ERRORS.NOT_ENOUGH_LAUNCHER_SLOTS, extraInfo: null };
@@ -373,6 +396,11 @@ function fitModuleChecked(simulation: SimulatedShip, typeID: number, flagID: num
   else if (slots.includes(flagID)) flag = flagID;
   const error = errorFittingInSlot(simulation, typeID, flag);
   if (error || flag === null) return error ?? { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+  // GetLoadedItem: a subsystem takes the place of the one in its slot (GetSubSystemInFlag, UnfitItemFromShip).
+  if (isSubsystemFlag(flag)) {
+    const held = fittedModules(simulation).find((item) => item.flagID === flag);
+    if (held) location.unfitItem(ship, held);
+  }
   simulation.ghosts += 1;
   return location.fitModule(ship, key ?? `${ship.key}|module|${simulation.ghosts}`, typeID, flag);
 }
@@ -391,7 +419,26 @@ export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagI
   eatingFitErrors(() => {
     if (module.groupID === null || !GROUPS_NOT_ACTIVE_BY_DEFAULT.has(module.groupID)) setModuleState(location, module, ACTIVE);
   });
+  if (module.flagID !== null && isSubsystemFlag(module.flagID)) offlineModulesWithoutSlots(simulation);
   return null;
+}
+
+/**
+ * ghostControllerMixin.OnSubSystemsReallyChanged (61 to 70), on a subsystem fitted or unfitted: each module online in
+ * a slot the ship no longer has (the slot's IsOnlineable: SlotExists) taken offline (OfflineSlotList); it stays fitted.
+ */
+function offlineModulesWithoutSlots(simulation: SimulatedShip): void {
+  const { location, ship } = simulation;
+  const flags = fittedModules(simulation)
+    .filter((item) => item.flagID !== null && !isSubsystemFlag(item.flagID) && location.isOnline(item) && !location.slotExists(ship, item.flagID))
+    .map((item) => item.flagID as number);
+  if (flags.length > 0) offlineSlots(location, ship, flags);
+}
+
+/** FittingSlotController.IsOnlineable: a module in a slot the ship has, its type with the online effect. */
+export function isOnlineable(simulation: SimulatedShip, module: DogmaItem): boolean {
+  const { location, ship } = simulation;
+  return module.flagID !== null && location.slotExists(ship, module.flagID) && (location.static.types[module.typeID]?.effects.includes(16) ?? false);
 }
 
 /**
@@ -520,10 +567,12 @@ export function loadChargeToSimulation(simulation: SimulatedShip, flagID: number
 /** UnfitModule (and UnfitDrone): the module put offline, the fit errors passed over, then unfitted with its charge. */
 export function unfitFromSimulation(simulation: SimulatedShip, item: DogmaItem): void {
   const { location, ship } = simulation;
+  const flagID = item.flagID;
   simulation.selectedDrones.delete(item);
   if (!ship.drones.has(item.key)) eatingFitErrors(() => setModuleState(location, item, OFFLINE));
   location.unfitItem(ship, item);
   simulation.changed = true;
+  if (flagID !== null && isSubsystemFlag(flagID)) offlineModulesWithoutSlots(simulation);
 }
 
 /** ghostFittingSvc allSlots: the rigs, then the subsystems, the low, medium and high slots and the services. */
@@ -579,20 +628,31 @@ export function simulateFitData(
 
 /**
  * The simulated hull's slots, as many of each kind as it has (its hiSlots, medSlots, lowSlots, rigSlots and
- * maxSubSystems as the simulation reckons them), by family and index, with their flags.
+ * maxSubSystems as the simulation reckons them, a strategic cruiser's of its subsystems), by family and index, with
+ * their flags; and a slot it no longer has that still holds a module (a subsystem taken away), which the client draws
+ * with its module (slot.UpdateFitting: enabled where it has a module).
  */
-export function simulatedSlotLayout(simulation: SimulatedShip): { readonly family: "high" | "mid" | "low" | "rig" | "subsystem"; readonly index: number; readonly flagID: number }[] {
+export function simulatedSlotLayout(simulation: SimulatedShip): { readonly family: "high" | "mid" | "low" | "rig" | "subsystem"; readonly index: number; readonly flagID: number; readonly present: boolean }[] {
   const { location, ship } = simulation;
   const count = (attributeID: number, most: number) => Math.max(0, Math.min(most, Math.trunc(location.value(ship, attributeID))));
-  const layout: { family: "high" | "mid" | "low" | "rig" | "subsystem"; index: number; flagID: number }[] = [];
+  const layout: { family: "high" | "mid" | "low" | "rig" | "subsystem"; index: number; flagID: number; present: boolean }[] = [];
   const add = (family: "high" | "mid" | "low" | "rig" | "subsystem", first: number, total: number) => {
-    for (let index = 0; index < total; index += 1) layout.push({ family, index, flagID: first + index });
+    for (let index = 0; index < total; index += 1) layout.push({ family, index, flagID: first + index, present: true });
   };
   add("high", 27, count(ATTRIBUTE_HI_SLOTS, 8));
   add("mid", 19, count(ATTRIBUTE_MED_SLOTS, 8));
   add("low", 11, count(ATTRIBUTE_LOW_SLOTS, 8));
   add("rig", 92, count(ATTRIBUTE_RIG_SLOTS, 3));
   add("subsystem", 125, count(ATTRIBUTE_MAX_SUBSYSTEMS, 4));
+  const families: readonly (readonly ["high" | "mid" | "low" | "rig", number, number])[] = [["high", 27, 34], ["mid", 19, 26], ["low", 11, 18], ["rig", 92, 94]];
+  for (const item of fittedModules(simulation)) {
+    const flag = item.flagID;
+    const family = flag === null ? undefined : families.find(([, first, last]) => flag >= first && flag <= last);
+    if (flag === null || family === undefined || layout.some((slot) => slot.flagID === flag)) continue;
+    layout.push({ family: family[0], index: flag - family[1], flagID: flag, present: false });
+  }
+  const order = ["high", "mid", "low", "rig", "subsystem"];
+  layout.sort((a, b) => order.indexOf(a.family) - order.indexOf(b.family) || a.index - b.index);
   return layout;
 }
 

@@ -218,10 +218,10 @@
     return placed;
   });
 
-  /** A key per family for the legend: label, how many, how many filled. */
+  /** A key per family for the legend: label, how many, how many filled; of the slots the ship has (not one gone). */
   const legend = $derived.by(() =>
     SLOT_FAMILY_ORDER.map((family) => {
-      const familySlots = slotsOfFamily(shownSlots, family);
+      const familySlots = slotsOfFamily(shownSlots, family).filter((slot) => slot.present !== false);
       return {
         family,
         label: SLOT_FAMILY_LABELS[family],
@@ -1362,6 +1362,12 @@
     }
     if (pickedItemID !== null && pickedCategoryID() === 8) {
       loadSimulated(flagID);
+      return;
+    }
+    // A picked module put on a module (FittingSlotController.OnDropData: Add): fitted there where it may be, a subsystem
+    // in the place of the one in its slot, any other refused as the slot is in use.
+    if (pickedItemID !== null) {
+      fitSimulated(flagID);
       return;
     }
     try {

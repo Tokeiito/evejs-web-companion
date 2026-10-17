@@ -168,6 +168,17 @@ const ATTRIBUTE_CPU_LOAD = 49;
 const ATTRIBUTE_POWER = 30;
 const ATTRIBUTE_POWER_LOAD = 15;
 const ATTRIBUTE_SLOTS = 47;
+/** dogma/const.py: the ship's slot counts, and a subsystem's modifiers of them and of its hardpoints. */
+const ATTRIBUTE_LOW_SLOTS = 12;
+const ATTRIBUTE_MED_SLOTS = 13;
+const ATTRIBUTE_HI_SLOTS = 14;
+const ATTRIBUTE_RIG_SLOTS = 1137;
+const ATTRIBUTE_SERVICE_SLOTS = 2056;
+const ATTRIBUTE_TURRET_HARDPOINT_MODIFIER = 1368;
+const ATTRIBUTE_LAUNCHER_HARDPOINT_MODIFIER = 1369;
+const ATTRIBUTE_HI_SLOT_MODIFIER = 1374;
+const ATTRIBUTE_MED_SLOT_MODIFIER = 1375;
+const ATTRIBUTE_LOW_SLOT_MODIFIER = 1376;
 const ATTRIBUTE_LAUNCHER_SLOTS_LEFT = 101;
 const ATTRIBUTE_TURRET_SLOTS_LEFT = 102;
 const ATTRIBUTE_UPGRADE_SLOTS_LEFT = 1154;
@@ -363,6 +374,10 @@ const PYTHON_EFFECTS: ReadonlyMap<number, PythonEffect> = new Map<number, Python
   }],
   [2663, changesEffect([[OP_MOD_SUB, ATTRIBUTE_UPGRADE_SLOTS_LEFT, ATTRIBUTE_SLOTS], [OP_MOD_ADD, ATTRIBUTE_UPGRADE_LOAD, ATTRIBUTE_UPGRADE_COST]])],
   [3772, NEUTRAL_PYTHON],
+  // hardPointModifierEffect.HardpointModifierEffect (effectHardPointModifier): a subsystem's hardpoints added to the ship's.
+  [3773, changesEffect([[OP_MOD_ADD, ATTRIBUTE_LAUNCHER_SLOTS_LEFT, ATTRIBUTE_LAUNCHER_HARDPOINT_MODIFIER], [OP_MOD_ADD, ATTRIBUTE_TURRET_SLOTS_LEFT, ATTRIBUTE_TURRET_HARDPOINT_MODIFIER]])],
+  // slotModifier.SlotModifier (effectSlotModifier): a subsystem's high, medium and low slots added to the ship's.
+  [3774, changesEffect([[OP_MOD_ADD, ATTRIBUTE_HI_SLOTS, ATTRIBUTE_HI_SLOT_MODIFIER], [OP_MOD_ADD, ATTRIBUTE_MED_SLOTS, ATTRIBUTE_MED_SLOT_MODIFIER], [OP_MOD_ADD, ATTRIBUTE_LOW_SLOTS, ATTRIBUTE_LOW_SLOT_MODIFIER]])],
   [6306, NEUTRAL_PYTHON],
   [EFFECT_ONLINE, {
     start: (location, item) => {
@@ -980,6 +995,18 @@ export class DogmaLocation {
     if (online >= maxGroupOnline) {
       throw new DogmaUserError("CannotOnlineReachedMaxGroupOnline", { type: item.typeID, group: item.groupID ?? 0, maxGroupOnline });
     }
+  }
+
+  /**
+   * baseDogmaLocation.SlotExists (1786 to 1807): whether the ship has the slot of a high, medium, low, rig or service
+   * flag (its number within the kind below the ship's count of them); any other flag, yes.
+   */
+  slotExists(ship: DogmaItem, flagID: number): boolean {
+    const kinds: readonly (readonly [number, number, number])[] = [
+      [27, 34, ATTRIBUTE_HI_SLOTS], [19, 26, ATTRIBUTE_MED_SLOTS], [11, 18, ATTRIBUTE_LOW_SLOTS], [92, 99, ATTRIBUTE_RIG_SLOTS], [164, 171, ATTRIBUTE_SERVICE_SLOTS],
+    ];
+    const kind = kinds.find(([first, last]) => flagID >= first && flagID <= last);
+    return kind === undefined || flagID - kind[0] < this.value(ship, kind[2]);
   }
 
   /** ModuleDogmaItem.IsOnline: its online effect running. */

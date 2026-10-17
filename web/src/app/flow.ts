@@ -46,6 +46,7 @@ import {
   simulatedDroneTypes,
   simulatedMaxActiveDrones,
   simulatedShipItems,
+  isOnlineable,
   unfitFromSimulation,
   type FitError,
   type SimulatedShip,
@@ -6100,8 +6101,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       moduleKinds[item.flagID] = moduleKind(location, item);
     }
     // The simulated hull's slots, as many as it has of each kind, each with what the simulation has fitted in it.
-    const slots = simulatedSlotLayout(simulation.simulated).map(({ family, index, flagID }): FittingSlot => {
-      const slot = { family, index };
+    const slots = simulatedSlotLayout(simulation.simulated).map(({ family, index, flagID, present }): FittingSlot => {
+      const slot = present ? { family, index } : { family, index, present };
       const module = moduleInSlot(ship, flagID);
       if (!module) return { ...slot, module: null };
       const charge = ship.subLocations.get(flagID) ?? null;
@@ -6231,6 +6232,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The type's static data read where it is not held yet: the simulation reckons with what the page has read.
     await dogmaStaticFor([typeID], []);
     if (!simulation) return null;
+    // FittingSlotController.OnDropData: nothing put on a module in a slot the ship no longer has.
+    const { location, ship } = simulation.simulated;
+    if (flagID !== null && moduleInSlot(ship, flagID) !== null && !location.slotExists(ship, flagID)) return null;
     const error = flagID === null ? fitToOneSlot(simulation.simulated, typeID) : fitToSimulation(simulation.simulated, typeID, flagID);
     showSimulation();
     return error;
@@ -6247,7 +6251,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /**
    * A simulated module clicked (FittingSlotController.OnClickSimulated): one in a slot other than a rig's that cannot be
-   * online only put offline; any other put in its next state, backwards with shift (SwitchBetweenModes). A state it
+   * online (IsOnlineable: its slot gone, or no online effect) only put offline; any other put in its next state, backwards with shift (SwitchBetweenModes). A state it
    * cannot be put in fails with the client's UserError.
    */
   function switchSimulatedModule(flagID: number, backwards: boolean): void {
@@ -6256,7 +6260,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const module = moduleInSlot(ship, flagID);
     if (!module) return;
     try {
-      if (!RIG_SLOT_FLAGS.includes(flagID) && !location.static.types[module.typeID]?.effects.includes(16)) {
+      if (!RIG_SLOT_FLAGS.includes(flagID) && !isOnlineable(simulation.simulated, module)) {
         if (location.isOnline(module)) offlineSlots(location, ship, [flagID]);
       } else {
         switchModuleState(location, module, backwards);

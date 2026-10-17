@@ -376,6 +376,8 @@ export interface FittingSlot {
   readonly family: SlotFamily;
   readonly index: number;
   readonly module: FittedModule | null;
+  /** False for a slot the ship no longer has (a subsystem taken away), drawn for the module it still holds. */
+  readonly present?: boolean;
 }
 
 /** One used-vs-total reading (CPU, powergrid, capacitor, calibration). */
