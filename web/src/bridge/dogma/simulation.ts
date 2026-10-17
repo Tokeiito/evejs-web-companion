@@ -193,7 +193,7 @@ export function simulatedFighterBayCapacity(simulation: SimulatedShip): { readon
 }
 
 /** GetMaxQty for the fighter bay: as many more of the type as its room left takes; null where none. */
-function fighterBayRoomFor(simulation: SimulatedShip, typeID: number): number | null {
+export function fighterBayRoomFor(simulation: SimulatedShip, typeID: number): number | null {
   const { capacity, used } = simulatedFighterBayCapacity(simulation);
   const typeVolume = typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME);
   const most = Math.trunc((capacity - used) / typeVolume);
@@ -207,7 +207,7 @@ function fighterBayRoomFor(simulation: SimulatedShip, typeID: number): number | 
  * no fighters (IsValidForHold: ItemAddedNotInFitting).
  */
 export function fitItemsToFighterBay(simulation: SimulatedShip, qtyByTypeID: ReadonlyMap<number, number>, facts: HoldFacts): number[] {
-  const { location, ship } = simulation;
+  const { location } = simulation;
   const notInFitting: number[] = [];
   for (const typeID of intDictOrder([...qtyByTypeID.keys()])) {
     const qty = qtyByTypeID.get(typeID) ?? 0;
@@ -215,25 +215,35 @@ export function fitItemsToFighterBay(simulation: SimulatedShip, qtyByTypeID: Rea
     if (volume <= 0) continue;
     const categoryID = location.static.types[typeID]?.categoryID ?? null;
     if (facts.dynamic(typeID) || categoryID === null || !ALLOWED_HOLD_CATEGORIES.has(categoryID)) continue;
-    const held = fighterBayItems(simulation).find((fighter) => fighter.typeID === typeID);
-    let added = false;
-    if (held) {
-      const more = Math.min(qty, fighterBayRoomFor(simulation, typeID) ?? 0);
-      if (!more) continue;
-      held.stacksize += more;
-      added = true;
-    } else {
-      const { capacity, used } = simulatedFighterBayCapacity(simulation);
-      if (used + volume * qty <= capacity) {
-        simulation.ghosts += 1;
-        location.loadFighter(ship, `${ship.key}|fighter|${simulation.ghosts}`, typeID, FLAG_FIGHTER_BAY, qty);
-        simulation.changed = true;
-        added = true;
-      }
-    }
-    if (added && categoryID !== CATEGORY_FIGHTER) notInFitting.push(typeID);
+    if (fitAnItemToFighterBay(simulation, typeID, qty)) notInFitting.push(typeID);
   }
   return notInFitting;
+}
+
+/**
+ * FitAnItemToHold (170 to 183) for the fighter bay: to the type's squadron there as many more as the room left takes,
+ * nothing where none; else a squadron of all of it where the bay has room (FitItemOrDroneToShip), the simulation then
+ * changed. Answers whether it was put in and is no fighter (IsValidForHold: ItemAddedNotInFitting).
+ */
+function fitAnItemToFighterBay(simulation: SimulatedShip, typeID: number, qty: number): boolean {
+  const { location, ship } = simulation;
+  const held = fighterBayItems(simulation).find((fighter) => fighter.typeID === typeID);
+  let added = false;
+  if (held) {
+    const more = Math.min(qty, fighterBayRoomFor(simulation, typeID) ?? 0);
+    if (!more) return false;
+    held.stacksize += more;
+    added = true;
+  } else {
+    const { capacity, used } = simulatedFighterBayCapacity(simulation);
+    if (used + typeAttribute(location, typeID, ATTRIBUTE_VOLUME) * qty <= capacity) {
+      simulation.ghosts += 1;
+      location.loadFighter(ship, `${ship.key}|fighter|${simulation.ghosts}`, typeID, FLAG_FIGHTER_BAY, qty);
+      simulation.changed = true;
+      added = true;
+    }
+  }
+  return added && location.static.types[typeID]?.categoryID !== CATEGORY_FIGHTER;
 }
 
 /**
@@ -306,6 +316,153 @@ function fitFighters(simulation: SimulatedShip, items: readonly { readonly typeI
     }
   }
   return { errors, raised: false };
+}
+
+/** dogma const attributeQuantity: what a squadron dragged out of its tube counts as (GetFittingItemDragData). */
+const ATTRIBUTE_QUANTITY = 805;
+/** dogma const attributeFighterSquadronRole. */
+const ATTRIBUTE_FIGHTER_SQUADRON_ROLE = 2270;
+
+/** The squadron in a tube of the simulated ship's (GetFightersInTubeInfo), where there is one. */
+function squadronInTube(simulation: SimulatedShip, tubeFlagID: number): DogmaItem | null {
+  return fightersInTubes(simulation.ship).find((fighter) => fighter.flagID === tubeFlagID) ?? null;
+}
+
+/** UnfitModule of a squadron or a fighter bay's stack: unloaded (UnfitItemFromShip), the simulation changed. */
+function unfitFighter(simulation: SimulatedShip, fighter: DogmaItem): void {
+  simulation.location.unfitItem(simulation.ship, fighter);
+  simulation.changed = true;
+}
+
+/** A tube of the simulated ship's as the fighter bay's picker shows it (AddTubeConts, SingleTube.LoadFighterInfo). */
+export interface SimulatedTube {
+  readonly flagID: number;
+  /** SLOTNUMBER_BY_TUBEFLAG: its number, from one. */
+  readonly number: number;
+  /** One of the ship's fighterTubes; a tube past them is shown disabled (SetAsDisabled). */
+  readonly present: boolean;
+  /**
+   * The squadron in it (GetFightersInTubeInfo): its type and size, its most (GetMaxSquadronSize: a dash each, as many
+   * lit as its size) and its role (GetSquadronRole: fighterSquadronRole, int).
+   */
+  readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null;
+}
+
+/** The five tubes (const.fighterTubeFlags), as many of them the ship's as its fighterTubes (int), each its squadron. */
+export function simulatedFighterTubes(simulation: SimulatedShip): SimulatedTube[] {
+  const { location, ship } = simulation;
+  const tubes = Math.trunc(location.value(ship, ATTRIBUTE_FIGHTER_TUBES));
+  return FIGHTER_TUBE_FLAGS.map((flagID, index) => {
+    const fighter = squadronInTube(simulation, flagID);
+    const squadron = fighter
+      ? { typeID: fighter.typeID, size: fighter.stacksize, max: maxSquadronSize(location, fighter.typeID), role: Math.trunc(typeAttribute(location, fighter.typeID, ATTRIBUTE_FIGHTER_SQUADRON_ROLE)) }
+      : null;
+    return { flagID, number: index + 1, present: index < tubes, squadron };
+  });
+}
+
+/**
+ * The squadrons of each kind the ship may have in its tubes (GetLightSupportHeavySlotsForShipAndDogmaLocation: a
+ * kind's slots and its standup kind's, int each) and has there (GetSquadronTypes of GetFighterNumByTypeIDsInTubes).
+ */
+export function simulatedSquadronSlots(simulation: SimulatedShip): Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>> {
+  const { location, ship } = simulation;
+  const slots = (attributeID: number, standupAttributeID: number) => Math.trunc(location.value(ship, attributeID)) + Math.trunc(location.value(ship, standupAttributeID));
+  const used = { heavy: 0, support: 0, light: 0 };
+  for (const fighter of fightersInTubes(ship)) {
+    const kind = squadronKind(simulation, fighter.typeID);
+    if (kind) used[kind] += 1;
+  }
+  return {
+    light: { total: slots(2217, 2737), used: used.light },
+    support: { total: slots(2218, 2738), used: used.support },
+    heavy: { total: slots(2219, 2739), used: used.heavy },
+  };
+}
+
+/**
+ * The simulated fighter bay by type (FighterBayItemPickerMenu's nodes, GetSortedItemsInfo): each type's fighters there,
+ * and the most it may be made (its count and the room left for more: LoadItemScroll's intRange).
+ */
+export function simulatedFighterBayTypes(simulation: SimulatedShip): { readonly typeID: number; readonly quantity: number; readonly most: number }[] {
+  const byType = new Map<number, number>();
+  for (const fighter of fighterBayItems(simulation)) byType.set(fighter.typeID, (byType.get(fighter.typeID) ?? 0) + fighter.stacksize);
+  return [...byType].map(([typeID, quantity]) => ({ typeID, quantity, most: quantity + (fighterBayRoomFor(simulation, typeID) ?? 0) }));
+}
+
+/**
+ * FitFighterToEmptyTube (278 to 290): the first of the five tubes with no squadron in it (the ship's or not;
+ * FitFighterToTube's rule refuses one past its tubes), a full squadron of the type put in it (GetMaxSquadronSize).
+ * "noTube" where each holds one; else FitFighterToTube's answer.
+ */
+export function fitFighterToEmptyTube(simulation: SimulatedShip, typeID: number): "noTube" | ReturnType<typeof fitFighterToTube> {
+  const tube = FIGHTER_TUBE_FLAGS.find((flagID) => squadronInTube(simulation, flagID) === null);
+  if (tube === undefined) return "noTube";
+  return fitFighterToTube(simulation, typeID, tube, maxSquadronSize(simulation.location, typeID));
+}
+
+/**
+ * ModifyFighterStackSize (325 to 337): the tube's squadron made as many as wanted, no more than its size and
+ * GetMaxExtraFighters of its size take; under one taken out (UnfitModule); an empty tube given a squadron of as many
+ * (FitFighterToTube), whose word is answered.
+ */
+export function setSquadronSize(simulation: SimulatedShip, typeID: number, wanted: number, tubeFlagID: number): ReturnType<typeof fitFighterToTube> {
+  const held = squadronInTube(simulation, tubeFlagID);
+  if (!held) return fitFighterToTube(simulation, typeID, tubeFlagID, wanted);
+  const size = held.stacksize;
+  const maxExtra = Math.min(size, maxSquadronSize(simulation.location, typeID) - size);
+  const qty = Math.min(wanted, size + maxExtra);
+  if (wanted < 1) {
+    unfitFighter(simulation, held);
+    return null;
+  }
+  held.stacksize = qty;
+  return null;
+}
+
+/** SimulatedSquadronCont.RemoveSquadron: the tube's squadron taken out (UnfitModule). */
+export function removeSquadron(simulation: SimulatedShip, tubeFlagID: number): void {
+  const held = squadronInTube(simulation, tubeFlagID);
+  if (held) unfitFighter(simulation, held);
+}
+
+/**
+ * A squadron dragged out of its tube (GetFittingItemDragData): its type, and what it counts as (its quantity
+ * attribute, else its size).
+ */
+export function squadronDragged(simulation: SimulatedShip, tubeFlagID: number): { readonly typeID: number; readonly quantity: number } | null {
+  const held = squadronInTube(simulation, tubeFlagID);
+  if (!held) return null;
+  return { typeID: held.typeID, quantity: simulation.location.value(held, ATTRIBUTE_QUANTITY) || held.stacksize };
+}
+
+/**
+ * ModifyHoldItemStackSize (190 to 200) for the fighter bay: a type's stack there made as many as wanted, no more than
+ * it and the room left take (GetMaxQty), taken out at none (UnfitModule); a type not there put in (FitAnItemToHold).
+ * Answers the types put in that are no fighters (ItemAddedNotInFitting).
+ */
+export function setFighterBayQuantity(simulation: SimulatedShip, typeID: number, wanted: number): number[] {
+  const held = fighterBayItems(simulation).find((fighter) => fighter.typeID === typeID);
+  if (!held) return fitAnItemToFighterBay(simulation, typeID, wanted) ? [typeID] : [];
+  const qty = Math.min(wanted, held.stacksize + (fighterBayRoomFor(simulation, typeID) ?? 0));
+  if (qty === 0) unfitFighter(simulation, held);
+  else held.stacksize = qty;
+  return [];
+}
+
+/** ItemPickerMenu.RemoveItem: the first of a type's stacks in the fighter bay taken out (UnfitModule). */
+export function removeFighterBayType(simulation: SimulatedShip, typeID: number): void {
+  const held = fighterBayItems(simulation).find((fighter) => fighter.typeID === typeID);
+  if (held) unfitFighter(simulation, held);
+}
+
+/**
+ * FighterBayItemPickerMenu.RemoveAll: the fighter bay emptied (RemoveAllItemsFromHold: each unloaded), then each tube's
+ * squadron taken out (UnfitModule).
+ */
+export function emptyFighterBay(simulation: SimulatedShip): void {
+  for (const fighter of fighterBayItems(simulation)) simulation.location.unfitItem(simulation.ship, fighter);
+  for (const flagID of FIGHTER_TUBE_FLAGS) removeSquadron(simulation, flagID);
 }
 
 /** FittingDogmaLocation.RemoveAllItemsFromHold(flagCargo): the hold emptied. */

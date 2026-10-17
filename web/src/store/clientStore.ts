@@ -1402,7 +1402,7 @@ export function createClientStore(): ClientStore {
         const current = fitting.get();
         fitting.set({
           ...current,
-          simulation: { shipID: event.shipID, shipTypeID: event.shipTypeID, name: event.name, changed: event.changed, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones, cargo: event.cargo, cargoCapacity: event.cargoCapacity, fighterBay: event.fighterBay, fighterSquadrons: event.fighterSquadrons, fighterDps: event.fighterDps, structure: event.structure },
+          simulation: { shipID: event.shipID, shipTypeID: event.shipTypeID, name: event.name, changed: event.changed, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones, cargo: event.cargo, cargoCapacity: event.cargoCapacity, fighterBay: event.fighterBay, fighterSquadrons: event.fighterSquadrons, fighterDps: event.fighterDps, structure: event.structure, fighterTubes: event.fighterTubes, squadronSlots: event.squadronSlots, fighterBayTypes: event.fighterBayTypes },
         });
         break;
       }

@@ -295,6 +295,9 @@ export type FeedEvent =
       readonly fighterSquadrons: { readonly full: number; readonly partial: number };
       readonly fighterDps: number;
       readonly structure: boolean;
+      readonly fighterTubes: readonly { readonly flagID: number; readonly number: number; readonly present: boolean; readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null }[];
+      readonly squadronSlots: Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>>;
+      readonly fighterBayTypes: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
     }
   // The simulation left (flow.exitSimulation).
   | { readonly type: "fitting/simulation-ended" }

@@ -466,6 +466,12 @@ export interface FittingState {
     readonly fighterDps: number;
     /** A structure simulated: its window shows the Fighters section in the drones' place (HasDronePanel false). */
     readonly structure: boolean;
+    /** The five tubes (the fighter bay's picker, SingleTube): its number, whether the ship has it, its squadron. */
+    readonly fighterTubes: readonly { readonly flagID: number; readonly number: number; readonly present: boolean; readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null }[];
+    /** Each kind's squadrons the ship may have in its tubes and has there (the picker's fightersAllowedCont). */
+    readonly squadronSlots: Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>>;
+    /** The simulated fighter bay by type: how many, and the most it may be made (its count and the room left). */
+    readonly fighterBayTypes: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
   } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the

@@ -895,9 +895,12 @@
     for (const row of fittableRows()) {
       refs.push({ kind: "type", id: row.row.typeID });
     }
-    // The simulated drone bay's and cargo hold's types, named in their pickers.
-    for (const entry of [...($fitting.simulation?.drones ?? []), ...($fitting.simulation?.cargo ?? [])]) {
+    // The simulated drone bay's, cargo hold's and fighter bay's types and the tubes' squadrons, named in their pickers.
+    for (const entry of [...($fitting.simulation?.drones ?? []), ...($fitting.simulation?.cargo ?? []), ...($fitting.simulation?.fighterBayTypes ?? [])]) {
       refs.push({ kind: "type", id: entry.typeID });
+    }
+    for (const tube of $fitting.simulation?.fighterTubes ?? []) {
+      if (tube.squadron) refs.push({ kind: "type", id: tube.squadron.typeID });
     }
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -907,9 +910,10 @@
   /** Modules sitting in the hangar or the ship's cargo that could be fitted. */
   function fittableRows(): { row: InventoryItemRow; source: "hangar" | "cargo" }[] {
     const rows: { row: InventoryItemRow; source: "hangar" | "cargo" }[] = [];
-    // In a simulation a charge and a drone go into the ghost too (FitAmmoToLocation, TryFitModuleToOneSlot).
+    // In a simulation a charge, a drone and a fighter go into the ghost too (FitAmmoToLocation, TryFitModuleToOneSlot,
+    // TryFit's fakeFighters).
     const takes = (categoryID: number | null): boolean =>
-      isFittableRow(categoryID) || ($fitting.simulation !== null && $fitting.simulation !== undefined && (categoryID === 8 || categoryID === 18));
+      isFittableRow(categoryID) || ($fitting.simulation !== null && $fitting.simulation !== undefined && (categoryID === 8 || categoryID === 18 || categoryID === 87));
     for (const row of $inventory.hangar.rows) {
       if (takes(row.categoryID)) {
         rows.push({ row, source: "hangar" });
@@ -1146,6 +1150,23 @@
     "UI/Fitting/FittingWindow/RemoveAll": "Take everything out",
     "UI/Generic/RemoveItem": "Take it out",
     "UI/Fitting/FittingWindow/ClickToEdit": "Change how many",
+    // The simulated fighter bay's picker (fighterPickerMenu FighterBayItemPickerMenu's emptyLabelPath; the tubes'
+    // squadron containers: an empty tube's action and hint, a squadron's hint and its simulated state; the classes' and
+    // the roles' hints, fighterConst HINTTEXT_BY_ROLE).
+    "UI/Fitting/FittingWindow/NoFightersSimulated": "No fighters in the simulated fighter bay. Pick up fighters and put them here.",
+    "UI/Inventory/Fighters/Open": "Open",
+    "UI/Inventory/Fighters/EmptyLaunchTube": "An empty launch tube",
+    "UI/Inventory/Fighters/SquadronHint": "{typeName}: {numFighters} in the squadron",
+    "UI/Fitting/FittingWindow/FightersSimulated": "Simulated",
+    "UI/Fighters/Class/Light": "Light fighters",
+    "UI/Fighters/Class/Support": "Support fighters",
+    "UI/Fighters/Class/Heavy": "Heavy fighters",
+    "UI/Inventory/Fighters/RoleNoneHint": "",
+    "UI/Inventory/Fighters/RoleAntiFighterHint": "Fights other fighters",
+    "UI/Inventory/Fighters/RoleGeneralHint": "General attack",
+    "UI/Inventory/Fighters/RoleEwarHint": "Electronic warfare",
+    "UI/Inventory/Fighters/RoleTorpedoBomberHint": "Torpedoes against big targets",
+    "UI/Inventory/Fighters/RoleAOEBomberHint": "Bombs that hit an area",
     // The fit-name label's tooltip (fittingWnd: SetTooltipHeaderAndDescription, ShipName_description).
     "Tooltips/FittingWindow/ShipName_description": "Click to see the fitting as it stands and save it; drag it into a chat to link it.",
     "Tooltips/FittingWindow/SimulateShipFittingDescription": "Try the ship's modules in every state without touching the ship itself.",
@@ -1461,6 +1482,90 @@
     if (!Number.isFinite(wanted)) return;
     void run(() => flow.setSimulatedCargo(typeID, wanted));
   }
+  // The simulated fighter bay (minihangar CargoFighterSlots, simulated), in the drone bay's place where the hull has one
+  // (ContructDroneAndFighterIcons: HasFighterBay): a click shows its picker (fittingWnd GetFighterMenu:
+  // FighterBayItemPickerMenu); a picked item put on it, one of each fighter (AddSimulatedFighters: GetQtyByTypeIDs,
+  // fighters only), goes to a tube or the bay (TryFitFightersToTubeOrBay).
+  let simFightersOpen = $state(false);
+  function clickSimulatedFighterBay(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      const fighter = pickedCategoryID() === 87;
+      pickedItemID = null;
+      if (typeID !== null && fighter) void run(() => flow.addSimulatedFighters(typeID, 1));
+      return;
+    }
+    simFightersOpen = !simFightersOpen;
+  }
+  /** The picked item's stack (a dropped item's stacksize). */
+  function pickedQuantity(): number {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.quantity ?? 1;
+  }
+  type SimulatedTubeEntry = NonNullable<typeof simulation>["fighterTubes"][number];
+  /** A fighter dragged in the picker: a tube's squadron (GetSquadronDragData) or a bay's type (ItemPickerBase.GetDragData). */
+  type FighterDrag = { readonly from: "tube"; readonly flagID: number; readonly typeID: number } | { readonly from: "bay"; readonly typeID: number };
+  let fighterDrag: FighterDrag | null = null;
+  function startFighterDrag(event: DragEvent, drag: FighterDrag): void {
+    fighterDrag = drag;
+    event.dataTransfer?.setData("application/x-evejs-simulated-fighter", String(drag.typeID));
+  }
+  /**
+   * A tube given a fighter (SingleTube.OnDropDataOnTube): a picked one, a bay's type or a tube's squadron put on it, a full
+   * squadron of its type (FitFighterToTube, GetMaxSquadronSize; a tube's squadron dropped stays in its own tube). A tube
+   * past the ship's is disabled.
+   */
+  function clickSimulatedTube(tube: SimulatedTubeEntry): void {
+    if (pickedItemID === null || !tube.present) return;
+    const typeID = pickedTypeID();
+    if (typeID === null || pickedCategoryID() !== 87) return;
+    pickedItemID = null;
+    void run(() => flow.fitSimulatedFighterToTube(typeID, tube.flagID));
+  }
+  function dropOnTube(event: DragEvent, tube: SimulatedTubeEntry): void {
+    const drag = fighterDrag;
+    fighterDrag = null;
+    if (!drag || !tube.present) return;
+    event.preventDefault();
+    void run(() => flow.fitSimulatedFighterToTube(drag.typeID, tube.flagID));
+  }
+  /**
+   * The fighter bay's list given fighters (OnDroppedInList): a tube's squadron dropped on it, out of its tube and into the
+   * bay (_TryRemoveItemsFromTube, _TryAddToFighterBay); a picked stack put on it, as many as it holds, a fighter only.
+   */
+  function clickFighterBayList(): void {
+    if (pickedItemID === null) return;
+    const typeID = pickedTypeID();
+    const qty = pickedQuantity();
+    const fighter = pickedCategoryID() === 87;
+    pickedItemID = null;
+    if (typeID !== null && fighter) void run(() => flow.addSimulatedFighterBay(typeID, qty));
+  }
+  function dropOnFighterBayList(event: DragEvent): void {
+    const drag = fighterDrag;
+    fighterDrag = null;
+    if (drag?.from !== "tube") return;
+    event.preventDefault();
+    void run(() => flow.moveSimulatedSquadronToBay(drag.flagID));
+  }
+  function setSimulatedFighterBay(typeID: number, wanted: number): void {
+    if (!Number.isFinite(wanted)) return;
+    void run(() => flow.setSimulatedFighterBay(typeID, wanted));
+  }
+  /** The picker's fightersAllowedCont: the light, support and heavy squadrons (fighterInvCont SquadronTypeContainer). */
+  const FIGHTER_CLASSES = [
+    { kind: "light", label: "UI/Fighters/Class/Light", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterLight.png") },
+    { kind: "support", label: "UI/Fighters/Class/Support", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterMedium.png") },
+    { kind: "heavy", label: "UI/Fighters/Class/Heavy", icon: clientTexture("res:/UI/Texture/classes/CarrierBay/iconFighterHeavy.png") },
+  ] as const;
+  /** fighterConst TEXTURE_BY_ROLE and HINTTEXT_BY_ROLE: a squadron's role icon (none for ROLE_NONE) and its hint. */
+  const FIGHTER_ROLES: Readonly<Record<number, { readonly icon: string | null; readonly hint: string }>> = {
+    0: { icon: null, hint: "UI/Inventory/Fighters/RoleNoneHint" },
+    1: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Interceptor.png"), hint: "UI/Inventory/Fighters/RoleAntiFighterHint" },
+    2: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_General.png"), hint: "UI/Inventory/Fighters/RoleGeneralHint" },
+    3: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Support.png"), hint: "UI/Inventory/Fighters/RoleEwarHint" },
+    4: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_AntiCapital.png"), hint: "UI/Inventory/Fighters/RoleTorpedoBomberHint" },
+    5: { icon: clientTexture("res:/UI/Texture/classes/ShipUI/Fighters/roleIcon_Bomber.png"), hint: "UI/Inventory/Fighters/RoleAOEBomberHint" },
+  };
   /** GetSortedItemsInfo: the hold's types by their names. */
   function cargoByName(entries: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[]) {
     return [...entries].sort((a, b) => {
@@ -2152,17 +2257,20 @@
         {/if}
       </div>
       {#if simulation?.fighterBay}
-        <!-- The simulated fighter bay (minihangar CargoFighterSlots), where the hull has one (HasFighterBay): its use and
-             capacity (GetCapacity(flagFighterBay)). -->
+        <!-- The simulated fighter bay (minihangar CargoFighterSlots) in the drone bay's place, where the hull has one
+             (ContructDroneAndFighterIcons: HasFighterBay): its use and capacity (GetCapacity(flagFighterBay)); a click
+             shows its picker, a picked fighter put on it goes to a tube or the bay. -->
         <div>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
-          <dd>{toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</dd>
+          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
+            {toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</button></dd>
+        </div>
+      {:else}
+        <div>
+          <dt>Drone bay</dt>
+          <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
         </div>
       {/if}
-      <div>
-        <dt>Drone bay</dt>
-        <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
-      </div>
       <div class="fit-readout-value">
         <dt>Fit value</dt>
         <dd>{@render statValue(fitValue, whole)}</dd>
@@ -2189,6 +2297,97 @@
           </ul>
           <p class="controls">
             <button type="button" class="minor" disabled={busy} onclick={() => flow.emptySimulatedCargo()}>{simulationWord("UI/Fitting/FittingWindow/RemoveAll")}</button>
+          </p>
+        {/if}
+      </div>
+    {/if}
+    {#if simulation?.fighterBay && simFightersOpen}
+      <!-- FighterBayItemPickerMenu: each kind's squadrons allowed and had (fightersAllowedCont; a kind the ship takes none
+           of not shown); the five tubes (SingleTube, one past the ship's disabled): the tube's number, its squadron (its
+           icon, its role's, a dash for each it may hold, lit as many as it has; taken out, one fewer, one more) or Open,
+           a fighter put in it a full squadron; the bay's types by name as the cargo's, double-clicked into the first empty
+           tube; Remove All, where the bay or a tube holds any. -->
+      <div class="fit-sim-fighters">
+        <p class="fit-sim-squadron-slots">
+          {#each FIGHTER_CLASSES as fighterKind (fighterKind.kind)}
+            {#if simulation.squadronSlots[fighterKind.kind].total}
+              <span class="fit-sim-squadron-slot" title={simulationWord(fighterKind.label)}>
+                <img src={fighterKind.icon} alt={simulationWord(fighterKind.label)} width="16" height="16" />:{simulation.squadronSlots[fighterKind.kind].used}/{simulation.squadronSlots[fighterKind.kind].total}
+              </span>
+            {/if}
+          {/each}
+        </p>
+        <ol class="fit-sim-tubes">
+          {#each simulation.fighterTubes as tube (tube.flagID)}
+            <li class="fit-sim-tube" class:disabled={!tube.present}>
+              <button type="button" class="fit-sim-tube-slot" data-tube-flag={tube.flagID} disabled={busy || !tube.present}
+                title={tube.squadron
+                  ? simulationWord("UI/Inventory/Fighters/SquadronHint", { typeName: moduleName(tube.squadron.typeID), numFighters: tube.squadron.size })
+                  : simulationWord("UI/Inventory/Fighters/EmptyLaunchTube")}
+                draggable={tube.squadron !== null}
+                ondragstart={(event) => { if (tube.squadron) startFighterDrag(event, { from: "tube", flagID: tube.flagID, typeID: tube.squadron.typeID }); }}
+                ondragend={() => (fighterDrag = null)}
+                ondragover={(event) => { if (fighterDrag) event.preventDefault(); }}
+                ondrop={(event) => dropOnTube(event, tube)}
+                onclick={() => clickSimulatedTube(tube)}>
+                <span class="fit-sim-tube-number">{tube.number}</span>
+                {#if tube.squadron}
+                  <TypeIcon typeID={tube.squadron.typeID} name={moduleName(tube.squadron.typeID)} size="md" />
+                  {#if FIGHTER_ROLES[tube.squadron.role]?.icon}
+                    <img class="fit-sim-tube-role" src={FIGHTER_ROLES[tube.squadron.role]?.icon} width="16" height="16"
+                      alt={simulationWord(FIGHTER_ROLES[tube.squadron.role]?.hint ?? "")} title={simulationWord(FIGHTER_ROLES[tube.squadron.role]?.hint ?? "")} />
+                  {/if}
+                  <span class="fit-sim-tube-dashes" aria-hidden="true">
+                    {#each Array.from({ length: tube.squadron.max }, (_, at) => at < (tube.squadron?.size ?? 0)) as lit, at (at)}
+                      <span class={lit ? "lit" : ""}></span>
+                    {/each}
+                  </span>
+                  <span class="fit-sim-tube-action">{simulationWord("UI/Fitting/FittingWindow/FightersSimulated")}</span>
+                {:else}
+                  <span class="fit-sim-tube-action">{tube.present ? simulationWord("UI/Inventory/Fighters/Open") : ""}</span>
+                {/if}
+              </button>
+              {#if tube.squadron && tube.present}
+                <span class="row-actions">
+                  <button type="button" class="minor" disabled={busy} aria-label={simulationWord("UI/Generic/RemoveItem")} title={simulationWord("UI/Generic/RemoveItem")}
+                    onclick={() => flow.removeSimulatedSquadron(tube.flagID)}>✕</button>
+                  <button type="button" class="minor" disabled={busy} aria-label="One fewer"
+                    onclick={() => tube.squadron && void run(() => flow.setSimulatedSquadronSize(tube.flagID, Math.max(0, (tube.squadron?.size ?? 0) - 1)))}>−</button>
+                  <button type="button" class="minor" disabled={busy} aria-label="One more"
+                    onclick={() => tube.squadron && void run(() => flow.setSimulatedSquadronSize(tube.flagID, (tube.squadron?.size ?? 0) + 1))}>+</button>
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <div class="fit-sim-fighter-bay" role="group" aria-label={offenseWord("UI/Fitting/FittingWindow/FighterBay")}
+          ondragover={(event) => { if (fighterDrag?.from === "tube") event.preventDefault(); }}
+          ondrop={dropOnFighterBayList}
+          onclick={clickFighterBayList}>
+          {#if simulation.fighterBayTypes.length === 0}
+            <p class="note">{simulationWord("UI/Fitting/FittingWindow/NoFightersSimulated")}</p>
+          {:else}
+            <ul class="fit-sim-drones">
+              {#each cargoByName(simulation.fighterBayTypes) as entry (entry.typeID)}
+                <li>
+                  <button type="button" class="fit-sim-drone-name fit-sim-fighter-name" draggable="true" disabled={busy}
+                    ondragstart={(event) => startFighterDrag(event, { from: "bay", typeID: entry.typeID })}
+                    ondragend={() => (fighterDrag = null)}
+                    ondblclick={() => void run(() => flow.fitSimulatedFighterToEmptyTube(entry.typeID))}>{moduleName(entry.typeID)}</button>
+                  <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
+                    title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
+                    onchange={(event) => setSimulatedFighterBay(entry.typeID, Number(event.currentTarget.value))} />
+                  <button type="button" class="minor" disabled={busy} title={simulationWord("UI/Generic/RemoveItem")} aria-label={simulationWord("UI/Generic/RemoveItem")}
+                    onclick={(event) => { event.stopPropagation(); flow.removeSimulatedFighterBayType(entry.typeID); }}>✕</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+        {#if simulation.fighterBayTypes.length > 0 || simulation.fighterTubes.some((tube) => tube.squadron !== null)}
+          <p class="controls">
+            <button type="button" class="minor" disabled={busy} onclick={() => flow.emptySimulatedFighterBay()}>{simulationWord("UI/Fitting/FittingWindow/RemoveAll")}</button>
           </p>
         {/if}
       </div>

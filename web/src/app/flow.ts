@@ -33,7 +33,7 @@ import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridg
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
 import { ownShipDrones, type DroneReading } from "../bridge/dogma/drones.ts";
-import { fighterClass, fullAndPartialSquadrons, totalFighterDps, type FighterAbilitySlot } from "../bridge/dogma/fighters.ts";
+import { fighterClass, fullAndPartialSquadrons, maxSquadronSize, totalFighterDps, type FighterAbilitySlot } from "../bridge/dogma/fighters.ts";
 import {
   fitToOneSlot,
   fitToSimulation,
@@ -54,6 +54,19 @@ import {
   simulatedCargoCapacity,
   simulatedCargoRoomFor,
   simulatedFighterBayCapacity,
+  emptyFighterBay,
+  fighterBayRoomFor,
+  fitFighterToEmptyTube,
+  fitFighterToTube,
+  fitItemsToFighterBay,
+  removeFighterBayType,
+  removeSquadron,
+  setFighterBayQuantity,
+  setSquadronSize,
+  simulatedFighterBayTypes,
+  simulatedFighterTubes,
+  simulatedSquadronSlots,
+  squadronDragged,
   type HoldFacts,
   type SimulationUserError,
   unfitFromSimulation,
@@ -1517,6 +1530,29 @@ export interface AppFlow {
   setSimulatedCargo(typeID: number, wanted: number): Promise<void>;
   /** The simulated cargo hold emptied (BaseHoldItemPickerMenu.RemoveAll). */
   emptySimulatedCargo(): void;
+  /**
+   * Fighters put on the simulated ship (TryFitFightersToTubeOrBay of one type: FitAFighterToTubeOrBay): a full squadron
+   * in the first empty tube; where there is none, or no tube for its class, as many as given in the fighter bay.
+   */
+  addSimulatedFighters(typeID: number, qty: number): Promise<void>;
+  /** Fighters put in the simulated fighter bay (FighterBayItemPickerMenu._TryAddToFighterBay: as many as given; Shift asks). */
+  addSimulatedFighterBay(typeID: number, qty: number): Promise<void>;
+  /** A full squadron of a type put in a simulated tube (SingleTube.OnDropDataOnTube: FitFighterToTube). */
+  fitSimulatedFighterToTube(typeID: number, tubeFlagID: number): Promise<void>;
+  /** A full squadron of a fighter bay's type put in the first empty tube (ItemFighterPicker.OnDblClick). */
+  fitSimulatedFighterToEmptyTube(typeID: number): Promise<void>;
+  /** A simulated tube's squadron made as many as wanted (SingleTube.ChangeNumFighters: ModifyFighterStackSize). */
+  setSimulatedSquadronSize(tubeFlagID: number, wanted: number): Promise<void>;
+  /** A simulated tube's squadron taken out (SimulatedSquadronCont.RemoveSquadron). */
+  removeSimulatedSquadron(tubeFlagID: number): void;
+  /** A tube's squadron dropped on the fighter bay's list (OnDroppedInList: out of its tube, then into the bay). */
+  moveSimulatedSquadronToBay(tubeFlagID: number): Promise<void>;
+  /** As many of a type in the simulated fighter bay as wanted (ChangeNumItems: ModifyHoldItemStackSize); none takes it out. */
+  setSimulatedFighterBay(typeID: number, wanted: number): Promise<void>;
+  /** A type taken out of the simulated fighter bay (ItemPickerMenu.RemoveItemClicked). */
+  removeSimulatedFighterBayType(typeID: number): void;
+  /** The simulated fighter bay and its tubes emptied (FighterBayItemPickerMenu.RemoveAll). */
+  emptySimulatedFighterBay(): void;
   /** As many of a type's simulated drones selected as wanted; "limit" or "bandwidth" where the selection is refused. */
   setSimulatedActiveDrones(typeID: number, wanted: number): { readonly warning: "limit" | "bandwidth"; readonly limit: number } | null;
   /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
@@ -6182,6 +6218,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // squadrons in the tubes, full and partial (GetFullAndPartialSquadrons), and their damage (GetFighterDps).
       fighterBay: location.value(ship, 2055) ? simulatedFighterBayCapacity(simulation.simulated) : null,
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
+      // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
+      fighterTubes: simulatedFighterTubes(simulation.simulated),
+      squadronSlots: simulatedSquadronSlots(simulation.simulated),
+      fighterBayTypes: simulatedFighterBayTypes(simulation.simulated),
       structure: ship.categoryID === 65,
       fighterDps: totalFighterDps(location, ship, fighterAbilitiesOf, (item, attributeID) => location.value(item, attributeID)),
     });
@@ -6365,6 +6405,120 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showSimulation();
   }
 
+  /** A fighter type's static data, its abilities (for its damage) and what the holds' rules go by of it, read. */
+  async function fighterTypeReady(typeID: number): Promise<HoldFacts | null> {
+    const [, facts] = await Promise.all([dogmaStaticFor([typeID], []), holdFactsFor([typeID]), ensureFighterAbilities([typeID])]);
+    return simulation ? facts : null;
+  }
+
+  /**
+   * GetModifiedQtyDict for the fighter bay, of one type: with Shift held, FindQty (QtyPopup up to GetMaxQty, from one),
+   * else as given; no room, or the question let go, none.
+   */
+  async function fighterBayQuantity(typeID: number, qty: number): Promise<number | null> {
+    if (!simulation || !shiftHeld()) return qty;
+    const most = fighterBayRoomFor(simulation.simulated, typeID);
+    if (most === null) return null;
+    return askQuantity({
+      min: 1, max: most, value: 1,
+      hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+    });
+  }
+
+  /** TryFitItemsToFighterBay of one type, as many as GetModifiedQtyDict gives; a type no fighter said (ItemAddedNotInFitting). */
+  async function fitToSimulatedFighterBay(typeID: number, qty: number, facts: HoldFacts): Promise<void> {
+    const wanted = await fighterBayQuantity(typeID, qty);
+    if (wanted === null || !simulation) return;
+    sayNotInFitting(fitItemsToFighterBay(simulation.simulated, new Map([[typeID, wanted]]), facts));
+  }
+
+  async function addSimulatedFighters(typeID: number, qty: number): Promise<void> {
+    if (!simulation) return;
+    const facts = await fighterTypeReady(typeID);
+    if (!facts || !simulation) return;
+    // FitAFighterToTubeOrBay: FitFighterToEmptyTube, its CannotLoadFighterTubeNoTubesAvailableForClass let pass; with no
+    // squadron put in a tube, the fighter bay; any other refusal said.
+    const tube = fitFighterToEmptyTube(simulation.simulated, typeID);
+    const toBay = tube === "noTube" || (tube !== null && tube.raised && tube.error.key === "CannotLoadFighterTubeNoTubesAvailableForClass");
+    if (toBay) await fitToSimulatedFighterBay(typeID, qty, facts);
+    showSimulation();
+    if (tube !== null && tube !== "noTube" && !toBay) await sayFighterErrors([tube.error]);
+  }
+
+  async function addSimulatedFighterBay(typeID: number, qty: number): Promise<void> {
+    if (!simulation) return;
+    const facts = await fighterTypeReady(typeID);
+    if (!facts || !simulation) return;
+    // _TryAddToFighterBay: a fighter only.
+    if (simulation.simulated.location.static.types[typeID]?.categoryID !== 87) return;
+    await fitToSimulatedFighterBay(typeID, qty, facts);
+    showSimulation();
+  }
+
+  async function fitSimulatedFighterToTube(typeID: number, tubeFlagID: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    const said = fitFighterToTube(simulation.simulated, typeID, tubeFlagID, maxSquadronSize(simulation.simulated.location, typeID));
+    showSimulation();
+    if (said) await sayFighterErrors([said.error]);
+  }
+
+  async function fitSimulatedFighterToEmptyTube(typeID: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    const said = fitFighterToEmptyTube(simulation.simulated, typeID);
+    showSimulation();
+    if (said !== null && said !== "noTube") await sayFighterErrors([said.error]);
+  }
+
+  async function setSimulatedSquadronSize(tubeFlagID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    // ChangeNumFighters: the tube's squadron's type; an empty tube, nothing.
+    const squadron = simulatedFighterTubes(simulation.simulated).find((tube) => tube.flagID === tubeFlagID)?.squadron ?? null;
+    if (!squadron) return;
+    const said = setSquadronSize(simulation.simulated, squadron.typeID, Math.max(0, Math.trunc(wanted)), tubeFlagID);
+    showSimulation();
+    if (said) await sayFighterErrors([said.error]);
+  }
+
+  function removeSimulatedSquadron(tubeFlagID: number): void {
+    if (!simulation) return;
+    removeSquadron(simulation.simulated, tubeFlagID);
+    showSimulation();
+  }
+
+  async function moveSimulatedSquadronToBay(tubeFlagID: number): Promise<void> {
+    if (!simulation) return;
+    const dragged = squadronDragged(simulation.simulated, tubeFlagID);
+    if (!dragged) return;
+    const facts = await fighterTypeReady(dragged.typeID);
+    if (!facts || !simulation) return;
+    // _TryRemoveItemsFromTube, then _TryAddToFighterBay of what it counts as.
+    removeSquadron(simulation.simulated, tubeFlagID);
+    showSimulation();
+    await fitToSimulatedFighterBay(dragged.typeID, dragged.quantity, facts);
+    showSimulation();
+  }
+
+  async function setSimulatedFighterBay(typeID: number, wanted: number): Promise<void> {
+    if (!simulation) return;
+    if (!(await fighterTypeReady(typeID)) || !simulation) return;
+    sayNotInFitting(setFighterBayQuantity(simulation.simulated, typeID, Math.max(0, Math.trunc(wanted))));
+    showSimulation();
+  }
+
+  function removeSimulatedFighterBayType(typeID: number): void {
+    if (!simulation) return;
+    removeFighterBayType(simulation.simulated, typeID);
+    showSimulation();
+  }
+
+  function emptySimulatedFighterBay(): void {
+    if (!simulation) return;
+    emptyFighterBay(simulation.simulated);
+    showSimulation();
+  }
+
   /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
   async function setSimulatedDrones(typeID: number, wanted: number): Promise<void> {
     if (!simulation) return;
@@ -6391,6 +6545,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The type's static data read where it is not held yet: the simulation reckons with what the page has read.
     await dogmaStaticFor([typeID], []);
     if (!simulation) return null;
+    // TryFitModuleToOneSlot: a fighter to a tube or the bay, one of it (FitAFighterToTubeOrBay).
+    if (flagID === null && simulation.simulated.location.static.types[typeID]?.categoryID === 87) {
+      await addSimulatedFighters(typeID, 1);
+      return null;
+    }
     // FittingSlotController.OnDropData: nothing put on a module in a slot the ship no longer has.
     const { location, ship } = simulation.simulated;
     if (flagID !== null && moduleInSlot(ship, flagID) !== null && !location.slotExists(ship, flagID)) return null;
@@ -25421,6 +25580,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     emptySimulatedCargo() {
       emptySimulatedCargo();
+    },
+    addSimulatedFighters(typeID, qty) {
+      return addSimulatedFighters(typeID, qty);
+    },
+    addSimulatedFighterBay(typeID, qty) {
+      return addSimulatedFighterBay(typeID, qty);
+    },
+    fitSimulatedFighterToTube(typeID, tubeFlagID) {
+      return fitSimulatedFighterToTube(typeID, tubeFlagID);
+    },
+    fitSimulatedFighterToEmptyTube(typeID) {
+      return fitSimulatedFighterToEmptyTube(typeID);
+    },
+    setSimulatedSquadronSize(tubeFlagID, wanted) {
+      return setSimulatedSquadronSize(tubeFlagID, wanted);
+    },
+    removeSimulatedSquadron(tubeFlagID) {
+      removeSimulatedSquadron(tubeFlagID);
+    },
+    moveSimulatedSquadronToBay(tubeFlagID) {
+      return moveSimulatedSquadronToBay(tubeFlagID);
+    },
+    setSimulatedFighterBay(typeID, wanted) {
+      return setSimulatedFighterBay(typeID, wanted);
+    },
+    removeSimulatedFighterBayType(typeID) {
+      removeSimulatedFighterBayType(typeID);
+    },
+    emptySimulatedFighterBay() {
+      emptySimulatedFighterBay();
     },
     setSimulatedActiveDrones(typeID, wanted) {
       return setSimulatedActiveDrones(typeID, wanted);

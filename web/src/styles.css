@@ -2143,6 +2143,20 @@
     border-bottom: 1px solid var(--color-line);
   }
   .fit-name-link { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */
+  .fit-sim-squadron-slots { display: flex; gap: 0.8rem; margin: 0 0 0.4rem; font-size: 11px; color: var(--color-muted); }
+  .fit-sim-squadron-slot { display: inline-flex; align-items: center; gap: 0.15rem; }
+  .fit-sim-tubes { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.5rem; padding: 0; list-style: none; }
+  .fit-sim-tube { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; width: 92px; }
+  .fit-sim-tube.disabled { opacity: 0.3; }
+  .fit-sim-tube-slot { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; width: 100%; min-height: 96px; padding: 0.3rem; border: 1px solid var(--color-line); background: none; color: rgb(158 158 158); font: inherit; cursor: pointer; }
+  .fit-sim-tube-number { position: absolute; top: 2px; left: 4px; font-size: 10px; }
+  .fit-sim-tube-role { position: absolute; top: 2px; right: 4px; }
+  .fit-sim-tube-dashes { display: flex; gap: 2px; }
+  .fit-sim-tube-dashes span { width: 6px; height: 3px; background: var(--color-line); }
+  .fit-sim-tube-dashes span.lit { background: var(--color-text-bright); }
+  .fit-sim-tube-action { font-size: 10px; }
+  .fit-sim-fighter-name { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: grab; }
   .fit-ship-name {
     color: var(--color-text-bright);
     font-weight: 600;
