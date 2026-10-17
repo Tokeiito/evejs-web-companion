@@ -289,8 +289,20 @@
     catalogueTip = { typeID, top: rect.bottom + 8, left: rect.left };
     await infoOf(typeID);
   }
+  // The tooltip stays while the pointer is on it (its panel takes the pointer): taken away a moment after the pointer
+  // leaves the skill, unless it came onto the tooltip.
+  let catalogueTipHeld = false;
+  let catalogueTipTimer: ReturnType<typeof setTimeout> | null = null;
   function hideCatalogueTip(typeID: number): void {
-    if (catalogueTip !== null && catalogueTip.typeID === typeID) catalogueTip = null;
+    if (catalogueTipTimer !== null) clearTimeout(catalogueTipTimer);
+    catalogueTipTimer = setTimeout(() => {
+      catalogueTipTimer = null;
+      if (!catalogueTipHeld && catalogueTip !== null && catalogueTip.typeID === typeID) catalogueTip = null;
+    }, 200);
+  }
+  function catalogueTipHover(inside: boolean): void {
+    catalogueTipHeld = inside;
+    if (!inside && catalogueTip !== null) hideCatalogueTip(catalogueTip.typeID);
   }
   let catalogueMenu = $state<{ readonly typeID: number; readonly entries: readonly SkillMenuEntry[]; readonly x: number; readonly y: number } | null>(null);
   async function openCatalogueMenu(typeID: number, event: MouseEvent): Promise<void> {
@@ -913,7 +925,7 @@
           {/each}
         </ul>
         {#if catalogueTip !== null && skillInfos.get(catalogueTip.typeID) !== undefined}
-          <SkillRowTip {store} {flow} info={skillInfos.get(catalogueTip.typeID)!} top={catalogueTip.top} left={catalogueTip.left} />
+          <SkillRowTip {store} {flow} typeID={catalogueTip.typeID} info={skillInfos.get(catalogueTip.typeID)!} top={catalogueTip.top} left={catalogueTip.left} onHover={catalogueTipHover} />
         {/if}
         {#if catalogueMenu !== null}
           {@const menuFor = catalogueMenu}

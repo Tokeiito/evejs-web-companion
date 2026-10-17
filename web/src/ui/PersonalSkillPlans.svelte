@@ -541,8 +541,20 @@
     const fitsRight = rect.right + TIP_GAP + TIP_WIDTH <= window.innerWidth;
     rowTip = { skill, top: rect.top, left: fitsRight ? rect.right + TIP_GAP : null, right: fitsRight ? null : window.innerWidth - rect.left + TIP_GAP };
   }
+  // The tooltip stays while the pointer is on it (its panel takes the pointer): taken away a moment after the pointer
+  // leaves the row, unless it came onto the tooltip.
+  let rowTipHeld = false;
+  let rowTipTimer: ReturnType<typeof setTimeout> | null = null;
   function hideRowTip(skill: number): void {
-    if (rowTip !== null && rowTip.skill === skill) rowTip = null;
+    if (rowTipTimer !== null) clearTimeout(rowTipTimer);
+    rowTipTimer = setTimeout(() => {
+      rowTipTimer = null;
+      if (!rowTipHeld && rowTip !== null && rowTip.skill === skill) rowTip = null;
+    }, 200);
+  }
+  function rowTipHover(inside: boolean): void {
+    rowTipHeld = inside;
+    if (!inside && rowTip !== null) hideRowTip(rowTip.skill);
   }
 
   /** GetDragData: the skill as a listentry.SkillEntry, taken by a chat's send box as the type's link. */
@@ -1259,7 +1271,7 @@
               {/each}
             </ul>
             {#if rowTip !== null && rowInfo(rowTip.skill) !== null}
-              <SkillRowTip {store} {flow} info={rowInfo(rowTip.skill)!} top={rowTip.top} left={rowTip.left} right={rowTip.right} />
+              <SkillRowTip {store} {flow} typeID={rowTip.skill} info={rowInfo(rowTip.skill)!} top={rowTip.top} left={rowTip.left} right={rowTip.right} onHover={rowTipHover} />
             {/if}
             {#if rowMenu !== null}
               {@const menuFor = rowMenu}
