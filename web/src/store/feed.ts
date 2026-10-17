@@ -1,4 +1,5 @@
 import type { ChargeFitment } from "../bridge/fitting.ts";
+import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
 // Feed adapter seam (goal R1b, roadmap section 5).
 //
 // The client-state store is fed by whatever event transport exists at the
@@ -276,6 +277,7 @@ export type FeedEvent =
       readonly resources: FittingResources;
       readonly stats: ShipStats;
       readonly bayReadout: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
+      readonly warnings: readonly FitWarning[];
     }
   // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
   | {
@@ -294,6 +296,7 @@ export type FeedEvent =
       readonly cargoCapacity: { readonly capacity: number; readonly used: number };
       readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
       readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
+      readonly warnings: readonly FitWarning[];
       readonly fighterSquadrons: { readonly full: number; readonly partial: number };
       readonly fighterDps: number;
       readonly structure: boolean;
@@ -331,6 +334,8 @@ export type FeedEvent =
     }
   // Drop the fitting state (character offline / logged out).
   | { readonly type: "fitting/cleared" }
+  // A fitted module's isOnline as godma hears it (fittingController.OnAttribute).
+  | { readonly type: "fitting/module-online"; readonly shipID: number; readonly itemID: number; readonly online: boolean }
   // R21 slice B — the bound-dogma snapshot (active ship + fitted modules with
   // their SERVER-effective attributes), loaded alongside the fitting slice. A
   // failed read carries its own error and never blanks the fit.

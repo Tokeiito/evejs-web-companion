@@ -2143,6 +2143,21 @@
     border-bottom: 1px solid var(--color-line);
   }
   .fit-name-link { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  /* The window's warnings: an icon a level, tinted its colour with its count; the level's tooltip; a slot, gauge or
+   * readout shown with a warning outlined in its colour. */
+  .fit-warnings { position: relative; display: inline-flex; gap: 0.2rem; align-items: center; }
+  .fit-warning-icon { display: inline-flex; align-items: flex-end; gap: 1px; padding: 0 2px; border: 0; background: none; cursor: default; color: var(--warning-color); font: inherit; font-weight: 700; }
+  .fit-warning-glyph { width: 20px; height: 20px; background: var(--warning-color); mask: var(--warning-icon) center / contain no-repeat; -webkit-mask: var(--warning-icon) center / contain no-repeat; }
+  .fit-warning-count { font-size: 12px; line-height: 1; }
+  .fit-warning-tooltip { position: absolute; top: 100%; left: 0; z-index: 30; min-width: 18rem; max-width: 26rem; padding: 0.3rem 0.5rem; background: var(--color-panel, #101418); border: 1px solid var(--color-line); }
+  .fit-warning-header { margin: 0.2rem 0 0.3rem; font-size: 15px; color: var(--warning-color); }
+  .fit-warning-lines { margin: 0; padding: 0; list-style: none; }
+  .fit-warning-line { display: flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0; }
+  .fit-warning-line-icon { flex: none; width: 20px; height: 20px; background: var(--warning-color); mask: var(--warning-icon) center / contain no-repeat; -webkit-mask: var(--warning-icon) center / contain no-repeat; }
+  .fit-warning-question { margin-left: auto; color: var(--warning-color); font-weight: 700; }
+  .fit-warning-row { display: flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0 0.1rem 1.6rem; }
+  .fit-socket.warning { outline: 2px solid var(--slot-warning); outline-offset: 1px; }
+  .hud-gauge.warning, .fit-readout-warning { outline: 1px solid var(--slot-warning); outline-offset: 2px; }
   /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */
   .fit-sim-squadron-slots { display: flex; gap: 0.8rem; margin: 0 0 0.4rem; font-size: 11px; color: var(--color-muted); }
   .fit-sim-squadron-slot { display: inline-flex; align-items: center; gap: 0.15rem; }
