@@ -3827,6 +3827,37 @@ export async function getTypePrices(
  * ships, each hull's facts and those of each type asked (null for a type the client has not), and each race's name as
  * the number of its message; `available` false where the client's data could not be read.
  */
+/**
+ * Each fighter type's three ability slots as the client's data has them (fighterAbilitiesByType.static): each slot's
+ * ability, cooldown and charges, or null; null for a type with none; `available` false where the data could not be
+ * read. At most 50 types an asking.
+ */
+export async function getFighterAbilities(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly available: boolean;
+  readonly types: Readonly<Record<number, readonly ({ readonly abilityID: number; readonly cooldownSeconds: number | null; readonly chargeCount: number | null; readonly rearmTimeSeconds: number | null } | null)[] | null>>;
+}> {
+  const data = await getJson(`/api/client-data/fighter-abilities?typeIDs=${typeIDs.join(",")}`, options);
+  const types: Record<number, ({ readonly abilityID: number; readonly cooldownSeconds: number | null; readonly chargeCount: number | null; readonly rearmTimeSeconds: number | null } | null)[] | null> = {};
+  const record = typeof data.types === "object" && data.types !== null && !Array.isArray(data.types) ? (data.types as Record<string, JsonValue>) : {};
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  for (const [key, value] of Object.entries(record)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    types[typeID] = Array.isArray(value)
+      ? value.map((slot) => {
+          if (typeof slot !== "object" || slot === null || Array.isArray(slot)) return null;
+          const facts = slot as Record<string, JsonValue>;
+          const abilityID = orNull(facts.abilityID);
+          return abilityID === null ? null : { abilityID, cooldownSeconds: orNull(facts.cooldownSeconds), chargeCount: orNull(facts.chargeCount), rearmTimeSeconds: orNull(facts.rearmTimeSeconds) };
+        })
+      : null;
+  }
+  return { available: data.available === true, types };
+}
+
 export async function getHullBrowser(
   typeIDs: readonly number[],
   options: ApiOptions = {},

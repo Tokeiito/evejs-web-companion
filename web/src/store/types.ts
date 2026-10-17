@@ -458,6 +458,14 @@ export interface FittingState {
     readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
     /** The simulated cargo hold's capacity and what is in it takes (GetCapacity), m³. */
     readonly cargoCapacity: { readonly capacity: number; readonly used: number };
+    /** The simulated fighter bay's capacity and use (GetCapacity(flagFighterBay)), m³; null for a hull with none (HasFighterBay). */
+    readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+    /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
+    readonly fighterSquadrons: { readonly full: number; readonly partial: number };
+    /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */
+    readonly fighterDps: number;
+    /** A structure simulated: its window shows the Fighters section in the drones' place (HasDronePanel false). */
+    readonly structure: boolean;
   } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the

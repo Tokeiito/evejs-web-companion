@@ -513,6 +513,11 @@
     "UI/Fitting/FittingWindow/DronesDps": "Drones",
     "UI/Fitting/FittingWindow/NumDronesActive": "{[numeric]numDrones} active",
     "UI/Fitting/FittingWindow/WithReloadTimeText": "counting reloads",
+    // The fighter panel (fighterPanel.py), a structure's in the drones' place.
+    "UI/Common/Fighters": "Fighters",
+    "UI/Fitting/FittingWindow/NumFullSquadrons": "{[numeric]numSquadrons} full squadrons",
+    "UI/Fitting/FittingWindow/NumPartialSquadrons": "{[numeric]numSquadrons} squadrons short of full",
+    "UI/Fitting/FittingWindow/FighterBay": "Fighter bay",
   };
   $effect(() => {
     if (!$fitting.activeShipID) return;
@@ -2011,6 +2016,21 @@
       {/if}
     </details>
 
+    {#if simulation?.structure}
+      <!-- A structure's fighter panel in the drones' place (statsPanel.GetMenuData: the drones' panel where the
+           controller has one, else the fighters'; fighterPanel.UpdateFighterStats and SetFighterDpsText): the squadrons
+           in the tubes' damage a second, how many are full and how many short of full. -->
+      <details class="fit-sec" open>
+        <summary class="fit-sec-head">
+          <span class="fit-sec-name">{offenseWord("UI/Common/Fighters")}</span>
+          <span class="fit-sec-headline">{offenseWord("UI/Fitting/FittingWindow/DpsLabel", { dps: simulation.fighterDps })}</span>
+        </summary>
+        <div class="fit-sec-body">
+          <p class="note">{offenseWord("UI/Fitting/FittingWindow/NumFullSquadrons", { numSquadrons: simulation.fighterSquadrons.full })}</p>
+          <p class="note">{offenseWord("UI/Fitting/FittingWindow/NumPartialSquadrons", { numSquadrons: simulation.fighterSquadrons.partial })}</p>
+        </div>
+      </details>
+    {:else}
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Drones</span>
@@ -2073,6 +2093,7 @@
         </p>
       </div>
     </details>
+    {/if}
   </div>
 {/snippet}
 
@@ -2130,6 +2151,14 @@
           <dd>{cargoBayText}</dd>
         {/if}
       </div>
+      {#if simulation?.fighterBay}
+        <!-- The simulated fighter bay (minihangar CargoFighterSlots), where the hull has one (HasFighterBay): its use and
+             capacity (GetCapacity(flagFighterBay)). -->
+        <div>
+          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
+          <dd>{toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</dd>
+        </div>
+      {/if}
       <div>
         <dt>Drone bay</dt>
         <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>

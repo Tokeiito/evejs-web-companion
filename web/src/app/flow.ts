@@ -33,6 +33,7 @@ import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridg
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
 import { ownShipDrones, type DroneReading } from "../bridge/dogma/drones.ts";
+import { fighterClass, fullAndPartialSquadrons, totalFighterDps, type FighterAbilitySlot } from "../bridge/dogma/fighters.ts";
 import {
   fitToOneSlot,
   fitToSimulation,
@@ -52,7 +53,9 @@ import {
   setCargoQuantity,
   simulatedCargoCapacity,
   simulatedCargoRoomFor,
+  simulatedFighterBayCapacity,
   type HoldFacts,
+  type SimulationUserError,
   unfitFromSimulation,
   type FitError,
   type SimulatedShip,
@@ -6004,8 +6007,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly hpIncluded: (module: DogmaItem) => boolean;
     readonly maxDamageMultiplier: (item: DogmaItem) => number;
     readonly drones: DroneReading;
+    /** GetTotalFighterDps: the squadrons in the tubes' damage a second; none where it is not said. */
+    readonly fighterDps?: number;
   }): { readonly resources: FittingResources; readonly stats: ShipStats } {
     const { location, ship, pilot, staticData, shipValue, drones } = view;
+    const fighterDps = view.fighterDps ?? 0;
     const accurate = view.accurate ?? ((item: DogmaItem, attributeID: number): number => location.value(item, attributeID));
     const attributes = new Map<number, number>();
     for (const attributeID of view.listed) {
@@ -6033,10 +6039,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         drones,
         firepower: {
           ...derived.firepower,
-          dps: known(weapons.totalDps + drones.dps),
+          // GetTurretMissileAndAoeDps: the drones' and the fighters' added to the total (dpsInfo.totalDps += droneDps +
+          // totalFighterDps), with reload and without.
+          dps: known(weapons.totalDps + drones.dps + fighterDps),
           droneDps: known(drones.dps),
           volley: known(weapons.alphaStrike),
-          simulator: { ...weapons, totalDps: weapons.totalDps + drones.dps, totalDpsWithReload: weapons.totalDpsWithReload + drones.dps },
+          simulator: { ...weapons, totalDps: weapons.totalDps + drones.dps + fighterDps, totalDpsWithReload: weapons.totalDpsWithReload + drones.dps + fighterDps },
         },
         capacitor: {
           ...derived.capacitor,
@@ -6068,15 +6076,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const inputs = await ownShipInputs();
     if (!inputs) throw new Error("The ship's own dogma has not been read yet.");
     const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay } = inputs;
-    // LoadCurrentShip: the ship's own visible items in its cargo hold, each its stack (invCache's list of the ship).
+    // LoadCurrentShip: the ship's own visible items in its cargo hold and its fighter bay, each its stack, and each
+    // squadron in its tubes with its size (invCache's list of the ship).
     const shipItems = await listShip(bridgeAsk, shipID).catch(() => []);
-    const cargoItems = shipItems.filter((item) => item.flagID === 5).map((item) => ({ typeID: item.typeID, quantity: item.quantity }));
+    const cargoItems = shipItems
+      .filter((item) => item.flagID === 5 || (item.flagID !== null && item.flagID >= 158 && item.flagID <= 163))
+      .map((item) => ({ typeID: item.typeID, flagID: item.flagID as number, quantity: item.quantity }));
     const [staticData, facts] = await Promise.all([
       cargoItems.length > 0 ? dogmaStaticFor(cargoItems.map((item) => item.typeID), []) : Promise.resolve(inputs.staticData),
       holdFactsFor(cargoItems.map((item) => item.typeID)),
+      ensureFighterAbilities(cargoItems.filter((item) => item.flagID !== 5).map((item) => item.typeID)),
     ]);
     if (!staticData) throw new Error("The client's static data could not be read.");
     const notInFitting: number[] = [];
+    const errors: SimulationUserError[] = [];
     simulation = {
       shipID,
       name: null,
@@ -6090,10 +6103,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         charges,
         bay.map((stack) => ({ typeID: stack.typeID, quantity: stack.quantity })),
         serverNow,
-        { items: cargoItems, facts, notInFitting },
+        { items: cargoItems, facts, notInFitting, errors },
       ),
     };
     sayNotInFitting(notInFitting);
+    await sayFighterErrors(errors);
     showSimulation();
   }
 
@@ -6118,6 +6132,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       hpIncluded: (module) => location.isActive(module),
       maxDamageMultiplier: (item) => (item.attributes.has(2734) ? 1.0 + location.value(item, 2734) : 1.0),
       drones: simulatedDrones(simulation.simulated),
+      fighterDps: totalFighterDps(location, ship, fighterAbilitiesOf, (item, attributeID) => location.value(item, attributeID)),
     });
     const moduleStates: Record<number, number> = {};
     const moduleKinds: Record<number, number> = {};
@@ -6163,6 +6178,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       drones,
       cargo,
       cargoCapacity: simulatedCargoCapacity(simulation.simulated),
+      // The fighter bay (CargoFighterSlots: GetCapacity(flagFighterBay)), where the hull has one (HasFighterBay); the
+      // squadrons in the tubes, full and partial (GetFullAndPartialSquadrons), and their damage (GetFighterDps).
+      fighterBay: location.value(ship, 2055) ? simulatedFighterBayCapacity(simulation.simulated) : null,
+      fighterSquadrons: fullAndPartialSquadrons(location, ship),
+      structure: ship.categoryID === 65,
+      fighterDps: totalFighterDps(location, ship, fighterAbilitiesOf, (item, attributeID) => location.value(item, attributeID)),
     });
   }
 
@@ -6213,8 +6234,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The pilot's security status, as the active ship's row carries it (_ApplyPilotSecurityStatusToShip).
     const shipID = store.fitting.get().activeShipID;
     const security = allInfo.ships.find((item) => Number(item.itemID) === shipID)?.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
-    const facts = await holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5).map((item) => item.typeID));
+    const [facts] = await Promise.all([
+      holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5 || item.flagID === 158).map((item) => item.typeID)),
+      ensureFighterAbilities(fitting.fitData.filter((item) => item.flagID >= 158 && item.flagID <= 163).map((item) => item.typeID)),
+    ]);
     const notInFitting: number[] = [];
+    const errors: SimulationUserError[] = [];
     simulation = {
       shipID: null,
       name: fitting.name,
@@ -6226,11 +6251,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         brain,
         fitting.fitData,
         serverNow,
-        { facts, notInFitting },
+        { facts, notInFitting, errors },
       ),
     };
     sayNotInFitting(notInFitting);
+    await sayFighterErrors(errors);
     showSimulation();
+  }
+
+  // Each fighter type's ability slots (fighterAbilitiesByType), read once a type.
+  const fighterAbilitiesKept = new Map<number, readonly (FighterAbilitySlot | null)[] | null>();
+  /** The ability slots of each fighter type named that are not held yet, read. */
+  async function ensureFighterAbilities(typeIDs: readonly number[]): Promise<void> {
+    const unknown = [...new Set(typeIDs)].filter((typeID) => !fighterAbilitiesKept.has(typeID));
+    for (let at = 0; at < unknown.length; at += 50) {
+      const read = await api.getFighterAbilities(unknown.slice(at, at + 50), callOptions).catch(() => null);
+      if (!read?.available) return;
+      for (const typeID of unknown.slice(at, at + 50)) fighterAbilitiesKept.set(typeID, read.types[typeID] ?? null);
+    }
+  }
+  const fighterAbilitiesOf = (typeID: number): readonly (FighterAbilitySlot | null)[] | null => fighterAbilitiesKept.get(typeID) ?? null;
+
+  /** fighters classNameMessageByFighterClass: the label of each class's name. */
+  const FIGHTER_CLASS_NAME_LABELS: Readonly<Record<string, string>> = {
+    light: "UI/Fighters/Class/Light", support: "UI/Fighters/Class/Support", heavy: "UI/Fighters/Class/Heavy",
+    standupLight: "UI/Fighters/Class/StandupLight", standupSupport: "UI/Fighters/Class/StandupSupport", standupHeavy: "UI/Fighters/Class/StandupHeavy",
+  };
+
+  /**
+   * The fighters' refusals and words as the client says them (FitFighterToTube's UserErrors and its
+   * CannotLoadFighterTubeSquadronIsFull), their types named; NoTubesAvailableForClass with its class's name.
+   */
+  async function sayFighterErrors(errors: readonly SimulationUserError[]): Promise<void> {
+    if (errors.length === 0) return;
+    await resolveNamesNow(errors.flatMap((error) => Object.values(error.values)).map((id) => ({ kind: "type" as const, id })));
+    for (const error of errors) {
+      const entries: [string, JsonValue][] = Object.entries(error.values).map(([key, value]) => [key, value]);
+      if (error.key === "CannotLoadFighterTubeNoTubesAvailableForClass" && simulation) {
+        const kind = fighterClass(simulation.simulated.location, error.values.newType ?? 0);
+        const label = kind === null ? null : FIGHTER_CLASS_NAME_LABELS[kind] ?? null;
+        if (label !== null) entries.push(["className", templateWords(label, {}, kind ?? "")]);
+      }
+      const named = Object.values(error.values).map((typeID) => nameCache.get(nameKey("type", typeID)) ?? String(typeID)).join(", ");
+      sayDialog(error.key, { type: "dict", entries }, `The fighters could not be put in that tube (${named}).`);
+    }
   }
 
   /** A charge loaded into the simulated module in a slot (FitAmmoToLocation); false where the module does not take it. */

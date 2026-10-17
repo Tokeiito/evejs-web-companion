@@ -13846,6 +13846,26 @@ app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => 
   }
 });
 
+// Each fighter type's three ability slots as the client's data has them (fighters.IterTypeAbilities: TypeStorage,
+// fighterAbilitiesByType.static), for the types asked: [slot0, slot1, slot2], each {abilityID, cooldownSeconds,
+// chargeCount, rearmTimeSeconds} or null; null for a type with none. `available` is false when the client's data could
+// not be read. At most 50.
+app.get("/api/client-data/fighter-abilities", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = typeof clientBuiltData.fighterAbilitiesByType === "function" ? await clientBuiltData.fighterAbilitiesByType() : null;
+    const types = {};
+    for (const typeID of asked.slice(0, 50)) types[typeID] = table ? table[String(typeID)] ?? null : null;
+    res.json({ ok: true, available: table !== null, types });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/clone-grade", requireAuth, async (req, res, next) => {
   const raceID = Number(req.query && req.query.raceID);
   if (!Number.isSafeInteger(raceID) || raceID <= 0) {

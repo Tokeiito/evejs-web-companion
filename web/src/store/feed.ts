@@ -291,6 +291,10 @@ export type FeedEvent =
       readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
       readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
       readonly cargoCapacity: { readonly capacity: number; readonly used: number };
+      readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+      readonly fighterSquadrons: { readonly full: number; readonly partial: number };
+      readonly fighterDps: number;
+      readonly structure: boolean;
     }
   // The simulation left (flow.exitSimulation).
   | { readonly type: "fitting/simulation-ended" }

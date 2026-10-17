@@ -133,6 +133,11 @@ const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
 // fsdlite.EveStorage(data='clonegrades', cache='clonegrades.static')): the same kind of cache, a record by race.
 const CLONE_GRADES = "res:/staticdata/clonegrades.static";
 
+// Each fighter type's three ability slots (fighters/storages.py TypeStorage: fsdlite.EveStorage(data=
+// 'fighters/abilitiesByType', cache='fighterAbilitiesByType.static')): the same kind of cache, a record by type, each
+// slot {abilityID, cooldownSeconds, charges: {chargeCount, rearmTimeSeconds}}.
+const FIGHTER_ABILITIES_BY_TYPE = "res:/staticdata/fighterabilitiesbytype.static";
+
 /** Runs the client's loader on a data file and answers what it printed. */
 function runLoader({ python, binFolder, loader, dataFile, attribute = null, keys = null, timeoutMs = LOAD_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
@@ -386,6 +391,47 @@ function createClientBuiltData({
     return cloneGradesRead;
   }
 
+  // The fighters' ability slots, once (FIGHTER_ABILITIES_BY_TYPE): {typeID: [slot0, slot1, slot2]}, each slot
+  // {abilityID, cooldownSeconds, chargeCount, rearmTimeSeconds} or null; null where they cannot be read.
+  let fighterAbilitiesRead = null;
+  function fighterAbilitiesByType() {
+    if (!available()) return Promise.resolve(null);
+    if (!fighterAbilitiesRead) {
+      fighterAbilitiesRead = Promise.resolve().then(() => {
+        const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
+        const relative = index.get(FIGHTER_ABILITIES_BY_TYPE);
+        if (!relative) throw new Error(`The client's index has no ${FIGHTER_ABILITIES_BY_TYPE}.`);
+        const { DatabaseSync } = require("node:sqlite");
+        const database = new DatabaseSync(path.join(clientRoot, "ResFiles", relative), { readOnly: true });
+        try {
+          const number = (value) => (Number.isFinite(Number(value)) && value !== null && value !== undefined ? Number(value) : null);
+          const slot = (value) => (value && typeof value === "object" && Number(value.abilityID) > 0
+            ? {
+                abilityID: Number(value.abilityID),
+                cooldownSeconds: number(value.cooldownSeconds),
+                chargeCount: number(value.charges && value.charges.chargeCount),
+                rearmTimeSeconds: number(value.charges && value.charges.rearmTimeSeconds),
+              }
+            : null);
+          const out = {};
+          for (const row of database.prepare("SELECT key, value FROM cache").all()) {
+            const record = JSON.parse(String(row.value));
+            if (Number(row.key) > 0 && record && typeof record === "object") {
+              out[String(row.key)] = [slot(record.abilitySlot0), slot(record.abilitySlot1), slot(record.abilitySlot2)];
+            }
+          }
+          return out;
+        } finally {
+          database.close();
+        }
+      }).catch((error) => {
+        onError(error);
+        return null;
+      });
+    }
+    return fighterAbilitiesRead;
+  }
+
   return {
     available,
     table,
@@ -393,6 +439,7 @@ function createClientBuiltData({
     infoBubbleGroups,
     infoBubbleTypeBonuses,
     cloneGrades,
+    fighterAbilitiesByType,
     async lookup(name, key) {
       const loaded = await table(name);
       if (!loaded) return { available: false, row: null };

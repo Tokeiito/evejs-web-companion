@@ -528,6 +528,8 @@ export class DogmaItem {
   readonly subLocations = new Map<number, DogmaItem>();
   /** A ship's: its drones (RegisterDrone), by key. */
   readonly drones = new Map<string, DogmaItem>();
+  /** A ship's: its fighters, in its tubes or its fighter bay (GetShipItemForFighter), by key. */
+  readonly fighters = new Map<string, DogmaItem>();
   /** How many the item is (the inventory row's stacksize: a stack of drones). */
   stacksize = 1;
   /** Its charged attributes (ChargedAttribute), by attribute. */
@@ -1369,6 +1371,7 @@ export class DogmaLocation {
     this.stopPassiveEffects(item);
     ship.fitted.delete(item.key);
     ship.drones.delete(item.key);
+    ship.fighters.delete(item.key);
     if (isCharge && item.flagID !== null) ship.subLocations.delete(item.flagID);
     this.items.delete(item.key);
     this.afterChange();
@@ -1380,6 +1383,20 @@ export class DogmaLocation {
    * (SetLocation: RegisterDrone), so owner-modifiable (IsOwnerModifiable: the pilot's ship holds it among its drones,
    * on the client), and its passive effects started.
    */
+  /**
+   * A squadron of fighters in one of the ship's tubes or in its fighter bay (LoadItem of a GhostFighterDogmaItem; a
+   * FighterDogmaItem): the pilot's (its owner), held by the ship (GetShipItemForFighter), so owner-modifiable
+   * (IsOwnerModifiable: AddFighterControllerOwnerModifiers, the owner's modifiers of its required skills), its passive
+   * effects started; its squadron size its stacksize (squadronSize).
+   */
+  loadFighter(ship: DogmaItem, key: string, typeID: number, flagID: number, squadronSize: number): DogmaItem {
+    const fighter = this.loadItem(key, typeID, { pilot: ship.pilot ?? undefined, flagID, ownerModifiable: true });
+    fighter.stacksize = squadronSize;
+    ship.fighters.set(fighter.key, fighter);
+    this.startPassiveEffects(fighter);
+    return fighter;
+  }
+
   loadDrone(ship: DogmaItem, key: string, typeID: number, stacksize: number): DogmaItem {
     const drone = this.loadItem(key, typeID, { pilot: ship.pilot ?? undefined, flagID: FLAG_DRONE_BAY, ownerModifiable: true });
     drone.stacksize = stacksize;

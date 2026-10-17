@@ -19,6 +19,7 @@ import { activeDroneBandwidth, activeDroneDps, type DroneReading } from "./drone
 import { loadSimulatedShip, type Brain, type DogmaItem, type DogmaLocation, type DogmaStatic, type SimulatedCharge } from "./location.ts";
 import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, offlineSlots, ONLINE, setModuleState } from "./moduleStates.ts";
 import { intDictOrder } from "../py27DictOrder.ts";
+import { ATTRIBUTE_FIGHTER_CAPACITY, ATTRIBUTE_FIGHTER_TUBES, FIGHTER_TUBE_FLAGS, FLAG_FIGHTER_BAY, TUBE_COUNT_ATTRIBUTE_BY_CLASS, fighterClass, fightersInTubes, maxSquadronSize } from "./fighters.ts";
 
 const ATTRIBUTE_VOLUME = 161;
 const ATTRIBUTE_DRONE_CAPACITY = 283;
@@ -162,6 +163,151 @@ export function setCargoQuantity(simulation: SimulatedShip, typeID: number, want
   return false;
 }
 
+/** A UserError of the client's the fighters' fitting raises or says, with its values. */
+export interface SimulationUserError {
+  readonly key: string;
+  readonly values: Readonly<Record<string, number>>;
+}
+
+const CATEGORY_FIGHTER = 87;
+/** fighters SquadronIsHeavy, SquadronIsSupport, SquadronIsLight: a fighter's kind, the standup kinds with them. */
+function squadronKind(simulation: SimulatedShip, typeID: number): "heavy" | "support" | "light" | null {
+  const has = (attributeID: number) => Boolean(typeAttribute(simulation.location, typeID, attributeID));
+  if (has(2214) || has(2742)) return "heavy";
+  if (has(2213) || has(2741)) return "support";
+  if (has(2212) || has(2740)) return "light";
+  return null;
+}
+
+/** The ship's fighters in its fighter bay (GetHoldItems(flagFighterBay)). */
+function fighterBayItems(simulation: SimulatedShip): DogmaItem[] {
+  return [...simulation.ship.fighters.values()].filter((fighter) => fighter.flagID === FLAG_FIGHTER_BAY);
+}
+
+/** GetCapacity(shipID, None, flagFighterBay) (472 to 477): the ship's fighterCapacity, against each squadron's size times its volume. */
+export function simulatedFighterBayCapacity(simulation: SimulatedShip): { readonly capacity: number; readonly used: number } {
+  const { location, ship } = simulation;
+  let used = 0;
+  for (const fighter of fighterBayItems(simulation)) used += fighter.stacksize * location.value(fighter, ATTRIBUTE_VOLUME);
+  return { capacity: location.value(ship, ATTRIBUTE_FIGHTER_CAPACITY), used };
+}
+
+/** GetMaxQty for the fighter bay: as many more of the type as its room left takes; null where none. */
+function fighterBayRoomFor(simulation: SimulatedShip, typeID: number): number | null {
+  const { capacity, used } = simulatedFighterBayCapacity(simulation);
+  const typeVolume = typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME);
+  const most = Math.trunc((capacity - used) / typeVolume);
+  return most ? most : null;
+}
+
+/**
+ * TryFitItemsToFighterBay (TryFitItemsToHold, flagFighterBay): each type, its volume and the hold's taking it at all
+ * as the cargo's (IsAllowedToAddAtAll), put in (FitAnItemToHold: to its squadron there as many more as the room left
+ * takes; else a squadron of all of it where the bay has room, FitItemOrDroneToShip). Answers the types put in that are
+ * no fighters (IsValidForHold: ItemAddedNotInFitting).
+ */
+export function fitItemsToFighterBay(simulation: SimulatedShip, qtyByTypeID: ReadonlyMap<number, number>, facts: HoldFacts): number[] {
+  const { location, ship } = simulation;
+  const notInFitting: number[] = [];
+  for (const typeID of intDictOrder([...qtyByTypeID.keys()])) {
+    const qty = qtyByTypeID.get(typeID) ?? 0;
+    const volume = typeAttribute(location, typeID, ATTRIBUTE_VOLUME);
+    if (volume <= 0) continue;
+    const categoryID = location.static.types[typeID]?.categoryID ?? null;
+    if (facts.dynamic(typeID) || categoryID === null || !ALLOWED_HOLD_CATEGORIES.has(categoryID)) continue;
+    const held = fighterBayItems(simulation).find((fighter) => fighter.typeID === typeID);
+    let added = false;
+    if (held) {
+      const more = Math.min(qty, fighterBayRoomFor(simulation, typeID) ?? 0);
+      if (!more) continue;
+      held.stacksize += more;
+      added = true;
+    } else {
+      const { capacity, used } = simulatedFighterBayCapacity(simulation);
+      if (used + volume * qty <= capacity) {
+        simulation.ghosts += 1;
+        location.loadFighter(ship, `${ship.key}|fighter|${simulation.ghosts}`, typeID, FLAG_FIGHTER_BAY, qty);
+        simulation.changed = true;
+        added = true;
+      }
+    }
+    if (added && categoryID !== CATEGORY_FIGHTER) notInFitting.push(typeID);
+  }
+  return notInFitting;
+}
+
+/**
+ * _CheckEmptyTubeCanAcceptFighter (338 to 355): the ship has tubes for the fighter's class (shipTubeCountAttribute-
+ * ByFighterClass), a tube free of the ship's fighterTubes, and fewer squadrons of the kind in its tubes than it takes.
+ */
+function emptyTubeCanTake(simulation: SimulatedShip, typeID: number): boolean {
+  const { location, ship } = simulation;
+  const kind = fighterClass(location, typeID);
+  const counts = { heavy: 0, support: 0, light: 0 };
+  for (const fighter of fightersInTubes(ship)) {
+    const of = squadronKind(simulation, fighter.typeID);
+    if (of) counts[of] += 1;
+  }
+  const total = counts.heavy + counts.support + counts.light;
+  const allowed = kind === null ? 0 : location.value(ship, TUBE_COUNT_ATTRIBUTE_BY_CLASS[kind] ?? 0);
+  const tubes = Math.trunc(location.value(ship, ATTRIBUTE_FIGHTER_TUBES));
+  if (!allowed) return false;
+  if (tubes <= total) return false;
+  if (kind === "light" || kind === "standupLight") return counts.light < allowed;
+  if (kind === "support" || kind === "standupSupport") return counts.support < allowed;
+  if (kind === "heavy" || kind === "standupHeavy") return counts.heavy < allowed;
+  return true;
+}
+
+/**
+ * FitFighterToTube (292 to 312): a squadron of another type in the tube refuses it
+ * (CannotLoadFighterTubeDifferentTypeAlreadyLoaded); as many more as its squadron takes (GetMaxExtraFighters), none
+ * said as CannotLoadFighterTubeSquadronIsFull; an empty tube that may not take it refuses it
+ * (CannotLoadFighterTubeNoTubesAvailableForClass); else a squadron of them in the tube. Answers the client's word where
+ * there is one: a refusal it raises (thrown: "raised"), or the one it says.
+ */
+export function fitFighterToTube(simulation: SimulatedShip, typeID: number, tubeFlagID: number, wanted: number): { readonly raised: boolean; readonly error: SimulationUserError } | null {
+  const { location, ship } = simulation;
+  const held = fightersInTubes(ship).find((fighter) => fighter.flagID === tubeFlagID) ?? null;
+  if (held && held.typeID !== typeID) {
+    return { raised: true, error: { key: "CannotLoadFighterTubeDifferentTypeAlreadyLoaded", values: { loadedType: held.typeID, newType: typeID } } };
+  }
+  const qty = Math.min(wanted, maxSquadronSize(location, typeID) - (held?.stacksize ?? 0));
+  if (held) {
+    if (qty < 1) return { raised: false, error: { key: "CannotLoadFighterTubeSquadronIsFull", values: { loadedType: held.typeID } } };
+    held.stacksize += qty;
+    return null;
+  }
+  if (!emptyTubeCanTake(simulation, typeID)) {
+    return { raised: true, error: { key: "CannotLoadFighterTubeNoTubesAvailableForClass", values: { newType: typeID } } };
+  }
+  simulation.ghosts += 1;
+  location.loadFighter(ship, `${ship.key}|fighter|${simulation.ghosts}`, typeID, tubeFlagID, qty);
+  simulation.changed = true;
+  return null;
+}
+
+/**
+ * FitFighters (958 to 965): the fitting's fighter bay put in the bay (TryFitItemsToFighterBay), then each squadron of
+ * its tubes into its tube (FitFighterToTube). A refusal it raises ends the loading there (the client's raise leaves the
+ * rest unloaded); answers the client's words.
+ */
+function fitFighters(simulation: SimulatedShip, items: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[], facts: HoldFacts, notInFitting: number[]): { readonly errors: SimulationUserError[]; readonly raised: boolean } {
+  const bay = new Map<number, number>();
+  for (const item of items) if (item.flagID === FLAG_FIGHTER_BAY) bay.set(item.typeID, (bay.get(item.typeID) ?? 0) + item.quantity);
+  notInFitting.push(...fitItemsToFighterBay(simulation, bay, facts));
+  const errors: SimulationUserError[] = [];
+  for (const item of items) {
+    if (!FIGHTER_TUBE_FLAGS.includes(item.flagID)) continue;
+    const said = fitFighterToTube(simulation, item.typeID, item.flagID, item.quantity);
+    if (said) {
+      errors.push(said.error);
+      if (said.raised) return { errors, raised: true };
+    }
+  }
+  return { errors, raised: false };
+}
+
 /** FittingDogmaLocation.RemoveAllItemsFromHold(flagCargo): the hold emptied. */
 export function emptyCargo(simulation: SimulatedShip): void {
   simulation.cargo.clear();
@@ -197,6 +343,8 @@ export function simulatedShipItems(simulation: SimulatedShip): { readonly typeID
   }
   for (const drone of ship.drones.values()) items.push({ typeID: drone.typeID, flagID: drone.flagID, quantity: drone.stacksize });
   for (const [typeID, quantity] of simulation.cargo) items.push({ typeID, flagID: FLAG_CARGO, quantity });
+  // fightersInTubes and the fighter bay's items (GetHoldItems(flagFighterBay)), each squadron's size.
+  for (const fighter of ship.fighters.values()) items.push({ typeID: fighter.typeID, flagID: fighter.flagID, quantity: fighter.stacksize });
   return items;
 }
 
@@ -243,8 +391,11 @@ export function simulateCurrentShip(
   charges: readonly SimulatedCharge[],
   drones: readonly { readonly typeID: number; readonly quantity: number }[],
   clock: () => number,
-  /** The ship's cargo, the hold's facts, and the types put in it a fitting does not keep there (for ItemAddedNotInFitting). */
-  hold: { readonly items: readonly { readonly typeID: number; readonly quantity: number }[]; readonly facts: HoldFacts; readonly notInFitting: number[] },
+  /**
+   * The ship's cargo, fighter bay and squadrons in its tubes, each its flag; the holds' facts; and the types put in them
+   * a fitting does not keep there (for ItemAddedNotInFitting) and the fighters' refusals (the client's words).
+   */
+  hold: { readonly items: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[]; readonly facts: HoldFacts; readonly notInFitting: number[]; readonly errors: SimulationUserError[] },
 ): SimulatedShip {
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
   const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), cargo: new Map(), changed: false, ghosts: 0 };
@@ -264,8 +415,11 @@ export function simulateCurrentShip(
     }
   }
   for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
-  // AddItemsToCargo: the ship's own cargo (LoadCurrentShip: each visible item in its cargo hold, its stack).
-  hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(hold.items.map((item) => ({ ...item, flagID: FLAG_CARGO }))), hold.facts));
+  // FitFighters, then AddItemsToCargo: the ship's own (LoadCurrentShip: each visible item in its cargo hold and its
+  // fighter bay with its stack, each squadron in a tube with its size).
+  const fighters = fitFighters(simulation, hold.items, hold.facts, hold.notInFitting);
+  hold.errors.push(...fighters.errors);
+  if (!fighters.raised) hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(hold.items), hold.facts));
   for (const charge of charges) location.loadCharge(ship, charge.flagID, charge.typeID);
   // LoadCurrentShip: ResetSimulationChangedFlag.
   simulation.changed = false;
@@ -740,8 +894,8 @@ export function simulateFitData(
   brain: Brain | null,
   fitData: readonly FitDataItem[],
   clock: () => number,
-  /** The hold's facts, and the types put in it a fitting does not keep there (for ItemAddedNotInFitting). */
-  hold: { readonly facts: HoldFacts; readonly notInFitting: number[] },
+  /** The holds' facts, the types put in them a fitting does not keep there (ItemAddedNotInFitting), the fighters' refusals. */
+  hold: { readonly facts: HoldFacts; readonly notInFitting: number[]; readonly errors: SimulationUserError[] },
 ): SimulatedShip {
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
   const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), cargo: new Map(), changed: false, ghosts: 0 };
@@ -763,8 +917,10 @@ export function simulateFitData(
     }
   }
   for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
-  // AddItemsToCargo: the fitting's cargo, each type as much as it holds (allowModifyQty False).
-  hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(fitData), hold.facts));
+  // FitFighters, then AddItemsToCargo: the fitting's fighters, and its cargo each type as much as it holds.
+  const fighters = fitFighters(simulation, fitData, hold.facts, hold.notInFitting);
+  hold.errors.push(...fighters.errors);
+  if (!fighters.raised) hold.notInFitting.push(...fitItemsToCargo(simulation, cargoQuantities(fitData), hold.facts));
   simulation.changed = false;
   return simulation;
 }
