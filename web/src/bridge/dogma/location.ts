@@ -41,9 +41,22 @@
 // ship is fitted to itself but has no location of its own, so an attribute of the ship made after a location modifier
 // was put in place never takes it.
 //
+// An item is loaded with its type's attributes, then its instance row's (GetInstance: the server's instance cache, the
+// ship's state; dgmAttributesByIdx, each that is not nought: online, damage, the capacitor's charge, skill points,
+// armour damage, the shield's charge, incapacitated), before it is fitted (BaseDogmaItem.Load, _LoadItem).
+//
+// A charged attribute (dogma/attributes/chargedAttribute.py: one the static data gives a recharge time, the capacitor's
+// charge and the shield's) takes no modifier, and runs by the clock (gametime.GetSimTime): made, it is its type's value
+// held to its cap; set, it is what it is set to from then on; each time it is read, and each time its cap or its
+// recharge time changes, it is brought up to that moment: scaled with its cap where the cap has changed, then
+// recharged by the time since it was last brought up, the root of its share of the cap closing on one by
+// exp(-t / (recharge time / 5)); at its cap or above it is its cap. (The client marks it dirty whenever anything its
+// cap or recharge time is reckoned from changes; here it is brought up where the cap's or the recharge time's value
+// has changed.)
+//
 // Not yet (later parts): the activated, overloaded and targeted effects (ghost fitting's module states), the
-// subsystems' hardpoint and slot effects (Python), drones and fighters, the skill level, charged, heat, security and
-// TiDi attribute classes.
+// subsystems' hardpoint and slot effects (Python), fighters, the skill level, heat, security and TiDi attribute
+// classes.
 
 import type { JsonValue } from "../wire.ts";
 import { readDictPairs, isListValue, unwrapLong, unwrapReal } from "../wire.ts";
@@ -150,6 +163,19 @@ const ATTRIBUTE_UPGRADE_LOAD = 1152;
 const ATTRIBUTE_UPGRADE_COST = 1153;
 const OP_MOD_ADD = 2;
 const OP_MOD_SUB = 3;
+/** dogma/const.py dgmAttributesByIdx: an instance row's attributes, by their index in it. */
+export const INSTANCE_ROW_ATTRIBUTES: readonly number[] = [2, 3, 18, 276, 266, 264, 1168];
+
+/**
+ * baseDogmaStaticSvc damageStateAttributes: damage, armour damage, the shield's charge, the attributes the client's dogma
+ * location takes from the server's word of a change (OnModuleAttributeChanges).
+ */
+export const DAMAGE_STATE_ATTRIBUTES: ReadonlySet<number> = new Set([3, 266, 264]);
+
+/** An instance row's values (in its order, after the item's ID) by attribute, as BaseDogmaItem.Load takes them. */
+export function instanceRowAttributes(values: readonly number[]): Map<number, number> {
+  return new Map(INSTANCE_ROW_ATTRIBUTES.map((attributeID, index) => [attributeID, values[index] ?? 0]));
+}
 const CATEGORY_SHIP = 6;
 const CATEGORY_DRONE = 18;
 const FLAG_DRONE_BAY = 87;
@@ -266,6 +292,8 @@ export class DogmaItem {
   readonly drones = new Map<string, DogmaItem>();
   /** How many the item is (the inventory row's stacksize: a stack of drones). */
   stacksize = 1;
+  /** Its charged attributes (ChargedAttribute), by attribute. */
+  readonly charged = new Map<number, ChargedState>();
   /** A location's: the items fitted to it (itself among them, for a ship), and the modifiers it holds for them. */
   readonly fitted = new Map<string, DogmaItem>();
   readonly locationMods = new Map<number, Map<string, HeldModifier>>();
@@ -281,6 +309,16 @@ export class DogmaItem {
     this.categoryID = facts ? facts.categoryID : null;
     this.reqSkills = new Set(facts ? facts.requiredSkills : []);
   }
+}
+
+/** A charged attribute's (ChargedAttribute): what it is, the cap and recharge rate it was last brought up with, and when. */
+interface ChargedState {
+  current: number;
+  prevCap: number;
+  /** In milliseconds. */
+  lastCalcTime: number;
+  /** The recharge time over five. */
+  rechargeRate: number;
 }
 
 function heldSet<K>(map: Map<K, Map<string, HeldModifier>>, key: K): Map<string, HeldModifier> {
@@ -310,9 +348,15 @@ export class DogmaLocation {
   private readonly items = new Map<string, DogmaItem>();
   private readonly cache = new Map<string, number>();
   private readonly reckoning = new Set<string>();
+  /** gametime.GetSimTime, in milliseconds: what the charged attributes run by. */
+  private readonly clock: () => number;
+  /** The charged attributes made. */
+  private readonly chargedAttributes: [DogmaItem, number][] = [];
+  private settling = false;
 
-  constructor(staticData: DogmaStatic) {
+  constructor(staticData: DogmaStatic, clock: () => number = () => Date.now()) {
     this.static = staticData;
+    this.clock = clock;
   }
 
   item(key: string): DogmaItem | null {
@@ -334,6 +378,8 @@ export class DogmaLocation {
       readonly ownerModifiable?: boolean;
       /** DBLessDogmaItem: its Load does nothing, so its attributes are made only as they are asked for. */
       readonly dbless?: boolean;
+      /** Its instance row (GetInstance), by attribute (INSTANCE_ROW_ATTRIBUTES). */
+      readonly instance?: ReadonlyMap<number, number>;
     } = {},
   ): DogmaItem {
     const facts = this.static.types[typeID] ?? null;
@@ -350,12 +396,79 @@ export class DogmaLocation {
     }
     if (links.flagID !== undefined) item.flagID = links.flagID;
     item.ownerModifiable = links.ownerModifiable === true;
-    for (const [attributeID, value] of facts && links.dbless !== true ? facts.attributes : []) {
-      this.makeAttribute(item, attributeID);
-      item.attributes.set(attributeID, value);
+    if (links.dbless !== true) {
+      for (const [attributeID, value] of facts ? facts.attributes : []) this.putBaseValue(item, attributeID, value);
+      for (const [attributeID, value] of links.instance ?? []) if (value !== 0) this.putBaseValue(item, attributeID, value);
     }
-    this.cache.clear();
+    this.afterChange();
     return item;
+  }
+
+  /** After a change: each charged attribute whose cap or recharge time it changed brought up now (MarkDirty: Update). */
+  private afterChange(): void {
+    this.cache.clear();
+    if (this.chargedAttributes.length === 0 || this.settling) return;
+    this.settling = true;
+    try {
+      const at = this.clock();
+      for (const [item, attributeID] of this.chargedAttributes) {
+        const state = item.charged.get(attributeID);
+        const record = this.record(attributeID);
+        if (!state || !record || !record.maxAttributeID || !record.chargeRechargeTimeID) continue;
+        const changed =
+          this.value(item, record.maxAttributeID) !== state.prevCap ||
+          this.value(item, record.chargeRechargeTimeID) / 5.0 !== state.rechargeRate;
+        if (changed) this.updateCharged(item, attributeID, state, at);
+      }
+    } finally {
+      this.settling = false;
+    }
+  }
+
+  /** ChargedAttribute.Update, at `at`. */
+  private updateCharged(item: DogmaItem, attributeID: number, state: ChargedState, at: number): void {
+    const record = this.record(attributeID);
+    if (!record || !record.maxAttributeID || !record.chargeRechargeTimeID) return;
+    const capVal = this.value(item, record.maxAttributeID);
+    state.rechargeRate = this.value(item, record.chargeRechargeTimeID) / 5.0;
+    const rechargeDelayFactor = state.rechargeRate;
+    if (capVal === 0) {
+      state.current = 0;
+      state.prevCap = 0;
+      return;
+    }
+    if (capVal !== state.prevCap) {
+      if (state.prevCap > 0) state.current = (state.current / state.prevCap) * capVal;
+      state.prevCap = capVal;
+    }
+    if (capVal <= state.current) {
+      state.current = capVal;
+      return;
+    }
+    if (rechargeDelayFactor === 0) {
+      state.lastCalcTime = at;
+      return;
+    }
+    const timeDiffMs = at - state.lastCalcTime;
+    if (timeDiffMs < -0.0001) return;
+    const root = Math.sqrt(state.current / capVal);
+    const rootBlended = (root - 1.0) * Math.exp(-timeDiffMs / rechargeDelayFactor) + 1.0;
+    state.current = rootBlended * rootBlended * capVal;
+    state.lastCalcTime = at;
+  }
+
+  /** SetBaseValue, inside a change: a charged attribute is what it is set to from now on (MarkDirty: Update). */
+  private putBaseValue(item: DogmaItem, attributeID: number, value: number | null): void {
+    this.makeAttribute(item, attributeID);
+    const state = item.charged.get(attributeID);
+    if (!state) {
+      item.attributes.set(attributeID, value);
+      return;
+    }
+    if (value === null || state.current === value) return;
+    state.current = value;
+    state.lastCalcTime = this.clock();
+    this.updateCharged(item, attributeID, state, state.lastCalcTime);
   }
 
   /** The attribute's static record. */
@@ -382,6 +495,20 @@ export class DogmaLocation {
     const record = this.record(attributeID);
     if (record && record.maxAttributeID) this.makeAttribute(item, record.maxAttributeID);
     if (record && record.minAttributeID) this.makeAttribute(item, record.minAttributeID);
+    if (record && record.maxAttributeID && record.chargeRechargeTimeID) {
+      // ChargedAttribute: no modifier taken (AddIncomingModifier), its recharge time made, its type's value held to
+      // its cap, from now.
+      this.makeAttribute(item, record.chargeRechargeTimeID);
+      const capVal = this.value(item, record.maxAttributeID);
+      item.charged.set(attributeID, {
+        current: Math.min(capVal, this.typeValue(item, attributeID)),
+        prevCap: capVal,
+        lastCalcTime: this.clock(),
+        rechargeRate: this.value(item, record.chargeRechargeTimeID) / 5.0,
+      });
+      this.chargedAttributes.push([item, attributeID]);
+      return;
+    }
     const location = item.location;
     if (location) this.pickUpFromLocation(location, item, attributeID);
     if (item.pilot && item.ownerModifiable) this.pickUpFromOwner(item.pilot, item, attributeID);
@@ -405,8 +532,11 @@ export class DogmaLocation {
   }
 
   private addIncoming(item: DogmaItem, attributeID: number, held: HeldModifier): void {
+    // ChargedAttribute.AddIncomingModifier: "Cannot modify a charged attribute!"
+    const record = this.record(attributeID);
+    if (record && record.maxAttributeID && record.chargeRechargeTimeID) return;
     heldSet(item.incoming, attributeID).set(heldKey(held), held);
-    this.cache.clear();
+    this.afterChange();
   }
 
   /** dogmaItems[itemID].attributes[attribID], as a modifier's source. */
@@ -554,8 +684,8 @@ export class DogmaLocation {
    * FitModuleToShip (GetLoadedItem, _LoadItem): a module loaded in a slot of the ship, fitted to it (SetLocation,
    * RegisterFittedItem) and its passive effects started (FitItemToLocation: a fitting flag).
    */
-  fitModule(ship: DogmaItem, key: string, typeID: number, flagID: number): DogmaItem {
-    const module = this.loadItem(key, typeID, { location: ship, flagID });
+  fitModule(ship: DogmaItem, key: string, typeID: number, flagID: number, instance?: ReadonlyMap<number, number>): DogmaItem {
+    const module = this.loadItem(key, typeID, { location: ship, flagID, ...(instance ? { instance } : {}) });
     ship.fitted.set(module.key, module);
     if (isFittingFlag(flagID)) this.startPassiveEffects(module);
     return module;
@@ -650,17 +780,24 @@ export class DogmaLocation {
 
   /** SetAttributeValue: an attribute's base value. */
   setBaseValue(item: DogmaItem, attributeID: number, value: number): void {
-    this.makeAttribute(item, attributeID);
-    item.attributes.set(attributeID, value);
-    this.cache.clear();
+    this.putBaseValue(item, attributeID, value);
+    this.afterChange();
   }
 
-  /** Attribute.GetValue: the attribute's value as Update reckons it (its base, the modifiers reaching it). */
+  /**
+   * Attribute.GetValue: the attribute's value as Update reckons it (its base, the modifiers reaching it); a charged
+   * attribute's brought up to now (ChargedAttribute.GetValue: it is always dirty, so always updated).
+   */
   value(item: DogmaItem, attributeID: number): number {
     const cacheKey = `${item.key}|${attributeID}`;
     const kept = this.cache.get(cacheKey);
     if (kept !== undefined) return kept;
     this.makeAttribute(item, attributeID);
+    const charged = item.charged.get(attributeID);
+    if (charged) {
+      this.updateCharged(item, attributeID, charged, this.clock());
+      return charged.current;
+    }
     const record = this.record(attributeID);
     const base = item.attributes.get(attributeID) ?? this.typeValue(item, attributeID);
     if (this.reckoning.has(cacheKey)) return base;
@@ -709,16 +846,20 @@ export class DogmaLocation {
  * pilot's ship yet: GetShip); the pilot seated in it (SetLocation, flagPilot: RegisterPilot, shipsByPilotID); then
  * MakeShipActive, which fits the ship to itself again (OnItemLoaded), starting the rest of its passive effects, and
  * applies the brain (ApplyBrainEffects); then the pilot's security status set on the ship.
+ *
+ * `loading`: the location's clock, and the pilot's and the ship's instance rows. A ghost's are nought (the Fitting
+ * window's GetInstance of an item that has none); the client's own ship's are the server's (its ship's state).
  */
 export function loadSimulatedShip(
   staticData: DogmaStatic,
   shipTypeID: number,
   pilot: { readonly characterID: number; readonly typeID: number; readonly securityStatus: number },
   brain: Brain | null,
+  loading: SimulatedLoading = {},
 ): { readonly location: DogmaLocation; readonly ship: DogmaItem; readonly pilot: DogmaItem } {
-  const location = new DogmaLocation(staticData);
-  const pilotItem = location.loadItem(String(pilot.characterID), pilot.typeID);
-  const ship = location.loadItem(`0_${shipTypeID}_ghost`, shipTypeID);
+  const location = new DogmaLocation(staticData, loading.clock);
+  const pilotItem = location.loadItem(String(pilot.characterID), pilot.typeID, loading.pilotInstance ? { instance: loading.pilotInstance } : {});
+  const ship = location.loadItem(`0_${shipTypeID}_ghost`, shipTypeID, loading.shipInstance ? { instance: loading.shipInstance } : {});
   ship.pilot = pilotItem;
   pilotItem.pilot = pilotItem;
   // LoadItem: ShipDogmaItem.OnItemLoaded, FitItemToLocation(ship, ship), then the passive effects.
@@ -735,12 +876,20 @@ export function loadSimulatedShip(
   return { location, ship, pilot: pilotItem };
 }
 
-/** A module to simulate: its key, type and slot, and whether it is online. */
+/** How a simulated ship is loaded: the location's clock (gametime.GetSimTime), and the instance rows it is loaded with. */
+export interface SimulatedLoading {
+  readonly clock?: () => number;
+  readonly shipInstance?: ReadonlyMap<number, number>;
+  readonly pilotInstance?: ReadonlyMap<number, number>;
+}
+
+/** A module to simulate: its key, type and slot, whether it is online, and its instance row where it has one. */
 export interface SimulatedModule {
   readonly key: string;
   readonly typeID: number;
   readonly flagID: number;
   readonly online: boolean;
+  readonly instance?: ReadonlyMap<number, number>;
 }
 
 /** A charge to simulate: the slot it is loaded in, and its type. */
@@ -760,6 +909,7 @@ export function loadSimulatedFitting(
   brain: Brain | null,
   modules: readonly SimulatedModule[],
   charges: readonly SimulatedCharge[],
+  loading: SimulatedLoading = {},
 ): {
   readonly location: DogmaLocation;
   readonly ship: DogmaItem;
@@ -767,10 +917,10 @@ export function loadSimulatedFitting(
   readonly modules: ReadonlyMap<string, DogmaItem>;
   readonly charges: readonly DogmaItem[];
 } {
-  const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain);
+  const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, loading);
   const fitted = new Map<string, DogmaItem>();
   const byFlag = [...modules].sort((left, right) => right.flagID - left.flagID);
-  for (const module of byFlag) fitted.set(module.key, loaded.location.fitModule(loaded.ship, module.key, module.typeID, module.flagID));
+  for (const module of byFlag) fitted.set(module.key, loaded.location.fitModule(loaded.ship, module.key, module.typeID, module.flagID, module.instance));
   for (const module of byFlag) {
     const item = fitted.get(module.key);
     if (module.online && item) loaded.location.onlineModule(item);

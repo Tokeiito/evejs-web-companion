@@ -27,14 +27,16 @@ import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
-import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
+import { decodeItemAttributeChanges, locationAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
 import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
 import { dockedDrones } from "../bridge/dogma/drones.ts";
 import {
+  DAMAGE_STATE_ATTRIBUTES,
   decodeBrain,
+  instanceRowAttributes,
   loadSimulatedFitting,
   type DogmaAttributeRecord as DogmaLocationAttributeRecord,
   type DogmaEffectFacts,
@@ -405,7 +407,7 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
-import { itemHasActivationCycle } from "../bridge/boundDogma.ts";
+import { decodeInstanceRows, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
@@ -5542,8 +5544,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R12 Ship fitting ----------------------------------------------------
 
+  /**
+   * The damage-state changes the client's dogma location has taken since (OnModuleAttributeChanges: an item's damage,
+   * armour damage and shield charge, each set as it is heard), the last of each item and attribute, in the order they
+   * were heard, each with the moment by the server's clock.
+   */
+  const damageStateHeard = new Map<string, { readonly itemID: number; readonly attributeID: number; readonly value: number; readonly at: number }>();
+
   /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
   function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
+    for (const change of locationAttributeChanges(method, args)) {
+      if (!DAMAGE_STATE_ATTRIBUTES.has(change.attributeID)) continue;
+      const key = `${change.itemID}|${change.attributeID}`;
+      damageStateHeard.delete(key);
+      damageStateHeard.set(key, { ...change, at: serverNow() });
+    }
     const current = store.fitting.get();
     if (current.activeShipID === null || current.shipAttributes === undefined) return;
     const changed = decodeItemAttributeChanges(method, args, current.activeShipID);
@@ -5684,8 +5699,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *   godma's again              the weapons' rates, multipliers and reloads (GetTurretMissileAndAoeDps:
    *                              GetGodmaAttributeValue)
    *
-   * A figure godma's row does not list is read off the dogma location. The charged attributes (capacitor and shield
-   * charge, which run by the clock) are left out.
+   * A figure godma's row does not list is read off the dogma location. The ship and its modules are loaded with the
+   * server's instance rows (the ship's state: MakeShipActive), at the moment they were the server's (the ship's row's
+   * time: godma was primed with both), and the location runs by the server's clock from then: the charged attributes
+   * (the capacitor's and the shield's charge) are brought up to each moment they are read. No panel shows them, and
+   * the window's figures leave them out.
    *
    * Docked only for now. In space a module may be running, and the running effects are a later part, so there the
    * server's figures stand.
@@ -5700,6 +5718,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const pilotTypeID = allInfo.character?.typeID ?? null;
     const shipInfo = allInfo.ships.find((item) => Number(item.itemID) === shipID && item.sublocation == null);
     if (!brain || !shipInfo || shipInfo.typeID === null || !Number.isSafeInteger(characterID) || pilotTypeID === null) return;
+    // The instance rows the client's dogma location loads the ship and its items with (the ship's state).
+    const instances = decodeInstanceRows(allInfo.shipState);
+    const instanceOf = (itemID: number | string | null): Map<number, number> | undefined => {
+      const row = itemID === null ? undefined : instances.get(String(itemID));
+      return row ? instanceRowAttributes(row) : undefined;
+    };
     const modules: SimulatedModule[] = [];
     const charges: SimulatedCharge[] = [];
     for (const item of allInfo.ships) {
@@ -5710,7 +5734,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       // Online where its online effect is among its active effects (the row's activeEffects, as godma keeps them).
       const online = readDictPairs(item.activeEffects).some(([effectID]) => Number(effectID) === 16);
-      modules.push({ key: String(item.itemID), typeID: item.typeID, flagID: item.flagID, online });
+      modules.push({ key: String(item.itemID), typeID: item.typeID, flagID: item.flagID, online, instance: instanceOf(item.itemID) });
     }
     // The pilot's security status as the ship's row carries it (pilotSecurityStatus).
     const security = shipInfo.attributes.find((attribute) => attribute.attributeID === 2610)?.value;
@@ -5726,6 +5750,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ];
     const staticData = await dogmaStaticFor(typeIDs, attributeIDs);
     if (!staticData || store.fitting.get().activeShipID !== shipID) return;
+    // Loaded at the moment the ship's state was the server's (MakeShipActive), read at each moment after.
+    let loadingAt: number | null = infoTimeMs(shipInfo.time) ?? serverNow();
     const reckoned = loadSimulatedFitting(
       staticData,
       shipInfo.typeID,
@@ -5733,8 +5759,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       brain,
       modules,
       charges,
+      { clock: () => loadingAt ?? serverNow(), shipInstance: instanceOf(shipInfo.itemID), pilotInstance: instanceOf(characterID) },
     );
     for (const stack of bay) reckoned.location.loadDrone(reckoned.ship, String(stack.itemID), stack.typeID, stack.quantity);
+    // What the location has taken since: each damage-state change heard after the ship's state was the server's, set
+    // on its item (where it is loaded) at the moment it was heard.
+    const loadedAt = loadingAt;
+    for (const [key, heard] of damageStateHeard) {
+      if (heard.at < loadedAt) {
+        damageStateHeard.delete(key);
+        continue;
+      }
+      const item = heard.itemID === shipID ? reckoned.ship : reckoned.modules.get(String(heard.itemID));
+      if (!item) continue;
+      loadingAt = heard.at;
+      reckoned.location.setBaseValue(item, heard.attributeID, heard.value);
+    }
+    loadingAt = null;
     // Godma's rows: the ship's, its modules' and charges' (keyed as the location keys them), the pilot's.
     const godmaRows = new Map<string, Map<number, number>>();
     const rowOf = (attributes: readonly { readonly attributeID: number; readonly value: number | boolean | null }[]): Map<number, number> =>
