@@ -6,10 +6,11 @@
 // Reckoned so far: the missing subsystems, modules in slots the hull has not, the CPU, powergrid and calibration
 // overloaded, the cargo hold overloaded, the tanking warnings (dual tanked, a shield hull armour tanked and the other
 // way round), mixed turret groups, launcher groups and turret sizes, polarized weapons, offline modules, undersized and
-// inefficient propulsion modules, and bubble immunity disabled. Not yet: the modules giving no bonus, the missing
-// charges and the stacking penalties.
+// inefficient propulsion modules, bubble immunity disabled, and the modules missing their charges. Not yet: the
+// modules giving no bonus and the stacking penalties.
 
 import type { DogmaStatic } from "./location.ts";
+import { intDictOrder } from "../py27DictOrder.ts";
 
 /** fittingWarningConst's levels. */
 export const WARNING_LEVEL_LOW = 1;
@@ -156,8 +157,21 @@ const SUBSYSTEM_INFO_BY_SLOT: Readonly<Record<number, { readonly groupID: number
 export const TYPE_LIST_FITTING_WARNINGS_SHIELD = 145;
 export const TYPE_LIST_FITTING_WARNINGS_ARMOR = 146;
 export const TYPE_LIST_FITTING_WARNINGS_HULL = 147;
+/** evetypes TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES and _NEED_CHARGES. */
+export const TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES = 216;
+export const TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES = 217;
 /** The type lists the warnings go by, to read for the fitted types. */
-export const WARNING_TYPE_LISTS: readonly number[] = [TYPE_LIST_FITTING_WARNINGS_SHIELD, TYPE_LIST_FITTING_WARNINGS_ARMOR, TYPE_LIST_FITTING_WARNINGS_HULL];
+export const WARNING_TYPE_LISTS: readonly number[] = [
+  TYPE_LIST_FITTING_WARNINGS_SHIELD, TYPE_LIST_FITTING_WARNINGS_ARMOR, TYPE_LIST_FITTING_WARNINGS_HULL,
+  TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES, TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES,
+];
+/** appConst categoryCharge, flagCargo, flagSpecializedAmmoHold; attributeCapacity, attributeVolume. */
+const CATEGORY_CHARGE = 8;
+const FLAG_SPECIALIZED_AMMO_HOLD = 143;
+const ATTRIBUTE_CAPACITY = 38;
+const ATTRIBUTE_VOLUME = 161;
+/** fittingWarningsCharges TREAT_AS_FULL: a scan probe launcher full at eight. */
+const TREAT_AS_FULL: Readonly<Record<number, number>> = { 481: 8 };
 /** fittingWarningConst INFO_BUBBLE_SHIELD, INFO_BUBBLE_ARMOR, INFO_BUBBLE_SHIELD_OR_ARMOR: a hull's tanking elements. */
 const INFO_BUBBLE_SHIELD = 20;
 const INFO_BUBBLE_ARMOR = 7;
@@ -212,6 +226,111 @@ export interface FitWarningInputs {
   readonly typeLists: (typeID: number) => ReadonlySet<number>;
   /** cfg.infoBubbleTypeElements of the ship's type: its elements; null where it has none. */
   readonly shipElements: readonly number[] | null;
+  /**
+   * FindModulesWithMissingCharges' fitting: each item fitted in a module slot (a module one, a charge its quantity:
+   * GetQuantity) and each stack in the cargo hold and the specialized ammo hold (GetHoldItems), (typeID, flagID, qty);
+   * null where the ship's item is no ship.
+   */
+  readonly chargesFit: readonly (readonly [number, number, number])[] | null;
+}
+
+/**
+ * infoSvc.GetUsedWithTypeIDs of a module, of the charges named (_GetUsedWithTuple keeps only those): a published charge
+ * in one of the module's charge groups, its volume within the module's capacity, its size the module's where the module
+ * has one (_AddUsedWithTypeIDs). Null for a module the table has nothing for: one not published or with no charge
+ * groups. (The table is the client's of every type; a module whose groups hold no charge it may use at all, which the
+ * table would leave out, is not told apart here.)
+ */
+function usedWithOf(staticData: DogmaStatic, moduleTypeID: number, chargeTypeIDs: readonly number[]): number[] | null {
+  const module = staticData.types[moduleTypeID];
+  const chargeGroups = (module?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+  if (!module || module.published === false || chargeGroups.length === 0) return null;
+  const capacity = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY);
+  const size = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CHARGE_SIZE) ?? 0;
+  return chargeTypeIDs.filter((chargeTypeID) => {
+    const charge = staticData.types[chargeTypeID];
+    if (!charge || charge.published === false || charge.groupID === null || !chargeGroups.includes(charge.groupID)) return false;
+    if (capacity !== null && capacity < (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0)) return false;
+    return !size || (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_CHARGE_SIZE) ?? 0) === size;
+  });
+}
+
+/**
+ * fittingWarningsCharges.FindModulesMissingCharges: the modules that need charges (list 217) and those that take
+ * optional ones (list 216), each with no charge, or short by more than one of full (its capacity over the charge's
+ * volume, a scan probe launcher's eight), that the charges in the cargo and ammo holds cannot fill
+ * (FindModulesThatCannotBeFilled: the modules of the same usable charges and capacity together, each charge's full
+ * rounds taken off them in turn).
+ */
+function findModulesMissingCharges(staticData: DogmaStatic, currentFit: readonly (readonly [number, number, number])[], lists: (typeID: number) => ReadonlySet<number>): { readonly required: [number, number][]; readonly optional: [number, number][] } {
+  const chargesInFlags = new Map<number, [number, number][]>();
+  for (const [typeID, flagID, qty] of currentFit) {
+    if (staticData.types[typeID]?.categoryID !== CATEGORY_CHARGE) continue;
+    const list = chargesInFlags.get(flagID) ?? [];
+    list.push([typeID, qty]);
+    chargesInFlags.set(flagID, list);
+  }
+  // _GetAllChargesInHolds: the cargo hold's and the ammo hold's charges by type.
+  const chargesLeft = new Map<number, number>();
+  for (const flagID of intDictOrder([...chargesInFlags.keys()])) {
+    if (flagID !== FLAG_CARGO && flagID !== FLAG_SPECIALIZED_AMMO_HOLD) continue;
+    for (const [chargeTypeID, qty] of chargesInFlags.get(flagID) ?? []) chargesLeft.set(chargeTypeID, (chargesLeft.get(chargeTypeID) ?? 0) + qty);
+  }
+  const needing: [number, number][] = currentFit.filter(([typeID]) => lists(typeID).has(TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES)).map(([typeID, flagID]) => [typeID, flagID]);
+  const optional: [number, number][] = currentFit.filter(([typeID]) => lists(typeID).has(TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES)).map(([typeID, flagID]) => [typeID, flagID]);
+  const withoutCharges: [number, number][] = [];
+  const partiallyFull = new Map<number, [number, number, number][]>();
+  for (const [moduleTypeID, flagID] of [...needing, ...optional]) {
+    const loaded = chargesInFlags.get(flagID);
+    if (!loaded) {
+      withoutCharges.push([moduleTypeID, flagID]);
+      continue;
+    }
+    const [chargeTypeID, chargeQty] = loaded[0]!;
+    let qtyFull = Math.trunc((typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY) ?? 0) / (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0));
+    const overridden = TREAT_AS_FULL[staticData.types[moduleTypeID]?.groupID ?? -1];
+    if (overridden && overridden < qtyFull) qtyFull = overridden;
+    if (qtyFull - chargeQty > 1) {
+      const list = partiallyFull.get(chargeTypeID) ?? [];
+      list.push([moduleTypeID, flagID, chargeQty]);
+      partiallyFull.set(chargeTypeID, list);
+    }
+  }
+  for (const chargeTypeID of intDictOrder([...partiallyFull.keys()])) {
+    for (const [moduleTypeID, flagID, chargeQty] of partiallyFull.get(chargeTypeID) ?? []) {
+      withoutCharges.push([moduleTypeID, flagID]);
+      chargesLeft.set(chargeTypeID, (chargesLeft.get(chargeTypeID) ?? 0) + chargeQty);
+    }
+  }
+  // GetGroupsDict and FindModulesThatCannotBeFilled.
+  const chargeTypesLeft = [...chargesLeft.keys()];
+  const groupings = new Map<string, { readonly chargeTypeIDs: readonly number[]; readonly capacity: number; readonly modules: [number, number][] }>();
+  for (const [moduleTypeID, flagID] of withoutCharges) {
+    const usedWith = usedWithOf(staticData, moduleTypeID, chargeTypesLeft);
+    if (usedWith === null) continue;
+    const chargeTypeIDs = [...new Set(usedWith)].sort((a, b) => a - b);
+    const capacity = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY) ?? 0;
+    const key = `${chargeTypeIDs.join(",")}|${capacity}`;
+    const group = groupings.get(key) ?? { chargeTypeIDs, capacity, modules: [] };
+    group.modules.push([moduleTypeID, flagID]);
+    groupings.set(key, group);
+  }
+  const cannotBeFilled: [number, number][] = [];
+  for (const { chargeTypeIDs, capacity, modules } of groupings.values()) {
+    let leftToFill = modules.length;
+    let filled = false;
+    for (const chargeTypeID of chargeTypeIDs) {
+      const qtyForFull = Math.trunc(capacity / (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0));
+      leftToFill -= Math.trunc((chargesLeft.get(chargeTypeID) ?? 0) / qtyForFull);
+      if (leftToFill <= 0) {
+        filled = true;
+        break;
+      }
+    }
+    if (!filled) cannotBeFilled.push(...modules);
+  }
+  const among = (pairs: readonly [number, number][]) => (pair: [number, number]) => pairs.some(([typeID, flagID]) => typeID === pair[0] && flagID === pair[1]);
+  return { required: cannotBeFilled.filter(among(needing)), optional: cannotBeFilled.filter(among(optional)) };
 }
 
 function typeAttribute(staticData: DogmaStatic, typeID: number, attributeID: number): number | null {
@@ -342,6 +461,12 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
       rows: [...turretsBySize].sort(([left], [right]) => left - right)
         .map(([size, pairs]) => ({ kind: "size", size, icon: ICON_BY_SIZE[size] ?? null, flags: pairs.map(([, flagID]) => flagID) })),
     });
+  }
+  // FindModulesWithMissingCharges: of a ship.
+  if (inputs.chargesFit !== null) {
+    const missing = findModulesMissingCharges(staticData, inputs.chargesFit, inputs.typeLists);
+    if (missing.required.length > 0) found.set(WARNING.MISSING_REQ_CHARGES, { flags: [...new Set(missing.required.map(([, flagID]) => flagID))], rows: [] });
+    if (missing.optional.length > 0) found.set(WARNING.MISSING_OPTIONAL_CHARGES, { flags: [...new Set(missing.optional.map(([, flagID]) => flagID))], rows: [] });
   }
   // FindOfflineModules (AddModuleRows: by their slots' order).
   const offline = [...inputs.offlineModules]

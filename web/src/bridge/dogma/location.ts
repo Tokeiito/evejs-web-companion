@@ -107,6 +107,8 @@ export interface DogmaTypeFacts {
   readonly categoryID: number | null;
   /** get_dogma_required_skills: the skills it requires (an item's reqSkills). */
   readonly requiredSkills: readonly number[];
+  /** evetypes.IsPublished; unknown where it was not read. */
+  readonly published?: boolean | null;
   /** GetCanFitShipGroups and GetCanFitShipTypes: the ship groups and types it may be fitted to (none: any). */
   readonly fitsShipGroups?: readonly number[];
   readonly fitsShipTypes?: readonly number[];

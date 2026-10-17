@@ -13644,6 +13644,8 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         groupID,
         categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
+        // evetypes.IsPublished.
+        published: type.published === undefined || type.published === null ? null : Boolean(type.published),
       };
     }
     const effectRows = effectIDs.length > 0 ? await clientBuiltData.rows("dogmaEffects", effectIDs) : {};

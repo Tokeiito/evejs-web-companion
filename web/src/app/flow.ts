@@ -6065,15 +6065,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // GetCapacityInfo (GetFighterCapacity or GetDroneCapacity: GetStatsInfo, the controller's GetAttribute to ten
     // places). Its use is unknown where the inventory cannot be read.
     const kind: "fighter" | "drone" = accurate(reckoned.ship, 2055) ? "fighter" : "drone";
-    const used = await api.getShipBays(shipID, callOptions, [kind])
-      .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === kind)?.capacity?.used ?? null)
-      .catch(() => null);
+    // Read with the specialized ammo hold, whose stacks the missing charges' warning counts (GetHoldItems).
+    const bays = await api.getShipBays(shipID, callOptions, [kind, "ammo"]).then((read) => decodeShipBays(read.bays)).catch(() => null);
+    const used = bays?.find((entry) => entry.key === kind)?.capacity?.used ?? null;
     if (store.fitting.get().activeShipID !== shipID) return;
     const bayReadout = { shipID, kind, capacity: roundTo10(shipValue(kind === "fighter" ? 2055 : 283)), used };
     // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
     // it (GetFittingDictForActiveShip: CreateFittingData of its fitted modules), its cargo hold's capacity and use as
     // the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline (FindOfflineModules).
     await ensureWarningFacts(modules.map((module) => module.typeID), shipTypeID).catch(() => false);
+    // FindModulesWithMissingCharges' fitting of the ship: what is in its module slots (a module one, a charge its
+    // quantity as godma has it: clientDogmaLocation.GetQuantity of a sublocation, its quantity attribute), and the stacks
+    // of its cargo hold and its specialized ammo hold (GetHoldItems: the ship's inventory). Only a ship's.
+    const holdStacks = [
+      ...store.inventory.get().cargo.rows.map((row) => [row.typeID, 5, row.quantity] as const),
+      ...(bays?.find((entry) => entry.key === "ammo")?.items ?? []).map((row) => [row.typeID, 143, row.quantity] as const),
+    ];
+    await dogmaStaticFor(holdStacks.map(([typeID]) => typeID), []).catch(() => null);
+    const inModuleSlot = (flagID: number) => flagID >= 11 && flagID <= 34;
+    const chargesFit = staticData.types[shipTypeID]?.categoryID === 6
+      ? [
+        ...modules.filter((module) => inModuleSlot(module.flagID)).map((module) => [module.typeID, module.flagID, 1] as const),
+        ...charges.filter((charge) => inModuleSlot(charge.flagID))
+          .map((charge) => [charge.typeID, charge.flagID, godmaRows.get(`${reckoned.ship.key}|${charge.flagID}|${charge.typeID}`)?.get(805) ?? 1] as const),
+        ...holdStacks,
+      ]
+      : null;
     const warnings = evaluateFit({
       static: staticData,
       shipTypeID,
@@ -6085,6 +6102,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       fittedItems: [...modules.map((module) => [module.typeID, module.flagID] as const), ...charges.map((charge) => [charge.typeID, charge.flagID] as const)],
       typeLists: warningListsOf,
       shipElements: bubbleElementsKept.get(shipTypeID) ?? null,
+      chargesFit,
     });
     store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings });
   }
@@ -6344,6 +6362,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         fittedItems: [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null).map((item) => [item.typeID, item.flagID as number] as const),
         typeLists: warningListsOf,
         shipElements: bubbleElementsKept.get(ship.typeID) ?? null,
+        // FindModulesWithMissingCharges: what is in the module slots (a charge its stacksize: the fitting location's
+        // GetQuantity), and the cargo hold's stacks; only a ship's.
+        chargesFit: ship.categoryID === 6
+          ? [
+            ...[...ship.fitted.values()]
+              .filter((item) => item !== ship && item !== pilot && item.flagID !== null && item.flagID >= 11 && item.flagID <= 34)
+              .map((item) => [item.typeID, item.flagID as number, location.static.types[item.typeID]?.categoryID === 8 ? item.stacksize : 1] as const),
+            ...[...simulation.simulated.cargo].map(([typeID, qty]) => [typeID, 5, qty] as const),
+          ]
+          : null,
       }),
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
       // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
