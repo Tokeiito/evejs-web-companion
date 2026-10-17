@@ -6876,14 +6876,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]);
     if (!needs.available) return null;
     const mine = skillLevelsOf(skills);
-    if (missingSkills(typeID, needs.required, mine).size === 0) return null;
+    if (missingSkills(typeID, needs.order, mine).size === 0) return null;
     const lapsed = skillLevelsOf(allSkills);
-    const listed = missingSkillsRecursive(typeID, needs.required, mine, lapsed);
-    const rest = await skillWindowRest(typeID, needs.required, skills, allSkills, listed).catch(() => null);
+    const listed = missingSkillsRecursive(typeID, needs.order, mine, lapsed);
+    const rest = await skillWindowRest(typeID, needs.order, skills, allSkills, listed).catch(() => null);
     return {
       typeID,
       skills: listed,
-      totalMissingLevels: totalMissingLevels(typeID, needs.required, mine),
+      totalMissingLevels: totalMissingLevels(typeID, needs.order, mine),
       missingBooks: missingSkillBooks(listed, lapsed).length,
       rows: rest?.rows ?? [],
       omega: rest?.omega ?? true,
@@ -7701,7 +7701,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       api.getRequiredSkills(skillTypes, callOptions).catch(() => null),
     ]);
     if (facts === null) return null;
-    const required: RequiredSkills = needs !== null && needs.available ? needs.required : {};
+    const required: RequiredSkills = needs !== null && needs.available ? needs.order : {};
     const rows = plan.requirements.map(([skill, level]) => {
       const held = facts.mine.get(skill);
       return {

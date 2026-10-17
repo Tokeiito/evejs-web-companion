@@ -14,8 +14,9 @@
 //                   the books          GetSkillBooksMissingFromList (597): the skills listed the pilot has not even
 //                                      lapsed
 //
-// The order of a type's own needs is the table's as the BFF gives it (by skill, rising); the client's is its built
-// table's, which was not read.
+// The order of a type's own needs is the client's table's (get_dogma_required_skills iterates them as its
+// requiredSkill1, 2, 3...), which the BFF's required-skills keeps (its order): the window lists the skills in it, as the
+// client's OrderedDict does (GetSkillsMissingToUseItemRecursive).
 //
 // And the rest of the window (skill_requirement.py, skillBtns.py, the skill bar):
 //
@@ -36,8 +37,8 @@ const MINUTE_TICKS = 600_000_000;
 /** characterskills.MAX_SKILL_LEVEL */
 const MAX_SKILL_LEVEL = 5;
 
-/** The skills each type needs, by type: skill to level. */
-export type RequiredSkills = Readonly<Record<number, Readonly<Record<number, number>>>>;
+/** The skills each type needs, by type: [skill, level], in the client's table's order. */
+export type RequiredSkills = Readonly<Record<number, readonly (readonly [number, number])[]>>;
 
 /** One skill of the pilot's, as its CharacterSkillEntry says. */
 export interface PilotSkill {
@@ -51,7 +52,7 @@ export type PilotSkills = ReadonlyMap<number, PilotSkill>;
 
 /** A type's own needs, in the table's order: [skill, level]. */
 function needsOf(required: RequiredSkills, typeID: number): readonly (readonly [number, number])[] {
-  return Object.entries(required[typeID] ?? {}).map(([skill, level]) => [Number(skill), Number(level)] as const);
+  return required[typeID] ?? [];
 }
 
 /** baseDogmaLocation.GetMissingSkills: skill to the level needed, for each one the pilot is short of. */
