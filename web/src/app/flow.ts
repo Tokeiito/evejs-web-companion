@@ -228,7 +228,16 @@ import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 export type SkillQueueDrop =
   | { readonly kind: "type"; readonly typeID: number }
   | { readonly kind: "skillEntry"; readonly typeID: number; readonly trained: boolean }
-  | { readonly kind: "queueEntry"; readonly typeID: number; readonly level: number }
+  /**
+   * A queue entry (SkillQueueSkillEntry.GetDragData: the scroll's selected nodes, the one dragged selected first):
+   * the first of them, and where more than one is dragged, all of them with their places as dragged, top first.
+   */
+  | {
+    readonly kind: "queueEntry";
+    readonly typeID: number;
+    readonly level: number;
+    readonly selection?: readonly { readonly typeID: number; readonly level: number; readonly idx: number }[];
+  }
   /** An inventory's item (xtriui.InvItem, listentry.InvItem): taken where it is a skill book. */
   | { readonly kind: "invItem"; readonly itemID: number; readonly typeID: number };
 
@@ -2493,6 +2502,12 @@ export interface AppFlow {
    * the purchase overlay.
    */
   skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): Promise<{ readonly missing: { readonly typeID: number; readonly position: number } | null }>;
+  /**
+   * The queue's selected levels taken out (skillQueuePanelNew.DoRemove, from the scroll's Delete: the selection
+   * bottom first; RemoveSkillsFromQueue): each in turn where CheckCanRemoveSkillFromQueue lets it, stopping at the
+   * first refusal, which is said; those taken out are committed.
+   */
+  removeQueuedLevels(levels: readonly { readonly typeID: number; readonly level: number }[]): Promise<void>;
   /** The purchase overlay's facts (SkillPurchaseOverlayController): sold directly, its price, its needs trained. */
   skillPurchaseOffer(typeID: number): Promise<{ readonly sold: boolean; readonly price: number | null; readonly requirementsTrained: boolean } | null>;
   /** buy_skill (trainAt null) and buy_and_train_skill (level I put in at that place once bought). */
@@ -10085,9 +10100,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await saveSkillQueueSaved(next, "Added to your skill queue", "that skill");
     };
     if (drop.kind === "queueEntry" && !shift) {
-      // DoMove: MoveSkillToPosition(skill, level, place; the last place for the end): checked where it would land, then
-      // taken out and put in there (a place below where it was one less once it is out).
-      const target = place === null || place < 0 ? queue.length - 1 : Math.max(0, place);
+      // DoDropData: the end's place is the queue's length. DoMove with one entry (_DoMoveOneEntry):
+      // MoveSkillToPosition(skill, level, place): checked where it would land, then taken out and put in there (a
+      // place below where it was one less once it is out).
+      const target = place === null || place < 0 ? queue.length : Math.max(0, place);
+      const selection = drop.selection ?? [];
+      if (selection.length > 1) {
+        await moveQueueEntries(selection, target, read);
+        return { missing: null };
+      }
       const refusal = queueInsertionRefusal(drop.typeID, drop.level, target, queue, read.includingLapsed, read.mine, read.required, read.ceiling);
       if (refusal !== null) {
         sayDialog(refusal, null, "That level cannot go there in the queue.");
@@ -10127,6 +10148,88 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!read.includingLapsed.has(drop.typeID)) return { missing: { typeID: drop.typeID, position } };
     await addToQueue(drop.typeID, drop.kind === "invItem" ? 1 : nextLevelToQueue(drop.typeID, read.includingLapsed, queue), position);
     return { missing: null };
+  }
+
+  /**
+   * _DoMoveManyEntries: those dragged from above the place, nearest first, each put at the lowest place above it that
+   * CheckCanInsertSkillAtPosition (check=True) lets it have, from the place up to the second (never the top); those
+   * from at or below it, top first, each at the highest from the place down; each by MoveSkillToPosition, the place
+   * kept next to those put in. The queue is then saved as it stands. A move AddSkillToQueue refuses after the level
+   * is out is said, and nothing is saved.
+   */
+  async function moveQueueEntries(
+    selection: readonly { readonly typeID: number; readonly level: number; readonly idx: number }[],
+    target: number,
+    read: Awaited<ReturnType<typeof queueDropRead>>,
+  ): Promise<void> {
+    const local = [...read.queue];
+    const length = local.length;
+    const refusalAt = (typeID: number, level: number, position: number): string | null =>
+      queueInsertionRefusal(typeID, level, position, local, read.includingLapsed, read.mine, read.required, read.ceiling);
+    // MoveSkillToPosition: taken out, then put in (one less where it was above), as AddSkillToQueue checks it.
+    const moveTo = (typeID: number, level: number, position: number): string | null => {
+      const current = local.findIndex((entry) => entry.typeID === typeID && entry.toLevel === level);
+      if (current < 0) return "QueueSkillNotPresent";
+      const at = current < position ? position - 1 : position;
+      const [entry] = local.splice(current, 1);
+      const refusal = refusalAt(typeID, level, at);
+      if (refusal !== null) return refusal;
+      local.splice(at, 0, entry!);
+      return null;
+    };
+    let skillPos = target;
+    const above = selection.filter((each) => each.idx < skillPos).reverse();
+    const below = selection.filter((each) => each.idx >= skillPos);
+    let nextSkillPos = skillPos;
+    for (const each of above) {
+      for (let testPos = nextSkillPos; testPos > 0; testPos -= 1) {
+        if (refusalAt(each.typeID, each.level, testPos) !== null) continue;
+        const refusal = moveTo(each.typeID, each.level, testPos);
+        if (refusal !== null) {
+          sayDialog(refusal, null, "That level cannot go there in the queue.");
+          return;
+        }
+        if (nextSkillPos === testPos) nextSkillPos -= 1;
+        break;
+      }
+    }
+    for (const each of below) {
+      for (let testPos = skillPos; testPos < length; testPos += 1) {
+        if (refusalAt(each.typeID, each.level, testPos) !== null) continue;
+        const refusal = moveTo(each.typeID, each.level, testPos);
+        if (refusal !== null) {
+          sayDialog(refusal, null, "That level cannot go there in the queue.");
+          return;
+        }
+        if (testPos === skillPos) skillPos += 1;
+        break;
+      }
+    }
+    const moved = local.some((entry, at) => entry.typeID !== read.queue[at]?.typeID || entry.toLevel !== read.queue[at]?.toLevel);
+    if (moved) await saveSkillQueueSaved(local, "Moved in your skill queue", "those skills");
+  }
+
+  async function removeQueuedLevels(levels: readonly { readonly typeID: number; readonly level: number }[]): Promise<void> {
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    let queue = queuedLevels(Array.isArray(answered) ? (answered[0] as JsonValue) : null);
+    const required = (await requiredSkillsFor(queue.map((entry) => entry.typeID))) ?? {};
+    let removed = 0;
+    let refused: string | null = null;
+    for (const { typeID, level } of levels) {
+      refused = queueRemovalRefusal(typeID, level, queue, required);
+      // InternalRemoveFromQueue: QueueSkillNotPresent where it is not there.
+      if (refused === null && !queue.some((entry) => entry.typeID === typeID && entry.toLevel === level)) refused = "QueueSkillNotPresent";
+      if (refused !== null) break;
+      queue = queue.filter((entry) => !(entry.typeID === typeID && entry.toLevel === level));
+      removed += 1;
+    }
+    // (finally: those taken out committed, OnClientQueueModified; then the refusal.)
+    if (removed > 0) await saveSkillQueueSaved(queue, "Removed from your skill queue", removed === 1 ? "that skill" : "those skills");
+    if (refused !== null) {
+      sayDialog(refused, null, refused === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+        ? "A higher level of this skill is still in the queue."
+        : refused === "QueueSkillNotPresent" ? "That level is not in the queue." : "A skill in the queue needs this one.");
+    }
   }
 
   async function skillPurchaseOffer(typeID: number): ReturnType<AppFlow["skillPurchaseOffer"]> {
@@ -23462,6 +23565,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerSkillBooks,
     skillQueueDropFacts,
     skillQueueDrop,
+    removeQueuedLevels,
     skillPurchaseOffer,
     buySkillFromOverlay,
     applySkillPointsRequired,

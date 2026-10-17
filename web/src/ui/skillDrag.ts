@@ -4,7 +4,7 @@
 //
 //   a plan's contents row      listentry.SkillEntry (SkillPlanContentsSkillEntry.GetDragData): its skill, had or not
 //   the plan editor            TypeDragData (a catalogue skill) and SkillLevelDragData (a plan's level, a TypeDragData)
-//   the skill queue's rows     SkillQueueSkillEntry: its skill and level
+//   the skill queue's rows     SkillQueueSkillEntry: the selected entries (GetSelectedNodes), the first leading
 
 import type { SkillQueueDrop } from "../app/flow.ts";
 

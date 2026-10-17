@@ -235,7 +235,57 @@
   let dropFacts = $state<Awaited<ReturnType<AppFlow["skillQueueDropFacts"]>>>(null);
   let dropFactsFor: string | null = null;
   /** The line: above an entry (its place) or at the end, its colour. */
-  let dropLine = $state<{ readonly at: number | "end"; readonly color: "allowed" | "refused" } | null>(null);
+  /** The line's colour: COLOR_TRAININGALLOWED, COLOR_TRAININGNOTALLOWED, or COLOR_MOVE_INDICATOR for several entries. */
+  let dropLine = $state<{ readonly at: number | "end"; readonly color: "allowed" | "refused" | "move" } | null>(null);
+
+  // ---- The queue's selection (its Scroll, multiSelect: SelectNode, GetSelectedNodes) ----------------------------------
+  //
+  // A click selects the entry alone; with Ctrl it is added or taken off; with Shift the entries from the last one
+  // clicked to it are selected alone (with Ctrl and Shift, added). An entry dragged that is not selected is selected
+  // first (GetSelectedNodes), and the drag carries every selected entry; several dragged show the move line
+  // (IsMultiSkillEntryMove) and move together (_DoMoveManyEntries), selected again after. Delete takes the selected
+  // out (the scroll's OnDelete: RemoveSkillFromQueue, DoRemove).
+  let selectedKeys = $state<readonly string[]>([]);
+  let lastSelected: number | null = null;
+  const entryKey = (typeID: number, level: number): string => typeID + ":" + level;
+  /** The selected entries, in the queue's order, with their places. */
+  const selectedEntries = $derived((queue?.entries ?? [])
+    .map((entry, idx) => ({ typeID: entry.typeID, level: entry.toLevel, idx }))
+    .filter((entry) => selectedKeys.includes(entryKey(entry.typeID, entry.level))));
+
+  /** Scroll.SelectNode, the scroll being multiSelect. */
+  function selectEntry(idx: number, control: boolean, shift: boolean): void {
+    const entries = queue?.entries ?? [];
+    const entry = entries[idx];
+    if (entry === undefined) return;
+    const key = entryKey(entry.typeID, entry.toLevel);
+    const keysFrom = (from: number, to: number): string[] =>
+      entries.slice(Math.min(from, to), Math.max(from, to) + 1).map((each) => entryKey(each.typeID, each.toLevel));
+    if (!control && !shift) {
+      selectedKeys = [key];
+    } else if (control && !shift) {
+      selectedKeys = selectedKeys.includes(key) ? selectedKeys.filter((each) => each !== key) : [...selectedKeys, key];
+    } else if (!control && shift) {
+      if (lastSelected !== null && lastSelected !== idx) {
+        // (The range's anchor stays where it was.)
+        selectedKeys = keysFrom(lastSelected, idx);
+        return;
+      }
+      selectedKeys = [key];
+    } else if (lastSelected !== null && lastSelected !== idx) {
+      selectedKeys = [...new Set([...selectedKeys, ...keysFrom(lastSelected, idx)])];
+    }
+    lastSelected = idx;
+  }
+
+  /** DoRemove of the selection, bottom first. */
+  async function removeSelected(): Promise<void> {
+    const levels = [...selectedEntries].reverse().map(({ typeID, level }) => ({ typeID, level }));
+    if (levels.length === 0) return;
+    selectedKeys = [];
+    lastSelected = null;
+    await run(() => flow.removeQueuedLevels(levels));
+  }
 
   function readDropFacts(): void {
     const drop = skillDragged();
@@ -251,6 +301,10 @@
 
   function lineFor(at: number | "end"): void {
     const drop = skillDragged();
+    if (drop !== null && drop.kind === "queueEntry" && (drop.selection?.length ?? 0) > 1) {
+      dropLine = { at, color: "move" };
+      return;
+    }
     if (drop === null || dropFacts === null) {
       dropLine = null;
       return;
@@ -310,6 +364,12 @@
     dropLine = null;
     dropFactsFor = null;
     endSkillDrag();
+    // The queue loaded again after it changes; several entries moved are selected again (ReselectDraggedNodes).
+    const moved = drop.kind === "queueEntry" && !shift && (drop.selection?.length ?? 0) > 1
+      ? drop.selection!.map((each) => entryKey(each.typeID, each.level))
+      : [];
+    selectedKeys = moved;
+    if (moved.length === 0) lastSelected = null;
     try {
       const outcome = await flow.skillQueueDrop(drop, place, shift);
       if (outcome.missing !== null) void openPurchase(outcome.missing.typeID, outcome.missing.position);
@@ -318,11 +378,19 @@
     }
   }
 
-  /** A queue entry's drag (SkillQueueSkillEntry.GetDragData): its skill and level. */
-  function queueEntryDrag(event: DragEvent, typeID: number, level: number): void {
-    event.dataTransfer?.setData("application/x-evejs-queue-entry", JSON.stringify({ typeID, level }));
+  /**
+   * A queue entry's drag (SkillQueueSkillEntry.GetDragData: GetSelectedNodes, the entry selected first where it is
+   * not): the selected entries; the first of them leads (DoDropData's entries[0]).
+   */
+  function queueEntryDrag(event: DragEvent, idx: number): void {
+    const entry = queue?.entries[idx];
+    if (entry === undefined) return;
+    if (!selectedKeys.includes(entryKey(entry.typeID, entry.toLevel))) selectEntry(idx, event.ctrlKey, event.shiftKey);
+    const dragged = selectedEntries.length > 0 ? selectedEntries : [{ typeID: entry.typeID, level: entry.toLevel, idx }];
+    const first = dragged[0]!;
+    event.dataTransfer?.setData("application/x-evejs-queue-entry", JSON.stringify(dragged.map(({ typeID, level }) => ({ typeID, level }))));
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    startSkillDrag({ kind: "queueEntry", typeID, level });
+    startSkillDrag({ kind: "queueEntry", typeID: first.typeID, level: first.level, ...(dragged.length > 1 ? { selection: dragged } : {}) });
   }
 
   // The purchase overlay (SkillPurchaseOverlay, show_skill_purchase_overlay): over the queue, its message (the price
@@ -528,8 +596,9 @@
       {/if}
     </span>
   </header>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="queue-drop" ondragover={queueDragOver} ondragleave={queueDragLeave} ondrop={(event) => void queueDrop(event, null)}>
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_tabindex -->
+  <div class="queue-drop" tabindex="0" ondragover={queueDragOver} ondragleave={queueDragLeave} ondrop={(event) => void queueDrop(event, null)}
+    onkeydown={(event) => { if (event.key === "Delete" && selectedEntries.length > 0) { event.preventDefault(); void removeSelected(); } }}>
   {#if purchase !== null}
     {@const open = purchase}
     <div class="queue-purchase" role="dialog" aria-label={resolvedName($names.resolved, "type", open.typeID, "")}>
@@ -574,10 +643,13 @@
         <tbody>
           {#each queue.entries as entry, index (`${entry.typeID}-${entry.toLevel}-${index}`)}
             {@const lineHere = dropLine !== null && (dropLine.at === index || (dropLine.at === "end" && index === queue.entries.length - 1))}
-            <tr draggable="true" ondragstart={(event) => queueEntryDrag(event, entry.typeID, entry.toLevel)} ondragend={endSkillDrag}
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+            <tr draggable="true" ondragstart={(event) => queueEntryDrag(event, index)} ondragend={endSkillDrag}
               ondragover={(event) => rowDragOver(event, index)} ondrop={(event) => void queueDrop(event, index)}
+              onclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) selectEntry(index, event.ctrlKey, event.shiftKey); }}
+              class:selected={selectedKeys.includes(entryKey(entry.typeID, entry.toLevel))}
               class:drop-above={lineHere && dropLine?.at !== "end"} class:drop-below={lineHere && dropLine?.at === "end"}
-              class:drop-refused={lineHere && dropLine?.color === "refused"}>
+              class:drop-refused={lineHere && dropLine?.color === "refused"} class:drop-move={lineHere && dropLine?.color === "move"}>
               <td data-label="Skill">
                 <span class="cell-item">
                   <TypeIcon typeID={entry.typeID} name={skillName(entry.typeID)} />
