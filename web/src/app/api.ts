@@ -32,6 +32,7 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
+import type { ExpertSystemData } from "../bridge/expertSystems.ts";
 import type { HullFacts, ShipTraitBonus, ShipTraits } from "../bridge/hullBrowser.ts";
 import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
 import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
@@ -3972,6 +3973,25 @@ export async function getAttributeDisplay(
     });
   }
   return { available: data.available === true, attributes };
+}
+
+/** The expert systems as the client's data has them (GET /api/client-data/expert-systems); null where not read. */
+export async function getExpertSystems(options: ApiOptions = {}): Promise<ReadonlyMap<number, ExpertSystemData> | null> {
+  const data = await getJson("/api/client-data/expert-systems", options);
+  if (data.available !== true) return null;
+  const raw = typeof data.expertSystems === "object" && data.expertSystems !== null && !Array.isArray(data.expertSystems)
+    ? (data.expertSystems as Record<string, JsonValue>)
+    : {};
+  const out = new Map<number, ExpertSystemData>();
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const row = value as Record<string, JsonValue>;
+    const skills = (Array.isArray(row.skills) ? row.skills : []).flatMap((pair) =>
+      Array.isArray(pair) && Number.isSafeInteger(Number(pair[0])) ? [[Number(pair[0]), Number(pair[1]) || 0] as const] : []);
+    out.set(typeID, { typeID, durationDays: Number(row.durationDays) || 0, hidden: row.hidden === true, retired: row.retired === true, skills });
+  }
+  return out;
 }
 
 /**

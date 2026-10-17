@@ -205,6 +205,7 @@ import {
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
 import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, certificateLevel, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import { installedExpertSystems, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
 import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
@@ -2714,6 +2715,28 @@ export interface AppFlow {
    * where they could not be read.
    */
   skillGroupCertificates(groupIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly claimed: number; readonly total: number }> | null>;
+  /**
+   * The character sheet's expert systems page (expertSystems/client/ui/character_sheet/home): the pilot's expert
+   * systems by when they were installed (GetMyExpertSystems), the client's data of every expert system, and for each
+   * skill an installed one gives, its skill bar at the level given (SkillRow: SkillBar with requiredLevel). Their
+   * names asked for. Null where they could not be read.
+   */
+  expertSystemsHome(): Promise<{
+    readonly installed: readonly InstalledExpertSystem[];
+    readonly data: ReadonlyMap<number, ExpertSystemData>;
+    readonly boxes: ReadonlyMap<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>;
+  } | null>;
+  /**
+   * The page's Remove (PageController.remove_selected): the client's question (prompt_remove_expert_system:
+   * CustomQuestion, RemovePromptTitle, RemovePromptBody and RemoveWarning); on Yes RemoveMyExpertSystem, a refusal said
+   * as the client says one. True where it was taken out.
+   */
+  removeExpertSystem(typeID: number): Promise<boolean>;
+  /**
+   * expertSystemSvc.on_expert_systems_updated: counts each OnExpertSystemsUpdated the server sends, whose dict is from
+   * then on the pilot's expert systems (the service keeps it, and the page loads again from it, asking nothing).
+   */
+  readonly expertSystemsChanged: ReadableSignal<number>;
   /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
   skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
   /**
@@ -4130,6 +4153,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (cloneGrade !== null) {
         store.apply({ type: "character/clone-grade", cloneGrade });
       }
+      return;
+    }
+    // expertSystemSvc.OnExpertSystemsUpdated(expertSystems, expertSystemAdded, expertSystemTypeID): the dict kept as the
+    // pilot's expert systems, and the page told (on_expert_systems_updated). (Not here: the fanfare of one added.)
+    if (method === "OnExpertSystemsUpdated") {
+      expertSystemsHeld = (args[0] ?? null) as JsonValue | null;
+      expertSystemsSignal.set(expertSystemsSignal.get() + 1);
       return;
     }
     // fittingSvc.OnSkillsChanged (1050 to 1052): what is kept of the fittings' skills let go, at the server's word of the
@@ -8266,6 +8296,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return states;
     } catch {
       return null;
+    }
+  }
+
+  // expertSystemSvc._myExpertSystems: GetMyExpertSystems' answer, asked once, and from then on what each
+  // OnExpertSystemsUpdated says (onServerNotice).
+  let expertSystemsHeld: JsonValue | null = null;
+  const expertSystemsSignal = createSignal<number>(0);
+
+  async function expertSystemsHome(): ReturnType<AppFlow["expertSystemsHome"]> {
+    try {
+      const [data, answer, skillsAnswer, allSkillsAnswer] = await Promise.all([
+        api.getExpertSystems(callOptions),
+        expertSystemsHeld !== null ? Promise.resolve(expertSystemsHeld) : bridgeAsk("expertSystemMgr", "GetMyExpertSystems", []),
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+      ]);
+      expertSystemsHeld = answer as JsonValue;
+      if (data === null) return null;
+      const installed = installedExpertSystems(answer);
+      const given = installed.flatMap((one) => data.get(one.typeID)?.skills ?? []);
+      const skills = [...new Set(given.map(([skill]) => skill))];
+      requestNames([...installed.map((one) => ({ kind: "type" as const, id: one.typeID })), ...skills.map((skill) => ({ kind: "type" as const, id: skill }))]);
+      const boxes = new Map<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>();
+      if (skills.length > 0) {
+        const facts = await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer);
+        const required = (await requiredSkillsFor(skills)) ?? {};
+        for (const [skill, level] of given) {
+          boxes.set(skill + ":" + level, skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0));
+        }
+      }
+      return { installed, data, boxes };
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      return null;
+    }
+  }
+
+  async function removeExpertSystem(typeID: number): ReturnType<AppFlow["removeExpertSystem"]> {
+    const labels = ["UI/ExpertSystem/RemovePromptTitle", "UI/ExpertSystem/RemovePromptBody", "UI/ExpertSystem/RemoveWarning"];
+    await wordsNow(labels).catch(() => {});
+    const name = nameCache.get(nameKey("type", typeID)) ?? "that expert system";
+    const header = templateWords("UI/ExpertSystem/RemovePromptTitle", {}, "Remove the expert system?");
+    const body = templateWords("UI/ExpertSystem/RemovePromptBody", { expert_system: typeID }, "Take " + name + " out?");
+    const warning = templateWords("UI/ExpertSystem/RemoveWarning", {}, "What is left of its time is lost.");
+    const yes = await askDialog("CustomQuestion", { type: "dict", entries: [["header", header], ["question", body + "<br><br>" + warning]] }, body + "\n\n" + warning);
+    if (!yes) return false;
+    try {
+      await bridgeDo("expertSystemMgr", "RemoveMyExpertSystem", [typeID]);
+      return true;
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const message = errorWords(error);
+      if (!sayRefusalDialog(error, message)) sayDialog("CustomNotify", { type: "dict", entries: [["notify", message]] }, message);
+      return false;
     }
   }
 
@@ -23689,6 +23773,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillCatalogueStates,
     attributeDisplay,
     skillGroupCertificates,
+    expertSystemsHome,
+    removeExpertSystem,
+    expertSystemsChanged: readonlySignal(expertSystemsSignal),
     skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,
     saveSkillPlan,

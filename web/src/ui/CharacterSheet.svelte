@@ -36,6 +36,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import ExpertSystems from "./ExpertSystems.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -278,6 +279,9 @@
       </table>
     </div>
   {/if}
+
+  <!-- The character panel's Expert Systems tab (characterPanel.py: expertSystems.ExpertSystemsPanel). -->
+  <ExpertSystems {store} {flow} />
 
 </section>
 

@@ -729,8 +729,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 410,
-    "sha256": "f7b7ce8dcc254f608daa5022aec5a4f98324ffcbce53ce1577089963eee8c678",
+    "count": 411,
+    "sha256": "ed48d4333edc3e21ecacee66dacbc05e2f294eaff52fb9e9491102f0f606fb3d",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -948,6 +948,7 @@
       "essMgr.RequestMainBankUnlink",
       "essMgr.RequestReserveBankUnlink",
       "essMgr.RequestUnlockReserveBank",
+      "expertSystemMgr.RemoveMyExpertSystem",
       "fighterMgr.CmdAbandonFighter",
       "fighterMgr.CmdActivateAbilitySlots",
       "fighterMgr.CmdDeactivateAbilitySlots",
@@ -1224,6 +1225,7 @@
       "dogmaIM.CreateNewbieShip",
       "dogmaIM.Deactivate",
       "dogmaIM.InitiateModuleRepair",
+      "dogmaIM.InjectSkillIntoBrain",
       "dogmaIM.LaunchProbes",
       "dogmaIM.LinkAllWeapons",
       "dogmaIM.LoadAmmo",
@@ -1240,6 +1242,7 @@
       "entity.CmdReconnectToDrones",
       "entity.CmdReturnBay",
       "entity.CmdSalvage",
+      "expertSystemMgr.RemoveMyExpertSystem",
       "fleetMgr.AddToWatchlist",
       "fleetMgr.BroadcastToBubble",
       "fleetMgr.RemoveFromWatchlist",

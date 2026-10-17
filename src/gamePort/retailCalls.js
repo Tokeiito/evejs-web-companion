@@ -819,6 +819,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // (infosvc.UpdateDataCorp: fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions). The gateway's list has nothing of the
   // enlistment manager's.
   "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
+  // The pilot's expert systems and one of them taken out (expertSystems/client/service.py: GetMyExpertSystems,
+  // RemoveMyExpertSystem, on expertSystemMgr by its name). The gateway's list has nothing of the expert systems'.
+  "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
 ]);
 
 /**
@@ -1642,6 +1645,7 @@ const CONTRACT_SORT_ID = 0;
 const CONTRACT_SORT_PRICE = 1;
 const DRONE_DAMAGE = "eveDrones/droneDamageTracker.py";
 const SKILL_SVC = "eve/client/script/ui/services/skillsvc.py";
+const EXPERT_SYSTEM_SVC = "expertSystems/client/service.py";
 const STANDING_SVC = "eve/client/script/ui/services/standingsvc.py";
 /**
  * A standing's detail, as the client's standings service asks for it: of an entity, with whoever's standing it is.
@@ -2696,6 +2700,8 @@ const RETAIL_CALLS = Object.freeze({
   "officeManager.HasCorpImpoundedItems": judged(`${CORP_SVC}/officeManager.py:143`, sentWithNothing, "Moniker('officeManager', stationID).HasCorpImpoundedItems(), no arguments, where a player's corporation has no office in the station (139 to 142). Recorded on Tranquility after an office was given up."),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
+  "expertSystemMgr.GetMyExpertSystems": same(`${EXPERT_SYSTEM_SVC}:42`, "GetMyExpertSystems(), no arguments (a Tranquility recording has it so)"),
+  "expertSystemMgr.RemoveMyExpertSystem": same(`${EXPERT_SYSTEM_SVC}:66`, "RemoveMyExpertSystem(expertSystemTypeID)"),
   "dogmaIM.InjectSkillIntoBrain": reshaped(
     `${SKILL_SVC}:784`,
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
