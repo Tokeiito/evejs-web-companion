@@ -28,7 +28,8 @@ import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } f
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
 import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
-import { deriveShipStats } from "../bridge/shipStats.ts";
+import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
+import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import {
   decodeBrain,
   loadSimulatedFitting,
@@ -5722,11 +5723,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       attributes.set(attributeID, roundTo10(reckoned.location.value(reckoned.ship, attributeID)));
     }
     const pilotAttributes = new Map<number, number>([[458, roundTo10(reckoned.location.value(reckoned.pilot, 458))]]);
+    const derived = deriveShipStats(attributes, undefined, pilotAttributes);
+    // The capacitor panel's simulation, of the modules online (clientDogmaLocation.IsModuleIncludedInCalculation).
+    const simulator = capSimulatorValues(capacitorSimulator(reckoned.location, reckoned.ship, isOnlineModule));
     store.apply({
       type: "fitting/reckoned",
       shipID,
       resources: resourcesOf(attributes),
-      stats: deriveShipStats(attributes, undefined, pilotAttributes),
+      stats: {
+        ...derived,
+        capacitor: {
+          ...derived.capacitor,
+          deltaPerSecond: known(simulator.delta),
+          stability: known(simulator.loadBalance),
+          lastsForSeconds: simulator.ttl === null ? unavailable("it does not run out") : known(simulator.ttl / 10_000_000),
+          simulator,
+        },
+      },
     });
   }
 

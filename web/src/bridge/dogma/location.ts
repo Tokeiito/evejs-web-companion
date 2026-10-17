@@ -67,6 +67,12 @@ export interface DogmaEffectFacts {
   readonly chanceAttributeID: number | null;
   /** Its modifierInfo; null where it has none (a neutral effect). */
   readonly modifiers: readonly DogmaModifierInfo[] | null;
+  /** The attributes it goes by: its cycle (durationAttributeID), what it drains (dischargeAttributeID), its range, falloff and tracking. */
+  readonly durationAttributeID?: number | null;
+  readonly dischargeAttributeID?: number | null;
+  readonly rangeAttributeID?: number | null;
+  readonly falloffAttributeID?: number | null;
+  readonly trackingSpeedAttributeID?: number | null;
 }
 
 /** A type as the location goes by it. */
@@ -75,6 +81,8 @@ export interface DogmaTypeFacts {
   readonly attributes: readonly (readonly [number, number | null])[];
   /** Its effects, in its typeDogma's order. */
   readonly effects: readonly number[];
+  /** Its default effect (dogmaStaticMgr.GetDefaultEffect), where it has one. */
+  readonly defaultEffectID?: number | null;
   readonly groupID: number | null;
   readonly categoryID: number | null;
   /** get_dogma_required_skills: the skills it requires (an item's reqSkills). */
@@ -228,7 +236,7 @@ function heldKey(held: HeldModifier): string {
 }
 
 /** A dogma item (SlimDogmaItem and the classes on it, as far as the location needs). */
-class DogmaItem {
+export class DogmaItem {
   readonly key: string;
   readonly typeID: number;
   readonly groupID: number | null;

@@ -61,6 +61,7 @@
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
   import { hullTree, NON_EMPIRE, type HullFacts, type ShipTraitBonus, type ShipTraits } from "../bridge/hullBrowser.ts";
   import { showInfo } from "./showInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
@@ -366,6 +367,44 @@
     if (!$fitting.activeShipID) return;
     flow.requestWords(Object.keys(FITTING_BROWSER_WORDS));
   });
+
+  // The capacitor panel's words (capacitorPanel.py), the client's from the player's install; the page's own where it
+  // has none.
+  const CAPACITOR_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/Stable": "Stable",
+    "UI/Fitting/FittingWindow/CapacitorNotStable": "Empty after {[timeinterval]time.shortForm, from=hour, to=second}",
+    "UI/Fitting/FittingWindow/ModulesSustainable": "Your modules can run without stopping",
+    "UI/Fitting/FittingWindow/ModulesNotSustainable": "Your modules drain the capacitor faster than it recharges",
+    "UI/Fitting/FittingWindow/CapacitorDelta": "{[numeric]delta, decimalPlaces=1} GJ/s spare ({[numeric]percentage, decimalPlaces=1}%)",
+    "UI/Fitting/FittingWindow/ExcessCapacitor": "Recharge left over",
+    "UI/Fitting/FittingWindow/CapSustainableBy": "Settles at {[numeric]balance, decimalPlaces=1}% of its capacity",
+    "UI/Fitting/FittingWindow/CapRunsOutBy": "Lasts {[timeinterval]ttl, from=hour, to=second}",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords([...Object.keys(CAPACITOR_WORDS), ...INTERVAL_WORD_LABELS, ...SHORT_INTERVAL_WORD_LABELS]);
+  });
+  /** A capacitor label filled: the client's template where the install has it, the page's own otherwise. */
+  function capacitorWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : CAPACITOR_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+      ...intervalWriters($words.templates),
+    }));
+  }
+  type CapacitorSimulation = NonNullable<typeof stats.capacitor.simulator>;
+  /** capacitorPanel.SetHeaderText: Stable where it settles, else when it runs dry (its TTL, a whole number of ticks). */
+  function capacitorHeadline(simulation: CapacitorSimulation): string {
+    return simulation.loadBalance > 0
+      ? capacitorWord("UI/Fitting/FittingWindow/Stable")
+      : capacitorWord("UI/Fitting/FittingWindow/CapacitorNotStable", { time: Math.trunc(simulation.ttl ?? 0) });
+  }
+  /** capacitorPanel.ColorPowerCore's hint: the share it settles at, or how long it lasts. */
+  function capacitorBalance(simulation: CapacitorSimulation): string {
+    return simulation.loadBalance === 0
+      ? capacitorWord("UI/Fitting/FittingWindow/CapRunsOutBy", { ttl: Math.trunc(simulation.ttl ?? 0) })
+      : capacitorWord("UI/Fitting/FittingWindow/CapSustainableBy", { balance: simulation.loadBalance * 100 });
+  }
   // The fittings read once the window has a ship (fittingSvc.PrimeFittings).
   let fittingsAsked = false;
   $effect(() => {
@@ -1218,23 +1257,44 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Capacitor</span>
-        <span class="fit-sec-headline">
-          {@render statValue(stats.capacitor.stability, (v) => (v > 0 ? "Stable" : "Unstable"))}
-        </span>
+        {#if stats.capacitor.simulator}
+          <span
+            class="fit-sec-headline"
+            title={capacitorWord(stats.capacitor.simulator.loadBalance > 0
+              ? "UI/Fitting/FittingWindow/ModulesSustainable"
+              : "UI/Fitting/FittingWindow/ModulesNotSustainable")}
+          >{capacitorHeadline(stats.capacitor.simulator)}</span>
+        {:else}
+          <span class="fit-sec-headline">
+            {@render statValue(stats.capacitor.stability, (v) => (v > 0 ? "Stable" : "Unstable"))}
+          </span>
+        {/if}
       </summary>
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
             {@render statRow("Capacity", stats.capacitor.capacity, (v) => `${whole(v)} GJ`)}
             {@render statRow("Recharge time", stats.capacitor.rechargeSeconds, asSeconds)}
-            {@render statRow("Net change per second", stats.capacitor.deltaPerSecond, whole)}
-            {@render statRow("Lasts for", stats.capacitor.lastsForSeconds, asSeconds)}
+            {#if !stats.capacitor.simulator}
+              {@render statRow("Net change per second", stats.capacitor.deltaPerSecond, whole)}
+              {@render statRow("Lasts for", stats.capacitor.lastsForSeconds, asSeconds)}
+            {/if}
           </tbody>
         </table>
-        <p class="note">
-          Whether a fit runs its capacitor dry needs each module's drain, which
-          this window cannot read yet — so it is left unsaid, not guessed.
-        </p>
+        {#if stats.capacitor.simulator}
+          <p class="fit-cap-delta" title={capacitorWord("UI/Fitting/FittingWindow/ExcessCapacitor")}>
+            {capacitorWord("UI/Fitting/FittingWindow/CapacitorDelta", {
+              delta: stats.capacitor.simulator.delta,
+              percentage: stats.capacitor.simulator.deltaPercentage,
+            })}
+          </p>
+          <p class="note fit-cap-balance">{capacitorBalance(stats.capacitor.simulator)}</p>
+        {:else}
+          <p class="note">
+            Whether a fit runs its capacitor dry needs each module's drain, which
+            this window cannot read yet — so it is left unsaid, not guessed.
+          </p>
+        {/if}
       </div>
     </details>
 

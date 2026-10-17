@@ -13561,8 +13561,9 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 //                  order), its group and category, and the skills it requires (get_dogma_required_skills: the item's
 //                  reqSkills, which a location's required-skill modifiers go by)
 //   each effect    of those types: its category, the attribute a fitting's chance goes by
-//                  (fittingUsageChanceAttributeID), and its modifierInfo (null where it has none: the compiler makes
-//                  it a neutral effect, baseEffectCompiler SetupDogmaEffects)
+//                  (fittingUsageChanceAttributeID), its modifierInfo (null where it has none: the compiler makes
+//                  it a neutral effect, baseEffectCompiler SetupDogmaEffects), and the attributes it goes by for its
+//                  cycle, drain, range, falloff and tracking; each type's default effect besides
 //   each attribute the types carry, the effects name, and those asked (attributeIDs, at most 200): what Attribute and
 //                  itemAttributeFactory go by (stackable, dataType, defaultValue, highIsGood, the cap and floor
 //                  attributes, whether it is a charged one), and the cap and floor attributes' own records
@@ -13606,15 +13607,21 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         .filter(([attributeID]) => attributeID !== null && attributeID > 0);
       rows.push([4, number(type.mass)], [38, number(type.capacity)], [161, number(type.volume)], [162, number(type.radius)]);
       for (const [attributeID] of rows) attributeIDs.add(attributeID);
-      const effects = (dogma && Array.isArray(dogma.dogmaEffects) ? dogma.dogmaEffects : [])
+      const effectRowsOfType = dogma && Array.isArray(dogma.dogmaEffects) ? dogma.dogmaEffects : [];
+      const effects = effectRowsOfType
         .map((row) => whole(row && row.effectID))
         .filter((effectID) => effectID !== null && effectID > 0);
+      // The type's default effect (baseDogmaStaticSvc.LoadTypeEffects: the effect marked isDefault; the last one where
+      // more are).
+      let defaultEffectID = null;
+      for (const row of effectRowsOfType) if (row && Number(row.isDefault || 0) && whole(row.effectID)) defaultEffectID = whole(row.effectID);
       for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
       const groupID = whole(type.groupID);
       const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
       types[typeID] = {
         attributes: rows,
         effects,
+        defaultEffectID,
         groupID,
         categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
@@ -13645,7 +13652,13 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
       }
       const chanceAttributeID = whole(row.fittingUsageChanceAttributeID);
       if (chanceAttributeID) attributeIDs.add(chanceAttributeID);
-      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers };
+      // The attributes the effect goes by: its cycle, what it drains, its range, falloff and tracking.
+      const named = {};
+      for (const field of ["durationAttributeID", "dischargeAttributeID", "rangeAttributeID", "falloffAttributeID", "trackingSpeedAttributeID"]) {
+        named[field] = whole(row[field]) || null;
+        if (named[field]) attributeIDs.add(named[field]);
+      }
+      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
     }
     const attributes = {};
     const keep = (attributeID) => {

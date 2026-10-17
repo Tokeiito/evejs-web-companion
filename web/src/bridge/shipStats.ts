@@ -156,6 +156,18 @@ export interface ShipStats {
     /** EveJS has no capacitor solver, and neither did the R20 oracle. */
     readonly stability: Stat;
     readonly lastsForSeconds: Stat;
+    /**
+     * The client's capacitor simulation (fittingDogmaLocationUtil.CapacitorSimulator, ghostControllerMixin
+     * ._GetCapSimulatorValues), where the figures are the page's own dogma's: the spare recharge in GJ/s (two
+     * places), its share of the peak recharge (one place), the share of the capacity it settles at (0 where it runs
+     * out), and when it runs out, in 100ns ticks (null where it does not). Absent where the figures are the server's.
+     */
+    readonly simulator?: {
+      readonly delta: number;
+      readonly deltaPercentage: number;
+      readonly loadBalance: number;
+      readonly ttl: number | null;
+    };
   };
 
   readonly firepower: {
