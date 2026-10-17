@@ -28,6 +28,7 @@
   import { marketDetailsTarget } from "./marketDetails.ts";
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
+  import { typeCompareTarget } from "./typeCompare.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -310,6 +311,17 @@
     if (count === servedContractsSearches) return;
     servedContractsSearches = count;
     open("contracts");
+  });
+
+  // Types asked to be compared from outside the compare tool (typeCompare.ts: menusvc.CompareType): the tool opened,
+  // which takes the types and adds them.
+  let servedCompareRequests = typeCompareTarget.requests.get();
+  const compareRequests = typeCompareTarget.requests;
+  $effect(() => {
+    const count = $compareRequests;
+    if (count === servedCompareRequests) return;
+    servedCompareRequests = count;
+    open("compare");
   });
 
   let servedMarketRequests = marketDetailsTarget.requests.get();

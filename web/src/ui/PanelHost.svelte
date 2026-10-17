@@ -30,6 +30,7 @@
   import Travel from "./Travel.svelte";
   import RouteWindow from "./RouteWindow.svelte";
   import MissionTracker from "./MissionTracker.svelte";
+  import TypeCompare from "./TypeCompare.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
@@ -206,6 +207,8 @@
   <ShowInfo {store} {flow} />
 {:else if tab === "chat"}
   <Chat {store} {flow} />
+{:else if tab === "compare"}
+  <TypeCompare {store} {flow} />
 {:else}
   <!-- Every tab in `tabs.ts` is named above; this is the arm for a `TabID` that
        does not exist yet, and it says so rather than guessing. -->

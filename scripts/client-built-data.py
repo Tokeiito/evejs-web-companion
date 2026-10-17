@@ -6,12 +6,16 @@ beside the client's executable (bin64/<name>Loader.pyd). Only that loader knows
 the layout. This runs the loader inside the client's own python27.dll, walks
 what it returns, and prints it as one JSON document.
 
-    python scripts/client-built-data.py <client bin64 folder> <loader module> <data file> [<attribute>]
+    python scripts/client-built-data.py <client bin64 folder> <loader module> <data file> [<attribute>] [keys=<k,k>]
 
     <loader module>  the loader's module name, "missionsLoader"
     <data file>      the .fsdbinary on disk (under the client's ResFiles)
     <attribute>      where given, only that attribute of each of the table's rows, by the row's key; rows without it
                      are left out ("isisGroupID" of the types: a table too big to walk whole)
+    keys=<k,k>       where given, only the rows of those keys (whole numbers), each looked up by itself as the
+                     client's own data module does (dogma/data.py get_type_dogma: the table's .get(typeID)); a key the
+                     table has not is left out. For a table too big to walk whole whose rows are wanted whole
+                     ("typeDogma": a type's dogma attributes)
 
 What is printed: a cfsd dict as an object (its keys as strings), a cfsd list or
 vector as an array, a cfsd object as an object of the attributes it has (an
@@ -95,7 +99,16 @@ sys.path[:] = [BIN]
 loader = __import__(LOADER)
 __data = loader.load(DATA)
 __out = open(OUT, 'wb')
-if ATTRIBUTE:
+if KEYS:
+    __parts = []
+    for __key in KEYS:
+        __row = __data.get(__key)
+        if __row is not None:
+            __item = getattr(__row, ATTRIBUTE, None) if ATTRIBUTE else __row
+            if __item is not None:
+                __parts.append(text(str(__key)) + ':' + walk(__item, 1))
+    __out.write('{' + ','.join(__parts) + '}')
+elif ATTRIBUTE:
     __parts = []
     for __key, __row in __data.iteritems():
         __item = getattr(__row, ATTRIBUTE, None)
@@ -109,10 +122,21 @@ __out.close()
 
 
 def main():
-    if len(sys.argv) not in (4, 5):
+    if len(sys.argv) not in (4, 5, 6):
         sys.exit(__doc__)
     dll_dir, loader, data_file = sys.argv[1], sys.argv[2], sys.argv[3]
-    attribute = sys.argv[4] if len(sys.argv) == 5 else ""
+    rest = sys.argv[4:]
+    keys_given = [part for part in rest if part.startswith("keys=")]
+    attributes_given = [part for part in rest if not part.startswith("keys=")]
+    if len(keys_given) > 1 or len(attributes_given) > 1:
+        sys.exit(__doc__)
+    attribute = attributes_given[0] if attributes_given else ""
+    keys = []
+    if keys_given:
+        for part in keys_given[0][len("keys="):].split(","):
+            if not re.match(r"^\d{1,12}$", part):
+                sys.exit("A key is not a whole number: %r" % part)
+            keys.append(int(part))
     if not re.match(r"^[A-Za-z0-9_]+Loader$", loader):
         sys.exit("The loader module's name is not one: %r" % loader)
     if attribute and not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", attribute):
@@ -131,12 +155,13 @@ def main():
     handle, out_path = tempfile.mkstemp(suffix=".json")
     os.close(handle)
     try:
-        names = "BIN = %r\nLOADER = %r\nDATA = %r\nOUT = %r\nATTRIBUTE = %r\n" % (
+        names = "BIN = %r\nLOADER = %r\nDATA = %r\nOUT = %r\nATTRIBUTE = %r\nKEYS = %r\n" % (
             dll_dir.replace("\\", "/"),
             loader,
             data_file.replace("\\", "/"),
             out_path.replace("\\", "/"),
             attribute,
+            keys,
         )
         status = py27.PyRun_SimpleString((names + WALKER + LOAD).encode("latin1"))
         if status != 0:

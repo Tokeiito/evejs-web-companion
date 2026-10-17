@@ -13258,6 +13258,96 @@ app.get("/api/client-data/ship-traits", requireAuth, async (req, res, next) => {
   }
 });
 
+// The compare tool's types (comparisonWindow.py, comparableType.py), from the client's own tables: each type's dogma
+// attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order, then its mass,
+// capacity, volume and radius from its types record: evetypes.GetMass and the rest), its group and category
+// (evetypes.GetGroupID, GetCategoryIDByGroup), whether it is published and whether it is a dynamic type
+// (evetypes.IsDynamicType); the records of the attributes they carry, of the two the tool adds itself (the estimated
+// price, attributeEstimatedPrice 5617, and the clone grade's, attributeCloneGradeRestriction 5618) and of those a value
+// names (unitAttributeID, 119); each unit's name's message (units.get_display_name). At most 50 types at once.
+app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const wanted = asked.slice(0, 50);
+    const [dogmaRows, typeRows, attributeRows, unitNames, groupCategories] = await Promise.all([
+      clientBuiltData.rows("typeDogma", wanted),
+      clientBuiltData.rows("types", wanted),
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("unitDisplayNames"),
+      clientBuiltData.table("groupCategories"),
+    ]);
+    if (!dogmaRows || !typeRows || !attributeRows) {
+      res.json({ ok: true, available: false, types: {}, attributes: {}, unitNameIDs: {} });
+      return;
+    }
+    const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const recordOf = (attributeID) => {
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") return null;
+      return {
+        name: typeof row.name === "string" ? row.name : null,
+        displayNameID: whole(row.displayNameID),
+        tooltipDescriptionID: whole(row.tooltipDescriptionID),
+        unitID: whole(row.unitID),
+        iconID: whole(row.iconID),
+        published: Boolean(Number(row.published || 0)),
+        displayWhenZero: Boolean(Number(row.displayWhenZero || 0)),
+        highIsGood: Boolean(Number(row.highIsGood || 0)),
+        dataType: whole(row.dataType),
+        defaultValue: number(row.defaultValue),
+      };
+    };
+    const types = {};
+    const attributes = {};
+    const units = new Set();
+    const keep = (attributeID) => {
+      if (Object.hasOwn(attributes, attributeID)) return;
+      const record = recordOf(attributeID);
+      attributes[attributeID] = record;
+      if (record && record.unitID !== null) units.add(record.unitID);
+    };
+    keep(5617);
+    keep(5618);
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      if (!type || typeof type !== "object") {
+        types[typeID] = null;
+        continue;
+      }
+      const dogma = dogmaRows[String(typeID)];
+      const listed = dogma && Array.isArray(dogma.dogmaAttributes) ? dogma.dogmaAttributes : [];
+      const rows = listed
+        .map((row) => [whole(row && row.attributeID), number(row && row.value)])
+        .filter(([attributeID]) => attributeID !== null && attributeID > 0);
+      rows.push([4, number(type.mass)], [38, number(type.capacity)], [161, number(type.volume)], [162, number(type.radius)]);
+      for (const [attributeID, value] of rows) {
+        keep(attributeID);
+        const record = attributes[attributeID];
+        if (record && record.unitID === 119 && value !== null && Number.isSafeInteger(Math.trunc(value))) keep(Math.trunc(value));
+      }
+      const groupID = whole(type.groupID);
+      const categoryID = groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null;
+      types[typeID] = {
+        attributes: rows,
+        groupID,
+        categoryID,
+        published: Boolean(Number(type.published || 0)),
+        dynamic: Boolean(Number(type.isDynamicType || 0)),
+      };
+    }
+    const unitNameIDs = {};
+    for (const unitID of units) unitNameIDs[unitID] = unitNames && unitNames[String(unitID)] !== undefined ? Number(unitNames[String(unitID)]) || null : null;
+    res.json({ ok: true, available: true, types, attributes, unitNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

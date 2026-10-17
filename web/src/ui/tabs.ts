@@ -29,6 +29,7 @@ export type TabID =
   | "industry"
   | "contracts"
   | "assets"
+  | "compare"
   | "agents"
   | "finder"
   | "skills"
@@ -165,6 +166,9 @@ export const TABS: readonly TabDef[] = [
   { id: "industry", label: "Industry", where: "both" },
   { id: "contracts", label: "Contracts", where: "both" },
   { id: "assets", label: "Personal Assets", where: "both" },
+  // The client's Compare Tool (comparisonWindow.py), which its Neocom offers too: types side by side, attribute by
+  // attribute. A type's menu (Compare) adds one to it.
+  { id: "compare", label: "Compare Tool", where: "both" },
   { id: "agents", label: "Agents & Missions", where: "both" },
   { id: "finder", label: "Agent Finder", where: "both" },
   { id: "skills", label: "Skills", where: "both" },

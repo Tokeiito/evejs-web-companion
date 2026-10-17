@@ -33,6 +33,7 @@ import {
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type { HullFacts, ShipTraitBonus, ShipTraits } from "../bridge/hullBrowser.ts";
+import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
 import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
@@ -3853,6 +3854,77 @@ export async function getShipTraits(
     if (Number.isSafeInteger(unitID) && unitID > 0) unitNameIDs[unitID] = orNull(value);
   }
   return { available: data.available === true, traits, unitNameIDs };
+}
+
+/** What the compare tool reads of some types (GET /api/client-data/type-attributes). */
+export interface TypeAttributesRead {
+  readonly available: boolean;
+  /** By type: its dogma attributes and facts, or null for a type the client's tables have not. */
+  readonly types: ReadonlyMap<number, ComparisonTypeData | null>;
+  /** The records of the attributes they carry and of those the tool adds or a value names; null for one not had. */
+  readonly attributes: ReadonlyMap<number, DogmaAttributeRecord | null>;
+  /** Each unit's name as the number of its message. */
+  readonly unitNameIDs: ReadonlyMap<number, number | null>;
+}
+
+/**
+ * Types as the compare tool reads them, from the client's own tables: each type's dogma attributes (get_type_attributes'
+ * rows), group, category, published and dynamic; the attributes' records; the units' names. At most 50 at once.
+ */
+export async function getTypeAttributes(typeIDs: readonly number[], options: ApiOptions = {}): Promise<TypeAttributesRead> {
+  const data = await getJson(`/api/client-data/type-attributes?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const numberOrNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const types = new Map<number, ComparisonTypeData | null>();
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      types.set(typeID, null);
+      continue;
+    }
+    const entry = value as Record<string, JsonValue>;
+    const attributes = (Array.isArray(entry.attributes) ? entry.attributes : []).flatMap((row) => {
+      if (!Array.isArray(row)) return [];
+      const attributeID = Number(row[0]);
+      return Number.isSafeInteger(attributeID) && attributeID > 0 ? [[attributeID, numberOrNull(row[1])] as const] : [];
+    });
+    types.set(typeID, {
+      attributes,
+      groupID: numberOrNull(entry.groupID),
+      categoryID: numberOrNull(entry.categoryID),
+      published: entry.published === true,
+      dynamic: entry.dynamic === true,
+    });
+  }
+  const attributes = new Map<number, DogmaAttributeRecord | null>();
+  for (const [key, value] of Object.entries(record(data.attributes))) {
+    const attributeID = Number(key);
+    if (!Number.isSafeInteger(attributeID) || attributeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      attributes.set(attributeID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    attributes.set(attributeID, {
+      name: typeof row.name === "string" ? row.name : null,
+      displayNameID: numberOrNull(row.displayNameID),
+      tooltipDescriptionID: numberOrNull(row.tooltipDescriptionID),
+      unitID: numberOrNull(row.unitID),
+      iconID: numberOrNull(row.iconID),
+      published: row.published === true,
+      displayWhenZero: row.displayWhenZero === true,
+      highIsGood: row.highIsGood === true,
+      dataType: numberOrNull(row.dataType),
+      defaultValue: numberOrNull(row.defaultValue),
+    });
+  }
+  const unitNameIDs = new Map<number, number | null>();
+  for (const [key, value] of Object.entries(record(data.unitNameIDs))) {
+    const unitID = Number(key);
+    if (Number.isSafeInteger(unitID) && unitID > 0) unitNameIDs.set(unitID, numberOrNull(value));
+  }
+  return { available: data.available === true, types, attributes, unitNameIDs };
 }
 
 /**

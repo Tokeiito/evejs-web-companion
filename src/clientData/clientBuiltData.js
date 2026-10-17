@@ -86,6 +86,15 @@ const TABLES = Object.freeze({
   // A group's category (evetypes.GetCategoryIDByGroup), by which a structure's fitting's menu has no Fit to Active Ship
   // (fittingBrowser.GetFittingMenu, 513).
   groupCategories: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", attribute: "categoryID" }),
+  // The dogma attributes' own records (dogma/data.py get_attribute: dogmaAttributes.fsdbinary), each with its name's
+  // and its tooltip's messages, its unit, its icon, whether it is published, shown at nought and better high, and its
+  // data type and default: what the compare tool shows an attribute by (comparableAttribute.py).
+  dogmaAttributes: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary" }),
+  // A type's dogma attributes (dogma/data.py get_type_dogma: typeDogma.fsdbinary, its dogmaAttributes), and a type's
+  // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
+  // whole, so read by the rows asked for only (rows(), never table()).
+  typeDogma: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", rowsOnly: true }),
+  types: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", rowsOnly: true }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),
@@ -98,11 +107,11 @@ const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
 const CLONE_GRADES = "res:/staticdata/clonegrades.static";
 
 /** Runs the client's loader on a data file and answers what it printed. */
-function runLoader({ python, binFolder, loader, dataFile, attribute = null, timeoutMs = LOAD_TIMEOUT_MS }) {
+function runLoader({ python, binFolder, loader, dataFile, attribute = null, keys = null, timeoutMs = LOAD_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     childProcess.execFile(
       python,
-      [SCRIPT, binFolder, loader, dataFile, ...(attribute ? [attribute] : [])],
+      [SCRIPT, binFolder, loader, dataFile, ...(attribute ? [attribute] : []), ...(keys ? [`keys=${keys.join(",")}`] : [])],
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (error) {
@@ -122,6 +131,8 @@ function runLoader({ python, binFolder, loader, dataFile, attribute = null, time
  *
  *   available()         whether there is a client to read at all
  *   table(name)         Promise of the whole table, an object by key; or null when it cannot be read
+ *   rows(name, keys)    Promise of those rows of the table, an object by key (a key it has not: null); or null when
+ *                       they cannot be read. Each row read once, whoever asks; for a table too big to read whole
  *   lookup(name, key)   Promise of {available, row}: whether the table could be read, and its row or null
  *   status()            {available, python, tables: {name: {loaded, rows, error}}}
  */
@@ -139,7 +150,7 @@ function createClientBuiltData({
 
   const available = () => Boolean(clientRoot);
 
-  async function read(name) {
+  async function read(name, keys = null) {
     const described = tables[name];
     const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
     const relative = index.get(described.resource);
@@ -150,6 +161,7 @@ function createClientBuiltData({
       loader: described.loader,
       dataFile: path.join(clientRoot, "ResFiles", relative),
       ...(described.attribute ? { attribute: described.attribute } : {}),
+      ...(keys ? { keys } : {}),
     });
     const table = JSON.parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
@@ -158,8 +170,37 @@ function createClientBuiltData({
     return table;
   }
 
-  function table(name) {
+  // name -> Map of key -> Promise of the row (null where the table has no such row), or of undefined where it could
+  // not be read (and the key is then let go, to be asked again).
+  const rowReads = new Map();
+  function rows(name, keys) {
     if (!available() || !Object.hasOwn(tables, name)) return Promise.resolve(null);
+    const wanted = [...new Set(keys.map(Number))].filter((key) => Number.isSafeInteger(key) && key >= 0);
+    if (!rowReads.has(name)) rowReads.set(name, new Map());
+    const kept = rowReads.get(name);
+    const missing = wanted.filter((key) => !kept.has(key));
+    if (missing.length > 0) {
+      const reading = read(name, missing).catch((error) => {
+        onError(error);
+        return null;
+      });
+      for (const key of missing) {
+        kept.set(key, reading.then((found) => {
+          if (!found) {
+            kept.delete(key);
+            return undefined;
+          }
+          return Object.hasOwn(found, String(key)) ? found[String(key)] : null;
+        }));
+      }
+    }
+    return Promise.all(wanted.map((key) => kept.get(key))).then((found) => (
+      found.some((row) => row === undefined) ? null : Object.fromEntries(wanted.map((key, at) => [String(key), found[at]]))
+    ));
+  }
+
+  function table(name) {
+    if (!available() || !Object.hasOwn(tables, name) || tables[name].rowsOnly) return Promise.resolve(null);
     if (!reads.has(name)) {
       reads.set(name, read(name).then(
         (loaded) => {
@@ -275,6 +316,7 @@ function createClientBuiltData({
   return {
     available,
     table,
+    rows,
     infoBubbleGroups,
     infoBubbleTypeBonuses,
     cloneGrades,

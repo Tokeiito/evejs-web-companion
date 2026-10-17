@@ -251,6 +251,18 @@ const positive = (value: unknown): number | null => {
 
 /** The adjusted price of each type, by type, out of config.GetAverageMarketPrices as answered; null for no table. */
 export function adjustedPrices(answered: JsonValue | null): ReadonlyMap<number, number | null> | null {
+  return pricesOf(answered, "adjustedPrice");
+}
+
+/**
+ * The average price of each type, by type, out of config.GetAverageMarketPrices as answered (the cfg's table:
+ * typeHelpers.GetAveragePrice reads its averagePrice); null for no table.
+ */
+export function averagePrices(answered: JsonValue | null): ReadonlyMap<number, number | null> | null {
+  return pricesOf(answered, "averagePrice");
+}
+
+function pricesOf(answered: JsonValue | null, field: "adjustedPrice" | "averagePrice"): ReadonlyMap<number, number | null> | null {
   if (answered === null || typeof answered !== "object" || Array.isArray(answered)) return null;
   const dict = answered as { type?: unknown; entries?: unknown };
   if (dict.type !== "dict" || !Array.isArray(dict.entries)) return null;
@@ -260,8 +272,8 @@ export function adjustedPrices(answered: JsonValue | null): ReadonlyMap<number, 
     const typeID = positive(pair[0]);
     const row = pair[1] as { args?: { entries?: unknown } } | null;
     const fields = row && row.args && Array.isArray(row.args.entries) ? (row.args.entries as unknown[]) : [];
-    const adjusted = fields.find((field) => Array.isArray(field) && field[0] === "adjustedPrice") as unknown[] | undefined;
-    if (typeID !== null) prices.set(typeID, adjusted && typeof adjusted[1] === "number" && Number.isFinite(adjusted[1]) ? adjusted[1] : null);
+    const found = fields.find((each) => Array.isArray(each) && each[0] === field) as unknown[] | undefined;
+    if (typeID !== null) prices.set(typeID, found && typeof found[1] === "number" && Number.isFinite(found[1]) ? found[1] : null);
   }
   return prices;
 }

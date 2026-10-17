@@ -490,6 +490,7 @@ import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { type HullBrowserData, type ShipTraitsHeld } from "../bridge/hullBrowser.ts";
+import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
@@ -555,7 +556,7 @@ import {
 import { alignTo as alignToCall, alignToPosition as alignToPositionCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { assembleShip as assembleShipCall, boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
-import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
+import { activityIDOf, averagePrices, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
@@ -2405,6 +2406,21 @@ export interface AppFlow {
   readonly shipTraits: ReadableSignal<ShipTraitsHeld>;
   /** Asks the traits of the ships named that are not asked yet, with the words and names they are written with. */
   requestShipTraits(typeIDs: readonly number[]): Promise<void>;
+  /**
+   * The compare tool's reading of types (comparableType.py), from the client's own tables and kept: each type's dogma
+   * attributes and facts, the attributes' records and the units' names, all that is held; the words and the names
+   * they are written with asked for. Null where the client's tables could not be read.
+   */
+  comparisonTypes(typeIDs: readonly number[]): Promise<{
+    readonly types: ReadonlyMap<number, ComparisonTypeData | null>;
+    readonly attributes: ReadonlyMap<number, DogmaAttributeRecord | null>;
+    readonly unitNameIDs: ReadonlyMap<number, number | null>;
+  } | null>;
+  /**
+   * The cfg's table of average prices (typeHelpers.GetAveragePrice: config.GetAverageMarketPrices, which the cfg asks
+   * once), read once it is had; null where it is not had yet.
+   */
+  cfgAveragePrices(): Promise<ReadonlyMap<number, number | null> | null>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -7404,6 +7420,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ...Object.values(read.unitNameIDs).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
     ]);
     requestNames(Object.values(read.traits).flatMap((each) => (each === null ? [] : each.skills.map((skill) => ({ kind: "type" as const, id: skill.skillTypeID })))));
+  }
+
+  // The compare tool's types and their attributes' records, as read: static data, kept.
+  const comparisonTypesHeld = new Map<number, ComparisonTypeData | null>();
+  const comparisonRecordsHeld = new Map<number, DogmaAttributeRecord | null>();
+  const comparisonUnitNamesHeld = new Map<number, number | null>();
+
+  async function comparisonTypes(typeIDs: readonly number[]): ReturnType<AppFlow["comparisonTypes"]> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !comparisonTypesHeld.has(typeID));
+    for (let at = 0; at < wanted.length; at += 50) {
+      const read = await api.getTypeAttributes(wanted.slice(at, at + 50), callOptions).catch(() => null);
+      if (read === null || !read.available) return null;
+      for (const [typeID, type] of read.types) comparisonTypesHeld.set(typeID, type);
+      for (const [attributeID, record] of read.attributes) comparisonRecordsHeld.set(attributeID, record);
+      for (const [unitID, messageID] of read.unitNameIDs) comparisonUnitNamesHeld.set(unitID, messageID);
+      const records = [...read.attributes.values()].flatMap((record) => (record === null ? [] : [record]));
+      requestWords([
+        ...records.flatMap((record) => [record.displayNameID, record.tooltipDescriptionID].flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))),
+        ...[...read.unitNameIDs.values()].flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
+      ]);
+      // A type's name heads its column; a value of a type or a group (unitTypeID 116, unitGroupID 115) is written by its name.
+      const refs: NameRef[] = [];
+      for (const [typeID, type] of read.types) {
+        refs.push({ kind: "type", id: typeID });
+        for (const [attributeID, value] of type?.attributes ?? []) {
+          const unitID = comparisonRecordsHeld.get(attributeID)?.unitID ?? null;
+          if (value !== null && Number.isSafeInteger(Math.trunc(value)) && Math.trunc(value) > 0) {
+            if (unitID === 116) refs.push({ kind: "type", id: Math.trunc(value) });
+            if (unitID === 115) refs.push({ kind: "typeGroup", id: Math.trunc(value) });
+          }
+        }
+      }
+      requestNames(refs);
+    }
+    return { types: new Map(comparisonTypesHeld), attributes: new Map(comparisonRecordsHeld), unitNameIDs: new Map(comparisonUnitNamesHeld) };
+  }
+
+  let cfgPricesHeld: ReadonlyMap<number, number | null> | null = null;
+  async function cfgAveragePrices(): Promise<ReadonlyMap<number, number | null> | null> {
+    if (cfgPricesHeld === null) {
+      try {
+        cfgPricesHeld = averagePrices(await bridgeAsk("config", "GetAverageMarketPrices", []));
+      } catch {
+        cfgPricesHeld = null;
+      }
+    }
+    return cfgPricesHeld;
   }
 
   /** globalConfig/const.py SHOW_COMMUNITY_FITTINGS_CONFIG, and its default ('1'). */
@@ -21819,6 +21882,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadHullBrowser,
     shipTraits: readonlySignal(shipTraitsSignal),
     requestShipTraits,
+    comparisonTypes,
+    cfgAveragePrices,
     deleteFitting,
     deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),

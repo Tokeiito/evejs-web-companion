@@ -65,6 +65,7 @@
   import { showMarketDetails } from "./marketDetails.ts";
   import { findInPersonalAssets } from "./assetsSearch.ts";
   import { findInContracts } from "./contractsSearch.ts";
+  import { compareType } from "./typeCompare.ts";
   import { assetSearchTextForType } from "../bridge/assetSearch.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
@@ -275,11 +276,11 @@
   // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
   // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), its import and export menu's Import
   // from Clipboard and Export to Clipboard (not its Simulate from Clipboard, its files nor Copy All Skills), and the
-  // tooltips of a fitting and of a hull (its traits with them), a hull's menu (Show Info and View Market Details),
-  // and the selection's Delete Fitting for several at once (DeleteManyFittings). Its words are the install's; the
-  // page's own stand in. Not done: a hull's Simulate button, the menu's Simulate Fitting, a fitting clicked
-  // (simulated), the hull menu's Find in Contracts, Find Personal Assets and Compare, the groups' Compare, and an
-  // unsupported fitting shown whole to a game master. Delete Fitting is offered as GetDeletableNodes offers it (the
+  // tooltips of a fitting and of a hull (its traits with them), a hull's menu (Show Info, View Market Details, Find in
+  // Contracts, Find Personal Assets and Compare), and the selection's Delete Fitting for several at once
+  // (DeleteManyFittings). Its words are the install's; the page's own stand in. Not done: a hull's Simulate button, the
+  // menu's Simulate Fitting, a fitting clicked (simulated), the groups' Compare, and an unsupported fitting shown whole
+  // to a game master. Delete Fitting is offered as GetDeletableNodes offers it (the
   // corporation's and the alliance's by role). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
@@ -294,6 +295,7 @@
     "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
     "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
     "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
+    "UI/Compare/CompareButton": "Side by side",
     // The asset search's exact-type keyword (assetSearchUtil, KeywordTypeExact): a word the search reads, not shown.
     "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
     "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
@@ -544,7 +546,9 @@
   // includeMarketDetails=True), 2281 to 2352) on its right click: Show Info, and View Market Details where the type has a
   // market group, and where it is published Find in Contracts (contracts.FindRelated: the contracts window's search for
   // the type, contractsSearch.ts) and Find Personal Assets (invItemFunctions.FindInPersonalAssets: the assets window's
-  // search for the type's exact name, assetsSearch.ts). Not the page's: Compare, and a GM's "GM / WM Extras".
+  // search for the type's exact name, assetsSearch.ts); and Compare, the type's category being among compareCategories
+  // (2347 to 2348: every hull's is; CompareType, the compare tool, typeCompare.ts). Not the page's: a GM's "GM / WM
+  // Extras".
   let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
   function openHullMenu(typeID: number, event: MouseEvent): void {
     event.preventDefault();
@@ -1872,6 +1876,7 @@
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInContracts(typeID); }}>{fitWord("UI/Inventory/ItemActions/FindInContracts")}</button>
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), hullName(typeID))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
         {/if}
+        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
       </span>
     {/if}
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
