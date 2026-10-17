@@ -164,10 +164,13 @@ export interface DroneReading {
   readonly dps: number;
 }
 
-/** The drone panel for the client's own ship docked: the bay's best set, its damage and bandwidth. */
-export function dockedDrones(location: DogmaLocation, ship: DogmaItem, pilot: DogmaItem, readings: DroneReadings): DroneReading {
+/**
+ * The drone panel for the client's own ship (clientDogmaLocation.GetActiveDrones): its drones out in space, one each;
+ * with none out, the bay's best set; their damage and bandwidth.
+ */
+export function ownShipDrones(location: DogmaLocation, ship: DogmaItem, pilot: DogmaItem, readings: DroneReadings, inSpace: readonly DogmaItem[]): DroneReading {
   void location;
-  const active = bayActiveDrones(ship, pilot, readings);
+  const active = inSpace.length > 0 ? new Map<DogmaItem, number>(inSpace.map((drone) => [drone, 1])) : bayActiveDrones(ship, pilot, readings);
   let count = 0;
   for (const quantity of active.values()) count += quantity;
   return {

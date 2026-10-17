@@ -141,11 +141,19 @@ export function simulateCapacitor(capacitorCapacity: number, rechargeTime: numbe
   return { peakRechargeRate, totalCapNeed, loadBalance, ttl };
 }
 
+/** GetAccurateAttributeValue: the location's own docked and for a ghost, godma's for the client's own ship in space. */
+type Accurate = (item: DogmaItem, attributeID: number) => number;
+
 /**
- * The modules CapacitorSimulator runs, off the dogma location: each fitted item of the ship but its charges, that the
- * calculation includes, by its default effect.
+ * The modules CapacitorSimulator runs: each fitted item of the ship but its charges, that the calculation includes, by
+ * its default effect, each figure read as GetAccurateAttributeValue gives it (`accurate`).
  */
-export function capacitorModules(location: DogmaLocation, ship: DogmaItem, included: (module: DogmaItem) => boolean): CapacitorModule[] {
+export function capacitorModules(
+  location: DogmaLocation,
+  ship: DogmaItem,
+  included: (module: DogmaItem) => boolean,
+  accurate: Accurate = (item, attributeID) => location.value(item, attributeID),
+): CapacitorModule[] {
   const modulesByFlag = new Map<number, DogmaItem>();
   const chargesByFlag = new Map<number, DogmaItem>();
   for (const item of ship.fitted.values()) {
@@ -162,8 +170,8 @@ export function capacitorModules(location: DogmaLocation, ship: DogmaItem, inclu
     const durationAttributeID = effect?.durationAttributeID ?? null;
     const dischargeAttributeID = effect?.dischargeAttributeID ?? null;
     if (durationAttributeID === null) continue;
-    const duration = location.value(module, durationAttributeID);
-    const reactivationDelay = location.value(module, ATTRIBUTE_MODULE_REACTIVATION_DELAY);
+    const duration = accurate(module, durationAttributeID);
+    const reactivationDelay = accurate(module, ATTRIBUTE_MODULE_REACTIVATION_DELAY);
     let reloadInfo: CapacitorModule["reloadInfo"] = null;
     let capNeed: number;
     let avgCapNeed: number;
@@ -171,35 +179,40 @@ export function capacitorModules(location: DogmaLocation, ship: DogmaItem, inclu
       const charges = chargesByFlag.get(flagID);
       if (!charges) continue;
       // _GetAvgInjectedEachCycle, _GetReloadInfo
-      const reloadTime = location.value(module, ATTRIBUTE_RELOAD_TIME);
-      const maxChargesInModule = long(location.value(module, ATTRIBUTE_CAPACITY) / location.value(charges, ATTRIBUTE_VOLUME));
+      const reloadTime = accurate(module, ATTRIBUTE_RELOAD_TIME);
+      const maxChargesInModule = long(accurate(module, ATTRIBUTE_CAPACITY) / accurate(charges, ATTRIBUTE_VOLUME));
       reloadInfo = { reloadTime, maxChargesInModule };
-      const capInjectedPerCycle = location.value(charges, ATTRIBUTE_CAPACITOR_BONUS);
+      const capInjectedPerCycle = accurate(charges, ATTRIBUTE_CAPACITOR_BONUS);
       const injectedInOneLoad = maxChargesInModule * capInjectedPerCycle;
       const durationOfFullLoad = maxChargesInModule * duration;
       const avgCapInjectedEachCycle = (injectedInOneLoad / (durationOfFullLoad + reloadTime)) * duration;
       avgCapNeed = -avgCapInjectedEachCycle;
       capNeed = -capInjectedPerCycle;
     } else if (module.groupID === GROUP_ENERGY_VAMPIRE) {
-      const capInjectedPerCycle = location.value(module, ATTRIBUTE_POWER_TRANSFER_AMOUNT);
+      const capInjectedPerCycle = accurate(module, ATTRIBUTE_POWER_TRANSFER_AMOUNT);
       capNeed = -capInjectedPerCycle;
       avgCapNeed = -capInjectedPerCycle;
     } else if (dischargeAttributeID === null) {
       continue;
     } else {
-      avgCapNeed = capNeed = location.value(module, dischargeAttributeID);
+      avgCapNeed = capNeed = accurate(module, dischargeAttributeID);
     }
     modules.push({ capNeeded: capNeed, avgCapNeed, duration, reactivationDelay, reloadInfo });
   }
   return modules;
 }
 
-/** CapacitorSimulator(dogmaLocation, shipID). */
-export function capacitorSimulator(location: DogmaLocation, ship: DogmaItem, included: (module: DogmaItem) => boolean): CapacitorReading {
+/** CapacitorSimulator(dogmaLocation, shipID), each figure read as GetAccurateAttributeValue gives it. */
+export function capacitorSimulator(
+  location: DogmaLocation,
+  ship: DogmaItem,
+  included: (module: DogmaItem) => boolean,
+  accurate: Accurate = (item, attributeID) => location.value(item, attributeID),
+): CapacitorReading {
   return simulateCapacitor(
-    location.value(ship, ATTRIBUTE_CAPACITOR_CAPACITY),
-    location.value(ship, ATTRIBUTE_RECHARGE_RATE),
-    capacitorModules(location, ship, included),
+    accurate(ship, ATTRIBUTE_CAPACITOR_CAPACITY),
+    accurate(ship, ATTRIBUTE_RECHARGE_RATE),
+    capacitorModules(location, ship, included, accurate),
   );
 }
 

@@ -32,7 +32,7 @@ import { deriveShipStats, known, unavailable, type ShipStats } from "../bridge/s
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
-import { dockedDrones, type DroneReading } from "../bridge/dogma/drones.ts";
+import { ownShipDrones, type DroneReading } from "../bridge/dogma/drones.ts";
 import {
   fitToOneSlot,
   fitToSimulation,
@@ -4533,6 +4533,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
         scheduleDroneRefresh();
       }
+      // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
+      // reckoned again where they are the page's, as the client's drone panel takes its drones again
+      // (clientDogmaLocation.GetActiveDrones).
+      const fittingNow = store.fitting.get();
+      if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
       // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
       // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
       // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
@@ -5593,6 +5598,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const damageStateHeard = new Map<string, { readonly itemID: number; readonly attributeID: number; readonly value: number; readonly at: number }>();
 
+  /** The ship attributes whose change alone the Fitting window's figures are not reckoned again for: damage, armour damage, the charges. */
+  const RECKONING_IGNORES: ReadonlySet<number> = new Set([3, 266, 264, 18]);
+
   /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
   function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
     for (const change of locationAttributeChanges(method, args)) {
@@ -5609,8 +5617,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       Object.entries(current.shipAttributes).map(([attributeID, value]) => [Number(attributeID), value]),
     );
     for (const [attributeID, value] of changed) attributes.set(attributeID, value);
-    // Where the figures are the page's own dogma's, the change is reckoned again from what godma holds now.
-    if (current.statsFrom === "page") scheduleShipReckoning();
+    // Where the figures are the page's own dogma's, the change is reckoned again from what godma holds now; not for a
+    // change of damage or a charge alone (the shield's charge in combat), which none of them is made of.
+    if (current.statsFrom === "page" && [...changed.keys()].some((attributeID) => !RECKONING_IGNORES.has(attributeID))) scheduleShipReckoning();
     store.apply({
       type: "fitting/ship-attributes",
       shipID: current.activeShipID,
@@ -5762,8 +5771,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The drone bay's stacks, which the client's dogma location loads with the ship's other items
     // (LoadItemsInLocation: invCache's list of the ship, the drone bay a valid flag).
     // A bay that cannot be read leaves the drones out, and the rest is reckoned all the same.
-    const bay = await api.getDrones(callOptions).then((answer) => decodeDroneBay(answer.bay) ?? []).catch(() => []);
-    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID)];
+    // And its drones out in space under its control (the client's ship's drones, their location the solar system).
+    const droneRead = await api.getDrones(callOptions)
+      .then((answer) => ({
+        bay: decodeDroneBay(answer.bay) ?? [],
+        inSpace: (decodeDronesInSpace(answer.inSpace) ?? []).filter((drone) => drone.controlled && drone.typeID !== null),
+      }))
+      .catch(() => ({ bay: [], inSpace: [] }));
+    const bay = droneRead.bay;
+    const inSpace = droneRead.inSpace.map((drone) => ({ itemID: drone.itemID, typeID: drone.typeID as number }));
+    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID), ...inSpace.map((drone) => drone.typeID)];
     const attributeIDs = [
       ...shipInfo.attributes.map((attribute) => attribute.attributeID),
       ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
@@ -5771,7 +5788,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ];
     const staticData = await dogmaStaticFor(typeIDs, attributeIDs);
     if (!staticData || store.fitting.get().activeShipID !== shipID) return null;
-    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, staticData };
+    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, staticData };
   }
 
   /**
@@ -5796,14 +5813,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * (the capacitor's and the shield's charge) are brought up to each moment they are read. No panel shows them, and
    * the window's figures leave them out.
    *
-   * Docked only for now. In space a module may be running, and the running effects are a later part, so there the
-   * server's figures stand.
+   * Docked and in space alike. In space GetAccurateAttributeValue is godma's for every item godma holds, and the active
+   * drones are the ship's drones out in space under its control (clientDogmaLocation.GetActiveDrones); a module's
+   * running effects are godma's figures, the location's holding only its online state (IsModuleIncludedInCalculation).
    */
   async function reckonActiveShip(): Promise<void> {
-    if (store.flight.get().status?.docked !== true) return;
+    const status = store.flight.get().status;
+    if (status?.docked !== true && status?.inSpace !== true) return;
+    const docked = status.docked === true;
     const inputs = await ownShipInputs();
     if (!inputs) return;
-    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, staticData } = inputs;
+    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, staticData } = inputs;
     // Loaded at the moment the ship's state was the server's (MakeShipActive), read at each moment after.
     let loadingAt: number | null = infoTimeMs(shipInfo.time) ?? serverNow();
     const reckoned = loadSimulatedFitting(
@@ -5816,6 +5836,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       { clock: () => loadingAt ?? serverNow(), shipInstance: instanceOf(shipInfo.itemID), pilotInstance: instanceOf(characterID) },
     );
     for (const stack of bay) reckoned.location.loadDrone(reckoned.ship, String(stack.itemID), stack.typeID, stack.quantity);
+    const dronesOut = inSpace.map((drone) => reckoned.location.loadDrone(reckoned.ship, String(drone.itemID), drone.typeID, 1));
     // What the location has taken since: each damage-state change heard after the ship's state was the server's, set
     // on its item (where it is loaded) at the moment it was heard.
     const loadedAt = loadingAt;
@@ -5847,11 +5868,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     /** The controller's GetAttribute for the session's own ship: godma's, else the location's. */
     const shipValue = (attributeID: number): number =>
       godmaRows.get(reckoned.ship.key)?.get(attributeID) ?? reckoned.location.value(reckoned.ship, attributeID);
+    // GetAccurateAttributeValue: docked, the location's own; in space, godma's where godma holds the item.
+    const accurate = (item: DogmaItem, attributeID: number): number =>
+      (docked ? undefined : godmaRows.get(item.key)?.get(attributeID)) ?? reckoned.location.value(item, attributeID);
     const figures = panelFigures({
       location: reckoned.location,
       ship: reckoned.ship,
       pilot: reckoned.pilot,
       staticData,
+      accurate,
       listed: new Set([...shipInfo.attributes.map((attribute) => attribute.attributeID), ...reckoned.location.values(reckoned.ship).keys()]),
       shipValue,
       // The offense panel's rates, multipliers and reloads off godma, the pilot's missile damage multiplier among them.
@@ -5861,11 +5886,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       included: isOnlineModule,
       hpIncluded: () => true,
       maxDamageMultiplier: () => 1.0,
-      // The drone panel's: docked, the bay's best set is the active one (clientDogmaLocation.GetActiveDrones).
-      drones: dockedDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
-        accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
+      // The drone panel's (clientDogmaLocation.GetActiveDrones): those out in space, else the bay's best set.
+      drones: ownShipDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
+        accurate,
         value: (item, attributeID) => reckoned.location.value(item, attributeID),
-      }),
+      }, dronesOut),
     });
     store.apply({ type: "fitting/reckoned", shipID, ...figures });
   }
@@ -5883,6 +5908,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly ship: DogmaItem;
     readonly pilot: DogmaItem;
     readonly staticData: DogmaStatic;
+    /** GetAccurateAttributeValue; the location's own where it is not said. */
+    readonly accurate?: (item: DogmaItem, attributeID: number) => number;
     readonly listed: Iterable<number>;
     readonly shipValue: (attributeID: number) => number;
     readonly gav: (item: DogmaItem, attributeID: number) => number;
@@ -5892,7 +5919,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly drones: DroneReading;
   }): { readonly resources: FittingResources; readonly stats: ShipStats } {
     const { location, ship, pilot, staticData, shipValue, drones } = view;
-    const accurate = (item: DogmaItem, attributeID: number): number => location.value(item, attributeID);
+    const accurate = view.accurate ?? ((item: DogmaItem, attributeID: number): number => location.value(item, attributeID));
     const attributes = new Map<number, number>();
     for (const attributeID of view.listed) {
       if (staticData.attributes[attributeID]?.chargeRechargeTimeID) continue;
@@ -5902,7 +5929,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const derived = deriveShipStats(attributes, undefined, pilotAttributes);
     // GetAlignTimeForShip: -ln(0.25) * agility * mass / 1e6.
     const alignTime = (-Math.log(0.25) * shipValue(70) * shipValue(4)) / 1_000_000;
-    const simulator = capSimulatorValues(capacitorSimulator(location, ship, view.included));
+    const simulator = capSimulatorValues(capacitorSimulator(location, ship, view.included, accurate));
     const weapons = offense(location, ship, pilot, { accurate, gav: view.gav, included: view.included, maxDamageMultiplier: view.maxDamageMultiplier });
     const layers = defense(location, ship, {
       stat: (attributeID) => roundTo10(shipValue(attributeID)),
