@@ -70,8 +70,12 @@
   // The corporation's notices (another member's changes) come on the pilot's stream as the gateway sends them, and are
   // taken as the client's panels take them (corpNotice, below).
   //
-  // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the omega button's
-  // upgrade window (the omega state's click), the faction and career icons, the omega banner, a skill row's selection,
+  // Where the plan is omega locked the contents show Upgrade Clone State (UpdateOmegaBanner) above the books' button.
+  // It, the omega level button and the locked panel's omega button open the clone upgrade window in the client (the
+  // Omega upsell window, the store's); the page has no store, so they are off, and their hints say so.
+  //
+  // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the clone upgrade
+  // window (the store), the faction and career icons, a skill row's selection,
   // menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry, and a notice kept
   // while the session does not match it yet (the client's notice routing cache).
   import { onMount, untrack } from "svelte";
@@ -171,6 +175,7 @@
     "UI/CloneState/RequiresOmegaClone": "Needs an omega clone",
     "UI/SkillPlan/SkillbooksMissing2": "Books not held",
     "UI/SkillPlan/RequireOmega": "Needs omega",
+    "UI/CloneState/UpgradeCloneState": "Upgrade the clone",
     "UI/SkillPlan/ClickToBuyMissingSkillAndRequirements": "A book for this skill, or for one it needs, is not held: buy them.",
     "UI/SkillPlan/RemoveFromQueue": "This level is queued: take it out.",
     "UI/SkillPlan/RemoveFromQueueLocked": "This level is queued, and another queued skill needs it.",
@@ -714,6 +719,14 @@
   };
   let levelBusy = $state(false);
 
+  /**
+   * A hint of a button that opens the clone upgrade window (uicore.cmd.OpenCloneUpgradeWindow: the Omega upsell window,
+   * the store's), with why the page's does not: as the apply-points button says it (ClientDialogs.svelte).
+   */
+  function withoutStore(hint: string): string {
+    return `${hint} (The page has no store.)`;
+  }
+
   /** GetTooltipText; add's with the points the level lacks and the pilot's points a minute (LoadTooltipPanel). */
   function levelHint(row: SkillPlanContentRow): string {
     if (row.button !== "add") return word(LEVEL_BUTTON_HINTS[row.button]);
@@ -923,11 +936,20 @@
                   </span>
                   <span class="skill-plan-row-name">{word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill: row.skill, level: romanLevel(row.level), levelColor: "#ffffff" })}</span>
                   <span class="skill-plan-row-time">{row.ticks === null ? "–" : interval(row.ticks, "minute")}</span>
-                  <button type="button" class="skill-plan-row-button {row.button}" disabled={levelButtonOff(row.button) || levelBusy}
-                    title={levelHint(row)} aria-label={levelHint(row)} onclick={() => void levelAction(plan, row)}>{LEVEL_BUTTON_MARKS[row.button]}</button>
+                  <!-- The omega state opens the clone upgrade window (OnOmegaMissingAction), which is the store's: off here, and why. -->
+                  <button type="button" class="skill-plan-row-button {row.button}" disabled={levelButtonOff(row.button) || row.button === "omega" || levelBusy}
+                    title={row.button === "omega" ? withoutStore(levelHint(row)) : levelHint(row)} aria-label={levelHint(row)}
+                    onclick={() => void levelAction(plan, row)}>{LEVEL_BUTTON_MARKS[row.button]}</button>
                 </li>
               {/each}
             </ul>
+          {/if}
+          <!-- UpdateOmegaBanner: Upgrade Clone State (SkillPlanOmegaButton) where the plan is omega locked, above the books'
+               button; it opens the clone upgrade window, the store's, so it is off here, and says why. -->
+          {#if contents !== undefined && contents.planID === plan.id && contents.detail !== null && contents.detail.omegaLocked}
+            <button type="button" class="skill-plan-upgrade" disabled title={withoutStore(word("UI/CloneState/UpgradeCloneState"))}>
+              <span aria-hidden="true">Ω</span> {word("UI/CloneState/UpgradeCloneState")}
+            </button>
           {/if}
           {#if contents !== undefined && contents.planID === plan.id && contents.detail !== null && contents.detail.missingBooks.length > 0}
             {@const missing = contents.detail.missingBooks}
@@ -950,7 +972,8 @@
               onclick={toggleContents}>📖{#if detail.missingBooks.length > 0}<span class="skill-plan-lock-count">{detail.missingBooks.length}</span>{/if}</button>
             {#if detail.omegaLocked}
               <span class="skill-plan-lock-icon" aria-hidden="true">🔒</span>
-              <span class="skill-plan-lock omega locked" title={word("UI/SkillPlan/OmegaMissing", { numMissing: detail.numOmegaSkills })}
+              <!-- SkillPlanLockedCont.OnOmegaButton opens the clone upgrade window, the store's: not here, and its hint says why. -->
+              <span class="skill-plan-lock omega locked" title={withoutStore(word("UI/SkillPlan/OmegaMissing", { numMissing: detail.numOmegaSkills }))}
                 aria-label={word("UI/SkillPlan/OmegaMissing", { numMissing: detail.numOmegaSkills })}>Ω</span>
             {/if}
           </div>
@@ -1136,6 +1159,8 @@
   .skill-plan-row-button.book { color: #e05a4f; }
   .skill-plan-row-button.omega { color: #e8b34a; }
   .skill-plan-buy-books { display: block; width: 100%; margin-top: 0.5rem; color: #e05a4f; }
+  /* SkillPlanOmegaButton: the MONETIZATION style, 36 high, ten above the books' button. */
+  .skill-plan-upgrade { display: block; width: 100%; min-height: 2.25rem; margin-top: 0.6rem; color: #e8b34a; }
   .skill-plan-foot { display: flex; flex-direction: column; align-items: stretch; gap: 0.5rem; }
   .skill-plan-locks { display: flex; justify-content: center; align-items: center; gap: 1rem; }
   /* The lock buttons (lockButton.py): the books' framed white, PRIMARY_BLUE where locked, with the count on HOT_RED;
