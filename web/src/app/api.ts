@@ -3721,7 +3721,12 @@ export async function loadBaseCycleTimes(
 export async function getRequiredSkills(
   typeIDs: readonly number[],
   options: ApiOptions = {},
-): Promise<{ readonly available: boolean; readonly required: Readonly<Record<number, Readonly<Record<number, number>>>> }> {
+): Promise<{
+  readonly available: boolean;
+  readonly required: Readonly<Record<number, Readonly<Record<number, number>>>>;
+  /** Each type's needs as [skill, level] in the order the client's table iterates them (get_dogma_required_skills). */
+  readonly order: Readonly<Record<number, readonly (readonly [number, number])[]>>;
+}> {
   const data = await getJson(`/api/client-data/required-skills?typeIDs=${typeIDs.join(",")}`, options);
   const raw =
     typeof data.required === "object" && data.required !== null && !Array.isArray(data.required)
@@ -3738,7 +3743,23 @@ export async function getRequiredSkills(
     }
     required[typeID] = bySkill;
   }
-  return { available: data.available === true, required };
+  const rawOrder =
+    typeof data.order === "object" && data.order !== null && !Array.isArray(data.order)
+      ? (data.order as Record<string, JsonValue>)
+      : {};
+  const order: Record<number, (readonly [number, number])[]> = {};
+  for (const [typeKey, pairs] of Object.entries(rawOrder)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || !Array.isArray(pairs)) continue;
+    order[typeID] = pairs.flatMap((pair) => {
+      if (!Array.isArray(pair)) return [];
+      const [skillID, level] = pair;
+      return typeof skillID === "number" && Number.isSafeInteger(skillID) && skillID > 0 && typeof level === "number" && Number.isSafeInteger(level)
+        ? [[skillID, level] as const]
+        : [];
+    });
+  }
+  return { available: data.available === true, required, order };
 }
 
 /**

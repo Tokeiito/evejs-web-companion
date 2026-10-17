@@ -53,8 +53,10 @@ const TABLES = Object.freeze({
   // The special effects that are a jump (fsdBuiltData/client/travelEffects.py, by guid): IsTravelEffect.
   travelEffects: Object.freeze({ loader: "travelEffectsLoader", resource: "res:/staticdata/traveleffects.fsdbinary" }),
   // The skills a type needs and at what level, by type (evetypes/skills.py get_dogma_required_skills), which the
-  // client's skill service and dogma location walk to say what is missing to fly a ship or use a thing.
-  requiredSkillsForTypes: Object.freeze({ loader: "requiredSkillsForTypesLoader", resource: "res:/staticdata/requiredskillsfortypes.fsdbinary" }),
+  // client's skill service and dogma location walk to say what is missing to fly a ship or use a thing. Each row is
+  // [[skill, level], ...] in the order the client's loader iterates it (its requiredSkill1, 2, 3...), which the
+  // client's skill plan validation walks in: keepOrder.
+  requiredSkillsForTypes: Object.freeze({ loader: "requiredSkillsForTypesLoader", resource: "res:/staticdata/requiredskillsfortypes.fsdbinary", keepOrder: true }),
   // A type's base price and whether it is published (evetypes.GetBasePrice and IsPublished): what a skill book bought
   // directly costs (characterskills/common/purchase.py get_direct_purchase_price) and whether it is sold so at all
   // (evetypes.IsSkillAvailableForPurchase). One attribute of the types each, as typeShipGroups is.
@@ -139,6 +141,20 @@ function runLoader({ python, binFolder, loader, dataFile, attribute = null, keys
  *   lookup(name, key)   Promise of {available, row}: whether the table could be read, and its row or null
  *   status()            {available, python, tables: {name: {loaded, rows, error}}}
  */
+// A table printed as dicts of whole-number keys, its rows each as [[key, value], ...] in the order the loader
+// printed them: JSON.parse would put whole-number keys in rising order. The keys are marked so they are not whole
+// numbers to it, then read back. Only for a table of numbers (no text in which such a mark could be read).
+function orderedRows(printed) {
+  const marked = JSON.parse(printed.replace(/"(\d+)":/g, '"#$1":'));
+  const table = {};
+  for (const [key, row] of Object.entries(marked)) {
+    table[key.slice(1)] = row && typeof row === "object" && !Array.isArray(row)
+      ? Object.entries(row).map(([inner, value]) => [Number(inner.slice(1)), value])
+      : row;
+  }
+  return table;
+}
+
 function createClientBuiltData({
   clientRoot = null,
   python = "python",
@@ -166,7 +182,7 @@ function createClientBuiltData({
       ...(described.attribute ? { attribute: described.attribute } : {}),
       ...(keys ? { keys } : {}),
     });
-    const table = JSON.parse(printed);
+    const table = described.keepOrder ? orderedRows(printed) : JSON.parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
       throw new Error(`The client's ${described.loader} did not print a table.`);
     }

@@ -13086,7 +13086,9 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
 // get_dogma_required_skills: the requiredSkillsForTypes table), for the types asked and every skill they lead to, so
 // that whoever asks walks them as the client's skill service walks them (skillsvc.py 534 to 595). A type that needs
 // none has {}. `available` is false when the table could not be read (no client install, or no Python to host the
-// client's loader); `required` is then empty. At most 50 types are asked at once.
+// client's loader); `required` is then empty. At most 50 types are asked at once. `order` has each type's needs as
+// [[skill, level], ...] in the order the client's table iterates them (its requiredSkill1, 2, 3...), which `required`'s
+// object loses on the way: the client's skill plan validation walks them in it.
 app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -13096,20 +13098,26 @@ app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) 
     }
     const table = await clientBuiltData.table("requiredSkillsForTypes");
     const required = {};
+    const order = {};
     const walk = (typeID) => {
       if (Object.prototype.hasOwnProperty.call(required, typeID)) return;
-      const row = table && table[typeID] && typeof table[typeID] === "object" ? table[typeID] : {};
+      const row = table && Array.isArray(table[typeID]) ? table[typeID] : [];
       const skills = {};
-      for (const [skillID, level] of Object.entries(row)) {
+      const inOrder = [];
+      for (const [skillID, level] of row) {
         const skill = Number(skillID);
         const atLevel = Number(level);
-        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) skills[skill] = atLevel;
+        if (Number.isSafeInteger(skill) && skill > 0 && Number.isSafeInteger(atLevel)) {
+          skills[skill] = atLevel;
+          inOrder.push([skill, atLevel]);
+        }
       }
       required[typeID] = skills;
-      for (const skillID of Object.keys(skills)) walk(Number(skillID));
+      order[typeID] = inOrder;
+      for (const [skill] of inOrder) walk(skill);
     };
     if (table) for (const typeID of asked.slice(0, 50)) walk(typeID);
-    res.json({ ok: true, available: Boolean(table), required });
+    res.json({ ok: true, available: Boolean(table), required, order });
   } catch (error) {
     next(error);
   }
@@ -13385,6 +13393,7 @@ const PUBLIC_GATEWAY_READS = new Set([
 const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.DeleteRequest",
   "eve_public.character.skill.plan.SetActiveRequest",
+  "eve_public.character.skill.plan.SetSkillRequirementsRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {

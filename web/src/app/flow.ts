@@ -203,6 +203,7 @@ import {
   rawTrainingTimeForSkillLevel, requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
+import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
 import {
   NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
   untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
@@ -7585,7 +7586,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       bridgeAsk("skillHandler", "GetSkills", []),
       bridgeAsk("skillHandler", "GetAllSkills", []),
     ]);
-    const plans = read.filter((plan) => plan !== null);
+    // _GetPersonalSkillPlanController: each plan's list put right by ValidateSkillPlan, and where that changed it, the
+    // plan's skills set so on the server (SetRequiredSkills); a plan either fails on is left out (it returns None).
+    // Without the client's data for it, a plan is taken as it is read.
+    const asRead = read.filter((plan) => plan !== null);
+    const validation = await skillPlanValidationFacts([...new Set(asRead.flatMap((plan) => plan.requirements.map(([skill]) => skill)))]).catch(() => null);
+    const plans: PersonalSkillPlan[] = [];
+    for (const plan of asRead) {
+      if (validation === null) {
+        plans.push(plan);
+        continue;
+      }
+      const requirements: PlanSkillLevel[] = plan.requirements.map(([skill, level]) => [skill, level] as const);
+      try {
+        if (validateSkillPlan(requirements, validation)) await setPlanSkillRequirements(plan.id, requirements);
+      } catch {
+        continue;
+      }
+      plans.push({ ...plan, requirements });
+    }
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
@@ -7598,6 +7617,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // GetTrainingTimeForSkills asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted.
         trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
       })),
+    };
+  }
+
+  /** skillPlanRequestsMessenger.set_required_skills: SetSkillRequirements, each [skill, level] in the plan's order. */
+  async function setPlanSkillRequirements(id: string, requirements: readonly PlanSkillLevel[]): Promise<void> {
+    await gatewayAsk("eve_public.character.skill.plan.SetSkillRequirementsRequest", {
+      skill_plan: { uuid: bytesFromUuid(id) },
+      requirements: requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+    }, true);
+  }
+
+  /** dogma/const.py attributeSkillIsObsolete */
+  const ATTRIBUTE_SKILL_IS_OBSOLETE = 2450;
+  /** inventorycommon/const.py categorySkill */
+  const CATEGORY_SKILL_TYPES = 16;
+
+  /**
+   * What the client's skill plan validation reads (bridge/skillPlanValidation.ts): each skill's needs in its table's
+   * order (the BFF's required-skills, fifty asked at a time, with every skill they lead to), and which skills are
+   * valid (_IsSkillInvalid: among the skill types, evetypes.GetTypeIDsByCategory(categorySkill); published; not
+   * attributeSkillIsObsolete). Null where the client's data could not be had.
+   */
+  async function skillPlanValidationFacts(skillTypes: readonly number[]): Promise<SkillPlanValidationFacts | null> {
+    const order = new Map<number, readonly PlanSkillLevel[]>();
+    for (let at = 0; at < skillTypes.length; at += 50) {
+      const read = await api.getRequiredSkills(skillTypes.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      for (const [key, pairs] of Object.entries(read.order)) order.set(Number(key), pairs);
+    }
+    const all = [...new Set([...skillTypes, ...order.keys()])];
+    const types = new Map<number, TypeMetaFacts | null>();
+    const obsolete = new Set<number>();
+    for (let at = 0; at < all.length; at += 500) {
+      const batch = all.slice(at, at + 500);
+      const [meta, dogma] = await Promise.all([api.getTypeMeta(batch, callOptions), api.fetchTypeDogma(batch, [ATTRIBUTE_SKILL_IS_OBSOLETE], callOptions)]);
+      if (!meta.available) return null;
+      for (const [typeID, facts] of meta.types) types.set(typeID, facts);
+      for (const typeID of batch) if (dogma[typeID]?.[ATTRIBUTE_SKILL_IS_OBSOLETE]) obsolete.add(typeID);
+    }
+    return {
+      isValidSkill: (typeID) => {
+        const facts = types.get(typeID);
+        return facts !== undefined && facts !== null && facts.categoryID === CATEGORY_SKILL_TYPES && facts.published && !obsolete.has(typeID);
+      },
+      prerequisites: (typeID) => order.get(typeID) ?? [],
     };
   }
 
