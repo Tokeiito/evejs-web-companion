@@ -1,6 +1,7 @@
 <script lang="ts">
   // A skill's menu at the pointer (menusvc.GetMenuForSkill, bridge/skillMenu.ts), as a skill entry's GetMenu opens it:
-  // a plan's contents rows (SkillPlanContentsSkillEntry) and the plan editor's catalogue (SkillGroupSkillEntry). The
+  // a plan's contents rows (SkillPlanContentsSkillEntry), the plan editor's catalogue (SkillGroupSkillEntry) and the
+  // skill queue's entries (SkillQueueSkillEntry, with its Remove after a line, which onRemove takes). The
   // queue's entries and Apply Skill Points are the flow's (skillMenuChoose); the type menu's are the page's windows:
   // Show Info, the market's details, the contracts' and the assets' searches, the compare tool. Buy This Type opens
   // the market's buy window (marketutils.Buy), which the page has not: it is off, and says so. Closed by a click
@@ -21,7 +22,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { JsonValue } from "../bridge/wire.ts";
 
-  let { store, flow, skill, entries, x, y, onClose, onApplied = null }: {
+  let { store, flow, skill, entries, x, y, onClose, onApplied = null, onRemove = null }: {
     store: ClientStore;
     flow: AppFlow;
     skill: number;
@@ -33,6 +34,8 @@
     onClose: () => void;
     /** After Apply Skill Points has put the points in (OnSkillsChanged), for what shows the skill to be read again. */
     onApplied?: (() => void) | null;
+    /** A queue entry's Remove chosen (RemoveSkillFromQueue: the queue's selection out). */
+    onRemove?: (() => void) | null;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -56,6 +59,7 @@
     "UI/Inventory/ItemActions/FindPersonalAssets": "Look in your assets",
     "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
     "UI/Compare/CompareButton": "Compare",
+    "UI/Commands/Remove": "Remove",
   };
 
   function word(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
@@ -99,6 +103,8 @@
         return word("UI/Inventory/ItemActions/FindPersonalAssets");
       case "compare":
         return word("UI/Compare/CompareButton");
+      case "remove":
+        return word("UI/Commands/Remove");
       case "separator":
         return "";
     }
@@ -109,6 +115,7 @@
     // The skill taken first: closing ends the menu, and with it what its props read.
     const typeID = skill;
     const applied = onApplied;
+    const remove = onRemove;
     onClose();
     switch (entry.kind) {
       case "front":
@@ -134,6 +141,9 @@
         return;
       case "compare":
         compareType(typeID);
+        return;
+      case "remove":
+        remove?.();
         return;
       default:
         return;

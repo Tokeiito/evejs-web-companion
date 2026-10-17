@@ -28,7 +28,9 @@ export type SkillMenuEntry =
   | { readonly kind: "marketDetails" }
   | { readonly kind: "findInContracts" }
   | { readonly kind: "findPersonalAssets" }
-  | { readonly kind: "compare" };
+  | { readonly kind: "compare" }
+  /** A queue entry's own (SkillQueueSkillEntry.GetMenu): Remove, of the queue's selection. */
+  | { readonly kind: "remove" };
 
 /** What the menu is made from, read as the client's services hold it. */
 export interface SkillMenuFacts {

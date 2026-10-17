@@ -17,7 +17,10 @@
   // clocks measured at read time. Nothing is ever advanced past what the server
   // said, and when the current skill's finish time passes, the panel RE-READS
   // rather than declaring the skill trained on its own authority.
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import SkillRowMenu from "./SkillRowMenu.svelte";
+  import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
+  import type { SkillRowInfo } from "../bridge/skillPlans.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   // R27's shared item icon. This is the panel it was waiting for: the icon
@@ -276,6 +279,43 @@
       selectedKeys = [...new Set([...selectedKeys, ...keysFrom(lastSelected, idx)])];
     }
     lastSelected = idx;
+  }
+
+  // ---- An entry's menu and hint (SkillQueueSkillEntry GetMenu, GetHint) ------------------------------------------------
+  //
+  // Its menu: the skill's (GetMenuForSkill, SkillRowMenu), then a line and Remove, which takes the selection out
+  // (RemoveSkillFromQueue). Opening it selects the entry where it is not selected (GetSelectedNodes). Its hint: the
+  // skill's description (evetypes.GetDescription), read for the queue's skills as the queue changes.
+  let queueMenu = $state<{ readonly typeID: number; readonly entries: readonly SkillMenuEntry[]; readonly x: number; readonly y: number } | null>(null);
+  async function openQueueMenu(event: MouseEvent, idx: number): Promise<void> {
+    event.preventDefault();
+    const entry = queue?.entries[idx];
+    if (entry === undefined) return;
+    if (!selectedKeys.includes(entryKey(entry.typeID, entry.toLevel))) selectEntry(idx, event.ctrlKey, event.shiftKey);
+    const { clientX: x, clientY: y } = event;
+    const info = (await flow.skillRowInfoFor([entry.typeID]))?.get(entry.typeID);
+    if (info === undefined) return;
+    queueMenu = { typeID: entry.typeID, entries: [...skillMenuEntries(entry.typeID, info.menu), { kind: "separator" }, { kind: "remove" }], x, y };
+  }
+
+  let queueInfos = $state<ReadonlyMap<number, SkillRowInfo>>(new Map());
+  let queueInfosFor = "";
+  $effect(() => {
+    const skills = [...new Set((queue?.entries ?? []).map((entry) => entry.typeID))];
+    const key = skills.join(",");
+    untrack(() => {
+      if (key === queueInfosFor || skills.length === 0) return;
+      queueInfosFor = key;
+      void flow.skillRowInfoFor(skills).then((read) => {
+        if (read !== null && queueInfosFor === key) queueInfos = read;
+      });
+    });
+  });
+  /** GetHint: the description, as the install words it. */
+  function queueHint(typeID: number): string | undefined {
+    const descriptionID = queueInfos.get(typeID)?.descriptionID ?? null;
+    const template = descriptionID === null ? undefined : $words.templates["#" + descriptionID];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") })) : undefined;
   }
 
   /** DoRemove of the selection, bottom first. */
@@ -647,6 +687,7 @@
             <tr draggable="true" ondragstart={(event) => queueEntryDrag(event, index)} ondragend={endSkillDrag}
               ondragover={(event) => rowDragOver(event, index)} ondrop={(event) => void queueDrop(event, index)}
               onclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) selectEntry(index, event.ctrlKey, event.shiftKey); }}
+              oncontextmenu={(event) => void openQueueMenu(event, index)} title={queueHint(entry.typeID)}
               class:selected={selectedKeys.includes(entryKey(entry.typeID, entry.toLevel))}
               class:drop-above={lineHere && dropLine?.at !== "end"} class:drop-below={lineHere && dropLine?.at === "end"}
               class:drop-refused={lineHere && dropLine?.color === "refused"} class:drop-move={lineHere && dropLine?.color === "move"}>
@@ -703,6 +744,12 @@
   {/if}
   </div>
 </section>
+
+{#if queueMenu !== null}
+  {@const menuFor = queueMenu}
+  <SkillRowMenu {store} {flow} skill={menuFor.typeID} entries={menuFor.entries} x={menuFor.x} y={menuFor.y}
+    onClose={() => { queueMenu = null; }} onRemove={() => void removeSelected()} />
+{/if}
 
 <PersonalSkillPlans {store} {flow} />
 
