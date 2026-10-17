@@ -19,6 +19,7 @@ import { activeDroneBandwidth, activeDroneDps, type DroneReading } from "./drone
 import { loadSimulatedShip, type Brain, type DogmaItem, type DogmaLocation, type DogmaStatic, type SimulatedCharge } from "./location.ts";
 import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, offlineSlots, ONLINE, setModuleState } from "./moduleStates.ts";
 import { intDictOrder } from "../py27DictOrder.ts";
+import type { PyNumber } from "../pyNumbers.ts";
 import { ATTRIBUTE_FIGHTER_CAPACITY, ATTRIBUTE_FIGHTER_TUBES, FIGHTER_TUBE_FLAGS, FLAG_FIGHTER_BAY, TUBE_COUNT_ATTRIBUTE_BY_CLASS, fighterClass, fightersInTubes, maxSquadronSize } from "./fighters.ts";
 
 const ATTRIBUTE_VOLUME = 161;
@@ -961,19 +962,58 @@ export function setDronesOfType(simulation: SimulatedShip, typeID: number, wante
   const drones = [...simulation.ship.drones.values()].filter((drone) => drone.typeID === typeID);
   const diff = wanted - drones.length;
   if (diff > 0) {
-    const fitted: DogmaItem[] = [];
-    for (let at = 0; at < diff; at += 1) {
-      const drone = fitDrone(simulation, typeID);
-      if (!drone) break;
-      fitted.push(drone);
-    }
-    for (const drone of dronesByDamage(simulation.location, fitted)) registerDrone(simulation, drone);
-    if (fitted.length > 0) simulation.changed = true;
+    addDronesOfType(simulation, typeID, diff);
   } else if (diff < 0) {
     // sorted(key=x in activeDrones): the unselected first.
     const order = [...drones].sort((left, right) => Number(simulation.selectedDrones.has(left)) - Number(simulation.selectedDrones.has(right)));
     for (const drone of order.slice(0, -diff)) unfitFromSimulation(simulation, drone);
   }
+}
+
+/**
+ * TryFitDronesToDroneBay of one type: as many more as asked, each while the bay has room (FitDronesToShip,
+ * selectByDefault False: FitADroneToShip, FitItemOrDroneToShip), then those fitted selected in their damage's order where
+ * they may be (RegisterTopDpsDrones, raiseError False). Answers how many were fitted.
+ */
+export function addDronesOfType(simulation: SimulatedShip, typeID: number, qty: number): number {
+  const fitted: DogmaItem[] = [];
+  for (let at = 0; at < qty; at += 1) {
+    const drone = fitDrone(simulation, typeID);
+    if (!drone) break;
+    fitted.push(drone);
+  }
+  for (const drone of dronesByDamage(simulation.location, fitted)) registerDrone(simulation, drone);
+  // GetLoadedItem: FlagSimulationChanged.
+  if (fitted.length > 0) simulation.changed = true;
+  return fitted.length;
+}
+
+/**
+ * itemPickerMenu.GetMaxQty for the drone bay, of one type: as many as the room left takes (GetCapacity(flagDroneBay):
+ * the ship's droneCapacity, each drone's volume); null where it takes none.
+ */
+export function droneBayRoomFor(simulation: SimulatedShip, typeID: number): number | null {
+  const { location, ship } = simulation;
+  let used = 0;
+  for (const drone of ship.drones.values()) used += location.value(drone, ATTRIBUTE_VOLUME);
+  const typeVolume = typeAttribute(location, typeID, ATTRIBUTE_VOLUME);
+  const most = Math.trunc((location.value(ship, ATTRIBUTE_DRONE_CAPACITY) - used) / typeVolume);
+  return most ? most : null;
+}
+
+/**
+ * What the simulated holds' readouts write as their use (minihangar GetSimulatedCapacity: the fitting location's
+ * GetCapacity, 452 to 477): each a Python int nought where the hold holds nothing (its `used = 0`), else the float of
+ * its items' volumes added up: the cargo's and the fighter bay's each stack's size times its volume, the drone bay's each
+ * drone's volume.
+ */
+export function simulatedHoldUse(simulation: SimulatedShip): { readonly cargo: PyNumber; readonly drone: PyNumber; readonly fighter: PyNumber } {
+  const { location, ship } = simulation;
+  const cargo: PyNumber = simulation.cargo.size === 0 ? { int: 0 } : simulatedCargoCapacity(simulation).used;
+  const drones = [...ship.drones.values()];
+  const drone: PyNumber = drones.length === 0 ? { int: 0 } : drones.reduce((sum, each) => sum + location.value(each, ATTRIBUTE_VOLUME), 0);
+  const fighter: PyNumber = fighterBayItems(simulation).length === 0 ? { int: 0 } : simulatedFighterBayCapacity(simulation).used;
+  return { cargo, drone, fighter };
 }
 
 /** ammoloadingUtils.IsChargeCompatibleWithLauncher: a group the module takes, and its charge size (or room for one). */

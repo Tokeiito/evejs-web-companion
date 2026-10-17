@@ -433,10 +433,11 @@ export interface FittingState {
    */
   readonly statsFrom?: "server" | "page";
   /**
-   * The active ship's fighter bay as the window's readout gives it, where the hull has one (the page's reckoning,
-   * flow.reckonActiveShip): its capacity (GetFighterCapacity) and its use (the ship's inventory; null where unread).
+   * The active ship's fighter bay, or its drone bay where it has none, as the window's readout gives it (the page's
+   * reckoning, flow.reckonActiveShip): its capacity (GetFighterCapacity, GetDroneCapacity) and its use (the ship's
+   * inventory, as the server sent it; null where unread).
    */
-  readonly fighterBay?: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null;
+  readonly bayReadout?: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
   /**
    * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
    * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
@@ -465,6 +466,11 @@ export interface FittingState {
     readonly cargoCapacity: { readonly capacity: number; readonly used: number };
     /** The simulated fighter bay's capacity and use (GetCapacity(flagFighterBay)), m³; null for a hull with none (HasFighterBay). */
     readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+    /**
+     * What the simulated holds' readouts write as their use (GetSimulatedCapacity): a Python int nought where the hold
+     * is empty ({int: 0}), else the float of its items' volumes.
+     */
+    readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
     /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
     readonly fighterSquadrons: { readonly full: number; readonly partial: number };
     /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */

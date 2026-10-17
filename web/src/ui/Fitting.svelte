@@ -47,6 +47,7 @@
   } from "./dragDrop.ts";
   import { startFittingDrag, startFittingSourceDrag } from "./fittingDrag.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
+  import { formatNumeric, type PyNumber } from "../bridge/pyNumbers.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -1150,6 +1151,9 @@
     "UI/Fitting/FittingWindow/RemoveAll": "Take everything out",
     "UI/Generic/RemoveItem": "Take it out",
     "UI/Fitting/FittingWindow/ClickToEdit": "Change how many",
+    // The holds' readouts (minihangar CargoSlots.SetStatusText: the capacity after the use, and the unit).
+    "UI/Fitting/FittingWindow/CargoUsage": "/ {text}",
+    "UI/Fitting/FittingWindow/CubicMeters": "m³",
     // The simulated fighter bay's picker (fighterPickerMenu FighterBayItemPickerMenu's emptyLabelPath; the tubes'
     // squadron containers: an empty tube's action and hint, a squadron's hint and its simulated state; the classes' and
     // the roles' hints, fighterConst HINTTEXT_BY_ROLE).
@@ -1574,22 +1578,52 @@
     });
   }
   /** The active ship's own fighter bay (CargoFighterSlots, not simulated), where the hull has one. */
-  const realFighterBay = $derived.by(() => {
-    const bay = $fitting.fighterBay ?? null;
+  const realBayReadout = $derived.by(() => {
+    const bay = $fitting.bayReadout ?? null;
     return bay !== null && bay.shipID === $fitting.activeShipID ? bay : null;
   });
-  /** The cargo hold's used / total, from the inventory slice's own capacity read. */
+  /**
+   * A hold's readout as minihangar CargoSlots._Update writes it (SetStatusText): its use, FmtAmt(used, showFraction=1);
+   * then UI/Fitting/FittingWindow/CargoUsage of its capacity, FmtAmt(GetCapacityInfo's value, showFraction=1), with no
+   * colour (no module previewed); then UI/Fitting/FittingWindow/CubicMeters. FmtAmt writes a float to one place and an
+   * int whole (eveLocalization.FormatNumeric); GetStatsInfo's value is a float (round). A use unknown is a dash.
+   */
+  function holdReadout(used: PyNumber | null, capacity: number): string {
+    const amount = (value: PyNumber): string => formatNumeric(value, { useGrouping: true, decimalPlaces: 1 });
+    const usage = simulationWord("UI/Fitting/FittingWindow/CargoUsage", { color: "", text: amount(capacity) });
+    return `${used === null ? "—" : amount(used)} ${usage} ${simulationWord("UI/Fitting/FittingWindow/CubicMeters")}`;
+  }
+  /** A figure as the server sent it: EveJS's marshal writes a whole number as an int (marshal.js), any other as a float. */
+  function sentNumber(value: number | null | undefined): PyNumber | null {
+    if (value === null || value === undefined || !Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? { int: value } : value;
+  }
+  /**
+   * The ship's own cargo hold's readout (CargoCargoSlots): the use of its inventory (invCtrl.ShipCargo(shipID).GetCapacity,
+   * the inventory slice's read) over GetCargoCapacity (the ship's figures; the inventory's capacity where they are not
+   * read). A use not read yet is a dash.
+   */
   const cargoBayText = $derived.by<string>(() => {
     const cap = $inventory.cargo.capacity;
-    if (cap) {
-      return `${toFixed(cap.used, 1)} / ${toFixed(cap.capacity, 1)} m³`;
-    }
-    // No capacity read yet — fall back to the hull's total from ShipGetInfo,
-    // with the used side honestly unknown rather than a fabricated 0.
-    return stats.bays.cargoCapacity.known
-      ? `— / ${asVolume(stats.bays.cargoCapacity.value)}`
-      : "Unavailable";
+    const capacity = stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : cap?.capacity ?? null;
+    return capacity === null ? "Unavailable" : holdReadout(sentNumber(cap?.used), capacity);
   });
+  // The simulated drone bay (minihangar CargoDroneSlots, simulated): a picked item put on it, a drone only, one of it
+  // (AddSimulatedDrones); a click shows its drones (OpenFakeDroneBay: the drone picker, here the Drones section's).
+  let dronesSection = $state<HTMLDetailsElement | null>(null);
+  function clickSimulatedDroneBay(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      const drone = pickedCategoryID() === 18;
+      pickedItemID = null;
+      if (typeID !== null && drone) void run(() => flow.addSimulatedDrones(typeID));
+      return;
+    }
+    if (dronesSection) {
+      dronesSection.open = true;
+      dronesSection.scrollIntoView({ block: "nearest" });
+    }
+  }
 
   /**
    * A fit's total ISK value needs a market price for the hull and every fitted
@@ -2141,7 +2175,7 @@
         </div>
       </details>
     {:else}
-    <details class="fit-sec" open>
+    <details class="fit-sec" open bind:this={dronesSection}>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Drones</span>
         {#if stats.drones}
@@ -2256,7 +2290,7 @@
         {#if simulation}
           <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
           <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
-            {toFixed(simulation.cargoCapacity.used, 1)} / {toFixed(simulation.cargoCapacity.capacity, 1)} m³</button></dd>
+            {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
           <dd>{cargoBayText}</dd>
         {/if}
@@ -2268,14 +2302,22 @@
         <div>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
           <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
-            {toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</button></dd>
+            {holdReadout(simulation.holdUse.fighter, simulation.fighterBay.capacity)}</button></dd>
         </div>
-      {:else if !simulation && realFighterBay}
-        <!-- The ship's own fighter bay in the drone bay's place (CargoFighterSlots: its inventory's use, over
-             GetFighterCapacity). -->
+      {:else if simulation}
+        <!-- The simulated drone bay (minihangar CargoDroneSlots): its use (GetSimulatedCapacity: each drone's volume) over
+             GetDroneCapacity; a picked drone put on it goes in the bay, a click shows its drones. -->
         <div>
-          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
-          <dd>{realFighterBay.used === null ? "—" : toFixed(realFighterBay.used, 1)} / {toFixed(realFighterBay.capacity, 1)} m³</dd>
+          <dt>Drone bay</dt>
+          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}>
+            {holdReadout(simulation.holdUse.drone, stats.bays.droneCapacity.known ? stats.bays.droneCapacity.value : 0)}</button></dd>
+        </div>
+      {:else if realBayReadout}
+        <!-- The ship's own fighter bay, or its drone bay where it has none (CargoFighterSlots, CargoDroneSlots): its
+             inventory's use over GetFighterCapacity or GetDroneCapacity. -->
+        <div>
+          <dt>{realBayReadout.kind === "fighter" ? offenseWord("UI/Fitting/FittingWindow/FighterBay") : "Drone bay"}</dt>
+          <dd>{holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</dd>
         </div>
       {:else}
         <div>

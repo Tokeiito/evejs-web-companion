@@ -275,7 +275,7 @@ export type FeedEvent =
       readonly shipID: number;
       readonly resources: FittingResources;
       readonly stats: ShipStats;
-      readonly fighterBay: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null;
+      readonly bayReadout: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
     }
   // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
   | {
@@ -293,6 +293,7 @@ export type FeedEvent =
       readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
       readonly cargoCapacity: { readonly capacity: number; readonly used: number };
       readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+      readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
       readonly fighterSquadrons: { readonly full: number; readonly partial: number };
       readonly fighterDps: number;
       readonly structure: boolean;
