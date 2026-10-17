@@ -250,7 +250,7 @@ export interface SavedMilestones {
 }
 import type { CatalogueSkill } from "./api.ts";
 import {
-  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, planProgressFrom, restrictedForAlpha, type PlanProgress, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
   untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
@@ -7752,15 +7752,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Plans as their entries show them (SkillPlanEntry): IsCompleted, and GetTotalTrainingTimeLeft
    * (GetTrainingTimeForSkills, which asks GetRawTrainingTimeForSkillLevel at its default: the boosters counted).
    */
-  async function planEntries<P extends PersonalSkillPlan>(plans: readonly P[], skillsAnswer: JsonValue, allSkillsAnswer: JsonValue): Promise<(P & { readonly completed: boolean; readonly trainingTicks: number | null })[]> {
+  async function planEntries<P extends PersonalSkillPlan>(
+    plans: readonly P[],
+    skillsAnswer: JsonValue,
+    allSkillsAnswer: JsonValue,
+  ): Promise<(P & { readonly completed: boolean; readonly trainingTicks: number | null; readonly progress: PlanProgress | null; readonly omegaMark: boolean })[]> {
     const mine = skillLevelsOf(skillsAnswer);
     const lapsed = skillLevelsOf(allSkillsAnswer);
     const skillTypes = [...new Set(plans.flatMap((plan) => [...skillRequirementsDict(plan).keys()]))];
     const facts = skillTypes.length === 0 ? null : await pilotTrainingFacts(skillTypes, skillsAnswer, allSkillsAnswer).catch(() => null);
+    // CheckShowOmegaIndicator: for an alpha only (is_omega_with_grace_period), each skill's needs however deep.
+    const alphaCeilings = facts !== null && !facts.omega ? facts.ceilings : null;
+    const required = alphaCeilings === null ? null : await requiredSkillsFor(skillTypes).catch(() => null);
+    const restricted = (skill: number): boolean =>
+      alphaCeilings !== null && required !== null && restrictedForAlpha(skill, (need) => alphaCeilings.get(need) ?? 0, required);
+    // The gauge's skill in training: the queue's head where it trains, its rate a minute (boosters counted, as the
+    // server trains it), and the level its place takes it to.
+    const at = Date.now();
+    const head = facts === null ? undefined : facts.queued[0];
+    const perMinute = facts === null || facts.training === null ? null : facts.rateWithBoosters(facts.training);
+    const training = facts !== null && facts.training !== null && head !== undefined && head.typeID === facts.training && perMinute !== null
+      ? { skill: facts.training, perMs: perMinute / 60_000, toLevel: head.toLevel }
+      : null;
     return plans.map((plan) => ({
       ...plan,
       completed: planCompleted(plan, (typeID) => mine.get(typeID)?.trainedSkillLevel ?? 0),
       trainingTicks: skillTypes.length === 0 ? 0 : facts === null ? null : trainingTimeForSkills(skillRequirementsDict(plan), mine, lapsed, { ...facts, rate: facts.rateWithBoosters }),
+      progress: facts === null ? null : planProgressFrom(skillRequirementsDict(plan), facts.rank, facts.pointsNow, facts.queued, training, at),
+      omegaMark: [...skillRequirementsDict(plan).keys()].some(restricted),
     }));
   }
 
@@ -7900,9 +7919,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // level above an alpha's (is_requirements_restricted). Its ceilings are its race's (CloneGradeStorage).
     const ceilings = facts.omega ? null : facts.ceilings;
     const ceiling = (skill: number): number => ceilings?.get(skill) ?? 0;
-    const restrictedForAlpha = (skill: number): boolean =>
-      ceiling(skill) < 1 || [...requiredSkillsRecursive(skill, required)].some(([need, level]) => ceiling(need) < level);
-    const numOmegaSkills = ceilings === null ? 0 : planSkills.filter(restrictedForAlpha).length;
+    const numOmegaSkills = ceilings === null ? 0 : planSkills.filter((skill) => restrictedForAlpha(skill, ceiling, required)).length;
     const maxQueued = (typeID: number): number => Math.max(0, ...facts.queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
     return {
       rows,

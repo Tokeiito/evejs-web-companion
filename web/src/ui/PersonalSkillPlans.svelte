@@ -59,8 +59,13 @@
   // the rows, Buy Missing Skillbooks with their count where any is not held (UpdateSkillsMissingBanner; its click
   // buy_missing_skills). After either, the contents are read again (OnSkillQueueChanged, OnSkillsAvailable).
   //
-  // Not done: Share, the omega button's upgrade window (the omega state's click), the progress gauge, the faction and
-  // career icons, the omega mark and banner, a skill row's selection, menu, tooltip and drag, the contents' menu (copy
+  // Each entry has its progress gauge (UpdateProgressGauge: the points trained white, the queued ones' cryo blue after
+  // them, bridge/skillPlans.ts planProgressAt), drawn again each second with its time left while any plan shown has
+  // levels queued (_UpdateTrainingTimeThread), and read again when the queue changes (OnSkillQueueChanged); and the
+  // omega mark where the plan has a skill an alpha may not train and the pilot is alpha (CheckShowOmegaIndicator).
+  //
+  // Not done: Share, the omega button's upgrade window (the omega state's click), the faction and career icons, the
+  // omega banner, a skill row's selection, menu, tooltip and drag, the contents' menu (copy
   // to clipboard), the tooltip and drag of an entry, and the corporation's notices (another member's changes, seen as
   // they are made).
   import { onMount } from "svelte";
@@ -73,7 +78,7 @@
   import { romanLevel } from "../bridge/skills.ts";
   import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import {
-    skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
+    planProgressAt, skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
@@ -98,6 +103,8 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const skillsSheet = store.skills;
 
   /** The page's own words, where the install's are not to hand. */
   const OWN: Readonly<Record<string, string>> = {
@@ -310,10 +317,48 @@
   }
 
   /** GetTotalTrainingTimeLeftText */
-  function timeLeft(plan: PersonalSkillPlanEntry): string {
+  function timeLeft(plan: PersonalSkillPlanEntry, ticksGone = 0): string {
     if (plan.completed) return word("UI/SkillPlan/Completed");
-    return plan.trainingTicks === null ? "–" : interval(plan.trainingTicks, timeLeftShowTo(plan.trainingTicks));
+    if (plan.trainingTicks === null) return "–";
+    const ticks = Math.max(0, plan.trainingTicks - ticksGone);
+    return interval(ticks, timeLeftShowTo(ticks));
   }
+
+  // OnSkillQueueChanged: each entry's gauge drawn as the queue now is (UpdateProgressGauge). The page reads its entries
+  // again when the queue it holds changes: a save from anywhere, or a reading of the sheet that finds it changed.
+  const queueSignature = $derived(
+    $skillsSheet.queue === null
+      ? null
+      : `${$skillsSheet.queue.active}|${$skillsSheet.queue.entries.map((entry) => `${entry.typeID}:${entry.toLevel}`).join(",")}`,
+  );
+  let queueSeen: string | null | undefined = undefined;
+  $effect(() => {
+    const signature = queueSignature;
+    if (queueSeen === undefined || signature === queueSeen) {
+      queueSeen = signature;
+      return;
+    }
+    queueSeen = signature;
+    void load();
+    void loadCertified();
+    if (corp !== undefined) void loadCorp();
+  });
+
+  // _UpdateTrainingTimeThread: while a plan shown has levels queued (GetInTrainingRatio above nought), the entries are
+  // drawn again each second (UpdateState).
+  let now = $state(Date.now());
+  const anyTraining = $derived.by(() => {
+    const shownPlans: readonly OpenedPlan[] = [...(read?.plans ?? []), ...certifiedEntries, ...(corp?.plans ?? [])];
+    return shownPlans.some((plan) => plan.progress !== undefined && plan.progress !== null && (plan.progress.training !== null || plan.progress.inTraining > 0));
+  });
+  $effect(() => {
+    if (!anyTraining) return;
+    now = Date.now();
+    const timer = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => clearInterval(timer);
+  });
 
   // The entry's menu (SkillPlanEntry.GetMenu), one open at a time; kept while it closes so nothing reads it gone.
   let menu = $state<{ readonly plan: OpenedPlan; readonly x: number; readonly y: number } | null>(null);
@@ -664,15 +709,26 @@
     </span>
   </header>
   {#snippet planCard(plan: OpenedPlan, withMenu: boolean)}
+    {@const shown = plan.progress ? planProgressAt(plan.progress, now) : null}
     <li>
       <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => { if (withMenu) openMenu(plan, event); }}>
         <span class="skill-plan-name">{plan.name}</span>
         {#if read && read.trackedID === plan.id}
           <span class="skill-plan-tracked" title={word("UI/SkillPlan/TrackedSkillPlan")} aria-label={word("UI/SkillPlan/TrackedSkillPlan")}>👁</span>
         {/if}
+        <!-- GaugeMultiValue: the progress ratio, then the in-training one after it. -->
+        <span class="skill-plan-gauge" aria-hidden="true">
+          {#if shown !== null}
+            <span class="skill-plan-gauge-trained" style:width={`${Math.min(100, shown.progress * 100)}%`}></span>
+            <span class="skill-plan-gauge-training" style:width={`${Math.min(100, shown.inTraining * 100)}%`}></span>
+          {/if}
+        </span>
         <span class="skill-plan-time" class:completed={plan.completed}>
-          {timeLeft(plan)}
-          {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
+          {timeLeft(plan, shown?.ticksGone ?? 0)}
+          <span class="skill-plan-marks">
+            {#if plan.omegaMark}<span class="skill-plan-omega" aria-hidden="true">Ω</span>{/if}
+            {#if plan.completed}<span class="skill-plan-done" aria-hidden="true">✔</span>{/if}
+          </span>
         </span>
       </button>
     </li>
@@ -934,6 +990,12 @@
   .skill-plan-name { font-size: 1.15rem; overflow-wrap: anywhere; }
   .skill-plan-tracked { position: absolute; top: 0.6rem; right: 0.7rem; }
   .skill-plan-time { display: flex; justify-content: space-between; align-items: center; }
+  /* GaugeMultiValue: four high on a dark track; eveColor.WHITE, then eveColor.CRYO_BLUE. */
+  .skill-plan-gauge { display: flex; height: 4px; background: rgba(0, 0, 0, 0.4); overflow: hidden; }
+  .skill-plan-gauge-trained { background: #ffffff; }
+  .skill-plan-gauge-training { background: #58a7bf; }
+  .skill-plan-marks { display: flex; gap: 0.5rem; align-items: center; }
+  .skill-plan-omega { color: #e8b34a; }
   /* TextColor.SUCCESS where the plan is completed. */
   .skill-plan-time.completed { color: #4caf50; }
   /* CreatePersonalPlanButton: 200 by 70, its words large. */

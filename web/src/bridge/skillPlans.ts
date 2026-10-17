@@ -7,12 +7,16 @@
 //   a plan         PersonalSkillPlanController: its name, description and skill requirements, [(typeID, level)] in
 //                  the order the plan has them
 //   its entry      browser/skillPlanEntry.py: the name, the time left to train it (GetTotalTrainingTimeLeftText), or
-//                  Completed; the tracked mark; Edit and Delete in its menu
+//                  Completed; the tracked mark; Edit and Delete in its menu; the progress gauge (UpdateProgressGauge:
+//                  GetProgressRatio white, GetInTrainingRatio after it cryo blue; characterskills/util.py), redrawn each
+//                  second with the time left while the plan has levels queued (_UpdateTrainingTimeThread); the omega
+//                  mark (CheckShowOmegaIndicator: IsOmega, and the pilot not omega)
 //   the order      SkillPlanScroll.ConstructSkillPlanEntries: localization.util.Sort by name
 //   a plan opened  selectedPlan/selectedSkillPlanContainer.py; its contents contents/skillPlanContents.py
 
-import type { SkillLevelBox } from "./missingSkills.ts";
+import { requiredSkillsRecursive, type QueuedLevel, type RequiredSkills, type SkillLevelBox } from "./missingSkills.ts";
 import type { LevelButtonState } from "./skillPlanLevelButton.ts";
+import { skillPointsForLevel } from "./skillSheet.ts";
 
 /** The nought uuid: SetActive's "none" (skillPlanRequestsMessenger.set_active), GetActive's answer with none tracked. */
 export const NO_SKILL_PLAN = "00000000-0000-0000-0000-000000000000";
@@ -96,6 +100,94 @@ export function planCompleted(plan: PersonalSkillPlan, trainedLevel: (typeID: nu
 }
 
 /** GetTimeLeftFormattedText: to the hour above a day, to the minute above an hour, else to the second. */
+/**
+ * clone_grade_svc.is_restricted_for_alpha: a skill an alpha clone cannot train at all (get_max_skill_level under 1), or
+ * one whose own needs, however deep, ask a level above an alpha's (is_requirements_restricted).
+ */
+export function restrictedForAlpha(skill: number, ceiling: (skill: number) => number, required: RequiredSkills): boolean {
+  return ceiling(skill) < 1 || [...requiredSkillsRecursive(skill, required)].some(([need, level]) => ceiling(need) < level);
+}
+
+/**
+ * A plan's progress as its entry's gauge draws it, read at one moment (at, in ms): GetTotalSkillPoints; and
+ * GetTrainedSkillPoints and GetInTrainingSkillPoints without the share of the skill in training, which is reckoned at
+ * each moment from its points then, its rate (a millisecond, boosters counted) and the points its queue place takes it
+ * to (it trains no further in it).
+ */
+export interface PlanProgress {
+  readonly total: number;
+  readonly trained: number;
+  readonly inTraining: number;
+  readonly training: {
+    readonly points: number;
+    readonly perMs: number;
+    /** The points of the queue place it trains in. */
+    readonly cap: number;
+    /** spRequiredForLevel: the points of the plan's level of it. */
+    readonly wanted: number;
+    /** GetInTrainingSkillPoints' level for it: the plan's, or the queue's last for it where that is lower. */
+    readonly queuedWanted: number;
+    readonly at: number;
+  } | null;
+}
+
+/**
+ * The progress of a plan's levels (GetSkillRequirementsDict): every rank known, else null. pointsNow is
+ * GetEstimatedSkillPointsTrained as read; the queue's levels are GetSkillLevelsInQueue's (each skill's last place).
+ */
+export function planProgressFrom(
+  required: ReadonlyMap<number, number>,
+  rank: (skill: number) => number | null | undefined,
+  pointsNow: (skill: number) => number,
+  queue: readonly QueuedLevel[],
+  training: { readonly skill: number; readonly perMs: number; readonly toLevel: number } | null,
+  at: number,
+): PlanProgress | null {
+  const queuedLevel = new Map<number, number>();
+  for (const entry of queue) queuedLevel.set(entry.typeID, entry.toLevel);
+  let total = 0;
+  let trained = 0;
+  let inTraining = 0;
+  let trainingShare: PlanProgress["training"] = null;
+  for (const [skill, level] of required) {
+    const skillRank = rank(skill);
+    if (skillRank === null || skillRank === undefined) return null;
+    const wanted = skillPointsForLevel(skillRank, level);
+    total += wanted;
+    const queued = queuedLevel.get(skill);
+    const queuedWanted = queued === undefined ? 0 : skillPointsForLevel(skillRank, Math.min(level, queued));
+    const points = pointsNow(skill);
+    if (training !== null && training.skill === skill && training.perMs > 0) {
+      trainingShare = { points, perMs: training.perMs, cap: skillPointsForLevel(skillRank, training.toLevel), wanted, queuedWanted, at };
+      continue;
+    }
+    trained += Math.min(wanted, points);
+    if (queued !== undefined) inTraining += queuedWanted - Math.min(queuedWanted, points);
+  }
+  return { total, trained, inTraining, training: trainingShare };
+}
+
+/**
+ * GetProgressRatio and GetInTrainingRatio at a moment (now, in ms), nought where the plan has no points; and the ticks
+ * the time left has gone down since it was read (the skill in training's, while it trains towards the plan's level).
+ */
+export function planProgressAt(progress: PlanProgress, now: number): { readonly progress: number; readonly inTraining: number; readonly ticksGone: number } {
+  if (progress.total <= 0) return { progress: 0, inTraining: 0, ticksGone: 0 };
+  let trained = progress.trained;
+  let inTraining = progress.inTraining;
+  let ticksGone = 0;
+  const training = progress.training;
+  if (training !== null) {
+    const elapsed = Math.max(0, now - training.at);
+    const points = Math.min(Math.max(training.cap, training.points), training.points + elapsed * training.perMs);
+    trained += Math.min(training.wanted, points);
+    inTraining += training.queuedWanted - Math.min(training.queuedWanted, points);
+    const until = Math.max(0, (Math.min(training.wanted, training.cap) - training.points) / training.perMs);
+    ticksGone = Math.min(elapsed, until) * 10_000;
+  }
+  return { progress: trained / progress.total, inTraining: inTraining / progress.total, ticksGone };
+}
+
 export function timeLeftShowTo(ticks: number): "hour" | "minute" | "second" {
   /** appConst DAY and HOUR, in ticks. */
   if (ticks > 864_000_000_000) return "hour";
@@ -118,6 +210,10 @@ export interface PersonalSkillPlanEntry extends PersonalSkillPlan {
   readonly completed: boolean;
   /** GetTotalTrainingTimeLeft, in ticks; null where a skill's rank or the pilot's rate for it was not had. */
   readonly trainingTicks: number | null;
+  /** The gauge's progress as read; null where it could not be reckoned. */
+  readonly progress?: PlanProgress | null;
+  /** CheckShowOmegaIndicator: the plan has a skill an alpha may not train, and the pilot is not omega. */
+  readonly omegaMark?: boolean;
 }
 
 /** The personal plans, and the tracked plan's id (null for none). */
