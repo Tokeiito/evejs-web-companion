@@ -13,6 +13,7 @@ const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
 const { createClientTextures } = require("./clientData/clientTextures");
 const { createMultibuyImport } = require("./clientData/importMultibuy");
+const { createSkillplanImport } = require("./clientData/importSkillplan");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { hullBrowserData } = require("./clientData/hullBrowser");
 const { readFitting } = require("./clientData/importFitting");
@@ -13266,6 +13267,25 @@ app.post("/api/client-data/multibuy-import", requireAuth, (req, res, next) => {
   try {
     if (multibuyImport === null) multibuyImport = createMultibuyImport(staticData.getMarketTypeNames());
     res.json({ ok: true, ...multibuyImport.getTypesAndQty(text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A list of skills read as the client's skill plan editor reads one from the clipboard (ImportSkillsFromClipboard;
+// textImporting.importSkillplan GetSkillsAndLevelsFromText, src/clientData/importSkillplan.js): each line's skill and
+// level, in order, and the lines it could not read. The names are the skill types' English ones (getSkillImportNames).
+// No session: they do not vary by player.
+let skillplanImport = null;
+app.post("/api/client-data/skillplan-import", requireAuth, (req, res, next) => {
+  const text = req.body && typeof req.body.text === "string" ? req.body.text : null;
+  if (text === null || text.length > MULTIBUY_IMPORT_MAX_TEXT) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `A list is text of at most ${MULTIBUY_IMPORT_MAX_TEXT} characters.` });
+    return;
+  }
+  try {
+    if (skillplanImport === null) skillplanImport = createSkillplanImport(staticData.getSkillImportNames(), (typeID) => staticData.isSkillType(typeID));
+    res.json({ ok: true, ...skillplanImport.getSkillsAndLevelsFromText(text) });
   } catch (error) {
     next(error);
   }

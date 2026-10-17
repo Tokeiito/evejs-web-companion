@@ -4084,6 +4084,27 @@ export async function importFitting(
 }
 
 /**
+ * A list of skills read as the client's skill plan editor reads one from the clipboard (POST
+ * /api/client-data/skillplan-import; textImporting.importSkillplan GetSkillsAndLevelsFromText): each line's skill and
+ * level, in order, and the lines it could not read.
+ */
+export async function importSkillPlanText(
+  text: string,
+  options: ApiOptions = {},
+): Promise<{ readonly skillsAndLevels: readonly (readonly [number, number])[]; readonly failed: readonly string[] }> {
+  const data = await postJson("/api/client-data/skillplan-import", { text }, options);
+  const skillsAndLevels: (readonly [number, number])[] = [];
+  for (const entry of Array.isArray(data.skillsAndLevels) ? (data.skillsAndLevels as JsonValue[]) : []) {
+    if (!Array.isArray(entry)) continue;
+    const typeID = Number(entry[0]);
+    const level = Number(entry[1]);
+    if (Number.isSafeInteger(typeID) && typeID > 0 && Number.isSafeInteger(level) && level >= 1 && level <= 5) skillsAndLevels.push([typeID, level]);
+  }
+  const failed = Array.isArray(data.failed) ? (data.failed as JsonValue[]).map((line) => String(line)) : [];
+  return { skillsAndLevels, failed };
+}
+
+/**
  * A shopping list read as the client's multibuy window reads one from the clipboard (POST
  * /api/client-data/multibuy-import; textImporting.importMultibuy): each market type it names with its quantity, in the
  * order the client adds them, and the lines it could not read.

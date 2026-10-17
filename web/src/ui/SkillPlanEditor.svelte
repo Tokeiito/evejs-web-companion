@@ -26,10 +26,24 @@
   //                   on it is added, and on a milestone replaces it after the client's question
   //                   (bridge/skillPlanEditorMilestones.ts); an edited plan's milestones are its own, copied (GetCopy)
   //
-  // Not done: dragging ships, modules and fittings in from other windows, a
-  // milestone's level changed in its tooltip, the ring, the double clicks, a row's selection marks, the catalogue's
-  // filter combo and group icons, the contents' menu (copy, import, clear), the time and bar of a level.
+  //   the contents' drags   SkillPlanEditorContents OnDropData and OnEntryDropData: a level dragged onto a level moves
+  //                   above it, onto the list's end to the end (MoveSkillRequirement, only where the plan stays valid; the
+  //                   line where it would land, grey where the move is valid and red where not); with Shift, the skill's
+  //                   next level put in above it (where IsSkillInsertionValid) or at the end; a skill from the catalogue
+  //                   put in above a level or at the end (InsertSkillRequirement, AppendSkillRequirement)
+  //   double clicks   a level's: its skill's next level appended (OnEntryDblClicked); a catalogue skill's: Show Info
+  //   selection       a level clicked: selected, the others marked by how they stand to it (OnEntryClicked,
+  //                   GetRequirementStateForEntry); Ctrl and a click on the selected one: none
+  //   the contents' menu  GetUtilMenu: Copy Skills to Clipboard, Import Skills from Clipboard (its hint the client's
+  //                   format examples; the queue's importer, the BFF's port), Clear Skills (and the milestones)
+  //
+  // Not done: dragging ships, modules and fittings in from other windows, a milestone's level changed in its tooltip,
+  // the ring, the catalogue's filter combo, group icons, menu and tooltip, the time and bar of a level.
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { planRowRequirement } from "../bridge/skillPlans.ts";
+  import type { SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -45,6 +59,7 @@
   import {
     MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, canRemoveLevel, canSavePlan, catalogueGroups, catalogueSearch,
     editedPlanDiffers, highestPlanLevel, nextPlanLevel, withLevelAppended, withLevelRemoved, type CatalogueGroup,
+    insertionIsValid, moveIsValid, planLevelIndex, withLevelInserted, withLevelMoved, withLevelsAppended,
   } from "../bridge/skillPlanEditor.ts";
 
   let { store, flow, plan, planCount, onClose, corp = null }: {
@@ -69,6 +84,10 @@
   let categoryID = $state(corp?.categoryID ?? 0);
 
   const OWN: Readonly<Record<string, string>> = {
+    "UI/SkillPlan/CopySkillsToClipboard": "Copy the plan's skills",
+    "UI/SkillPlan/ImportSkillsFromClipboard": "Add the skills on the clipboard",
+    "UI/SkillPlan/ClearSkills": "Take every skill out",
+    "UI/SkillQueue/ImportSkillplanFormatHint": "One skill to a line, its name and then its level: {[item]typeID.name} 3, or {[item]typeID.name} III",
     "UI/SkillPlan/Skills": "Skills",
     "UI/SkillPlan/SkillPlan": "Plan",
     "UI/SkillPlan/AddSkillLevelToPlan": "Put level {skillLevel} of it in the plan",
@@ -158,8 +177,230 @@
   let requiring = $state(new Map<number, ReadonlyMap<number, readonly number[]>>());
   let contentsFilter = $state("");
 
+  // ---- The contents' drags, double clicks, selection and menu (SkillPlanEditorContents, SkillPlanEditorSkillEntry) ----
+
+  /** What is being dragged here: a level of the plan (SkillLevelDragData) or a catalogue skill (a type's, level null). */
+  let dragging = $state<{ readonly typeID: number; readonly level: number | null } | null>(null);
+  /** The plan's skills' validation facts, read as a drag begins, for the drop line's colour. */
+  let dragFacts: SkillPlanValidationFacts | null = null;
+  /** DragIndicatorLine: above a level (its index in the plan) or at the list's end, grey where the drop is a valid move and red where not. */
+  let dropLine = $state<{ readonly at: number | "end"; readonly valid: boolean } | null>(null);
+
+  function draggedOf(event: DragEvent): { readonly typeID: number; readonly level: number | null } | null {
+    if (dragging !== null) return dragging;
+    const raw = event.dataTransfer?.getData("application/x-evejs-skill-level");
+    if (!raw) return null;
+    try {
+      const data = JSON.parse(raw) as { typeID?: unknown; level?: unknown };
+      return typeof data.typeID === "number" ? { typeID: data.typeID, level: typeof data.level === "number" ? data.level : null } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function dragEnd(): void {
+    dragging = null;
+    dropLine = null;
+  }
+
+  /** The validation facts of the plan's skills and those given, or null where the client's data could not be read. */
+  async function factsWith(typeIDs: readonly number[]): Promise<SkillPlanValidationFacts | null> {
+    return flow.skillPlanValidationFor([...new Set([...requirements.map(([skill]) => skill), ...typeIDs])]).catch(() => null);
+  }
+
+  /** OnEntryDragEnter: the line above the level, its colour by whether a level dragged may move there. */
+  function rowDragOver(event: DragEvent, skill: number, level: number): void {
+    if (!event.dataTransfer?.types.includes("application/x-evejs-skill-level")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const at = planLevelIndex(requirements, skill, level);
+    let valid = true;
+    if (dragging !== null && dragging.level !== null && dragFacts !== null) {
+      valid = moveIsValid(requirements, planLevelIndex(requirements, dragging.typeID, dragging.level), at, dragFacts);
+    }
+    dropLine = { at, valid };
+  }
+
+  /** OnScrollDragEnter: the line at the list's end, as a level moved to the end would land. */
+  function contentsDragOver(event: DragEvent): void {
+    if (!event.dataTransfer?.types.includes("application/x-evejs-skill-level")) return;
+    event.preventDefault();
+    let valid = true;
+    if (dragging !== null && dragging.level !== null && dragFacts !== null) {
+      valid = moveIsValid(requirements, planLevelIndex(requirements, dragging.typeID, dragging.level), requirements.length, dragFacts);
+    }
+    dropLine = { at: "end", valid };
+  }
+
+  /** OnEntryDropData: dropped on a level. */
+  async function rowDrop(event: DragEvent, above: SkillLevel): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    const data = draggedOf(event);
+    const shift = event.shiftKey;
+    dragEnd();
+    if (data === null || working) return;
+    working = true;
+    try {
+      const facts = await factsWith([data.typeID]);
+      if (facts === null) {
+        note = "The client's skill data could not be read: the plan was not changed.";
+        return;
+      }
+      if (data.level !== null) {
+        if (shift) {
+          // The skill's next level put in above it, where the plan would stay valid (IsSkillInsertionValid).
+          const next = nextPlanLevel(requirements, data.typeID);
+          if (data.level < 5 && next !== null && insertionIsValid(requirements, data.typeID, next, planLevelIndex(requirements, above[0], above[1]), facts)) {
+            requirements = withLevelInserted(requirements, data.typeID, next, above, facts);
+          }
+        } else {
+          requirements = withLevelMoved(requirements, data.typeID, data.level, above, facts) ?? requirements;
+        }
+      } else {
+        // A skill from the catalogue (a type's drag, a skill): its next level put in above (InsertSkillRequirement).
+        requirements = withLevelInserted(requirements, data.typeID, null, above, facts);
+      }
+      await readRequiring();
+    } finally {
+      working = false;
+    }
+  }
+
+  /** OnDropData: dropped on the list, not on a level. */
+  async function contentsDrop(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    const data = draggedOf(event);
+    const shift = event.shiftKey;
+    dragEnd();
+    if (data === null || working) return;
+    working = true;
+    try {
+      const facts = await factsWith([data.typeID]);
+      if (facts === null) {
+        note = "The client's skill data could not be read: the plan was not changed.";
+        return;
+      }
+      if (data.level !== null) {
+        if (shift) {
+          if (data.level < 5) requirements = withLevelAppended(requirements, data.typeID, facts);
+        } else {
+          // _MoveEntryToBottom.
+          requirements = withLevelMoved(requirements, data.typeID, data.level, null, facts) ?? requirements;
+        }
+      } else {
+        requirements = withLevelAppended(requirements, data.typeID, facts);
+      }
+      await readRequiring();
+    } finally {
+      working = false;
+    }
+  }
+
+  // OnEntryClicked: the level clicked selected, the others marked by how they stand to it.
+  let selection = $state<{
+    readonly skill: number;
+    readonly level: number;
+    readonly prereqs: ReadonlyMap<number, number>;
+    readonly requiredFor: ReadonlySet<number>;
+  } | null>(null);
+  async function selectLevel(skill: number, level: number, ctrlKey: boolean): Promise<void> {
+    if (ctrlKey && selection !== null && selection.skill === skill && selection.level === level) {
+      selection = null;
+      return;
+    }
+    // GetPreReqsAndRequiredForSkillLevel: get_dogma_required_skills and GetSkillsRequiring(skill, level).
+    const [facts, requiringRead] = await Promise.all([
+      flow.skillPlanTypeFacts([skill]).catch(() => null),
+      flow.skillsRequiring([skill]).catch(() => null),
+    ]);
+    selection = {
+      skill,
+      level,
+      prereqs: new Map(facts?.required[skill] ?? []),
+      requiredFor: new Set(requiringRead?.get(skill)?.get(level) ?? []),
+    };
+  }
+  /** ReconstructScrollEntries: the selection kept while its level is in the plan. */
+  function levelMark(skill: number, level: number): "selected" | "marked" | null {
+    const chosen = selection;
+    if (chosen === null || planLevelIndex(requirements, chosen.skill, chosen.level) < 0) return null;
+    if (chosen.skill === skill && chosen.level === level) return "selected";
+    return planRowRequirement(chosen, { skill, level }, chosen.prereqs, chosen.requiredFor) === null ? null : "marked";
+  }
+
+  // GetUtilMenu: Copy Skills to Clipboard, Import Skills from Clipboard, Clear Skills.
+  let contentsMenu = $state<{ readonly left: number; readonly top: number } | null>(null);
+  function openContentsMenu(event: MouseEvent): void {
+    if (contentsMenu !== null) {
+      contentsMenu = null;
+      return;
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    contentsMenu = { left: Math.max(8, rect.right - 240), top: rect.bottom + 4 };
+  }
+  $effect(() => {
+    if (contentsMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".plan-editor-contents-menu, .plan-editor-menu-button"))) contentsMenu = null;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") contentsMenu = null;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+  /** CopySkillsToClipboard: GetRequirementsClipboardText, each level "name level" and a new line. */
+  function copySkills(): void {
+    contentsMenu = null;
+    const text = requirements.map(([typeID, level]) => `${resolvedName($names.resolved, "type", typeID, String(typeID))} ${level}\n`).join("");
+    void navigator.clipboard?.writeText(text).catch(() => {});
+  }
+  /** ImportSkillsFromClipboard: the clipboard read as the queue's importer reads it, its levels appended. */
+  async function importSkills(): Promise<void> {
+    contentsMenu = null;
+    if (working) return;
+    const text = await navigator.clipboard?.readText().catch(() => null);
+    if (typeof text !== "string" || text === "") return;
+    working = true;
+    note = "";
+    try {
+      const levels = await flow.skillPlanImportText(text);
+      if (levels === null) {
+        note = "The clipboard's skills could not be read.";
+        return;
+      }
+      if (levels.length === 0) return;
+      const facts = await factsWith(levels.map(([typeID]) => typeID));
+      if (facts === null) {
+        note = "The client's skill data could not be read: the plan was not changed.";
+        return;
+      }
+      requirements = withLevelsAppended(requirements, levels, facts);
+      await readRequiring();
+    } finally {
+      working = false;
+    }
+  }
+  /** ClearSkills: every level out, and the milestones (ClearMilestones). */
+  function clearSkills(): void {
+    contentsMenu = null;
+    requirements = [];
+    milestones = milestones.toAdd.reduce((out, milestone) => withMilestoneRemoved(out, milestone.id), milestones);
+    selection = null;
+  }
+
   onMount(() => {
     flow.requestWords(Object.keys(OWN));
+    // ImportSkillplanFormatHint's skill: appConst.typeSpaceshipCommand.
+    flow.requestNames([{ kind: "type", id: 3327 }]);
     void (async () => {
       const catalogue = await flow.skillCatalogue();
       groups = catalogue ? catalogueGroups(catalogue.skills, (typeID) => catalogue.held.has(typeID)) : null;
@@ -182,7 +423,12 @@
   /** A skill level, or a skill, dragged (skillPlanUtil: SkillLevelDragData, or a type's). */
   function dragStart(event: DragEvent, typeID: number, level: number | null): void {
     event.dataTransfer?.setData("application/x-evejs-skill-level", JSON.stringify({ typeID, level }));
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
+    dragging = { typeID, level };
+    dragFacts = null;
+    void factsWith([typeID]).then((facts) => {
+      if (dragging !== null && dragging.typeID === typeID && dragging.level === level) dragFacts = facts;
+    });
   }
 
   function dragOver(event: DragEvent): void {
@@ -361,7 +607,9 @@
           {#each shownSkills as skill (skill.typeID)}
             {@const next = nextPlanLevel(requirements, skill.typeID)}
             {@const full = highestPlanLevel(requirements, skill.typeID) === 5}
-            <li draggable="true" ondragstart={(event) => dragStart(event, skill.typeID, null)}>
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <li draggable="true" ondragstart={(event) => dragStart(event, skill.typeID, null)} ondragend={dragEnd}
+              ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) showInfo({ kind: "type", typeID: skill.typeID }); }}>
               <span>{skill.name}</span>
               <button type="button" class="plan-editor-add" disabled={full || working}
                 title={full ? word("UI/SkillPlan/AllLevelsInPlan") : word("UI/SkillPlan/AddSkillLevelToPlan", { skillLevel: next ?? 1 })}
@@ -376,16 +624,32 @@
       <div class="plan-editor-caption">
         <h3>{word("UI/SkillPlan/SkillPlan")} <span class="plan-editor-count">{requirements.length}</span></h3>
         <input type="search" bind:value={contentsFilter} aria-label="Filter the plan" />
+        <button type="button" class="plan-editor-menu-button" aria-haspopup="menu" aria-expanded={contentsMenu !== null} onclick={openContentsMenu}>☰</button>
       </div>
+      {#if contentsMenu !== null}
+        <span class="hull-menu plan-editor-contents-menu" role="menu" use:portal style:left={`${contentsMenu.left}px`} style:top={`${contentsMenu.top}px`}>
+          <button type="button" role="menuitem" onclick={copySkills}>{word("UI/SkillPlan/CopySkillsToClipboard")}</button>
+          <button type="button" role="menuitem" title={word("UI/SkillQueue/ImportSkillplanFormatHint", { typeID: 3327 })} onclick={() => void importSkills()}>{word("UI/SkillPlan/ImportSkillsFromClipboard")}</button>
+          <button type="button" role="menuitem" onclick={clearSkills}>{word("UI/SkillPlan/ClearSkills")}</button>
+        </span>
+      {/if}
       {#if requirements.length === 0}
         <p class="empty plan-editor-hint">{word("UI/SkillPlan/NoSkillsInPlanHint")}</p>
       {:else if shownRows.length === 0}
         <p class="empty">{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters")}</p>
       {:else}
-        <ul class="plan-editor-rows">
+        <ul class="plan-editor-rows" ondragover={contentsDragOver} ondrop={(event) => void contentsDrop(event)} ondragleave={(event) => { if (event.target === event.currentTarget) dropLine = null; }}>
           {#each shownRows as [skill, level], at (at)}
             {@const removable = canRemoveLevel(requirements, skill, level, skillsNeeding)}
-            <li draggable="true" ondragstart={(event) => dragStart(event, skill, level)}>
+            {@const mark = levelMark(skill, level)}
+            {@const lineHere = dropLine !== null && dropLine.at === planLevelIndex(requirements, skill, level)}
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <li draggable="true" ondragstart={(event) => dragStart(event, skill, level)} ondragend={dragEnd}
+              class:selected={mark === "selected"} class:marked={mark === "marked"} class:drop-above={lineHere} class:drop-invalid={lineHere && dropLine?.valid === false}
+              ondragover={(event) => rowDragOver(event, skill, level)} ondrop={(event) => void rowDrop(event, [skill, level])}
+              onclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) void selectLevel(skill, level, event.ctrlKey); }}
+              onkeydown={(event) => { if (event.key === "Enter") void selectLevel(skill, level, event.ctrlKey); }}
+              ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) void addLevel(skill); }}>
               <span>{word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill, level: romanLevel(level), levelColor: "#ffffff" })}</span>
               <button type="button" class="plan-editor-remove" disabled={!removable || working}
                 title={word(removable ? "UI/SkillPlan/RemoveFromPlan" : "UI/SkillPlan/RemoveFromPlanLocked")}
@@ -393,6 +657,9 @@
                 onclick={() => void removeLevel(skill, level)}>✕</button>
             </li>
           {/each}
+          {#if dropLine !== null && dropLine.at === "end"}
+            <li class="plan-editor-drop-end" class:drop-invalid={!dropLine.valid} aria-hidden="true"></li>
+          {/if}
         </ul>
       {/if}
     </section>
@@ -460,6 +727,15 @@
   .plan-editor-milestone-name { flex: 1; }
   .plan-editor-milestone-slot { text-align: center; opacity: 0.5; padding: 0.3rem; border: 1px dotted var(--line, #555); }
   .plan-editor-skills li[draggable="true"], .plan-editor-rows li[draggable="true"] { cursor: grab; }
+  /* DragIndicatorLine: VALID_LINE_COLOR (0.8 grey) where the drop is a valid move, INVALID_LINE_COLOR (0.7 red) where not. */
+  .plan-editor-rows li.drop-above { box-shadow: inset 0 2px 0 #cccccc; }
+  .plan-editor-rows li.drop-above.drop-invalid { box-shadow: inset 0 2px 0 #b30000; }
+  .plan-editor-rows li.plan-editor-drop-end { min-height: 0; height: 2px; padding: 0; background: #cccccc; }
+  .plan-editor-rows li.plan-editor-drop-end.drop-invalid { background: #b30000; }
+  /* SkillEntryUnderlay: the level selected, and those standing to it in its hover look. */
+  .plan-editor-rows li { cursor: pointer; }
+  .plan-editor-rows li.selected { background: rgba(255, 255, 255, 0.16); outline: 1px solid rgba(255, 255, 255, 0.35); }
+  .plan-editor-rows li.marked { background: rgba(255, 255, 255, 0.1); }
   .plan-editor-name { display: flex; align-items: center; gap: 0.5rem; }
   .plan-editor-name input { flex: 1; }
   .plan-editor-counter { font-size: 0.8rem; opacity: 0.6; }

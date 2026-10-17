@@ -14,8 +14,13 @@
 //   saving           skillPlanService.Save: a new plan created; an edited one sent what differs
 //                    (_GetCallsToUpdate: SetName, SetDescription, SetRequiredSkills)
 //   the save button  SkillPlanEditorSaveButton.UpdateState: off with no skill or no name
+//   a level moved    MoveSkillRequirement: above another level, or to the end, only where the plan stays valid
+//                    (IsSkillRequirementMoveValid: IsPlanValid of the list moved)
+//   a level put in   InsertSkillRequirement: at the place of a level, then the plan put right (a skill dropped from the
+//                    catalogue on a level; a level shift-dragged on one, where IsSkillInsertionValid)
+//   levels appended  AppendSkillRequirements: a list imported from the clipboard, then the plan put right
 //
-// Milestones are left out (not done).
+// The milestones' rules are skillPlanEditorMilestones.ts.
 
 import { validateSkillPlan, type SkillLevel, type SkillPlanValidationFacts } from "./skillPlanValidation.ts";
 
@@ -138,4 +143,93 @@ export function planUpdates(saved: EditedPlan, edited: EditedPlan): ("name" | "d
 /** SkillPlanEditorSaveButton.UpdateState: a skill and a name. */
 export function canSavePlan(edited: EditedPlan): boolean {
   return edited.requirements.length > 0 && edited.name.length > 0;
+}
+
+/**
+ * skillPlanValidation.IsPlanValid: no invalid skill, no level missing or twice, no prerequisite missing, nothing out of
+ * order. Each of those fails exactly where ValidateSkillPlan's fix for it would change the list, so a list is valid
+ * where putting a copy right changes nothing.
+ */
+export function isPlanValid(list: readonly SkillLevel[], facts: SkillPlanValidationFacts): boolean {
+  return !validateSkillPlan([...list], facts);
+}
+
+/** The list as IsSkillRequirementMoveValid and MoveSkillRequirement move a level: popped from one place, put at another. */
+export function listWithMove(list: readonly SkillLevel[], originalIndex: number, targetIndex: number): SkillLevel[] {
+  const next: SkillLevel[] = [...list];
+  if (originalIndex > targetIndex) {
+    const [moved] = next.splice(originalIndex, 1);
+    next.splice(targetIndex, 0, moved!);
+  } else if (targetIndex > originalIndex) {
+    next.splice(targetIndex, 0, next[originalIndex]!);
+    next.splice(originalIndex, 1);
+  }
+  return next;
+}
+
+/** IsSkillRequirementMoveValid(originalIndex, targetIndex): the plan valid with the level moved there. */
+export function moveIsValid(list: readonly SkillLevel[], originalIndex: number, targetIndex: number, facts: SkillPlanValidationFacts): boolean {
+  return isPlanValid(listWithMove(list, originalIndex, targetIndex), facts);
+}
+
+/** GetSkillRequirementIndex: the level's place in the plan, -1 where it is not in it. */
+export function planLevelIndex(list: readonly SkillLevel[], typeID: number, level: number): number {
+  return list.findIndex(([skill, l]) => skill === typeID && l === level);
+}
+
+/**
+ * MoveSkillRequirement(typeID, level, above): the level put above another (at the end where none), where the move
+ * leaves the plan valid (IsSkillRequirementMoveValid); null where it would not, and nothing moves. The plan is not put
+ * right after: a valid move needs nothing.
+ */
+export function withLevelMoved(
+  list: readonly SkillLevel[],
+  typeID: number,
+  level: number,
+  above: SkillLevel | null,
+  facts: SkillPlanValidationFacts,
+): SkillLevel[] | null {
+  const originIndex = planLevelIndex(list, typeID, level);
+  const dropIndex = above === null ? list.length : planLevelIndex(list, above[0], above[1]);
+  return originIndex < 0 || !moveIsValid(list, originIndex, dropIndex, facts) ? null : listWithMove(list, originIndex, dropIndex);
+}
+
+/** IsSkillInsertionValid(typeID, level, targetIndex): the plan valid with the level put in there. */
+export function insertionIsValid(list: readonly SkillLevel[], typeID: number, level: number, targetIndex: number, facts: SkillPlanValidationFacts): boolean {
+  const next: SkillLevel[] = [...list];
+  next.splice(pythonInsertIndex(next.length, targetIndex), 0, [typeID, level]);
+  return isPlanValid(next, facts);
+}
+
+/** Where Python's list.insert(index, item) puts it: a negative index from the end, then clamped. */
+function pythonInsertIndex(length: number, index: number): number {
+  const at = index < 0 ? index + length : index;
+  return Math.min(length, Math.max(0, at));
+}
+
+/**
+ * InsertSkillRequirement(typeID, level, aboveTypeID, aboveLevel): the level (the skill's next where none is given;
+ * nothing past V) put in at the place of the level above (list.insert at its index: before the last where that level
+ * is not in the plan), then the plan put right.
+ */
+export function withLevelInserted(
+  list: readonly SkillLevel[],
+  typeID: number,
+  level: number | null,
+  above: SkillLevel,
+  facts: SkillPlanValidationFacts,
+): SkillLevel[] {
+  const next: SkillLevel[] = [...list];
+  const inserted = level ?? nextPlanLevel(list, typeID);
+  if (inserted === null) return next;
+  next.splice(pythonInsertIndex(next.length, planLevelIndex(list, above[0], above[1])), 0, [typeID, inserted]);
+  validateSkillPlan(next, facts);
+  return next;
+}
+
+/** AppendSkillRequirements: each level appended (none without a skill or a level), then the plan put right. */
+export function withLevelsAppended(list: readonly SkillLevel[], levels: readonly SkillLevel[], facts: SkillPlanValidationFacts): SkillLevel[] {
+  const next: SkillLevel[] = [...list, ...levels.filter(([typeID, level]) => typeID > 0 && level > 0)];
+  validateSkillPlan(next, facts);
+  return next;
 }

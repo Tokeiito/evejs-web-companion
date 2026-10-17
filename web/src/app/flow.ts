@@ -2640,6 +2640,12 @@ export interface AppFlow {
   skillCatalogue(): Promise<{ readonly skills: readonly CatalogueSkill[]; readonly held: ReadonlySet<number> } | null>;
   /** What the client's skill plan validation reads, for these skills (and every skill they lead to). Null without the client's data. */
   skillPlanValidationFor(skillTypes: readonly number[]): Promise<SkillPlanValidationFacts | null>;
+  /**
+   * The skill plan editor's Import Skills from Clipboard: the text read as the skill queue's importer reads it
+   * (GetSkillPlanImporter().GetSkillsAndLevelsFromText, the BFF's port), each line's skill and level in order. Null
+   * where it could not be read.
+   */
+  skillPlanImportText(text: string): Promise<readonly (readonly [number, number])[] | null>;
   /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
   skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
   /**
@@ -23205,6 +23211,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trainSkillPlan,
     skillCatalogue,
     skillPlanValidationFor: skillPlanValidationFacts,
+    skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,
     saveSkillPlan,
     askLeaveSkillPlanEditor,

@@ -114,6 +114,34 @@ function getMarketTypeNames() {
   return caches.get(cacheKey);
 }
 
+/** inventorycommon/const.py categorySkill. */
+const CATEGORY_SKILL = 16;
+
+/**
+ * ImportSkillPlan's names (textImporting/importSkillplan.py: TextToTypeIDFinder over
+ * evetypes.GetTypeIDsByCategory(categorySkill)): every skill type, by English name cleaned, stripped and lowered
+ * (CleanAndStripText). Made once.
+ */
+function getSkillImportNames() {
+  const cacheKey = "itemTypes:skillImportNames";
+  if (!caches.has(cacheKey)) {
+    const { cleanText } = require("./clientData/importMultibuy");
+    const names = new Map();
+    for (const type of buildIndex("itemTypes", "types", "typeID").values()) {
+      if (!type || Number(type.categoryID) !== CATEGORY_SKILL || typeof type.name !== "string") continue;
+      names.set(cleanText(type.name).trim().toLowerCase(), Number(type.typeID));
+    }
+    caches.set(cacheKey, names);
+  }
+  return caches.get(cacheKey);
+}
+
+/** evetypes.IsSkill: a type of the skill category. */
+function isSkillType(typeID) {
+  const type = getType(typeID);
+  return Boolean(type) && Number(type.categoryID) === CATEGORY_SKILL;
+}
+
 /**
  * ImportFittingUtil's names (shipfitting/importFittingUtil.py 47 to 51; src/clientData/importFitting.js
  * importTypeNames): the types of the nine categories, the ice products and the two type lists, by English name cleaned
@@ -2266,6 +2294,8 @@ module.exports = {
   getLauncherEffectName,
   getOverloadEffectID,
   getMarketTypeNames,
+  getSkillImportNames,
+  isSkillType,
   getFittingImportNames,
   getPassiveFilteredEffects,
   getModuleChargeFitment,
