@@ -20,9 +20,18 @@
   // level's training time, faint (GetTrainingTimeForLevelText: from the day to the minute); with none shown,
   // NoSkillsMatchingFilters.
   //
-  // Not done: the menu's Edit, the Create and Edit buttons (the plan editor), Save and Share, Start Training and the
-  // locked panel, the progress gauge and milestones, the faction and career icons, the omega mark and banner, the
-  // missing books' button, a level's add-to-queue button, a skill row's selection, menu, tooltip and drag, the
+  // At its foot, hidden where the plan is completed (UpdateComponents), the locked panel (SkillPlanLockedCont): the
+  // books button, its count of books missing in red where any are (its hint SkillbooksMissing, or
+  // NoSkillbooksMissing), which shows the contents (onMissingSkillsButtonSignal); the omega button only where the plan
+  // is omega locked (its hint OmegaMissing), with the lock. Then Start Training (UpdateStartTrainingButton): off where
+  // the plan cannot be trained (StartTrainingLockedHint) or has nothing left to train
+  // (StartTrainingNothingToTrainHint), else StartTrainingHint. It adds the plan's levels left to the queue and starts
+  // it, then tracks the plan (at once where none is tracked; on the client's AskTrackPlan question where another is),
+  // and says SkillsAddedNotification where levels were added (TrainSkills; the client's notice, said here in the view).
+  //
+  // Not done: the menu's Edit, the Create and Edit buttons (the plan editor), Save and Share, the omega button's
+  // upgrade window, the progress gauge and milestones, the faction and career icons, the omega mark and banner, the
+  // missing books' buy button, a level's add-to-queue button, a skill row's selection, menu, tooltip and drag, the
   // contents' menu (copy to clipboard), the tooltip and drag of an entry, and the Certified and Corporation plans.
   import { onMount } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -32,8 +41,8 @@
   import { romanLevel } from "../bridge/skills.ts";
   import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import {
-    skillPlanRowVisible, sortPlansByName, timeLeftShowTo,
-    type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow,
+    skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
+    type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanDetail,
   } from "../bridge/skillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -63,6 +72,14 @@
     "UI/SkillPlan/HideTrainedSkills": "Leave out those trained",
     "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters": "No skill shown with these filters",
     "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
+    "UI/SkillPlan/StartTraining": "Train it",
+    "UI/SkillPlan/StartTrainingHint": "Put as many of this plan's levels as fit into your training queue.",
+    "UI/SkillPlan/StartTrainingLockedHint": "This plan cannot be trained yet: a book is missing, or it needs omega.",
+    "UI/SkillPlan/StartTrainingNothingToTrainHint": "Every level of this plan is trained or queued already.",
+    "UI/SkillPlan/SkillsAddedNotification": "{numSkills} put in the queue from {planName}.",
+    "UI/SkillPlan/SkillbooksMissing": "{numMissing} books not held",
+    "UI/SkillPlan/NoSkillbooksMissing": "Every book is held",
+    "UI/SkillPlan/OmegaMissing": "{numMissing} of its skills need omega.",
   };
 
   onMount(() => {
@@ -154,8 +171,11 @@
   let selectedID = $state<string | null>(null);
   const selected = $derived(read && selectedID !== null ? read.plans.find((plan) => plan.id === selectedID) ?? null : null);
   let contentsShown = $state(false);
-  /** The contents read for the plan opened: undefined while read, null where they could not be. */
-  let contents = $state<{ readonly planID: string; readonly rows: readonly SkillPlanContentRow[] | null } | undefined>(undefined);
+  /** The plan opened, as read (its rows, books, locks): undefined while read, null where it could not be. */
+  let contents = $state<{ readonly planID: string; readonly detail: SkillPlanDetail | null } | undefined>(undefined);
+  /** SkillsAddedNotification's words, said in the view after Start Training. */
+  let notice = $state("");
+  let training = $state(false);
   let filter = $state("");
 
   const HIDE_TRAINED_KEY = "evejs.SkillPlanContentsHideTrained";
@@ -178,25 +198,44 @@
 
   function open(plan: PersonalSkillPlanEntry): void {
     selectedID = plan.id;
-    contents = undefined;
-    if (contentsShown) void readContents(plan);
+    notice = "";
+    void readContents(plan);
   }
 
   function close(): void {
     selectedID = null;
     contents = undefined;
+    notice = "";
   }
 
   async function readContents(plan: PersonalSkillPlanEntry): Promise<void> {
     contents = undefined;
-    const rows = await flow.skillPlanContents(plan).catch(() => null);
-    if (selectedID === plan.id) contents = { planID: plan.id, rows };
+    const detail = await flow.skillPlanDetail(plan).catch(() => null);
+    if (selectedID === plan.id) contents = { planID: plan.id, detail };
   }
 
   /** OnToggleContents */
-  function toggleContents(plan: PersonalSkillPlanEntry): void {
+  function toggleContents(): void {
     contentsShown = !contentsShown;
-    if (contentsShown && contents?.planID !== plan.id) void readContents(plan);
+  }
+
+  /** TrainSkills */
+  async function startTraining(plan: PersonalSkillPlanEntry): Promise<void> {
+    if (!read || training) return;
+    training = true;
+    error = "";
+    notice = "";
+    try {
+      const outcome = await flow.trainSkillPlan(plan, read.trackedID);
+      if (read) read = { ...read, trackedID: outcome.trackedID };
+      if (outcome.added !== null && outcome.added > 0) notice = word("UI/SkillPlan/SkillsAddedNotification", { numSkills: outcome.added, planName: plan.name });
+    } catch {
+      error = word("UI/SkillPlan/ConnectionError");
+    } finally {
+      training = false;
+    }
+    // OnSkillQueueChanged: the view's buttons and the contents' bars as the queue now is.
+    if (selectedID === plan.id) await readContents(plan);
   }
 
   /** OnTrackButton, _ToggleTracked */
@@ -215,8 +254,8 @@
   }
 
   const shownRows = $derived(
-    contents && contents.rows
-      ? contents.rows.filter((row) => skillPlanRowVisible(row, hideTrained, filter, resolvedName($names.resolved, "type", row.skill, "")))
+    contents && contents.detail
+      ? contents.detail.rows.filter((row) => skillPlanRowVisible(row, hideTrained, filter, resolvedName($names.resolved, "type", row.skill, "")))
       : [],
   );
 </script>
@@ -251,7 +290,7 @@
           aria-label={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
           aria-pressed={tracked} onclick={() => void toggleTracked(plan)}>👁</button>
       </div>
-      <button type="button" class="skill-plan-toggle" onclick={() => toggleContents(plan)}>
+      <button type="button" class="skill-plan-toggle" onclick={toggleContents}>
         {contentsShown ? "◂" : "▸"} {word(contentsShown ? "UI/SkillPlan/HideSkillPlanContents" : "UI/SkillPlan/ShowSkillPlanContents")}
       </button>
       {#if plan.completed}
@@ -270,7 +309,7 @@
           </div>
           {#if contents === undefined || contents.planID !== plan.id}
             <p class="note">Reading the plan's skills…</p>
-          {:else if contents.rows === null}
+          {:else if contents.detail === null}
             <p class="error">Your skills could not be read.</p>
           {:else if shownRows.length === 0}
             <p class="empty">{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters")}</p>
@@ -289,6 +328,29 @@
               {/each}
             </ul>
           {/if}
+        </div>
+      {/if}
+      {#if notice}
+        <p class="note">{notice}</p>
+      {/if}
+      {#if !plan.completed && contents !== undefined && contents.planID === plan.id && contents.detail !== null}
+        {@const detail = contents.detail}
+        {@const state = startTrainingState(detail)}
+        <div class="skill-plan-foot">
+          <div class="skill-plan-locks">
+            <button type="button" class="skill-plan-lock books" class:locked={detail.missingBooks.length > 0}
+              title={detail.missingBooks.length > 0 ? word("UI/SkillPlan/SkillbooksMissing", { numMissing: detail.missingBooks.length }) : word("UI/SkillPlan/NoSkillbooksMissing")}
+              aria-label={detail.missingBooks.length > 0 ? word("UI/SkillPlan/SkillbooksMissing", { numMissing: detail.missingBooks.length }) : word("UI/SkillPlan/NoSkillbooksMissing")}
+              onclick={toggleContents}>📖{#if detail.missingBooks.length > 0}<span class="skill-plan-lock-count">{detail.missingBooks.length}</span>{/if}</button>
+            {#if detail.omegaLocked}
+              <span class="skill-plan-lock-icon" aria-hidden="true">🔒</span>
+              <span class="skill-plan-lock omega locked" title={word("UI/SkillPlan/OmegaMissing", { numMissing: detail.numOmegaSkills })}
+                aria-label={word("UI/SkillPlan/OmegaMissing", { numMissing: detail.numOmegaSkills })}>Ω</span>
+            {/if}
+          </div>
+          <button type="button" class="skill-plan-train" disabled={state !== "ready" || training}
+            title={word(state === "locked" ? "UI/SkillPlan/StartTrainingLockedHint" : state === "nothing" ? "UI/SkillPlan/StartTrainingNothingToTrainHint" : "UI/SkillPlan/StartTrainingHint")}
+            onclick={() => void startTraining(plan)}>{word("UI/SkillPlan/StartTraining")}</button>
         </div>
       {/if}
     </div>
@@ -350,6 +412,17 @@
   .skill-plan-row { display: flex; align-items: center; gap: 0.75rem; min-height: 2rem; padding: 0 0.5rem; background: rgba(255, 255, 255, 0.04); }
   .skill-plan-row-name { flex: 1; }
   .skill-plan-row-time { opacity: 0.35; }
+  .skill-plan-foot { display: flex; flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .skill-plan-locks { display: flex; justify-content: center; align-items: center; gap: 1rem; }
+  /* The lock buttons (lockButton.py): the books' framed white, PRIMARY_BLUE where locked, with the count on HOT_RED;
+     the omega one SAND_YELLOW where locked. */
+  .skill-plan-lock { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem;
+    border: 1px solid #fff; background: rgba(60, 138, 94, 0.3); }
+  .skill-plan-lock.books.locked { border-color: #58a7bf; background: rgba(55, 73, 87, 0.3); }
+  .skill-plan-lock.omega.locked { border-color: #d8b25a; background: rgba(160, 120, 50, 0.3); }
+  .skill-plan-lock-count { position: absolute; right: -0.4rem; bottom: -0.4rem; min-width: 1.1rem; height: 1.1rem; border-radius: 50%;
+    font-size: 0.7rem; line-height: 1.1rem; text-align: center; color: #fff; background: #dd2c2c; }
+  .skill-plan-lock-icon { color: #dd2c2c; }
   /* The skill bar's boxes, as the skill requirement window draws them (skillLevel.py). */
   .skill-bar { display: inline-flex; gap: 2px; }
   .skill-box { width: 8px; height: 8px; box-sizing: border-box; }

@@ -145,3 +145,40 @@ export function skillPlanRowVisible(row: SkillPlanContentRow, hideTrained: boole
   if (hideTrained && row.trained) return false;
   return filter === "" || name.toLowerCase().includes(filter.toLowerCase());
 }
+
+/** What the opened plan's buttons and locks go by, with its contents' rows. */
+export interface SkillPlanDetail {
+  readonly rows: readonly SkillPlanContentRow[];
+  /** GetMissingSkillbooks: the plan's skills not held, lapsed ones counted held, in GetSkillRequirementsDict's order. */
+  readonly missingBooks: readonly number[];
+  /** IsOmegaLocked: a skill of the plan restricted for an alpha clone, and the pilot not omega. */
+  readonly omegaLocked: boolean;
+  /** GetNumOmegaSkills, where it is reckoned (an alpha clone's plan); nought otherwise. */
+  readonly numOmegaSkills: number;
+  /** GetUntrainedSkills: the plan's levels above the skill's level, its queue counted, in the plan's order. */
+  readonly untrained: readonly (readonly [number, number])[];
+}
+
+/**
+ * GetUntrainedSkills: each of the plan's levels where MySkillLevelIncludingQueued is under it (the trained level, the
+ * lapsed counted, or the highest the queue takes it to, whichever is more; nought where the skill is not held at all).
+ */
+export function untrainedSkills(
+  plan: PersonalSkillPlan,
+  trainedIncludingLapsed: (typeID: number) => number | null,
+  maxQueued: (typeID: number) => number,
+): readonly (readonly [number, number])[] {
+  return plan.requirements.filter(([typeID, level]) => {
+    const trained = trainedIncludingLapsed(typeID);
+    return (trained === null ? 0 : Math.max(trained, maxQueued(typeID))) < level;
+  });
+}
+
+/**
+ * UpdateStartTrainingButton: locked where the plan is not trainable (IsTrainable: omega locked, or books missing),
+ * nothing to train where every level is trained or queued (IsQueuedOrTrained), else ready.
+ */
+export function startTrainingState(detail: SkillPlanDetail): "locked" | "nothing" | "ready" {
+  if (detail.omegaLocked || detail.missingBooks.length > 0) return "locked";
+  return detail.untrained.length === 0 ? "nothing" : "ready";
+}

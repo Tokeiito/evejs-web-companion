@@ -205,7 +205,7 @@ import {
 } from "../bridge/missingSkills.ts";
 import {
   NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
-  type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanContentRow,
+  untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
@@ -2451,11 +2451,20 @@ export interface AppFlow {
    */
   deletePersonalSkillPlan(id: string): Promise<boolean>;
   /**
-   * A plan's contents as SkillPlanContents lists them: each of its skill levels in the plan's order, whether it is
-   * trained, its skill bar and its training time (bridge/skillPlans.ts SkillPlanContentRow); the skills' names asked
-   * for. Null where the pilot's skills could not be read.
+   * An opened plan as its view reckons it (bridge/skillPlans.ts SkillPlanDetail): its contents' rows (each of its
+   * skill levels in the plan's order, whether it is trained, its skill bar and its training time), the books missing,
+   * the omega lock and the levels left to queue; the skills' names asked for. Null where the pilot's skills could not
+   * be read.
    */
-  skillPlanContents(plan: PersonalSkillPlan): Promise<readonly SkillPlanContentRow[] | null>;
+  skillPlanDetail(plan: PersonalSkillPlan): Promise<SkillPlanDetail | null>;
+  /**
+   * The opened plan's Start Training (SelectedSkillPlanContainer.TrainSkills): the plan's levels left to train added
+   * to the end of the queue and the queue saved started (AddToTrainingQueue: skillQueueSvc.AddSkillsToQueue, then
+   * OnClientQueueModified's commit); then the plan tracked (_CheckSetCurrentSkillPlanAsTracked): at once where none
+   * is tracked, on the client's AskTrackPlan question where another is. The levels added (null where the queue was
+   * refused: its refusal is said as any queue's is, and nothing is tracked) and the plan tracked after it.
+   */
+  trainSkillPlan(plan: PersonalSkillPlan, trackedID: string | null): Promise<{ readonly added: number | null; readonly trackedID: string | null }>;
   /**
    * skillPlanService.SetTrackedSkillPlanID: SetActive on the public gateway, the plan's id or, for none, the nought
    * uuid; the plan tracked after it (null for none). A refusal is thrown.
@@ -7592,10 +7601,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function skillPlanContents(plan: PersonalSkillPlan): Promise<readonly SkillPlanContentRow[] | null> {
+  async function skillPlanDetail(plan: PersonalSkillPlan): Promise<SkillPlanDetail | null> {
     const skillTypes = [...new Set(plan.requirements.map(([skill]) => skill))];
     requestNames(skillTypes.map((skill) => ({ kind: "type" as const, id: skill })));
-    if (skillTypes.length === 0) return [];
+    if (skillTypes.length === 0) return { rows: [], missingBooks: [], omegaLocked: false, numOmegaSkills: 0, untrained: [] };
     let skillsAnswer: JsonValue;
     let allSkillsAnswer: JsonValue;
     try {
@@ -7610,7 +7619,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]);
     if (facts === null) return null;
     const required: RequiredSkills = needs !== null && needs.available ? needs.required : {};
-    return plan.requirements.map(([skill, level]) => {
+    const rows = plan.requirements.map(([skill, level]) => {
       const held = facts.mine.get(skill);
       return {
         skill,
@@ -7621,6 +7630,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ticks: rawTrainingTimeForSkillLevel(skill, level, facts.mine, facts),
       };
     });
+    const planSkills = [...skillRequirementsDict(plan).keys()];
+    // IsOmega for an alpha clone (an omega's plan is never locked, IsOmegaLocked): clone_grade_svc.is_restricted_for_alpha,
+    // a skill an alpha cannot train at all (get_max_skill_level under 1), or one whose own needs, however deep, ask a
+    // level above an alpha's (is_requirements_restricted). Its ceilings are its race's (CloneGradeStorage).
+    const ceilings = facts.omega ? null : facts.ceilings;
+    const ceiling = (skill: number): number => ceilings?.get(skill) ?? 0;
+    const restrictedForAlpha = (skill: number): boolean =>
+      ceiling(skill) < 1 || [...requiredSkillsRecursive(skill, required)].some(([need, level]) => ceiling(need) < level);
+    const numOmegaSkills = ceilings === null ? 0 : planSkills.filter(restrictedForAlpha).length;
+    const maxQueued = (typeID: number): number => Math.max(0, ...facts.queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
+    return {
+      rows,
+      missingBooks: planSkills.filter((skill) => !facts.lapsed.has(skill)),
+      omegaLocked: numOmegaSkills > 0,
+      numOmegaSkills,
+      untrained: untrainedSkills(plan, (typeID) => facts.lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued),
+    };
+  }
+
+  async function trainSkillPlan(plan: PersonalSkillPlan, trackedID: string | null): Promise<{ readonly added: number | null; readonly trackedID: string | null }> {
+    const [answered, allSkillsAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
+    const lapsed = skillLevelsOf(allSkillsAnswer);
+    const maxQueued = (typeID: number): number => Math.max(0, ...queue.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
+    const levels = untrainedSkills(plan, (typeID) => lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued);
+    const next = queueWithLevels(queue, levels);
+    if (!(await saveSkillQueueSaved(next, "Added to your skill queue", "those skills", true))) return { added: null, trackedID };
+    let tracked = trackedID;
+    if (tracked === null) {
+      tracked = await setTrackedSkillPlan(plan.id).catch(() => null);
+    } else if (tracked !== plan.id && (await askDialog("AskTrackPlan", {}, "Follow this plan from now on?"))) {
+      tracked = await setTrackedSkillPlan(plan.id).catch(() => null);
+    }
+    return { added: next.length - queue.length, trackedID: tracked };
   }
 
   async function setTrackedSkillPlan(id: string | null): Promise<string | null> {
@@ -14165,6 +14211,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     context = "that skill",
     start = false,
   ): Promise<void> {
+    await saveSkillQueueSaved(entries, label, context, start);
+  }
+
+  /** saveSkillQueue, and whether the queue was saved (false where it was refused, its refusal said). */
+  async function saveSkillQueueSaved(
+    entries: readonly { readonly typeID: number; readonly toLevel: number }[],
+    label: string,
+    context = "that skill",
+    start = false,
+  ): Promise<boolean> {
     let raw: JsonValue;
     try {
       raw = await saveQueueAndRead(entries, start);
@@ -14188,12 +14244,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // showing an optimistic order — re-read so what is on screen is the
       // server's, not ours.
       await loadSkills().catch(() => {});
-      return;
+      return false;
     }
     // The sheet read after the save IS the confirmation. Landing it first means
     // the "saved" message can never be on screen next to a stale queue.
     applySkillSheet(raw);
     store.apply({ type: "skills/action", action: label });
+    return true;
   }
 
   /**
@@ -22168,7 +22225,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestShipTraits,
     personalSkillPlans,
     deletePersonalSkillPlan,
-    skillPlanContents,
+    skillPlanDetail,
+    trainSkillPlan,
     setTrackedSkillPlan,
     comparisonTypes,
     cfgAveragePrices,
