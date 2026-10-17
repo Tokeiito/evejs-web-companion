@@ -67,14 +67,17 @@
   // SkillbooksMissing2 with their count where any book is not held, and RequireOmega with the count of skills an alpha
   // may not train where the pilot is alpha.
   //
-  // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the omega button's upgrade window (the omega state's click), the faction and career icons, the
-  // omega banner, a skill row's selection, menu, tooltip and drag, the contents' menu (copy
-  // to clipboard), the tooltip and drag of an entry, and the corporation's notices (another member's changes, seen as
-  // they are made).
-  import { onMount } from "svelte";
+  // The corporation's notices (another member's changes) come on the pilot's stream as the gateway sends them, and are
+  // taken as the client's panels take them (corpNotice, below).
+  //
+  // Not done: the links in a description shown in the tooltip (its LINKSTYLE_REGULAR label), Share, the omega button's
+  // upgrade window (the omega state's click), the faction and career icons, the omega banner, a skill row's selection,
+  // menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry, and a notice kept
+  // while the session does not match it yet (the client's notice routing cache).
+  import { onMount, untrack } from "svelte";
   import { portal } from "./portal.ts";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
-  import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
+  import { MAX_PERSONAL_PLANS, uuidFromBytes } from "../bridge/skillPlans.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -88,7 +91,7 @@
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
   import { LEVEL_BUTTON_HINTS, levelButtonOff, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
   import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
-  import type { CertifiedPlanEntry, CorpPlanEntry } from "../app/flow.ts";
+  import type { CertifiedPlanEntry, CorpPlanEntry, GatewayNotice } from "../app/flow.ts";
   import { CORP_PLANS_PER_PAGE, MAX_CORP_PLANS, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -368,6 +371,58 @@
   }
   function hideTip(plan: OpenedPlan): void {
     if (tip !== null && tip.planID === plan.id) tip = null;
+  }
+
+  // The corporation's notices (CorpSkillPlanNoticeMessenger and CorpMilestoneNoticeMessenger, taken by
+  // skillPlanService's OnRemoteCorpSkillPlan* and the milestone service's cache), as the client's panels take them:
+  //   Created, Deleted, NameUpdated, DescriptionUpdated, CategoryUpdated   the corporation panel made again from its
+  //       first page (on_created, on_deleted, on_saved: ReconstructPagination), none of it where the corporation's
+  //       plans were never read (corpCache None); the three updates also close what is open over the panels, a plan
+  //       or the editor (skillPlanPanel.OnSkillPlanSaved: _HideAllOverlays), and Deleted closes the plan it deletes
+  //       where that one is open (OnSkillPlanDeleted)
+  //   SkillRequirementsUpdated   the plan's skills as they now are (ResetSkillRequirements), the opened one's contents
+  //       read again
+  //   a milestone Created or Deleted   the opened corporation plan's milestones read again
+  // svelte-ignore state_referenced_locally
+  const gatewayNotices = flow.gatewayNotices;
+  const CORP_PLAN_NOTICE = "eve_public.corporation.skill.plan.";
+  let noticeSeen = 0;
+  $effect(() => {
+    const notice = $gatewayNotices;
+    if (notice === null || notice.n === noticeSeen) return;
+    noticeSeen = notice.n;
+    untrack(() => corpNotice(notice));
+  });
+
+  function corpNotice(notice: GatewayNotice): void {
+    if (!notice.typeName.startsWith(CORP_PLAN_NOTICE)) return;
+    const kind = notice.typeName.slice(CORP_PLAN_NOTICE.length);
+    if (kind.startsWith("milestone.")) {
+      if (selected !== null && selected.corp) void readMilestones(selected);
+      return;
+    }
+    if (corp === undefined) return;
+    const payload = notice.payload !== null && typeof notice.payload === "object" && !Array.isArray(notice.payload)
+      ? (notice.payload as Record<string, unknown>)
+      : {};
+    const identifier = (payload.identifier ?? payload.skill_plan ?? {}) as Record<string, unknown>;
+    const planID = uuidFromBytes(String(identifier.uuid ?? ""));
+    if (kind === "SkillRequirementsUpdatedNotice") {
+      void loadCorp().then(() => {
+        if (selected !== null && selected.corp && selected.id === planID) void readContents(selected);
+      });
+      return;
+    }
+    if (kind === "NameUpdatedNotice" || kind === "DescriptionUpdatedNotice" || kind === "CategoryUpdatedNotice") {
+      editing = null;
+      close();
+    } else if (kind === "DeletedNotice" && selectedID !== null && selectedID === planID) {
+      close();
+    } else if (kind !== "CreatedNotice") {
+      return;
+    }
+    corpPage = 0;
+    void loadCorp();
   }
 
   // _UpdateTrainingTimeThread: while a plan shown has levels queued (GetInTrainingRatio above nought), the entries are

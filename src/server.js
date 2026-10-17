@@ -191,6 +191,8 @@ const gamePortPilots = options.gamePortPilots !== undefined
     ? createGamePortPilots({
       // "Released" is said once the server itself has the character offline.
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
+      // Each pilot's public gateway notices, on the connection its gateway requests go on (gamePort/publicGateway.js).
+      gatewayNotices: (pilot, onNotice) => sharedPublicGateway().consume(pilot, onNotice),
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
       // The client's travel effects, from its own data (clientBuiltData, made below; asked for once a pilot is in space).
@@ -13496,6 +13498,11 @@ const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.corporation.skill.plan.milestone.CreateRequest",
 ]);
 let publicGatewayClient = null;
+/** The one public gateway client: the page's requests and each pilot's notices go on its connections. */
+function sharedPublicGateway() {
+  if (!publicGatewayClient) publicGatewayClient = createPublicGateway({ url: publicGatewayUrl(process.env, gameEndpoint(process.env).host) });
+  return publicGatewayClient;
+}
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -13512,10 +13519,9 @@ app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
     const held = requireHeldBridgeSession(req, res);
     if (!held) return;
     const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload) ? body.payload : {};
-    if (!publicGatewayClient) publicGatewayClient = createPublicGateway({ url: publicGatewayUrl(process.env, gameEndpoint(process.env).host) });
     let answer;
     try {
-      answer = await publicGatewayClient.request({ userID: held.accountID, characterID: held.characterID }, request, payload);
+      answer = await sharedPublicGateway().request({ userID: held.accountID, characterID: held.characterID }, request, payload);
     } catch (error) {
       if (!String(error && error.code).startsWith("GATEWAY_")) throw error;
       res.status(502).json({ ok: false, error: error.code, message: error.message });

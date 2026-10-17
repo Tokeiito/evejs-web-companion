@@ -12,6 +12,15 @@
 // and the authoritative context: the tenant (lower case, '.' as '_'), the account as the authenticated user, and for a
 // character request (send_character_request) the character as the active identity.
 //
+// The notices come on a second stream of the same connection, Notices/Consume (publicGateway/grpc/noticeConsumer.py,
+// its native NoticeConsumer), each an eve_public.Notice: the notice message packed in a google.protobuf.Any, and the
+// target group it is for. What the native consumer writes on that stream is not in the client's Python; EveJS's
+// gateway (publicGatewayLocal.js handleNoticesConsumeStream) reads an eve_public.Request on it for whose stream it is,
+// as it also learns from the requests on the same connection, so one is written there with the pilot's context. While
+// a pilot's notices are read its connection stays open, and a stream that is lost is opened again after a moment.
+// Which notices are the pilot's is the client's own test (NoticeConsumer._validate_target_group_against_session):
+// noticeTargetMatches below.
+//
 // The messages are the client's own, from its generated eveProto modules (eveProtoSchema.json; see
 // scripts/eve-proto-schema.js).
 
@@ -21,10 +30,13 @@ const { createSchema } = require("./protoCodec");
 const { RETAIL_CLIENT } = require("./session");
 
 const SEND_PATH = "/eve_public.gateway.Requests/Send";
+const CONSUME_PATH = "/eve_public.gateway.Notices/Consume";
 const TYPE_URL_PREFIX = "type.googleapis.com/";
 /** stackless_response_router DEFAULT_TIMEOUT_SECONDS: a request with no timeout of its own waits this long. */
 const DEFAULT_TIMEOUT_MS = 10_000;
 const IDLE_CLOSE_MS = 5 * 60_000;
+/** How long a notice stream that was lost is left before it is opened again. */
+const CONSUME_RETRY_MS = 5_000;
 const STATUS_OK = 200;
 
 let defaultSchema = null;
@@ -68,11 +80,39 @@ function gatewayError(code, message, extra = {}) {
   return Object.assign(new Error(message), { code, ...extra });
 }
 
+/** The message type an Any holds: its type_url's last part. */
+function anyTypeName(any) {
+  return any && any.type_url ? String(any.type_url).slice(String(any.type_url).lastIndexOf("/") + 1) : null;
+}
+
+/**
+ * NoticeConsumer._validate_target_group_against_session (with get_target_group_and_id): whether a notice's target group
+ * is the pilot's. The application instance is the connection's own, the solar system, user, character, corporation and
+ * alliance the session's (solarsystemid2, userid, charid, corpid, allianceid); a bubble instance is anyone's; with no
+ * group (None against None) it is the pilot's too.
+ *   targetGroup   the notice's target_group as decoded (bytes as base64), or null
+ *   pilot         { applicationInstance (base64), solarSystemID, userID, characterID, corporationID, allianceID }
+ */
+function noticeTargetMatches(targetGroup, pilot) {
+  const group = targetGroup && typeof targetGroup === "object" ? targetGroup : {};
+  const same = (said, held) => held !== null && held !== undefined && Number(said) === Number(held);
+  if (group.application_instance_uuid !== undefined) return String(group.application_instance_uuid) === String(pilot.applicationInstance);
+  if (group.solar_system !== undefined) return same(group.solar_system, pilot.solarSystemID);
+  if (group.user !== undefined) return same(group.user, pilot.userID);
+  if (group.character !== undefined) return same(group.character, pilot.characterID);
+  if (group.corporation !== undefined) return same(group.corporation, pilot.corporationID);
+  if (group.alliance !== undefined) return same(group.alliance, pilot.allianceID);
+  return true;
+}
+
 /**
  * A public gateway client for the BFF's pilots.
  *   request(pilot, typeName, payload) -> {statusCode, statusMessage, typeName, payload}
+ *   consume(pilot, onNotice) -> stop()
  * pilot is {userID, characterID}; with no characterID it is a user request (send_user_request: no active identity).
- * payload, the answer's, is the decoded message where the schema knows its type, else null.
+ * payload, the answer's, is the decoded message where the schema knows its type, else null. onNotice gets each notice
+ * as {typeName, payload, targetGroup, applicationInstance}: the payload decoded where the schema knows its type (else
+ * null), the target group as decoded, and the connection's own application instance (base64) to test it against.
  */
 function createPublicGateway({
   url = publicGatewayUrl(),
@@ -80,6 +120,7 @@ function createPublicGateway({
   origin = `eve-desktop-client/${RETAIL_CLIENT.build} ${RETAIL_CLIENT.codename}`,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   idleCloseMs = IDLE_CLOSE_MS,
+  consumeRetryMs = CONSUME_RETRY_MS,
   schema = eveProtoSchema(),
   connect = (target) => http2.connect(target, { rejectUnauthorized: false }),
   now = () => Date.now(),
@@ -112,7 +153,7 @@ function createPublicGateway({
       te: "trailers",
       "grpc-accept-encoding": "identity",
     });
-    const line = { session, stream, waiting: new Map(), idle: null, applicationInstance: crypto.randomUUID() };
+    const line = { session, stream, waiting: new Map(), idle: null, consumers: 0, applicationInstance: crypto.randomUUID() };
     const read = frameReader((message) => {
       let response;
       try {
@@ -139,36 +180,57 @@ function createPublicGateway({
     return line;
   }
 
+  /** Kept open while it is asked things, and for as long as its notices are read. */
   function touch(key, line) {
     clearTimeout(line.idle);
-    line.idle = setTimeout(() => closeLine(key), idleCloseMs);
+    line.idle = setTimeout(() => {
+      if (line.consumers > 0) {
+        touch(key, line);
+        return;
+      }
+      closeLine(key);
+    }, idleCloseMs);
     if (line.idle.unref) line.idle.unref();
   }
 
-  async function request(pilot, typeName, payload = {}) {
-    if (!schema.hasMessage(typeName)) throw gatewayError("GATEWAY_UNKNOWN_REQUEST", `No message ${typeName} in the client's schema.`);
+  function pilotOf(pilot) {
     const userID = Number(pilot && pilot.userID);
     const characterID = pilot && pilot.characterID !== undefined && pilot.characterID !== null ? Number(pilot.characterID) : null;
     if (!Number.isInteger(userID) || userID <= 0) throw gatewayError("GATEWAY_NO_USER", "A gateway request is made for an account.");
-    const key = characterID === null ? `user:${userID}` : `character:${characterID}`;
-    const line = lineFor(key);
-    touch(key, line);
-    const correlation = crypto.randomBytes(16);
-    correlation[6] = (correlation[6] & 0x0f) | 0x40;
-    correlation[8] = (correlation[8] & 0x3f) | 0x80;
+    return { userID, characterID, key: characterID === null ? `user:${userID}` : `character:${characterID}` };
+  }
+
+  /** RequestBroker.new_eve_public_request's envelope, its payload the message given (none on a notice stream). */
+  function envelope(line, { userID, characterID }, correlation, payload) {
     const authoritativeContext = {
       tenant: sanitizedTenant,
       authenticated_user: { sequential: userID },
       ...(characterID === null ? { no_active_identity: true } : { identity: { character: { sequential: characterID } } }),
     };
-    const envelope = schema.encode("eve_public.Request", {
+    return schema.encode("eve_public.Request", {
       issued: timestamp(now()),
       correlation_uuid: correlation,
-      payload: { type_url: `${TYPE_URL_PREFIX}${typeName}`, value: schema.encode(typeName, payload) },
+      ...(payload ? { payload } : {}),
       external_origin: origin,
       application_instance_uuid: Buffer.from(line.applicationInstance.replace(/-/g, ""), "hex"),
       authoritative_context: authoritativeContext,
     });
+  }
+
+  function newCorrelation() {
+    const correlation = crypto.randomBytes(16);
+    correlation[6] = (correlation[6] & 0x0f) | 0x40;
+    correlation[8] = (correlation[8] & 0x3f) | 0x80;
+    return correlation;
+  }
+
+  async function request(pilot, typeName, payload = {}) {
+    if (!schema.hasMessage(typeName)) throw gatewayError("GATEWAY_UNKNOWN_REQUEST", `No message ${typeName} in the client's schema.`);
+    const who = pilotOf(pilot);
+    const line = lineFor(who.key);
+    touch(who.key, line);
+    const correlation = newCorrelation();
+    const message = envelope(line, who, correlation, { type_url: `${TYPE_URL_PREFIX}${typeName}`, value: schema.encode(typeName, payload) });
     const response = await new Promise((resolve, reject) => {
       const id = correlation.toString("base64");
       const timer = setTimeout(() => {
@@ -176,7 +238,7 @@ function createPublicGateway({
         reject(gatewayError("GATEWAY_TIMEOUT", `The public gateway did not answer ${typeName} in ${timeoutMs} ms.`));
       }, timeoutMs);
       line.waiting.set(id, { resolve, reject, timer });
-      line.stream.write(frame(envelope), (error) => {
+      line.stream.write(frame(message), (error) => {
         if (!error) return;
         line.waiting.delete(id);
         clearTimeout(timer);
@@ -184,7 +246,7 @@ function createPublicGateway({
       });
     });
     const any = response.payload || null;
-    const answerType = any && any.type_url ? String(any.type_url).slice(String(any.type_url).lastIndexOf("/") + 1) : null;
+    const answerType = anyTypeName(any);
     return {
       statusCode: Number(response.status_code || 0),
       statusMessage: response.status_message || "",
@@ -193,11 +255,94 @@ function createPublicGateway({
     };
   }
 
+  function consume(pilot, onNotice) {
+    const who = pilotOf(pilot);
+    let stopped = false;
+    let current = null;
+    let retry = null;
+
+    function release() {
+      if (!current) return;
+      const { line, stream } = current;
+      current = null;
+      line.consumers = Math.max(0, line.consumers - 1);
+      try { stream.close(); } catch {}
+    }
+
+    function open() {
+      retry = null;
+      if (stopped) return;
+      let line;
+      try {
+        line = lineFor(who.key);
+      } catch {
+        retry = setTimeout(open, consumeRetryMs);
+        if (retry.unref) retry.unref();
+        return;
+      }
+      line.consumers += 1;
+      touch(who.key, line);
+      const stream = line.session.request({
+        ":method": "POST",
+        ":path": CONSUME_PATH,
+        "content-type": "application/grpc+proto",
+        te: "trailers",
+        "grpc-accept-encoding": "identity",
+      });
+      const mine = { line, stream };
+      current = mine;
+      const read = frameReader((message) => {
+        let notice;
+        try {
+          notice = schema.decode("eve_public.Notice", message);
+        } catch {
+          return;
+        }
+        const any = notice.payload || null;
+        const typeName = anyTypeName(any);
+        let payload = null;
+        if (typeName && schema.hasMessage(typeName)) {
+          try { payload = schema.decode(typeName, Buffer.from(any.value || "", "base64")); } catch { payload = null; }
+        }
+        try {
+          onNotice({
+            typeName,
+            payload,
+            targetGroup: notice.target_group || null,
+            applicationInstance: Buffer.from(line.applicationInstance.replace(/-/g, ""), "hex").toString("base64"),
+          });
+        } catch {
+          // The listener's own failure is its own.
+        }
+      });
+      stream.on("data", (chunk) => {
+        try { read(chunk); } catch { try { stream.close(); } catch {} }
+      });
+      const lost = () => {
+        if (current !== mine) return;
+        release();
+        if (stopped) return;
+        retry = setTimeout(open, consumeRetryMs);
+        if (retry.unref) retry.unref();
+      };
+      stream.on("error", lost);
+      stream.on("close", lost);
+      stream.write(frame(envelope(line, who, newCorrelation(), null)), () => {});
+    }
+
+    open();
+    return function stop() {
+      stopped = true;
+      clearTimeout(retry);
+      release();
+    };
+  }
+
   function close() {
     for (const key of [...lines.keys()]) closeLine(key);
   }
 
-  return { request, close, STATUS_OK };
+  return { request, consume, close, STATUS_OK };
 }
 
-module.exports = { STATUS_OK, createPublicGateway, eveProtoSchema, publicGatewayUrl };
+module.exports = { STATUS_OK, createPublicGateway, eveProtoSchema, noticeTargetMatches, publicGatewayUrl };

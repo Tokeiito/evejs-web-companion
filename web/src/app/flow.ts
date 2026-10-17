@@ -217,6 +217,13 @@ import {
 import { levelButtonState, levelsForSkillAndRequirements, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
 import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
 
+/** A public gateway notice: its message type (eve_public.…Notice) and its message as decoded (bytes as base64). */
+export interface GatewayNotice {
+  readonly n: number;
+  readonly typeName: string;
+  readonly payload: JsonValue | null;
+}
+
 /** A corporation plan's save: the category chosen in the editor (0 for None), and the saved plan's (null for a new one). */
 export interface CorpPlanSave {
   readonly categoryID: number;
@@ -2389,6 +2396,12 @@ export interface AppFlow {
   buySkillsRequired(): Promise<void>;
   /** The client's books window open now (ClientDialogs.svelte shows it); null with none. */
   readonly skillBooksAsked: ReadableSignal<SkillBooksAsk | null>;
+  /**
+   * The newest public gateway notice for the pilot (the BFF's Notices/Consume, those for the pilot's session, as the
+   * client's NoticeConsumer hands them to its subscribers): n counts them, so the same notice twice is two. Null until
+   * one comes.
+   */
+  readonly gatewayNotices: ReadableSignal<GatewayNotice | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
   answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
   /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
@@ -3607,6 +3620,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return;
       }
       store.apply({ type: "live/question", question, epoch, sequence });
+      return;
+    }
+    // A public gateway notice for the pilot (game-port pilots): handed to whatever on the page listens for its type.
+    if (event.kind === "gateway-notice") {
+      const notice = (event.notice ?? {}) as Record<string, JsonValue>;
+      if (typeof notice.typeName === "string") {
+        gatewayNoticesHeard += 1;
+        gatewayNoticesSignal.set({ n: gatewayNoticesHeard, typeName: notice.typeName, payload: notice.payload ?? null });
+      }
       return;
     }
     if (event.kind === "question-closed") {
@@ -6870,6 +6892,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
   // The client's books window (MissingSkillbooksWnd), one at a time; and what it has bought, which its end answers.
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
+  const gatewayNoticesSignal = createSignal<GatewayNotice | null>(null);
+  let gatewayNoticesHeard = 0;
   let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
   let skillBooksPurchased: number[] = [];
   // The client's multibuy window, one at a time, and the sell orders read for its types (the quote service's order
@@ -22854,6 +22878,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trainSkillsRequired,
     buySkillsRequired,
     skillBooksAsked: readonlySignal(skillBooksAskedSignal),
+    gatewayNotices: readonlySignal(gatewayNoticesSignal),
     answerSkillBooks,
     applySkillPointsRequired,
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),

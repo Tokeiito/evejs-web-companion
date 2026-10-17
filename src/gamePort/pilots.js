@@ -56,6 +56,7 @@ const { GamePortSession } = require("./session");
 const packets = require("./packets");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
+const { noticeTargetMatches } = require("./publicGateway");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
@@ -1126,6 +1127,9 @@ function createGamePortPilots({
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
+  // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
+  // consume); none read where it is not given.
+  gatewayNotices = null,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
@@ -1326,6 +1330,34 @@ function createGamePortPilots({
     const frame = publish(entry, { kind: "notification", notification });
     entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
+  }
+
+  /**
+   * The pilot's public gateway notices, read for as long as the pilot is held (the client's NoticeConsumer). Those
+   * whose target group is the pilot's session's (NoticeConsumer._validate_target_group_against_session) go on its
+   * stream, each as {typeName, payload}; the rest the client logs and keeps a while in case the session comes to match
+   * them, which here is not done.
+   */
+  function startGatewayNotices(entry) {
+    if (typeof gatewayNotices !== "function") return;
+    try {
+      entry.gatewayNoticesStop = gatewayNotices({ userID: entry.accountID, characterID: entry.characterID }, (notice) => {
+        if (entry.ended) return;
+        const attributes = entry.session.attributes || {};
+        const forPilot = noticeTargetMatches(notice.targetGroup, {
+          applicationInstance: notice.applicationInstance,
+          solarSystemID: positive(attributes.solarsystemid2),
+          userID: positive(attributes.userid) ?? entry.accountID,
+          characterID: positive(attributes.charid) ?? entry.characterID,
+          corporationID: positive(attributes.corpid),
+          allianceID: positive(attributes.allianceid),
+        });
+        if (!forPilot) return;
+        publish(entry, { kind: "gateway-notice", notice: { typeName: notice.typeName, payload: notice.payload } });
+      });
+    } catch {
+      entry.gatewayNoticesStop = null;
+    }
   }
 
   /** One event on the pilot's stream, for whoever is listening now and whoever resumes from before it. */
@@ -1562,6 +1594,10 @@ function createGamePortPilots({
     entry.space = null;
     averagePricesThreadEnded(entry);
     warsThreadEnded(entry);
+    if (entry.gatewayNoticesStop) {
+      try { entry.gatewayNoticesStop(); } catch { /* Gone with the pilot either way. */ }
+      entry.gatewayNoticesStop = null;
+    }
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -2286,6 +2322,7 @@ function createGamePortPilots({
     closedByServerByCharacter.delete(characterID);
     sessions.set(entry.handle, entry);
     session.onClose((error) => end(entry, noteClosedByServer(entry, error) ? "closed_by_server" : "connection_closed"));
+    startGatewayNotices(entry);
     // A pilot that was left in space comes back in space.
     syncSpace(entry);
     return {
