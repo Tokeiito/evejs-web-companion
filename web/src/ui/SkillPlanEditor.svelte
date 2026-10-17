@@ -16,16 +16,27 @@
   //                   letters, hinted EnterPlanDescription), Clear (the skills, the name and the description) and Save
   //                   (off with CantSaveTooltip with no skill or no name)
   //
-  // Not done: milestones, the category (a corporation plan's), dragging (skills, levels, ships, fittings) and the
-  // double clicks, a row's selection marks, the catalogue's filter combo and group icons, the contents' menu (copy,
-  // import, clear), the time and bar of a level.
+  //   milestones      the overview's milestone editor (SkillPlanProgressIndicatorEditable and its header): Milestones
+  //                   with the count of five, each milestone's kind and name with its Remove Milestone, an empty slot
+  //                   while one is free; a skill level dragged from the contents, or a skill from the catalogue, dropped
+  //                   on it is added, and on a milestone replaces it after the client's question
+  //                   (bridge/skillPlanEditorMilestones.ts); an edited plan's milestones are its own, copied (GetCopy)
+  //
+  // Not done: the category (a corporation plan's), dragging ships, modules and fittings in from other windows, a
+  // milestone's level changed in its tooltip, the ring, the double clicks, a row's selection marks, the catalogue's
+  // filter combo and group icons, the contents' menu (copy, import, clear), the time and bar of a level.
   import { onMount } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import { romanLevel } from "../bridge/skills.ts";
-  import type { SkillLevel } from "../bridge/skillPlanValidation.ts";
+  import { validateSkillPlan, type SkillLevel } from "../bridge/skillPlanValidation.ts";
+  import { milestoneSubType, type Milestone } from "../bridge/skillPlanMilestones.ts";
+  import {
+    MAX_NUM_MILESTONES, copiedMilestones, dropped, milestonesChanged, typeValidAsMilestone, withMilestoneAdded,
+    withMilestoneRemoved, withMilestonesCheckedAgainst, type EditorMilestones,
+  } from "../bridge/skillPlanEditorMilestones.ts";
   import type { PersonalSkillPlanEntry } from "../bridge/skillPlans.ts";
   import {
     MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, canRemoveLevel, canSavePlan, catalogueGroups, catalogueSearch,
@@ -65,6 +76,15 @@
     "UI/Common/Buttons/Save": "Save",
     "Tooltips/SkillPlanner/CantSaveTooltip": "A plan wants a name and a skill before it is saved.",
     "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
+    "UI/SkillPlan/Milestones": "Milestones",
+    "UI/SkillPlan/SkillMilestonesDescText": "Points of the plan worth reaching on the way.",
+    "UI/SkillPlan/RemoveMilestone": "Remove",
+    "UI/SkillPlan/AddingMilestones": "Adding milestones",
+    "UI/SkillPlan/MilestonesDragDropInformation": "Drag a skill or a level of one here to make it a milestone.",
+    "UI/SkillPlan/MilestoneShip": "Ship",
+    "UI/SkillPlan/MilestoneSkill": "Skill",
+    "UI/SkillPlan/MilestoneModule": "Module",
+    "UI/SkillPlan/MilestoneOther": "Other",
   };
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -94,6 +114,35 @@
     !groups ? [] : catalogueFilter !== "" ? catalogueSearch(groups, catalogueFilter) : groups.find((group) => group.groupID === selectedGroupID)?.skills ?? [],
   );
 
+  // The milestones (to add, and the plan's ids to delete), the plan's own as read, and the types' facts read.
+  let milestones = $state<EditorMilestones>({ toAdd: [], toDelete: [] });
+  let persisted = $state<readonly Milestone[]>([]);
+  let typeFacts = $state<{ required: Record<number, readonly (readonly [number, number])[]>; categoryID: Map<number, number | null> }>({ required: {}, categoryID: new Map() });
+  const newMilestoneID = (): string => crypto.randomUUID();
+
+  async function readTypeFacts(typeIDs: readonly number[]): Promise<boolean> {
+    const missing = [...new Set(typeIDs)].filter((typeID) => !typeFacts.categoryID.has(typeID));
+    if (missing.length === 0) return true;
+    flow.requestNames(missing.map((typeID) => ({ kind: "type" as const, id: typeID })));
+    const read = await flow.skillPlanTypeFacts(missing).catch(() => null);
+    if (read === null) return false;
+    typeFacts = { required: { ...typeFacts.required, ...read.required }, categoryID: new Map([...typeFacts.categoryID, ...read.categoryID]) };
+    return true;
+  }
+
+  const MILESTONE_KIND_LABELS = {
+    ship: "UI/SkillPlan/MilestoneShip",
+    module: "UI/SkillPlan/MilestoneModule",
+    skill: "UI/SkillPlan/MilestoneSkill",
+    other: "UI/SkillPlan/MilestoneOther",
+  } as const;
+
+  function milestoneName(milestone: Milestone): string {
+    return milestone.kind === "skill"
+      ? word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill: milestone.typeID, level: romanLevel(milestone.level), levelColor: "#ffffff" })
+      : resolvedName($names.resolved, "type", milestone.typeID, "");
+  }
+
   // GetSkillsRequiring for the plan's skills, as read.
   let requiring = $state(new Map<number, ReadonlyMap<number, readonly number[]>>());
   let contentsFilter = $state("");
@@ -106,7 +155,82 @@
       if (groups && groups.length > 0) selectedGroupID = groups[0]!.groupID;
     })();
     void readRequiring();
+    // GetCopy: an edited plan's milestones, copied.
+    if (plan) {
+      const editedPlan = plan;
+      void (async () => {
+        const read = await flow.skillPlanMilestones(editedPlan).catch(() => null);
+        if (!read) return;
+        persisted = read.milestones;
+        milestones = copiedMilestones(read.milestones, newMilestoneID);
+        await readTypeFacts(read.milestones.map((milestone) => milestone.typeID));
+      })();
+    }
   });
+
+  /** A skill level, or a skill, dragged (skillPlanUtil: SkillLevelDragData, or a type's). */
+  function dragStart(event: DragEvent, typeID: number, level: number | null): void {
+    event.dataTransfer?.setData("application/x-evejs-skill-level", JSON.stringify({ typeID, level }));
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+  }
+
+  function dragOver(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes("application/x-evejs-skill-level")) event.preventDefault();
+  }
+
+  /** SkillPlanProgressIndicatorEditable._OnDataDropped and SkillPlanEditorOverview.OnMilestoneDataDropped. */
+  async function dropMilestone(event: DragEvent, onMilestoneID: string | null): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    const raw = event.dataTransfer?.getData("application/x-evejs-skill-level");
+    if (!raw || working) return;
+    let data: { typeID: number; level: number | null };
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    working = true;
+    note = "";
+    try {
+      if (!(await readTypeFacts([data.typeID]))) {
+        note = "The client's data for that could not be read.";
+        return;
+      }
+      const categoryID = typeFacts.categoryID.get(data.typeID) ?? null;
+      const what = dropped(data.typeID, data.level, categoryID);
+      if (!typeValidAsMilestone(categoryID, (typeFacts.required[data.typeID] ?? []).length > 0)) {
+        flow.sayCantAddAsMilestone();
+        return;
+      }
+      let current = milestones;
+      const old = onMilestoneID === null ? undefined : current.toAdd.find((each) => each.id === onMilestoneID);
+      if (old) {
+        // evetypes.GetName of each: the type, or the skill.
+        if (!(await flow.askReplaceMilestone(resolvedName($names.resolved, "type", old.typeID, ""), resolvedName($names.resolved, "type", what.typeID, "")))) return;
+        current = withMilestoneRemoved(current, old.id);
+      }
+      const added = withMilestoneAdded(current, requirements, what.typeID, what.level, typeFacts.required, newMilestoneID);
+      if (added === null) {
+        milestones = current;
+        return;
+      }
+      const facts = await flow.skillPlanValidationFor([...new Set(added.list.map(([skill]) => skill))]);
+      if (facts === null) {
+        note = "The client's skill data could not be read: the plan was not changed.";
+        return;
+      }
+      const list = added.list;
+      validateSkillPlan(list, facts);
+      requirements = list;
+      milestones = added.milestones;
+      await readRequiring();
+    } catch {
+      note = "That could not be made a milestone.";
+    } finally {
+      working = false;
+    }
+  }
 
   async function readRequiring(): Promise<void> {
     const skills = [...new Set(requirements.map(([skill]) => skill))];
@@ -150,6 +274,12 @@
         note = "The client's skill data could not be read: the plan was not changed.";
         return;
       }
+      // RemoveSkillRequirement: the level out, the milestones that then lack a skill out (_CheckRemoveMilestones), then
+      // the plan put right.
+      const without = requirements.filter(([skill, l]) => !(skill === typeID && l === level));
+      if (milestones.toAdd.length > 0 && (await readTypeFacts(milestones.toAdd.map((milestone) => milestone.typeID)))) {
+        milestones = withMilestonesCheckedAgainst(milestones, without, typeFacts.required);
+      }
       requirements = withLevelRemoved(requirements, typeID, level, facts);
     } catch {
       note = "That level could not be taken out.";
@@ -161,13 +291,15 @@
   /** SkillPlanEditorOverview.OnClearButton */
   function clear(): void {
     requirements = [];
+    milestones = milestones.toAdd.reduce((out, milestone) => withMilestoneRemoved(out, milestone.id), milestones);
     name = "";
     description = "";
   }
 
   /** SkillPlanEditorPanel.OnBack */
   async function back(): Promise<void> {
-    if (editedPlanDiffers(plan, edited) && !(await flow.askLeaveSkillPlanEditor())) return;
+    const changed = editedPlanDiffers(plan, edited) || milestonesChanged(milestones, plan ? persisted : null);
+    if (changed && !(await flow.askLeaveSkillPlanEditor())) return;
     onClose(false);
   }
 
@@ -176,7 +308,7 @@
     if (saving || !canSavePlan(edited)) return;
     saving = true;
     try {
-      if (await flow.saveSkillPlan(edited, plan, planCount)) onClose(true);
+      if (await flow.saveSkillPlan(edited, plan, planCount, { milestones, persisted })) onClose(true);
     } finally {
       saving = false;
     }
@@ -216,7 +348,7 @@
           {#each shownSkills as skill (skill.typeID)}
             {@const next = nextPlanLevel(requirements, skill.typeID)}
             {@const full = highestPlanLevel(requirements, skill.typeID) === 5}
-            <li>
+            <li draggable="true" ondragstart={(event) => dragStart(event, skill.typeID, null)}>
               <span>{skill.name}</span>
               <button type="button" class="plan-editor-add" disabled={full || working}
                 title={full ? word("UI/SkillPlan/AllLevelsInPlan") : word("UI/SkillPlan/AddSkillLevelToPlan", { skillLevel: next ?? 1 })}
@@ -240,7 +372,7 @@
         <ul class="plan-editor-rows">
           {#each shownRows as [skill, level], at (at)}
             {@const removable = canRemoveLevel(requirements, skill, level, skillsNeeding)}
-            <li>
+            <li draggable="true" ondragstart={(event) => dragStart(event, skill, level)}>
               <span>{word("UI/InfoWindow/RequiredSkillNameAndLevel", { skill, level: romanLevel(level), levelColor: "#ffffff" })}</span>
               <button type="button" class="plan-editor-remove" disabled={!removable || working}
                 title={word(removable ? "UI/SkillPlan/RemoveFromPlan" : "UI/SkillPlan/RemoveFromPlanLocked")}
@@ -252,6 +384,23 @@
       {/if}
     </section>
     <section class="plan-editor-overview">
+      <div class="plan-editor-milestones" role="list" aria-label={word("UI/SkillPlan/Milestones")} ondragover={dragOver} ondrop={(event) => void dropMilestone(event, null)}>
+        <div class="plan-editor-milestones-head">
+          <span title={word("UI/SkillPlan/SkillMilestonesDescText")}>{word("UI/SkillPlan/Milestones")}</span>
+          <span class="plan-editor-counter">{milestones.toAdd.length}/{MAX_NUM_MILESTONES}</span>
+        </div>
+        {#each milestones.toAdd as milestone (milestone.id)}
+          <div class="plan-editor-milestone" role="listitem" ondragover={dragOver} ondrop={(event) => void dropMilestone(event, milestone.id)}>
+            <span class="plan-editor-milestone-kind">{word(MILESTONE_KIND_LABELS[milestoneSubType(typeFacts.categoryID.get(milestone.typeID) ?? null)])}</span>
+            <span class="plan-editor-milestone-name">{milestoneName(milestone)}</span>
+            <button type="button" title={word("UI/SkillPlan/RemoveMilestone")} aria-label={word("UI/SkillPlan/RemoveMilestone")}
+              onclick={() => { milestones = withMilestoneRemoved(milestones, milestone.id); }}>✕</button>
+          </div>
+        {/each}
+        {#if milestones.toAdd.length < MAX_NUM_MILESTONES}
+          <div class="plan-editor-milestone-slot" role="listitem" title={word("UI/SkillPlan/AddingMilestones") + "\n" + word("UI/SkillPlan/MilestonesDragDropInformation")}>+</div>
+        {/if}
+      </div>
       <label for="plan-editor-name">{word("UI/Common/Name")}</label>
       <div class="plan-editor-name">
         <input id="plan-editor-name" type="text" maxlength={MAX_PLAN_NAME_LENGTH} placeholder={word("UI/SkillPlan/EnterPlanName")} bind:value={name} />
@@ -282,6 +431,13 @@
   .plan-editor-skills li, .plan-editor-rows li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.2rem 0.5rem; background: rgba(255, 255, 255, 0.04); }
   .plan-editor-hint { white-space: pre-line; }
   .plan-editor-overview { display: flex; flex-direction: column; gap: 0.35rem; }
+  .plan-editor-milestones { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem; margin-bottom: 0.75rem; border: 1px dashed var(--line, #555); }
+  .plan-editor-milestones-head { display: flex; justify-content: space-between; }
+  .plan-editor-milestone { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.4rem; background: rgba(255, 255, 255, 0.05); }
+  .plan-editor-milestone-kind { font-size: 0.75rem; text-transform: uppercase; opacity: 0.7; min-width: 3.5rem; }
+  .plan-editor-milestone-name { flex: 1; }
+  .plan-editor-milestone-slot { text-align: center; opacity: 0.5; padding: 0.3rem; border: 1px dotted var(--line, #555); }
+  .plan-editor-skills li[draggable="true"], .plan-editor-rows li[draggable="true"] { cursor: grab; }
   .plan-editor-name { display: flex; align-items: center; gap: 0.5rem; }
   .plan-editor-name input { flex: 1; }
   .plan-editor-counter { font-size: 0.8rem; opacity: 0.6; }

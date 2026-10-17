@@ -209,9 +209,17 @@ import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
 } from "../bridge/skillPlanMilestones.ts";
+import { adjustedMilestones, type EditorMilestones } from "../bridge/skillPlanEditorMilestones.ts";
+import type { Milestone } from "../bridge/skillPlanMilestones.ts";
+
+/** The editor's milestones at Save, and the plan's own as they were read (AdjustMilestonesToAddAndDeletedIDs). */
+export interface SavedMilestones {
+  readonly milestones: EditorMilestones;
+  readonly persisted: readonly Milestone[];
+}
 import type { CatalogueSkill } from "./api.ts";
 import {
-  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
   untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
@@ -2486,7 +2494,17 @@ export interface AppFlow {
    * (CheckNumPersonalSkillPlans: MaxPersonalPlansReached at ten); an edited one sent what differs from the saved one
    * (_GetCallsToUpdate). A refusal said as the client says it (_RaiseErrorMessageOnSave). True where it was saved.
    */
-  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number): Promise<boolean>;
+  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones): Promise<boolean>;
+  /**
+   * What the editor's milestones read of types (skillPlanUtil.IsTypeValidMilestone, AddAllSkillsRequiredFor): each
+   * one's category and its needs in the client's table's order (and every skill they lead to). Null without the
+   * client's data.
+   */
+  skillPlanTypeFacts(typeIDs: readonly number[]): Promise<{ readonly required: RequiredSkills; readonly categoryID: ReadonlyMap<number, number | null> } | null>;
+  /** A type dropped that is no milestone (SkillPlanProgressIndicatorEditable._OnDataDropped): CantAddAsMilestone. */
+  sayCantAddAsMilestone(): void;
+  /** A milestone dropped on one (OnMilestoneDataDropped): ReplaceMilestoneWithNewMilestone; true on Yes. */
+  askReplaceMilestone(oldName: string, newName: string): Promise<boolean>;
   /** The editor's Back where the plan was changed (ShouldContinueAfterAskingAboutLeavingEditor): AskCloseSkillPlanEditor; true on Yes. */
   askLeaveSkillPlanEditor(): Promise<boolean>;
   /**
@@ -7788,15 +7806,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return out;
   }
 
-  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number): Promise<boolean> {
+  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number, milestones?: SavedMilestones): Promise<boolean> {
     const requirements = edited.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level }));
+    // OnSaveButton: AdjustMilestonesToAddAndDeletedIDs first.
+    const adjusted = milestones ? adjustedMilestones(milestones.milestones, milestones.persisted) : { toAdd: [], toDelete: [] };
     try {
       if (saved === null) {
         if (planCount >= MAX_PERSONAL_PLANS) {
           sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
           return false;
         }
-        await gatewayAsk("eve_public.character.skill.plan.CreateRequest", { skill_plan: { name: edited.name, description: edited.description, skill_requirements: requirements } }, true);
+        const created = await gatewayAsk("eve_public.character.skill.plan.CreateRequest", { skill_plan: { name: edited.name, description: edited.description, skill_requirements: requirements } }, true);
+        // _CreateAndCachePersonalController: SetMilestonesToAdd, SaveMilestones.
+        const planID = uuidFromBytes(String(((created as { skill_plan?: { uuid?: string } } | null)?.skill_plan?.uuid) ?? ""));
+        if (planID !== null) await saveMilestones(planID, adjusted);
         return true;
       }
       const uuid = bytesFromUuid(saved.id);
@@ -7806,6 +7829,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           : what === "description"
             ? gatewayAsk("eve_public.character.skill.plan.SetDescriptionRequest", { skill_plan: { uuid }, description: edited.description }, true)
             : setPlanSkillRequirements(saved.id, edited.requirements)));
+      // _SaveExistingPersonalSkillPlan: skillPlan.SaveMilestones().
+      await saveMilestones(saved.id, adjusted);
       return true;
     } catch (error) {
       // requestsMessenger.send_request makes every failure a UserError; 412 is SkillPlansErrorInvalidData.
@@ -7875,6 +7900,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         trainingTicks: training === null ? null : trainingTimeLeft(milestone.typeID, needs.order, mine, lapsed, training),
       })),
     };
+  }
+
+  /**
+   * EditableSkillPlanController.SaveMilestones: the ids to delete deleted, then those to add created, each set at once
+   * (uthread.parallel), each one's failure only logged (_Delete, _Create).
+   */
+  async function saveMilestones(planID: string, milestones: EditorMilestones): Promise<void> {
+    await Promise.all(milestones.toDelete.map((id) =>
+      gatewayAsk("eve_public.character.skill.plan.milestone.DeleteRequest", { milestone: { uuid: bytesFromUuid(id) } }, true).catch(() => null)));
+    const skill_plan = { uuid: bytesFromUuid(planID) };
+    await Promise.all(milestones.toAdd.map((milestone) =>
+      gatewayAsk("eve_public.character.skill.plan.milestone.CreateRequest", {
+        milestone: milestone.kind === "type"
+          ? { skill_plan, train_to_type: { sequential: String(milestone.typeID) } }
+          : { skill_plan, skill: { skill_type: { sequential: String(milestone.typeID) }, level: milestone.level } },
+      }, true).catch(() => null)));
+  }
+
+  async function skillPlanTypeFacts(typeIDs: readonly number[]): ReturnType<AppFlow["skillPlanTypeFacts"]> {
+    const required: Record<number, readonly (readonly [number, number])[]> = {};
+    for (let at = 0; at < typeIDs.length; at += 50) {
+      const read = await api.getRequiredSkills(typeIDs.slice(at, at + 50), callOptions);
+      if (!read.available) return null;
+      Object.assign(required, read.order);
+    }
+    const meta = await api.getTypeMeta(typeIDs, callOptions);
+    if (!meta.available) return null;
+    return { required, categoryID: new Map(typeIDs.map((typeID) => [typeID, meta.types.get(typeID)?.categoryID ?? null])) };
+  }
+
+  function sayCantAddAsMilestone(): void {
+    sayDialog("CantAddAsMilestone", null, "That can not be a milestone.");
+  }
+
+  function askReplaceMilestone(oldName: string, newName: string): Promise<boolean> {
+    return askDialog("ReplaceMilestoneWithNewMilestone", { type: "dict", entries: [["milestoneNameOld", oldName], ["milestoneNameNew", newName]] }, `Put ${newName} in the place of ${oldName}?`);
   }
 
   function askLeaveSkillPlanEditor(): Promise<boolean> {
@@ -22445,6 +22506,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     saveSkillPlan,
     askLeaveSkillPlanEditor,
     skillPlanMilestones,
+    skillPlanTypeFacts,
+    sayCantAddAsMilestone,
+    askReplaceMilestone,
     setTrackedSkillPlan,
     comparisonTypes,
     cfgAveragePrices,

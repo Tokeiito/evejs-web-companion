@@ -13444,6 +13444,7 @@ const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.SetNameRequest",
   "eve_public.character.skill.plan.SetDescriptionRequest",
   "eve_public.character.skill.plan.milestone.DeleteRequest",
+  "eve_public.character.skill.plan.milestone.CreateRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {
