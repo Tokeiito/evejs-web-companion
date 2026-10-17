@@ -52,6 +52,7 @@
   import { portal } from "./portal.ts";
   import SkillRowMenu from "./SkillRowMenu.svelte";
   import SkillRowTip from "./SkillRowTip.svelte";
+  import { endSkillDrag, startSkillDrag } from "./skillDrag.ts";
   import { skillGroupIcon } from "./skillGroupIcons.ts";
   import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
   import type { SkillRowInfo } from "../bridge/skillPlans.ts";
@@ -281,6 +282,7 @@
   function dragEnd(): void {
     dragging = null;
     dropLine = null;
+    endSkillDrag();
   }
 
   /** The validation facts of the plan's skills and those given, or null where the client's data could not be read. */
@@ -509,6 +511,8 @@
     event.dataTransfer?.setData("application/x-evejs-skill-level", JSON.stringify({ typeID, level }));
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
     dragging = { typeID, level };
+    // A TypeDragData (a SkillLevelDragData is one too), for a drop onto the skill queue.
+    startSkillDrag({ kind: "type", typeID });
     dragFacts = null;
     void factsWith([typeID]).then((facts) => {
       if (dragging !== null && dragging.typeID === typeID && dragging.level === level) dragFacts = facts;

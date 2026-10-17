@@ -26,6 +26,10 @@
   import TypeIcon from "./TypeIcon.svelte";
   // The client's Personal Plans, read on the public gateway.
   import PersonalSkillPlans from "./PersonalSkillPlans.svelte";
+  import { showMarketDetails } from "./marketDetails.ts";
+  import { endSkillDrag, skillDragged, startSkillDrag } from "./skillDrag.ts";
+  import { formatTemplate } from "../bridge/clientWords.ts";
+  import { resolvedName } from "../store/names.ts";
   import {
     formatDuration,
     formatSkillPoints,
@@ -50,6 +54,8 @@
   const skills = store.skills;
   // svelte-ignore state_referenced_locally
   const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
   // A queued level a skill accelerator runs as it begins is marked (skillQueueSkillEntry.UpdateAcceleratedMarker): the
   // booster picture, its hint the install's words.
   const ACCELERATED_LABEL = "UI/SkillQueue/Skills/AcceleratedTraining";
@@ -214,6 +220,140 @@
     );
   }
 
+  // ---- Drops onto the queue (skillQueuePanelNew.DoDropData; SkillQueueSkillEntry OnDropData, OnDragEnter) --------
+  //
+  // A skill dragged here from a plan's contents (a SkillEntry), from the plan editor (a type's drag) or from the queue
+  // itself (an entry: moved, or with Shift its next level added) is put in where it is dropped: above the entry it is
+  // dropped on, or at the end (flow.skillQueueDrop, the client's AddSkillToQueue and MoveSkillToPosition). As it is
+  // dragged over, the line where it would land (ShowPosIndicator, IsMoveAllowed): white where it may go there, red
+  // where a skill may not, none for a type's drag. A skill not had opens the purchase overlay (SkillPurchaseOverlay).
+
+  /** The flow's judge of the drag under way, read as it enters the queue. */
+  let dropFacts = $state<Awaited<ReturnType<AppFlow["skillQueueDropFacts"]>>>(null);
+  let dropFactsFor: string | null = null;
+  /** The line: above an entry (its place) or at the end, its colour. */
+  let dropLine = $state<{ readonly at: number | "end"; readonly color: "allowed" | "refused" } | null>(null);
+
+  function readDropFacts(): void {
+    const drop = skillDragged();
+    if (drop === null) return;
+    const key = `${drop.kind}:${drop.typeID}`;
+    if (dropFactsFor === key) return;
+    dropFactsFor = key;
+    dropFacts = null;
+    void flow.skillQueueDropFacts([drop.typeID]).then((facts) => {
+      if (dropFactsFor === key) dropFacts = facts;
+    });
+  }
+
+  function lineFor(at: number | "end"): void {
+    const drop = skillDragged();
+    if (drop === null || dropFacts === null) {
+      dropLine = null;
+      return;
+    }
+    if (dropFacts.allowed(drop, at === "end" ? null : at)) dropLine = { at, color: "allowed" };
+    // COLOR_TRAININGNOTALLOWED for a skill entry (IsSkillEntry); a type's drag shows none.
+    else dropLine = drop.kind === "type" ? null : { at, color: "refused" };
+  }
+
+  function rowDragOver(event: DragEvent, index: number): void {
+    if (skillDragged() === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    readDropFacts();
+    lineFor(index);
+  }
+
+  function queueDragOver(event: DragEvent): void {
+    if (skillDragged() === null) return;
+    event.preventDefault();
+    readDropFacts();
+    lineFor("end");
+  }
+
+  function queueDragLeave(event: DragEvent): void {
+    if (event.currentTarget instanceof Element && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    dropLine = null;
+  }
+
+  /** DoDropData at the entry's place (an entry's OnDropData), or at the end. */
+  async function queueDrop(event: DragEvent, place: number | null): Promise<void> {
+    const drop = skillDragged();
+    if (drop === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const shift = event.shiftKey;
+    dropLine = null;
+    dropFactsFor = null;
+    endSkillDrag();
+    try {
+      const outcome = await flow.skillQueueDrop(drop, place, shift);
+      if (outcome.missing !== null) void openPurchase(outcome.missing.typeID, outcome.missing.position);
+    } catch (cause) {
+      if (isSessionLost(cause)) throw cause;
+    }
+  }
+
+  /** A queue entry's drag (SkillQueueSkillEntry.GetDragData): its skill and level. */
+  function queueEntryDrag(event: DragEvent, typeID: number, level: number): void {
+    event.dataTransfer?.setData("application/x-evejs-queue-entry", JSON.stringify({ typeID, level }));
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    startSkillDrag({ kind: "queueEntry", typeID, level });
+  }
+
+  // The purchase overlay (SkillPurchaseOverlay, show_skill_purchase_overlay): over the queue, its message (the price
+  // where the book is sold directly, else that it is rare), Cancel, and Buy and train (its needs trained: bought, then
+  // level I put in where it was dropped) or Buy Skill, or for a rare book View Market Details. Closed by any of them,
+  // and by a change of the queue (OnSkillQueueChanged).
+  let purchase = $state<{ readonly typeID: number; readonly position: number; readonly offer: { readonly sold: boolean; readonly price: number | null; readonly requirementsTrained: boolean } } | null>(null);
+  let purchaseQueue: string | null = null;
+  async function openPurchase(typeID: number, position: number): Promise<void> {
+    if (purchase !== null) return;
+    const offer = await flow.skillPurchaseOffer(typeID);
+    if (offer === null) return;
+    flow.requestWords(Object.keys(PURCHASE_WORDS));
+    flow.requestNames([{ kind: "type", id: typeID }]);
+    purchaseQueue = queueSignatureNow();
+    purchase = { typeID, position, offer };
+  }
+  const PURCHASE_WORDS: Readonly<Record<string, string>> = {
+    "UI/SkillQueue/ConfirmSkillPurchase": "{[item]skill.name} is not yours to train yet. Buy it for {[numeric]price, useGrouping, decimalPlaces=0} ISK?",
+    "UI/SkillQueue/ErrorSkillIsRare": "{[item]skill.name} is not yours to train yet, and its book is not sold directly: look on the market.",
+    "UI/Common/Cancel": "Cancel",
+    "UI/Skills/BuyAndTrain": "Buy and train",
+    "UI/Skills/BuySkill": "Buy",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Market details",
+  };
+  function purchaseWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" ? template : PURCHASE_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => resolvedName($names.resolved, kind, id, ""),
+    }));
+  }
+  function queueSignatureNow(): string {
+    return (queue?.entries ?? []).map((entry) => `${entry.typeID}:${entry.toLevel}`).join(",");
+  }
+  // OnSkillQueueChanged: the overlay closed.
+  $effect(() => {
+    const signature = (queue?.entries ?? []).map((entry) => `${entry.typeID}:${entry.toLevel}`).join(",");
+    if (purchaseQueue !== null && signature !== purchaseQueue) {
+      purchase = null;
+      purchaseQueue = null;
+    }
+  });
+  async function purchaseAnswer(answer: "cancel" | "buy" | "market"): Promise<void> {
+    const open = purchase;
+    purchase = null;
+    purchaseQueue = null;
+    if (open === null || answer === "cancel") return;
+    if (answer === "market") {
+      showMarketDetails(open.typeID);
+      return;
+    }
+    await run(() => flow.buySkillFromOverlay(open.typeID, open.offer.requirementsTrained ? open.position : null));
+  }
+
   /** A queue with skills on it and none of them training: paused, as the retail client's queue can be. */
   const paused = $derived(queue !== null && !queue.active && queue.entries.length > 0);
 
@@ -365,10 +505,30 @@
       {/if}
     </span>
   </header>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="queue-drop" ondragover={queueDragOver} ondragleave={queueDragLeave} ondrop={(event) => void queueDrop(event, null)}>
+  {#if purchase !== null}
+    {@const open = purchase}
+    <div class="queue-purchase" role="dialog" aria-label={resolvedName($names.resolved, "type", open.typeID, "")}>
+      <div class="queue-purchase-box">
+      <p>{open.offer.sold
+        ? purchaseWord("UI/SkillQueue/ConfirmSkillPurchase", { skill: open.typeID, price: open.offer.price ?? 0 })
+        : purchaseWord("UI/SkillQueue/ErrorSkillIsRare", { skill: open.typeID })}</p>
+      <span class="queue-purchase-buttons">
+        <button type="button" onclick={() => void purchaseAnswer("cancel")}>{purchaseWord("UI/Common/Cancel")}</button>
+        {#if open.offer.sold}
+          <button type="button" class="primary" disabled={busy} onclick={() => void purchaseAnswer("buy")}>{purchaseWord(open.offer.requirementsTrained ? "UI/Skills/BuyAndTrain" : "UI/Skills/BuySkill")}</button>
+        {:else}
+          <button type="button" onclick={() => void purchaseAnswer("market")}>{purchaseWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+        {/if}
+      </span>
+      </div>
+    </div>
+  {/if}
   {#if queue === null}
     <p class="error">The queue could not be read.</p>
   {:else if queue.entries.length === 0}
-    <p class="empty">The queue is empty.</p>
+    <p class="empty" class:drop-end={dropLine !== null && dropLine.at === "end"} class:drop-refused={dropLine?.color === "refused"}>The queue is empty.</p>
   {:else}
     <p class="note">
       {queue.entries.length} of {queue.maxEntries} places used.
@@ -390,7 +550,11 @@
         </thead>
         <tbody>
           {#each queue.entries as entry, index (`${entry.typeID}-${entry.toLevel}-${index}`)}
-            <tr>
+            {@const lineHere = dropLine !== null && (dropLine.at === index || (dropLine.at === "end" && index === queue.entries.length - 1))}
+            <tr draggable="true" ondragstart={(event) => queueEntryDrag(event, entry.typeID, entry.toLevel)} ondragend={endSkillDrag}
+              ondragover={(event) => rowDragOver(event, index)} ondrop={(event) => void queueDrop(event, index)}
+              class:drop-above={lineHere && dropLine?.at !== "end"} class:drop-below={lineHere && dropLine?.at === "end"}
+              class:drop-refused={lineHere && dropLine?.color === "refused"}>
               <td data-label="Skill">
                 <span class="cell-item">
                   <TypeIcon typeID={entry.typeID} name={skillName(entry.typeID)} />
@@ -442,6 +606,7 @@
       </table>
     </div>
   {/if}
+  </div>
 </section>
 
 <PersonalSkillPlans {store} {flow} />

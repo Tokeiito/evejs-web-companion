@@ -138,3 +138,61 @@ export function levelsForSkillAndRequirements(
   }
   return { levels: added, stopped: false };
 }
+
+/**
+ * skillQueueSvc.CheckCanInsertSkillAtPosition(skill, level, position) with its length test left out (the server makes
+ * that one when the queue is saved): the refusal's dialog, or null where the level may go in at that place of the queue
+ * as it stands.
+ *   QueueInvalidPosition                      a place outside the queue
+ *   QueueSkillNotUploaded                     a skill not had (lapsed counted)
+ *   QueueCannotTrainPreviouslyTrainedSkills   a level already trained
+ *   QueueCannotTrainPastMaximumLevel          a skill at V
+ *   QueueCannotPlaceSkillLevelsOutOfOrder     a lower level of it at or after the place, or a higher one before it
+ *   QueueCannotPlaceSkillBeforeRequirements   for a skill with no points: a need of it queued after the place, or a
+ *                                             need neither had (not lapsed) and trained nor queued before it
+ *   QueueCannotPlaceSkillAfterDependentSkills a queued skill that needs it at this very level, before the place
+ *                                             (GetDependentSkills)
+ *   QueueCannotTrainOmegaRestrictedSkill      a level above the clone's ceiling (is_skill_level_restricted)
+ */
+export function queueInsertionRefusal(
+  skill: number,
+  level: number,
+  position: number,
+  queue: readonly QueuedLevel[],
+  includingLapsed: PilotSkills,
+  mine: PilotSkills,
+  required: RequiredSkills,
+  ceiling: (typeID: number) => number,
+): string | null {
+  if (position < 0 || position > queue.length) return "QueueInvalidPosition";
+  const had = includingLapsed.get(skill);
+  if (had === undefined) return "QueueSkillNotUploaded";
+  if (had.trainedSkillLevel >= level) return "QueueCannotTrainPreviouslyTrainedSkills";
+  if (had.trainedSkillLevel >= 5) return "QueueCannotTrainPastMaximumLevel";
+  // skillQueueCache: each skill's levels queued and their places.
+  const placesOf = (typeID: number): (readonly [number, number])[] =>
+    queue.flatMap((entry, at) => (entry.typeID === typeID ? [[entry.toLevel, at] as const] : []));
+  for (const [queuedLevel, at] of placesOf(skill)) {
+    if (queuedLevel < level && at >= position) return "QueueCannotPlaceSkillLevelsOutOfOrder";
+    if (queuedLevel > level && at < position) return "QueueCannotPlaceSkillLevelsOutOfOrder";
+  }
+  if (had.trainedSkillPoints === 0) {
+    for (const [need, needLevel] of required[skill] ?? []) {
+      let queuedBefore = false;
+      for (const [queuedLevel, at] of placesOf(need)) {
+        if (queuedLevel <= needLevel && at > position) return "QueueCannotPlaceSkillBeforeRequirements";
+        if (queuedLevel >= needLevel && at < position) queuedBefore = true;
+      }
+      const needHad = mine.get(need);
+      if (needHad === undefined) return "QueueCannotPlaceSkillBeforeRequirements";
+      if (needHad.trainedSkillLevel < needLevel && !queuedBefore) return "QueueCannotPlaceSkillBeforeRequirements";
+    }
+  }
+  for (const entry of queue) {
+    const needLevel = (required[entry.typeID] ?? []).find(([need]) => need === skill)?.[1];
+    if (needLevel === undefined || needLevel !== level) continue;
+    if (placesOf(entry.typeID).some(([, at]) => at < position)) return "QueueCannotPlaceSkillAfterDependentSkills";
+  }
+  if (level > ceiling(skill)) return "QueueCannotTrainOmegaRestrictedSkill";
+  return null;
+}

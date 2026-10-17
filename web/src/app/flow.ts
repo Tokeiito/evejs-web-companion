@@ -214,12 +214,22 @@ import {
   PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
 } from "../bridge/certifiedSkillPlans.ts";
 
-import { levelButtonState, levelsForSkillAndRequirements, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
+import { levelButtonState, levelsForSkillAndRequirements, nextLevelToQueue, queueInsertionRefusal, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
 import { highestQueuedLevel, queueAfter, type SkillMenuEntry } from "../bridge/skillMenu.ts";
 import type { SkillRowInfo } from "../bridge/skillPlans.ts";
 import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 
 /** A skill plan link followed: its plan's id (a certified plan's a whole number, the others' a uuid) and owner. */
+/**
+ * What was dropped onto the skill queue (skillQueuePanelNew.DoDropData's kinds): a type's drag (TypeDragData: the plan
+ * editor's catalogue and levels), a skill entry (listentry.SkillEntry: a plan's contents row; trained where the pilot
+ * has it), or one of the queue's own entries (SkillQueueSkillEntry, its level).
+ */
+export type SkillQueueDrop =
+  | { readonly kind: "type"; readonly typeID: number }
+  | { readonly kind: "skillEntry"; readonly typeID: number; readonly trained: boolean }
+  | { readonly kind: "queueEntry"; readonly typeID: number; readonly level: number };
+
 export interface SkillPlanLinkFollowed {
   readonly n: number;
   readonly skillPlanID: number | string;
@@ -2468,6 +2478,22 @@ export interface AppFlow {
   allianceShowInfo(allianceID: number): Promise<AllianceInfoExtra | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
   answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
+  /**
+   * What a drop onto the skill queue is judged by while it is dragged (IsMoveAllowed): whether the drop would put its
+   * level in at a place (the end where null). False for a type's drag, which shows no line. Null where unread.
+   */
+  skillQueueDropFacts(typeIDs: readonly number[]): Promise<{ readonly queueLength: number; readonly allowed: (drop: SkillQueueDrop, place: number | null) => boolean } | null>;
+  /**
+   * A drop onto the skill queue (skillQueuePanelNew.DoDropData) at a place (the end where null): a queue entry moved
+   * (MoveSkillToPosition; with Shift, its next level added); a skill entry's next level added
+   * (AddSkillThroughSkillEntry); a type's next level added (AddSkillsThroughOtherEntry); a refusal said as the client
+   * says it. A skill not had answers it as missing, for the purchase overlay.
+   */
+  skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): Promise<{ readonly missing: { readonly typeID: number; readonly position: number } | null }>;
+  /** The purchase overlay's facts (SkillPurchaseOverlayController): sold directly, its price, its needs trained. */
+  skillPurchaseOffer(typeID: number): Promise<{ readonly sold: boolean; readonly price: number | null; readonly requirementsTrained: boolean } | null>;
+  /** buy_skill (trainAt null) and buy_and_train_skill (level I put in at that place once bought). */
+  buySkillFromOverlay(typeID: number, trainAt: number | null): Promise<void>;
   /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
   readonly multiBuyAsked: ReadableSignal<MultiBuyAsk | null>;
   /** Types and how many of each put into the multibuy window (shipfitting/multiBuyUtil.BuyMultipleTypesWithQty). */
@@ -9914,6 +9940,188 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * GetSkillHandler().PurchaseSkills(those books). Bought, and none left that is not sold: the window put away;
    * otherwise kept, without the books bought.
    */
+  /**
+   * Books bought as the client's purchase validates them (characterskills purchase: SkillPurchaseValidator, each a skill
+   * not had and the cost within the wallet; handle_skill_purchase_error saying a refusal): the skills bought, or null
+   * where it was refused (said).
+   */
+  async function purchaseBooksValidated(books: readonly number[], cost: number | null): Promise<readonly number[] | null> {
+    const lapsed = await skillsIncludingLapsedNow().catch(() => null);
+    const injected = lapsed === null ? undefined : books.find((skill) => lapsed.has(skill));
+    if (injected !== undefined) {
+      sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
+      return null;
+    }
+    const wealth = await walletReads.wealth().catch(() => null);
+    const balance = wealth === null ? null : Number(toAmountString(wealth));
+    if (cost !== null && balance !== null && Number.isFinite(balance) && cost > balance) {
+      sayDialog("NotEnoughMoney", { type: "dict", entries: [["balance", balance], ["amount", cost]] }, "There is not enough ISK in the wallet for those books.");
+      return null;
+    }
+    try {
+      return await purchaseSkills(bridgeDo, books);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      if (!sayRefusalDialog(error, `Those books could not be bought: ${errorWords(error)}`)) {
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", `Those books could not be bought: ${errorWords(error)}`]] }, "Those books could not be bought.");
+      }
+      return null;
+    }
+  }
+
+  // ---- Drops onto the skill queue (skillQueuePanelNew.DoDropData) ------------------------------------------------------
+
+  /** What a drop onto the queue is judged by: the queue now, the pilot's skills, the needs, the clone's ceilings. */
+  async function queueDropRead(typeIDs: readonly number[]) {
+    const [skillsAnswer, allSkillsAnswer, queueAnswer] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkills", []),
+      bridgeAsk("skillHandler", "GetAllSkills", []),
+      bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+    ]);
+    const queue = queuedLevels(Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null);
+    const required = (await requiredSkillsFor([...new Set([...typeIDs, ...queue.map((entry) => entry.typeID)])])) ?? {};
+    const omega = store.station.get().cloneGrade !== CLONE_GRADE_ALPHA;
+    const raceID = store.station.get().online?.raceID ?? null;
+    const ceilings = omega || raceID === null
+      ? null
+      : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
+    return {
+      queue,
+      mine: skillLevelsOf(skillsAnswer),
+      includingLapsed: skillLevelsOf(allSkillsAnswer),
+      required,
+      ceiling: (typeID: number): number => (ceilings === null ? 5 : ceilings.get(typeID) ?? 0),
+    };
+  }
+
+  async function skillQueueDropFacts(typeIDs: readonly number[]): ReturnType<AppFlow["skillQueueDropFacts"]> {
+    try {
+      const read = await queueDropRead(typeIDs);
+      // IsMoveAllowed(node, place): the level the drop would add (FindNextLevel for a skill entry, the entry's own level
+      // for a queue entry) inserted there, the length test left out (CheckCanInsertSkillAtPosition, check=1).
+      return {
+        queueLength: read.queue.length,
+        allowed: (drop: SkillQueueDrop, place: number | null): boolean => {
+          if (drop.kind === "type") return false;
+          const level = drop.kind === "queueEntry" ? drop.level : nextLevelToQueue(drop.typeID, read.includingLapsed, read.queue);
+          return queueInsertionRefusal(drop.typeID, level, place ?? read.queue.length, read.queue, read.includingLapsed, read.mine, read.required, read.ceiling) === null;
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): ReturnType<AppFlow["skillQueueDrop"]> {
+    const read = await queueDropRead([drop.typeID]);
+    const queue = read.queue;
+    const position = place === null || place < 0 ? queue.length : place;
+    // AddSkillToQueue(typeID, level, position): refused as the client refuses it, else the queue saved with the level in.
+    const addToQueue = async (typeID: number, level: number, at: number, from = queue): Promise<void> => {
+      if (level > 5) return;
+      if (from.some((entry) => entry.typeID === typeID && entry.toLevel === level)) {
+        sayDialog("QueueSkillAlreadyPresent", null, "That level is in the queue already.");
+        return;
+      }
+      if (from.length >= 150) {
+        sayDialog("QueueTooManySkills", { type: "dict", entries: [["num", 150]] }, "The queue holds 150 skills at most.");
+        return;
+      }
+      const refusal = queueInsertionRefusal(typeID, level, at, from, read.includingLapsed, read.mine, read.required, read.ceiling);
+      if (refusal !== null) {
+        sayDialog(refusal, refusal === "QueueCannotTrainOmegaRestrictedSkill" ? { type: "dict", entries: [["skillID", typeID]] } : null, "That level cannot go there in the queue.");
+        return;
+      }
+      const next = [...from];
+      next.splice(Math.min(at, next.length), 0, { typeID, toLevel: level });
+      await saveSkillQueueSaved(next, "Added to your skill queue", "that skill");
+    };
+    if (drop.kind === "queueEntry" && !shift) {
+      // DoMove: MoveSkillToPosition(skill, level, place; the last place for the end): checked where it would land, then
+      // taken out and put in there (a place below where it was one less once it is out).
+      const target = place === null || place < 0 ? queue.length - 1 : Math.max(0, place);
+      const refusal = queueInsertionRefusal(drop.typeID, drop.level, target, queue, read.includingLapsed, read.mine, read.required, read.ceiling);
+      if (refusal !== null) {
+        sayDialog(refusal, null, "That level cannot go there in the queue.");
+        return { missing: null };
+      }
+      const current = queue.findIndex((entry) => entry.typeID === drop.typeID && entry.toLevel === drop.level);
+      if (current < 0) return { missing: null };
+      const without = queue.filter((_, at) => at !== current);
+      await addToQueue(drop.typeID, drop.level, current < target ? target - 1 : target, without);
+      return { missing: null };
+    }
+    if (drop.kind === "skillEntry" || drop.kind === "queueEntry") {
+      // AddSkillThroughSkillEntry: a skill not had opens the purchase overlay; past V, SkillFullyPlanned; a level the
+      // clone may not train, SkillRequiresCloneStateUpgrade; else its next level put in.
+      if (drop.kind === "skillEntry" && !drop.trained) return { missing: { typeID: drop.typeID, position } };
+      const nextLevel = nextLevelToQueue(drop.typeID, read.includingLapsed, queue);
+      // (CustomNotify with the label's words: GetByLabel.)
+      const notify = async (label: string, own: string): Promise<void> => {
+        await wordsNow([label]).catch(() => {});
+        const template = store.words.get().templates[label];
+        const text = typeof template === "string" && template !== "" ? plainText(template) : own;
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", text]] }, text);
+      };
+      if (nextLevel > 5) {
+        await notify("UI/SkillQueue/SkillFullyPlanned", "Every level of that skill is trained or queued.");
+        return { missing: null };
+      }
+      if (nextLevel > read.ceiling(drop.typeID)) {
+        await notify("UI/SkillQueue/SkillRequiresCloneStateUpgrade", "That level needs an omega clone.");
+        return { missing: null };
+      }
+      await addToQueue(drop.typeID, nextLevel, position);
+      return { missing: null };
+    }
+    // AddSkillsThroughOtherEntry: a type's drag (a catalogue skill, a plan's level): not had, the purchase overlay; else
+    // its next level put in, nothing past V.
+    if (!read.includingLapsed.has(drop.typeID)) return { missing: { typeID: drop.typeID, position } };
+    await addToQueue(drop.typeID, nextLevelToQueue(drop.typeID, read.includingLapsed, queue), position);
+    return { missing: null };
+  }
+
+  async function skillPurchaseOffer(typeID: number): ReturnType<AppFlow["skillPurchaseOffer"]> {
+    try {
+      const [books, skillsAnswer, allSkillsAnswer, required] = await Promise.all([
+        skillBookFacts([typeID]),
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+        requiredSkillsFor([typeID]),
+      ]);
+      const book = books[typeID];
+      const base = book?.basePrice ?? null;
+      return {
+        sold: book?.sold === true,
+        // get_direct_purchase_price: the base price and the direct purchase tax.
+        price: book?.sold === true && base !== null ? directPurchasePrice(base) : null,
+        // are_requirements_trained: GetSkillsMissingToUseItemRecursive empty.
+        requirementsTrained: required !== null && missingSkillsRecursive(typeID, required, skillLevelsOf(skillsAnswer), skillLevelsOf(allSkillsAnswer)).length === 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function buySkillFromOverlay(typeID: number, trainAt: number | null): Promise<void> {
+    const price = await skillPurchaseOffer(typeID).then((offer) => offer?.price ?? null);
+    const bought = await purchaseBooksValidated([typeID], price);
+    if (bought === null || bought.length === 0) return;
+    await waitUntilSkillsAvailable(bought);
+    if (trainAt === null) return;
+    // buy_and_train_skill: AddSkillToQueue(type, 1, position).
+    const read = await queueDropRead([typeID]);
+    const at = Math.min(trainAt, read.queue.length);
+    const refusal = queueInsertionRefusal(typeID, 1, at, read.queue, read.includingLapsed, read.mine, read.required, read.ceiling);
+    if (refusal !== null) {
+      sayDialog(refusal, null, "That level cannot go there in the queue.");
+      return;
+    }
+    const next = [...read.queue];
+    next.splice(at, 0, { typeID, toLevel: 1 });
+    await saveSkillQueueSaved(next, "Added to your skill queue", "that skill");
+  }
+
   async function answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void> {
     const asked = skillBooksAskedSignal.get();
     if (asked === null || asked.n !== n || skillBooksEnd === null) return;
@@ -9931,28 +10139,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (asked.available.length === 0) return;
-    const lapsed = await skillsIncludingLapsedNow().catch(() => null);
-    const injected = lapsed === null ? undefined : asked.available.find((skill) => lapsed.has(skill));
-    if (injected !== undefined) {
-      sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
-      return;
-    }
-    const wealth = await walletReads.wealth().catch(() => null);
-    const balance = wealth === null ? null : Number(toAmountString(wealth));
-    if (asked.cost !== null && balance !== null && Number.isFinite(balance) && asked.cost > balance) {
-      sayDialog("NotEnoughMoney", { type: "dict", entries: [["balance", balance], ["amount", asked.cost]] }, "There is not enough ISK in the wallet for those books.");
-      return;
-    }
-    let bought: readonly number[];
-    try {
-      bought = await purchaseSkills(bridgeDo, asked.available);
-    } catch (error) {
-      if (isSessionLost(error)) throw error;
-      if (!sayRefusalDialog(error, `Those books could not be bought: ${errorWords(error)}`)) {
-        sayDialog("CustomNotify", { type: "dict", entries: [["notify", `Those books could not be bought: ${errorWords(error)}`]] }, "Those books could not be bought.");
-      }
-      return;
-    }
+    const bought = await purchaseBooksValidated(asked.available, asked.cost);
+    if (bought === null) return;
     skillBooksPurchased = [...skillBooksPurchased, ...bought];
     if (asked.unavailable.length === 0) {
       skillBooksEnd(skillBooksPurchased);
@@ -23224,6 +23412,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationShowInfo,
     allianceShowInfo,
     answerSkillBooks,
+    skillQueueDropFacts,
+    skillQueueDrop,
+    skillPurchaseOffer,
+    buySkillFromOverlay,
     applySkillPointsRequired,
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),
     answerApplyPoints,

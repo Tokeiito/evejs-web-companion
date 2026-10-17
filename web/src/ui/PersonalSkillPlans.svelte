@@ -99,6 +99,7 @@
   import { showInfo } from "./showInfo.ts";
   import SkillRowMenu from "./SkillRowMenu.svelte";
   import SkillRowTip from "./SkillRowTip.svelte";
+  import { endSkillDrag, startSkillDrag } from "./skillDrag.ts";
   import {
     planProgressAt, planRowRequirement, requirementsClipboardText, skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow, type SkillPlanDetail,
@@ -551,6 +552,9 @@
     event.dataTransfer?.setData(LINK_DRAG_TYPE, JSON.stringify({ url: `showinfo:${skill}`, text: name }));
     event.dataTransfer?.setData("text/plain", `<a href="showinfo:${skill}">${name}</a>`);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+    // A listentry.SkillEntry, its trained the skill had (lapsed counted); had where its row was not read.
+    const info = rowInfo(skill);
+    startSkillDrag({ kind: "skillEntry", typeID: skill, trained: info === null ? true : info.menu.trainedLevel !== null });
   }
 
   let tip = $state<{ readonly planID: string; readonly top: number; readonly left: number | null; readonly right: number | null } | null>(null);
@@ -1234,7 +1238,7 @@
                 {@const mark = rowMark(plan, row)}
                 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                 <li class="skill-plan-row" class:selected={mark === "selected"} class:marked={mark === "marked"} aria-current={mark === "selected" ? "true" : undefined}
-                  draggable="true" ondragstart={(event) => skillDrag(event, row.skill)}
+                  draggable="true" ondragstart={(event) => skillDrag(event, row.skill)} ondragend={endSkillDrag}
                   ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) showInfo({ kind: "type", typeID: row.skill }); }}
                   oncontextmenu={(event) => openRowMenu(row.skill, event)}
                   onmouseenter={(event) => showRowTip(row.skill, event)} onmouseleave={() => hideRowTip(row.skill)}
