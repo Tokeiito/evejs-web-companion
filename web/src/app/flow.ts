@@ -15,6 +15,7 @@ import {
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
+import { evaluateFit } from "../bridge/dogma/fittingWarnings.ts";
 import { FREIGHT_BAYS, planLootTransfers, splitNeverFits } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -55,6 +56,9 @@ import {
   simulatedCargoCapacity,
   simulatedCargoRoomFor,
   simulatedFighterBayCapacity,
+  addDronesOfType,
+  droneBayRoomFor,
+  simulatedHoldUse,
   emptyFighterBay,
   fighterBayRoomFor,
   fitFighterToEmptyTube,
@@ -1533,6 +1537,11 @@ export interface AppFlow {
   setSimulatedCargo(typeID: number, wanted: number): Promise<void>;
   /** The simulated cargo hold emptied (BaseHoldItemPickerMenu.RemoveAll). */
   emptySimulatedCargo(): void;
+  /**
+   * A drone put on the simulated drone bay's readout (CargoDroneSlots.AddSimulatedDrones: a drone only, one of it; with
+   * Shift held the client's quantity question first, up to the room left): fitted, selected where it may be.
+   */
+  addSimulatedDrones(typeID: number): Promise<void>;
   /**
    * Fighters put on the simulated ship (TryFitFightersToTubeOrBay of one type: FitAFighterToTubeOrBay): a full squadron
    * in the first empty tube; where there is none, or no tube for its class, as many as given in the fighter bay.
@@ -4672,7 +4681,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
       // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
       // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
-      else if (fittingNow.statsFrom === "page" && fittingNow.fighterBay?.shipID === fittingNow.activeShipID) {
+      else if (fittingNow.statsFrom === "page" && fittingNow.bayReadout?.kind === "fighter" && fittingNow.bayReadout.shipID === fittingNow.activeShipID) {
         const places = itemChangeLocations(args);
         if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
       }
@@ -5736,16 +5745,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const damageStateHeard = new Map<string, { readonly itemID: number; readonly attributeID: number; readonly value: number; readonly at: number }>();
 
+  /** dogma const attributeIsOnline. */
+  const ATTRIBUTE_IS_ONLINE = 2;
+
   /** The ship attributes whose change alone the Fitting window's figures are not reckoned again for: damage, armour damage, the charges. */
   const RECKONING_IGNORES: ReadonlySet<number> = new Set([3, 266, 264, 18]);
 
   /** The active ship's attribute changes a notice tells of, worked into the fit as read (fitting/ship-attributes). */
   function applyShipAttributeChanges(method: string | null, args: readonly unknown[]): void {
-    for (const change of locationAttributeChanges(method, args)) {
+    const heard = locationAttributeChanges(method, args);
+    for (const change of heard) {
       if (!DAMAGE_STATE_ATTRIBUTES.has(change.attributeID)) continue;
       const key = `${change.itemID}|${change.attributeID}`;
       damageStateHeard.delete(key);
       damageStateHeard.set(key, { ...change, at: serverNow() });
+    }
+    // A module in the ship's slots online or not as godma hears it (fittingController.OnAttribute of isOnline: its
+    // slot shows it so). The window's read of the slots, made as the call to put it online or offline is answered,
+    // comes before the server's word of it (the toggle's OnMultiEvent follows the answer, as on Tranquility).
+    const fitted = store.fitting.get();
+    for (const change of heard) {
+      if (change.attributeID !== ATTRIBUTE_IS_ONLINE || fitted.activeShipID === null) continue;
+      if (!fitted.slots.some((slot) => slot.module?.itemID === change.itemID)) continue;
+      store.apply({ type: "fitting/module-online", shipID: fitted.activeShipID, itemID: change.itemID, online: change.value !== 0 });
     }
     const current = store.fitting.get();
     if (current.activeShipID === null || current.shipAttributes === undefined) return;
@@ -6041,19 +6063,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // GetTotalFighterDps of the location's tubes, their figures as GetAccurateAttributeValue gives them.
       fighterDps: totalFighterDps(reckoned.location, reckoned.ship, fighterAbilitiesOf, accurate),
     });
-    // The fighter bay's readout, in the drone bay's place where the hull has one (fittingWnd.ContructDroneAndFighterIcons:
+    // The fighter bay's readout, or the drone bay's where the hull has none (fittingWnd.ContructDroneAndFighterIcons:
     // HasFighterBay, GetAccurateAttributeValue(fighterCapacity)): its use as the ship's inventory gives it
-    // (CargoFighterSlots.GetCapacity: invCtrl.ShipFighterBay(shipID).GetCapacity()), over GetFighterCapacity (GetStatsInfo:
-    // the controller's GetAttribute, to ten places). Its use is unknown where the inventory cannot be read.
-    let fighterBay: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null = null;
-    if (accurate(reckoned.ship, 2055)) {
-      const used = await api.getShipBays(shipID, callOptions, ["fighter"])
-        .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === "fighter")?.capacity?.used ?? null)
-        .catch(() => null);
-      if (store.fitting.get().activeShipID !== shipID) return;
-      fighterBay = { shipID, capacity: roundTo10(shipValue(2055)), used };
-    }
-    store.apply({ type: "fitting/reckoned", shipID, ...figures, fighterBay });
+    // (CargoSlots.GetCapacity: invCtrl.ShipFighterBay or ShipDroneBay(shipID).GetCapacity(), the bays route), over its
+    // GetCapacityInfo (GetFighterCapacity or GetDroneCapacity: GetStatsInfo, the controller's GetAttribute to ten
+    // places). Its use is unknown where the inventory cannot be read.
+    const kind: "fighter" | "drone" = accurate(reckoned.ship, 2055) ? "fighter" : "drone";
+    const used = await api.getShipBays(shipID, callOptions, [kind])
+      .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === kind)?.capacity?.used ?? null)
+      .catch(() => null);
+    if (store.fitting.get().activeShipID !== shipID) return;
+    const bayReadout = { shipID, kind, capacity: roundTo10(shipValue(kind === "fighter" ? 2055 : 283)), used };
+    // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
+    // it (GetFittingDictForActiveShip: CreateFittingData of its fitted modules), its cargo hold's capacity and use as
+    // the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline (FindOfflineModules).
+    const warnings = evaluateFit({
+      static: staticData,
+      shipTypeID,
+      fit: createFittingData(modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: 1 })), staticTypeFacts(staticData)),
+      slotExists: (flagID) => reckoned.location.slotExists(reckoned.ship, flagID),
+      resources: resourceLoads(figures.resources),
+      cargo: store.inventory.get().cargo.capacity ?? null,
+      offlineModules: modules.filter((module) => !module.online).map((module) => [module.typeID, module.flagID] as const),
+    });
+    store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings });
+  }
+
+  /** A type's group and category as the page's static dogma data holds them (no type list among them). */
+  function staticTypeFacts(staticData: DogmaStatic): (typeID: number) => TypeFacts {
+    return (typeID) => ({ groupID: staticData.types[typeID]?.groupID ?? null, categoryID: staticData.types[typeID]?.categoryID ?? null, lists: new Set<number>() });
+  }
+
+  /** The controller's GetCPULoad and GetCPUOutput, and the powergrid's and calibration's, as the figures hold them. */
+  function resourceLoads(resources: FittingResources): Readonly<Record<"cpu" | "powergrid" | "calibration", { readonly load: number; readonly output: number } | null>> {
+    const of = (resource: FittingResources["cpu"]) => (resource.known ? { load: resource.used, output: resource.total } : null);
+    return { cpu: of(resources.cpu), powergrid: of(resources.powergrid), calibration: of(resources.calibration) };
   }
 
   /**
@@ -6251,7 +6295,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       cargoCapacity: simulatedCargoCapacity(simulation.simulated),
       // The fighter bay (CargoFighterSlots: GetCapacity(flagFighterBay)), where the hull has one (HasFighterBay); the
       // squadrons in the tubes, full and partial (GetFullAndPartialSquadrons), and their damage (GetFighterDps).
-      fighterBay: location.value(ship, 2055) ? simulatedFighterBayCapacity(simulation.simulated) : null,
+      // Its capacity as the readout gives it (GetFighterCapacity: GetStatsInfo, ten places).
+      fighterBay: location.value(ship, 2055)
+        ? { ...simulatedFighterBayCapacity(simulation.simulated), capacity: roundTo10(location.value(ship, 2055)) }
+        : null,
+      // What the holds' readouts write as their use (GetSimulatedCapacity).
+      holdUse: simulatedHoldUse(simulation.simulated),
+      // The window's warnings of the simulated ship (GetFittingDictForSimulatedShip: CreateFittingData of its items; the
+      // fitting location's GetCapacity(flagCargo); FindOfflineModules finds none while simulating).
+      warnings: evaluateFit({
+        static: location.static,
+        shipTypeID: ship.typeID,
+        fit: createFittingData(simulatedShipItems(simulation.simulated), staticTypeFacts(location.static)),
+        slotExists: (flagID) => location.slotExists(ship, flagID),
+        resources: resourceLoads(figures.resources),
+        cargo: simulatedCargoCapacity(simulation.simulated),
+        offlineModules: [],
+      }),
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
       // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
       fighterTubes: simulatedFighterTubes(simulation.simulated),
@@ -6437,6 +6497,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function emptySimulatedCargo(): void {
     if (!simulation) return;
     emptyCargo(simulation.simulated);
+    showSimulation();
+  }
+
+  async function addSimulatedDrones(typeID: number): Promise<void> {
+    if (!simulation) return;
+    await dogmaStaticFor([typeID], []);
+    if (!simulation) return;
+    // AddSimulatedDrones: what is no drone left out; one of each thing dropped (GetQtyByTypeAndItemIDs).
+    if (simulation.simulated.location.static.types[typeID]?.categoryID !== 18) return;
+    let qty = 1;
+    // TryFitDronesToDroneBay: GetModifiedQtyDict, with Shift held FindQty (QtyPopup up to GetMaxQty, from one); no room, none.
+    if (shiftHeld()) {
+      const most = droneBayRoomFor(simulation.simulated, typeID);
+      if (most === null) return;
+      const asked = await askQuantity({
+        min: 1, max: most, value: 1,
+        hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+      });
+      if (asked === null || !simulation) return;
+      qty = asked;
+    }
+    addDronesOfType(simulation.simulated, typeID, qty);
     showSimulation();
   }
 
@@ -25695,6 +25777,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     emptySimulatedCargo() {
       emptySimulatedCargo();
+    },
+    addSimulatedDrones(typeID) {
+      return addSimulatedDrones(typeID);
     },
     addSimulatedFighters(typeID, qty) {
       return addSimulatedFighters(typeID, qty);

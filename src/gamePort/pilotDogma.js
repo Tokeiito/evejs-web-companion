@@ -446,7 +446,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const listed = fields.get("activeEffects");
     for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
       if (!Array.isArray(line)) continue;
-      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null });
+      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null, line });
     }
     effects.set(key(itemID), active);
   }
@@ -502,19 +502,32 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
 
   /**
    * An item's GET-INFO row as godma holds it now: the row last given, its attributes each as godma has it now
-   * (godma.GetAttribute of each). Null for an item whose row was not given.
+   * (godma.GetAttribute of each), and its active effects as godma holds them now (effectsByItemEffect, which each
+   * OnGodmaShipEffect sets: one stopped is no longer among them, one started is, with the line its notice gave; one
+   * the client started itself keeps the line its row had, where it had one). Null for an item whose row was not given.
    */
   function infoNow(itemID, at = now()) {
     const kept = rows.get(key(itemID));
     if (!kept) return null;
     const nowAttributes = { type: "dict", entries: attributesOf(itemID, at) };
-    return withField(kept.row, "attributes", nowAttributes);
+    const withAttributes = withField(kept.row, "attributes", nowAttributes);
+    const held = effects.get(key(itemID));
+    if (!held) return withAttributes;
+    const given = fieldsOf(kept.row).get("activeEffects");
+    const lineGiven = new Map((given && Array.isArray(given.entries) ? given.entries : []).map(([effectID, line]) => [number(effectID), line]));
+    const entries = [];
+    for (const [effectID, effect] of held) {
+      if (!effect.isActive) continue;
+      const line = effect.line ?? lineGiven.get(effectID);
+      if (Array.isArray(line)) entries.push([effectID, line]);
+    }
+    return withField(withAttributes, "activeEffects", { type: "dict", entries });
   }
 
   /**
    * godma's GetAllInfo answered from what godma holds: `allInfo` the priming's answer, with its ship's items as godma
    * holds them now (the ship and what is in its slots, each its row with its attributes now) and the ship its active
-   * one. Each item's active effects are as its row gave them.
+   * one. Each item's active effects are as godma holds them now (infoNow).
    */
   function allInfoNow(allInfo, shipID) {
     const ship = key(shipID);
@@ -641,6 +654,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       duration: number(duration),
       repeat: typeof repeat === "boolean" ? Number(repeat) : number(repeat),
       targetID: Array.isArray(environment) ? environment[ENV_IDX_TARGET] ?? null : null,
+      // The item's activeEffects line for it as a GET-INFO row gives one: the environment's item, owner, location,
+      // target, other, area and effect, then when it began, how long a cycle is and how many are left.
+      line: Array.isArray(environment) ? [...environment.slice(0, 7), startTime, duration, repeat] : null,
     });
     return true;
   }

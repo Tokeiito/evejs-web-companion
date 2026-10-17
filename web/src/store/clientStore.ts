@@ -1395,20 +1395,30 @@ export function createClientStore(): ClientStore {
       case "fitting/reckoned": {
         const current = fitting.get();
         if (current.activeShipID !== event.shipID) break;
-        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page", fighterBay: event.fighterBay });
+        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page", bayReadout: event.bayReadout, warnings: event.warnings });
         break;
       }
       case "fitting/simulated": {
         const current = fitting.get();
         fitting.set({
           ...current,
-          simulation: { shipID: event.shipID, shipTypeID: event.shipTypeID, name: event.name, changed: event.changed, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones, cargo: event.cargo, cargoCapacity: event.cargoCapacity, fighterBay: event.fighterBay, fighterSquadrons: event.fighterSquadrons, fighterDps: event.fighterDps, structure: event.structure, fighterTubes: event.fighterTubes, squadronSlots: event.squadronSlots, fighterBayTypes: event.fighterBayTypes },
+          simulation: { shipID: event.shipID, shipTypeID: event.shipTypeID, name: event.name, changed: event.changed, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones, cargo: event.cargo, cargoCapacity: event.cargoCapacity, fighterBay: event.fighterBay, holdUse: event.holdUse, warnings: event.warnings, fighterSquadrons: event.fighterSquadrons, fighterDps: event.fighterDps, structure: event.structure, fighterTubes: event.fighterTubes, squadronSlots: event.squadronSlots, fighterBayTypes: event.fighterBayTypes },
         });
         break;
       }
       case "fitting/simulation-ended": {
         const current = fitting.get();
         if (current.simulation) fitting.set({ ...current, simulation: null });
+        break;
+      }
+      case "fitting/module-online": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        if (!current.slots.some((slot) => slot.module?.itemID === event.itemID && slot.module.online !== event.online)) break;
+        fitting.set({
+          ...current,
+          slots: current.slots.map((slot) => (slot.module?.itemID === event.itemID ? { ...slot, module: { ...slot.module, online: event.online } } : slot)),
+        });
         break;
       }
       case "fitting/charge-quantity": {

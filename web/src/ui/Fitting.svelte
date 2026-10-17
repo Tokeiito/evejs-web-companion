@@ -47,6 +47,19 @@
   } from "./dragDrop.ts";
   import { startFittingDrag, startFittingSourceDrag } from "./fittingDrag.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
+  import { formatNumeric, type PyNumber } from "../bridge/pyNumbers.ts";
+  import {
+    COLOR_BY_LEVEL,
+    FLAG_CPU_GAUGE,
+    FLAG_POWERGRID_GAUGE,
+    HEADER_BY_LEVEL,
+    WARNING,
+    WARNING_LEVEL_HIGH,
+    WARNING_LEVEL_LOW,
+    WARNING_LEVEL_MEDIUM,
+    WARNINGS_BY_ID,
+    type FitWarningRow,
+  } from "../bridge/dogma/fittingWarnings.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -1150,6 +1163,40 @@
     "UI/Fitting/FittingWindow/RemoveAll": "Take everything out",
     "UI/Generic/RemoveItem": "Take it out",
     "UI/Fitting/FittingWindow/ClickToEdit": "Change how many",
+    // The window's warnings (fittingWarningConst headerByWarningLevel and warningsByWarningID's lines and hints, those
+    // reckoned; the turret sizes' names, the charge size's sizeclass).
+    "UI/Fitting/FittingWindow/Warnings/HeaderHigh": "Fitting problems",
+    "UI/Fitting/FittingWindow/Warnings/HeaderMedium": "Fitting cautions",
+    "UI/Fitting/FittingWindow/Warnings/HeaderLow": "Fitting notes",
+    "UI/Fitting/FittingWindow/Warnings/SubsystemShort": "Subsystem slots empty",
+    "UI/Fitting/FittingWindow/Warnings/SubsystemHint": "A strategic cruiser needs a subsystem in each of its subsystem slots.",
+    "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsShort": "Modules in slots the hull lacks",
+    "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsHint": "These modules sit in slots this hull does not have, and do nothing there.",
+    "UI/Fitting/FittingWindow/Warnings/CpuOverloadedShort": "Over the CPU",
+    "UI/Fitting/FittingWindow/Warnings/CpuOverloadedHint": "The modules need more CPU than the ship has.",
+    "UI/Fitting/FittingWindow/Warnings/PowergridOverloadedShort": "Over the power grid",
+    "UI/Fitting/FittingWindow/Warnings/PowergridOverloadedHint": "The modules need more power grid than the ship has.",
+    "UI/Fitting/FittingWindow/Warnings/CalibrationOverloadedShort": "Calibration overloaded",
+    "UI/Fitting/FittingWindow/Warnings/CalibrationOverloadedHint": "The rigs need more calibration than the ship has.",
+    "UI/Fitting/FittingWindow/Warnings/CargoOverloadedShort": "Cargo hold overfull",
+    "UI/Fitting/FittingWindow/Warnings/CargoOverloadedHint": "The cargo hold holds more than its capacity.",
+    "UI/Fitting/FittingWindow/Warnings/MixingTurretGroupsShort": "Turret kinds mixed",
+    "UI/Fitting/FittingWindow/Warnings/MixingTurretGroupsHint": "Turrets of more than one kind are fitted.",
+    "UI/Fitting/FittingWindow/Warnings/MixingLauncherGroupsShort": "Launcher kinds mixed",
+    "UI/Fitting/FittingWindow/Warnings/MixingLauncherGroupsHint": "Launchers of more than one kind are fitted.",
+    "UI/Fitting/FittingWindow/Warnings/MixingTurretSizesShort": "Turret sizes mixed",
+    "UI/Fitting/FittingWindow/Warnings/MixingTurretSizesHint": "Turrets of more than one size are fitted.",
+    "UI/Fitting/FittingWindow/Warnings/OfflineModulesShort": "Modules offline",
+    "UI/Fitting/FittingWindow/Warnings/OfflineModulesHint": "These modules are fitted but not online.",
+    "UI/Fitting/FittingWindow/Warnings/PolarizedWeaponsFittedShort": "A polarized weapon is fitted",
+    "UI/Fitting/FittingWindow/Warnings/PolarizedWeaponsFittedHint": "A polarized weapon takes the ship's resistances away.",
+    "UI/InfoWindow/SmallSize": "Small",
+    "UI/InfoWindow/MediumSize": "Medium",
+    "UI/InfoWindow/LargeSize": "Large",
+    "UI/InfoWindow/XLargeSize": "Extra large",
+    // The holds' readouts (minihangar CargoSlots.SetStatusText: the capacity after the use, and the unit).
+    "UI/Fitting/FittingWindow/CargoUsage": "/ {text}",
+    "UI/Fitting/FittingWindow/CubicMeters": "m³",
     // The simulated fighter bay's picker (fighterPickerMenu FighterBayItemPickerMenu's emptyLabelPath; the tubes'
     // squadron containers: an empty tube's action and hint, a squadron's hint and its simulated state; the classes' and
     // the roles' hints, fighterConst HINTTEXT_BY_ROLE).
@@ -1323,6 +1370,74 @@
    * simulating, GetShipName, the ring's name with "*" before it once the simulation has been changed.
    */
   const fitName = $derived.by(() => (simulation?.changed ? `*${ringName}` : ringName));
+  // The window's warnings (fittingWnd.ConstructNameCaptionAndFittingWarnings: WarningIconCont), of the ship as it stands
+  // or as it is simulated (the page's reckoning: bridge/dogma/fittingWarnings.ts evaluateFit).
+  const fitWarnings = $derived.by(() => (simulation ? simulation.warnings : $fitting.warnings ?? []));
+  /** WarningIconCont's red, yellow and white icons, each shown with how many warnings it has (__UpdateIcon_thread). */
+  const warningIcons = $derived.by(() =>
+    [WARNING_LEVEL_HIGH, WARNING_LEVEL_MEDIUM, WARNING_LEVEL_LOW]
+      .map((level) => ({ level, count: fitWarnings.filter((warning) => warning.level === level).length }))
+      .filter((icon) => icon.count > 0));
+  /** WarningIcon's texture (warningGroup.png, tinted its level's colour) and a line's (WARNING_PATH). */
+  const WARNING_GROUP_ICON = clientTexture("res:/UI/Texture/classes/Fitting/warningGroup.png");
+  const WARNING_LINE_ICON = clientTexture("res:/UI/Texture/classes/agency/iconExclamation.png");
+  /** The level whose tooltip is open (LoadWarningTooltipPanel), and the slots shown with a warning (ChangeFittingWarningDisplay). */
+  let warningTooltipLevel = $state<number | null>(null);
+  let warningSlots = $state<ReadonlyMap<number, number>>(new Map());
+  /** EvaluateFitAndPopulateTooltip's warningSlotDict: the slots of the level's warnings, each at the level. */
+  function levelSlots(level: number): Map<number, number> {
+    const slots = new Map<number, number>();
+    for (const warning of fitWarnings) if (warning.level === level) for (const flagID of warning.flags) slots.set(flagID, level);
+    return slots;
+  }
+  function openWarningTooltip(level: number): void {
+    warningTooltipLevel = level;
+    warningSlots = levelSlots(level);
+  }
+  /** TooltipPanelBeingDestroyed: the tooltip closed, no slot shown with a warning. */
+  function closeWarningTooltip(): void {
+    warningTooltipLevel = null;
+    warningSlots = new Map();
+  }
+  /** OnMouseEnterContainer: a line's or a row's slots shown with its warning; OnMouseExitContainer: none. */
+  function showWarningSlots(flags: readonly number[], level: number): void {
+    warningSlots = new Map(flags.map((flagID) => [flagID, level]));
+  }
+  /** FilterResultsForWarningLevel: the open level's warnings, in the tooltip's order. */
+  const tooltipWarnings = $derived.by(() => (warningTooltipLevel === null ? [] : fitWarnings.filter((warning) => warning.level === warningTooltipLevel)));
+  /** A warning's colour at a slot's flag, where it is shown with one. */
+  function slotWarningColor(flagID: number | null): string | null {
+    const level = flagID === null ? undefined : warningSlots.get(flagID);
+    return level === undefined ? null : COLOR_BY_LEVEL[level] ?? null;
+  }
+  /** GetQuestionMarkHint: a warning's hint; the CPU's and the powergrid's with the skills that help named (__GetSkillText). */
+  function warningHint(warningID: number): string {
+    const hint = WARNINGS_BY_ID[warningID]?.hint;
+    if (!hint) return "";
+    if (warningID === WARNING.OVER_CPU_POWER || warningID === WARNING.OVER_CPU || warningID === WARNING.OVER_POWERGRID) {
+      return simulationWord(hint, {
+        cpuMgmtLink: moduleName(3426), weaponUpgradesLink: moduleName(3318), advancedWeaponUpgradesLink: moduleName(11207), powerGridMgmtLink: moduleName(3413),
+      });
+    }
+    return simulationWord(hint);
+  }
+  /** The rows under a line: AddTurretOrLauncherGroups by the groups' names; the others as they come. */
+  function warningRows(rows: readonly FitWarningRow[]): readonly FitWarningRow[] {
+    const groupName = (row: FitWarningRow) => (row.kind === "group" ? resolvedName($names.resolved, "group", row.groupID) : "");
+    return [...rows].sort((left, right) => (left.kind === "group" && right.kind === "group" ? (groupName(left) < groupName(right) ? -1 : groupName(left) > groupName(right) ? 1 : 0) : 0));
+  }
+  const SIZE_LABELS: Readonly<Record<number, string>> = { 1: "UI/InfoWindow/SmallSize", 2: "UI/InfoWindow/MediumSize", 3: "UI/InfoWindow/LargeSize", 4: "UI/InfoWindow/XLargeSize" };
+  $effect(() => {
+    // The names the tooltip's rows and hints need: the groups', the modules', the skills' the hints name.
+    const refs: { kind: "type" | "group"; id: number }[] = [3426, 3318, 11207, 3413].map((id) => ({ kind: "type", id }));
+    for (const warning of fitWarnings) {
+      for (const row of warning.rows) {
+        if (row.kind === "module") refs.push({ kind: "type", id: row.typeID });
+        else if (row.kind === "group" || row.kind === "subsystem") refs.push({ kind: "group", id: row.groupID });
+      }
+    }
+    if (fitWarnings.length > 0) flow.requestNames(refs);
+  });
   /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
   const HYPERLINK_ICON = clientTexture("res:/UI/Texture/classes/HyperNet/hyperlink_icon.png");
   /** A simulation word: the client's where the install has it, the page's own otherwise. */
@@ -1574,22 +1689,52 @@
     });
   }
   /** The active ship's own fighter bay (CargoFighterSlots, not simulated), where the hull has one. */
-  const realFighterBay = $derived.by(() => {
-    const bay = $fitting.fighterBay ?? null;
+  const realBayReadout = $derived.by(() => {
+    const bay = $fitting.bayReadout ?? null;
     return bay !== null && bay.shipID === $fitting.activeShipID ? bay : null;
   });
-  /** The cargo hold's used / total, from the inventory slice's own capacity read. */
+  /**
+   * A hold's readout as minihangar CargoSlots._Update writes it (SetStatusText): its use, FmtAmt(used, showFraction=1);
+   * then UI/Fitting/FittingWindow/CargoUsage of its capacity, FmtAmt(GetCapacityInfo's value, showFraction=1), with no
+   * colour (no module previewed); then UI/Fitting/FittingWindow/CubicMeters. FmtAmt writes a float to one place and an
+   * int whole (eveLocalization.FormatNumeric); GetStatsInfo's value is a float (round). A use unknown is a dash.
+   */
+  function holdReadout(used: PyNumber | null, capacity: number): string {
+    const amount = (value: PyNumber): string => formatNumeric(value, { useGrouping: true, decimalPlaces: 1 });
+    const usage = simulationWord("UI/Fitting/FittingWindow/CargoUsage", { color: "", text: amount(capacity) });
+    return `${used === null ? "—" : amount(used)} ${usage} ${simulationWord("UI/Fitting/FittingWindow/CubicMeters")}`;
+  }
+  /** A figure as the server sent it: EveJS's marshal writes a whole number as an int (marshal.js), any other as a float. */
+  function sentNumber(value: number | null | undefined): PyNumber | null {
+    if (value === null || value === undefined || !Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? { int: value } : value;
+  }
+  /**
+   * The ship's own cargo hold's readout (CargoCargoSlots): the use of its inventory (invCtrl.ShipCargo(shipID).GetCapacity,
+   * the inventory slice's read) over GetCargoCapacity (the ship's figures; the inventory's capacity where they are not
+   * read). A use not read yet is a dash.
+   */
   const cargoBayText = $derived.by<string>(() => {
     const cap = $inventory.cargo.capacity;
-    if (cap) {
-      return `${toFixed(cap.used, 1)} / ${toFixed(cap.capacity, 1)} m³`;
-    }
-    // No capacity read yet — fall back to the hull's total from ShipGetInfo,
-    // with the used side honestly unknown rather than a fabricated 0.
-    return stats.bays.cargoCapacity.known
-      ? `— / ${asVolume(stats.bays.cargoCapacity.value)}`
-      : "Unavailable";
+    const capacity = stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : cap?.capacity ?? null;
+    return capacity === null ? "Unavailable" : holdReadout(sentNumber(cap?.used), capacity);
   });
+  // The simulated drone bay (minihangar CargoDroneSlots, simulated): a picked item put on it, a drone only, one of it
+  // (AddSimulatedDrones); a click shows its drones (OpenFakeDroneBay: the drone picker, here the Drones section's).
+  let dronesSection = $state<HTMLDetailsElement | null>(null);
+  function clickSimulatedDroneBay(): void {
+    if (pickedItemID !== null) {
+      const typeID = pickedTypeID();
+      const drone = pickedCategoryID() === 18;
+      pickedItemID = null;
+      if (typeID !== null && drone) void run(() => flow.addSimulatedDrones(typeID));
+      return;
+    }
+    if (dronesSection) {
+      dronesSection.open = true;
+      dronesSection.scrollIntoView({ block: "nearest" });
+    }
+  }
 
   /**
    * A fit's total ISK value needs a market price for the hull and every fitted
@@ -2141,7 +2286,7 @@
         </div>
       </details>
     {:else}
-    <details class="fit-sec" open>
+    <details class="fit-sec" open bind:this={dronesSection}>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Drones</span>
         {#if stats.drones}
@@ -2213,7 +2358,7 @@
 {#snippet fitFooter()}
   <div class="fit-footer">
     <div class="fit-bars">
-      <div class="hud-gauge cpu">
+      <div class="hud-gauge cpu" class:warning={slotWarningColor(FLAG_CPU_GAUGE) !== null} style={slotWarningColor(FLAG_CPU_GAUGE) ? `--slot-warning: ${slotWarningColor(FLAG_CPU_GAUGE)}` : undefined}>
         <div class="hud-head">
           <span class="hud-label">CPU</span>
           <span class="hud-value">{resourceText(resources.cpu, "tf")}</span>
@@ -2229,7 +2374,7 @@
           <span class="hud-fill" style={`width: ${percent(resources.cpu) ?? 0}%`}></span>
         </div>
       </div>
-      <div class="hud-gauge powergrid">
+      <div class="hud-gauge powergrid" class:warning={slotWarningColor(FLAG_POWERGRID_GAUGE) !== null} style={slotWarningColor(FLAG_POWERGRID_GAUGE) ? `--slot-warning: ${slotWarningColor(FLAG_POWERGRID_GAUGE)}` : undefined}>
         <div class="hud-head">
           <span class="hud-label">Power grid</span>
           <span class="hud-value">{resourceText(resources.powergrid, "MW")}</span>
@@ -2251,12 +2396,12 @@
         <dt>Calibration</dt>
         <dd>{resourceText(resources.calibration, "")}</dd>
       </div>
-      <div>
+      <div class:fit-readout-warning={slotWarningColor(5) !== null} style={slotWarningColor(5) ? `--slot-warning: ${slotWarningColor(5)}` : undefined}>
         <dt>Cargo hold</dt>
         {#if simulation}
           <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
           <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
-            {toFixed(simulation.cargoCapacity.used, 1)} / {toFixed(simulation.cargoCapacity.capacity, 1)} m³</button></dd>
+            {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
           <dd>{cargoBayText}</dd>
         {/if}
@@ -2268,14 +2413,22 @@
         <div>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
           <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
-            {toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</button></dd>
+            {holdReadout(simulation.holdUse.fighter, simulation.fighterBay.capacity)}</button></dd>
         </div>
-      {:else if !simulation && realFighterBay}
-        <!-- The ship's own fighter bay in the drone bay's place (CargoFighterSlots: its inventory's use, over
-             GetFighterCapacity). -->
+      {:else if simulation}
+        <!-- The simulated drone bay (minihangar CargoDroneSlots): its use (GetSimulatedCapacity: each drone's volume) over
+             GetDroneCapacity; a picked drone put on it goes in the bay, a click shows its drones. -->
         <div>
-          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
-          <dd>{realFighterBay.used === null ? "—" : toFixed(realFighterBay.used, 1)} / {toFixed(realFighterBay.capacity, 1)} m³</dd>
+          <dt>Drone bay</dt>
+          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}>
+            {holdReadout(simulation.holdUse.drone, stats.bays.droneCapacity.known ? stats.bays.droneCapacity.value : 0)}</button></dd>
+        </div>
+      {:else if realBayReadout}
+        <!-- The ship's own fighter bay, or its drone bay where it has none (CargoFighterSlots, CargoDroneSlots): its
+             inventory's use over GetFighterCapacity or GetDroneCapacity. -->
+        <div>
+          <dt>{realBayReadout.kind === "fighter" ? offenseWord("UI/Fitting/FittingWindow/FighterBay") : "Drone bay"}</dt>
+          <dd>{holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</dd>
         </div>
       {:else}
         <div>
@@ -2509,6 +2662,60 @@
               title={`${fitName}\n${simulationWord("Tooltips/FittingWindow/ShipName_description")}`}
               ondragstart={(event) => startFittingSourceDrag(event, "fittingWindow")}
               onclick={() => void flow.saveFitAs().catch(() => {})}><img src={HYPERLINK_ICON} alt="" width="16" height="16" />{fitName}</button>
+            {#if warningIcons.length > 0}
+              <!-- WarningIconCont: the red, yellow and white icons, each with how many warnings it has; its tooltip
+                   (LoadWarningTooltipPanel: EvaluateFitAndPopulateTooltip) the level's header and each warning's line
+                   (its icon, its line, its hint behind "?") with its rows under it; a line or row pointed at shows its
+                   slots with the warning (OnMouseEnterContainer), the tooltip open all of the level's. -->
+              <div class="fit-warnings" role="group" aria-label="Fitting warnings" onmouseleave={closeWarningTooltip}>
+                {#each warningIcons as icon (icon.level)}
+                  <button type="button" class="fit-warning-icon" style={`--warning-color: ${COLOR_BY_LEVEL[icon.level]}; --warning-icon: url("${WARNING_GROUP_ICON}")`}
+                    aria-expanded={warningTooltipLevel === icon.level}
+                    aria-label={`${simulationWord(HEADER_BY_LEVEL[icon.level] ?? "")}: ${icon.count}`}
+                    onmouseenter={() => openWarningTooltip(icon.level)}
+                    onfocus={() => openWarningTooltip(icon.level)}
+                    onclick={() => (warningTooltipLevel === icon.level ? closeWarningTooltip() : openWarningTooltip(icon.level))}>
+                    <span class="fit-warning-glyph" aria-hidden="true"></span><span class="fit-warning-count">{icon.count}</span>
+                  </button>
+                {/each}
+                {#if warningTooltipLevel !== null && tooltipWarnings.length > 0}
+                  {@const level = warningTooltipLevel}
+                  <div class="fit-warning-tooltip" role="tooltip" style={`--warning-color: ${COLOR_BY_LEVEL[level]}`}>
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <h3 class="fit-warning-header" onmouseenter={() => (warningSlots = levelSlots(level))} onmouseleave={() => (warningSlots = new Map())}>
+                      {simulationWord(HEADER_BY_LEVEL[level] ?? "")}</h3>
+                    <ul class="fit-warning-lines">
+                      {#each tooltipWarnings as warning (warning.warningID)}
+                        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                        <li class="fit-warning-line" title={warningHint(warning.warningID)}
+                          onmouseenter={() => showWarningSlots(warning.flags, warning.level)} onmouseleave={() => (warningSlots = new Map())}>
+                          <span class="fit-warning-line-icon" style={`--warning-icon: url("${WARNING_LINE_ICON}")`} aria-hidden="true"></span>
+                          <b>{simulationWord(WARNINGS_BY_ID[warning.warningID]?.short ?? "")}</b>
+                          <span class="fit-warning-question" aria-hidden="true">?</span>
+                        </li>
+                        {#each warningRows(warning.rows) as row, at (at)}
+                          {@const flags = row.kind === "module" || row.kind === "subsystem" ? [row.flagID] : row.flags}
+                          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                          <li class="fit-warning-row" onmouseenter={() => (row.kind === "subsystem" ? undefined : showWarningSlots(flags, warning.level))}
+                            onmouseleave={() => (row.kind === "subsystem" ? undefined : (warningSlots = new Map()))}>
+                            {#if row.kind === "module"}
+                              <TypeIcon typeID={row.typeID} name={moduleName(row.typeID)} size="sm" />
+                              <span>{moduleName(row.typeID)}</span>
+                            {:else if row.kind === "size"}
+                              {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
+                              <span>{simulationWord(SIZE_LABELS[row.size] ?? "")}</span>
+                            {:else}
+                              {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
+                              <span>{resolvedName($names.resolved, "group", row.groupID)}</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+              </div>
+            {/if}
             {#if activeShipClass}<span class="fit-ship-class">{activeShipClass}</span>{/if}
             <span class="fit-info" title={`${activeShipName}${activeShipClass ? ` · ${activeShipClass}` : ""}`}
               aria-label={`Ship: ${activeShipName}${activeShipClass ? `, ${activeShipClass}` : ""}`}>ⓘ</span>
@@ -2562,7 +2769,8 @@
                   class:sim-online={simulatedState(slot) === 1}
                   class:sim-active={simulatedState(slot) === 2}
                   class:sim-overheated={simulatedState(slot) === 3}
-                  style={`left: ${socket.xPercent}%; top: ${socket.yPercent}%`}
+                  style={`left: ${socket.xPercent}%; top: ${socket.yPercent}%${slotWarningColor(slotFlagOf(slot.family, slot.index)) ? `; --slot-warning: ${slotWarningColor(slotFlagOf(slot.family, slot.index))}` : ""}`}
+                  class:warning={slotWarningColor(slotFlagOf(slot.family, slot.index)) !== null}
                   title={simulation && slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}. ${simulationWord("UI/Fitting/FittingWindow/ModuleMode")}: ${simulatedStateText(slot) ?? ""}. ${simulationWord("UI/Fitting/FittingWindow/ModuleModeHint")} Right-click takes it out.` : socketDescription(slot)}
                   aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
