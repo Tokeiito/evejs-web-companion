@@ -2480,6 +2480,16 @@ export interface AppFlow {
    * the pilot's race. Their names' and the career paths' messages, and the factions' names, asked for. Null where the
    * client's data could not be read.
    */
+  /**
+   * The opened plan's Save (SelectedSkillPlanContainer.SaveSkillPlan, GetSkillPlanCopy): SkillPlanCopied said, then the
+   * plan saved as a new personal plan (SaveCopyOfPlanAsPersonalSkillPlan, _SaveNewPersonalSkillPlan: the plans counted,
+   * CreateRequest with its name, description and skills, then its milestones created). The copy's id; null where it
+   * was not saved (its refusal said as the client says it). planCount null: the personal plans could not be read.
+   */
+  copySkillPlan(
+    plan: { readonly name: string; readonly description: string; readonly requirements: readonly (readonly [number, number])[]; readonly milestones: readonly Milestone[] },
+    planCount: number | null,
+  ): Promise<string | null>;
   /** A certified plan's milestones (the client's table's), as the opened plan shows them. Null without the client's data. */
   certifiedPlanMilestones(milestones: readonly Milestone[]): Promise<readonly MilestoneEntry[] | null>;
   certifiedSkillPlans(): Promise<{
@@ -7904,13 +7914,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await saveMilestones(saved.id, adjusted);
       return true;
     } catch (error) {
-      // requestsMessenger.send_request makes every failure a UserError; 412 is SkillPlansErrorInvalidData.
-      const invalid = (error as { statusCode?: number }).statusCode === 412;
-      if (invalid && edited.name.length > MAX_PLAN_NAME_LENGTH) sayDialog("UnableToSaveSkillPlanNameTooLong", null, "The plan's name is too long to save.");
-      else if (invalid && edited.description.length > MAX_PLAN_DESCRIPTION_LENGTH) sayDialog("UnableToSaveSkillPlanDescTooLong", null, "The plan's description is too long to save.");
-      else sayDialog("UnableToSaveSkillPlan", null, "The skill plan could not be saved.");
+      saySkillPlanSaveRefused(error, edited);
       return false;
     }
+  }
+
+  /** _RaiseErrorMessageOnSave: requestsMessenger.send_request makes every failure a UserError; 412 is SkillPlansErrorInvalidData. */
+  function saySkillPlanSaveRefused(error: unknown, edited: { readonly name: string; readonly description: string }): void {
+    const invalid = (error as { statusCode?: number }).statusCode === 412;
+    if (invalid && edited.name.length > MAX_PLAN_NAME_LENGTH) sayDialog("UnableToSaveSkillPlanNameTooLong", null, "The plan's name is too long to save.");
+    else if (invalid && edited.description.length > MAX_PLAN_DESCRIPTION_LENGTH) sayDialog("UnableToSaveSkillPlanDescTooLong", null, "The plan's description is too long to save.");
+    else sayDialog("UnableToSaveSkillPlan", null, "The skill plan could not be saved.");
+  }
+
+  async function copySkillPlan(
+    plan: { readonly name: string; readonly description: string; readonly requirements: readonly (readonly [number, number])[]; readonly milestones: readonly Milestone[] },
+    planCount: number | null,
+  ): Promise<string | null> {
+    // GetSkillPlanCopy: SkillPlanCopied said (in its own tasklet, whatever comes of the save).
+    sayDialog("SkillPlanCopied", null, "A copy of the plan is now among your own.");
+    // CheckNumPersonalSkillPlans
+    if (planCount === null) {
+      sayDialog("UnableToFetchSkillPlans", null, "Your skill plans could not be read.");
+      return null;
+    }
+    if (planCount >= MAX_PERSONAL_PLANS) {
+      sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
+      return null;
+    }
+    let created: JsonValue | null;
+    try {
+      created = await gatewayAsk("eve_public.character.skill.plan.CreateRequest", {
+        skill_plan: {
+          name: plan.name,
+          description: plan.description,
+          skill_requirements: plan.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+        },
+      }, true);
+    } catch (error) {
+      saySkillPlanSaveRefused(error, plan);
+      return null;
+    }
+    const planID = uuidFromBytes(String(((created as { skill_plan?: { uuid?: string } } | null)?.skill_plan?.uuid) ?? ""));
+    if (planID === null) return null;
+    // _CreateAndCachePersonalController: SetMilestonesToAdd(GetMilestonesSet()), SaveMilestones.
+    await saveMilestones(planID, { toAdd: plan.milestones, toDelete: [] });
+    return planID;
   }
 
   async function skillPlanMilestones(plan: PersonalSkillPlan): ReturnType<AppFlow["skillPlanMilestones"]> {
@@ -22581,6 +22630,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     personalSkillPlans,
     certifiedSkillPlans,
     certifiedPlanMilestones,
+    copySkillPlan,
     deletePersonalSkillPlan,
     skillPlanDetail,
     trainSkillPlan,

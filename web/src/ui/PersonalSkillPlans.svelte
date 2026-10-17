@@ -115,6 +115,7 @@
     "UI/SkillPlan/SelectCareerPathHint": "Choose a career path",
     "UI/SkillPlan/CareerPathsLockedByAIR": "Finish the AIR plan to open the career paths.",
     "UI/SkillPlan/CertifiedSkillPlan": "Ready-made plan",
+    "UI/SkillPlan/SavePlan": "Keep a copy among your own plans",
   };
 
   // The panels (skillPlansBrowserPanel's toggle buttons): Certified Plans, then Personal Plans; the choice kept
@@ -395,6 +396,32 @@
     if (selectedID === plan.id) await readContents(plan);
   }
 
+  /**
+   * SaveSkillPlan: a copy of the plan saved as a personal plan (GetSkillPlanCopy: with its milestones, a certified
+   * plan's from its table, a personal plan's as read), then opened (on_selected).
+   */
+  async function savePlanCopy(plan: PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }): Promise<void> {
+    if (copying) return;
+    copying = true;
+    error = "";
+    try {
+      const milestoneList = plan.certified
+        ? plan.milestoneList ?? []
+        : milestones !== undefined && milestones.planID === plan.id && milestones.list !== null ? milestones.list : [];
+      const newID = await flow.copySkillPlan(
+        { name: plan.name, description: plan.description, requirements: plan.requirements, milestones: milestoneList },
+        read ? read.plans.length : null,
+      );
+      if (newID === null) return;
+      await load();
+      const copy = read?.plans.find((each) => each.id === newID);
+      if (copy) open(copy);
+    } finally {
+      copying = false;
+    }
+  }
+  let copying = $state(false);
+
   /** OnTrackButton, _ToggleTracked */
   async function toggleTracked(plan: PersonalSkillPlanEntry): Promise<void> {
     if (!read) return;
@@ -463,6 +490,8 @@
           <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
           <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
         {/if}
+        <!-- saveButton: on every plan, a copy among the personal plans. -->
+        <button type="button" disabled={copying} title={word("UI/SkillPlan/SavePlan")} aria-label={word("UI/SkillPlan/SavePlan")} onclick={() => void savePlanCopy(plan)}>💾</button>
         <button type="button" class="skill-plan-track" class:tracked
           title={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
           aria-label={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
