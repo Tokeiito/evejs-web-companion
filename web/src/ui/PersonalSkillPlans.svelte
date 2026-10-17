@@ -104,6 +104,15 @@
   import type { CertifiedPlanEntry, CorpPlanEntry, GatewayNotice, SkillPlanLinkFollowed } from "../app/flow.ts";
   import { LINK_DRAG_TYPE, skillPlanUrl } from "../bridge/skillPlanLink.ts";
   import { CORP_PLANS_PER_PAGE, MAX_CORP_PLANS, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
+  import {
+    CAREER_BUTTON,
+    CAREER_HINT_LABELS,
+    CIRCULAR_BUTTON,
+    FACTION_HINT_LABELS,
+    SKILL_PLAN_INFO_ICON,
+    careerIcon,
+    factionIcon,
+  } from "./skillPlanIcons.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -117,6 +126,9 @@
     readonly planID?: number;
     /** A plan opened by its link that is none of the pilot's own (GetOwnedByOther): not editable, not trackable. */
     readonly linked?: true;
+    /** A certified plan's career path and faction (GetCareerPathID, GetFactionID). */
+    readonly careerPathID?: number | null;
+    readonly factionID?: number | null;
   };
 
   // svelte-ignore state_referenced_locally
@@ -173,6 +185,18 @@
     "UI/SkillPlan/CertifiedPlansHoverTooltip": "Plans made for each career path.",
     "UI/SkillPlan/SelectCareerPathHint": "Choose a career path",
     "UI/SkillPlan/CareerPathsLockedByAIR": "Finish the AIR plan to open the career paths.",
+    // The opened plan's faction and career path icons' tooltips (selectedSkillPlanContainer.py LoadFactionTooltip,
+    // LoadCareerTooltip: HINT_BY_FACTION_ID, HINT_BY_CAREER_ID).
+    "UI/SkillPlan/SkillPlanFaction": "Faction",
+    "UI/SkillPlan/SkillPlanCareerPath": "Career path",
+    "UI/SkillPlan/SkillPlanFactionAmarr": "A plan for a pilot of the Amarr Empire.",
+    "UI/SkillPlan/SkillPlanFactionGallente": "A plan for a pilot of the Gallente Federation.",
+    "UI/SkillPlan/SkillPlanFactionMinmatar": "A plan for a pilot of the Minmatar Republic.",
+    "UI/SkillPlan/SkillPlanFactionCaldari": "A plan for a pilot of the Caldari State.",
+    "UI/SkillPlan/SkillPlanCareerPathEnforcer": "A plan for the Enforcer's path.",
+    "UI/SkillPlan/SkillPlanCareerPathExplorer": "A plan for the Explorer's path.",
+    "UI/SkillPlan/SkillPlanCareerPathIndustrial": "A plan for the Industrialist's path.",
+    "UI/SkillPlan/SkillPlanCareerPathSoldier": "A plan for the Soldier of Fortune's path.",
     "UI/SkillPlan/CertifiedSkillPlan": "Ready-made plan",
     "UI/SkillPlan/SavePlan": "Keep a copy among your own plans",
     "UI/SkillPlan/CorpPlans": "My corporation's plans",
@@ -306,6 +330,44 @@
   const corpShown = $derived(corpAll.slice(corpPage * CORP_PLANS_PER_PAGE, (corpPage + 1) * CORP_PLANS_PER_PAGE));
   /** The editor's Category choices after None (_GetCategoryComboOptions: the career paths in the table's order). */
   const corpCategories = $derived((certified?.careerPaths ?? []).map((career) => ({ id: career.careerPathID, name: message(career.nameID) })));
+
+  // certifiedPlansPanel._OnSizeChange_NoBlock (158 to 164): under 550 high or 860 wide, the career paths are plain
+  // buttons with their names (SimpleCareerPathToggleButtonGroupButton); else each its picture, its name and its info
+  // icon (CareerPathToggleButtonGroupButton). Measured on the window's body below the panel's tabs.
+  let sectionElement = $state<HTMLElement | null>(null);
+  let headElement = $state<HTMLElement | null>(null);
+  let limitedHeight = $state(true);
+  $effect(() => {
+    const host = sectionElement?.parentElement ?? null;
+    if (host === null || typeof ResizeObserver === "undefined") return;
+    const measure = (): void => {
+      const height = host.clientHeight - (headElement?.offsetHeight ?? 0);
+      limitedHeight = height < 550 || host.clientWidth < 860;
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    measure();
+    return () => observer.disconnect();
+  });
+
+  /**
+   * UpdateFactionIcon and UpdateCareerPathIcon: an opened plan's faction icon (ICON_BY_FACTION_ID, a certified plan's
+   * faction) and career path icon (CAREERS_32_SIZES, where GetCareerPathID is one: a certified plan's career path, a
+   * corporation plan's category), each with its tooltip's header and text (LoadFactionTooltip, LoadCareerTooltip).
+   */
+  function viewIcons(plan: OpenedPlan): { readonly kind: "faction" | "career"; readonly src: string; readonly title: string }[] {
+    const icons: { readonly kind: "faction" | "career"; readonly src: string; readonly title: string }[] = [];
+    const faction = plan.factionID ? factionIcon(plan.factionID) : null;
+    if (faction !== null && plan.factionID) {
+      icons.push({ kind: "faction", src: faction, title: `${word("UI/SkillPlan/SkillPlanFaction")}\n${word(FACTION_HINT_LABELS.get(plan.factionID) ?? "")}` });
+    }
+    const careerPathID = plan.certified ? plan.careerPathID ?? null : plan.corp ? plan.categoryID ?? null : null;
+    const career = careerPathID ? careerIcon(careerPathID, 32) : null;
+    if (career !== null && careerPathID) {
+      icons.push({ kind: "career", src: career, title: `${word("UI/SkillPlan/SkillPlanCareerPath")}\n${word(CAREER_HINT_LABELS.get(careerPathID) ?? "")}` });
+    }
+    return icons;
+  }
 
   onMount(() => {
     flow.requestWords([...Object.keys(OWN), ...SHORT_INTERVAL_WORD_LABELS]);
@@ -936,8 +998,8 @@
   );
 </script>
 
-<section>
-  <header class="panel-head">
+<section bind:this={sectionElement}>
+  <header class="panel-head" bind:this={headElement}>
     <div class="skill-plan-tabs" role="tablist">
       <button type="button" role="tab" aria-selected={shownPanel === "certified"} class:selected={shownPanel === "certified"}
         title={word("UI/SkillPlan/CertifiedPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("certified"); }}>{word("UI/SkillPlan/CertifiedPlans")}</button>
@@ -952,6 +1014,18 @@
       <button type="button" disabled={busy} onclick={() => { void load(); void loadCertified(); if (inCorp) void loadCorp(); }}>Refresh</button>
     </span>
   </header>
+  <!-- ToggleButtonGroupButtonCircular: from the back, the stroke (0.1), the fill (selected; half hovered), the glow
+       (selected, twice the button's size) and the 32px icon (white; black selected); its name where it has no icon. -->
+  {#snippet circularArt(icon: string | null, label: string)}
+    <img class="circular-stroke" src={CIRCULAR_BUTTON.stroke} alt="" />
+    <img class="circular-fill" src={CIRCULAR_BUTTON.fill} alt="" />
+    <img class="circular-glow" src={CIRCULAR_BUTTON.glow} alt="" />
+    {#if icon !== null}
+      <img class="circular-icon" src={icon} alt="" />
+    {:else}
+      <span class="circular-label">{label}</span>
+    {/if}
+  {/snippet}
   {#snippet planCard(plan: OpenedPlan, withMenu: boolean)}
     {@const shown = plan.progress ? planProgressAt(plan.progress, now) : null}
     <li onmouseenter={(event) => showTip(plan, event)} onmouseleave={() => hideTip(plan)}
@@ -1009,6 +1083,16 @@
         <span class="skill-plan-view-name">{plan.name}</span>
         <button type="button" class="skill-plan-close" aria-label="Close" onclick={close}>✕</button>
       </div>
+      <!-- ConstructIconCont, UpdateFactionIcon, UpdateCareerPathIcon: the plan's faction at the left and its career path
+           at the right (a certified plan's; a corporation's category is its career path), each at half opacity, with
+           its tooltip. -->
+      {#if viewIcons(plan).length > 0}
+        <div class="skill-plan-view-icons">
+          {#each viewIcons(plan) as icon (icon.kind)}
+            <img class={icon.kind} src={icon.src} alt="" width="32" height="32" title={icon.title} />
+          {/each}
+        </div>
+      {/if}
       <div class="skill-plan-view-buttons">
         <!-- UpdateInformation: Edit and Delete only where the plan is editable (IsEditable: not a certified one; a
              corporation's only with corpRoleSkillPlanManager). -->
@@ -1161,12 +1245,38 @@
       {#if !certified.airFinished && airPlan !== null}
         <ul class="skill-plan-cards skill-plan-air">{@render planCard(airPlan, false)}</ul>
       {/if}
-      <div class="skill-plan-careers" role="tablist">
+      <div class="skill-plan-careers" class:pictured={!limitedHeight} role="tablist">
         {#each certified.careerPaths as career (career.careerPathID)}
-          <button type="button" role="tab" disabled={!certified.airFinished} aria-selected={careerPathID === career.careerPathID}
-            class:selected={careerPathID === career.careerPathID}
-            title={certified.airFinished ? message(career.descriptionID) : word("UI/SkillPlan/CareerPathsLockedByAIR")}
-            onclick={() => chooseCareer(career.careerPathID)}>{message(career.nameID)}</button>
+          {@const picture = limitedHeight ? null : careerIcon(career.careerPathID, 128)}
+          {#if picture === null}
+            <button type="button" role="tab" disabled={!certified.airFinished} aria-selected={careerPathID === career.careerPathID}
+              class:selected={careerPathID === career.careerPathID}
+              title={certified.airFinished ? message(career.descriptionID) : word("UI/SkillPlan/CareerPathsLockedByAIR")}
+              onclick={() => chooseCareer(career.careerPathID)}>{message(career.nameID)}</button>
+          {:else}
+            <!-- CareerPathToggleButtonGroupButton: in a 270 by 290 frame, from the back, the two lines (at 80 to either
+                 side, 92 selected), the selection highlight (smoke blue, 0.2 selected), the hexagon (0.1; 0.5 hovered,
+                 1 selected), the glow (0.2; 0.8 selected), the fixed frame and the 80px icon (white; black selected);
+                 under it the career's name and its info icon, the career's description its hint. -->
+            <button type="button" role="tab" class="career-path" disabled={!certified.airFinished} aria-selected={careerPathID === career.careerPathID}
+              class:selected={careerPathID === career.careerPathID}
+              title={certified.airFinished ? undefined : word("UI/SkillPlan/CareerPathsLockedByAIR")}
+              onclick={() => chooseCareer(career.careerPathID)}>
+              <span class="career-path-art" aria-hidden="true">
+                <span class="career-path-line left"></span>
+                <span class="career-path-line right"></span>
+                <span class="career-path-selection" style:mask-image={`url(${CAREER_BUTTON.selection})`} style:-webkit-mask-image={`url(${CAREER_BUTTON.selection})`}></span>
+                <img class="career-path-hexagon" src={CAREER_BUTTON.hexagon} alt="" />
+                <img class="career-path-glow" src={CAREER_BUTTON.glow} alt="" />
+                <img class="career-path-fixed" src={CAREER_BUTTON.fixed} alt="" />
+                <img class="career-path-icon" src={picture} alt="" />
+              </span>
+              <span class="career-path-title">
+                <span class="career-path-name">{message(career.nameID)}</span>
+                <img class="career-path-info" src={SKILL_PLAN_INFO_ICON} alt="" title={message(career.descriptionID)} />
+              </span>
+            </button>
+          {/if}
         {/each}
       </div>
       {#if certified.airFinished}
@@ -1174,11 +1284,23 @@
           <p class="skill-plan-hint">{word("UI/SkillPlan/SelectCareerPathHint")}</p>
         {:else}
           {#if careerPathID !== CAREER_PATH_INDUSTRIALIST}
+            <!-- ConstructEmpireFactionTabGroup: a line across, the four factions' round buttons in its middle 45%
+                 (EmpireFactionToggleButtonGroupButton: each its icon, the faction's name its hint). -->
             <div class="skill-plan-factions" role="radiogroup">
+              <span class="faction-line outer"></span>
               {#each empireFactions() as faction (faction)}
-                <button type="button" role="radio" aria-checked={factionID === faction} class:selected={factionID === faction}
-                  title={resolvedName($names.resolved, "faction", faction, "")} onclick={() => { factionID = faction; }}>{resolvedName($names.resolved, "faction", faction, String(faction))}</button>
+                {@const icon = factionIcon(faction)}
+                <span class="faction-slot">
+                  <span class="faction-line"></span>
+                  <button type="button" role="radio" class="circular" aria-checked={factionID === faction} class:selected={factionID === faction}
+                    title={resolvedName($names.resolved, "faction", faction, "")} aria-label={resolvedName($names.resolved, "faction", faction, String(faction))}
+                    onclick={() => { factionID = faction; }}>
+                    {@render circularArt(icon, resolvedName($names.resolved, "faction", faction, String(faction)))}
+                  </button>
+                  <span class="faction-line"></span>
+                </span>
               {/each}
+              <span class="faction-line outer"></span>
             </div>
           {/if}
           <ul class="skill-plan-cards">
@@ -1201,9 +1323,13 @@
       {#if corpRead.plans.length > 0}
         <div class="skill-plan-corp-filters">
           <div class="skill-plan-categories" role="group">
+            <!-- ToggleButtonGroupCircular: each career path's 32px icon (CAREERS_32_SIZES) on a 48px round button, its
+                 name the hint. -->
             {#each certified?.careerPaths ?? [] as career (career.careerPathID)}
-              <button type="button" aria-pressed={corpCategoryID === career.careerPathID} class:selected={corpCategoryID === career.careerPathID}
-                title={message(career.nameID)} onclick={() => chooseCorpCategory(career.careerPathID)}>{message(career.nameID)}</button>
+              <button type="button" class="circular" aria-pressed={corpCategoryID === career.careerPathID} class:selected={corpCategoryID === career.careerPathID}
+                title={message(career.nameID)} aria-label={message(career.nameID)} onclick={() => chooseCorpCategory(career.careerPathID)}>
+                {@render circularArt(careerIcon(career.careerPathID, 32), message(career.nameID))}
+              </button>
             {/each}
           </div>
           <span class="skill-plan-num-shown">{word("UI/SkillPlan/NumShown", { numShown: corpShown.length, numTotal: corpRead.plans.length })}</span>
@@ -1256,11 +1382,58 @@
 </section>
 
 <style>
-  .skill-plan-tabs, .skill-plan-careers, .skill-plan-factions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-  .skill-plan-tabs button.selected, .skill-plan-careers button.selected, .skill-plan-factions button.selected { outline: 1px solid currentColor; }
+  .skill-plan-tabs, .skill-plan-careers { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .skill-plan-tabs button.selected, .skill-plan-careers button.selected:not(.career-path) { outline: 1px solid currentColor; }
   .skill-plan-careers { margin: 0.5rem 0; }
   .skill-plan-careers button { flex: 1; min-height: 2.5rem; }
-  .skill-plan-factions { justify-content: center; margin-bottom: 0.75rem; }
+  /* The career paths' pictures (CareerPathToggleButtonGroupButton), the group 315 high with 50 below. */
+  .skill-plan-careers.pictured { flex-wrap: nowrap; gap: 0; margin: 0 0 50px; height: 315px; }
+  .career-path { position: relative; flex: 1; min-width: 0; height: 315px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  .career-path:disabled { cursor: default; }
+  .career-path-art { position: absolute; left: 50%; top: 0; width: 270px; height: 290px; transform: translateX(-50%); pointer-events: none; }
+  .career-path-art > * { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  .career-path-line { width: 2px; height: 45px; background: #ffffff; opacity: 0.6; transition: opacity 0.15s, margin-left 0.15s; }
+  .career-path-line.left { margin-left: -80px; }
+  .career-path-line.right { margin-left: 80px; }
+  .career-path-selection { width: 246px; height: 279px; background: #305665; opacity: 0; mask-size: 100% 100%; -webkit-mask-size: 100% 100%; transition: opacity 0.15s; }
+  .career-path-hexagon { width: 140px; height: 162px; opacity: 0.1; transition: opacity 0.15s; }
+  .career-path-glow { width: 270px; height: 290px; opacity: 0.2; transition: opacity 0.15s; }
+  .career-path-fixed { width: 182px; height: 162px; }
+  .career-path-icon { width: 80px; height: 80px; transition: filter 0.15s; }
+  .career-path:not(:disabled):not(.selected):hover .career-path-hexagon { opacity: 0.5; }
+  .career-path.selected .career-path-line { opacity: 1; }
+  .career-path.selected .career-path-line.left { margin-left: -92px; }
+  .career-path.selected .career-path-line.right { margin-left: 92px; }
+  .career-path.selected .career-path-selection { opacity: 0.2; }
+  .career-path.selected .career-path-hexagon { opacity: 1; }
+  .career-path.selected .career-path-glow { opacity: 0.8; }
+  .career-path.selected .career-path-icon { filter: brightness(0); }
+  .career-path:disabled .career-path-icon { opacity: 0.1; }
+  .career-path-title { position: absolute; left: 50%; bottom: 0; height: 30px; display: flex; align-items: center; gap: 10px; transform: translateX(-50%);
+    white-space: nowrap; font-size: 1.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .career-path-info { width: 20px; height: 20px; }
+  /* The empire factions: 48 high, 25 above and below; the line at 0.1 across, broken by each round button. */
+  .skill-plan-factions { display: flex; align-items: center; height: 48px; margin: 25px 0; }
+  .faction-line { flex: 1; height: 2px; background: #ffffff; opacity: 0.1; }
+  .faction-line.outer { flex: 0 0 27.5%; }
+  .faction-slot { flex: 1; display: flex; align-items: center; }
+  /* ToggleButtonGroupButtonCircular, 48 round with a 32 icon. */
+  .circular { position: relative; flex: none; width: 48px; height: 48px; min-height: 0; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; }
+  .circular > * { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+  .circular-stroke, .circular-fill { width: 48px; height: 48px; }
+  .circular-stroke { opacity: 0.1; }
+  .circular-fill { opacity: 0; transition: opacity 0.15s; }
+  .circular-glow { width: 96px; height: 96px; max-width: none; opacity: 0; transition: opacity 0.15s; }
+  .circular-icon { width: 32px; height: 32px; transition: filter 0.15s; }
+  .circular-label { font-size: 0.9rem; white-space: nowrap; }
+  .circular:not(.selected):hover .circular-fill { opacity: 0.5; }
+  .circular.selected .circular-fill, .circular.selected .circular-glow { opacity: 1; }
+  .circular.selected .circular-icon { filter: brightness(0); }
+  .circular.selected .circular-label { color: #000000; }
+  /* The opened plan's faction and career path icons (ConstructIconCont: 32 high, 6 above, each at half opacity). */
+  .skill-plan-view-icons { display: flex; justify-content: space-between; height: 32px; margin-top: 6px; }
+  .skill-plan-view-icons img { opacity: 0.5; }
+  .skill-plan-view-icons img.career { margin-left: auto; }
   .skill-plan-hint { text-align: center; font-size: 1.1rem; opacity: 0.8; }
   .skill-plan-air { max-width: 20rem; margin: 0 auto 0.75rem; }
   /* corpPlansPanel: the category buttons at the left, NumShown and the filter at the right; the page buttons below. */
@@ -1268,7 +1441,7 @@
   .skill-plan-categories, .skill-plan-pages { display: flex; flex-wrap: wrap; gap: 0.35rem; }
   .skill-plan-categories { flex: 1; }
   .skill-plan-pages { margin-top: 0.75rem; }
-  .skill-plan-categories button.selected, .skill-plan-pages button.selected { outline: 1px solid currentColor; }
+  .skill-plan-pages button.selected { outline: 1px solid currentColor; }
   /* SkillPlanScroll: as many to a row as fit at 325 wide, each entry 134 high. */
   .skill-plan-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
   .skill-plan-card { position: relative; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 0.5rem;
