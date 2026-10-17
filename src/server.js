@@ -13866,6 +13866,25 @@ app.get("/api/client-data/fighter-abilities", requireAuth, async (req, res, next
   }
 });
 
+// The ships' info bubble elements (cfg.infoBubbleTypeElements): of each type asked, up to 50, its elements in its
+// slots' order, or null for one that has none. The Fitting window's tanking warnings go by them
+// (fittingWarnings.GetProblematicShipAndTankingCombo).
+app.get("/api/client-data/info-bubble-elements", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const table = typeof clientBuiltData.infoBubbleTypeElements === "function" ? await clientBuiltData.infoBubbleTypeElements() : null;
+    const types = {};
+    for (const typeID of asked.slice(0, 50)) types[typeID] = table ? table[String(typeID)] ?? null : null;
+    res.json({ ok: true, available: table !== null, types });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/clone-grade", requireAuth, async (req, res, next) => {
   const raceID = Number(req.query && req.query.raceID);
   if (!Number.isSafeInteger(raceID) || raceID <= 0) {

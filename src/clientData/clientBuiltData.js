@@ -358,6 +358,42 @@ function createClientBuiltData({
     return infoBubbleTypeBonusesRead;
   }
 
+  // The ships' info bubble elements, once (INFO_BUBBLES, its infoBubbleTypeElements: eveCfg.LoadCfgData's
+  // cfg.infoBubbleTypeElements, each type's 'elements'): by ship type, the element of each of its slots, in their order;
+  // null where they cannot be read.
+  let infoBubbleTypeElementsRead = null;
+  function infoBubbleTypeElements() {
+    if (!available()) return Promise.resolve(null);
+    if (!infoBubbleTypeElementsRead) {
+      infoBubbleTypeElementsRead = Promise.resolve().then(() => {
+        const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
+        const relative = index.get(INFO_BUBBLES);
+        if (!relative) throw new Error(`The client's index has no ${INFO_BUBBLES}.`);
+        const { DatabaseSync } = require("node:sqlite");
+        const database = new DatabaseSync(path.join(clientRoot, "ResFiles", relative), { readOnly: true });
+        try {
+          const row = database.prepare("SELECT value FROM cache WHERE key = ?").get("infoBubbleTypeElements");
+          const types = row ? JSON.parse(String(row.value)) : null;
+          if (!types || typeof types !== "object") throw new Error("The client's ship tree has no type elements.");
+          const out = {};
+          for (const [key, value] of Object.entries(types)) {
+            const elements = value && typeof value === "object" ? value.elements : null;
+            if (Number(key) > 0 && elements && typeof elements === "object") {
+              out[key] = Object.keys(elements).sort((a, b) => Number(a) - Number(b)).map((slot) => Number(elements[slot])).filter((id) => Number.isFinite(id));
+            }
+          }
+          return out;
+        } finally {
+          database.close();
+        }
+      }).catch((error) => {
+        onError(error);
+        return null;
+      });
+    }
+    return infoBubbleTypeElementsRead;
+  }
+
   // The alpha clone's skills, once (CLONE_GRADES): {raceID: {skillTypeID: level}}, or null where they cannot be read.
   let cloneGradesRead = null;
   function cloneGrades() {
@@ -438,6 +474,7 @@ function createClientBuiltData({
     rows,
     infoBubbleGroups,
     infoBubbleTypeBonuses,
+    infoBubbleTypeElements,
     cloneGrades,
     fighterAbilitiesByType,
     async lookup(name, key) {

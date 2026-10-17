@@ -4,9 +4,10 @@
 // its level, the slots it is shown on and the rows under it, in the tooltip's order.
 //
 // Reckoned so far: the missing subsystems, modules in slots the hull has not, the CPU, powergrid and calibration
-// overloaded, the cargo hold overloaded, mixed turret groups, launcher groups and turret sizes, polarized weapons and
-// offline modules. Not yet: the tanking warnings, the modules giving no bonus, the missing charges, the stacking
-// penalties, the propulsion modules' and bubble immunity's.
+// overloaded, the cargo hold overloaded, the tanking warnings (dual tanked, a shield hull armour tanked and the other
+// way round), mixed turret groups, launcher groups and turret sizes, polarized weapons, offline modules, undersized and
+// inefficient propulsion modules, and bubble immunity disabled. Not yet: the modules giving no bonus, the missing
+// charges and the stacking penalties.
 
 import type { DogmaStatic } from "./location.ts";
 
@@ -151,6 +152,28 @@ const SUBSYSTEM_INFO_BY_SLOT: Readonly<Record<number, { readonly groupID: number
   127: { groupID: 956, icon: "res:/UI/Texture/Icons/81_64_12.png" },
   128: { groupID: 957, icon: "res:/UI/Texture/Icons/81_64_13.png" },
 };
+/** evetypes TYPE_LIST_FITTING_WARNINGS_SHIELD, ARMOR, HULL: the tanking modules of each layer. */
+export const TYPE_LIST_FITTING_WARNINGS_SHIELD = 145;
+export const TYPE_LIST_FITTING_WARNINGS_ARMOR = 146;
+export const TYPE_LIST_FITTING_WARNINGS_HULL = 147;
+/** The type lists the warnings go by, to read for the fitted types. */
+export const WARNING_TYPE_LISTS: readonly number[] = [TYPE_LIST_FITTING_WARNINGS_SHIELD, TYPE_LIST_FITTING_WARNINGS_ARMOR, TYPE_LIST_FITTING_WARNINGS_HULL];
+/** fittingWarningConst INFO_BUBBLE_SHIELD, INFO_BUBBLE_ARMOR, INFO_BUBBLE_SHIELD_OR_ARMOR: a hull's tanking elements. */
+const INFO_BUBBLE_SHIELD = 20;
+const INFO_BUBBLE_ARMOR = 7;
+const INFO_BUBBLE_SHIELD_OR_ARMOR = 2046;
+/** NON_PROP_MOD_GROUPS (groupFreighter), groupPropulsionModule, groupInterdictionNullifier. */
+const GROUP_FREIGHTER = 513;
+const GROUP_PROPULSION_MODULE = 46;
+const GROUP_INTERDICTION_NULLIFIER = 4117;
+/** dogma const attributeMass, attributeSpeedBoostFactor, attributeWarpBubbleImmune, attributeWarpBubbleImmuneModifier. */
+const ATTRIBUTE_MASS = 4;
+const ATTRIBUTE_SPEED_BOOST_FACTOR = 567;
+const ATTRIBUTE_WARP_BUBBLE_IMMUNE = 1538;
+const ATTRIBUTE_WARP_BUBBLE_IMMUNE_MODIFIER = 1539;
+/** MASS_SPEEDBOOST_MAX_RATIO. */
+const MASS_SPEEDBOOST_MAX_RATIO = 2.0;
+
 /** shipmode/data.py _DATA: the hulls that have stances (ship_has_stances). */
 const HULLS_WITH_STANCES: ReadonlySet<number> = new Set([34317, 34562, 34828, 35683, 89808, 89807]);
 
@@ -183,6 +206,12 @@ export interface FitWarningInputs {
   readonly cargo: { readonly capacity: number; readonly used: number } | null;
   /** FindOfflineModules: the ship's offline modules, (typeID, flagID); none while simulating. */
   readonly offlineModules: readonly (readonly [number, number])[];
+  /** The dogma location's GetFittedItemsToShip: each item fitted to the ship, (typeID, flagID). */
+  readonly fittedItems: readonly (readonly [number, number])[];
+  /** The type lists a type is on, of the warnings' (WARNING_TYPE_LISTS). */
+  readonly typeLists: (typeID: number) => ReadonlySet<number>;
+  /** cfg.infoBubbleTypeElements of the ship's type: its elements; null where it has none. */
+  readonly shipElements: readonly number[] | null;
 }
 
 function typeAttribute(staticData: DogmaStatic, typeID: number, attributeID: number): number | null {
@@ -254,6 +283,32 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
   if (shipType?.categoryID !== CATEGORY_STRUCTURE && inputs.cargo !== null && isOverloaded(inputs.cargo.capacity - inputs.cargo.used)) {
     found.set(WARNING.OVERLOADED_CARGO, { flags: [FLAG_CARGO], rows: [] });
   }
+  // GetModulesByTankGroup: each fitted module on the armour list, else the shield list, else the hull list.
+  const shieldModules: [number, number][] = [];
+  const armorModules: [number, number][] = [];
+  for (const [typeID, flagID] of fittedModules) {
+    const lists = inputs.typeLists(typeID);
+    if (lists.has(TYPE_LIST_FITTING_WARNINGS_ARMOR)) armorModules.push([typeID, flagID]);
+    else if (lists.has(TYPE_LIST_FITTING_WARNINGS_SHIELD)) shieldModules.push([typeID, flagID]);
+  }
+  // GetShieldArmorDualTankingModules: shield modules and armour modules both, every one of them.
+  if (shieldModules.length > 0 && armorModules.length > 0) {
+    found.set(WARNING.DUAL_TANKED, { flags: [...shieldModules, ...armorModules].map(([, flagID]) => flagID), rows: [] });
+  }
+  // GetProblematicShipAndTankingCombo (GetProblematicCombo): a hull of one tanking kind by its info bubble elements, none
+  // where one is shield or armour; a shield hull's armour modules, an armour hull's shield modules.
+  const elements = new Set(inputs.shipElements ?? []);
+  if (!elements.has(INFO_BUBBLE_SHIELD_OR_ARMOR)) {
+    const isShieldShip = elements.has(INFO_BUBBLE_SHIELD);
+    const isArmorShip = elements.has(INFO_BUBBLE_ARMOR);
+    if (Number(isShieldShip) + Number(isArmorShip) === 1) {
+      if (isShieldShip && armorModules.length > 0) {
+        found.set(WARNING.ARMOR_TANKED_SHIELD_SHIP, { flags: armorModules.map(([, flagID]) => flagID), rows: [] });
+      } else if (isArmorShip && shieldModules.length > 0) {
+        found.set(WARNING.SHIELD_TANKED_ARMOR_SHIP, { flags: shieldModules.map(([, flagID]) => flagID), rows: [] });
+      }
+    }
+  }
   // GetMixedTurrets: the high slots' turrets by their weapon group (a civilian turret its HARD_CODED_GROUPIDS group),
   // more than one group.
   const turretsByGroup = groupedBy(highSlotModules, (typeID) => {
@@ -299,6 +354,29 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
   const polarized = fittedModules.filter(([typeID]) =>
     hasEffect(staticData, typeID, EFFECT_RESISTANCE_KILLER_HULL_ALL) || hasEffect(staticData, typeID, EFFECT_RESISTANCE_KILLER_SHIELD_ARMOR_ALL));
   if (polarized.length > 0) found.set(WARNING.POLARIZED_WEAPONS, { flags: polarized.map(([, flagID]) => flagID), rows: [] });
+
+  // FindUndersizedPropMod: not a freighter; each fitted module with a speedBoostFactor, the hull's mass over it above
+  // MASS_SPEEDBOOST_MAX_RATIO (the type's figures).
+  if (shipType?.groupID !== GROUP_FREIGHTER) {
+    const mass = typeAttribute(staticData, shipTypeID, ATTRIBUTE_MASS);
+    const undersized = fittedModules.filter(([typeID]) => {
+      const boostFactor = typeAttribute(staticData, typeID, ATTRIBUTE_SPEED_BOOST_FACTOR);
+      return boostFactor !== null && mass !== null && mass / boostFactor > MASS_SPEEDBOOST_MAX_RATIO;
+    });
+    if (undersized.length > 0) found.set(WARNING.UNDERSIZED_PROP_MOD, { flags: undersized.map(([, flagID]) => flagID), rows: [] });
+  }
+  // FindInefficientPropMod: a freighter's fitted propulsion modules.
+  if (shipType?.groupID === GROUP_FREIGHTER) {
+    const inefficient = fittedModules.filter(([typeID]) => staticData.types[typeID]?.groupID === GROUP_PROPULSION_MODULE);
+    if (inefficient.length > 0) found.set(WARNING.INEFFICIENT_PROP_MOD, { flags: inefficient.map(([, flagID]) => flagID), rows: [] });
+  }
+  // FindModsDisablingBubbleImmunity: of the items fitted to the ship, those with a warpBubbleImmuneModifier, where the
+  // hull is immune; with an interdiction nullifier fitted, those and the nullifiers.
+  const nullifiers = inputs.fittedItems.filter(([typeID]) => staticData.types[typeID]?.groupID === GROUP_INTERDICTION_NULLIFIER);
+  const disabling = inputs.fittedItems.filter(([typeID]) => typeAttribute(staticData, typeID, ATTRIBUTE_WARP_BUBBLE_IMMUNE_MODIFIER) !== null);
+  const immuneHull = typeAttribute(staticData, shipTypeID, ATTRIBUTE_WARP_BUBBLE_IMMUNE);
+  const bubbleWarned = immuneHull && disabling.length > 0 ? disabling : nullifiers.length > 0 && disabling.length > 0 ? [...disabling, ...nullifiers] : [];
+  if (bubbleWarned.length > 0) found.set(WARNING.DISABLED_BUBBLE_IMMUNITY, { flags: bubbleWarned.map(([, flagID]) => flagID), rows: [] });
 
   return TOOLTIP_ORDER.flatMap((warningID) => {
     const warning = found.get(warningID);

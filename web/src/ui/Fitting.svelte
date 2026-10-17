@@ -1190,6 +1190,18 @@
     "UI/Fitting/FittingWindow/Warnings/OfflineModulesHint": "These modules are fitted but not online.",
     "UI/Fitting/FittingWindow/Warnings/PolarizedWeaponsFittedShort": "A polarized weapon is fitted",
     "UI/Fitting/FittingWindow/Warnings/PolarizedWeaponsFittedHint": "A polarized weapon takes the ship's resistances away.",
+    "UI/Fitting/FittingWindow/Warnings/ShipIsDualTankedShort": "Shield and armour tanked together",
+    "UI/Fitting/FittingWindow/Warnings/ShipIsDualTankedHint": "Spreading the tank over shield and armour usually makes both weaker.",
+    "UI/Fitting/FittingWindow/Warnings/ArmorTankingShieldShipShort": "Armour tank on a shield hull",
+    "UI/Fitting/FittingWindow/Warnings/ArmorTankingShieldShipHint": "{[item]shipTypeID.name} is built for a shield tank; armour modules waste its bonuses.",
+    "UI/Fitting/FittingWindow/Warnings/ShieldTankingArmorShipShort": "Shield tank on an armour hull",
+    "UI/Fitting/FittingWindow/Warnings/ShieldTankingArmorShipHint": "{[item]shipTypeID.name} is built for an armour tank; shield modules waste its bonuses.",
+    "UI/Fitting/FittingWindow/Warnings/UndersizedPropModShort": "Propulsion module too small",
+    "UI/Fitting/FittingWindow/Warnings/UndersizedPropModHint": "This hull is too heavy for that propulsion module to move it well.",
+    "UI/Fitting/FittingWindow/Warnings/InefficientPropModShort": "Propulsion module wasted",
+    "UI/Fitting/FittingWindow/Warnings/InefficientPropModHint": "A freighter gains little from a propulsion module.",
+    "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledShort": "Bubble immunity lost",
+    "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledHint": "A fitted module takes away the hull's immunity to warp bubbles.",
     "UI/InfoWindow/SmallSize": "Small",
     "UI/InfoWindow/MediumSize": "Medium",
     "UI/InfoWindow/LargeSize": "Large",
@@ -1414,6 +1426,10 @@
   function warningHint(warningID: number): string {
     const hint = WARNINGS_BY_ID[warningID]?.hint;
     if (!hint) return "";
+    // The tanking ones name the hull (GetByLabel(hintPath, shipTypeID=fittingController.GetTypeID())).
+    if (warningID === WARNING.ARMOR_TANKED_SHIELD_SHIP || warningID === WARNING.SHIELD_TANKED_ARMOR_SHIP || warningID === WARNING.WRONG_TANKING) {
+      return simulationWord(hint, { shipTypeID: simulation ? simulation.shipTypeID : activeShipTypeID ?? 0 });
+    }
     if (warningID === WARNING.OVER_CPU_POWER || warningID === WARNING.OVER_CPU || warningID === WARNING.OVER_POWERGRID) {
       return simulationWord(hint, {
         cpuMgmtLink: moduleName(3426), weaponUpgradesLink: moduleName(3318), advancedWeaponUpgradesLink: moduleName(11207), powerGridMgmtLink: moduleName(3413),
@@ -1430,6 +1446,9 @@
   $effect(() => {
     // The names the tooltip's rows and hints need: the groups', the modules', the skills' the hints name.
     const refs: { kind: "type" | "group"; id: number }[] = [3426, 3318, 11207, 3413].map((id) => ({ kind: "type", id }));
+    // The hull a tanking hint names.
+    const hullTypeID = simulation ? simulation.shipTypeID : activeShipTypeID;
+    if (hullTypeID !== null) refs.push({ kind: "type", id: hullTypeID });
     for (const warning of fitWarnings) {
       for (const row of warning.rows) {
         if (row.kind === "module") refs.push({ kind: "type", id: row.typeID });
