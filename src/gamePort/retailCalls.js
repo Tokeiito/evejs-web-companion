@@ -653,6 +653,7 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "corpFittingMgr.SaveFitting", "corpFittingMgr.UpdateFitting", "corpFittingMgr.UpdateNameAndDescription",
   "allianceFittingMgr.SaveFitting", "allianceFittingMgr.UpdateFitting", "allianceFittingMgr.UpdateNameAndDescription",
   "corpFittingMgr.DeleteFitting", "allianceFittingMgr.DeleteFitting",
+  "corpFittingMgr.DeleteManyFittings", "allianceFittingMgr.DeleteManyFittings",
   // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
   "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
@@ -1918,6 +1919,9 @@ const RETAIL_CALLS = Object.freeze({
   "charFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID): fittingSvc.DeleteFitting, from fittingUtil.DeleteFittings of one fitting (the browser's Delete Fitting, after DeleteFitting's Yes). In no recording."),
   "corpFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID), the corporation's fitting manager, by one with the fitting manager's role (fittingUtil.CanDeleteFit). In no recording."),
   "allianceFittingMgr.DeleteFitting": same(`${FITTING_SVC}:435`, "GetFittingMgr(ownerID).DeleteFitting(ownerID, fittingID), the alliance's fitting manager, by one with the role whose corporation is the alliance's executor (fittingUtil.CanDeleteFit). In no recording."),
+  "charFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs): fittingSvc.DeleteManyFittings, one call for each owner at once (uthread.parallel), from fittingUtil.DeleteFittings of more than one (the browser's Delete Fitting with many selected, after DeleteFittingsManyOneOwner's or DeleteFittingsMany's Yes); the fittings deleted answered as a list. In no recording."),
+  "corpFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs), the corporation's fitting manager, for the corporation's fittings of the many selected, where fittingUtil.CanDeleteFit lets the pilot (GetDeletableNodes). In no recording."),
+  "allianceFittingMgr.DeleteManyFittings": same(`${FITTING_SVC}:448`, "GetFittingMgr(ownerID).DeleteManyFittings(ownerID, fittingIDs), the alliance's fitting manager, for the alliance's fittings of the many selected, where fittingUtil.CanDeleteFit lets the pilot. In no recording."),
   "corpFittingMgr.UpdateNameAndDescription": typing(same(`${FITTING_SVC}:720`, "GetFittingMgr(ownerID).UpdateNameAndDescription(fittingID, ownerID, name, description), the corporation's fitting manager for a fitting of the corporation's: as the pilot's (fittingMgmtCont.SaveExistingFitting, by one with the fitting manager's role). In no recording."), [2, 3]),
   "corpFittingMgr.SaveFitting": judged(`${FITTING_SVC}:304`, fittingSaved, "GetFittingMgr(ownerID).SaveFitting(ownerID, fitting), the corporation's fitting manager: as the pilot's (the fitting display's Save for Corporation, fittingMgmtCont.SaveNewFitting). In no recording."),
   "corpFittingMgr.UpdateFitting": judged(`${FITTING_SVC}:302`, fittingUpdated, "GetFittingMgr(ownerID).UpdateFitting(ownerID, fitting, fittingID=...), the corporation's fitting manager: as the pilot's, where the pilot said Yes to UpdateFitCorp. In no recording."),

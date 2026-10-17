@@ -55,3 +55,54 @@ export function intDictOrder(keys: readonly number[]): number[] {
   }
   return table.filter((entry): entry is Slot => entry !== undefined).map((entry) => entry.key);
 }
+
+/**
+ * A dict of whole-number keys as CPython 2.7 lays out its table, for the order it iterates in (no deletions; values
+ * are not kept). `set` is d[key] = value (PyDict_SetItem: the table grown when two-thirds full). `update` is
+ * d.update(other) and dict(other) of a dict (PyDict_Merge): the table first made big enough for both where the two
+ * would pass two-thirds of it, then the other's keys put in the order it iterates in, with no growing after
+ * (insertdict). Whole numbers within 32 bits only.
+ *
+ * The size the merge grows to is the client's python27.dll's, measured (sys.getsizeof of a dict after update, for
+ * one to 39 keys into an empty dict and into one of one key): above four times the count of both (six keys into an
+ * empty dict make a table of 32, eight of 64), where CPython 2.7's own source reads twice.
+ */
+export class IntDict {
+  private table: (Slot | undefined)[] = new Array(MIN_TABLE_SIZE);
+  private used = 0;
+
+  set(key: number): void {
+    if (!Number.isInteger(key) || key < -2147483648 || key > 2147483647) throw new TypeError("A whole number within 32 bits is a dict key here.");
+    const hash = hashOf(key);
+    const slot = findSlot(this.table, hash, key);
+    if (this.table[slot] !== undefined) return;
+    this.table[slot] = { key, hash };
+    this.used += 1;
+    if (this.used * 3 >= this.table.length * 2) this.table = resized(this.table, (this.used > 50000 ? 2 : 4) * this.used);
+  }
+
+  update(other: IntDict): void {
+    const keys = other.keys();
+    if (keys.length === 0) return;
+    if ((this.used + keys.length) * 3 >= this.table.length * 2) this.table = resized(this.table, (this.used + keys.length) * 4);
+    for (const key of keys) {
+      const hash = hashOf(key);
+      const slot = findSlot(this.table, hash, key);
+      if (this.table[slot] !== undefined) continue;
+      this.table[slot] = { key, hash };
+      this.used += 1;
+    }
+  }
+
+  /** The keys in the order the dict iterates them: its table's slots in order. */
+  keys(): number[] {
+    return this.table.filter((entry): entry is Slot => entry !== undefined).map((entry) => entry.key);
+  }
+}
+
+/** A dict set with `keys` in that order (IntDict.set each). */
+export function intDictOf(keys: readonly number[]): IntDict {
+  const dict = new IntDict();
+  for (const key of keys) dict.set(key);
+  return dict;
+}

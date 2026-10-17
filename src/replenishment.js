@@ -52,13 +52,29 @@ function createReplenishment({ filePath = null, operations, data, now = Date.now
       fail("CHARACTER_IN_USE");
   }
   function enterWrite(pilot, lease = null) {
+    // A pilot's write while another of its writes is under way shares that one's reservation, and the last of them
+    // done lets it go: the client makes writes at once (fittingSvc.DeleteManyFittings asks each owner's fitting
+    // manager together, uthread.parallel), and the page makes them as it does. What assertWritable keeps out of a
+    // write (a replenishment's custody, a provisioning's control) it still keeps out.
+    const active = operations.get(pilot);
+    if (!lease && active?.kind === "bridge-write") {
+      assertWritable(pilot, active);
+      active.writes += 1;
+      return () => {
+        active.writes -= 1;
+        if (active.writes === 0 && operations.get(pilot) === active) operations.delete(pilot);
+      };
+    }
     assertWritable(pilot, lease);
     // Existing Factory/session lifecycle reservations already cover their
     // writes. The replenishment capability owns its entire Apply sequence.
     if (operations.has(pilot)) return () => {};
-    const reservation = { kind: "bridge-write" };
+    const reservation = { kind: "bridge-write", writes: 1 };
     operations.set(pilot, reservation);
-    return () => { if (operations.get(pilot) === reservation) operations.delete(pilot); };
+    return () => {
+      reservation.writes -= 1;
+      if (reservation.writes === 0 && operations.get(pilot) === reservation) operations.delete(pilot);
+    };
   }
   function assertSelectable(pilot) {
     const active = operations.get(pilot);

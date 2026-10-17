@@ -378,6 +378,7 @@ export async function selectCharacter(
       corporationID: asNumberOrNull(character.corporationID),
       allianceID: asNumberOrNull(character.allianceID),
       corpRole: typeof character.corpRole === "string" && /^\d+$/.test(character.corpRole) ? character.corpRole : null,
+      role: typeof character.role === "string" && /^\d+$/.test(character.role) ? character.role : null,
       corpAccountKey: asNumberOrNull(character.corpAccountKey),
       raceID: asNumberOrNull(character.raceID),
     },
@@ -3757,6 +3758,8 @@ export async function getTypePrices(
   readonly groupID: Readonly<Record<number, number | null>>;
   /** Each type's category (evetypes.GetCategoryID), or null. */
   readonly categoryID: Readonly<Record<number, number | null>>;
+  /** Whether each type is a dynamic one, made by a mutaplasmid (evetypes.IsDynamicType), or null. */
+  readonly dynamic: Readonly<Record<number, boolean | null>>;
 }> {
   const data = await getJson(`/api/client-data/type-prices?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
@@ -3771,7 +3774,9 @@ export async function getTypePrices(
   for (const [key, value] of Object.entries(record(data.groupID))) groupID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
   const categoryID: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.categoryID))) categoryID[Number(key)] = typeof value === "number" && Number.isSafeInteger(value) ? value : null;
-  return { available: data.available === true, basePrice, published, portionSize, groupID, categoryID };
+  const dynamic: Record<number, boolean | null> = {};
+  for (const [key, value] of Object.entries(record(data.dynamic))) dynamic[Number(key)] = typeof value === "boolean" ? value : null;
+  return { available: data.available === true, basePrice, published, portionSize, groupID, categoryID, dynamic };
 }
 
 /**

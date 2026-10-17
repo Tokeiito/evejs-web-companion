@@ -63,6 +63,10 @@ const TABLES = Object.freeze({
   // A type's portion size (evetypes.GetPortionSize), by which the market's average falls back to the base price where
   // nothing traded in the week (marketsvc.GetAveragePrice).
   typePortionSizes: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "portionSize" }),
+  // Whether a type is a dynamic one, an item made by a mutaplasmid (evetypes.IsDynamicType: the type's isDynamicType),
+  // which a GM's gift of what a fitting lacks passes over (missingItemsPopup.GiveOrLoadAllGM). Only the types that
+  // have it are listed.
+  typeDynamic: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "isDynamicType" }),
   // A dogma effect's name, the number of its message (dogma.data.get_effect_display_name: the effect's displayNameID),
   // which the fitting display heads each slot kind of a fitting with (fittingSvc.GetFittingInfoForScrollList).
   effectDisplayNames: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", attribute: "displayNameID" }),

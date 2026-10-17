@@ -5,8 +5,8 @@
     "bffWritePolicy": "evejs-web-poc/src/bridgeCallPolicy.js#BRIDGE_WRITE_PAIR_KEYS"
   },
   "gatewayAllowlist": {
-    "count": 717,
-    "sha256": "c257ca8d4c2bdb11011aef822039da6851aa19145e7efb746b39cf876533a6f4",
+    "count": 718,
+    "sha256": "6f713dd6f85bd21b005df78cc20490bb52e603dc6b773f1d2c0366c0f4a95df0",
     "pairs": [
       "LPStoreMgr.GetAvailableOffersFromCorp",
       "LPStoreMgr.TakeOfferForCharacter",
@@ -451,6 +451,7 @@
       "invbroker.GetItem",
       "invbroker.GetItemDescriptor",
       "invbroker.GetItems",
+      "invbroker.ImportExportWithPlanet",
       "invbroker.List",
       "invbroker.ListByFlags",
       "invbroker.ListDroneBay",
@@ -728,8 +729,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 408,
-    "sha256": "440d3fe0147856e2897265b91a4b471ea8398674ca4fff036a17f55f07c87956",
+    "count": 410,
+    "sha256": "f7b7ce8dcc254f608daa5022aec5a4f98324ffcbce53ce1577089963eee8c678",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -765,6 +766,7 @@
       "agentMgr.WarpToAgentInSpace",
       "agentMgr.WarpToLocation",
       "allianceFittingMgr.DeleteFitting",
+      "allianceFittingMgr.DeleteManyFittings",
       "allianceFittingMgr.SaveFitting",
       "allianceFittingMgr.UpdateFitting",
       "allianceFittingMgr.UpdateNameAndDescription",
@@ -852,6 +854,7 @@
       "contractProxy.PlaceBid",
       "contractProxy.SplitStack",
       "corpFittingMgr.DeleteFitting",
+      "corpFittingMgr.DeleteManyFittings",
       "corpFittingMgr.SaveFitting",
       "corpFittingMgr.SaveManyFittings",
       "corpFittingMgr.UpdateFitting",
@@ -1168,6 +1171,7 @@
       "agentMgr.RemoveOfferFromJournal",
       "agentMgr.WarpToLocation",
       "allianceFittingMgr.DeleteFitting",
+      "allianceFittingMgr.DeleteManyFittings",
       "allianceFittingMgr.SaveFitting",
       "allianceFittingMgr.UpdateFitting",
       "allianceFittingMgr.UpdateNameAndDescription",
@@ -1190,6 +1194,7 @@
       "beyonce.CmdWarpToStuff",
       "beyonce.CmdWarpToStuffAutopilot",
       "charFittingMgr.DeleteFitting",
+      "charFittingMgr.DeleteManyFittings",
       "charFittingMgr.SaveFitting",
       "charFittingMgr.UpdateFitting",
       "charFittingMgr.UpdateNameAndDescription",
@@ -1208,6 +1213,7 @@
       "charMgr.UnblockOwners",
       "contractProxy.AcceptContract",
       "corpFittingMgr.DeleteFitting",
+      "corpFittingMgr.DeleteManyFittings",
       "corpFittingMgr.SaveFitting",
       "corpFittingMgr.UpdateFitting",
       "corpFittingMgr.UpdateNameAndDescription",

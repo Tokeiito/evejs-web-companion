@@ -95,6 +95,43 @@
   const fittingsDeletable = flow.fittingsDeletable;
   /** GetDeletableNodes (fittingUtil.CanDeleteFit): the pilot's own, and the corporation's or the alliance's where it may. */
   const deletable = (source: string): boolean => source === "personal" || (source === "corporation" && $fittingsDeletable.corporation) || (source === "alliance" && $fittingsDeletable.alliance);
+  // The browser's selection, as its scroll keeps one (scroll.SelectNode, 550 to 598): a click on a fitting selects it
+  // alone; Ctrl, it added or taken out; Shift, the run of rows from the last clicked to it, alone (and the last
+  // clicked kept), or with Ctrl added to what is selected. By the fittings' numbers, the run by the rows as shown.
+  let selectedFittings = $state<readonly number[]>([]);
+  let lastSelectedFitting: number | null = null;
+  let browserSection = $state<HTMLElement | null>(null);
+  /** The fittings' rows as the browser shows them now, in order (the scroll's nodes). */
+  const shownFittingIDs = (): number[] => [...(browserSection?.querySelectorAll<HTMLElement>("[data-fitting-id]") ?? [])].map((row) => Number(row.dataset.fittingId));
+  function selectFitting(fittingID: number, event: MouseEvent): void {
+    const control = event.ctrlKey || event.metaKey;
+    const shift = event.shiftKey;
+    const rows = shownFittingIDs();
+    const from = lastSelectedFitting === null ? -1 : rows.indexOf(lastSelectedFitting);
+    const to = rows.indexOf(fittingID);
+    const run = from >= 0 && to >= 0 && from !== to ? rows.slice(Math.min(from, to), Math.max(from, to) + 1) : null;
+    if (!control && !shift) selectedFittings = [fittingID];
+    else if (control && !shift) {
+      selectedFittings = selectedFittings.includes(fittingID) ? selectedFittings.filter((id) => id !== fittingID) : [...selectedFittings, fittingID];
+    } else if (!control && shift) {
+      if (run !== null) {
+        selectedFittings = run;
+        return;
+      }
+      selectedFittings = [fittingID];
+    } else if (run !== null) selectedFittings = [...new Set([...selectedFittings, ...run])];
+    lastSelectedFitting = fittingID;
+  }
+  // A fitting no longer kept goes from the selection.
+  $effect(() => {
+    const kept = new Set(($savedFittings ?? []).map((fitting) => fitting.fittingID));
+    if (selectedFittings.some((id) => !kept.has(id))) selectedFittings = selectedFittings.filter((id) => kept.has(id));
+  });
+  /** GetDeletableNodes of the selection: those of it CanDeleteFit lets go. */
+  const selectedDeletable = $derived(selectedFittings.filter((id) => {
+    const fitting = ($savedFittings ?? []).find((each) => each.fittingID === id);
+    return fitting !== undefined && deletable(fitting.source);
+  }));
   /** inventorycommon/const.py categoryStructure. */
   const CATEGORY_STRUCTURE = 65;
   // svelte-ignore state_referenced_locally
@@ -1731,7 +1768,7 @@
   {/if}
 
   <!-- ===================== saved fittings ============================= -->
-  <section>
+  <section bind:this={browserSection}>
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
     <p class="controls">
       <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
@@ -1785,7 +1822,7 @@
       {#each mailBodyLines(text) as line, place (place)}{#if place > 0}{" "}{/if}{#each line as segment, at (at)}<span class="marked-run" class:bold={segment.bold} class:italic={segment.italic} class:underline={segment.underline || segment.link !== null}>{segment.text}</span>{/each}{/each}
     {/snippet}
     {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
-        <p class="controls saved-fitting">
+        <p class="controls saved-fitting" class:selected={selectedFittings.includes(saved.fittingID)} data-fitting-id={saved.fittingID}>
           {#if saved.source === "corporation"}
             <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
           {:else if saved.source === "community"}
@@ -1793,7 +1830,17 @@
           {:else if saved.source === "alliance"}
             <span title={fitWord("UI/Fitting/AllianceFittingHint")}>🛡</span>
           {/if}
-          <span title={fittingTooltip(saved)}>{@render markedText(saved.name)}</span>
+          <button type="button" class="fitting-name" title={fittingTooltip(saved)} aria-pressed={selectedFittings.includes(saved.fittingID)}
+            onclick={(event) => selectFitting(saved.fittingID, event)}>{@render markedText(saved.name)}</button>
+          {#if selectedFittings.length > 1 && selectedFittings.includes(saved.fittingID)}
+            <!-- GetFittingMenu with more than one selected (506 to 528): Delete Fitting alone, for those of them
+                 GetDeletableNodes lets go, in the browser's order. -->
+            {#if selectedDeletable.length > 0}
+              <button type="button" class="minor" onclick={() => void flow.deleteFittings(shownFittingIDs().filter((id) => selectedDeletable.includes(id))).catch(() => {})}>
+                {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
+              </button>
+            {/if}
+          {:else}
           <button type="button" class="minor" onclick={() => void flow.viewFitting(saved.fittingID).catch(() => {})}>
             {fitWord("UI/Fitting/FittingWindow/ViewFitting")}
           </button>
@@ -1816,6 +1863,7 @@
             <button type="button" class="minor" onclick={() => void flow.deleteFitting(saved.fittingID).catch(() => {})}>
               {fitWord("UI/Fitting/FittingWindow/FittingManagement/DeleteFitting")}
             </button>
+          {/if}
           {/if}
         </p>
     {/snippet}

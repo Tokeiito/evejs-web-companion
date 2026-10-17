@@ -23,8 +23,9 @@ function createPilotMutationFence({ heldSessions, assertWritable, enterWrite }) 
             for (const arg of args) if (arg && typeof arg === "object" && Number.isSafeInteger(arg.characterID)) pilots.add(arg.characterID);
             for (const pilot of pilots) {
               const capability = scope.getStore();
-              assertWritable(pilot, capability || null);
+              // enterWrite makes the same check, and lets a write join one of the pilot's already under way.
               if (enterWrite) releases.push(enterWrite(pilot, capability || null));
+              else assertWritable(pilot, capability || null);
             }
           }
           const result = fn.apply(target, args);

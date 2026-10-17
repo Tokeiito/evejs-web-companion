@@ -557,6 +557,7 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
+import { IntDict, intDictOf } from "../bridge/py27DictOrder.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -1063,6 +1064,14 @@ export interface ViewFittingAsk {
 }
 
 /** The client's Buy All box (missingItemsPopup.BuyAllMessageBox): what a fitting could not load, each type and how many. */
+/** The loading service's progress window (loading.ProgressWnd): its title, its text, and how far of how many. */
+export interface ProgressWndShown {
+  readonly title: string;
+  readonly text: string;
+  readonly portion: number;
+  readonly total: number;
+}
+
 export interface BuyAllAsk {
   readonly n: number;
   readonly missing: readonly { readonly typeID: number; readonly qty: number }[];
@@ -2315,8 +2324,13 @@ export interface AppFlow {
   buyFit(fittingID: number): Promise<void>;
   /** The client's Buy All box open now (ClientDialogs.svelte shows it); null with none. */
   readonly buyAllAsked: ReadableSignal<BuyAllAsk | null>;
-  /** Its Buy All (the multibuy window with what is missing, for the fitting), or Close. */
-  answerBuyAll(n: number, answer: "buy" | "close"): Promise<void>;
+  /**
+   * Its Buy All (the multibuy window with what is missing, for the fitting), its GM: Give all (GiveAllGM: a GM's
+   * /create of each, the box shown only to a session with ROLE_GML), or Close.
+   */
+  answerBuyAll(n: number, answer: "buy" | "gm-give-all" | "close"): Promise<void>;
+  /** The loading service's progress window up now (ClientDialogs.svelte shows it); null with none. */
+  readonly progressWnd: ReadableSignal<ProgressWndShown | null>;
   /** The fitting display window open now (ClientDialogs.svelte shows it); null with none. */
   readonly viewFittingAsked: ReadableSignal<ViewFittingAsk | null>;
   /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
@@ -2346,12 +2360,19 @@ export interface AppFlow {
    */
   answerMultiFit(n: number, answer: "fit" | "refresh" | "view" | "buy-missing" | "buy-ships" | "buy-equipment" | "close"): Promise<void>;
   /**
+   * A GM's buttons beside its Buy All (AddBuyAllBtn): GM: Give all (/create, for ROLE_WORLDMOD) and GM: Load me all
+   * (/load me, for ROLE_GML) of what is missing: all, the ships' or the equipment's.
+   */
+  multiFitGm(n: number, which: "missing" | "ships" | "equipment", slashCmd: "create" | "load me"): Promise<void>;
+  /**
    * Its Save (fittingMgmtCont.Save, SaveExistingFitting, fittingSvc.ChangeNameAndDescription) for the pilot's own
    * fitting: the name and the description as edited, and the window closed.
    */
   saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void>;
   /** Whether the window's Save menu offers Save for Alliance (the pilot's corporation its alliance's executor). */
   saveForAllianceOffered(): Promise<boolean>;
+  /** session.corprole & corpRoleFittingManager: whether Save's tooltip panel is shown (LoadSaveBtnTooltipPanel). */
+  hasFittingManagerRole(): boolean;
   /** The window's setting useFittingNameForShips: a ship named after a fitting loaded on it. */
   readonly useFittingNameForShips: ReadableSignal<boolean>;
   setUseFittingNameForShips(on: boolean): void;
@@ -2372,6 +2393,12 @@ export interface AppFlow {
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
    */
   deleteFitting(fittingID: number): Promise<void>;
+  /**
+   * The browser's Delete Fitting with fittings selected (fittingBrowser.GetFittingMenu, GetDeletableNodes and
+   * fittingUtil.DeleteFittings), given in the browser's order: one as deleteFitting; more, the question for many,
+   * each owner's DeleteManyFittings, and DeletedManyFittings said.
+   */
+  deleteFittings(fittingIDs: readonly number[]): Promise<void>;
   /** Its import of a shopping list from the clipboard's text, or null where the clipboard could not be read. */
   importMultiBuy(n: number, text: string | null): Promise<void>;
   /**
@@ -3714,6 +3741,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (Number.isSafeInteger(fittingID) && fittingID > 0) fittingLetGo(fittingID);
       return;
     }
+    // fittingSvc.OnManyFittingsDeleted(ownerID, fitIDs) (1085 to 1095): each let go from those kept. The client lets
+    // its many deleted go by this alone (DeleteManyFittings keeps none of its own).
+    if (method === "OnManyFittingsDeleted") {
+      const fitIDs = Array.isArray(args[1]) ? (args[1] as readonly unknown[]) : isListValue(args[1]) ? args[1].items : [];
+      for (const each of fitIDs) {
+        const fittingID = Number(each);
+        if (Number.isSafeInteger(fittingID) && fittingID > 0) fittingLetGo(fittingID);
+      }
+      return;
+    }
     // MarketProgressionNotifier.OnMarketEscrowChanged: the kept escrow is to be asked again (once its last asking is
     // twelve hours old).
     if (method === "OnMarketEscrowChanged") {
@@ -3750,7 +3787,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
-    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey")) {
+    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey" || name === "role")) {
       const ownerOf = (value: unknown): number | null => {
         const id = Number(wholeDigits(value) ?? Number.NaN);
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -3761,6 +3798,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("allianceid") ? { allianceID: ownerOf(sessionChangeValue(method, args, "allianceid")) } : {}),
         ...(sessionNames.includes("corprole") ? { corpRole: wholeDigits(sessionChangeValue(method, args, "corprole")) } : {}),
         ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
+        ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
@@ -7898,6 +7936,86 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     fittingLetGo(fitting.fittingID);
   }
 
+  // The bullet before each owner's line (fittingUtil._GetDeleteWarningText, fittingSvc.GetDeletedFittingsText): two
+  // spaces, U+2022 and a space, as the compiled files hold it (the decompiled source misreads it as "\u0x2022 ").
+  const OWNER_LINE_BULLET = "  \u2022 ";
+
+  /**
+   * GetDeletableNodes (fittingUtil.py 367 to 373) of the fittings selected, and fittingUtil.DeleteFittings (376 to
+   * 399): one, as deleteFitting; more, by owner (a defaultdict of lists, its keys in the order CPython iterates them),
+   * DeleteFittingsManyOneOwner with the owner's name, or DeleteFittingsMany with a line for each of the pilot, its
+   * corporation and its alliance that has any (_GetDeleteWarningText, 402 to 417), Yes to go on; then
+   * fittingSvc.DeleteManyFittings (441 to 460): each owner's DeleteManyFittings(ownerID, fittingIDs) at once
+   * (uthread.parallel), the fittings each deleted counted, and DeletedManyFittings said with the count and, for more
+   * than one owner, a line for each (GetDeletedFittingsText, 462 to 479). The fittings go from the browser by
+   * OnManyFittingsDeleted, as the client's do.
+   */
+  async function deleteFittings(fittingIDs: readonly number[]): Promise<void> {
+    const deletable: SourcedFitting[] = [];
+    for (const fittingID of fittingIDs) {
+      const fitting = savedFittingOf(fittingID);
+      if (fitting !== null && (await canDeleteFit(fitting.ownerID))) deletable.push(fitting);
+    }
+    if (deletable.length === 0) return;
+    if (deletable.length === 1) {
+      await deleteFitting(deletable[0]!.fittingID);
+      return;
+    }
+    const byOwner = new Map<number, number[]>();
+    for (const fitting of deletable) byOwner.set(fitting.ownerID, [...(byOwner.get(fitting.ownerID) ?? []), fitting.fittingID]);
+    const ownerIDs = intDictOf([...byOwner.keys()]).keys();
+    const kindOf = (ownerID: number) => fittingOwner(ownerID)?.kind ?? "character";
+    await resolveNamesNow(ownerIDs.map((ownerID) => ({ kind: kindOf(ownerID), id: ownerID })));
+    const ownerNameOf = (ownerID: number): string => nameCache.get(nameKey(kindOf(ownerID), ownerID)) ?? String(ownerID);
+    await wordsNow(["UI/Fitting/FittingWindow/OwnerAndFittingNum", "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNum", "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNumWithAttempted"]);
+    let asked: boolean;
+    if (ownerIDs.length === 1) {
+      const ownerText = ownerNameOf(ownerIDs[0]!);
+      asked = await askDialog("DeleteFittingsManyOneOwner", { type: "dict", entries: [["ownerText", ownerText], ["numFittings", deletable.length]] },
+        `Delete these ${deletable.length} fittings of ${ownerText} for good?`);
+    } else {
+      const online = store.station.get().online;
+      const lines: string[] = [];
+      for (const ownerID of [online?.characterID ?? null, online?.corporationID ?? null, online?.allianceID ?? null]) {
+        const own = ownerID === null || ownerID === 0 ? [] : byOwner.get(ownerID) ?? [];
+        if (own.length === 0) continue;
+        const ownerName = ownerNameOf(ownerID!);
+        lines.push(OWNER_LINE_BULLET + templateWords("UI/Fitting/FittingWindow/OwnerAndFittingNum", { ownerName, numFittings: own.length }, `${ownerName}, ${own.length} of them`));
+      }
+      asked = await askDialog("DeleteFittingsMany", { type: "dict", entries: [["ownerText", lines.join("<br>")], ["numFittings", deletable.length]] },
+        `Delete these ${deletable.length} fittings for good?\n${lines.join("\n")}`);
+    }
+    if (!asked) return;
+    let deleted: (readonly unknown[])[];
+    try {
+      deleted = await Promise.all(ownerIDs.map(async (ownerID) => {
+        const answer = await bridgeDo(fittingOwner(ownerID)!.manager, "DeleteManyFittings", [ownerID, byOwner.get(ownerID) ?? []]);
+        return Array.isArray(answer) ? (answer as readonly unknown[]) : isListValue(answer) ? answer.items : [];
+      }));
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      sayRefusalDialog(error, `The fittings could not be deleted: ${errorWords(error)}`);
+      return;
+    }
+    const fittingsDeleted = deleted.reduce((sum, each) => sum + each.length, 0);
+    let ownerText = "";
+    if (ownerIDs.length > 1) {
+      const lines: string[] = [];
+      ownerIDs.forEach((ownerID, at) => {
+        const attempted = byOwner.get(ownerID)?.length ?? 0;
+        if (ownerID === 0 || attempted === 0) return;
+        const numDeleted = deleted[at]?.length ?? 0;
+        const label = numDeleted !== attempted ? "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNumWithAttempted" : "UI/Fitting/FittingWindow/OwnerAndDeletedFittingNum";
+        const ownerName = ownerNameOf(ownerID);
+        lines.push(OWNER_LINE_BULLET + templateWords(label, { numFittings: numDeleted, ownerName, numAttempted: attempted },
+          numDeleted !== attempted ? `${ownerName}, ${numDeleted} of the ${attempted} asked` : `${ownerName}, ${numDeleted} of them`));
+      });
+      ownerText = lines.join("<br>");
+    }
+    sayDialog("DeletedManyFittings", { type: "dict", entries: [["numFittings", fittingsDeleted], ["ownerText", ownerText]] },
+      `${fittingsDeleted} fittings were deleted.${ownerText === "" ? "" : `\n${ownerText.split("<br>").join("\n")}`}`);
+  }
+
   const multiFitAskedSignal = createSignal<MultiFitAsk | null>(null);
   const maxShipsToFitSignal = createSignal<number>(maxShipsToFit(undefined));
   let multiFitRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -8173,6 +8291,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * MultiFitWnd.GiveAllGM and LoadAllGM (507 to 515), from AddBuyAllBtn: GiveOrLoadAllGM of the missing dict, a
+   * counter's own (its missingDict, set type by type) or both (LoadMissingTooltip: an empty dict updated with the
+   * ships' and then the equipment's), in the dict's order.
+   */
+  async function multiFitGm(n: number, which: "missing" | "ships" | "equipment", slashCmd: "create" | "load me"): Promise<void> {
+    const open = multiFitAskedSignal.get();
+    if (open === null || open.n !== n || open.status === null) return;
+    const ships = intDictOf(open.status.missingShips.map((each) => each.typeID));
+    const equipment = intDictOf(open.status.missingEquipment.map((each) => each.typeID));
+    let order: number[];
+    if (which === "ships") order = ships.keys();
+    else if (which === "equipment") order = equipment.keys();
+    else {
+      const both = new IntDict();
+      both.update(ships);
+      both.update(equipment);
+      order = both.keys();
+    }
+    const qtyOf = new Map([...open.status.missingShips, ...open.status.missingEquipment].map((each) => [each.typeID, each.qty]));
+    if (order.length > 0) await giveOrLoadAllGM(order.map((typeID) => ({ typeID, qty: qtyOf.get(typeID) ?? 0 })), slashCmd);
+  }
+
   /** A fitting no longer kept (fittingSvc.DeleteFitting, and its OnFittingDeleted): out of those kept. */
   function fittingLetGo(fittingID: number): void {
     const kept = savedFittingsSignal.get();
@@ -8180,11 +8321,75 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /** BuyAllMessageBox.BuyAll: the multibuy window with what is missing, for the fitting, and the box closed; or Close. */
-  async function answerBuyAll(n: number, answer: "buy" | "close"): Promise<void> {
+  async function answerBuyAll(n: number, answer: "buy" | "gm-give-all" | "close"): Promise<void> {
     const asked = buyAllAskedSignal.get();
     if (asked === null || asked.n !== n) return;
     buyAllAskedSignal.set(null);
     if (answer === "buy") await openMultiBuy(new Map(asked.missing.map((entry) => [entry.typeID, entry.qty])), asked.fitting);
+    // BuyAllMessageBox.GiveAllGM: GiveAllGM of what failed to load, and the box closed. That is the box's dict
+    // (OpenBuyAllBox: dict of the Counter, LoadFittingFromFittingListAndGetBuyOptionOnFailure's of a dict comprehension
+    // over what failed), so its order is theirs.
+    if (answer === "gm-give-all") {
+      const counter = new IntDict();
+      counter.update(intDictOf(asked.missing.map((entry) => entry.typeID)));
+      const faildToLoadInfo = new IntDict();
+      faildToLoadInfo.update(counter);
+      const qtyOf = new Map(asked.missing.map((entry) => [entry.typeID, entry.qty]));
+      await giveOrLoadAllGM(faildToLoadInfo.keys().map((typeID) => ({ typeID, qty: qtyOf.get(typeID) ?? 0 })), "create");
+    }
+  }
+
+  const progressWndSignal = createSignal<ProgressWndShown | null>(null);
+  let progressWndHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * loading.ProgressWnd (73 to 90): the window put up, or its title, text and count set; at the end of its count it
+   * goes three-quarters of a second later (CheckVisibility, DelayHide), unless counted again before.
+   */
+  function progressWnd(title: string, text: string, portion: number, total: number): void {
+    if (progressWndHideTimer !== null) clearTimeout(progressWndHideTimer);
+    progressWndHideTimer = null;
+    progressWndSignal.set({ title, text, portion: Math.max(0, portion), total: Math.max(0, total) });
+    if (portion >= total) {
+      progressWndHideTimer = setTimeout(() => {
+        progressWndHideTimer = null;
+        progressWndSignal.set(null);
+      }, 750);
+    }
+  }
+
+  /**
+   * missingItemsPopup.GiveOrLoadAllGM (97 to 114): for each type missing, in the order given (the dict's), a GM's
+   * "/create typeID qty" (or "/load me typeID qty") to the slash service, one after another, the progress window
+   * counting them under "GM Item Gift (create)"; a dynamic type (evetypes.IsDynamicType) passed over, and the
+   * CustomNotify said once at the end where any was. The window ends on "Done". The client shows no reply.
+   */
+  async function giveOrLoadAllGM(missing: readonly { readonly typeID: number; readonly qty: number }[], slashCmd: "create" | "load me"): Promise<void> {
+    const numToCountTo = missing.length + 1;
+    const header = `GM Item Gift (${slashCmd})`;
+    progressWnd(header, "", 1, numToCountTo);
+    const dynamic = new Map<number, boolean>();
+    const typeIDs = [...new Set(missing.map((entry) => entry.typeID))];
+    for (let at = 0; at < typeIDs.length; at += 50) {
+      const read = await api.getTypePrices(typeIDs.slice(at, at + 50), callOptions).catch(() => null);
+      for (const typeID of typeIDs.slice(at, at + 50)) dynamic.set(typeID, read?.dynamic[typeID] === true);
+    }
+    let counter = 1;
+    let itemsRemoved = false;
+    for (const { typeID, qty } of missing) {
+      if (dynamic.get(typeID) === true) {
+        itemsRemoved = true;
+        continue;
+      }
+      counter += 1;
+      progressWnd(header, "", counter, numToCountTo);
+      await runSlashCommand(bridgeDo, `/${slashCmd} ${typeID} ${qty}`).catch((error: unknown) => {
+        if (isSessionLost(error)) throw error;
+      });
+    }
+    progressWnd("Done", "", numToCountTo, numToCountTo);
+    if (itemsRemoved) sayDialog("CustomNotify", { type: "dict", entries: [["notify", "Not all items were created"]] }, "Not all items were created");
+    void loadInventory().catch(() => {});
   }
 
   async function answerApplyPoints(n: number, answer: "confirm" | "close"): Promise<void> {
@@ -21196,6 +21401,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  /** The labels asked and their asking waited for (requestWords and the queue flushed now), for words wanted at once. */
+  async function wordsNow(labels: readonly string[]): Promise<void> {
+    requestWords(labels);
+    await flushWordsQueue();
+  }
+
   function requestWords(labels: readonly string[]): void {
     let queued = false;
     for (const label of labels) {
@@ -21439,6 +21650,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buyFit,
     buyAllAsked: readonlySignal(buyAllAskedSignal),
     answerBuyAll,
+    progressWnd: readonlySignal(progressWndSignal),
     viewFittingAsked: readonlySignal(viewFittingAskedSignal),
     viewFitting,
     answerViewFitting,
@@ -21450,8 +21662,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openMultiFit,
     editMultiFit,
     answerMultiFit,
+    multiFitGm,
     saveViewFitting,
     saveForAllianceOffered,
+    hasFittingManagerRole,
     useFittingNameForShips: readonlySignal(useFittingNameForShipsSignal),
     setUseFittingNameForShips,
     fittingsDeletable: readonlySignal(fittingsDeletableSignal),
@@ -21461,6 +21675,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     hullBrowser: readonlySignal(hullBrowserSignal),
     loadHullBrowser,
     deleteFitting,
+    deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
     answerShipName,
     setDestination,

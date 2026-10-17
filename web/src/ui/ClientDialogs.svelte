@@ -41,6 +41,7 @@
   import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
   import { CONTENTS_LABELS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
@@ -68,6 +69,8 @@
   const viewFittingAsked = flow.viewFittingAsked;
   // svelte-ignore state_referenced_locally
   const multiFitAsked = flow.multiFitAsked;
+  // svelte-ignore state_referenced_locally
+  const progressWnd = flow.progressWnd;
   // svelte-ignore state_referenced_locally
   const useFittingNameForShips = flow.useFittingNameForShips;
   // svelte-ignore state_referenced_locally
@@ -189,6 +192,14 @@
   let viewFittingSettingsOpen = $state(false);
   let viewFittingSaveMenuOpen = $state(false);
   let viewFittingSaveForAlliance = $state(false);
+  // Save's tooltip panel (fittingMgmtCont.LoadSaveBtnTooltipPanel, 157 to 180): shown on the pointer over Save, to a
+  // pilot with the fitting manager's role only; the same three as the menu, each a button.
+  let viewFittingSavePanelOpen = $state(false);
+  function viewFittingSaveHovered(): void {
+    if (!flow.hasFittingManagerRole()) return;
+    viewFittingSavePanelOpen = true;
+    void flow.saveForAllianceOffered().then((offered) => (viewFittingSaveForAlliance = offered)).catch(() => {});
+  }
   // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
   // changes, as its contents arrive, leave what is being typed).
   let viewFittingName = $state("");
@@ -1108,8 +1119,9 @@
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
         <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
              its alliance's executor, Save for Corporation, and for the pilot. -->
-        <span class="multibuy-export">
-          <button type="button" onclick={() => void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
+        <span class="multibuy-export" role="group" onpointerleave={() => (viewFittingSavePanelOpen = false)}>
+          <button type="button" onpointerenter={viewFittingSaveHovered}
+            onclick={() => void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
           <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSaveMenuOpen}
             onclick={() => { viewFittingSaveMenuOpen = !viewFittingSaveMenuOpen; if (viewFittingSaveMenuOpen) void flow.saveForAllianceOffered().then((offered) => (viewFittingSaveForAlliance = offered)).catch(() => {}); }}>▾</button>
           {#if viewFittingSaveMenuOpen}
@@ -1119,6 +1131,14 @@
               {/if}
               <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
               <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {:else if viewFittingSavePanelOpen}
+            <span class="multibuy-menu save-panel" role="group" data-panel="LoadSaveBtnTooltipPanel">
+              {#if viewFittingSaveForAlliance}
+                <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
             </span>
           {/if}
         </span>
@@ -1171,6 +1191,7 @@
           <p class="multifit-warning" title={[fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingItems", args), ...missingLines([...status.missingShips, ...status.missingEquipment])].join("\n")}>
             {fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingShipEquipment")}
             <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-missing").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+            {@render multiFitGmButtons(fit.n, "missing")}
           </p>
         {/if}
         {#if fit.invalidT3}
@@ -1183,7 +1204,8 @@
           </span>
           <span title={fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangarHint")}>{fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangar")}</span>
           {#if status !== null && status.missingShips.length > 0}
-            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-ships").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+            <span><button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-ships").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+              {@render multiFitGmButtons(fit.n, "ships")}</span>
           {:else}<span></span>{/if}
           <span class="multifit-counter" class:short={status !== null && status.maxAvailableFitting !== null && status.maxAvailableFitting < fit.numToFit}
             title={status !== null && status.missingEquipment.length > 0 ? [fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingEquipment", args), ...missingLines(status.missingEquipment)].join("\n") : undefined}>
@@ -1191,7 +1213,8 @@
           </span>
           <span>{fitWord("UI/Fitting/FittingWindow/FittingManagement/RoundsOfFittingsInLocation", { locationName: fit.locationID === null ? fitWord("UI/Inventory/ItemHangar") : containerName(fit.containers.find((container) => container.itemID === fit.locationID) ?? { itemID: fit.locationID, typeID: 0 }) })}</span>
           {#if status !== null && status.missingEquipment.length > 0}
-            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-equipment").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+            <span><button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-equipment").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+              {@render multiFitGmButtons(fit.n, "equipment")}</span>
           {:else}<span></span>{/if}
         </div>
         <button type="button" class="minor multifit-refresh" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/RefreshInventoryStatusHint")} disabled={fit.isFitting}
@@ -1235,7 +1258,35 @@
       <span class="answers">
         <button type="button" onclick={() => void flow.answerBuyAll(box.n, "buy").catch(() => {})}>{buyAllWord("UI/Market/MarketQuote/BuyAll")}</button>
         <button type="button" onclick={() => void flow.answerBuyAll(box.n, "close")}>{buyAllWord("/Carbon/UI/Common/Close")}</button>
+        <!-- BuyAllMessageBox (52 to 53): GM: Give all, to a session with ROLE_GML; the client's own words, no label's. -->
+        {#if sessionHasRole($station.online?.role, ROLE_GML)}
+          <button type="button" onclick={() => void flow.answerBuyAll(box.n, "gm-give-all").catch(() => {})}>GM: Give all</button>
+        {/if}
       </span>
+    </div>
+  </div>
+{/if}
+
+<!-- MultiFitWnd.AddBuyAllBtn (494 to 505): beside each Buy All, GM: Give all to a session with ROLE_WORLDMOD and GM: Load
+     me all to one with ROLE_GML. -->
+{#snippet multiFitGmButtons(n: number, which: "missing" | "ships" | "equipment")}
+  {#if sessionHasRole($station.online?.role, ROLE_WORLDMOD)}
+    <button type="button" class="minor" onclick={() => void flow.multiFitGm(n, which, "create").catch(() => {})}>GM: Give all</button>
+  {/if}
+  {#if sessionHasRole($station.online?.role, ROLE_GML)}
+    <button type="button" class="minor" onclick={() => void flow.multiFitGm(n, which, "load me").catch(() => {})}>GM: Load me all</button>
+  {/if}
+{/snippet}
+
+<!-- The loading service's progress window (loading.ProgressWnd): its title, its text and how far of how many, over all
+     else while it is up. -->
+{#if $progressWnd !== null}
+  {@const shown = $progressWnd}
+  <div class="client-dialog-shade modal">
+    <div class="client-dialog progress-wnd" role="dialog" aria-label={shown.title} data-dialog="ProgressWnd">
+      <span class="book-title"><strong>{shown.title}</strong></span>
+      {#if shown.text !== ""}<p>{shown.text}</p>{/if}
+      <progress max={shown.total} value={shown.portion}>{shown.portion} / {shown.total}</progress>
     </div>
   </div>
 {/if}

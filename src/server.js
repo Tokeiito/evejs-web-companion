@@ -1786,6 +1786,11 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
         corpRole: typeof outcome.session.corpRole === "string" && /^\d+$/.test(outcome.session.corpRole)
           ? outcome.session.corpRole
           : null,
+        // session.role, the session's own roles (a GM's among them), where the transport says them: the game port
+        // does.
+        role: typeof outcome.session.role === "string" && /^\d+$/.test(outcome.session.role)
+          ? outcome.session.role
+          : null,
         corpAccountKey: Number.isSafeInteger(outcome.session.corpAccountKey) ? outcome.session.corpAccountKey : null,
         raceID: Number.isSafeInteger(outcome.session.raceID) ? outcome.session.raceID : null,
       },
@@ -13106,8 +13111,9 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
       const typeID = Number(part);
       if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
     }
-    const [prices, published, portions] = await Promise.all([
+    const [prices, published, portions, dynamicTypes] = await Promise.all([
       clientBuiltData.table("typeBasePrices"), clientBuiltData.table("typePublished"), clientBuiltData.table("typePortionSizes"),
+      clientBuiltData.table("typeDynamic"),
     ]);
     const basePrice = {};
     const isPublished = {};
@@ -13117,7 +13123,11 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
     // entry is an implant by it: shipfitting/fitting.py _IsImplant).
     const groupID = {};
     const categoryID = {};
+    // evetypes.IsDynamicType: bool of the type's isDynamicType, false where the type has none; null where the table
+    // could not be read.
+    const dynamic = {};
     for (const typeID of asked.slice(0, 50)) {
+      dynamic[typeID] = dynamicTypes ? Boolean(Number(dynamicTypes[typeID] || 0)) : null;
       const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
       groupID[typeID] = type && Number.isSafeInteger(Number(type.groupID)) ? Number(type.groupID) : null;
       categoryID[typeID] = type && Number.isSafeInteger(Number(type.categoryID)) ? Number(type.categoryID) : null;
@@ -13127,7 +13137,7 @@ app.get("/api/client-data/type-prices", requireAuth, async (req, res, next) => {
       const portion = portions ? Number(portions[typeID]) : NaN;
       portionSize[typeID] = portions && portions[typeID] !== undefined && Number.isFinite(portion) ? portion : null;
     }
-    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID, categoryID });
+    res.json({ ok: true, available: Boolean(prices && published), basePrice, published: isPublished, portionSize, groupID, categoryID, dynamic });
   } catch (error) {
     next(error);
   }
