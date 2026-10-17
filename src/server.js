@@ -13430,7 +13430,8 @@ app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next
 });
 
 // The expert systems as the client's data has them (expertSystems/data.py ExpertSystem): by type, its days, whether
-// it is hidden or retired, and the skills it gives with their levels (skillsGranted, in the order its dict was read).
+// it is hidden or retired, and the skills it gives with their levels (skillsGranted, in the order the client's loader
+// iterates its dict).
 app.get("/api/client-data/expert-systems", requireAuth, async (req, res, next) => {
   try {
     const rows = await clientBuiltData.table("expertSystems");
@@ -13442,12 +13443,13 @@ app.get("/api/client-data/expert-systems", requireAuth, async (req, res, next) =
     for (const [key, row] of Object.entries(rows)) {
       const typeID = Number(key);
       if (!Number.isSafeInteger(typeID) || typeID <= 0 || !row || typeof row !== "object") continue;
-      const granted = row.skillsGranted && typeof row.skillsGranted === "object" ? row.skillsGranted : {};
+      // (The table keeps skillsGranted as [[skill, level], ...] in the loader's order: innerOrder.)
+      const granted = Array.isArray(row.skillsGranted) ? row.skillsGranted : row.skillsGranted && typeof row.skillsGranted === "object" ? Object.entries(row.skillsGranted) : [];
       expertSystems[typeID] = {
         durationDays: Number(row.durationDays) || 0,
         hidden: Boolean(Number(row.esHidden || 0)),
         retired: Boolean(Number(row.esRetired || 0)),
-        skills: Object.entries(granted).map(([skill, level]) => [Number(skill), Number(level) || 0]).filter(([skill]) => skill > 0),
+        skills: granted.map(([skill, level]) => [Number(skill), Number(level) || 0]).filter(([skill]) => skill > 0),
       };
     }
     res.json({ ok: true, available: true, expertSystems });

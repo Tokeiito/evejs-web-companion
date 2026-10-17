@@ -10,6 +10,7 @@
 //                    MAX_INSTALLED_DURATION_TO_ALLOW_TOP_UP of it is left (validate_extend)
 
 import { readDictPairs, unwrapLong } from "./wire.ts";
+import { intDictOrder } from "./py27DictOrder.ts";
 
 /** expertSystems/const.py MAX_CHARACTER_INSTALLATIONS: the home page's slots. */
 export const MAX_CHARACTER_INSTALLATIONS = 3;
@@ -24,7 +25,7 @@ export interface ExpertSystemData {
   readonly durationDays: number;
   readonly hidden: boolean;
   readonly retired: boolean;
-  /** skillsGranted: each skill and the level it gives. */
+  /** skillsGranted: each skill and the level it gives, in the order the client's loader iterates them. */
   readonly skills: readonly (readonly [number, number])[];
 }
 
@@ -67,6 +68,31 @@ export function expiresSoon(expiresMs: number, nowMs: number): boolean {
 export function remainingProportion(installed: InstalledExpertSystem, nowMs: number): number {
   const total = installed.expiresMs - installed.installedMs;
   return total <= 0 ? 0 : Math.max(0, installed.expiresMs - nowMs) / total;
+}
+
+/**
+ * skills/client/util.py get_skills_to_train(expert_system.skills): the skills' dict (ExpertSystem.skills:
+ * dict(skillsGranted), its keys as CPython iterates them) walked; for each skill the pilot has not at its level,
+ * trained or queued (MySkillLevelIncludingQueued), first each of its missing needs (GetSkillsMissingToUseItemRecursive)
+ * not so had, then the skill; each at the highest level asked of it, in the order first asked (an OrderedDict).
+ */
+export function skillsToTrain(
+  granted: readonly (readonly [number, number])[],
+  levelIncludingQueued: (skill: number) => number,
+  missingRecursive: (skill: number) => readonly (readonly [number, number])[],
+): Map<number, number> {
+  const levels = new Map(granted);
+  const result = new Map<number, number>();
+  for (const skill of intDictOrder(granted.map(([typeID]) => typeID))) {
+    const level = levels.get(skill) ?? 0;
+    if (levelIncludingQueued(skill) >= level) continue;
+    for (const [needed, neededLevel] of missingRecursive(skill)) {
+      if (levelIncludingQueued(needed) >= neededLevel) continue;
+      result.set(needed, Math.max(result.get(needed) ?? 0, neededLevel));
+    }
+    result.set(skill, Math.max(result.get(skill) ?? 0, level));
+  }
+  return result;
 }
 
 /** ExpertSystem.validate_extend: why it may not be extended, or null where it may. */

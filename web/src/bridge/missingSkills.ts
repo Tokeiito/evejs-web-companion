@@ -45,6 +45,17 @@ export interface PilotSkill {
   readonly trainedSkillLevel: number;
   readonly trainedSkillPoints: number;
   readonly effectiveSkillLevel: number;
+  /**
+   * False where the skill is the pilot's only by an expert system (its trainedSkillLevel None, a virtualSkillLevel
+   * given): it is among the pilot's skills, and not injected (skillsvc.IsSkillInjected). Left out: injected.
+   */
+  readonly injected?: boolean;
+}
+
+/** skillsvc.IsSkillInjected: among the skills (the lapsed counted where those are given), its trained level not None. */
+export function isSkillInjected(skills: PilotSkills, typeID: number): boolean {
+  const skill = skills.get(typeID);
+  return skill !== undefined && skill.injected !== false;
 }
 
 /** The pilot's skills by type. */
@@ -281,7 +292,7 @@ export function booksToBuy(
   isSkill: (typeID: number) => boolean,
   isSold: (typeID: number) => boolean,
 ): { readonly available: readonly number[]; readonly unavailable: readonly number[] } {
-  const wanted = [...new Set(skillTypeIDs)].filter((typeID) => isSkill(typeID) && !includingLapsed.has(typeID));
+  const wanted = [...new Set(skillTypeIDs)].filter((typeID) => isSkill(typeID) && !isSkillInjected(includingLapsed, typeID));
   return { available: wanted.filter(isSold), unavailable: wanted.filter((typeID) => !isSold(typeID)) };
 }
 

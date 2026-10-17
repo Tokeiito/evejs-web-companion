@@ -201,11 +201,11 @@ import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, 
 import {
   allLevelsQueued, booksToBuy, isBoosterSkillAccelerator, needsOmegaUpgrade, directPurchasePrice, isSkillRequirementMet, levelProgress, skillLevelRaw, levelsToTrain, missingSkillBooks, missingSkills, missingSkillsRecursive, queueWithLevels,
   rawTrainingTimeForSkillLevel, requiredSkillsRecursive, skillLevelBoxes, skillPointsRequired, skillRowMark, skillsNotHeld, totalMissingLevels, trainingTimeForSkills, trainingTimeLeft,
-  type RequiredSkills, type SkillLevelBox, type SkillRowMark,
+  isSkillInjected, type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
 import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, certificateLevel, planUpdates, type CatalogueSkillRow, type EditedPlan } from "../bridge/skillPlanEditor.ts";
-import { installedExpertSystems, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
+import { installedExpertSystems, skillsToTrain, type ExpertSystemData, type InstalledExpertSystem } from "../bridge/expertSystems.ts";
 import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
@@ -2725,7 +2725,17 @@ export interface AppFlow {
     readonly installed: readonly InstalledExpertSystem[];
     readonly data: ReadonlyMap<number, ExpertSystemData>;
     readonly boxes: ReadonlyMap<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>;
+    /** By installed expert system: whether it has skills to train (ExpertSystem.can_train_skills). */
+    readonly canTrain: ReadonlyMap<number, boolean>;
   } | null>;
+  /**
+   * The page's Train Skills (PageController.train_selected_skills: train_expert_system_skills, buy_and_train_skills):
+   * the skills to train (get_skills_to_train), the books of those not had bought (buy_missing_skills: the page's
+   * buyMissingSkillBooks), then each level put at the queue's end (AddSkillsToQueue): one already there, past the
+   * queue's length, or refused where it would go, and nothing is committed (its exception is only logged); else the
+   * queue committed.
+   */
+  trainExpertSystemSkills(typeID: number): Promise<void>;
   /**
    * The page's Remove (PageController.remove_selected): the client's question (prompt_remove_expert_system:
    * CustomQuestion, RemovePromptTitle, RemovePromptBody and RemoveWarning); on Yes RemoveMyExpertSystem, a refusal said
@@ -8142,9 +8152,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The skills' own needs however deep, for whether a level can be trained (the bar's boxes, the books held), and the
     // queued skills' (GetDependentSkills, whether a level may come out of the queue); without the client's table, none.
     const required: RequiredSkills = (await requiredSkillsFor([...skillTypes, ...facts.queued.map((entry) => entry.typeID)]).catch(() => null)) ?? {};
-    // IsInjected and IsAllPrereqsInjected: held, lapsed counted (skillsvc.IsSkillInjected).
+    // IsInjected and IsAllPrereqsInjected: held, lapsed counted, not an expert system's alone (skillsvc.IsSkillInjected).
     const booksHeld = (skill: number): boolean =>
-      facts.lapsed.has(skill) && [...requiredSkillsRecursive(skill, required).keys()].every((need) => facts.lapsed.has(need));
+      isSkillInjected(facts.lapsed, skill) && [...requiredSkillsRecursive(skill, required).keys()].every((need) => isSkillInjected(facts.lapsed, need));
     // GetSkillPointsMissingForLevel: the level's points less those trained and enabled (GetMySkillPoints).
     const pointsMissing = (skill: number, level: number): number | null => {
       const rank = facts.rank(skill);
@@ -8279,7 +8289,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const nextLevel = next > 5 ? null : next;
         states.set(typeID, {
           ...catalogueSkillState({
-            level: had === undefined ? null : had.trainedSkillLevel,
+            // IsInjected (skillsvc.IsSkillInjected): an expert system's skill alone is not.
+            level: had === undefined || had.injected === false ? null : had.trainedSkillLevel,
             points: had?.trainedSkillPoints ?? 0,
             needsMet,
             ceiling: ceilings === null ? 5 : ceilings.get(typeID) ?? 0,
@@ -8319,18 +8330,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const skills = [...new Set(given.map(([skill]) => skill))];
       requestNames([...installed.map((one) => ({ kind: "type" as const, id: one.typeID })), ...skills.map((skill) => ({ kind: "type" as const, id: skill }))]);
       const boxes = new Map<string, readonly { readonly box: SkillLevelBox; readonly partial: boolean }[]>();
+      const canTrain = new Map<number, boolean>();
       if (skills.length > 0) {
         const facts = await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer);
         const required = (await requiredSkillsFor(skills)) ?? {};
         for (const [skill, level] of given) {
           boxes.set(skill + ":" + level, skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0));
         }
+        const including = levelIncludingQueuedOf(facts.lapsed, facts.queued);
+        for (const one of installed) {
+          canTrain.set(one.typeID, skillsToTrain(data.get(one.typeID)?.skills ?? [], including, (skill) => missingSkillsRecursive(skill, required, facts.mine, facts.lapsed)).size > 0);
+        }
       }
-      return { installed, data, boxes };
+      return { installed, data, boxes, canTrain };
     } catch (error) {
       if (isSessionLost(error)) throw error;
       return null;
     }
+  }
+
+  /** MySkillLevelIncludingQueued: the level had (lapsed counted) or the highest queued, nought where not had. */
+  function levelIncludingQueuedOf(lapsed: ReadonlyMap<number, { readonly trainedSkillLevel: number }>, queued: readonly { readonly typeID: number; readonly toLevel: number }[]) {
+    return (skill: number): number => {
+      const had = lapsed.get(skill);
+      if (had === undefined) return 0;
+      return Math.max(had.trainedSkillLevel, ...queued.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel));
+    };
+  }
+
+  async function trainExpertSystemSkills(typeID: number): Promise<void> {
+    const data = (await api.getExpertSystems(callOptions))?.get(typeID);
+    if (data === undefined) return;
+    const skills = data.skills.map(([skill]) => skill);
+    const before = await queueDropRead(skills);
+    const wanted = skillsToTrain(data.skills, levelIncludingQueuedOf(before.includingLapsed, before.queue),
+      (skill) => missingSkillsRecursive(skill, before.required, before.mine, before.includingLapsed));
+    if (wanted.size === 0) return;
+    if (!(await buyMissingSkillBooks([...wanted.keys()]))) return;
+    const read = await queueDropRead([...wanted.keys()]);
+    const next = [...read.queue];
+    for (const [skill, level] of wanted) {
+      // (QueueSkillAlreadyPresent, QueueTooManySkills, CheckCanInsertSkillAtPosition's refusals: logged, nothing committed.)
+      if (next.some((entry) => entry.typeID === skill && entry.toLevel === level)) return;
+      if (next.length >= MAX_QUEUED_SKILLS) return;
+      if (queueInsertionRefusal(skill, level, next.length, next, read.includingLapsed, read.mine, read.required, read.ceiling) !== null) return;
+      next.push({ typeID: skill, toLevel: level });
+    }
+    await saveSkillQueueSaved(next, "Added to your skill queue", "those skills");
   }
 
   async function removeExpertSystem(typeID: number): ReturnType<AppFlow["removeExpertSystem"]> {
@@ -10076,9 +10122,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function buyMissingSkillBooks(typeIDs: readonly number[]): Promise<boolean> {
-    // _is_skill_missing: not among the pilot's skills, lapsed ones counted.
+    // _is_skill_missing: not among the pilot's skills (lapsed ones counted), or its trained level None (an expert
+    // system's alone).
     const lapsed = await skillsIncludingLapsedNow();
-    const missing = [...new Set(typeIDs)].filter((typeID) => !lapsed.has(typeID));
+    const missing = [...new Set(typeIDs)].filter((typeID) => !isSkillInjected(lapsed, typeID));
     if (missing.length === 0) return true;
     // skillsvc.PurchaseSkills (characterskills/client/purchase.py purchase_skills), as Buy and train makes it.
     if (!(await skillPurchaseEnabled())) {
@@ -10129,7 +10176,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function purchaseBooksValidated(books: readonly number[], cost: number | null): Promise<readonly number[] | null> {
     const lapsed = await skillsIncludingLapsedNow().catch(() => null);
-    const injected = lapsed === null ? undefined : books.find((skill) => lapsed.has(skill));
+    // is_skill_injected (characterskills/client/purchase.py 129): skillsvc.IsSkillInjected, an expert system's skill alone not.
+    const injected = lapsed === null ? undefined : books.find((skill) => isSkillInjected(lapsed, skill));
     if (injected !== undefined) {
       sayDialog("CharacterAlreadyKnowsSkill", { type: "dict", entries: [["skillName", injected]] }, "The pilot has that skill already.");
       return null;
@@ -23775,6 +23823,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillGroupCertificates,
     expertSystemsHome,
     removeExpertSystem,
+    trainExpertSystemSkills,
     expertSystemsChanged: readonlySignal(expertSystemsSignal),
     skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,

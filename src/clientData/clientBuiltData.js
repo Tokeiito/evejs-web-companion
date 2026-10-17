@@ -103,7 +103,9 @@ const TABLES = Object.freeze({
   // data type and default: what the compare tool shows an attribute by (comparableAttribute.py).
   // The expert systems (expertSystems/data.py ExpertSystemsDataLoader): each one's days, whether hidden or retired,
   // the skills it gives at what level, the ships it goes with.
-  expertSystems: Object.freeze({ loader: "expertSystemsLoader", resource: "res:/staticdata/expertsystems.fsdbinary" }),
+  // Its skills are walked in the order the client's dict of them iterates (data.py ExpertSystem.skills, then
+  // get_skills_to_train): innerOrder keeps the order the loader printed them in.
+  expertSystems: Object.freeze({ loader: "expertSystemsLoader", resource: "res:/staticdata/expertsystems.fsdbinary", innerOrder: true }),
   // A picture's res: path by its icon number (fsdBuiltData/common/iconIDs.py GetIconFile: the icon's iconFile), which
   // an attribute is drawn with (skillsPanelUtil.AttributeCont: get_attribute_icon_id, then GetIconFile).
   iconFiles: Object.freeze({ loader: "iconIDsLoader", resource: "res:/staticdata/iconids.fsdbinary", attribute: "iconFile" }),
@@ -186,6 +188,23 @@ function keyOrdered(printed) {
   return table;
 }
 
+// A table printed as a dict of whole-number keys whose rows hold dicts of whole-number keys of their own: each row as
+// it is, but each such dict in it as [[key, value], ...] in the order the loader printed it (JSON.parse would put
+// whole-number keys in rising order). Only for a table whose text holds no "<digits>": of its own.
+function innerOrdered(printed) {
+  const marked = JSON.parse(printed.replace(/"(\d+)":/g, '"#$1":'));
+  const unmark = (value) => {
+    if (Array.isArray(value)) return value.map(unmark);
+    if (!value || typeof value !== "object") return value;
+    const entries = Object.entries(value);
+    if (entries.length > 0 && entries.every(([key]) => /^#\d+$/.test(key))) return entries.map(([key, inner]) => [Number(key.slice(1)), unmark(inner)]);
+    return Object.fromEntries(entries.map(([key, inner]) => [key, unmark(inner)]));
+  };
+  const table = {};
+  for (const [key, row] of Object.entries(marked)) table[key.slice(1)] = unmark(row);
+  return table;
+}
+
 function createClientBuiltData({
   clientRoot = null,
   python = "python",
@@ -213,7 +232,7 @@ function createClientBuiltData({
       ...(described.attribute ? { attribute: described.attribute } : {}),
       ...(keys ? { keys } : {}),
     });
-    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed) : JSON.parse(printed);
+    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed) : described.innerOrder ? innerOrdered(printed) : JSON.parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
       throw new Error(`The client's ${described.loader} did not print a table.`);
     }

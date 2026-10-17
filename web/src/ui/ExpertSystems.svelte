@@ -9,11 +9,13 @@
   //   none installed  the intro (IntroHeader, ExpertSystemDescription, BrowseExpertSystems)
   //   the selected    its name and time left; Extend Duration (the New Eden Store, which the page has not: off, its
   //                   hint and the client's reason it would be refused, validate_extend); Remove (after the client's
-  //                   question: flow.removeExpertSystem); Train Skills (not here yet: off)
+  //                   question: flow.removeExpertSystem); Train Skills (flow.trainExpertSystemSkills: the books of the
+  //                   skills to train bought and the levels queued; off with TrainSkillsDisabledReasonNoSkills where
+  //                   none is left to train)
   //   its skills      SkillCountHint and the skills it gives by name, each with its skill bar at the level given
   //                   (SkillList, SkillRow)
   //
-  // Not here: the browse page (all the expert systems), Train Skills, the fanfare, the slot's ring of time left.
+  // Not here: the browse page (all the expert systems), the fanfare, the slot's ring of time left.
   import { onMount, untrack } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { shortWrittenInterval } from "../bridge/timeInterval.ts";
@@ -44,6 +46,8 @@
     "UI/ExpertSystem/RemoveHint": "Take it out, freeing its slot.",
     "UI/ExpertSystem/RemoveWarning": "What is left of its time is lost.",
     "UI/ExpertSystem/TrainSkills": "Train skills",
+    "UI/ExpertSystem/TrainSkillsHint": "Queue its skills you lack, buying the books first.",
+    "UI/ExpertSystem/TrainSkillsDisabledReasonNoSkills": "Every skill it gives is trained or queued.",
     "UI/ExpertSystem/SkillCountHint": "{skill_count} skills",
   };
 
@@ -69,6 +73,8 @@
   const slots = $derived(Array.from({ length: MAX_CHARACTER_INSTALLATIONS }, (_, at) => home?.installed[at] ?? null));
   const chosen = $derived(home?.installed.find((one) => one.typeID === selected) ?? null);
   const chosenData = $derived(chosen === null ? null : home?.data.get(chosen.typeID) ?? null);
+  /** ExpertSystem.can_train_skills. */
+  const chosenCanTrain = $derived(chosen === null ? false : home?.canTrain.get(chosen.typeID) ?? false);
   /** SkillList.update_skills: by name. */
   const chosenSkills = $derived(
     [...(chosenData?.skills ?? [])].sort(([left], [right]) =>
@@ -93,6 +99,23 @@
       ? word("UI/ExpertSystem/ExtendDisabledReasonDurationLimit", { days })
       : refusal !== null ? word("UI/ExpertSystem/ExtendDisabledReasonNotAvailable") : "";
     return hint + (reason ? "\n\n" + reason : "") + "\n\nThe New Eden Store is not on this page.";
+  }
+
+  /** _get_train_skills_hint: the hint, and the reason it is off where it is. */
+  function trainHint(canTrain: boolean): string {
+    return word("UI/ExpertSystem/TrainSkillsHint") + (canTrain ? "" : "\n\n" + word("UI/ExpertSystem/TrainSkillsDisabledReasonNoSkills"));
+  }
+
+  /** PageController.train_selected_skills; the page loads again for the queue's change (OnSkillQueueChanged). */
+  async function train(): Promise<void> {
+    if (chosen === null || busy) return;
+    busy = true;
+    try {
+      await flow.trainExpertSystemSkills(chosen.typeID);
+      await load();
+    } finally {
+      busy = false;
+    }
   }
 
   /** PageController.remove_selected: the page loads again at the server's word (OnExpertSystemsUpdated). */
@@ -167,7 +190,7 @@
           <button type="button" disabled title={extendHint()}>{word("UI/ExpertSystem/ExtendDuration")}</button>
           <button type="button" disabled={busy} onclick={() => void remove()}
             title={word("UI/ExpertSystem/Remove") + "\n" + word("UI/ExpertSystem/RemoveHint") + "\n\n" + word("UI/ExpertSystem/RemoveWarning")}>{word("UI/ExpertSystem/Remove")}</button>
-          <button type="button" disabled title="Not on this page yet.">{word("UI/ExpertSystem/TrainSkills")}</button>
+          <button type="button" class="primary" disabled={busy || !chosenCanTrain} title={trainHint(chosenCanTrain)} onclick={() => void train()}>{word("UI/ExpertSystem/TrainSkills")}</button>
         </span>
       </div>
       <p class="expert-system-count">{word("UI/ExpertSystem/SkillCountHint", { skill_count: chosenSkills.length })}</p>
