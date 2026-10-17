@@ -93,7 +93,15 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import { romanLevel } from "../bridge/skills.ts";
-  import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
+  import { shortWrittenInterval, SHORT_INTERVAL_WORD_LABELS, type TimePart } from "../bridge/timeInterval.ts";
+  import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
+  import type { SkillRowInfo } from "../bridge/skillPlans.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { showMarketDetails } from "./marketDetails.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { findInContracts } from "./contractsSearch.ts";
+  import { compareType } from "./typeCompare.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
   import {
     planProgressAt, planRowRequirement, requirementsClipboardText, skillPlanRowVisible, sortPlansByName, startTrainingState, timeLeftShowTo,
     type PersonalSkillPlanEntry, type PersonalSkillPlansRead, type SkillPlanContentRow, type SkillPlanDetail,
@@ -185,6 +193,26 @@
     "UI/SkillPlan/CertifiedPlansHoverTooltip": "Plans made for each career path.",
     "UI/SkillPlan/SelectCareerPathHint": "Choose a career path",
     "UI/SkillPlan/CareerPathsLockedByAIR": "Finish the AIR plan to open the career paths.",
+    // A contents row's menu (GetMenuForSkill) and tooltip (LoadSkillEntryTooltipInfoOnly).
+    "UI/SkillQueue/AddSkillMenu/AddToFrontOfQueueTime": "Train first ({takes})",
+    "UI/SkillQueue/Skills/CompletionImminent": "almost done",
+    "UI/SkillQueue/Skills/SkillTimeLeft": "{[timeinterval]timeLeft.shortWrittenForm, from=day, to=second}",
+    "UI/SkillQueue/AddSkillMenu/RemoveHighestLevelFromQueue": "Take level {level} out of the queue",
+    "UI/SkillQueue/AddSkillMenu/AddToEndOfQueue": "Queue level {[numeric]nextLevel}",
+    "UI/SkillQueue/AddSkillMenu/TrainToLevel5": "Queue every level to V",
+    "UI/SkillQueue/AddSkillMenu/ApplySkillPoints": "Put free points into it",
+    "UI/Inventory/ItemActions/BuyThisType": "Buy",
+    "UI/Commands/ShowInfo": "Show information",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Market details",
+    "UI/Inventory/ItemActions/FindInContracts": "Look in contracts",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Look in your assets",
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
+    "UI/Compare/CompareButton": "Compare",
+    "UI/Common/SkillLevel": "Level {level}",
+    "UI/SkillQueue/CurrentAndTotalSkillPoints": "{[numeric]current, useGrouping, decimalPlaces=0} of {[numeric]total, useGrouping, decimalPlaces=0} points",
+    "UI/Skills/TrainingToLevel": "Queued to level {level}",
+    "UI/Skills/TimeUntilTrained": "Trained in",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/TrainingRate": "Rate",
     // The opened plan's faction and career path icons' tooltips (selectedSkillPlanContainer.py LoadFactionTooltip,
     // LoadCareerTooltip: HINT_BY_FACTION_ID, HINT_BY_CAREER_ID).
     "UI/SkillPlan/SkillPlanFaction": "Faction",
@@ -494,9 +522,165 @@
     void load();
     void loadCertified();
     if (corp !== undefined) void loadCorp();
+    // And the opened plan's contents (SkillPlanContents.OnSkillQueueChanged: its entries refreshed, their buttons, bars,
+    // tooltips and menus as the queue now is), from a row's menu or from the queue anywhere.
+    untrack(() => {
+      if (selected !== null && contents !== undefined && contents.planID === selected.id) void readContents(selected);
+    });
   });
 
   // The entry's tooltip, for the entry hovered or focused: at its right, or at its left where the screen ends first.
+  // ---- A contents row: its menu, tooltip, drag and double click (SkillPlanContentsSkillEntry, SkillPlanSkillEntry) ----
+  //
+  //   GetMenu        the skill bar's: menusvc.GetMenuForSkill (bridge/skillMenu.ts), on a right click
+  //   LoadTooltipPanel  LoadSkillEntryTooltipInfoOnly: the description, the level and the points, and for a skill in the
+  //                  queue the level it trains to, the time until then and the rate (no actions). Not here: the
+  //                  description's info icon, the tooltip being shown and gone with the pointer (and the expert systems'
+  //                  notice, the page having no expert systems)
+  //   GetDragData    the skill bar's: a listentry.SkillEntry; dropped into a chat's send box it is the type's link
+  //                  (eveEditPlainText.py 140: evelink.type_link). The queue's own drop (skillQueuePanelNew 852) is not
+  //                  the page's yet
+  //   OnDblClick     Show Info on the skill
+
+  /** The opened plan's info for a skill, where its contents were read. */
+  function rowInfo(skill: number): SkillRowInfo | null {
+    return contents?.detail?.skillInfo?.get(skill) ?? null;
+  }
+
+  let rowMenu = $state<{ readonly skill: number; readonly entries: readonly SkillMenuEntry[]; readonly x: number; readonly y: number } | null>(null);
+  function openRowMenu(skill: number, event: MouseEvent): void {
+    const info = rowInfo(skill);
+    if (info === null) return;
+    event.preventDefault();
+    rowTip = null;
+    rowMenu = { skill, entries: skillMenuEntries(skill, info.menu), x: event.clientX, y: event.clientY };
+  }
+  $effect(() => {
+    if (rowMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".skill-row-menu"))) rowMenu = null;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") rowMenu = null;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+
+  /** The words of an entry of the menu. */
+  function menuEntryWord(entry: SkillMenuEntry): string {
+    switch (entry.kind) {
+      case "front": {
+        // AddToFrontOfQueueTime: its {takes}, Completion Imminent where it takes nothing, else SkillTimeLeft.
+        const takes = entry.ticks !== null && entry.ticks <= 0
+          ? word("UI/SkillQueue/Skills/CompletionImminent")
+          : entry.ticks === null
+            ? ""
+            : intervalWord("UI/SkillQueue/Skills/SkillTimeLeft", "timeLeft", entry.ticks);
+        return word("UI/SkillQueue/AddSkillMenu/AddToFrontOfQueueTime", { takes });
+      }
+      case "removeHighest":
+        return word("UI/SkillQueue/AddSkillMenu/RemoveHighestLevelFromQueue", { level: entry.level });
+      case "end":
+        return word("UI/SkillQueue/AddSkillMenu/AddToEndOfQueue", { nextLevel: entry.level });
+      case "toLevel5":
+        return word("UI/SkillQueue/AddSkillMenu/TrainToLevel5", { nextLevel: entry.level });
+      case "applyPoints":
+        return word("UI/SkillQueue/AddSkillMenu/ApplySkillPoints");
+      case "buy":
+        return word("UI/Inventory/ItemActions/BuyThisType");
+      case "showInfo":
+        return word("UI/Commands/ShowInfo");
+      case "marketDetails":
+        return word("UI/Inventory/ItemActions/ViewTypesMarketDetails");
+      case "findInContracts":
+        return word("UI/Inventory/ItemActions/FindInContracts");
+      case "findPersonalAssets":
+        return word("UI/Inventory/ItemActions/FindPersonalAssets");
+      case "compare":
+        return word("UI/Compare/CompareButton");
+      case "separator":
+        return "";
+    }
+  }
+
+  /** An entry chosen: the queue's and the points' by the flow, the type menu's here. */
+  function chooseMenuEntry(skill: number, entry: SkillMenuEntry): void {
+    rowMenu = null;
+    switch (entry.kind) {
+      case "front":
+      case "removeHighest":
+      case "end":
+      case "toLevel5":
+        // (The contents are read again as the queue changes: OnSkillQueueChanged, above.)
+        void flow.skillMenuChoose(skill, entry).catch(() => {});
+        return;
+      case "applyPoints": {
+        // OnSkillsChanged: the contents read again once the points are in.
+        const opened = selected;
+        void flow.skillMenuChoose(skill, entry).catch(() => {}).then(() => {
+          if (opened !== null && selectedID === opened.id) void readContents(opened);
+        });
+        return;
+      }
+      case "showInfo":
+        showInfo({ kind: "type", typeID: skill });
+        return;
+      case "marketDetails":
+        showMarketDetails(skill);
+        return;
+      case "findInContracts":
+        findInContracts(skill);
+        return;
+      case "findPersonalAssets":
+        findInPersonalAssets(assetSearchTextForType(word("UI/Inventory/AssetSearch/KeywordTypeExact"), resolvedName($names.resolved, "type", skill, "")));
+        return;
+      case "compare":
+        compareType(skill);
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** A label with a length of time (a timeinterval tag's shortWrittenForm), from and to as the tag says. */
+  function intervalWord(label: string, name: string, ticks: number): string {
+    const template = $words.templates[label];
+    const text = typeof template === "string" ? template : OWN[label] ?? "";
+    return plainText(formatTemplate(text, { [name]: { type: "long", value: String(Math.trunc(ticks)) } }, {
+      nameOf: (kind, id) => resolvedName($names.resolved, kind, id, ""),
+      writeShortInterval: (value, from, to) => shortWrittenInterval(value, $words.templates, (from ?? "day") as TimePart, (to ?? "second") as TimePart),
+    }));
+  }
+
+  let rowTip = $state<{ readonly skill: number; readonly top: number; readonly left: number | null; readonly right: number | null } | null>(null);
+  function showRowTip(skill: number, event: Event): void {
+    if (rowMenu !== null || rowInfo(skill) === null || !(event.currentTarget instanceof HTMLElement)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    // GetTooltipPointer: POINT_RIGHT_2, the tooltip at the entry's right where it fits.
+    const fitsRight = rect.right + TIP_GAP + TIP_WIDTH <= window.innerWidth;
+    rowTip = { skill, top: rect.top, left: fitsRight ? rect.right + TIP_GAP : null, right: fitsRight ? null : window.innerWidth - rect.left + TIP_GAP };
+  }
+  function hideRowTip(skill: number): void {
+    if (rowTip !== null && rowTip.skill === skill) rowTip = null;
+  }
+
+  /** GetDragData: the skill as a listentry.SkillEntry, taken by a chat's send box as the type's link. */
+  function skillDrag(event: DragEvent, skill: number): void {
+    rowTip = null;
+    const name = resolvedName($names.resolved, "type", skill, "");
+    event.dataTransfer?.setData(LINK_DRAG_TYPE, JSON.stringify({ url: `showinfo:${skill}`, text: name }));
+    event.dataTransfer?.setData("text/plain", `<a href="showinfo:${skill}">${name}</a>`);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+  }
+
   let tip = $state<{ readonly planID: string; readonly top: number; readonly left: number | null; readonly right: number | null } | null>(null);
   /** The tooltip's widest (17rem) and the gap between it and the entry, in pixels. */
   const TIP_WIDTH = 272;
@@ -1178,6 +1362,10 @@
                 {@const mark = rowMark(plan, row)}
                 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                 <li class="skill-plan-row" class:selected={mark === "selected"} class:marked={mark === "marked"} aria-current={mark === "selected" ? "true" : undefined}
+                  draggable="true" ondragstart={(event) => skillDrag(event, row.skill)}
+                  ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) showInfo({ kind: "type", typeID: row.skill }); }}
+                  oncontextmenu={(event) => openRowMenu(row.skill, event)}
+                  onmouseenter={(event) => showRowTip(row.skill, event)} onmouseleave={() => hideRowTip(row.skill)}
                   onclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) void selectRow(plan, row, event.ctrlKey); }}
                   onkeydown={(event) => { if (event.key === "Enter") void selectRow(plan, row, event.ctrlKey); }}>
                   <span class="skill-bar" aria-hidden="true">
@@ -1194,6 +1382,43 @@
                 </li>
               {/each}
             </ul>
+            {#if rowTip !== null && rowInfo(rowTip.skill) !== null}
+              {@const info = rowInfo(rowTip.skill)!}
+              <!-- LoadSkillEntryTooltipInfoOnly: the description; the level and the points; for a skill in the queue the
+                   level it trains to (cryo blue), the time until it is trained (day to minute) and the training rate. -->
+              <div class="skill-plan-tip skill-row-tip" role="tooltip" use:portal style:top={`${rowTip.top}px`}
+                style:left={rowTip.left === null ? undefined : `${rowTip.left}px`} style:right={rowTip.right === null ? undefined : `${rowTip.right}px`}>
+                {#if info.descriptionID !== null && message(info.descriptionID) !== ""}<p>{message(info.descriptionID)}</p>{/if}
+                <span class="skill-row-tip-pair">
+                  <span>{word("UI/Common/SkillLevel", { level: info.level === 0 ? "0" : romanLevel(info.level) })}</span>
+                  {#if info.totalPoints !== null}<span>{word("UI/SkillQueue/CurrentAndTotalSkillPoints", { current: info.points, total: info.totalPoints })}</span>{/if}
+                </span>
+                {#if info.queued !== null}
+                  <span class="skill-row-tip-queued">{word("UI/Skills/TrainingToLevel", { level: info.queued.level })}</span>
+                  {#if info.queued.ticks !== null}
+                    <span class="skill-row-tip-pair"><span>{word("UI/Skills/TimeUntilTrained")}</span><span>{interval(info.queued.ticks, "minute")}</span></span>
+                  {/if}
+                  {#if info.queued.rate !== null}
+                    <span class="skill-row-tip-pair"><span>{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/TrainingRate")}</span><span>{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/SpPerMinute", { spPerMin: info.queued.rate })}</span></span>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
+            {#if rowMenu !== null}
+              {@const menuFor = rowMenu}
+              <span class="hull-menu skill-row-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+                {#each menuFor.entries as entry, at (at)}
+                  {#if entry.kind === "separator"}
+                    <hr />
+                  {:else if entry.kind === "buy"}
+                    <!-- QuickBuy opens the market's buy window, which the page has not: off here, and why. -->
+                    <button type="button" role="menuitem" disabled title="The market's buy window is not on this page.">{menuEntryWord(entry)}</button>
+                  {:else}
+                    <button type="button" role="menuitem" onclick={() => chooseMenuEntry(menuFor.skill, entry)}>{menuEntryWord(entry)}</button>
+                  {/if}
+                {/each}
+              </span>
+            {/if}
           {/if}
           <!-- UpdateOmegaBanner: Upgrade Clone State (SkillPlanOmegaButton) where the plan is omega locked, above the books'
                button; it opens the clone upgrade window, the store's, so it is off here, and says why. -->
@@ -1460,6 +1685,9 @@
   .skill-plan-tip { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 0.45rem; width: max-content; max-width: 17rem;
     padding: 0.6rem 0.75rem; border: 1px solid var(--line, #333); background: rgba(10, 12, 16, 0.96); pointer-events: none; }
   .skill-plan-tip p { margin: 0; overflow-wrap: anywhere; }
+  .skill-row-tip { width: 17rem; }
+  .skill-row-tip-pair { display: flex; justify-content: space-between; gap: 0.75rem; }
+  .skill-row-tip-queued { color: #58a7bf; }
   .skill-plan-tip-row { display: flex; align-items: center; gap: 0.6rem; }
   .skill-plan-tip-icon { width: 1.25rem; text-align: center; }
   .skill-plan-tip-icon.books { color: #e05a4f; }

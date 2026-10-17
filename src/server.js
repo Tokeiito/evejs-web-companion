@@ -13561,6 +13561,8 @@ app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
           techLevel: whole(type.techLevel),
           marketGroupID: whole(type.marketGroupID),
           published: Boolean(Number(type.published || 0)),
+          // evetypes.GetDescriptionID: the message the type's description is (GetDescription words it).
+          descriptionID: whole(type.descriptionID),
           groupID: whole(type.groupID),
           categoryID: whole(type.groupID) !== null && groupCategories && groupCategories[String(type.groupID)] !== undefined ? whole(groupCategories[String(type.groupID)]) : null,
         }

@@ -21,6 +21,7 @@
 
 import { requiredSkillsRecursive, type QueuedLevel, type RequiredSkills, type SkillLevelBox } from "./missingSkills.ts";
 import type { LevelButtonState } from "./skillPlanLevelButton.ts";
+import type { SkillMenuFacts } from "./skillMenu.ts";
 import { skillPointsForLevel } from "./skillSheet.ts";
 
 /** The nought uuid: SetActive's "none" (skillPlanRequestsMessenger.set_active), GetActive's answer with none tracked. */
@@ -300,6 +301,27 @@ export interface SkillPlanDetail {
   readonly numOmegaSkills: number;
   /** GetUntrainedSkills: the plan's levels above the skill's level, its queue counted, in the plan's order. */
   readonly untrained: readonly (readonly [number, number])[];
+  /** Each of the plan's skills' tooltip and menu (SkillPlanContentsSkillEntry: LoadTooltipPanel, GetMenu); none unread. */
+  readonly skillInfo?: ReadonlyMap<number, SkillRowInfo>;
+}
+
+/**
+ * What a contents row's tooltip (LoadSkillEntryTooltipInfoOnly: the skill tooltip controller's information) and menu
+ * (GetMenuForSkill, bridge/skillMenu.ts) are made from, for its skill.
+ */
+export interface SkillRowInfo {
+  /** evetypes.GetDescriptionID: its description, as the tooltip's first words; null where it has none. */
+  readonly descriptionID: number | null;
+  /** The controller's level: GetSkillIncludingLapsed's trainedSkillLevel, nought where not had. */
+  readonly level: number;
+  /** The controller's points: GetSkillIncludingLapsed's trainedSkillPoints, nought where not had. */
+  readonly points: number;
+  /** get_skill_points_text's total: GetSPForLevelRaw(rank, 5); null where the rank is not known. */
+  readonly totalPoints: number | null;
+  /** is_queued: level_including_queued (MySkillLevelIncludingQueued), the time until it is trained (GetTrainingLengthOfSkill
+   * at that level, in ticks; null unknown) and the training rate (GetSkillpointsPerMinute); null where it is not queued. */
+  readonly queued: { readonly level: number; readonly ticks: number | null; readonly rate: number | null } | null;
+  readonly menu: SkillMenuFacts;
 }
 
 /**

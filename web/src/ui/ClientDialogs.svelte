@@ -23,13 +23,13 @@
   // Not done: the dialog's icon, its sound (audio.AudioMessage), its line in the client's log (logger.AddMessage), the
   // strip's place with the HUD at the top and its being dragged, and the box's holding the rest of the client still
   // (is_modal) for a pilot not in front.
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { DO_NOT_ASK_AGAIN_LABEL, DO_NOT_SHOW_AGAIN_LABEL, answerKept, suppressKey } from "../bridge/dialogSuppression.ts";
   import type { Session } from "../app/sessions.ts";
   import type { MultiBuyAsk, MultiBuyRow, SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
   import { romanLevel } from "../bridge/skills.ts";
   import NamePopup from "./NamePopup.svelte";
   import { changeQuickbar } from "./marketQuickbar.ts";
@@ -651,7 +651,18 @@
   $effect(() => {
     const ask = $asked;
     if (ask === null) return;
-    flow.requestWords([...Object.keys(QUANTITY_WORDS), ...(ask.hintLabel === null ? [] : [ask.hintLabel])]);
+    flow.requestWords([
+      ...Object.keys(QUANTITY_WORDS),
+      ...[ask.hintLabel, ask.captionLabel ?? null, ask.labelLabel ?? null].filter((label): label is string => label !== null),
+    ]);
+  });
+  // The names its label speaks of (UseSkillPointsWindow's skill), as its words come.
+  $effect(() => {
+    const ask = $asked;
+    if (ask === null || ask.labelLabel === undefined) return;
+    const template = $words.templates[ask.labelLabel];
+    const refs = typeof template === "string" ? templateNameRefs(template, ask.labelArgs ?? {}) : [];
+    if (refs.length > 0) untrack(() => flow.requestNames(refs));
   });
   // (Text, not a number field: a number field's text cannot be selected, and the client's is selected to begin with.
   // Digits only, as the client's field takes them: intonly.)
@@ -853,7 +864,21 @@
     const name = confirm ? (shipNameTyped || shipNameHint).replace(/\n/g, " ").trim() : null;
     flow.answerShipName(ask.n, name, shipNameKeep);
   }
-  const hintText = $derived($asked === null ? "" : $asked.hintLabel === null ? $asked.hint ?? "" : wordOf($asked.hintLabel, $asked.hint ?? ""));
+  const hintText = $derived($asked === null
+    ? ""
+    : $asked.hintLabel === null
+      ? $asked.hint ?? ""
+      : $asked.hintArgs === undefined
+        ? wordOf($asked.hintLabel, $asked.hint ?? "")
+        : plainText(formatTemplate(wordOf($asked.hintLabel, $asked.hint ?? ""), $asked.hintArgs, { nameOf })));
+  /** QtyPopup's caption: the one asked, else SetQuantity. */
+  const captionText = $derived($asked?.captionLabel === undefined
+    ? wordOf("UI/Common/SetQuantity", "Set Quantity")
+    : wordOf($asked.captionLabel, $asked.caption ?? ""));
+  /** QtyPopup's label beside its field, where one is asked. */
+  const labelText = $derived($asked === null || $asked.labelLabel === undefined
+    ? $asked?.label ?? ""
+    : plainText(formatTemplate(wordOf($asked.labelLabel, $asked.label ?? ""), $asked.labelArgs ?? {}, { nameOf })));
   function focusAll(node: HTMLInputElement): void {
     node.focus();
     node.select();
@@ -869,7 +894,7 @@
 
 {#if $asked !== null}
   <div class="client-dialog-shade" class:modal={inFront}>
-    <div class="client-dialog" role="dialog" aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")} data-dialog="setQuantityPopup" data-in-front={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={captionText} data-dialog="setQuantityPopup" data-in-front={inFront}>
       <form
         class="quantity"
         onsubmit={(event) => {
@@ -880,8 +905,9 @@
         {#if !inFront && pilotName !== null}
           <span class="for-pilot">For {pilotName}</span>
         {/if}
-        <strong>{wordOf("UI/Common/SetQuantity", "Set Quantity")}</strong>
+        <strong>{captionText}</strong>
         {#if hintText !== ""}<p class="body">{hintText}</p>{/if}
+        {#if labelText !== ""}<p class="body quantity-label">{labelText}</p>{/if}
         <input
           type="text"
           inputmode="numeric"

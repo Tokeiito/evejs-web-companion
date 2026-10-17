@@ -215,6 +215,8 @@ import {
 } from "../bridge/certifiedSkillPlans.ts";
 
 import { levelButtonState, levelsForSkillAndRequirements, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
+import { highestQueuedLevel, queueAfter, type SkillMenuEntry } from "../bridge/skillMenu.ts";
+import type { SkillRowInfo } from "../bridge/skillPlans.ts";
 import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 
 /** A skill plan link followed: its plan's id (a certified plan's a whole number, the others' a uuid) and owner. */
@@ -964,6 +966,15 @@ export interface QuantityAsk {
   readonly value: number;
   readonly hintLabel: string | null;
   readonly hint: string | null;
+  /** The hint label's arguments, where it takes any (UI/Common/SetQtyBetween's min and max). */
+  readonly hintArgs?: Readonly<Record<string, JsonValue>>;
+  /** The window's caption, a label of the client's with the page's own words; UI/Common/SetQuantity where none. */
+  readonly captionLabel?: string;
+  readonly caption?: string;
+  /** QtyPopup's label beside the field (a labeltext row), a label of the client's, its arguments and the page's own words. */
+  readonly labelLabel?: string;
+  readonly labelArgs?: Readonly<Record<string, JsonValue>>;
+  readonly label?: string;
 }
 
 /** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
@@ -2437,6 +2448,12 @@ export interface AppFlow {
    * and null answered.
    */
   sharedSkillPlan(skillPlanID: string, ownerID: number | null): Promise<(PersonalSkillPlanEntry & { readonly linked: true }) | null>;
+  /**
+   * A skill menu's entry chosen (bridge/skillMenu.ts; skillQueueSvc's AddSkillToQueue, RemoveHighestLevelFromQueue,
+   * AddAllLevels and UseFreeSkillPoints), on the queue as the server has it now: the queue saved after it, or the
+   * client's refusal said; Apply Skill Points asks how many first. The type menu's own entries are the window's.
+   */
+  skillMenuChoose(typeID: number, entry: SkillMenuEntry): Promise<void>;
   /**
    * Show Info on a corporation (corporationInfoWindow.py reconstruct_info_window; infosvc.UpdateDataCorp): its public
    * record (corpmgr.GetPublicInfo), its friendly fire (the corp service's GetAggressionSettings, corpmgr's) and, for a
@@ -7194,7 +7211,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       typeName: () => null,
       typeGroupName: () => null,
       typeAttribute: (skill, attributeID) => typeAttributes[skill]?.[attributeID],
-    }) as { skills?: readonly { typeID: number | null; skillPoints: number }[] };
+    }) as {
+      skills?: readonly { typeID: number | null; skillPoints: number }[];
+      queue?: { entries?: readonly { typeID: number; toLevel: number; lengthMs?: number | null }[] } | null;
+    };
     const pointsNow = (skill: number): number =>
       sheet.skills?.find((row) => row.typeID === skill)?.skillPoints ?? mine.get(skill)?.trainedSkillPoints ?? 0;
     // GetSkillpointsPerMinute(includeBoosters=True): the attributes as the server has them, boosters and all, halved
@@ -7207,7 +7227,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
     };
-    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, rateWithBoosters, pointsNow };
+    // GetTrainingLengthOfSkill(skill, level): the queue's time up to that level's end, each level's own time
+    // (GetAllTrainingLengths, the sheet's lengths) added in turn; null where the level is not queued or a time before it
+    // is not had. In ticks.
+    const untilTrained = (skill: number, level: number): number | null => {
+      let total = 0;
+      for (const entry of sheet.queue?.entries ?? []) {
+        if (entry.lengthMs === null || entry.lengthMs === undefined) return null;
+        total += entry.lengthMs;
+        if (entry.typeID === skill && entry.toLevel === level) return Math.round(total * 10_000);
+      }
+      return null;
+    };
+    // GetFreeSkillPoints: the queue answer's second.
+    const freePoints = Array.isArray(queueAnswer) ? Math.max(0, Math.trunc(Number(queueAnswer[1]) || 0)) : 0;
+    return { mine, lapsed, queueAnswer, queued, training, typeAttributes, attributes, omega, ceilings, graded, rank, rate, rateWithBoosters, pointsNow, untilTrained, freePoints };
   }
 
   /**
@@ -8029,13 +8063,112 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const ceiling = (skill: number): number => ceilings?.get(skill) ?? 0;
     const numOmegaSkills = ceilings === null ? 0 : planSkills.filter((skill) => restrictedForAlpha(skill, ceiling, required)).length;
     const maxQueued = (typeID: number): number => Math.max(0, ...facts.queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
+    // Each skill's row tooltip and menu (SkillPlanContentsSkillEntry LoadTooltipPanel and GetMenu): its type's
+    // description, market group, publishing and category (evetypes), and what the skill and queue services hold of it.
+    const types = await typeFacts(skillTypes).catch(() => null);
+    const skillInfo = new Map<number, SkillRowInfo>();
+    for (const skill of skillTypes) {
+      const had = facts.lapsed.get(skill);
+      const rank = facts.rank(skill);
+      const highest = highestQueuedLevel(skill, facts.queued);
+      const type = types?.get(skill) ?? null;
+      const rate = facts.rateWithBoosters(skill);
+      // GetTrainingLengthOfSkill(skill, level + 1, 0): the next level from the points trained, at the front.
+      const nextPoints = had === undefined || rank === null || rank === undefined || had.trainedSkillLevel >= 5
+        ? null
+        : skillPointsForLevel(rank, had.trainedSkillLevel + 1);
+      const frontMinutes = nextPoints === null || rate === null || rate <= 0 ? null : Math.max(0, nextPoints - facts.pointsNow(skill)) / rate;
+      skillInfo.set(skill, {
+        descriptionID: type?.descriptionID ?? null,
+        level: had?.trainedSkillLevel ?? 0,
+        points: had?.trainedSkillPoints ?? 0,
+        totalPoints: rank === null || rank === undefined ? null : skillPointsForLevel(rank, 5),
+        // MySkillLevelIncludingQueued: the higher of the level trained and the highest queued.
+        queued: highest === null ? null : {
+          level: Math.max(highest, had?.trainedSkillLevel ?? 0),
+          ticks: facts.untilTrained(skill, Math.max(highest, had?.trainedSkillLevel ?? 0)),
+          rate,
+        },
+        menu: {
+          trainedLevel: had === undefined ? null : had.trainedSkillLevel,
+          queue: facts.queued,
+          inTraining: facts.training === skill,
+          frontTicks: frontMinutes === null ? null : Math.round(frontMinutes * 60 * 10_000_000),
+          freePoints: facts.freePoints,
+          // SkillpointsNextLevel + 0.5 - trainedSkillPoints.
+          pointsToNextLevel: nextPoints === null || had === undefined ? null : nextPoints + 0.5 - had.trainedSkillPoints,
+          marketGroupID: type?.marketGroupID ?? null,
+          published: type?.published === true,
+          categoryID: type?.categoryID ?? null,
+        },
+      });
+    }
+    requestWords([...skillInfo.values()].flatMap((info) => (info.descriptionID === null ? [] : [`#${info.descriptionID}`])));
     return {
       rows,
       missingBooks: planSkills.filter((skill) => !facts.lapsed.has(skill)),
       omegaLocked: numOmegaSkills > 0,
       numOmegaSkills,
       untrained: untrainedSkills(plan, (typeID) => facts.lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued),
+      skillInfo,
     };
+  }
+
+  /** characterskills/queue.py SKILLQUEUE_MAX_NUM_SKILLS. */
+  const MAX_QUEUED_SKILLS = 150;
+
+  async function skillMenuChoose(typeID: number, entry: SkillMenuEntry): Promise<void> {
+    const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
+    const queueRead = Array.isArray(answered) ? (answered[0] as JsonValue) : null;
+    if (entry.kind === "applyPoints") {
+      // UseFreeSkillPoints: none into the skill in training (CannotApplyFreePointsWhileTrainingSkill); else a quantity
+      // asked, up to the free points, begun at those the next level needs.
+      if (skillInTraining(queueRead) === typeID) {
+        sayDialog("CannotApplyFreePointsWhileTrainingSkill", null, "That skill is training. Pause the queue first.");
+        return;
+      }
+      const free = Array.isArray(answered) ? Math.max(0, Math.trunc(Number(answered[1]) || 0)) : 0;
+      const needed = Math.trunc(entry.points);
+      const points = await askQuantity({
+        min: 0,
+        max: free,
+        value: needed,
+        // QtyPopup: its hint, as none is given, SetQtyBetween with FmtAmt's figures.
+        hintLabel: "UI/Common/SetQtyBetween",
+        hint: `From 0 to ${free.toLocaleString("en-US")}.`,
+        hintArgs: { min: "0", max: free.toLocaleString("en-US") },
+        captionLabel: "UI/SkillQueue/AddSkillMenu/ApplySkillPoints",
+        caption: "Apply skill points",
+        labelLabel: "UI/SkillQueue/AddSkillMenu/UseSkillPointsWindow",
+        labelArgs: { skill: typeID, skillPoints: needed },
+        label: `Points for the next level: ${needed.toLocaleString("en-US")}.`,
+      });
+      if (points === null || points <= 0) return;
+      await applyFreeSkillPoints(typeID, points);
+      return;
+    }
+    const queue = queuedLevels(queueRead);
+    if (entry.kind === "removeHighest") {
+      const required = (await requiredSkillsFor(queue.map((each) => each.typeID))) ?? {};
+      const refusal = queueRemovalRefusal(typeID, entry.level, queue, required);
+      if (refusal !== null) {
+        sayDialog(refusal, null, refusal === "QueueCannotRemoveSkillsWithHigherLevelsStillInQueue"
+          ? "A higher level of this skill is still in the queue."
+          : "A skill in the queue needs this one.");
+        return;
+      }
+    }
+    const after = queueAfter(typeID, entry, queue, MAX_QUEUED_SKILLS);
+    if (after === null) return;
+    if ("refusal" in after) {
+      if (after.refusal === "QueueTooManySkills") {
+        sayDialog("QueueTooManySkills", { type: "dict", entries: [["num", MAX_QUEUED_SKILLS]] }, `The queue holds ${MAX_QUEUED_SKILLS} skills at most.`);
+      } else {
+        sayDialog("QueueSkillAlreadyPresent", null, "That level is in the queue already.");
+      }
+      return;
+    }
+    await saveSkillQueueSaved(after.queue, entry.kind === "removeHighest" ? "Removed from your skill queue" : "Added to your skill queue", "that skill");
   }
 
   /**
@@ -23013,6 +23146,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openSkillPlanLink,
     takeSkillPlanLink,
     sharedSkillPlan,
+    skillMenuChoose,
     corporationShowInfo,
     allianceShowInfo,
     answerSkillBooks,

@@ -3903,6 +3903,8 @@ export interface TypeMetaFacts {
   readonly techLevel: number | null;
   readonly marketGroupID: number | null;
   readonly published: boolean;
+  /** evetypes.GetDescriptionID: the message its description is; null where it has none. */
+  readonly descriptionID: number | null;
   readonly groupID: number | null;
   readonly categoryID: number | null;
 }
@@ -3930,6 +3932,7 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
       techLevel: numberOrNull(row.techLevel),
       marketGroupID: numberOrNull(row.marketGroupID),
       published: row.published === true,
+      descriptionID: numberOrNull(row.descriptionID),
       groupID: numberOrNull(row.groupID),
       categoryID: numberOrNull(row.categoryID),
     });
