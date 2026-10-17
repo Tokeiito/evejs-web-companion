@@ -121,7 +121,9 @@ import {
   decodeContractDetail,
   decodeContractList,
   decodeContractSearch,
+  decodeContractSearchEntries,
   decodeContractSummary,
+  type ContractSearchEntry,
 } from "../bridge/contracts.ts";
 import { decodeAssetItems, decodeAssetSearchItems } from "../bridge/personalAssets.ts";
 import { ASSET_SEARCH_KEYWORDS, assetSearchConditions, parseAssetSearch, searchAssets, type AssetSearchItem, type AssetSearchLocation, type AssetSearchNames } from "../bridge/assetSearch.ts";
@@ -1750,6 +1752,11 @@ export interface AppFlow {
   loadContracts(page: number): Promise<void>;
   /** Open one contract in full: its items and its route endpoints, by name. */
   openContract(contractID: number): Promise<void>;
+  /**
+   * contracts.FindRelated for a type (the type menu's Find in Contracts): the public item exchanges and auctions of
+   * that type, in every region, cheapest first, as the contract search sends it.
+   */
+  findContractsOfType(typeID: number): Promise<{ readonly entries: readonly ContractSearchEntry[]; readonly numFound: number }>;
   /** Close the open contract without touching the server. */
   closeContract(): void;
   /**
@@ -10836,6 +10843,55 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     requestNames(refs);
+  }
+
+  /**
+   * contracts.FindRelated(typeID, None, None, None, None, None) (contracts.py 131 to 135): the search's type made
+   * auctions and item exchanges together (CONTYPE_AUCTIONANDITEMECHANGE, 10) and the window's FindRelated
+   * (contractsearch.py 1074 to 1110): public, its location set to all regions (7: none sent), the type's filters reset,
+   * the type's name with Exact Type ticked; then SearchContracts (1113 to 1367) with its twenty-six keywords: the one
+   * type ({typeID: None}, the exact match of GetTypesFromName), its name, the type 10, public (0), excludeMultiple as
+   * the box is (unticked: False), every other filter None, sorted by price, lowest first (SORT_PRICE, 0), from the first.
+   */
+  async function findContractsOfType(typeID: number): Promise<{ readonly entries: readonly ContractSearchEntry[]; readonly numFound: number }> {
+    await resolveNamesNow([{ kind: "type", id: typeID }]);
+    const typeName = nameCache.get(nameKey("type", typeID)) ?? null;
+    const answered = await bridgeAsk("contractProxy", "SearchContracts", [], {
+      itemTypes: { type: "dict", entries: [[typeID, null]] },
+      itemTypeName: typeName,
+      itemCategoryID: null,
+      itemGroupID: null,
+      contractType: 10,
+      securityClasses: null,
+      locationID: null,
+      endLocationID: null,
+      issuerID: null,
+      minPrice: null,
+      maxPrice: null,
+      minReward: null,
+      maxReward: null,
+      minCollateral: null,
+      maxCollateral: null,
+      minVolume: null,
+      maxVolume: null,
+      excludeTrade: null,
+      excludeMultiple: false,
+      excludeNoBuyout: null,
+      availability: 0,
+      description: null,
+      searchHint: null,
+      sortBy: 1,
+      sortDir: 0,
+      startNum: 0,
+    });
+    const decoded = decodeContractSearchEntries(answered);
+    requestNames(decoded.entries.flatMap((entry) => [
+      { kind: "system" as const, id: entry.contract.startSolarSystemID },
+      { kind: "station" as const, id: entry.contract.startStationID },
+      entry.contract.forCorp ? { kind: "owner" as const, id: entry.contract.issuerCorpID } : { kind: "character" as const, id: entry.contract.issuerID },
+      ...entry.items.map((item) => ({ kind: "type" as const, id: item.typeID })),
+    ]).filter((ref) => ref.id > 0));
+    return decoded;
   }
 
   async function openContract(contractID: number): Promise<void> {
@@ -22505,6 +22561,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     sendMail,
     loadContracts,
     openContract,
+    findContractsOfType,
     closeContract,
     acceptContract,
     loadPersonalAssets,

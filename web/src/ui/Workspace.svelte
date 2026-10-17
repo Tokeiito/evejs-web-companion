@@ -27,6 +27,7 @@
   import { showInfoTarget } from "./showInfo.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
   import { assetsSearchTarget } from "./assetsSearch.ts";
+  import { contractsSearchTarget } from "./contractsSearch.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -298,6 +299,17 @@
     if (count === servedAssetsSearches) return;
     servedAssetsSearches = count;
     open("assets");
+  });
+
+  // Contracts of a type asked for from outside the contracts window (contractsSearch.ts: contracts.FindRelated): the
+  // contracts window opened, which takes the type and searches.
+  let servedContractsSearches = contractsSearchTarget.requests.get();
+  const contractsSearchRequests = contractsSearchTarget.requests;
+  $effect(() => {
+    const count = $contractsSearchRequests;
+    if (count === servedContractsSearches) return;
+    servedContractsSearches = count;
+    open("contracts");
   });
 
   let servedMarketRequests = marketDetailsTarget.requests.get();
