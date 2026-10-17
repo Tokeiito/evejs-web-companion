@@ -6,6 +6,11 @@
   // backlog poll: the panel polls the active channel on a modest interval while
   // it is open and stops when it closes (onDestroy). The browser never sees a
   // bridge session.
+  //
+  // A message is shown by its markup as the client's chat shows it (the editor's markup: bridge/mailMarkup.ts), a link
+  // in it underlined with its url as its hint; a skill plan's link (bridge/skillPlanLink.ts) is followed when clicked
+  // (link.py handle_link: the Skills window opens on the plan). A link dragged onto the send box (a skill plan's share
+  // button: SkillPlanDragData.get_link) is put in at the caret as its markup.
   import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { createChatPoller } from "../app/chatPoll.ts";
@@ -16,8 +21,15 @@
   import type { ChatChannel } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
+  import { LINK_DRAG_TYPE, parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openSkillPlanLink = null }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** A skill plan's link in a message, clicked. */
+    openSkillPlanLink?: ((url: string) => void) | null;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const chat = store.chat;
@@ -58,6 +70,29 @@
   let busy = $state(false);
   let error = $state("");
   let draft = $state("");
+  let sendBox = $state<HTMLInputElement | undefined>(undefined);
+
+  /** A link dragged over the send box is taken. */
+  function linkDragOver(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes(LINK_DRAG_TYPE)) event.preventDefault();
+  }
+
+  /** A link dropped on the send box: its markup (<a href="url">text</a>, evelink.Link) put in at the caret. */
+  function linkDropped(event: DragEvent): void {
+    const raw = event.dataTransfer?.getData(LINK_DRAG_TYPE);
+    if (!raw) return;
+    event.preventDefault();
+    let link: { readonly url?: unknown; readonly text?: unknown };
+    try {
+      link = JSON.parse(raw) as { readonly url?: unknown; readonly text?: unknown };
+    } catch {
+      return;
+    }
+    if (typeof link.url !== "string" || typeof link.text !== "string") return;
+    const markup = `<a href="${link.url}">${link.text}</a>`;
+    const at = sendBox?.selectionStart ?? draft.length;
+    draft = draft.slice(0, at) + markup + draft.slice(at);
+  }
 
   const CHANNELS: readonly { id: ChatChannel; label: string }[] = [
     { id: "local", label: "Local" },
@@ -191,7 +226,7 @@
             {#each active.messages as message, index (index)}
               <li>
                 <span class="author">{message.characterName}</span>:
-                <span class="body">{message.message}</span>
+                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const planLink = run.link !== null && openSkillPlanLink !== null && parseSkillPlanUrl(run.link) !== null ? run.link : null}{#if planLink !== null}<button type="button" class="chat-link" title={planLink} onclick={() => openSkillPlanLink?.(planLink)}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
               </li>
             {/each}
           </ul>
@@ -214,7 +249,10 @@
     <form class="send-box" onsubmit={onSubmit}>
       <input
         type="text"
+        bind:this={sendBox}
         bind:value={draft}
+        ondragover={linkDragOver}
+        ondrop={linkDropped}
         maxlength="4096"
         placeholder={`Message ${$chat.activeChannel === "corp" ? "Corp" : "Local"}…`}
         disabled={busy}
@@ -225,6 +263,12 @@
 </section>
 
 <style>
+  /* evelink's link colour (link.py link_color_info: #94ccff, hovered #aed9ff). */
+  .chat-link { padding: 0; border: 0; background: none; font: inherit; color: #94ccff; text-decoration: underline; cursor: pointer; }
+  .chat-link:hover { color: #aed9ff; }
+  .chat-bold { font-weight: 700; }
+  .chat-italic { font-style: italic; }
+  .chat-underline { text-decoration: underline; }
   .chat-grid {
     display: grid;
     grid-template-columns: 1fr minmax(140px, 220px);

@@ -215,7 +215,15 @@ import {
 } from "../bridge/certifiedSkillPlans.ts";
 
 import { levelButtonState, levelsForSkillAndRequirements, queueRemovalRefusal, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
-import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
+import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
+
+/** A skill plan link followed: its plan's id (a certified plan's a whole number, the others' a uuid) and owner. */
+export interface SkillPlanLinkFollowed {
+  readonly n: number;
+  readonly skillPlanID: number | string;
+  readonly ownerID: number | null;
+}
+import { MAX_CORP_PLANS, categoryBytes, corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, inPlayerCorporation, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
 
 /** A public gateway notice: its message type (eve_public.…Notice) and its message as decoded (bytes as base64). */
 export interface GatewayNotice {
@@ -257,7 +265,7 @@ export interface SavedMilestones {
 }
 import type { CatalogueSkill } from "./api.ts";
 import {
-  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, planProgressFrom, restrictedForAlpha, type PlanProgress, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, planProgressFrom, restrictedForAlpha, type PersonalSkillPlanEntry, type PlanProgress, bytesFromUuid, uuidFromBytes, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
   untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
@@ -2402,6 +2410,24 @@ export interface AppFlow {
    * one comes.
    */
   readonly gatewayNotices: ReadableSignal<GatewayNotice | null>;
+  /**
+   * The newest skill plan link followed (link.py handle_link: parse_skillPlanID_url), for the Skills window to open
+   * (OpenSkillPlanWnd); n counts them. Null until one is.
+   */
+  readonly skillPlanLinks: ReadableSignal<SkillPlanLinkFollowed | null>;
+  /** handle_link: a "skillPlan:" url followed; nothing where the client's own parse would refuse it. */
+  openSkillPlanLink(url: string): void;
+  /** The link followed and not yet opened, taken by whoever opens it (null where none is waiting). */
+  takeSkillPlanLink(): SkillPlanLinkFollowed | null;
+  /**
+   * skillPlanService.GetOwnedByOther: a plan that is not the pilot's, by its link's owner: a player corporation's by the
+   * corporation's GetShared (its skills by the corporation's Get, as CorpSkillPlanController reads them), anyone
+   * else's by the personal GetShared, its skills put right as on reading (ValidateSkillPlan, and the personal
+   * SetRequiredSkills where that changed them, as _GetPersonalSkillPlanController does). As its entry shows it, marked
+   * linked. Where none is had (any failure: GetOwnedByOther catches them all) the client's SkillPlanNotFound is said
+   * and null answered.
+   */
+  sharedSkillPlan(skillPlanID: string, ownerID: number | null): Promise<(PersonalSkillPlanEntry & { readonly linked: true }) | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
   answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
   /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
@@ -6894,6 +6920,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
   const gatewayNoticesSignal = createSignal<GatewayNotice | null>(null);
   let gatewayNoticesHeard = 0;
+  const skillPlanLinksSignal = createSignal<SkillPlanLinkFollowed | null>(null);
+  let skillPlanLinksFollowed = 0;
+  let skillPlanLinkWaiting: SkillPlanLinkFollowed | null = null;
+
+  function openSkillPlanLink(url: string): void {
+    const parsed = parseSkillPlanUrl(url);
+    if (parsed === null) return;
+    skillPlanLinksFollowed += 1;
+    skillPlanLinkWaiting = { n: skillPlanLinksFollowed, ...parsed };
+    skillPlanLinksSignal.set(skillPlanLinkWaiting);
+  }
+
+  function takeSkillPlanLink(): SkillPlanLinkFollowed | null {
+    const waiting = skillPlanLinkWaiting;
+    skillPlanLinkWaiting = null;
+    return waiting;
+  }
   let skillBooksEnd: ((purchased: readonly number[]) => void) | null = null;
   let skillBooksPurchased: number[] = [];
   // The client's multibuy window, one at a time, and the sell orders read for its types (the quote service's order
@@ -8320,6 +8363,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       plans: entries.map((entry) => ({ ...entry, corp: true as const })),
       canEdit: hasSkillPlanManagerRole(store.station.get().online?.corpRole ?? null),
     };
+  }
+
+  async function sharedSkillPlan(skillPlanID: string, ownerID: number | null): ReturnType<AppFlow["sharedSkillPlan"]> {
+    let plan: PersonalSkillPlan | null = null;
+    try {
+      const uuid = bytesFromUuid(skillPlanID);
+      if (inPlayerCorporation(ownerID)) {
+        const shared = await gatewayAsk("eve_public.corporation.skill.plan.GetSharedRequest", { skill_plan: { uuid } });
+        const attributes = (shared as { skill_plan?: { name?: unknown; description?: unknown } } | null)?.skill_plan;
+        if (attributes) {
+          // CorpSkillPlanController.skillRequirements: the corporation's Get (where the plan is another corporation's,
+          // the gateway has none for the pilot, and nothing is had).
+          const requirements = corpPlanRequirements(await gatewayAsk("eve_public.corporation.skill.plan.GetRequest", { skill_plan: { uuid } }));
+          plan = {
+            id: skillPlanID,
+            name: typeof attributes.name === "string" ? attributes.name : "",
+            description: typeof attributes.description === "string" ? attributes.description : "",
+            requirements,
+          };
+        }
+      } else {
+        const shared = await gatewayAsk("eve_public.character.skill.plan.GetSharedRequest", { skill_plan: { uuid } });
+        // personalSkillPlanRequest.GetShared: none where the answer has no plan (HasField('skill_plan')).
+        if ((shared as { skill_plan?: unknown } | null)?.skill_plan) {
+          const read = planFromGet(skillPlanID, shared);
+          const requirements: PlanSkillLevel[] = read.requirements.map(([skill, level]) => [skill, level] as const);
+          const validation = await skillPlanValidationFacts([...new Set(requirements.map(([skill]) => skill))]).catch(() => null);
+          if (validation !== null && validateSkillPlan(requirements, validation)) {
+            void setPlanSkillRequirements(skillPlanID, requirements).catch(() => {});
+          }
+          plan = { ...read, requirements };
+        }
+      }
+    } catch {
+      plan = null;
+    }
+    if (plan === null) {
+      sayDialog("SkillPlanNotFound", null, "That skill plan is not there any more.");
+      return null;
+    }
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const [entry] = await planEntries([plan], skillsAnswer, allSkillsAnswer);
+    return entry ? { ...entry, linked: true as const } : null;
   }
 
   async function deleteCorpSkillPlan(id: string): Promise<boolean> {
@@ -22879,6 +22965,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buySkillsRequired,
     skillBooksAsked: readonlySignal(skillBooksAskedSignal),
     gatewayNotices: readonlySignal(gatewayNoticesSignal),
+    skillPlanLinks: readonlySignal(skillPlanLinksSignal),
+    openSkillPlanLink,
+    takeSkillPlanLink,
+    sharedSkillPlan,
     answerSkillBooks,
     applySkillPointsRequired,
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),

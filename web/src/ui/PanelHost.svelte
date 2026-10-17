@@ -206,7 +206,8 @@
   -->
   <ShowInfo {store} {flow} />
 {:else if tab === "chat"}
-  <Chat {store} {flow} />
+  <!-- A skill plan link in a message, followed (link.py handle_link): the Skills window opens on it. -->
+  <Chat {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
 {:else if tab === "compare"}
   <TypeCompare {store} {flow} />
 {:else}

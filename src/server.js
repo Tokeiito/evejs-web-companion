@@ -13478,6 +13478,8 @@ const PUBLIC_GATEWAY_READS = new Set([
   "eve_public.corporation.skill.plan.GetAllRequest",
   "eve_public.corporation.skill.plan.GetRequest",
   "eve_public.corporation.skill.plan.milestone.GetAllRequest",
+  "eve_public.character.skill.plan.GetSharedRequest",
+  "eve_public.corporation.skill.plan.GetSharedRequest",
 ]);
 const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.DeleteRequest",

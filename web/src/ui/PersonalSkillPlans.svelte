@@ -67,6 +67,12 @@
   // SkillbooksMissing2 with their count where any book is not held, and RequireOmega with the count of skills an alpha
   // may not train where the pilot is alpha.
   //
+  // The opened plan's share button (MakeDragObject) is dragged into a chat's send box to give the plan's link
+  // (bridge/skillPlanLink.ts: <a href="skillPlan:{id}:{owner}">{name}</a>). A link followed from a chat opens the plan
+  // here (OpenSkillPlanWnd): one of the pilot's own as itself; another's by GetShared (flow.sharedSkillPlan) as a linked
+  // plan, which has no Edit or Delete and is tracked by a copy (IsEditable, IsTrackable: its owner is not the pilot);
+  // SkillPlanNotFound where it is had nowhere.
+  //
   // The corporation's notices (another member's changes) come on the pilot's stream as the gateway sends them, and are
   // taken as the client's panels take them (corpNotice, below).
   //
@@ -95,7 +101,8 @@
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
   import { LEVEL_BUTTON_HINTS, levelButtonOff, type LevelButtonState } from "../bridge/skillPlanLevelButton.ts";
   import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
-  import type { CertifiedPlanEntry, CorpPlanEntry, GatewayNotice } from "../app/flow.ts";
+  import type { CertifiedPlanEntry, CorpPlanEntry, GatewayNotice, SkillPlanLinkFollowed } from "../app/flow.ts";
+  import { LINK_DRAG_TYPE, skillPlanUrl } from "../bridge/skillPlanLink.ts";
   import { CORP_PLANS_PER_PAGE, MAX_CORP_PLANS, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -106,6 +113,10 @@
     readonly milestoneList?: CertifiedPlanEntry["milestoneList"];
     readonly corp?: CorpPlanEntry["corp"];
     readonly categoryID?: CorpPlanEntry["categoryID"];
+    /** A certified plan's number (its link's id). */
+    readonly planID?: number;
+    /** A plan opened by its link that is none of the pilot's own (GetOwnedByOther): not editable, not trackable. */
+    readonly linked?: true;
   };
 
   // svelte-ignore state_referenced_locally
@@ -177,6 +188,7 @@
     "UI/SkillPlan/RequireOmega": "Needs omega",
     "UI/CloneState/UpgradeCloneState": "Upgrade the clone",
     "UI/SkillPlan/CopySkillsToClipboard": "Copy the plan's skills",
+    "UI/SkillPlan/SharePlan": "Drag this into a chat to give the plan's link",
     "UI/SkillPlan/ClickToBuyMissingSkillAndRequirements": "A book for this skill, or for one it needs, is not held: buy them.",
     "UI/SkillPlan/RemoveFromQueue": "This level is queued: take it out.",
     "UI/SkillPlan/RemoveFromQueueLocked": "This level is queued, and another queued skill needs it.",
@@ -299,7 +311,70 @@
     flow.requestWords([...Object.keys(OWN), ...SHORT_INTERVAL_WORD_LABELS]);
     void load();
     void loadCertified();
+    // A link followed before the window was open (the window opens on it).
+    const waiting = flow.takeSkillPlanLink();
+    if (waiting !== null) void followLink(waiting);
   });
+
+  // A skill plan link followed (link.py handle_link, OpenSkillPlanWnd): the plan opened here, whichever panel is shown.
+  // svelte-ignore state_referenced_locally
+  const skillPlanLinks = flow.skillPlanLinks;
+  let linkSeen = 0;
+  $effect(() => {
+    const followed = $skillPlanLinks;
+    if (followed === null || followed.n === linkSeen) return;
+    linkSeen = followed.n;
+    const waiting = untrack(() => flow.takeSkillPlanLink());
+    if (waiting !== null) untrack(() => void followLink(waiting));
+  });
+
+  /** A plan opened by its link that is none of the pilot's own (the linked window's plan). */
+  let linked = $state<OpenedPlan | null>(null);
+
+  /**
+   * OpenSkillPlanWnd: the plan among the pilot's own (skillPlanService.Get: the certified ones by number, the personal
+   * and the corporation's by uuid), else another's (GetOwnedByOther: the flow says SkillPlanNotFound where none is had);
+   * then opened. The client opens it in a window of its own (SkillPlanPanelWnd, LinkedSkillPlanContainer); here it is
+   * opened in the panel, over whichever list is shown.
+   */
+  async function followLink(link: SkillPlanLinkFollowed): Promise<void> {
+    editing = null;
+    let found: OpenedPlan | null = null;
+    if (typeof link.skillPlanID === "number") {
+      if (certified === undefined) await loadCertified();
+      const id = certifiedPlanUuid(link.skillPlanID);
+      found = certifiedEntries.find((plan) => plan.id === id) ?? null;
+    } else {
+      const id = link.skillPlanID;
+      if (read === undefined) await load();
+      found = read?.plans.find((plan) => plan.id === id) ?? null;
+      if (found === null && inCorp) {
+        if (corp === undefined) await loadCorp();
+        found = corp?.plans.find((plan) => plan.id === id) ?? null;
+      }
+      if (found === null) {
+        const shared = await flow.sharedSkillPlan(id, link.ownerID);
+        if (shared !== null) {
+          linked = shared;
+          found = shared;
+        }
+      }
+    }
+    if (found !== null) open(found);
+  }
+
+  /**
+   * The share button's drag data (GetShareButtonDragData: SkillPlanDragData, its get_link): the plan's link, its owner
+   * the pilot for a personal plan, the corporation for the corporation's, none for a certified or another's plan.
+   */
+  function shareDrag(event: DragEvent, plan: OpenedPlan): void {
+    const online = store.station.get().online;
+    const ownerID = plan.certified || plan.linked ? null : plan.corp ? online?.corporationID ?? null : online?.characterID ?? null;
+    const id = plan.certified && plan.planID !== undefined ? plan.planID : plan.id;
+    event.dataTransfer?.setData(LINK_DRAG_TYPE, JSON.stringify({ url: skillPlanUrl(id, ownerID), text: plan.name }));
+    event.dataTransfer?.setData("text/plain", `<a href="${skillPlanUrl(id, ownerID)}">${plan.name}</a>`);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+  }
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
     const template = $words.templates[label];
@@ -548,6 +623,7 @@
       : (read?.plans.find((plan) => plan.id === selectedID)
         ?? certifiedEntries.find((plan) => plan.id === selectedID)
         ?? corp?.plans.find((plan) => plan.id === selectedID)
+        ?? (linked !== null && linked.id === selectedID ? linked : null)
         ?? null),
   );
   let contentsShown = $state(false);
@@ -644,8 +720,8 @@
     notice = "";
     try {
       // _CheckSetCurrentSkillPlanAsTracked: a corporation's plan tracked by a copy among the personal plans.
-      const outcome = await flow.trainSkillPlan(plan, read.trackedID, plan.corp ? () => copyAsPersonal(plan) : undefined);
-      if (plan.corp) await load();
+      const outcome = await flow.trainSkillPlan(plan, read.trackedID, plan.corp || plan.linked ? () => copyAsPersonal(plan) : undefined);
+      if (plan.corp || plan.linked) await load();
       if (read) read = { ...read, trackedID: outcome.trackedID };
       if (outcome.added !== null && outcome.added > 0) notice = word("UI/SkillPlan/SkillsAddedNotification", { numSkills: outcome.added, planName: plan.name });
     } catch {
@@ -835,8 +911,9 @@
   /** OnTrackButton, _ToggleTracked */
   async function toggleTracked(plan: OpenedPlan): Promise<void> {
     if (!read) return;
-    // A plan that cannot be tracked (IsTrackable: a corporation's): _CreateCopySelectAndTrack.
-    if (plan.corp) {
+    // A plan that cannot be tracked (IsTrackable: a corporation's, or another's opened by its link):
+    // _CreateCopySelectAndTrack.
+    if (plan.corp || plan.linked) {
       await trackCopy(plan);
       return;
     }
@@ -925,7 +1002,7 @@
   {:else if selected !== null}
     {@const plan = selected}
     {@const tracked = read?.trackedID === plan.id}
-    {@const trackHint = plan.corp ? "UI/SkillPlan/SaveAnTrackPlan" : tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint"}
+    {@const trackHint = plan.corp || plan.linked ? "UI/SkillPlan/SaveAnTrackPlan" : tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint"}
     <div class="skill-plan-view">
       <div class="skill-plan-view-head">
         <span class="skill-plan-caption">{word(plan.certified ? "UI/SkillPlan/CertifiedSkillPlan" : plan.corp ? "UI/SkillPlan/CorpSkillPlan" : "UI/SkillPlan/SkillPlan")}</span>
@@ -940,10 +1017,13 @@
             <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
             <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
           {/if}
-        {:else if !plan.certified}
+        {:else if !plan.certified && !plan.linked}
           <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
           <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
         {/if}
+        <!-- shareButton (MakeDragObject): dragged into a chat's send box, the plan's link. -->
+        <span class="skill-plan-share" role="button" tabindex="-1" draggable="true" title={word("UI/SkillPlan/SharePlan")}
+          aria-label={word("UI/SkillPlan/SharePlan")} ondragstart={(event) => shareDrag(event, plan)}>⇪</span>
         <!-- saveButton: on every plan, a copy among the personal plans. -->
         <button type="button" disabled={copying} title={word("UI/SkillPlan/SavePlan")} aria-label={word("UI/SkillPlan/SavePlan")} onclick={() => void savePlanCopy(plan)}>💾</button>
         <button type="button" class="skill-plan-track" class:tracked disabled={plan.corp && copying}
@@ -1246,6 +1326,9 @@
   .skill-plan-row.selected { background: rgba(255, 255, 255, 0.16); outline: 1px solid rgba(255, 255, 255, 0.35); }
   .skill-plan-row.marked { background: rgba(255, 255, 255, 0.1); }
   .skill-plan-contents-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  /* The share button: a drag source, drawn as the view's buttons are. */
+  .skill-plan-share { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; padding: 0.15rem 0.4rem;
+    border: 1px solid var(--line, #333); cursor: grab; user-select: none; }
   /* SkillLevelEntryPrimaryButton: 36 wide at the row's right; DANGER for a book to buy, MONETIZATION for omega. */
   .skill-plan-row-button { min-width: 2.25rem; }
   .skill-plan-row-button.book { color: #e05a4f; }
