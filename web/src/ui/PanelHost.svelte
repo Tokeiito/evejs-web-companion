@@ -122,7 +122,8 @@
 {:else if tab === "scanner"}
   <Scanner {store} {flow} />
 {:else if tab === "mail"}
-  <Mail {store} {flow} />
+  <!-- A skill plan link in a mail, followed (link.py handle_link): the Skills window opens on it. -->
+  <Mail {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
 {:else if tab === "contacts"}
   <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "locations"}

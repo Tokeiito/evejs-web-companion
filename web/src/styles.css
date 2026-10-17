@@ -9704,5 +9704,14 @@
 .progress-wnd { min-width: 18rem; }
 .progress-wnd progress { width: 100%; }
 /* A hull's menu in the fitting browser, at its right click (ui/Fitting.svelte, HullTypeListGroup.GetMenu). */
+/* A link followed as the client's link registry follows it (ui/linkFollowers.ts), in a chat message or a mail's body.
+   evelink/client/color.py: default_link_color_info (#d98d00, hovered #ffb732) for skill plans (registered with no
+   colour of their own) and Show Info; external_link_color_info (#ffe400, hovered TextColor.HIGHLIGHT) for the web.
+   The registry's links are bold (register: bold=True). */
+.evelink { padding: 0; border: 0; background: none; font: inherit; font-weight: 700; color: #d98d00; cursor: pointer; }
+.evelink:hover { color: #ffb732; }
+.evelink.web { color: #ffe400; }
+.evelink.web:hover { color: #ffffff; }
+
 .hull-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; white-space: nowrap;
   background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; }
