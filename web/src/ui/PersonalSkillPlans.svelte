@@ -29,11 +29,18 @@
   // it, then tracks the plan (at once where none is tracked; on the client's AskTrackPlan question where another is),
   // and says SkillsAddedNotification where levels were added (TrainSkills; the client's notice, said here in the view).
   //
-  // Not done: the menu's Edit, the Create and Edit buttons (the plan editor), Save and Share, the omega button's
-  // upgrade window, the progress gauge and milestones, the faction and career icons, the omega mark and banner, the
-  // missing books' buy button, a level's add-to-queue button, a skill row's selection, menu, tooltip and drag, the
-  // contents' menu (copy to clipboard), the tooltip and drag of an entry, and the Certified and Corporation plans.
+  // Create (CreatePersonalPlanButton, under the plans or alone where there are none: off where there are ten,
+  // MaximumSkillPlanReached; its tooltip CreatePersonalSkillPlan and PlansInTotal), the opened plan's Edit (its hint
+  // EditPlan) and an entry's menu's Edit open the editor (SkillPlanEditor.svelte) in the list's place, on a new plan
+  // or a copy of the plan; a save goes back to the list, read again (OnSkillPlanCreated, OnSkillPlanSaved).
+  //
+  // Not done: Save and Share, the omega button's upgrade window, the progress gauge and milestones, the faction and
+  // career icons, the omega mark and banner, the missing books' buy button, a level's add-to-queue button, a skill
+  // row's selection, menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry,
+  // and the Certified and Corporation plans.
   import { onMount } from "svelte";
+  import SkillPlanEditor from "./SkillPlanEditor.svelte";
+  import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -80,6 +87,12 @@
     "UI/SkillPlan/SkillbooksMissing": "{numMissing} books not held",
     "UI/SkillPlan/NoSkillbooksMissing": "Every book is held",
     "UI/SkillPlan/OmegaMissing": "{numMissing} of its skills need omega.",
+    "UI/SkillPlan/CreateNewSkillPlan": "New plan",
+    "UI/SkillPlan/CreatePersonalSkillPlan": "Make a plan of your own",
+    "UI/SkillPlan/PlansInTotal": "Plans: {numPlans} of {numTotal}",
+    "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as can be kept.",
+    "UI/SkillPlan/EditPlan": "Change this plan",
+    "UI/Neocom/Edit": "Edit",
   };
 
   onMount(() => {
@@ -167,6 +180,29 @@
   }
 
   // --- A plan opened ---------------------------------------------------------------------------------------------
+
+  // The editor, open on a plan (a copy) or a new one (plan null).
+  let editing = $state<{ readonly plan: PersonalSkillPlanEntry | null } | null>(null);
+
+  function edit(plan: PersonalSkillPlanEntry | null): void {
+    menuUp = false;
+    editing = { plan };
+  }
+
+  function editorClosed(saved: boolean): void {
+    editing = null;
+    if (saved) {
+      selectedID = null;
+      void load();
+    }
+  }
+
+  /** CreatePersonalPlanButton's tooltip: its header, the plans in total, the warning at the most. */
+  function createTip(numPlans: number): string {
+    const lines = [word("UI/SkillPlan/CreatePersonalSkillPlan"), word("UI/SkillPlan/PlansInTotal", { numPlans, numTotal: MAX_PERSONAL_PLANS })];
+    if (numPlans >= MAX_PERSONAL_PLANS) lines.push(word("UI/SkillPlan/MaximumSkillPlanReached", { numPlans: MAX_PERSONAL_PLANS }));
+    return lines.join("\n");
+  }
 
   let selectedID = $state<string | null>(null);
   const selected = $derived(read && selectedID !== null ? read.plans.find((plan) => plan.id === selectedID) ?? null : null);
@@ -274,6 +310,8 @@
     <p class="note">Reading your skill plans…</p>
   {:else if read === null}
     <p class="error">{word("UI/SkillPlan/ConnectionError")}</p>
+  {:else if editing !== null}
+    <SkillPlanEditor {store} {flow} plan={editing.plan} planCount={plans.length} onClose={editorClosed} />
   {:else if selected !== null}
     {@const plan = selected}
     {@const tracked = read.trackedID === plan.id}
@@ -284,6 +322,7 @@
         <button type="button" class="skill-plan-close" aria-label="Close" onclick={close}>✕</button>
       </div>
       <div class="skill-plan-view-buttons">
+        <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
         <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
         <button type="button" class="skill-plan-track" class:tracked
           title={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
@@ -356,6 +395,7 @@
     </div>
   {:else if plans.length === 0}
     <p class="empty">{word("UI/SkillPlan/NoPersonalSkillPlans")}</p>
+    <button type="button" class="skill-plan-create" title={createTip(0)} onclick={() => edit(null)}>{word("UI/SkillPlan/CreateNewSkillPlan")}</button>
   {:else}
     <ul class="skill-plan-cards">
       {#each plans as plan (plan.id)}
@@ -373,10 +413,13 @@
         </li>
       {/each}
     </ul>
+    <button type="button" class="skill-plan-create" disabled={plans.length >= MAX_PERSONAL_PLANS} title={createTip(plans.length)}
+      onclick={() => edit(null)}>{word("UI/SkillPlan/CreateNewSkillPlan")}</button>
   {/if}
   {#if menuUp && menu !== null}
     {@const menuFor = menu}
     <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+      <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
       <button type="button" role="menuitem" onclick={() => void deletePlan(menuFor.plan)}>{word("UI/Common/Buttons/Delete")}</button>
     </span>
   {/if}
@@ -394,6 +437,8 @@
   .skill-plan-time { display: flex; justify-content: space-between; align-items: center; }
   /* TextColor.SUCCESS where the plan is completed. */
   .skill-plan-time.completed { color: #4caf50; }
+  /* CreatePersonalPlanButton: 200 by 70, its words large. */
+  .skill-plan-create { display: block; margin: 0.75rem auto 0; min-width: 12rem; min-height: 3rem; font-size: 1.05rem; }
 
   .skill-plan-view { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem 1rem 1rem; border: 1px solid var(--line, #333); background: rgba(0, 0, 0, 0.6); }
   .skill-plan-view-head { display: flex; align-items: baseline; gap: 0.75rem; }

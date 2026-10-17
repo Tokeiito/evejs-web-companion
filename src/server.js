@@ -13089,6 +13089,50 @@ app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, n
 // client's loader); `required` is then empty. At most 50 types are asked at once. `order` has each type's needs as
 // [[skill, level], ...] in the order the client's table iterates them (its requiredSkill1, 2, 3...), which `required`'s
 // object loses on the way: the client's skill plan validation walks them in it.
+// The skills that need each of these skills at each level (skillPlanUtil.GetSkillsRequiring: the requiredSkillsIndex
+// table's row for the skill, its level's market category 150, every meta group's types together), for the skill plan
+// editor's remove lock (EditableSkillPlanController.CanRemoveSkillRequirement). A skill no skill needs has {}.
+// `available` is false when the table could not be read. At most 100 skills at once.
+app.get("/api/client-data/skills-requiring", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const rows = asked.length === 0 ? {} : await clientBuiltData.rows("requiredSkillsIndex", asked.slice(0, 100));
+    const requiring = {};
+    if (rows) {
+      for (const typeID of asked.slice(0, 100)) {
+        const row = rows[String(typeID)];
+        const byLevel = {};
+        if (row && typeof row === "object") {
+          for (const [level, byCategory] of Object.entries(row)) {
+            const skills = byCategory && typeof byCategory === "object" ? byCategory["150"] : null;
+            if (!skills || typeof skills !== "object") continue;
+            byLevel[level] = Object.values(skills).flatMap((types) => (Array.isArray(types) ? types.map(Number).filter(Number.isSafeInteger) : []));
+          }
+        }
+        requiring[typeID] = byLevel;
+      }
+    }
+    res.json({ ok: true, available: Boolean(rows), requiring });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Every skill type, by the server's static data: its type, name, group and group's name, and whether it is published.
+// The skill plan editor's catalogue (skillsvc._ConstructSkillControllers: the skill category's types, published or
+// held, by group) is made of it.
+app.get("/api/static/skill-catalogue", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, skills: staticData.listSkillTypes ? staticData.listSkillTypes() : [] });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/required-skills", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -13394,6 +13438,9 @@ const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.DeleteRequest",
   "eve_public.character.skill.plan.SetActiveRequest",
   "eve_public.character.skill.plan.SetSkillRequirementsRequest",
+  "eve_public.character.skill.plan.CreateRequest",
+  "eve_public.character.skill.plan.SetNameRequest",
+  "eve_public.character.skill.plan.SetDescriptionRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {

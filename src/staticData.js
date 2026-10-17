@@ -504,6 +504,17 @@ function getSkillType(typeID) {
   return buildIndex("skillTypes", "skills", "typeID").get(Number(typeID) || 0) || null;
 }
 
+/** Every skill type: its type, name, group and group's name, and whether it is published. */
+function listSkillTypes() {
+  return [...buildIndex("skillTypes", "skills", "typeID").values()].map((skill) => ({
+    typeID: Number(skill.typeID),
+    name: String(skill.name || ""),
+    groupID: Number(skill.groupID) || 0,
+    groupName: String(skill.groupName || ""),
+    published: skill.published === true,
+  }));
+}
+
 function buildTypeDogmaIndex() {
   const cacheKey = "typeDogma:typesByTypeID";
   if (caches.has(cacheKey)) {
@@ -2272,6 +2283,7 @@ module.exports = {
   getLocalTypeIconUrl,
   getRemoteTypeIconUrl,
   getSkillType,
+  listSkillTypes,
   getType,
   getTypeCategoryID,
   getTypeCategoryName,

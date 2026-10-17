@@ -57,6 +57,10 @@ const TABLES = Object.freeze({
   // [[skill, level], ...] in the order the client's loader iterates it (its requiredSkill1, 2, 3...), which the
   // client's skill plan validation walks in: keepOrder.
   requiredSkillsForTypes: Object.freeze({ loader: "requiredSkillsForTypesLoader", resource: "res:/staticdata/requiredskillsfortypes.fsdbinary", keepOrder: true }),
+  // The other way about (evetypes/skills.py get_required_skills_index): by skill, by level, by the market category of
+  // what needs it (150, skills), by meta group, the types that need the skill at that level. The skill plan editor's
+  // remove lock reads it (skillPlanUtil.GetSkillsRequiring). Read a row at a time.
+  requiredSkillsIndex: Object.freeze({ loader: "requiredSkillsIndexLoader", resource: "res:/staticdata/requiredskillsindex.fsdbinary", rowsOnly: true }),
   // A type's base price and whether it is published (evetypes.GetBasePrice and IsPublished): what a skill book bought
   // directly costs (characterskills/common/purchase.py get_direct_purchase_price) and whether it is sold so at all
   // (evetypes.IsSkillAvailableForPurchase). One attribute of the types each, as typeShipGroups is.

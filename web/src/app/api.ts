@@ -5197,3 +5197,54 @@ export async function publicGatewayRequest(request: string, payload: Record<stri
     payload: data.payload ?? null,
   };
 }
+
+/** A skill type as the server's static data has it (GET /api/static/skill-catalogue). */
+export interface CatalogueSkill {
+  readonly typeID: number;
+  readonly name: string;
+  readonly groupID: number;
+  readonly groupName: string;
+  readonly published: boolean;
+}
+
+/** Every skill type, for the skill plan editor's catalogue. */
+export async function getSkillCatalogue(options: ApiOptions = {}): Promise<readonly CatalogueSkill[]> {
+  const data = await getJson("/api/static/skill-catalogue", options);
+  const skills = Array.isArray(data.skills) ? data.skills : [];
+  return skills.flatMap((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const row = raw as Record<string, JsonValue>;
+    const typeID = Number(row.typeID);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) return [];
+    return [{
+      typeID,
+      name: typeof row.name === "string" ? row.name : "",
+      groupID: Number(row.groupID) || 0,
+      groupName: typeof row.groupName === "string" ? row.groupName : "",
+      published: row.published === true,
+    }];
+  });
+}
+
+/**
+ * The skills that need each of these skills at each level (skillPlanUtil.GetSkillsRequiring, the client's
+ * requiredSkillsIndex): skill to level to the skills. `available` is false where the client's table could not be read.
+ */
+export async function getSkillsRequiring(typeIDs: readonly number[], options: ApiOptions = {}): Promise<{
+  readonly available: boolean;
+  readonly requiring: ReadonlyMap<number, ReadonlyMap<number, readonly number[]>>;
+}> {
+  const data = await getJson(`/api/client-data/skills-requiring?typeIDs=${typeIDs.join(",")}`, options);
+  const raw = typeof data.requiring === "object" && data.requiring !== null && !Array.isArray(data.requiring) ? (data.requiring as Record<string, JsonValue>) : {};
+  const requiring = new Map<number, ReadonlyMap<number, readonly number[]>>();
+  for (const [typeKey, byLevel] of Object.entries(raw)) {
+    const typeID = Number(typeKey);
+    if (!Number.isSafeInteger(typeID) || typeof byLevel !== "object" || byLevel === null || Array.isArray(byLevel)) continue;
+    const levels = new Map<number, readonly number[]>();
+    for (const [levelKey, skills] of Object.entries(byLevel as Record<string, JsonValue>)) {
+      if (Array.isArray(skills)) levels.set(Number(levelKey), skills.map(Number).filter((skill) => Number.isSafeInteger(skill)));
+    }
+    requiring.set(typeID, levels);
+  }
+  return { available: data.available === true, requiring };
+}

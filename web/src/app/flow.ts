@@ -204,8 +204,10 @@ import {
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
+import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, planUpdates, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import type { CatalogueSkill } from "./api.ts";
 import {
-  NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
+  MAX_PERSONAL_PLANS, NO_SKILL_PLAN, bytesFromUuid, planCompleted, planFromGet, planIDsFromGetAll, skillRequirementsDict, trackedPlanFromGetActive,
   untrainedSkills, type PersonalSkillPlan, type PersonalSkillPlansRead, type SkillPlanDetail,
 } from "../bridge/skillPlans.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
@@ -2466,6 +2468,23 @@ export interface AppFlow {
    * refused: its refusal is said as any queue's is, and nothing is tracked) and the plan tracked after it.
    */
   trainSkillPlan(plan: PersonalSkillPlan, trackedID: string | null): Promise<{ readonly added: number | null; readonly trackedID: string | null }>;
+  /**
+   * The skill plan editor's catalogue (bridge/skillPlanEditor.ts): every skill type, and which the pilot holds (the
+   * catalogue lists a skill published or held). Kept once read. Null where it could not be read.
+   */
+  skillCatalogue(): Promise<{ readonly skills: readonly CatalogueSkill[]; readonly held: ReadonlySet<number> } | null>;
+  /** What the client's skill plan validation reads, for these skills (and every skill they lead to). Null without the client's data. */
+  skillPlanValidationFor(skillTypes: readonly number[]): Promise<SkillPlanValidationFacts | null>;
+  /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
+  skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
+  /**
+   * The editor's Save (skillPlanService.Save): a new plan (saved null) created, the plans counted first
+   * (CheckNumPersonalSkillPlans: MaxPersonalPlansReached at ten); an edited one sent what differs from the saved one
+   * (_GetCallsToUpdate). A refusal said as the client says it (_RaiseErrorMessageOnSave). True where it was saved.
+   */
+  saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number): Promise<boolean>;
+  /** The editor's Back where the plan was changed (ShouldContinueAfterAskingAboutLeavingEditor): AskCloseSkillPlanEditor; true on Yes. */
+  askLeaveSkillPlanEditor(): Promise<boolean>;
   /**
    * skillPlanService.SetTrackedSkillPlanID: SetActive on the public gateway, the plan's id or, for none, the nought
    * uuid; the plan tracked after it (null for none). A refusal is thrown.
@@ -7731,6 +7750,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       tracked = await setTrackedSkillPlan(plan.id).catch(() => null);
     }
     return { added: next.length - queue.length, trackedID: tracked };
+  }
+
+  let skillCatalogueHeld: readonly CatalogueSkill[] | null = null;
+  async function skillCatalogue(): Promise<{ readonly skills: readonly CatalogueSkill[]; readonly held: ReadonlySet<number> } | null> {
+    try {
+      if (skillCatalogueHeld === null) skillCatalogueHeld = await api.getSkillCatalogue(callOptions);
+      const held = new Set(skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])).keys());
+      return { skills: skillCatalogueHeld, held };
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null> {
+    const out = new Map<number, ReadonlyMap<number, readonly number[]>>();
+    for (let at = 0; at < typeIDs.length; at += 100) {
+      const read = await api.getSkillsRequiring(typeIDs.slice(at, at + 100), callOptions);
+      if (!read.available) return null;
+      for (const [typeID, byLevel] of read.requiring) out.set(typeID, byLevel);
+    }
+    return out;
+  }
+
+  async function saveSkillPlan(edited: EditedPlan, saved: PersonalSkillPlan | null, planCount: number): Promise<boolean> {
+    const requirements = edited.requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level }));
+    try {
+      if (saved === null) {
+        if (planCount >= MAX_PERSONAL_PLANS) {
+          sayDialog("MaxPersonalPlansReached", { type: "dict", entries: [["numPlans", planCount]] }, "You have as many skill plans as can be kept.");
+          return false;
+        }
+        await gatewayAsk("eve_public.character.skill.plan.CreateRequest", { skill_plan: { name: edited.name, description: edited.description, skill_requirements: requirements } }, true);
+        return true;
+      }
+      const uuid = bytesFromUuid(saved.id);
+      await Promise.all(planUpdates(saved, edited).map((what) =>
+        what === "name"
+          ? gatewayAsk("eve_public.character.skill.plan.SetNameRequest", { skill_plan: { uuid }, name: edited.name }, true)
+          : what === "description"
+            ? gatewayAsk("eve_public.character.skill.plan.SetDescriptionRequest", { skill_plan: { uuid }, description: edited.description }, true)
+            : setPlanSkillRequirements(saved.id, edited.requirements)));
+      return true;
+    } catch (error) {
+      // requestsMessenger.send_request makes every failure a UserError; 412 is SkillPlansErrorInvalidData.
+      const invalid = (error as { statusCode?: number }).statusCode === 412;
+      if (invalid && edited.name.length > MAX_PLAN_NAME_LENGTH) sayDialog("UnableToSaveSkillPlanNameTooLong", null, "The plan's name is too long to save.");
+      else if (invalid && edited.description.length > MAX_PLAN_DESCRIPTION_LENGTH) sayDialog("UnableToSaveSkillPlanDescTooLong", null, "The plan's description is too long to save.");
+      else sayDialog("UnableToSaveSkillPlan", null, "The skill plan could not be saved.");
+      return false;
+    }
+  }
+
+  function askLeaveSkillPlanEditor(): Promise<boolean> {
+    return askDialog("AskCloseSkillPlanEditor", {}, "Leave the plan without saving what you changed?");
   }
 
   async function setTrackedSkillPlan(id: string | null): Promise<string | null> {
@@ -22291,6 +22364,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deletePersonalSkillPlan,
     skillPlanDetail,
     trainSkillPlan,
+    skillCatalogue,
+    skillPlanValidationFor: skillPlanValidationFacts,
+    skillsRequiring,
+    saveSkillPlan,
+    askLeaveSkillPlanEditor,
     setTrackedSkillPlan,
     comparisonTypes,
     cfgAveragePrices,
