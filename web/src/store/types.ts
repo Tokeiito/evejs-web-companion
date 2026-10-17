@@ -442,6 +442,8 @@ export interface FittingState {
     readonly moduleStates: Readonly<Record<number, number>>;
     /** Each simulated module's kind by its slot (moduleStateUtil: PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
     readonly moduleKinds: Readonly<Record<number, number>>;
+    /** The simulated ship's slots: the ship's own, with what the simulation has fitted in each. */
+    readonly slots: readonly FittingSlot[];
   } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the

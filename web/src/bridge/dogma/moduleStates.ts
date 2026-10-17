@@ -145,7 +145,7 @@ export function switchModuleState(location: DogmaLocation, module: DogmaItem, ba
 }
 
 /** EatCpuPowergridActiveUserErrors around one module's change. */
-function eatingFitErrors(change: () => void): void {
+export function eatingFitErrors(change: () => void): void {
   try {
     change();
   } catch (error) {

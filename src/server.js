@@ -13618,10 +13618,25 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
       for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
       const groupID = whole(type.groupID);
       const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
+      // The ship groups and types it may be fitted to (baseDogmaStaticSvc GetCanFitShipGroups and GetCanFitShipTypes):
+      // the values of its attributes whose data type is a group (dgmAttrCatGroup, 12: get_attribute_list_by_data_type)
+      // named canFitShipGroup..., and a type (dgmAttrCatType, 11) named canFitShipType... or fitsToShipType.
+      const fitsShipGroups = [];
+      const fitsShipTypes = [];
+      for (const [attributeID, value] of rows) {
+        const record = attributeRows[String(attributeID)];
+        const name = record && typeof record.name === "string" ? record.name : "";
+        const category = record ? whole(record.dataType) : null;
+        if (value === null) continue;
+        if (category === 12 && name.startsWith("canFitShipGroup")) fitsShipGroups.push(value);
+        else if (category === 11 && (name === "fitsToShipType" || name.startsWith("canFitShipType"))) fitsShipTypes.push(value);
+      }
       types[typeID] = {
         attributes: rows,
         effects,
         defaultEffectID,
+        fitsShipGroups,
+        fitsShipTypes,
         groupID,
         categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),

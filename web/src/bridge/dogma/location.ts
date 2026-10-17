@@ -107,6 +107,9 @@ export interface DogmaTypeFacts {
   readonly categoryID: number | null;
   /** get_dogma_required_skills: the skills it requires (an item's reqSkills). */
   readonly requiredSkills: readonly number[];
+  /** GetCanFitShipGroups and GetCanFitShipTypes: the ship groups and types it may be fitted to (none: any). */
+  readonly fitsShipGroups?: readonly number[];
+  readonly fitsShipTypes?: readonly number[];
 }
 
 /** An attribute's static record, as Attribute and itemAttributeFactory go by it. */
@@ -1319,6 +1322,27 @@ export class DogmaLocation {
     } catch (error) {
       if (!(error instanceof DogmaUserError)) throw error;
     }
+  }
+
+  /**
+   * FittingDogmaLocation.UnfitItemFromShip: a module's charge unfitted first; then the item unfitted from the ship
+   * (UnfitItemFromLocation: its running effects that are not passive stopped, then its passive ones) and unloaded.
+   */
+  unfitItem(ship: DogmaItem, item: DogmaItem): void {
+    const isCharge = item.flagID !== null && ship.subLocations.get(item.flagID) === item;
+    if (!isCharge && item.flagID !== null) {
+      const charge = ship.subLocations.get(item.flagID);
+      if (charge) this.unfitItem(ship, charge);
+    }
+    for (const effectID of [...item.activeEffects]) {
+      if (this.static.effects[effectID]?.category !== EFFECT_CATEGORY_PASSIVE) this.stopEffect(item, effectID);
+    }
+    this.stopPassiveEffects(item);
+    ship.fitted.delete(item.key);
+    ship.drones.delete(item.key);
+    if (isCharge && item.flagID !== null) ship.subLocations.delete(item.flagID);
+    this.items.delete(item.key);
+    this.afterChange();
   }
 
   /**

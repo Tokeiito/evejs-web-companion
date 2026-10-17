@@ -33,7 +33,7 @@ import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridg
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
 import { dockedDrones, type DroneReading } from "../bridge/dogma/drones.ts";
-import { simulateCurrentShip, simulatedDrones, type SimulatedShip } from "../bridge/dogma/simulation.ts";
+import { fitToOneSlot, fitToSimulation, simulateCurrentShip, simulatedDrones, unfitFromSimulation, type FitError, type SimulatedShip } from "../bridge/dogma/simulation.ts";
 import { moduleInSlot, moduleKind, moduleState, offlineSlots, RIG_SLOT_FLAGS, switchModuleState } from "../bridge/dogma/moduleStates.ts";
 import {
   DAMAGE_STATE_ATTRIBUTES,
@@ -1421,8 +1421,12 @@ export interface AppFlow {
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
   simulateShip(): Promise<void>;
-  /** Leave the simulation: the ship's own figures shown again. */
-  exitSimulation(): void;
+  /** Leave the simulation (asked first where it was changed): the ship's own figures shown again; false where not left. */
+  exitSimulation(): Promise<boolean>;
+  /** A module of a type fitted in the simulation, in the slot named or, with none, the first it fits; why not, else null. */
+  fitSimulatedModule(typeID: number, flagID: number | null): Promise<FitError | null>;
+  /** The simulated module in a slot unfitted. */
+  unfitSimulatedModule(flagID: number): void;
   /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
   switchSimulatedModule(flagID: number, backwards: boolean): void;
   /**
@@ -5959,7 +5963,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       moduleStates[item.flagID] = moduleState(location, item);
       moduleKinds[item.flagID] = moduleKind(location, item);
     }
-    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds });
+    // The simulated ship's slots: the ship's own, each with what the simulation has fitted in it.
+    const slots = store.fitting.get().slots.map((slot): FittingSlot => {
+      const flagID = slotFlagOf(slot.family, slot.index);
+      const module = flagID === null ? null : moduleInSlot(ship, flagID);
+      if (!module || flagID === null) return { ...slot, module: null };
+      const charge = ship.subLocations.get(flagID) ?? null;
+      return {
+        ...slot,
+        module: {
+          itemID: -flagID,
+          typeID: module.typeID,
+          groupID: module.groupID,
+          online: location.isOnline(module),
+          charge: charge ? { itemID: [0, flagID, charge.typeID], typeID: charge.typeID, quantity: 1 } : null,
+        },
+      };
+    });
+    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds, slots });
+  }
+
+  /**
+   * A module fitted in the simulation (FitModuleToShipAndChangeState; with no slot named, TryFitModuleToOneSlot): the
+   * simulation shown again. Why it does not fit where it does not, else null.
+   */
+  async function fitSimulatedModule(typeID: number, flagID: number | null): Promise<FitError | null> {
+    if (!simulation) return null;
+    // The type's static data read where it is not held yet: the simulation reckons with what the page has read.
+    await dogmaStaticFor([typeID], []);
+    if (!simulation) return null;
+    const error = flagID === null ? fitToOneSlot(simulation.simulated, typeID) : fitToSimulation(simulation.simulated, typeID, flagID);
+    showSimulation();
+    return error;
+  }
+
+  /** A simulated module unfitted (UnfitModule), with its charge: the simulation shown again. */
+  function unfitSimulatedModule(flagID: number): void {
+    if (!simulation) return;
+    const module = moduleInSlot(simulation.simulated.ship, flagID);
+    if (!module) return;
+    unfitFromSimulation(simulation.simulated, module);
+    showSimulation();
   }
 
   /**
@@ -5983,10 +6027,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  /** ToggleGhostFitting out of the simulation: the ship's own figures shown again. */
-  function exitSimulation(): void {
+  /**
+   * ToggleGhostFitting out of the simulation: where it has been changed and holds more than the hull and the pilot,
+   * the client's question first (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning); then the ship's
+   * own figures shown again. False where the pilot stays.
+   */
+  async function exitSimulation(): Promise<boolean> {
+    if (!simulation) return true;
+    const { ship } = simulation.simulated;
+    const holds = [...ship.fitted.values()].some((item) => item !== ship && item !== simulation?.simulated.pilot) || ship.drones.size > 0;
+    if (simulation.simulated.changed && holds) {
+      const leave = await askDialog("ExitSimulationWarning", { type: "dict", entries: [] }, "Leave the simulation? What was changed in it is not kept.");
+      if (!leave) return false;
+    }
     simulation = null;
     store.apply({ type: "fitting/simulation-ended" });
+    return true;
   }
 
   let shipReckoningTimer: ReturnType<typeof setTimeout> | null = null;
@@ -24691,7 +24747,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return simulateShip();
     },
     exitSimulation() {
-      exitSimulation();
+      return exitSimulation();
+    },
+    fitSimulatedModule(typeID, flagID) {
+      return fitSimulatedModule(typeID, flagID);
+    },
+    unfitSimulatedModule(flagID) {
+      unfitSimulatedModule(flagID);
     },
     switchSimulatedModule(flagID, backwards) {
       switchSimulatedModule(flagID, backwards);

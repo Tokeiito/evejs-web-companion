@@ -284,6 +284,7 @@ export type FeedEvent =
       readonly stats: ShipStats;
       readonly moduleStates: Readonly<Record<number, number>>;
       readonly moduleKinds: Readonly<Record<number, number>>;
+      readonly slots: readonly FittingSlot[];
     }
   // The simulation left (flow.exitSimulation).
   | { readonly type: "fitting/simulation-ended" }

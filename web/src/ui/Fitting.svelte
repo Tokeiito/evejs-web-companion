@@ -187,9 +187,12 @@
     }
   }
 
+  /** The slots shown: the simulation's while the window simulates the ship, the ship's own otherwise. */
+  const shownSlots = $derived.by(() => ($fitting.simulation ? $fitting.simulation.slots : $fitting.slots));
+
   /** The sockets to draw, with each one's placement and what is in it. */
   const sockets = $derived.by(() => {
-    const counts = countByFamily($fitting.slots);
+    const counts = countByFamily(shownSlots);
     const placed: {
       slot: FittingSlot;
       xPercent: number;
@@ -197,7 +200,7 @@
     }[] = [];
     for (const family of SLOT_FAMILY_ORDER) {
       const placements = placeFamily(family, counts[family], OUTER_RADIUS_PERCENT);
-      const familySlots = slotsOfFamily($fitting.slots, family);
+      const familySlots = slotsOfFamily(shownSlots, family);
       for (const placement of placements) {
         const slot = familySlots[placement.index];
         if (slot) {
@@ -215,7 +218,7 @@
   /** A key per family for the legend: label, how many, how many filled. */
   const legend = $derived.by(() =>
     SLOT_FAMILY_ORDER.map((family) => {
-      const familySlots = slotsOfFamily($fitting.slots, family);
+      const familySlots = slotsOfFamily(shownSlots, family);
       return {
         family,
         label: SLOT_FAMILY_LABELS[family],
@@ -870,7 +873,7 @@
     if ($fitting.activeShipID) {
       refs.push({ kind: "evelocation", id: $fitting.activeShipID });
     }
-    for (const slot of $fitting.slots) {
+    for (const slot of [...$fitting.slots, ...($fitting.simulation?.slots ?? [])]) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
         // The loaded charge needs a name too, or the socket description would
@@ -1133,7 +1136,68 @@
     "UI/Fitting/FittingWindow/ModuleModeOnlineRig": "Online",
     "UI/Fitting/FittingWindow/ModuleModeActive": "Active",
     "UI/Fitting/FittingWindow/ModuleModeOverheated": "Overheated",
+    // FeedbackLabelCont: why a module would not fit in the simulation.
+    "UI/Fitting/FittingWindow/WarningNotForThisHullCategory": "That is not something this kind of hull takes.",
+    "UI/Fitting/FittingWindow/WarningHullCantFitThisModule": "This hull cannot take that module.",
+    "UI/Fitting/FittingWindow/WarningModuleTooBig": "That module is too big for this hull.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughLauncherSlots": "No launcher hardpoint is free.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughTurretSlotsFree": "No turret hardpoint is free.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughRigSlots": "No rig slot is free.",
+    "UI/Fitting/FittingWindow/WarningRigNotRightSize": "That rig is not this hull's size.",
+    "UI/Fitting/FittingWindow/WarningNotEnoughFreeSlots": "No slot of that kind is free.",
+    "UI/Fitting/FittingWindow/WarningIncorrectSlotForModule": "That module does not go in that slot.",
+    "UI/Fitting/FittingWindow/WarningModuleSlotInUse": "That slot is taken.",
+    "UI/Fitting/FittingWindow/WarningMaxGroupFitted": "No more than {extraInfo} of that group may be fitted.",
+    "UI/Fitting/FittingWindow/WarningMaxTypeFitted": "No more than {extraInfo} of that module may be fitted.",
+    "UI/Fitting/FittingWindow/WarningModuleCouldntBeFitted": "The module could not be fitted.",
   };
+  /** FeedbackLabelCont's errorDict and errorLabelPathDictWithVariables, by FIT_ERRORS key. */
+  const FIT_ERROR_LABELS: Readonly<Record<number, string>> = {
+    13: "WarningNotForThisHullCategory",
+    1: "WarningHullCantFitThisModule",
+    2: "WarningModuleTooBig",
+    5: "WarningNotEnoughLauncherSlots",
+    6: "WarningNotEnoughTurretSlotsFree",
+    7: "WarningNotEnoughRigSlots",
+    8: "WarningRigNotRightSize",
+    9: "WarningNotEnoughFreeSlots",
+    10: "WarningIncorrectSlotForModule",
+    11: "WarningModuleSlotInUse",
+    3: "WarningMaxGroupFitted",
+    4: "WarningMaxTypeFitted",
+  };
+  /** The simulation's feedback line (FeedbackLabelCont.SetText): why the last module would not fit. */
+  let fitFeedback = $state("");
+  function showFitError(fitError: { readonly errorKey: number; readonly extraInfo: number | null } | null): void {
+    if (!fitError) {
+      fitFeedback = "";
+      return;
+    }
+    const label = `UI/Fitting/FittingWindow/${FIT_ERROR_LABELS[fitError.errorKey] ?? "WarningModuleCouldntBeFitted"}`;
+    const template = $words.templates[label];
+    fitFeedback = plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { extraInfo: fitError.extraInfo ?? 0 }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** The picked module's type, where one is picked. */
+  function pickedTypeID(): number | null {
+    return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.typeID ?? null;
+  }
+  /** A picked module fitted in the simulation, in the slot named or the first it fits. */
+  function fitSimulated(flagID: number | null): void {
+    const typeID = pickedTypeID();
+    if (typeID === null) return;
+    pickedItemID = null;
+    void run(async () => showFitError(await flow.fitSimulatedModule(typeID, flagID)));
+  }
+  /** A simulated module right-clicked: unfitted (the ghost slot's Unfit). */
+  function unfitSimulated(slot: FittingSlot, event: MouseEvent): void {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (!simulation || !slot.module || flagID === null) return;
+    event.preventDefault();
+    simulationError = null;
+    flow.unfitSimulatedModule(flagID);
+  }
   $effect(() => {
     if (!$fitting.activeShipID) return;
     flow.requestWords(Object.keys(SIMULATION_WORDS));
@@ -1185,6 +1249,7 @@
   /** The ghost ship icon clicked (ToggleGhostFitting): into the simulation, or out of it. */
   function toggleSimulation(): void {
     simulationError = null;
+    fitFeedback = "";
     void run(async () => {
       if (simulation) flow.exitSimulation();
       else await flow.simulateShip();
@@ -1196,9 +1261,13 @@
    */
   function clickSimulated(slot: FittingSlot, event: MouseEvent): void {
     const flagID = slotFlagOf(slot.family, slot.index);
-    if (!slot.module || flagID === null) return;
+    if (flagID === null) return;
     error = "";
     simulationError = null;
+    if (!slot.module) {
+      if (pickedItemID !== null) fitSimulated(flagID);
+      return;
+    }
     try {
       flow.switchSimulatedModule(flagID, event.shiftKey);
     } catch (cause) {
@@ -1396,6 +1465,10 @@
     if (itemID === null) {
       return;
     }
+    if (simulation) {
+      fitSimulated(slotFlagOf(slot.family, slot.index));
+      return;
+    }
     const source = pickedSource;
     void run(async () => {
       await flow.fitModule(itemID, source, { family: slot.family, index: slot.index });
@@ -1407,6 +1480,10 @@
   function fitAnywhere(): void {
     const itemID = pickedItemID;
     if (itemID === null) {
+      return;
+    }
+    if (simulation) {
+      fitSimulated(null);
       return;
     }
     const source = pickedSource;
@@ -1947,6 +2024,9 @@
   {#if simulationErrorText}
     <p class="error" role="alert">{simulationErrorText}</p>
   {/if}
+  {#if simulation && fitFeedback}
+    <p class="note fit-feedback" role="status">{fitFeedback}</p>
+  {/if}
   {#if $fitting.resourcesError}
     <p class="error">The ship's readings could not be loaded: {$fitting.resourcesError}</p>
   {/if}
@@ -2041,11 +2121,12 @@
                   class:sim-active={simulatedState(slot) === 2}
                   class:sim-overheated={simulatedState(slot) === 3}
                   style={`left: ${socket.xPercent}%; top: ${socket.yPercent}%`}
-                  title={simulation && slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}. ${simulationWord("UI/Fitting/FittingWindow/ModuleMode")}: ${simulatedStateText(slot) ?? ""}. ${simulationWord("UI/Fitting/FittingWindow/ModuleModeHint")}` : socketDescription(slot)}
+                  title={simulation && slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}. ${simulationWord("UI/Fitting/FittingWindow/ModuleMode")}: ${simulatedStateText(slot) ?? ""}. ${simulationWord("UI/Fitting/FittingWindow/ModuleModeHint")} Right-click takes it out.` : socketDescription(slot)}
                   aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
                   onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
+                  oncontextmenu={(event) => unfitSimulated(slot, event)}
                   ondragover={(event) => overSocket(event, slot)}
                   ondragleave={() => (dropSlot = null)}
                   ondrop={(event) => dropOnSocket(event, slot)}

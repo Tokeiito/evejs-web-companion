@@ -17,7 +17,7 @@
 
 import { activeDroneBandwidth, activeDroneDps, type DroneReading } from "./drones.ts";
 import { loadSimulatedShip, type Brain, type DogmaItem, type DogmaLocation, type DogmaStatic, type SimulatedCharge } from "./location.ts";
-import { activateOnLoading } from "./moduleStates.ts";
+import { ACTIVE, activateOnLoading, eatingFitErrors, OFFLINE, ONLINE, setModuleState } from "./moduleStates.ts";
 
 const ATTRIBUTE_VOLUME = 161;
 const ATTRIBUTE_DRONE_CAPACITY = 283;
@@ -27,12 +27,18 @@ const ATTRIBUTE_DAMAGE_MULTIPLIER = 64;
 /** EM, thermal, kinetic, explosive. */
 const DAMAGE_ATTRIBUTES = [114, 118, 117, 116] as const;
 
-/** A simulated ship: its location, hull and pilot, and the drones selected (SelectedDroneTracker), each with how many. */
+/**
+ * A simulated ship: its location, hull and pilot, the drones selected (SelectedDroneTracker), each with how many, and
+ * whether it has been changed since it was loaded (simulationChanged: FlagSimulationChanged on a fit or an unfit).
+ */
 export interface SimulatedShip {
   readonly location: DogmaLocation;
   readonly ship: DogmaItem;
   readonly pilot: DogmaItem;
   readonly selectedDrones: Map<DogmaItem, number>;
+  changed: boolean;
+  /** How many ghost items it has made (GhostFittingDataObject's keys). */
+  ghosts: number;
 }
 
 /** A module of the ship as it is fitted: its key, type and slot. */
@@ -86,7 +92,7 @@ export function simulateCurrentShip(
   clock: () => number,
 ): SimulatedShip {
   const loaded = loadSimulatedShip(staticData, shipTypeID, pilot, brain, { clock });
-  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map() };
+  const simulation: SimulatedShip = { ...loaded, selectedDrones: new Map(), changed: false, ghosts: 0 };
   const { location, ship } = simulation;
   for (const module of [...modules].sort((left, right) => right.flagID - left.flagID)) {
     location.fitModule(ship, module.key, module.typeID, module.flagID);
@@ -94,20 +100,297 @@ export function simulateCurrentShip(
   activateOnLoading(location, ship);
   // FitDrones: each one alone, while the drone bay has room for it.
   const fitted: DogmaItem[] = [];
-  let ghost = 0;
   for (const stack of drones) {
     for (let at = 0; at < stack.quantity; at += 1) {
-      let used = 0;
-      for (const drone of ship.drones.values()) used += location.value(drone, ATTRIBUTE_VOLUME);
-      const volume = staticData.types[stack.typeID]?.attributes.find(([id]) => id === ATTRIBUTE_VOLUME)?.[1] ?? 0;
-      if (used + volume > location.value(ship, ATTRIBUTE_DRONE_CAPACITY)) break;
-      ghost += 1;
-      fitted.push(location.loadDrone(ship, `${ship.key}|drone|${ghost}`, stack.typeID, 1));
+      const drone = fitDrone(simulation, stack.typeID);
+      if (!drone) break;
+      fitted.push(drone);
     }
   }
   for (const drone of dronesByDamage(location, fitted)) registerDrone(simulation, drone);
   for (const charge of charges) location.loadCharge(ship, charge.flagID, charge.typeID);
+  // LoadCurrentShip: ResetSimulationChangedFlag.
+  simulation.changed = false;
   return simulation;
+}
+
+/** FitItemOrDroneToShip for a drone: one more in the drone bay where it has room (GetCapacity: each drone's volume). */
+function fitDrone(simulation: SimulatedShip, typeID: number): DogmaItem | null {
+  const { location, ship } = simulation;
+  let used = 0;
+  for (const drone of ship.drones.values()) used += location.value(drone, ATTRIBUTE_VOLUME);
+  const volume = location.static.types[typeID]?.attributes.find(([id]) => id === ATTRIBUTE_VOLUME)?.[1] ?? 0;
+  if (used + volume > location.value(ship, ATTRIBUTE_DRONE_CAPACITY)) return null;
+  simulation.ghosts += 1;
+  return location.loadDrone(ship, `${ship.key}|drone|${simulation.ghosts}`, typeID, 1);
+}
+
+// --- fitting in the simulation (ghostFittingSvc FitModuleToShipAndChangeState, UnfitModule; shipfitting/fittingStuff)
+
+/** shipfitting/errorConst: why a module does not fit. */
+export const FIT_ERRORS = Object.freeze({
+  CANT_FIT_MODULE_TO_SHIP: 1,
+  MODULE_TOO_BIG: 2,
+  CANT_FIT_TOO_MANY_BY_GROUP: 3,
+  CANT_FIT_TOO_MANY_BY_TYPE: 4,
+  NOT_ENOUGH_LAUNCHER_SLOTS: 5,
+  NOT_ENOUGH_TURRET_SLOTS: 6,
+  NOT_ENOUGH_RIG_SLOTS: 7,
+  RIG_WRONG_SIZE: 8,
+  SLOT_NOT_PRESENT: 9,
+  WRONG_SLOT: 10,
+  SLOT_IN_USE: 11,
+  MODULE_NOT_POWERED: 12,
+  MODULE_NOT_APPROPRIATE_FOR_CATEGORY: 13,
+});
+
+/** An error's key (FIT_ERRORS) and its extra (the most that may be fitted, for the two that have one). */
+export interface FitError {
+  readonly errorKey: number;
+  readonly extraInfo: number | null;
+}
+
+const EFFECT_LO_POWER = 11;
+const EFFECT_HI_POWER = 12;
+const EFFECT_MED_POWER = 13;
+const EFFECT_LAUNCHER_FITTED = 40;
+const EFFECT_TURRET_FITTED = 42;
+const EFFECT_RIG_SLOT = 2663;
+const EFFECT_SUBSYSTEM = 3772;
+const EFFECT_SERVICE_SLOT = 6306;
+const range = (first: number, count: number): number[] => Array.from({ length: count }, (_, at) => first + at);
+/** POWER_TO_FLAG_DICT: the slots a type's slot effect fits it to. */
+const POWER_TO_FLAGS: ReadonlyMap<number, readonly number[]> = new Map([
+  [EFFECT_HI_POWER, range(27, 8)],
+  [EFFECT_MED_POWER, range(19, 8)],
+  [EFFECT_LO_POWER, range(11, 8)],
+  [EFFECT_RIG_SLOT, range(92, 3)],
+  [EFFECT_SUBSYSTEM, range(125, 4)],
+  [EFFECT_SERVICE_SLOT, range(164, 8)],
+]);
+const ATTRIBUTE_LOW_SLOTS = 12;
+const ATTRIBUTE_MED_SLOTS = 13;
+const ATTRIBUTE_HI_SLOTS = 14;
+const ATTRIBUTE_LAUNCHER_SLOTS_LEFT = 101;
+const ATTRIBUTE_TURRET_SLOTS_LEFT = 102;
+const ATTRIBUTE_RIG_SLOTS = 1137;
+const ATTRIBUTE_MAX_SUBSYSTEMS = 1367;
+const ATTRIBUTE_SUBSYSTEM_SLOT = 1366;
+const ATTRIBUTE_SERVICE_SLOTS = 2056;
+const ATTRIBUTE_RIG_SIZE = 1547;
+const ATTRIBUTE_MAX_GROUP_FITTED = 1544;
+const ATTRIBUTE_MAX_TYPE_FITTED = 2431;
+/** IsShipFittable: a module, a subsystem, a structure module. */
+const SHIP_FITTABLE_CATEGORIES: ReadonlySet<number> = new Set([7, 32, 66]);
+const CATEGORY_STRUCTURE = 65;
+const CATEGORY_STRUCTURE_MODULE = 66;
+const CATEGORY_DRONE = 18;
+/** GetShipGroupByClassType()[GROUP_CAPITALSHIPS] */
+const CAPITAL_GROUPS: ReadonlySet<number> = new Set([547, 5120, 883, 485, 30, 659, 1538, 4594]);
+/** inventorycommon/const.py maxNonCapitalModuleSize */
+const MAX_NON_CAPITAL_MODULE_SIZE = 3500;
+/** TYPEIDS_NOT_ACTIVE_BY_DEFAULT: the cloaking devices and the mass entanglers, by group. */
+const GROUPS_NOT_ACTIVE_BY_DEFAULT: ReadonlySet<number> = new Set([330, 2008]);
+
+/** GetTypeAttribute2: a type's attribute as the static data has it, else the attribute's default. */
+function typeAttribute(location: DogmaLocation, typeID: number, attributeID: number): number {
+  const listed = location.static.types[typeID]?.attributes.find(([id]) => id === attributeID)?.[1];
+  if (listed !== undefined && listed !== null) return listed;
+  return location.static.attributes[attributeID]?.defaultValue ?? 0;
+}
+
+const typeHasEffect = (location: DogmaLocation, typeID: number, effectID: number): boolean =>
+  location.static.types[typeID]?.effects.includes(effectID) ?? false;
+
+/** GetSlotListForTypeID: the slots of its slot effect (the first fittable one of its effects); a subsystem's own. */
+export function slotListForType(location: DogmaLocation, typeID: number): readonly number[] {
+  const effects = location.static.types[typeID]?.effects ?? [];
+  const slotType = effects.find((effectID) => POWER_TO_FLAGS.has(effectID));
+  if (slotType === undefined) return [];
+  if (slotType === EFFECT_SUBSYSTEM) return [Math.trunc(typeAttribute(location, typeID, ATTRIBUTE_SUBSYSTEM_SLOT))];
+  return POWER_TO_FLAGS.get(slotType) ?? [];
+}
+
+/** The modules fitted to the ship (GetFittedItems), not the ship itself, nor a charge. */
+function fittedModules(simulation: SimulatedShip): DogmaItem[] {
+  const { ship } = simulation;
+  return [...ship.fitted.values()].filter((item) => item !== ship && !(item.flagID !== null && ship.subLocations.get(item.flagID) === item));
+}
+
+/** GetErrorInfoFromHardware, with GetHardwareLayoutForShip and GetValidSlotsForType (subsystems' modifiers aside). */
+function errorFromHardware(simulation: SimulatedShip, typeID: number, flagID: number | null): FitError | null {
+  const { location, ship } = simulation;
+  const shipTypeID = ship.typeID;
+  const has = (effectID: number) => typeHasEffect(location, typeID, effectID);
+  const layout = new Map<number, number>();
+  const GTA = (attributeID: number) => Math.trunc(typeAttribute(location, shipTypeID, attributeID));
+  let isTurret = false;
+  let isLauncher = false;
+  if (has(EFFECT_HI_POWER)) {
+    layout.set(ATTRIBUTE_HI_SLOTS, GTA(ATTRIBUTE_HI_SLOTS));
+    if (has(EFFECT_TURRET_FITTED)) {
+      layout.set(ATTRIBUTE_TURRET_SLOTS_LEFT, GTA(ATTRIBUTE_TURRET_SLOTS_LEFT));
+      isTurret = true;
+    } else if (has(EFFECT_LAUNCHER_FITTED)) {
+      layout.set(ATTRIBUTE_LAUNCHER_SLOTS_LEFT, GTA(ATTRIBUTE_LAUNCHER_SLOTS_LEFT));
+      isLauncher = true;
+    }
+  } else if (has(EFFECT_MED_POWER)) layout.set(ATTRIBUTE_MED_SLOTS, GTA(ATTRIBUTE_MED_SLOTS));
+  else if (has(EFFECT_LO_POWER)) layout.set(ATTRIBUTE_LOW_SLOTS, GTA(ATTRIBUTE_LOW_SLOTS));
+  else if (has(EFFECT_RIG_SLOT)) layout.set(ATTRIBUTE_RIG_SLOTS, GTA(ATTRIBUTE_RIG_SLOTS));
+  else if (has(EFFECT_SUBSYSTEM)) layout.set(ATTRIBUTE_MAX_SUBSYSTEMS, GTA(ATTRIBUTE_MAX_SUBSYSTEMS));
+  else if (has(EFFECT_SERVICE_SLOT)) layout.set(ATTRIBUTE_SERVICE_SLOTS, GTA(ATTRIBUTE_SERVICE_SLOTS));
+  let turretsFitted = 0;
+  let launchersFitted = 0;
+  let rigsFitted = 0;
+  for (const item of fittedModules(simulation)) {
+    const flag = item.flagID ?? 0;
+    if (flag >= 27 && flag <= 34) {
+      if (isTurret && typeHasEffect(location, item.typeID, EFFECT_TURRET_FITTED)) turretsFitted += 1;
+      else if (isLauncher && typeHasEffect(location, item.typeID, EFFECT_LAUNCHER_FITTED)) launchersFitted += 1;
+    } else if (flag >= 92 && flag <= 99) rigsFitted += 1;
+  }
+  if (has(EFFECT_LAUNCHER_FITTED) && (layout.get(ATTRIBUTE_LAUNCHER_SLOTS_LEFT) ?? 0) - launchersFitted < 1) {
+    return { errorKey: FIT_ERRORS.NOT_ENOUGH_LAUNCHER_SLOTS, extraInfo: null };
+  }
+  if (has(EFFECT_TURRET_FITTED) && (layout.get(ATTRIBUTE_TURRET_SLOTS_LEFT) ?? 0) - turretsFitted < 1) {
+    return { errorKey: FIT_ERRORS.NOT_ENOUGH_TURRET_SLOTS, extraInfo: null };
+  }
+  if (has(EFFECT_RIG_SLOT)) {
+    if ((layout.get(ATTRIBUTE_RIG_SLOTS) ?? 0) - rigsFitted < 1) return { errorKey: FIT_ERRORS.NOT_ENOUGH_RIG_SLOTS, extraInfo: null };
+    // IsRigTooSmall: a ship with a rig size, the rig's not the same.
+    const shipRigSize = typeAttribute(location, shipTypeID, ATTRIBUTE_RIG_SIZE);
+    if (shipRigSize && typeAttribute(location, typeID, ATTRIBUTE_RIG_SIZE) !== shipRigSize) return { errorKey: FIT_ERRORS.RIG_WRONG_SIZE, extraInfo: null };
+  }
+  // GetValidSlotsForType: the slots the ship has of the kind; none, ModuleNotPowered.
+  let first = 0;
+  let allowed = 0;
+  let last = 0;
+  if (has(EFFECT_LO_POWER)) [first, allowed, last] = [11, layout.get(ATTRIBUTE_LOW_SLOTS) ?? 0, 18];
+  else if (has(EFFECT_HI_POWER)) [first, allowed, last] = [27, layout.get(ATTRIBUTE_HI_SLOTS) ?? 0, 34];
+  else if (has(EFFECT_MED_POWER)) [first, allowed, last] = [19, layout.get(ATTRIBUTE_MED_SLOTS) ?? 0, 26];
+  else if (has(EFFECT_RIG_SLOT)) [first, allowed, last] = [92, layout.get(ATTRIBUTE_RIG_SLOTS) ?? 0, 99];
+  else if (has(EFFECT_SUBSYSTEM)) {
+    const desired = Math.trunc(typeAttribute(location, typeID, ATTRIBUTE_SUBSYSTEM_SLOT));
+    allowed = layout.get(ATTRIBUTE_MAX_SUBSYSTEMS) ?? 0;
+    if (allowed > 0 && (flagID === null || flagID < desired || flagID >= desired + 1)) return { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+    if (allowed <= 0) return { errorKey: FIT_ERRORS.MODULE_NOT_POWERED, extraInfo: null };
+    return null;
+  } else if (has(EFFECT_SERVICE_SLOT)) [first, allowed, last] = [164, layout.get(ATTRIBUTE_SERVICE_SLOTS) ?? 0, 171];
+  if (allowed <= 0) return { errorKey: FIT_ERRORS.MODULE_NOT_POWERED, extraInfo: null };
+  const firstNonSlot = Math.min(first + allowed, last + 1);
+  if (flagID === null || flagID < first || flagID >= firstNonSlot) return { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+  return null;
+}
+
+/** CheckCanFitType: no more of the module's group, or of its type, than its maxGroupFitted and maxTypeFitted. */
+function errorFromFitLimits(simulation: SimulatedShip, typeID: number): FitError | null {
+  const { location } = simulation;
+  const facts = location.static.types[typeID];
+  const listed = (attributeID: number) => facts?.attributes.find(([id]) => id === attributeID)?.[1] ?? null;
+  const fitted = fittedModules(simulation);
+  const maxGroupFitted = listed(ATTRIBUTE_MAX_GROUP_FITTED);
+  if (maxGroupFitted && fitted.filter((item) => item.groupID === facts?.groupID).length >= maxGroupFitted) {
+    return { errorKey: FIT_ERRORS.CANT_FIT_TOO_MANY_BY_GROUP, extraInfo: Math.trunc(maxGroupFitted) };
+  }
+  const maxTypeFitted = listed(ATTRIBUTE_MAX_TYPE_FITTED);
+  if (maxTypeFitted && fitted.filter((item) => item.typeID === typeID).length >= maxTypeFitted) {
+    return { errorKey: FIT_ERRORS.CANT_FIT_TOO_MANY_BY_TYPE, extraInfo: Math.trunc(maxTypeFitted) };
+  }
+  return null;
+}
+
+/**
+ * GetErrorInfoDoesModuleTypeIDFit: GetModuleErrorInfo (a category a ship fits; a structure's modules for a structure
+ * only; the ships the type may be fitted to; a module too big for a ship not capital), the fit limits, then the
+ * hardware.
+ */
+function errorDoesModuleFit(simulation: SimulatedShip, typeID: number, flagID: number | null): FitError | null {
+  const { location, ship } = simulation;
+  const facts = location.static.types[typeID];
+  const categoryID = facts?.categoryID ?? null;
+  if (categoryID === null || !SHIP_FITTABLE_CATEGORIES.has(categoryID)) return { errorKey: FIT_ERRORS.MODULE_NOT_APPROPRIATE_FOR_CATEGORY, extraInfo: null };
+  const shipIsStructure = ship.categoryID === CATEGORY_STRUCTURE;
+  if (shipIsStructure ? categoryID !== CATEGORY_STRUCTURE_MODULE : categoryID === CATEGORY_STRUCTURE_MODULE) {
+    return { errorKey: FIT_ERRORS.MODULE_NOT_APPROPRIATE_FOR_CATEGORY, extraInfo: null };
+  }
+  const groups = facts?.fitsShipGroups ?? [];
+  const types = facts?.fitsShipTypes ?? [];
+  if ((groups.length > 0 || types.length > 0) && !(ship.groupID !== null && groups.includes(ship.groupID)) && !types.includes(ship.typeID)) {
+    return { errorKey: FIT_ERRORS.CANT_FIT_MODULE_TO_SHIP, extraInfo: null };
+  }
+  const isCapital = ship.groupID !== null && CAPITAL_GROUPS.has(ship.groupID);
+  if (!isCapital && !shipIsStructure && typeAttribute(location, typeID, ATTRIBUTE_VOLUME) > MAX_NON_CAPITAL_MODULE_SIZE) {
+    return { errorKey: FIT_ERRORS.MODULE_TOO_BIG, extraInfo: null };
+  }
+  return errorFromFitLimits(simulation, typeID) ?? errorFromHardware(simulation, typeID, flagID);
+}
+
+/** CanFitModuleInSlot: the module's fit, the slot free (a subsystem's taken over), the right kind of slot. */
+function errorFittingInSlot(simulation: SimulatedShip, typeID: number, flagID: number | null): FitError | null {
+  const isSubsystem = flagID !== null && flagID >= 125 && flagID <= 132;
+  const error = errorDoesModuleFit(simulation, typeID, flagID);
+  if (error && !(isSubsystem && error.errorKey === FIT_ERRORS.SLOT_NOT_PRESENT)) return error;
+  if (flagID !== null && !isSubsystem && fittedModules(simulation).some((item) => item.flagID === flagID)) {
+    return { errorKey: FIT_ERRORS.SLOT_IN_USE, extraInfo: null };
+  }
+  if (flagID === null || !slotListForType(simulation.location, typeID).includes(flagID)) return { errorKey: FIT_ERRORS.WRONG_SLOT, extraInfo: null };
+  return error;
+}
+
+/**
+ * FitModuleToShipAndChangeState: the slot to use (GetFlagIdToUse: the one asked where the type goes there, the first
+ * free of its kind where any will do, 0); its fit checked; the module loaded in it (a ghost of its type), then put
+ * online and activated, the fit errors passed over (a cloak or a mass entangler not activated). Null where it is
+ * fitted, else why not.
+ */
+export function fitToSimulation(simulation: SimulatedShip, typeID: number, flagID: number): FitError | null {
+  const { location, ship } = simulation;
+  const slots = slotListForType(location, typeID);
+  const used = new Set(fittedModules(simulation).map((item) => item.flagID));
+  let flag: number | null = null;
+  if (flagID === 0) flag = slots.find((slot) => !used.has(slot)) ?? null;
+  else if (slots.includes(flagID)) flag = flagID;
+  const error = errorFittingInSlot(simulation, typeID, flag);
+  if (error || flag === null) return error ?? { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+  simulation.ghosts += 1;
+  const module = location.fitModule(ship, `${ship.key}|module|${simulation.ghosts}`, typeID, flag);
+  simulation.changed = true;
+  eatingFitErrors(() => setModuleState(location, module, ONLINE));
+  eatingFitErrors(() => {
+    if (module.groupID === null || !GROUPS_NOT_ACTIVE_BY_DEFAULT.has(module.groupID)) setModuleState(location, module, ACTIVE);
+  });
+  return null;
+}
+
+/**
+ * TryFitModuleToOneSlot: a drone one more in the drone bay (selected where it may be); a module fitted to the first of
+ * its kind of slot it fits in. Null where it is fitted, else why the last slot tried would not take it.
+ */
+export function fitToOneSlot(simulation: SimulatedShip, typeID: number): FitError | null {
+  if (simulation.location.static.types[typeID]?.categoryID === CATEGORY_DRONE) {
+    const drone = fitDrone(simulation, typeID);
+    if (drone) {
+      simulation.changed = true;
+      registerDrone(simulation, drone);
+    }
+    return null;
+  }
+  let error: FitError | null = { errorKey: FIT_ERRORS.SLOT_NOT_PRESENT, extraInfo: null };
+  for (const flagID of slotListForType(simulation.location, typeID)) {
+    error = fitToSimulation(simulation, typeID, flagID);
+    if (error === null) break;
+  }
+  return error;
+}
+
+/** UnfitModule (and UnfitDrone): the module put offline, the fit errors passed over, then unfitted with its charge. */
+export function unfitFromSimulation(simulation: SimulatedShip, item: DogmaItem): void {
+  const { location, ship } = simulation;
+  simulation.selectedDrones.delete(item);
+  if (!ship.drones.has(item.key)) eatingFitErrors(() => setModuleState(location, item, OFFLINE));
+  location.unfitItem(ship, item);
+  simulation.changed = true;
 }
 
 /** The drone panel of a simulated ship: the drones selected, the bandwidth they take, their damage a second. */
