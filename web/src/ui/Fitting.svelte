@@ -399,6 +399,65 @@
       ? capacitorWord("UI/Fitting/FittingWindow/Stable")
       : capacitorWord("UI/Fitting/FittingWindow/CapacitorNotStable", { time: Math.trunc(simulation.ttl ?? 0) });
   }
+  // The defense panel's words (defensePanel.py), the client's from the install; the page's own where it has none.
+  const DEFENSE_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/ColoredEffectiveHp": "{[numeric]effectiveHp, useGrouping} effective hit points",
+    "UI/Fitting/FittingWindow/ColoredResistanceLabel": "{[numeric]number}%",
+    "UI/Fitting/FittingWindow/ColoredHitpointsAndRechargeTime2": "{hp} hit points, back in {[numeric]rechargeTime, useGrouping} s",
+    "UI/Fitting/FittingWindow/ColoredHp2": "{hp} hit points",
+    "UI/Fitting/FittingWindow/ColoredPassiveRepairRate": "{[numeric]hpPerSec, decimalPlaces=1} hit points a second",
+    "UI/Fitting/FittingWindow/NoModule": "None fitted",
+    "UI/Fitting/FittingWindow/ArmorRepairRate": "Armor repaired",
+    "UI/Fitting/FittingWindow/HullRepairRate": "Structure repaired",
+    "UI/Fitting/FittingWindow/ShieldBoostRate": "Shield boosted",
+    "UI/Fitting/FittingWindow/PassiveShieldRecharge": "Shield recharging by itself",
+    "UI/Common/Shield": "Shield",
+    "UI/Common/Armor": "Armor",
+    "UI/Fitting/Structure": "Structure",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(DEFENSE_WORDS));
+  });
+  /** A defense label filled: the client's template where the install has it, the page's own otherwise. */
+  function defenseWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : DEFENSE_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }).replace(/<br\s*\/?>/gi, " "));
+  }
+  type DefenseSimulation = NonNullable<typeof stats.defense>;
+  /** defensePanel._GetFormattedValue: the hit points' whole part, grouped (a short form past a hundred million). */
+  function hitPoints(value: number): string {
+    const whole = Math.trunc(value);
+    return whole > 100_000_000 ? `${Math.round(whole / 1_000_000).toLocaleString()}M` : whole.toLocaleString();
+  }
+  /** SetDefenseLayerText: the shield with its recharge time, the others alone. */
+  function layerText(simulation: DefenseSimulation, layer: "shield" | "armor" | "structure"): string {
+    const hp = hitPoints(simulation.layers[layer].hp);
+    return layer === "shield"
+      ? defenseWord("UI/Fitting/FittingWindow/ColoredHitpointsAndRechargeTime2", { hp, rechargeTime: simulation.shieldRechargeSeconds, startColorTag1: "", startColorTag2: "", endColorTag: "" })
+      : defenseWord("UI/Fitting/FittingWindow/ColoredHp2", { hp });
+  }
+  /** UpdateBestRepair's choices: the passive recharge, and each kind of repairer's rate and count (or none). */
+  function repairLines(simulation: DefenseSimulation): { readonly label: string; readonly text: string }[] {
+    const rate = (repair: { readonly hpPerSec: number; readonly modules: number } | null): string =>
+      repair === null
+        ? defenseWord("UI/Fitting/FittingWindow/NoModule")
+        : `${repair.hpPerSec ? defenseWord("UI/Fitting/FittingWindow/ColoredPassiveRepairRate", { hpPerSec: repair.hpPerSec }) : "0"} (${repair.modules})`;
+    return [
+      { label: defenseWord("UI/Fitting/FittingWindow/PassiveShieldRecharge"), text: defenseWord("UI/Fitting/FittingWindow/ColoredPassiveRepairRate", { hpPerSec: simulation.passiveShieldRecharge }) },
+      { label: defenseWord("UI/Fitting/FittingWindow/ShieldBoostRate"), text: rate(simulation.repairs.shieldBoost) },
+      { label: defenseWord("UI/Fitting/FittingWindow/ArmorRepairRate"), text: rate(simulation.repairs.armorRepair) },
+      { label: defenseWord("UI/Fitting/FittingWindow/HullRepairRate"), text: rate(simulation.repairs.hullRepair) },
+    ];
+  }
+  const DEFENSE_LAYERS = [
+    { layer: "shield", label: "UI/Common/Shield" },
+    { layer: "armor", label: "UI/Common/Armor" },
+    { layer: "structure", label: "UI/Fitting/Structure" },
+  ] as const;
+
   // The offense panel's words (offensePanel.py), the client's from the install; the page's own where it has none.
   const OFFENSE_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/FittingWindow/DpsLabel": "{[numeric]dps, decimalPlaces=1} damage a second",
@@ -1391,8 +1450,49 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Defense</span>
-        <span class="fit-sec-headline">{@render statValue(stats.totalEhp, (v) => `${whole(v)} ehp`)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{defenseWord("UI/Fitting/FittingWindow/ColoredEffectiveHp", { effectiveHp: Math.trunc(stats.defense.effectiveHp) })}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.totalEhp, (v) => `${whole(v)} ehp`)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <div class="fit-sec-body">
+          <div class="table-wrap overflow-x-auto">
+            <table class="guests defence-grid">
+              <thead>
+                <tr>
+                  <th>Layer</th>
+                  <th class="num">HP</th>
+                  {#each DAMAGE_TYPES as dt (dt.key)}
+                    <th class="num"><span class="dmg-chip {dt.cls}">{dt.label}</span></th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each DEFENSE_LAYERS as row (row.layer)}
+                  <tr>
+                    <td data-label="Layer"><span class="layer-{row.layer === 'structure' ? 'hull' : row.layer}">{defenseWord(row.label)}</span></td>
+                    <td class="num" data-label="HP">{layerText(stats.defense, row.layer)}</td>
+                    {#each DAMAGE_TYPES as dt (dt.key)}
+                      <td class="num" data-label={dt.label}>
+                        {defenseWord("UI/Fitting/FittingWindow/ColoredResistanceLabel", { number: stats.defense.layers[row.layer].resistances[dt.key] })}
+                      </td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <table class="guests">
+            <tbody>
+              {#each repairLines(stats.defense) as line (line.label)}
+                <tr><th scope="row">{line.label}</th><td>{line.text}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <p class="note">
           Effective hit points are worked out against an even {damageProfileText}
@@ -1450,6 +1550,7 @@
           to read its effective boost or repair amount.
         </p>
       </div>
+      {/if}
     </details>
 
     <details class="fit-sec" open>

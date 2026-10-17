@@ -31,6 +31,7 @@ import { decodeItemAttributeChanges } from "../bridge/shipAttributeNotifications
 import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import { offense } from "../bridge/dogma/offense.ts";
+import { defense } from "../bridge/dogma/defense.ts";
 import {
   decodeBrain,
   loadSimulatedFitting,
@@ -5751,12 +5752,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       included: isOnlineModule,
       maxDamageMultiplier: () => 1.0,
     });
+    // The defense panel's: the ship's figures as GetStatsInfo reads them, each repairer counted (the ship itself:
+    // IncludeModuleInHpCalculation), docked each off the dogma location.
+    const layers = defense(reckoned.location, reckoned.ship, {
+      stat: (attributeID) => roundTo10(reckoned.location.value(reckoned.ship, attributeID)),
+      attribute: (attributeID) => reckoned.location.value(reckoned.ship, attributeID),
+      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
+      included: () => true,
+    });
     store.apply({
       type: "fitting/reckoned",
       shipID,
       resources: resourcesOf(attributes),
       stats: {
         ...derived,
+        defense: layers,
         firepower: {
           ...derived.firepower,
           dps: known(weapons.totalDps),
