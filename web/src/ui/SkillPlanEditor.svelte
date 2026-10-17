@@ -22,15 +22,20 @@
   //
   //   milestones      the overview's milestone editor (SkillPlanProgressIndicatorEditable and its header): Milestones
   //                   with the count of five, each milestone's kind and name with its Remove Milestone, an empty slot
-  //                   while one is free; a skill level dragged from the contents, or a skill from the catalogue, dropped
-  //                   on it is added, and on a milestone replaces it after the client's question
+  //                   while one is free; a skill level dragged from the contents, a skill from the catalogue, or an
+  //                   item or a fitted module (its type) dropped on it is added, and on a milestone replaces it after
+  //                   the client's question (a saved fitting: CantAddAsMilestone)
   //                   (bridge/skillPlanEditorMilestones.ts); an edited plan's milestones are its own, copied (GetCopy)
   //
   //   the contents' drags   SkillPlanEditorContents OnDropData and OnEntryDropData: a level dragged onto a level moves
   //                   above it, onto the list's end to the end (MoveSkillRequirement, only where the plan stays valid; the
   //                   line where it would land, grey where the move is valid and red where not); with Shift, the skill's
   //                   next level put in above it (where IsSkillInsertionValid) or at the end; a skill from the catalogue
-  //                   put in above a level or at the end (InsertSkillRequirement, AppendSkillRequirement)
+  //                   put in above a level or at the end (InsertSkillRequirement, AppendSkillRequirement); a saved
+  //                   fitting (the fitting window's, as FittingEntry) its hull's and modules' needs appended where the
+  //                   plan lacks them (_OnDropFitting, BulkAddAllSkillsRequiredFor); an item or a fitted module its
+  //                   type's requirements (_OnTypeDropData, _AddRequirementsForType: a milestone made of it where one
+  //                   is free, else its needs alone; nothing for a type that can be no milestone)
   //   double clicks   a level's: its skill's next level appended (OnEntryDblClicked); a catalogue skill's: Show Info
   //   selection       a level clicked: selected, the others marked by how they stand to it (OnEntryClicked,
   //                   GetRequirementStateForEntry); Ctrl and a click on the selected one: none
@@ -46,13 +51,16 @@
   //   a catalogue skill  SkillGroupSkillEntry: its menu (GetMenu: GetMenuForSkill, SkillRowMenu) and its tooltip below it
   //                   (LoadSkillEntryTooltipInfoOnly, SkillRowTip; none while dragging)
   //
-  // Not done: dragging ships, modules and fittings in from other windows, a milestone's level changed in its tooltip,
-  // the ring, a group's tooltip, a skill's bar and the time of its next level, the skill points label.
+  // Not done: the end line while an item is dragged over (its type is not readable before the drop), fittings dragged
+  // as text links, a milestone's level changed in its tooltip, the ring, a group's tooltip, a skill's bar and the time
+  // of its next level, the skill points label.
   import { onMount } from "svelte";
   import { portal } from "./portal.ts";
   import SkillRowMenu from "./SkillRowMenu.svelte";
   import SkillRowTip from "./SkillRowTip.svelte";
   import { endSkillDrag, startSkillDrag } from "./skillDrag.ts";
+  import { DRAG_MIME, decodeDrag } from "./dragDrop.ts";
+  import { droppedFittingID, isFittingDrag } from "./fittingDrag.ts";
   import { skillGroupIcon } from "./skillGroupIcons.ts";
   import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
   import type { SkillRowInfo } from "../bridge/skillPlans.ts";
@@ -65,10 +73,10 @@
   import { resolvedName } from "../store/names.ts";
   import { romanLevel } from "../bridge/skills.ts";
   import { validateSkillPlan, type SkillLevel } from "../bridge/skillPlanValidation.ts";
-  import { milestoneSubType, type Milestone } from "../bridge/skillPlanMilestones.ts";
+  import { milestoneSubType, requiredSkillsRecursiveAsDict, type Milestone } from "../bridge/skillPlanMilestones.ts";
   import {
     MAX_NUM_MILESTONES, copiedMilestones, dropped, milestonesChanged, typeValidAsMilestone, withMilestoneAdded,
-    withMilestoneRemoved, withMilestonesCheckedAgainst, type EditorMilestones,
+    withMilestoneRemoved, withMilestonesCheckedAgainst, withTypeRequirementsAdded, type EditorMilestones,
   } from "../bridge/skillPlanEditorMilestones.ts";
   import type { PersonalSkillPlanEntry } from "../bridge/skillPlans.ts";
   import {
@@ -76,6 +84,7 @@
     editedPlanDiffers, highestPlanLevel, nextPlanLevel, withLevelAppended, withLevelRemoved, type CatalogueGroup,
     insertionIsValid, moveIsValid, planLevelIndex, withLevelInserted, withLevelMoved, withLevelsAppended,
     CATALOGUE_FILTERS, catalogueSkillPasses, groupProgress, type CatalogueFilter, type CatalogueSkillState,
+    withNeedsOfTypesAppended,
   } from "../bridge/skillPlanEditor.ts";
 
   let { store, flow, plan, planCount, onClose, corp = null }: {
@@ -290,9 +299,15 @@
     return flow.skillPlanValidationFor([...new Set([...requirements.map(([skill]) => skill), ...typeIDs])]).catch(() => null);
   }
 
-  /** OnEntryDragEnter: the line above the level, its colour by whether a level dragged may move there. */
+  /** What the plan's skills take dropped: a level or a catalogue skill, an item or a fitted module, a saved fitting. */
+  function dropTaken(event: DragEvent): boolean {
+    const types = event.dataTransfer?.types ?? [];
+    return types.includes("application/x-evejs-skill-level") || types.includes(DRAG_MIME) || isFittingDrag(event);
+  }
+
+  /** OnEntryDragEnter: the line above the level, its colour by whether a level dragged may move there (any other drag's: valid). */
   function rowDragOver(event: DragEvent, skill: number, level: number): void {
-    if (!event.dataTransfer?.types.includes("application/x-evejs-skill-level")) return;
+    if (!dropTaken(event)) return;
     event.preventDefault();
     event.stopPropagation();
     const at = planLevelIndex(requirements, skill, level);
@@ -303,10 +318,15 @@
     dropLine = { at, valid };
   }
 
-  /** OnScrollDragEnter: the line at the list's end, as a level moved to the end would land. */
+  /**
+   * OnScrollDragEnter: the line at the list's end, as a level moved to the end would land; for a catalogue skill too
+   * (IsValidContentsDragData). None for a fitting (no type of its own), nor for an item, whose type is not readable
+   * until the drop.
+   */
   function contentsDragOver(event: DragEvent): void {
-    if (!event.dataTransfer?.types.includes("application/x-evejs-skill-level")) return;
+    if (!dropTaken(event)) return;
     event.preventDefault();
+    if (!event.dataTransfer?.types.includes("application/x-evejs-skill-level")) return;
     let valid = true;
     if (dragging !== null && dragging.level !== null && dragFacts !== null) {
       valid = moveIsValid(requirements, planLevelIndex(requirements, dragging.typeID, dragging.level), requirements.length, dragFacts);
@@ -321,7 +341,8 @@
     const data = draggedOf(event);
     const shift = event.shiftKey;
     dragEnd();
-    if (data === null || working) return;
+    if (data === null) return void (await dropOther(event));
+    if (working) return;
     working = true;
     try {
       const facts = await factsWith([data.typeID]);
@@ -355,7 +376,8 @@
     const data = draggedOf(event);
     const shift = event.shiftKey;
     dragEnd();
-    if (data === null || working) return;
+    if (data === null) return void (await dropOther(event));
+    if (working) return;
     working = true;
     try {
       const facts = await factsWith([data.typeID]);
@@ -377,6 +399,68 @@
     } finally {
       working = false;
     }
+  }
+
+  /**
+   * OnDropData and OnEntryDropData past a skill's drag, alike on a level or on the list: a saved fitting
+   * (_OnDropFitting), else an item or a fitted module (_OnTypeDropData). What was dropped is read before any await, as
+   * a drop's data can only be.
+   */
+  async function dropOther(event: DragEvent): Promise<void> {
+    const fittingID = droppedFittingID(event);
+    const item = fittingID === null ? decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null) : null;
+    if ((fittingID === null && item === null) || working) return;
+    working = true;
+    note = "";
+    try {
+      if (fittingID !== null) await addFittingNeeds(fittingID);
+      else if (item !== null) await addTypeRequirements(item.typeID);
+      await readRequiring();
+    } catch {
+      note = "That could not be put in the plan.";
+    } finally {
+      working = false;
+    }
+  }
+
+  /** _OnDropFitting: the hull's and each module's needs appended where the plan lacks that level (BulkAddAllSkillsRequiredFor). */
+  async function addFittingNeeds(fittingID: number): Promise<void> {
+    const typeIDs = await flow.skillPlanFittingTypes(fittingID);
+    if (typeIDs === null) {
+      note = "That fitting's types could not be read: the plan was not changed.";
+      return;
+    }
+    if (!(await readTypeFacts(typeIDs))) {
+      note = "The client's data for that could not be read.";
+      return;
+    }
+    const needs = typeIDs.flatMap((typeID) => requiredSkillsRecursiveAsDict(typeID, typeFacts.required).map(([skill]) => skill));
+    const facts = await factsWith(needs);
+    if (facts === null) {
+      note = "The client's skill data could not be read: the plan was not changed.";
+      return;
+    }
+    requirements = withNeedsOfTypesAppended(requirements, typeIDs, typeFacts.required, facts);
+  }
+
+  /** _AddRequirementsForType: for a type that may be a milestone, one made of it where one is free, else its needs alone. */
+  async function addTypeRequirements(typeID: number): Promise<void> {
+    if (!(await readTypeFacts([typeID]))) {
+      note = "The client's data for that could not be read.";
+      return;
+    }
+    const categoryID = typeFacts.categoryID.get(typeID) ?? null;
+    if (!typeValidAsMilestone(categoryID, (typeFacts.required[typeID] ?? []).length > 0)) return;
+    const isSkill = milestoneSubType(categoryID) === "skill";
+    const needs = requiredSkillsRecursiveAsDict(typeID, typeFacts.required).map(([skill]) => skill);
+    const facts = await factsWith(isSkill ? [...needs, typeID] : needs);
+    if (facts === null) {
+      note = "The client's skill data could not be read: the plan was not changed.";
+      return;
+    }
+    const added = withTypeRequirementsAdded(milestones, requirements, typeID, isSkill, typeFacts.required, newMilestoneID, (list) => validateSkillPlan(list, facts));
+    requirements = added.list;
+    milestones = added.milestones;
   }
 
   // OnEntryClicked: the level clicked selected, the others marked by how they stand to it.
@@ -520,7 +604,7 @@
   }
 
   function dragOver(event: DragEvent): void {
-    if (event.dataTransfer?.types.includes("application/x-evejs-skill-level")) event.preventDefault();
+    if (dropTaken(event)) event.preventDefault();
   }
 
   /** SkillPlanProgressIndicatorEditable._OnDataDropped and SkillPlanEditorOverview.OnMilestoneDataDropped. */
@@ -528,12 +612,22 @@
     event.preventDefault();
     event.stopPropagation();
     const raw = event.dataTransfer?.getData("application/x-evejs-skill-level");
-    if (!raw || working) return;
-    let data: { typeID: number; level: number | null };
-    try {
-      data = JSON.parse(raw);
-    } catch {
+    // GetDragDataTypeIDAndLevel: an item's or a fitted module's type; a fitting has none (CantAddAsMilestone).
+    const item = raw ? null : decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    if (!raw && item === null) {
+      if (droppedFittingID(event) !== null) flow.sayCantAddAsMilestone();
       return;
+    }
+    if (working) return;
+    let data: { typeID: number; level: number | null };
+    if (item !== null) {
+      data = { typeID: item.typeID, level: null };
+    } else {
+      try {
+        data = JSON.parse(raw!);
+      } catch {
+        return;
+      }
     }
     working = true;
     note = "";
@@ -749,9 +843,11 @@
         </span>
       {/if}
       {#if requirements.length === 0}
-        <p class="empty plan-editor-hint">{word("UI/SkillPlan/NoSkillsInPlanHint")}</p>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <p class="empty plan-editor-hint" ondragover={contentsDragOver} ondrop={(event) => void contentsDrop(event)}>{word("UI/SkillPlan/NoSkillsInPlanHint")}</p>
       {:else if shownRows.length === 0}
-        <p class="empty">{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters")}</p>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <p class="empty" ondragover={contentsDragOver} ondrop={(event) => void contentsDrop(event)}>{word("UI/CharacterSheet/CharacterSheetWindow/SkillTabs/NoSkillsMatchingFilters")}</p>
       {:else}
         <ul class="plan-editor-rows" ondragover={contentsDragOver} ondrop={(event) => void contentsDrop(event)} ondragleave={(event) => { if (event.target === event.currentTarget) dropLine = null; }}>
           {#each shownRows as [skill, level], at (at)}

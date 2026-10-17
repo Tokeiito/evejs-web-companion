@@ -15,9 +15,11 @@
 //   saved            AdjustMilestonesToAddAndDeletedIDs (GetMilestonesToAddAndDeletedIDs): one to add the same as one
 //                    to delete keeps the old and adds nothing; then SaveMilestones: the ids deleted, the rest created
 //   changed          skillPlanDiff: a new plan with any to add; an edited one whose milestones' data differ
+//   a type dropped   SkillPlanEditorContents._AddRequirementsForType: on the plan's skills, a type made a milestone
+//                    where one may be added, else only its needs appended
 
 import type { Milestone } from "./skillPlanMilestones.ts";
-import { milestoneRequiredSkills } from "./skillPlanMilestones.ts";
+import { milestoneRequiredSkills, requiredSkillsRecursiveAsDict } from "./skillPlanMilestones.ts";
 import type { RequiredSkills } from "./missingSkills.ts";
 import type { SkillLevel } from "./skillPlanValidation.ts";
 
@@ -75,6 +77,39 @@ export function withMilestoneAdded(
   const needs = milestoneRequiredSkills(milestone, required);
   if (milestone.kind === "skill" && needs.length === 0) return null;
   return { milestones: { ...milestones, toAdd: [...milestones.toAdd, milestone] }, list: [...list, ...needs] };
+}
+
+/**
+ * _AddRequirementsForType, for a type IsTypeValidMilestone lets be one (the caller asks it, and does nothing where
+ * not). Where a milestone may still be added (HasEmptyMilestoneSlots): a skill's needs and its level I appended
+ * (AddAllSkillsRequiredFor(typeID, 1)), then that level made a milestone (AddSkillRequirementMilestone(typeID, 1),
+ * which appends them again where it adds one); another type made a milestone with its needs appended
+ * (AddTypeIDMilestone: nothing at all where it is one already). Where the five are taken: the type's needs appended
+ * alone (AddAllSkillsRequiredFor(typeID): a skill's own level is not among them). validate puts the plan right, as
+ * each append there does (none where nothing is appended).
+ */
+export function withTypeRequirementsAdded(
+  milestones: EditorMilestones,
+  list: readonly SkillLevel[],
+  typeID: number,
+  isSkill: boolean,
+  required: RequiredSkills,
+  newID: () => string,
+  validate: (list: SkillLevel[]) => void,
+): { readonly milestones: EditorMilestones; readonly list: SkillLevel[] } {
+  const appended = (to: readonly SkillLevel[], needs: readonly SkillLevel[]): SkillLevel[] => {
+    const next = [...to, ...needs];
+    if (needs.length > 0) validate(next);
+    return next;
+  };
+  if (milestones.toAdd.length < MAX_NUM_MILESTONES) {
+    const before = isSkill ? appended(list, milestoneRequiredSkills({ id: "", kind: "skill", typeID, level: 1 }, required)) : [...list];
+    const added = withMilestoneAdded(milestones, before, typeID, isSkill ? 1 : null, required, newID);
+    if (added === null) return { milestones, list: before };
+    if (added.list.length > before.length) validate(added.list);
+    return added;
+  }
+  return { milestones, list: appended(list, requiredSkillsRecursiveAsDict(typeID, required)) };
 }
 
 /** RemoveMilestone */

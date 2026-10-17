@@ -162,3 +162,48 @@ export function fittingContents(
   }
   return groups;
 }
+
+/**
+ * The skill plan editor's types of a dropped fitting (SkillPlanEditorContents._OnDropFitting): the hull, then each of
+ * GetTypesByRack's kinds in this order, its types as its dict iterates them, each once: the subsystems, high, medium,
+ * low and rig slots, charges, fighters, drones, implants and the hold's modules; then the kinds left as that dict
+ * iterates them (asked of the client's own Python: serviceSlots, filaments, ice, other, otherInCargo), where they
+ * hold any.
+ */
+export function fittingTypesForSkillPlan(
+  shipTypeID: number,
+  fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[],
+  facts: (typeID: number) => TypeFacts,
+): number[] {
+  const kinds = new Map<string, number[]>();
+  const into = (kind: string, typeID: number): void => {
+    const order = kinds.get(kind) ?? [];
+    kinds.set(kind, order);
+    if (!order.includes(typeID)) order.push(typeID);
+  };
+  for (const { typeID, flagID: flag } of fitData) {
+    const { groupID, categoryID, lists } = facts(typeID);
+    if (categoryID === CATEGORY_CHARGE) into("charges", typeID);
+    else if (categoryID === CATEGORY_IMPLANT) into("implants", typeID);
+    else if (groupID === GROUP_ICE_PRODUCT) into("ice", typeID);
+    else if (HI_SLOTS.has(flag)) into("hiSlots", typeID);
+    else if (MED_SLOTS.has(flag)) into("medSlots", typeID);
+    else if (LO_SLOTS.has(flag)) into("lowSlots", typeID);
+    else if (RIG_SLOTS.has(flag)) into("rigSlots", typeID);
+    else if (SERVICE_SLOTS.has(flag)) into("serviceSlots", typeID);
+    else if (VISIBLE_SUBSYSTEMS.has(flag)) into("subSystems", typeID);
+    else if (flag === FLAG_DRONE_BAY) into("drones", typeID);
+    else if (flag === FLAG_FIGHTER_BAY) into("fighters", typeID);
+    else if ((categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM) && flag === FLAG_CARGO) into("modules", typeID);
+    else if (lists.has(TYPE_LIST_FILAMENTS)) into("filaments", typeID);
+    else if (lists.has(TYPE_LIST_OTHER_CARGO_HOLD_TYPES)) into("otherInCargo", typeID);
+    else into("other", typeID);
+  }
+  const typeIDs = [shipTypeID];
+  const take = (kind: string): void => {
+    for (const typeID of intDictOrder(kinds.get(kind) ?? [])) if (!typeIDs.includes(typeID)) typeIDs.push(typeID);
+  };
+  for (const kind of ["subSystems", "hiSlots", "medSlots", "lowSlots", "rigSlots", "charges", "fighters", "drones", "implants", "modules"]) take(kind);
+  for (const kind of ["serviceSlots", "filaments", "ice", "other", "otherInCargo"]) take(kind);
+  return typeIDs;
+}

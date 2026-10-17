@@ -44,6 +44,7 @@
     encodeDrag,
     type DragPayload,
   } from "./dragDrop.ts";
+  import { startFittingDrag } from "./fittingDrag.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -1964,7 +1965,10 @@
       {#each mailBodyLines(text) as line, place (place)}{#if place > 0}{" "}{/if}{#each line as segment, at (at)}<span class="marked-run" class:bold={segment.bold} class:italic={segment.italic} class:underline={segment.underline || segment.link !== null}>{segment.text}</span>{/each}{/each}
     {/snippet}
     {#snippet fittingRow(saved: NonNullable<typeof $savedFittings>[number])}
-        <p class="controls saved-fitting" class:selected={selectedFittings.includes(saved.fittingID)} data-fitting-id={saved.fittingID}>
+        <!-- Draggable (FittingEntry.GetDragData): the skill plan editor takes a fitting dropped on its skills. -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <p class="controls saved-fitting" class:selected={selectedFittings.includes(saved.fittingID)} data-fitting-id={saved.fittingID}
+          draggable="true" ondragstart={(event) => startFittingDrag(event, saved.fittingID)}>
           {#if saved.source === "corporation"}
             <span title={fitWord("UI/Fitting/CorpFittingHint")}>🏢</span>
           {:else if saved.source === "community"}

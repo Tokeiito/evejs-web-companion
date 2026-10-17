@@ -19,10 +19,14 @@
 //   a level put in   InsertSkillRequirement: at the place of a level, then the plan put right (a skill dropped from the
 //                    catalogue on a level; a level shift-dragged on one, where IsSkillInsertionValid)
 //   levels appended  AppendSkillRequirements: a list imported from the clipboard, then the plan put right
+//   a fitting's      BulkAddAllSkillsRequiredFor (SkillPlanEditorContents._OnDropFitting): each of its types' needs
+//                    appended where the plan lacks that very level, then the plan put right
 //
 // The milestones' rules are skillPlanEditorMilestones.ts.
 
 import { validateSkillPlan, type SkillLevel, type SkillPlanValidationFacts } from "./skillPlanValidation.ts";
+import type { RequiredSkills } from "./missingSkills.ts";
+import { requiredSkillsRecursiveAsDict } from "./skillPlanMilestones.ts";
 
 /** skillConst.skill_group_ids (inventorycommon/const.py): the skill groups the catalogue lists. */
 export const SKILL_GROUP_IDS: readonly number[] = [
@@ -230,6 +234,27 @@ export function withLevelInserted(
 /** AppendSkillRequirements: each level appended (none without a skill or a level), then the plan put right. */
 export function withLevelsAppended(list: readonly SkillLevel[], levels: readonly SkillLevel[], facts: SkillPlanValidationFacts): SkillLevel[] {
   const next: SkillLevel[] = [...list, ...levels.filter(([typeID, level]) => typeID > 0 && level > 0)];
+  validateSkillPlan(next, facts);
+  return next;
+}
+
+/**
+ * BulkAddAllSkillsRequiredFor: for each type in turn, each skill it needs (get_dogma_required_skills_recursive, in its
+ * dict's order) appended at the level it needs where the plan has no entry of that skill at that level, then the plan
+ * put right once.
+ */
+export function withNeedsOfTypesAppended(
+  list: readonly SkillLevel[],
+  typeIDs: readonly number[],
+  required: RequiredSkills,
+  facts: SkillPlanValidationFacts,
+): SkillLevel[] {
+  const next: SkillLevel[] = [...list];
+  for (const typeID of typeIDs) {
+    for (const [skill, level] of requiredSkillsRecursiveAsDict(typeID, required)) {
+      if (!next.some(([typeIn, levelIn]) => typeIn === skill && levelIn === level)) next.push([skill, level]);
+    }
+  }
   validateSkillPlan(next, facts);
   return next;
 }
