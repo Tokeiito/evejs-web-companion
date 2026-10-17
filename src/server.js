@@ -13554,6 +13554,127 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
   }
 });
 
+// What the page's own dogma reckons a type's item with (the Fitting window's simulation: FittingDogmaLocation on
+// baseDogmaLocation), from the client's own tables, for at most 50 types at once:
+//   each type      its attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order,
+//                  then its mass, capacity, volume and radius), its effects (its typeDogma dogmaEffects, in their
+//                  order), its group and category, and the skills it requires (get_dogma_required_skills: the item's
+//                  reqSkills, which a location's required-skill modifiers go by)
+//   each effect    of those types: its category, the attribute a fitting's chance goes by
+//                  (fittingUsageChanceAttributeID), and its modifierInfo (null where it has none: the compiler makes
+//                  it a neutral effect, baseEffectCompiler SetupDogmaEffects)
+//   each attribute the types carry, the effects name, and those asked (attributeIDs, at most 200): what Attribute and
+//                  itemAttributeFactory go by (stackable, dataType, defaultValue, highIsGood, the cap and floor
+//                  attributes, whether it is a charged one), and the cap and floor attributes' own records
+app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
+  try {
+    const listed = (name, most) => {
+      const out = [];
+      for (const part of String((req.query && req.query[name]) || "").split(",")) {
+        const id = Number(part);
+        if (Number.isSafeInteger(id) && id > 0 && !out.includes(id)) out.push(id);
+      }
+      return out.slice(0, most);
+    };
+    const wanted = listed("typeIDs", 50);
+    const askedAttributes = listed("attributeIDs", 200);
+    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills] = await Promise.all([
+      clientBuiltData.rows("typeDogma", wanted),
+      clientBuiltData.rows("types", wanted),
+      clientBuiltData.table("dogmaAttributes"),
+      clientBuiltData.table("groupCategories"),
+      clientBuiltData.table("requiredSkillsForTypes"),
+    ]);
+    if (!dogmaRows || !typeRows || !attributeRows) {
+      res.json({ ok: true, available: false, types: {}, effects: {}, attributes: {} });
+      return;
+    }
+    const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const types = {};
+    const effectIDs = [];
+    const attributeIDs = new Set(askedAttributes);
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      if (!type || typeof type !== "object") {
+        types[typeID] = null;
+        continue;
+      }
+      const dogma = dogmaRows[String(typeID)];
+      const rows = (dogma && Array.isArray(dogma.dogmaAttributes) ? dogma.dogmaAttributes : [])
+        .map((row) => [whole(row && row.attributeID), number(row && row.value)])
+        .filter(([attributeID]) => attributeID !== null && attributeID > 0);
+      rows.push([4, number(type.mass)], [38, number(type.capacity)], [161, number(type.volume)], [162, number(type.radius)]);
+      for (const [attributeID] of rows) attributeIDs.add(attributeID);
+      const effects = (dogma && Array.isArray(dogma.dogmaEffects) ? dogma.dogmaEffects : [])
+        .map((row) => whole(row && row.effectID))
+        .filter((effectID) => effectID !== null && effectID > 0);
+      for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
+      const groupID = whole(type.groupID);
+      const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
+      types[typeID] = {
+        attributes: rows,
+        effects,
+        groupID,
+        categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
+        requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
+      };
+    }
+    const effectRows = effectIDs.length > 0 ? await clientBuiltData.rows("dogmaEffects", effectIDs) : {};
+    const effects = {};
+    for (const effectID of effectIDs) {
+      const row = effectRows ? effectRows[String(effectID)] : null;
+      if (!row || typeof row !== "object") {
+        effects[effectID] = null;
+        continue;
+      }
+      const modifiers = Array.isArray(row.modifierInfo) && row.modifierInfo.length > 0
+        ? row.modifierInfo.map((info) => ({
+          func: typeof info.func === "string" ? info.func : null,
+          domain: typeof info.domain === "string" ? info.domain : null,
+          modifiedAttributeID: whole(info.modifiedAttributeID),
+          modifyingAttributeID: whole(info.modifyingAttributeID),
+          operation: whole(info.operation),
+          skillTypeID: whole(info.skillTypeID),
+          groupID: whole(info.groupID),
+        }))
+        : null;
+      for (const info of modifiers || []) {
+        if (info.modifiedAttributeID) attributeIDs.add(info.modifiedAttributeID);
+        if (info.modifyingAttributeID) attributeIDs.add(info.modifyingAttributeID);
+      }
+      const chanceAttributeID = whole(row.fittingUsageChanceAttributeID);
+      if (chanceAttributeID) attributeIDs.add(chanceAttributeID);
+      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers };
+    }
+    const attributes = {};
+    const keep = (attributeID) => {
+      if (Object.hasOwn(attributes, attributeID)) return;
+      const row = attributeRows[String(attributeID)];
+      if (!row || typeof row !== "object") {
+        attributes[attributeID] = null;
+        return;
+      }
+      const record = {
+        stackable: Boolean(Number(row.stackable || 0)),
+        dataType: whole(row.dataType),
+        defaultValue: number(row.defaultValue),
+        highIsGood: Boolean(Number(row.highIsGood || 0)),
+        maxAttributeID: whole(row.maxAttributeID) || null,
+        minAttributeID: whole(row.minAttributeID) || null,
+        chargeRechargeTimeID: whole(row.chargeRechargeTimeID) || null,
+      };
+      attributes[attributeID] = record;
+      if (record.maxAttributeID) keep(record.maxAttributeID);
+      if (record.minAttributeID) keep(record.minAttributeID);
+    };
+    for (const attributeID of attributeIDs) keep(attributeID);
+    res.json({ ok: true, available: true, types, effects, attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Types' meta level, meta group and tech level from the client's types records (evetypes.GetMetaLevel, GetMetaGroupID,
 // GetTechLevel: null where a record has none), and each meta group's name as the number of its message
 // (metaGroups.get_name): what the assets search's metalevel, metagroup and techlevel keywords read

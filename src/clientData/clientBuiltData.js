@@ -118,6 +118,10 @@ const TABLES = Object.freeze({
   // assets search's metagroup keyword matches (assetSearchUtil.MatchMetagroup).
   metaGroupNameIDs: Object.freeze({ loader: "metaGroupsLoader", resource: "res:/staticdata/metagroups.fsdbinary", attribute: "nameID" }),
   types: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", rowsOnly: true }),
+  // The dogma effects' own records (dogma/data.py get_effect: dogmaEffects.fsdbinary), each with its category and its
+  // modifierInfo: what the client's effect compiler makes a type's passive effects of (baseEffectCompiler
+  // SetupDogmaEffects, dogma/effects/modifiers.py). Read by the rows asked for only.
+  dogmaEffects: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", rowsOnly: true }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),
