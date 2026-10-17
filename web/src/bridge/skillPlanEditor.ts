@@ -233,3 +233,78 @@ export function withLevelsAppended(list: readonly SkillLevel[], levels: readonly
   validateSkillPlan(next, facts);
   return next;
 }
+
+/** skills/skillConst.py: the catalogue's filters (SkillFilterCombo's options, in its order) and their labels. */
+export type CatalogueFilter = "alltrainable" | "trained" | "mytrainable" | "haveprerequisits";
+export const CATALOGUE_FILTERS: readonly { readonly id: CatalogueFilter; readonly label: string }[] = [
+  { id: "alltrainable", label: "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowAllSkills" },
+  { id: "trained", label: "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyCurrentSkills" },
+  { id: "mytrainable", label: "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyTrainableSkills" },
+  { id: "haveprerequisits", label: "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyHavePrerequisits" },
+];
+
+/** What a catalogue skill is to the pilot, as the skill controller answers it. */
+export interface CatalogueSkillState {
+  /** GetMyLevel: the level trained, lapsed counted; nought where not had. */
+  readonly level: number;
+  /** IsInjected (IsSkillInjected: had, lapsed counted). */
+  readonly injected: boolean;
+  /** IsTrainableNow. */
+  readonly trainableNow: boolean;
+  /** _HavePrerequisitesForFilter. */
+  readonly havePrereqs: boolean;
+  /** GetAccumulatedLevelsTrainedAndDisabled's part: the levels above the clone's ceiling, for a skill had. */
+  readonly disabledLevels: number;
+}
+
+/**
+ * A skill's state, from the pilot's skills: its level had (lapsed counted: GetMyLevel), its points (lapsed counted:
+ * GetSkillpointsTrained), each of its own needs met by a level trained (MySkillLevel: not lapsed) or queued
+ * (IsSkillRequirementMetIncludingSkillQueue), and the clone's ceiling for it (get_max_skill_level: V for an omega).
+ *   IsTrainableNow           injected, its needs met or points in it, below the clone's ceiling, not at V
+ *   _HavePrerequisitesForFilter  not at V, and injected or its needs met
+ */
+export function catalogueSkillState(input: {
+  readonly level: number | null;
+  readonly points: number;
+  readonly needsMet: boolean;
+  readonly ceiling: number;
+}): CatalogueSkillState {
+  const injected = input.level !== null;
+  const level = input.level ?? 0;
+  const fullyTrained = level === MAX_LEVEL;
+  return {
+    level,
+    injected,
+    trainableNow: injected && (input.needsMet || input.points > 0) && level < input.ceiling && !fullyTrained,
+    havePrereqs: !fullyTrained && (injected || input.needsMet),
+    disabledLevels: injected ? Math.max(level - input.ceiling, 0) : 0,
+  };
+}
+
+/** SkillGroupController.GetSkillsFiltered's first step: whether a skill is among those the filter keeps. */
+export function catalogueSkillPasses(state: CatalogueSkillState | undefined, filter: CatalogueFilter): boolean {
+  if (filter === "alltrainable") return true;
+  if (state === undefined) return false;
+  if (filter === "trained") return state.injected;
+  if (filter === "mytrainable") return state.trainableNow;
+  return state.havePrereqs;
+}
+
+/**
+ * SkillGroupEntry.UpdateProgress: the group's levels trained of all its skills' (five each), the part above the clone's
+ * ceiling apart (GetAccumulatedLevelsTrainedRatio, GetAccumulatedLevelsTrainedAndDisabledRatio).
+ */
+export function groupProgress(skills: readonly CatalogueEntry[], states: ReadonlyMap<number, CatalogueSkillState>): { readonly trained: number; readonly disabled: number } {
+  const total = skills.length * MAX_LEVEL;
+  if (total === 0) return { trained: 0, disabled: 0 };
+  let trained = 0;
+  let disabled = 0;
+  for (const skill of skills) {
+    const state = states.get(skill.typeID);
+    if (!state?.injected) continue;
+    trained += state.level;
+    disabled += state.disabledLevels;
+  }
+  return { trained: trained / total, disabled: disabled / total };
+}

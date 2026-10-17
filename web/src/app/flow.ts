@@ -204,7 +204,7 @@ import {
   type RequiredSkills, type SkillLevelBox, type SkillRowMark,
 } from "../bridge/missingSkills.ts";
 import { validateSkillPlan, type SkillLevel as PlanSkillLevel, type SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
-import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, planUpdates, type EditedPlan } from "../bridge/skillPlanEditor.ts";
+import { MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, catalogueSkillState, planUpdates, type CatalogueSkillState, type EditedPlan } from "../bridge/skillPlanEditor.ts";
 import {
   milestoneCompleted, milestoneRequiredSkills, milestoneSubType, milestoneValid, milestonesFromGetAll, milestonesMissingRequirements,
   type MilestoneEntry,
@@ -2646,6 +2646,17 @@ export interface AppFlow {
    * where it could not be read.
    */
   skillPlanImportText(text: string): Promise<readonly (readonly [number, number])[] | null>;
+  /**
+   * Skills' row tooltips and menus (bridge/skillPlans.ts SkillRowInfo), read for those asked: the editor's catalogue's
+   * entries (SkillGroupSkillEntry: LoadTooltipPanel, GetMenu). Null where the pilot's skills could not be read.
+   */
+  skillRowInfoFor(typeIDs: readonly number[]): Promise<ReadonlyMap<number, SkillRowInfo> | null>;
+  /**
+   * The editor's catalogue's skills as the skill controllers answer them (bridge/skillPlanEditor.ts
+   * CatalogueSkillState): their levels, whether injected, trainable now or with their needs met, and the levels above
+   * an alpha clone's ceiling; for SkillFilterCombo's filters and the groups' bars. Null where they could not be read.
+   */
+  skillCatalogueStates(typeIDs: readonly number[]): Promise<ReadonlyMap<number, CatalogueSkillState> | null>;
   /** GetSkillsRequiring for these skills, by level. Null without the client's data. */
   skillsRequiring(typeIDs: readonly number[]): Promise<ReadonlyMap<number, ReadonlyMap<number, readonly number[]>> | null>;
   /**
@@ -8069,8 +8080,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const ceiling = (skill: number): number => ceilings?.get(skill) ?? 0;
     const numOmegaSkills = ceilings === null ? 0 : planSkills.filter((skill) => restrictedForAlpha(skill, ceiling, required)).length;
     const maxQueued = (typeID: number): number => Math.max(0, ...facts.queued.filter((entry) => entry.typeID === typeID).map((entry) => entry.toLevel));
-    // Each skill's row tooltip and menu (SkillPlanContentsSkillEntry LoadTooltipPanel and GetMenu): its type's
-    // description, market group, publishing and category (evetypes), and what the skill and queue services hold of it.
+    const skillInfo = await skillRowInfos(skillTypes, facts);
+    return {
+      rows,
+      missingBooks: planSkills.filter((skill) => !facts.lapsed.has(skill)),
+      omegaLocked: numOmegaSkills > 0,
+      numOmegaSkills,
+      untrained: untrainedSkills(plan, (typeID) => facts.lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued),
+      skillInfo,
+    };
+  }
+
+  /**
+   * Each skill's row tooltip and menu (a skill entry's LoadTooltipPanel and GetMenu, in a plan's contents and in the
+   * editor's catalogue): its type's description, market group, publishing and category (evetypes), and what the skill
+   * and queue services hold of it.
+   */
+  async function skillRowInfos(skillTypes: readonly number[], facts: Awaited<ReturnType<typeof pilotTrainingFacts>>): Promise<Map<number, SkillRowInfo>> {
     const types = await typeFacts(skillTypes).catch(() => null);
     const skillInfo = new Map<number, SkillRowInfo>();
     for (const skill of skillTypes) {
@@ -8110,14 +8136,56 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
     }
     requestWords([...skillInfo.values()].flatMap((info) => (info.descriptionID === null ? [] : [`#${info.descriptionID}`])));
-    return {
-      rows,
-      missingBooks: planSkills.filter((skill) => !facts.lapsed.has(skill)),
-      omegaLocked: numOmegaSkills > 0,
-      numOmegaSkills,
-      untrained: untrainedSkills(plan, (typeID) => facts.lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued),
-      skillInfo,
-    };
+    return skillInfo;
+  }
+
+  async function skillRowInfoFor(typeIDs: readonly number[]): ReturnType<AppFlow["skillRowInfoFor"]> {
+    const skills = [...new Set(typeIDs)];
+    if (skills.length === 0) return new Map();
+    try {
+      const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+      return await skillRowInfos(skills, await pilotTrainingFacts(skills, skillsAnswer, allSkillsAnswer));
+    } catch {
+      return null;
+    }
+  }
+
+  async function skillCatalogueStates(typeIDs: readonly number[]): ReturnType<AppFlow["skillCatalogueStates"]> {
+    try {
+      const [skillsAnswer, allSkillsAnswer, queueAnswer] = await Promise.all([
+        bridgeAsk("skillHandler", "GetSkills", []),
+        bridgeAsk("skillHandler", "GetAllSkills", []),
+        bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
+      ]);
+      const mine = skillLevelsOf(skillsAnswer);
+      const lapsed = skillLevelsOf(allSkillsAnswer);
+      const queued = queuedLevels(Array.isArray(queueAnswer) ? (queueAnswer[0] as JsonValue) : null);
+      // GetMaxSkillLevelsInQueue.
+      const inQueue = new Map<number, number>();
+      for (const entry of queued) inQueue.set(entry.typeID, Math.max(inQueue.get(entry.typeID) ?? 0, entry.toLevel));
+      const required = (await requiredSkillsFor(typeIDs)) ?? {};
+      // clone_grade_svc.get_max_skill_level: V for an omega; an alpha's ceilings by race (nought for a skill not listed).
+      const omega = store.station.get().cloneGrade !== CLONE_GRADE_ALPHA;
+      const raceID = store.station.get().online?.raceID ?? null;
+      const ceilings = omega || raceID === null
+        ? null
+        : await api.getCloneGrade(raceID, callOptions).then((grade) => (grade.available ? grade.levels : null)).catch(() => null);
+      const states = new Map<number, CatalogueSkillState>();
+      for (const typeID of typeIDs) {
+        const had = lapsed.get(typeID);
+        // IsSkillRequirementMetIncludingSkillQueue: each of its own needs trained (MySkillLevel) or queued that high.
+        const needsMet = (required[typeID] ?? []).every(([skill, level]) => (mine.get(skill)?.trainedSkillLevel ?? 0) >= level || (inQueue.get(skill) ?? 0) >= level);
+        states.set(typeID, catalogueSkillState({
+          level: had === undefined ? null : had.trainedSkillLevel,
+          points: had?.trainedSkillPoints ?? 0,
+          needsMet,
+          ceiling: ceilings === null ? 5 : ceilings.get(typeID) ?? 0,
+        }));
+      }
+      return states;
+    } catch {
+      return null;
+    }
   }
 
   /** characterskills/queue.py SKILLQUEUE_MAX_NUM_SKILLS. */
@@ -23211,6 +23279,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trainSkillPlan,
     skillCatalogue,
     skillPlanValidationFor: skillPlanValidationFacts,
+    skillRowInfoFor,
+    skillCatalogueStates,
     skillPlanImportText: (text: string) => api.importSkillPlanText(text, callOptions).then((read) => read.skillsAndLevels).catch(() => null),
     skillsRequiring,
     saveSkillPlan,

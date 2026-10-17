@@ -37,10 +37,24 @@
   //   the contents' menu  GetUtilMenu: Copy Skills to Clipboard, Import Skills from Clipboard (its hint the client's
   //                   format examples; the queue's importer, the BFF's port), Clear Skills (and the milestones)
   //
+  //   the catalogue's filter  SkillFilterCombo (kept as skillEditorCatalogueCombo): Show All, Injected, Trainable Now,
+  //                   Have Prerequisites (SkillGroupController.GetSkillsFiltered, bridge/skillPlanEditor.ts
+  //                   CatalogueSkillState), with the text filter too
+  //   the groups      SkillGroupEntry: the group's icon (ICON_BY_GROUPID), its name, how many of its skills the filters
+  //                   keep (none: no number and the entry faded), its bar of levels trained of all its skills' and an
+  //                   alpha clone's levels past its ceiling in omega orange
+  //   a catalogue skill  SkillGroupSkillEntry: its menu (GetMenu: GetMenuForSkill, SkillRowMenu) and its tooltip below it
+  //                   (LoadSkillEntryTooltipInfoOnly, SkillRowTip; none while dragging)
+  //
   // Not done: dragging ships, modules and fittings in from other windows, a milestone's level changed in its tooltip,
-  // the ring, the catalogue's filter combo, group icons, menu and tooltip, the time and bar of a level.
+  // the ring, a group's tooltip, a skill's bar and the time of its next level, the skill points label.
   import { onMount } from "svelte";
   import { portal } from "./portal.ts";
+  import SkillRowMenu from "./SkillRowMenu.svelte";
+  import SkillRowTip from "./SkillRowTip.svelte";
+  import { skillGroupIcon } from "./skillGroupIcons.ts";
+  import { skillMenuEntries, type SkillMenuEntry } from "../bridge/skillMenu.ts";
+  import type { SkillRowInfo } from "../bridge/skillPlans.ts";
   import { showInfo } from "./showInfo.ts";
   import { planRowRequirement } from "../bridge/skillPlans.ts";
   import type { SkillPlanValidationFacts } from "../bridge/skillPlanValidation.ts";
@@ -60,6 +74,7 @@
     MAX_PLAN_DESCRIPTION_LENGTH, MAX_PLAN_NAME_LENGTH, canRemoveLevel, canSavePlan, catalogueGroups, catalogueSearch,
     editedPlanDiffers, highestPlanLevel, nextPlanLevel, withLevelAppended, withLevelRemoved, type CatalogueGroup,
     insertionIsValid, moveIsValid, planLevelIndex, withLevelInserted, withLevelMoved, withLevelsAppended,
+    CATALOGUE_FILTERS, catalogueSkillPasses, groupProgress, type CatalogueFilter, type CatalogueSkillState,
   } from "../bridge/skillPlanEditor.ts";
 
   let { store, flow, plan, planCount, onClose, corp = null }: {
@@ -84,6 +99,11 @@
   let categoryID = $state(corp?.categoryID ?? 0);
 
   const OWN: Readonly<Record<string, string>> = {
+    // SkillFilterCombo's options.
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowAllSkills": "Every skill",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyCurrentSkills": "Skills you have",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyTrainableSkills": "Skills you can train now",
+    "UI/CharacterSheet/CharacterSheetWindow/SkillTabs/ShowOnlyHavePrerequisits": "Skills whose needs you meet",
     "UI/SkillPlan/CopySkillsToClipboard": "Copy the plan's skills",
     "UI/SkillPlan/ImportSkillsFromClipboard": "Add the skills on the clipboard",
     "UI/SkillPlan/ClearSkills": "Take every skill out",
@@ -140,9 +160,69 @@
   let groups = $state<CatalogueGroup[] | null | undefined>(undefined);
   let selectedGroupID = $state<number | null>(null);
   let catalogueFilter = $state("");
+  // SkillFilterCombo: its choice kept (settings.char.ui skillEditorCatalogueCombo), Show All where none was kept.
+  const CATALOGUE_COMBO_KEY = "evejs.skillEditorCatalogueCombo";
+  function keptCatalogueFilter(): CatalogueFilter {
+    try {
+      const kept = localStorage.getItem(CATALOGUE_COMBO_KEY);
+      return CATALOGUE_FILTERS.some((filter) => filter.id === kept) ? (kept as CatalogueFilter) : "alltrainable";
+    } catch {
+      return "alltrainable";
+    }
+  }
+  let catalogueFilterID = $state<CatalogueFilter>(keptCatalogueFilter());
+  function chooseCatalogueFilter(id: CatalogueFilter): void {
+    catalogueFilterID = id;
+    try {
+      localStorage.setItem(CATALOGUE_COMBO_KEY, id);
+    } catch {
+      // Not kept; chosen all the same.
+    }
+  }
+  /** The catalogue's skills as the skill controllers answer them; none until read (the filters then keep all). */
+  let catalogueStates = $state<ReadonlyMap<number, CatalogueSkillState>>(new Map());
+  const passes = (typeID: number): boolean => catalogueSkillPasses(catalogueStates.get(typeID), catalogueFilterID);
   const shownSkills = $derived(
-    !groups ? [] : catalogueFilter !== "" ? catalogueSearch(groups, catalogueFilter) : groups.find((group) => group.groupID === selectedGroupID)?.skills ?? [],
+    (!groups ? [] : catalogueFilter !== "" ? catalogueSearch(groups, catalogueFilter) : groups.find((group) => group.groupID === selectedGroupID)?.skills ?? [])
+      .filter((skill) => passes(skill.typeID)),
   );
+  /** UpdateSkillGroupNumFilteredLabels: how many of each group's skills the filter and the text keep. */
+  function groupCount(group: CatalogueGroup): number {
+    const text = catalogueFilter.toLowerCase();
+    return group.skills.filter((skill) => passes(skill.typeID) && (text === "" || skill.name.toLowerCase().includes(text))).length;
+  }
+
+  // A catalogue skill's tooltip and menu (SkillGroupSkillEntry LoadTooltipPanel, GetMenu), read for the skill as they
+  // are asked and kept while the editor is open.
+  let skillInfos = $state<ReadonlyMap<number, SkillRowInfo>>(new Map());
+  async function infoOf(typeID: number): Promise<SkillRowInfo | null> {
+    const kept = skillInfos.get(typeID);
+    if (kept !== undefined) return kept;
+    const read = await flow.skillRowInfoFor([typeID]);
+    const info = read?.get(typeID) ?? null;
+    if (info !== null) skillInfos = new Map([...skillInfos, [typeID, info]]);
+    return info;
+  }
+  let catalogueTip = $state<{ readonly typeID: number; readonly top: number; readonly left: number } | null>(null);
+  async function showCatalogueTip(typeID: number, event: Event): Promise<void> {
+    if (dragging !== null || catalogueMenu !== null || !(event.currentTarget instanceof HTMLElement)) return;
+    // GetTooltipPointer: POINT_BOTTOM_2, below the entry.
+    const rect = event.currentTarget.getBoundingClientRect();
+    catalogueTip = { typeID, top: rect.bottom + 8, left: rect.left };
+    await infoOf(typeID);
+  }
+  function hideCatalogueTip(typeID: number): void {
+    if (catalogueTip !== null && catalogueTip.typeID === typeID) catalogueTip = null;
+  }
+  let catalogueMenu = $state<{ readonly typeID: number; readonly entries: readonly SkillMenuEntry[]; readonly x: number; readonly y: number } | null>(null);
+  async function openCatalogueMenu(typeID: number, event: MouseEvent): Promise<void> {
+    event.preventDefault();
+    catalogueTip = null;
+    const { clientX: x, clientY: y } = event;
+    const info = await infoOf(typeID);
+    if (info === null) return;
+    catalogueMenu = { typeID, entries: skillMenuEntries(typeID, info.menu), x, y };
+  }
 
   // The milestones (to add, and the plan's ids to delete), the plan's own as read, and the types' facts read.
   let milestones = $state<EditorMilestones>({ toAdd: [], toDelete: [] });
@@ -405,6 +485,10 @@
       const catalogue = await flow.skillCatalogue();
       groups = catalogue ? catalogueGroups(catalogue.skills, (typeID) => catalogue.held.has(typeID)) : null;
       if (groups && groups.length > 0) selectedGroupID = groups[0]!.groupID;
+      if (groups) {
+        const states = await flow.skillCatalogueStates(groups.flatMap((group) => group.skills.map((skill) => skill.typeID)));
+        if (states !== null) catalogueStates = states;
+      }
     })();
     void readRequiring();
     // GetCopy: an edited plan's milestones, copied.
@@ -589,6 +673,12 @@
     <section class="plan-editor-catalogue">
       <div class="plan-editor-caption">
         <h3>{word("UI/SkillPlan/Skills")}</h3>
+        <select class="plan-editor-filter-combo" value={catalogueFilterID} aria-label="Skills shown"
+          onchange={(event) => chooseCatalogueFilter((event.currentTarget as HTMLSelectElement).value as CatalogueFilter)}>
+          {#each CATALOGUE_FILTERS as filter (filter.id)}
+            <option value={filter.id}>{word(filter.label)}</option>
+          {/each}
+        </select>
         <input type="search" bind:value={catalogueFilter} aria-label="Filter skills" />
       </div>
       {#if groups === undefined}
@@ -598,9 +688,20 @@
       {:else}
         <div class="plan-editor-groups" role="tablist">
           {#each groups as group (group.groupID)}
-            <button type="button" role="tab" aria-selected={catalogueFilter === "" && selectedGroupID === group.groupID}
-              class:selected={catalogueFilter === "" && selectedGroupID === group.groupID}
-              onclick={() => { catalogueFilter = ""; selectedGroupID = group.groupID; }}>{group.name}</button>
+            {@const count = groupCount(group)}
+            {@const progress = groupProgress(group.skills, catalogueStates)}
+            {@const icon = skillGroupIcon(group.groupID)}
+            <button type="button" role="tab" class="plan-editor-group" aria-selected={catalogueFilter === "" && selectedGroupID === group.groupID}
+              class:selected={catalogueFilter === "" && selectedGroupID === group.groupID} class:none={count === 0}
+              onclick={() => { catalogueFilter = ""; selectedGroupID = group.groupID; }}>
+              {#if icon !== null}<img class="plan-editor-group-icon" src={icon} alt="" width="32" height="32" />{/if}
+              <span class="plan-editor-group-name">{group.name}</span>
+              <span class="plan-editor-group-count">{count === 0 ? "" : count}</span>
+              <span class="plan-editor-group-bar" aria-hidden="true">
+                <span class="trained" style:width={`${Math.max(0, progress.trained - progress.disabled) * 100}%`}></span>
+                <span class="omega" style:width={`${progress.disabled * 100}%`}></span>
+              </span>
+            </button>
           {/each}
         </div>
         <ul class="plan-editor-skills">
@@ -608,7 +709,9 @@
             {@const next = nextPlanLevel(requirements, skill.typeID)}
             {@const full = highestPlanLevel(requirements, skill.typeID) === 5}
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <li draggable="true" ondragstart={(event) => dragStart(event, skill.typeID, null)} ondragend={dragEnd}
+            <li draggable="true" ondragstart={(event) => { catalogueTip = null; dragStart(event, skill.typeID, null); }} ondragend={dragEnd}
+              oncontextmenu={(event) => void openCatalogueMenu(skill.typeID, event)}
+              onmouseenter={(event) => void showCatalogueTip(skill.typeID, event)} onmouseleave={() => hideCatalogueTip(skill.typeID)}
               ondblclick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) showInfo({ kind: "type", typeID: skill.typeID }); }}>
               <span>{skill.name}</span>
               <button type="button" class="plan-editor-add" disabled={full || working}
@@ -618,6 +721,14 @@
             </li>
           {/each}
         </ul>
+        {#if catalogueTip !== null && skillInfos.get(catalogueTip.typeID) !== undefined}
+          <SkillRowTip {store} {flow} info={skillInfos.get(catalogueTip.typeID)!} top={catalogueTip.top} left={catalogueTip.left} />
+        {/if}
+        {#if catalogueMenu !== null}
+          {@const menuFor = catalogueMenu}
+          <SkillRowMenu {store} {flow} skill={menuFor.typeID} entries={menuFor.entries} x={menuFor.x} y={menuFor.y}
+            onClose={() => { catalogueMenu = null; }} onApplied={() => { skillInfos = new Map(); }} />
+        {/if}
       {/if}
     </section>
     <section class="plan-editor-contents">
@@ -716,6 +827,18 @@
   .plan-editor-count { opacity: 0.6; font-size: 0.9em; }
   .plan-editor-groups { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.5rem 0; }
   .plan-editor-groups button.selected { outline: 1px solid currentColor; }
+  /* SkillGroupEntry: the 32px icon, the name, the count at the right, the bar of levels trained (the theme's accent at
+     0.2) and of an alpha's levels past its ceiling (COLOR_OMEGA_ORANGE at 0.6); faded to 0.4 where the filters keep none. */
+  .plan-editor-group { position: relative; display: flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.5rem 0.2rem 0.25rem; overflow: hidden; }
+  .plan-editor-group.none { opacity: 0.4; }
+  .plan-editor-group-icon { flex: none; }
+  .plan-editor-group-name { flex: 1; text-align: left; }
+  .plan-editor-group-count { min-width: 1.2rem; text-align: right; opacity: 0.8; }
+  .plan-editor-group-bar { position: absolute; left: 0; bottom: 0; right: 0; height: 100%; display: flex; pointer-events: none; z-index: 0; }
+  .plan-editor-group > :not(.plan-editor-group-bar) { position: relative; z-index: 1; }
+  .plan-editor-group-bar .trained { background: rgba(88, 167, 191, 0.2); }
+  .plan-editor-group-bar .omega { background: rgba(232, 179, 74, 0.6); }
+  .plan-editor-filter-combo { max-width: 10rem; }
   .plan-editor-skills, .plan-editor-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; max-height: 28rem; overflow-y: auto; }
   .plan-editor-skills li, .plan-editor-rows li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.2rem 0.5rem; background: rgba(255, 255, 255, 0.04); }
   .plan-editor-hint { white-space: pre-line; }
