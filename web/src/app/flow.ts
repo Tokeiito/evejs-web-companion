@@ -45,6 +45,7 @@ import {
   simulatedDrones,
   simulatedDroneTypes,
   simulatedMaxActiveDrones,
+  simulatedShipItems,
   unfitFromSimulation,
   type FitError,
   type SimulatedShip,
@@ -1244,7 +1245,9 @@ export interface ViewFittingAsk {
 /** A link or a fitting dropped on a text (eveEditPlainText.OnDropData): a link's url and text, or a fitting's own. */
 export type DroppedLink =
   | { readonly kind: "link"; readonly url: string; readonly text: string }
-  | { readonly kind: "fitting"; readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string };
+  | { readonly kind: "fitting"; readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string }
+  /** A fitting the Fitting window gives, read as it is dropped: its ghost ship icon's or its fit-name label's. */
+  | { readonly kind: "fittingSource"; readonly source: "activeShip" | "fittingWindow" };
 
 /** The text a link is dropped on: its length now (its tags counted), how much of it is selected, its most. */
 export interface LinkDropRoom {
@@ -1487,7 +1490,11 @@ export interface AppFlow {
     readonly shipTypeID: number;
     readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
     readonly name: string | null;
+    /** The saved fitting's number and owner (lastLoadedFitInfo); none for one not saved. */
     readonly fittingID?: number;
+    readonly ownerID?: number;
+    /** From the fitting browser's click or menu (OnFittingClicked: a fitting of old subsystems is shown instead). */
+    readonly browserClick?: boolean;
   }): Promise<void>;
   /** As many drones of a type in the simulated drone bay as wanted. */
   setSimulatedDrones(typeID: number, wanted: number): Promise<void>;
@@ -2563,6 +2570,13 @@ export interface AppFlow {
    * after the client's checks of the room left; null where it is not put in (the client's word said).
    */
   droppedLinkMarkup(dropped: DroppedLink, room: LinkDropRoom): Promise<string | null>;
+  /**
+   * The fitting the Fitting window gives as it is dragged: its ghost ship icon's (the active ship's own) or its fit-name
+   * label's (the one it shows); null with no ship.
+   */
+  draggedFittingOf(source: "activeShip" | "fittingWindow"): Promise<{ readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string } | null>;
+  /** GetShipName: the name the Fitting window's fit-name label shows (GetFitName). */
+  fittingWindowShipName(): Promise<string>;
   /** handle_link: a "skillPlan:" url followed; nothing where the client's own parse would refuse it. */
   openSkillPlanLink(url: string): void;
   /** The link followed and not yet opened, taken by whoever opens it (null where none is waiting). */
@@ -6026,6 +6040,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly simulated: SimulatedShip;
     /** ghostFittingSvc.fittingName: the ship's name, or the fitting's; null for the hull's own. */
     readonly name: string | null;
+    /** ghostFittingSvc.lastLoadedFitInfo: the saved fitting it was loaded from (LoadSimulatedFitting), its owner and number. */
+    readonly loadedFit: { readonly ownerID: number; readonly fittingID: number } | null;
   } | null = null;
 
   /**
@@ -6039,6 +6055,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     simulation = {
       shipID,
       name: null,
+      loadedFit: null,
       simulated: simulateCurrentShip(
         staticData,
         shipTypeID,
@@ -6106,6 +6123,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       shipID: simulation.shipID,
       shipTypeID: ship.typeID,
       name: simulation.name,
+      changed: simulation.simulated.changed,
       ...figures,
       moduleStates,
       moduleKinds,
@@ -6124,7 +6142,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly shipTypeID: number;
     readonly fitData: readonly { readonly typeID: number; readonly flagID: number; readonly quantity: number }[];
     readonly name: string | null;
+    /** The saved fitting's number and owner, for lastLoadedFitInfo (LoadSimulatedFitting); none for one not saved. */
     readonly fittingID?: number;
+    readonly ownerID?: number;
+    /** From the fitting browser's click or menu (OnFittingClicked), which shows a fitting of old subsystems instead. */
+    readonly browserClick?: boolean;
   }): Promise<void> {
     const allInfo = store.dogma.get().allInfo;
     const brain = allInfo ? decodeBrain(allInfo.charBrain) : null;
@@ -6138,7 +6160,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!staticData) throw new Error("The client's static data could not be read.");
     // fittingBrowser.OnFittingClicked: a fitting with the old electronic subsystems (groupElectronicSubSystems, 955)
     // is shown (DisplayFitting), not simulated.
-    if (fitting.fittingID !== undefined && fitting.fitData.some((item) => staticData.types[item.typeID]?.groupID === 955)) {
+    if (fitting.browserClick === true && fitting.fittingID !== undefined && fitting.fitData.some((item) => staticData.types[item.typeID]?.groupID === 955)) {
       await viewFitting(fitting.fittingID);
       return;
     }
@@ -6160,6 +6182,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     simulation = {
       shipID: null,
       name: fitting.name,
+      loadedFit: (fitting.fittingID ?? 0) > 0 && (fitting.ownerID ?? 0) > 0 ? { ownerID: fitting.ownerID!, fittingID: fitting.fittingID! } : null,
       simulated: simulateFitData(
         staticData,
         fitting.shipTypeID,
@@ -7803,9 +7826,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * (simple_html_unescape). Then AddLink of any link: its text without localized tags, its markup put in where it fits
    * (IsEnoughRoomForInsert: the length now and the markup within the most), else uiwarning03.
    */
-  async function droppedLinkMarkup(dropped: DroppedLink, room: LinkDropRoom): Promise<string | null> {
+  async function droppedLinkMarkup(given: DroppedLink, room: LinkDropRoom): Promise<string | null> {
     let url: string;
     let text: string;
+    let dropped: Exclude<DroppedLink, { readonly kind: "fittingSource" }>;
+    if (given.kind === "fittingSource") {
+      const fitting = await draggedFittingOf(given.source);
+      if (fitting === null) return null;
+      dropped = { kind: "fitting", ...fitting };
+    } else dropped = given;
     if (dropped.kind === "fitting") {
       const facts = await fittingLinkFacts([dropped.shipTypeID, ...dropped.fitData.map(([typeID]) => typeID)]);
       try {
@@ -10056,10 +10085,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * fitData sorted ('ViewFitting_%s'); else the one window, ViewFitting. Where that window is open it is reloaded with
    * the fitting (ReloadWnd) and brought in front (Maximize); else it is opened, in front.
    */
-  async function openViewFitting(fitting: SourcedFitting, truncated = false): Promise<void> {
+  async function openViewFitting(fitting: SourcedFitting, truncated = false, ownWindowID: string | null = null): Promise<void> {
     const sorted = fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const)
       .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
-    const windowID = shiftHeld() ? `ViewFitting_${JSON.stringify(sorted)}` : "ViewFitting";
+    const windowID = ownWindowID ?? (shiftHeld() ? `ViewFitting_${JSON.stringify(sorted)}` : "ViewFitting");
     const windows = viewFittingsAskedSignal.get();
     const open = windows.find((view) => view.windowID === windowID) ?? null;
     const n = open?.n ?? (dialogsSaidCount += 1);
@@ -10128,36 +10157,106 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * The fitting window's Save Fit As (hullAndHardwareTypeBrowser.SaveFitting, fittingSvc.DoSaveFitting and
-   * GetFittingForCurrentInWnd, 1150 to 1190): the display window opened on the ship's fit as it stands
-   * (GetFittingDictForActiveShip: each of the ship's own items, made fitData by CreateFittingData with the modules'
-   * charges put in the hold), named the ship's own name (cfg.evelocations), with no description, no number and no
-   * owner. (A simulated ship's is the client's other way, and the page has no simulation.)
+   * The fitting window's Save Fit As and its fit-name label's click (hullAndHardwareTypeBrowser.SaveFitting, with
+   * GetShipName; fittingWnd.OpenFittingForCurrentShip, with none: the same name, GetFittingForCurrentInWnd's own),
+   * fittingSvc.DoSaveFitting (1153 to 1164): the fitting the window shows (GetFittingForCurrentInWnd), in its own
+   * display window ('Save_ViewFitting_' and the hull's type), reloaded and brought in front where it is open.
    */
   async function saveFitAs(): Promise<void> {
     const fitting = await currentShipFitting();
-    if (fitting !== null) await openViewFitting(fitting);
+    if (fitting === null) return;
+    await openViewFitting(fitting, false, `Save_ViewFitting_${fitting.shipTypeID}`);
+  }
+
+  /** The active ship's own name (cfg.evelocations), its type's where it has none; "" with no ship. */
+  async function activeShipName(): Promise<string> {
+    const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
+    if (shipID === null) return "";
+    const shipTypeID = store.inventory.get().hangar.rows.find((row) => row.itemID === shipID)?.typeID ?? null;
+    const named = await api.resolveNames([{ kind: "evelocation", id: shipID }, ...(shipTypeID === null ? [] : [{ kind: "type" as const, id: shipTypeID }])], callOptions)
+      .then((read) => read.names).catch(() => ({} as Readonly<Record<string, string | null>>));
+    return named[nameKey("evelocation", shipID)] ?? (shipTypeID === null ? null : named[nameKey("type", shipTypeID)]) ?? "";
   }
 
   /**
-   * fittingSvc.GetFittingForCurrentInWnd (1166 to 1186): the fitting of the ship the window shows, as it stands
-   * (GetFittingDictForCurrentFittingWindowShip), named the ship's name, with no number and no owner; null with no ship.
+   * ghostFittingSvc.GetShipName (1212 to 1218): simulated, its fittingName with "*" before it once the simulation has
+   * been changed (the fitting's name; the ship's own, LoadCurrentShip; or SimulatedShipName for a hull alone); else the
+   * active ship's name.
    */
-  async function currentShipFitting(): Promise<SourcedFitting | null> {
+  async function fittingWindowShipName(): Promise<string> {
+    if (!simulation) return activeShipName();
+    let name = simulation.name;
+    if (!name && simulation.shipID !== null) name = await activeShipName();
+    if (!name) {
+      const typeID = simulation.simulated.ship.typeID;
+      await resolveNamesNow([{ kind: "type", id: typeID }]);
+      name = templateWords("UI/Fitting/FittingWindow/SimulatedShipName", { typeID }, `Simulated ${nameCache.get(nameKey("type", typeID)) ?? ""}`);
+    }
+    return simulation.simulated.changed ? `*${name}` : name;
+  }
+
+  /**
+   * fittingSvc.GetFittingDictForActiveShip (120 to 138): each of the active ship's own visible items, and in space its
+   * drones out (its dogma location's drones not in it, each as one in the drone bay), made fitData by
+   * CreateFittingData with the modules' charges put in the hold; with its hull. Null with no ship.
+   */
+  async function activeShipFitData(): Promise<{ readonly shipTypeID: number; readonly fitData: [number, number, number][] } | null> {
     const shipID = store.fitting.get().activeShipID ?? store.inventory.get().activeShipID;
     if (shipID === null) return null;
     const [flight, shipItems] = await Promise.all([api.getFlightStatus(callOptions), listShip(bridgeAsk, shipID)]);
     const shipTypeID = decodeFlightStatus(flight.flight).shipTypeID ?? null;
     if (shipTypeID === null) return null;
-    const facts = await fittingTypeFacts([...new Set(shipItems.map((item) => item.typeID))]);
-    const fitData = createFittingData(shipItems, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() });
-    const named = await api.resolveNames([{ kind: "evelocation", id: shipID }, { kind: "type", id: shipTypeID }], callOptions)
-      .then((read) => read.names).catch(() => ({} as Readonly<Record<string, string | null>>));
-    const name = named[nameKey("evelocation", shipID)] ?? named[nameKey("type", shipTypeID)] ?? "";
+    const dronesOut = store.flight.get().status?.inSpace === true
+      ? await api.getDrones(callOptions)
+        .then((answer) => (decodeDronesInSpace(answer.inSpace) ?? []).filter((drone) => drone.controlled && drone.typeID !== null))
+        .catch(() => [])
+      : [];
+    const items = [...shipItems, ...dronesOut.map((drone) => ({ typeID: drone.typeID as number, flagID: 87, quantity: 1 }))];
+    const facts = await fittingTypeFacts([...new Set(items.map((item) => item.typeID))]);
+    return { shipTypeID, fitData: createFittingData(items, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() }) };
+  }
+
+  /**
+   * fittingSvc.GetFittingDictForCurrentFittingWindowShip (112 to 116): simulated, GetFittingDictForSimulatedShip (the
+   * simulated ship's own visible items and its drones, made fitData by CreateFittingData with the modules' charges in
+   * the hold); else the active ship's (activeShipFitData).
+   */
+  async function fittingWindowFitData(): Promise<{ readonly shipTypeID: number; readonly fitData: [number, number, number][] } | null> {
+    if (!simulation) return activeShipFitData();
+    const items = simulatedShipItems(simulation.simulated);
+    const facts = await fittingTypeFacts([...new Set(items.map((item) => item.typeID))]);
+    return { shipTypeID: simulation.simulated.ship.typeID, fitData: createFittingData(items, (typeID) => facts.get(typeID) ?? { groupID: null, categoryID: null, lists: new Set() }) };
+  }
+
+  /**
+   * fittingSvc.GetFittingForCurrentInWnd (1166 to 1186): the fitting of the ship the window shows, as it stands
+   * (GetFittingDictForCurrentFittingWindowShip); simulated, named GetShipName and described as the saved fitting it was
+   * loaded from (lastLoadedFitInfo); else named the active ship's name, with no description; no number and no owner.
+   * Null with no ship.
+   */
+  async function currentShipFitting(): Promise<SourcedFitting | null> {
+    const read = await fittingWindowFitData();
+    if (read === null) return null;
+    const loaded = simulation?.loadedFit ?? null;
+    const original = loaded === null ? null : savedFittingOf(loaded.fittingID);
+    const description = original !== null && original.ownerID === loaded?.ownerID ? original.description : "";
     return {
-      fittingID: 0, ownerID: 0, name, description: "", shipTypeID, savedDate: null, source: "personal",
-      modules: fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
+      fittingID: 0, ownerID: 0, name: await fittingWindowShipName(), description, shipTypeID: read.shipTypeID, savedDate: null, source: "personal",
+      modules: read.fitData.map(([typeID, flagID, quantity]) => ({ typeID, flagID, quantity })),
     };
+  }
+
+  /**
+   * A fitting the Fitting window gives as it is dragged: its fit-name label's (fittingUtil.GetFittingDragData, 79 to
+   * 96: the fitting the window shows, named GetShipName while simulated, else the active ship's name, with no
+   * description), or its ghost ship icon's (ghostShipIcon.GetDragData, 178 to 191: the active ship's own fitting,
+   * GetFittingDictForActiveShip, named the active ship's name, simulated or not). Null with no ship.
+   */
+  async function draggedFittingOf(source: "activeShip" | "fittingWindow"): Promise<{ readonly shipTypeID: number; readonly fitData: readonly (readonly [number, number, number])[]; readonly name: string } | null> {
+    const read = source === "activeShip" ? await activeShipFitData() : await fittingWindowFitData();
+    if (read === null) return null;
+    const name = source === "fittingWindow" && simulation ? await fittingWindowShipName() : await activeShipName();
+    return { shipTypeID: read.shipTypeID, fitData: read.fitData, name };
   }
 
   /** The text of a fitting as the client copies it (GetFittingEFTString), its types named first. */
@@ -10360,6 +10459,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         shipTypeID: open.fitting.shipTypeID,
         fitData: open.fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
         name: open.fitting.name,
+        ...(open.fitting.fittingID > 0 && open.fitting.ownerID > 0 ? { fittingID: open.fitting.fittingID, ownerID: open.fitting.ownerID } : {}),
       });
     } else await buyFitOf(open.fitting);
   }
@@ -24639,6 +24739,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     followWebLink,
     followFittingLink,
     droppedLinkMarkup,
+    draggedFittingOf,
+    fittingWindowShipName,
     openSkillPlanLink,
     takeSkillPlanLink,
     sharedSkillPlan,

@@ -45,7 +45,8 @@
     encodeDrag,
     type DragPayload,
   } from "./dragDrop.ts";
-  import { startFittingDrag } from "./fittingDrag.ts";
+  import { startFittingDrag, startFittingSourceDrag } from "./fittingDrag.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -1128,6 +1129,8 @@
     "UI/Fitting/FittingWindow/Simulate": "Simulate",
     "UI/Fitting/FittingWindow/ExitSimulation": "Exit simulation",
     "UI/Fitting/FittingWindow/SimulateShipFitting": "Simulate this fitting",
+    // The fit-name label's tooltip (fittingWnd: SetTooltipHeaderAndDescription, ShipName_description).
+    "Tooltips/FittingWindow/ShipName_description": "Click to see the fitting as it stands and save it; drag it into a chat to link it.",
     "Tooltips/FittingWindow/SimulateShipFittingDescription": "Try the ship's modules in every state without touching the ship itself.",
     "UI/Fitting/FittingWindow/ExitSimulationMode": "Leave the simulation",
     "Tooltips/FittingWindow/ExitSimulationModeDescription": "Show the ship as it really is again.",
@@ -1259,6 +1262,8 @@
       fitData: saved.modules.map((item) => ({ typeID: item.typeID, flagID: item.flagID, quantity: item.quantity })),
       name: saved.name,
       fittingID: saved.fittingID,
+      ownerID: saved.ownerID,
+      browserClick: true,
     }));
   }
   /** A hull simulated alone (the hull browser's ShipFittingSimulationButton: SimulateFitting with no fitData). */
@@ -1275,6 +1280,13 @@
     if (simulation.shipID !== null) return activeShipName;
     return simulationWord("UI/Fitting/FittingWindow/SimulatedShipName", { typeID: simulation.shipTypeID });
   });
+  /**
+   * The fit-name label's name (fittingWnd.GetFitName and UpdateShipName): the ship's own while not simulating; while
+   * simulating, GetShipName, the ring's name with "*" before it once the simulation has been changed.
+   */
+  const fitName = $derived.by(() => (simulation?.changed ? `*${ringName}` : ringName));
+  /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
+  const HYPERLINK_ICON = clientTexture("res:/UI/Texture/classes/HyperNet/hyperlink_icon.png");
   /** A simulation word: the client's where the install has it, the page's own otherwise. */
   function simulationWord(label: string, args: Record<string, string | number> = {}): string {
     const template = $words.templates[label];
@@ -2177,7 +2189,13 @@
         <div class="fit-center">
           <div class="fit-topline">
             <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="sm" />
-            <span class="fit-ship-name">{activeShipName}</span>
+            <!-- The fit-name label (fittingWnd fitNameParent, 415 to 425): its link icon and name, a click that saves the
+                 fitting as it stands (OpenFittingForCurrentShip: DoSaveFitting), dragged the fitting the window shows
+                 (GetFittingDragData), its tooltip the name and ShipName_description. -->
+            <button type="button" class="fit-ship-name fit-name-link" draggable="true" disabled={busy}
+              title={`${fitName}\n${simulationWord("Tooltips/FittingWindow/ShipName_description")}`}
+              ondragstart={(event) => startFittingSourceDrag(event, "fittingWindow")}
+              onclick={() => void flow.saveFitAs().catch(() => {})}><img src={HYPERLINK_ICON} alt="" width="16" height="16" />{fitName}</button>
             {#if activeShipClass}<span class="fit-ship-class">{activeShipClass}</span>{/if}
             <span class="fit-info" title={`${activeShipName}${activeShipClass ? ` · ${activeShipClass}` : ""}`}
               aria-label={`Ship: ${activeShipName}${activeShipClass ? `, ${activeShipClass}` : ""}`}>ⓘ</span>
@@ -2199,9 +2217,12 @@
                 {#if simulation && simulation.shipID === null}
                   <span class="fit-hull-name">{ringName}</span>
                 {/if}
-                <!-- The ghost ship icon (ghostShipIcon.py): Simulate, or Exit Simulation while simulating. -->
+                <!-- The ghost ship icon (ghostShipIcon.py): Simulate, or Exit Simulation while simulating; dragged, the
+                     active ship's own fitting (GetDragData: GetFittingDictForActiveShip, named the ship's name). -->
                 <button
                   type="button"
+                  draggable="true"
+                  ondragstart={(event) => startFittingSourceDrag(event, "activeShip")}
                   class="fit-simulate"
                   class:simulating={simulation !== null}
                   title={simulateHint}

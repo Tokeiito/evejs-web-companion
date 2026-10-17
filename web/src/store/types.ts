@@ -441,6 +441,8 @@ export interface FittingState {
     /** The simulated hull's type, and its name (the fitting's; null for the hull's own). */
     readonly shipTypeID: number;
     readonly name: string | null;
+    /** ghostFittingSvc.simulationChanged: changed since it was loaded (GetShipName puts "*" before the name). */
+    readonly changed: boolean;
     readonly resources: FittingResources;
     readonly stats: ShipStats;
     readonly moduleStates: Readonly<Record<number, number>>;

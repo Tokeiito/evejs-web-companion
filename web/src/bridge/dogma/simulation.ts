@@ -48,6 +48,23 @@ export interface CurrentModule {
   readonly flagID: number;
 }
 
+/**
+ * fittingSvc.GetFittingDictForSimulatedShip (1188 to 1203): the items CreateFittingData is given of the simulated ship:
+ * its fitted items (the modules and their charges, each charge's stacksize the rounds it holds fully loaded,
+ * FitAmmoToLocation) and its drones (each stack's), each its type, flag and quantity. The page's simulation holds no
+ * hold and no fighters.
+ */
+export function simulatedShipItems(simulation: SimulatedShip): { readonly typeID: number; readonly flagID: number | null; readonly quantity: number }[] {
+  const { ship, pilot } = simulation;
+  const items: { readonly typeID: number; readonly flagID: number | null; readonly quantity: number }[] = [];
+  for (const item of ship.fitted.values()) {
+    if (item === ship || item === pilot) continue;
+    items.push({ typeID: item.typeID, flagID: item.flagID, quantity: item.stacksize });
+  }
+  for (const drone of ship.drones.values()) items.push({ typeID: drone.typeID, flagID: drone.flagID, quantity: drone.stacksize });
+  return items;
+}
+
 /** FittingDogmaLocation.GetMaxActiveDrones: max(5, the pilot's maxActiveDrones). */
 export function simulatedMaxActiveDrones(simulation: SimulatedShip): number {
   return Math.max(5, simulation.location.value(simulation.pilot, ATTRIBUTE_MAX_ACTIVE_DRONES));

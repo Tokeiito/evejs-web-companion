@@ -23,7 +23,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import { LINK_DRAG_TYPE } from "../bridge/skillPlanLink.ts";
-  import { droppedFitting, isFittingDrag } from "./fittingDrag.ts";
+  import { droppedFittingDrag, isFittingDrag } from "./fittingDrag.ts";
   import type { DroppedLink } from "../app/flow.ts";
   import { LINK_WORDS, linkFollowerOf } from "./linkFollowers.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -102,13 +102,15 @@
    * (flow.droppedLinkMarkup). What was dropped is read before any await, as a drop's data can only be.
    */
   function linkDropped(event: DragEvent): void {
-    const fitting = droppedFitting(event);
+    const fitting = droppedFittingDrag(event);
     const raw = fitting === null ? event.dataTransfer?.getData(LINK_DRAG_TYPE) : null;
     if (fitting === null && !raw) return;
     event.preventDefault();
     let dropped: DroppedLink;
-    if (fitting !== null) {
-      dropped = { kind: "fitting", shipTypeID: fitting.shipTypeID, fitData: fitting.fitData, name: fitting.name };
+    if (fitting?.kind === "source") {
+      dropped = { kind: "fittingSource", source: fitting.source };
+    } else if (fitting !== null) {
+      dropped = { kind: "fitting", shipTypeID: fitting.fitting.shipTypeID, fitData: fitting.fitting.fitData, name: fitting.fitting.name };
     } else {
       let link: { readonly url?: unknown; readonly text?: unknown };
       try {

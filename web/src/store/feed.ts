@@ -282,6 +282,7 @@ export type FeedEvent =
       readonly shipID: number | null;
       readonly shipTypeID: number;
       readonly name: string | null;
+      readonly changed: boolean;
       readonly resources: FittingResources;
       readonly stats: ShipStats;
       readonly moduleStates: Readonly<Record<number, number>>;

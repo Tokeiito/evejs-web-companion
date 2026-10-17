@@ -1423,7 +1423,14 @@
         <button type="button" class="close" aria-label="Close" disabled={fit.isFitting} onclick={() => void flow.answerMultiFit(fit.n, "close")}>✕</button>
       </span>
       <div class="multifit-top" class:dimmed={fit.isFitting}>
-        <button type="button" class="multifit-icon" title={fitWord("UI/Fitting/ShowFitting")} onclick={() => void flow.answerMultiFit(fit.n, "view").catch(() => {})}>
+        <!-- The hull's icon (multiFitWnd shipIcon): its click the fitting shown, dragged the fitting (GetFittingDragData). -->
+        <button type="button" class="multifit-icon" title={fitWord("UI/Fitting/ShowFitting")} onclick={() => void flow.answerMultiFit(fit.n, "view").catch(() => {})}
+          draggable="true" ondragstart={(event) => startFittingDrag(event, {
+            fittingID: fit.fitting.fittingID > 0 ? fit.fitting.fittingID : null,
+            shipTypeID: fit.fitting.shipTypeID,
+            fitData: fit.fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: fit.fitting.name,
+          })}>
           <TypeIcon typeID={fit.fitting.shipTypeID} name={nameOf("type", fit.fitting.shipTypeID)} size="lg" />
         </button>
         <div class="multifit-fields">

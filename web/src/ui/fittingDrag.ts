@@ -15,6 +15,23 @@ export interface DraggedFitting {
   readonly name: string;
 }
 
+/**
+ * A fitting the Fitting window gives as it is dragged, read as it is dropped: its ghost ship icon's (ghostShipIcon
+ * .GetDragData: the active ship's own) or its fit-name label's (fittingUtil.GetFittingDragData: the one it shows).
+ */
+export type FittingDragSource = "activeShip" | "fittingWindow";
+
+/** What a fitting's drag gives at the drop: the fitting itself, or the Fitting window's, to be read. */
+export type DroppedFittingDrag =
+  | { readonly kind: "fitting"; readonly fitting: DraggedFitting }
+  | { readonly kind: "source"; readonly source: FittingDragSource };
+
+/** The Fitting window's fitting's drag begun. */
+export function startFittingSourceDrag(event: DragEvent, source: FittingDragSource): void {
+  event.dataTransfer?.setData(FITTING_DRAG_MIME, JSON.stringify({ source }));
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+}
+
 /** A fitting's drag begun. */
 export function startFittingDrag(event: DragEvent, fitting: DraggedFitting): void {
   event.dataTransfer?.setData(FITTING_DRAG_MIME, JSON.stringify(fitting));
@@ -28,8 +45,8 @@ export function isFittingDrag(event: DragEvent): boolean {
 
 const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
-/** The fitting dropped, or null where none was (read in the drop's own handler, before any await). */
-export function droppedFitting(event: DragEvent): DraggedFitting | null {
+/** What a fitting's drag gave, or null where none was (read in the drop's own handler, before any await). */
+export function droppedFittingDrag(event: DragEvent): DroppedFittingDrag | null {
   const raw = event.dataTransfer?.getData(FITTING_DRAG_MIME) ?? "";
   if (raw === "") return null;
   let read: unknown;
@@ -39,7 +56,20 @@ export function droppedFitting(event: DragEvent): DraggedFitting | null {
     return null;
   }
   if (typeof read !== "object" || read === null) return null;
-  const { fittingID, shipTypeID, fitData, name } = read as Record<string, unknown>;
+  const { source } = read as Record<string, unknown>;
+  if (source === "activeShip" || source === "fittingWindow") return { kind: "source", source };
+  const fitting = fittingOf(read as Record<string, unknown>);
+  return fitting === null ? null : { kind: "fitting", fitting };
+}
+
+/** The fitting itself dropped, or null where none was (or the Fitting window's, which is read later). */
+export function droppedFitting(event: DragEvent): DraggedFitting | null {
+  const dropped = droppedFittingDrag(event);
+  return dropped?.kind === "fitting" ? dropped.fitting : null;
+}
+
+function fittingOf(read: Record<string, unknown>): DraggedFitting | null {
+  const { fittingID, shipTypeID, fitData, name } = read;
   if (!(fittingID === null || whole(fittingID)) || !whole(shipTypeID) || typeof name !== "string" || !Array.isArray(fitData)) return null;
   const items = fitData.filter((item): item is [number, number, number] => Array.isArray(item) && item.length === 3 && item.every(whole));
   if (items.length !== fitData.length) return null;
