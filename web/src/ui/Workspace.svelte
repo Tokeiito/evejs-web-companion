@@ -29,6 +29,7 @@
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
   import { typeCompareTarget } from "./typeCompare.ts";
+  import { fittingWindowTarget } from "./fittingWindowTarget.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -212,6 +213,15 @@
   );
   const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
   const close = (id: TabID): void => {
+    // The Fitting window's close (fittingWnd.Close, 887 to 905): with a simulation shown, the client's question first
+    // (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning, where it was changed); on No the window
+    // stays; else it closes, and the simulation ends with it.
+    if (id === "fitting") {
+      void flow.exitSimulation().then((leave) => {
+        if (leave) wins = closeWindow(wins, id);
+      }).catch(() => {});
+      return;
+    }
     wins = closeWindow(wins, id);
     // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
@@ -322,6 +332,17 @@
     if (count === servedCompareRequests) return;
     servedCompareRequests = count;
     open("compare");
+  });
+
+  // The Fitting window asked for from outside it (fittingWindowTarget.ts: the fitting display window's Simulate): opened,
+  // or raised where it is open (FittingWindow.Maximize).
+  let servedFittingWindowRequests = fittingWindowTarget.requests.get();
+  const fittingWindowRequests = fittingWindowTarget.requests;
+  $effect(() => {
+    const count = $fittingWindowRequests;
+    if (count === servedFittingWindowRequests) return;
+    servedFittingWindowRequests = count;
+    open("fitting");
   });
 
   let servedMarketRequests = marketDetailsTarget.requests.get();

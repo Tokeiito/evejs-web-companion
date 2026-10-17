@@ -47,7 +47,17 @@
   import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
-  import { CONTENTS_LABELS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
+  import { CONTENTS_LABELS, RACK_EFFECTS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
+  import type { ViewFittingTypeMark } from "../app/flow.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { findInContracts } from "./contractsSearch.ts";
+  import { compareType } from "./typeCompare.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
+  import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
+  import { openFittingWindow } from "./fittingWindowTarget.ts";
+  import { portal } from "./portal.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -72,6 +82,8 @@
   const buyAllAsked = flow.buyAllAsked;
   // svelte-ignore state_referenced_locally
   const viewFittingAsked = flow.viewFittingAsked;
+  // The types' facts its entries' menus go by (a market group, published, the category), as the fitting browser holds them.
+  const hullBrowser = flow.hullBrowser;
   // svelte-ignore state_referenced_locally
   const multiFitAsked = flow.multiFitAsked;
   // svelte-ignore state_referenced_locally
@@ -152,15 +164,18 @@
     return lines;
   }
   // The client's fitting display window (fittingMgmtWindow.ViewFitting, its FittingMgmtContInStandalone): its caption
-  // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, two tabs,
-  // the contents by heading (each slot kind under its effect's name, each type "Nx" and its name with its icon) and the
-  // description, and Fit, Save and Buy: the name (40 letters at most, the client's field) and the description (500,
-  // maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the install's; the page's
-  // own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the fitting as the client's
-  // text, its names English). Save, for any fitting, has its menu: Save for Alliance (the executor corporation's), for
-  // Corporation and for the pilot; a fitting of another owner's is saved as a copy. Its settings have Use Fitting Name
-  // for Ship (the ship named after a fitting loaded on it). Not done: Save's tooltip of the same three for one with the
-  // fitting manager's role, Simulate, the ship's preview, the truncated mark, and an obsolete module's mark.
+  // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, the
+  // ship's info icon (Show Info on the hull), two tabs, the contents by heading (each slot kind under its effect's name,
+  // each type "Nx" and its name with its icon, its marks and its info icon, FittingModuleEntry) and the description,
+  // and Fit (disabled for a structure's), Save, Buy and Simulate: the name (40 letters at most, the client's field) and
+  // the description (500, maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the
+  // install's; the page's own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the
+  // fitting as the client's text, its names English). Save, for any fitting, has its menu: Save for Alliance (the
+  // executor corporation's), for Corporation and for the pilot; a fitting of another owner's is saved as a copy; and,
+  // for one with the fitting manager's role, its tooltip of the same three. Its settings have Use Fitting Name for Ship
+  // (the ship named after a fitting loaded on it). Not the page's: the ship's preview (the ship icon's click,
+  // preview.PreviewType), which has no 3D view here. Not done: the truncated mark, which only a fitting link's fitting
+  // has, and the page does not follow fitting links yet.
   const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/ShipFitting": "Fitting",
     // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
@@ -182,6 +197,20 @@
     "UI/Market/MarketQuote/CommandBuy": "Purchase",
     "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
     "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting": "Your corporation's fitting",
+    // TryAddSimulationBtn.
+    "UI/Fitting/FittingWindow/Simulate": "Try it out",
+    // Each entry's marks (FittingModuleEntry.Startup and Load, fitting.py 104 to 160) and its info icon.
+    "UI/Control/Entries/FittingModuleSkillMissing": "You lack a skill it needs",
+    "UI/Control/Entries/FittingModuleSkillOK": "You have the skills it needs",
+    "UI/Fitting/TypeIsObsolete": "This is no longer made",
+    "UI/Fitting/FittingWindow/FittingManagement/AbyssalModuleWarning": "A mutated module: the one bought may not be this one",
+    // Each entry's menu (Item.GetMenu: menusvc.GetMenuFromItemIDTypeID(None, typeID, includeMarketDetails=True)).
+    "UI/Commands/ShowInfo": "About it",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
+    "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
+    "UI/Compare/CompareButton": "Side by side",
     [CONTENTS_LABELS.charges]: "Ammunition",
     [CONTENTS_LABELS.ice]: "Fuel",
     [CONTENTS_LABELS.drones]: "Drones",
@@ -229,6 +258,63 @@
       ...($station.online ? [{ kind: "owner" as const, id: $station.online.characterID }] : []),
       ...($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID }))),
     ]);
+    const types = ($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => entry.typeID));
+    if (types.length > 0) void flow.loadHullBrowser(types).catch(() => {});
+  });
+  /** InfoIcon's picture (infoIcon.py default_texturePath). */
+  const VIEW_FITTING_INFO_ICON = clientTexture("res:/ui/Texture/Icons/38_16_208.png");
+  // FittingModuleEntry's marks: 'ui_38_16_193' and 'ui_38_16_194' (the skills had or not), and the warning
+  // (res:/ui/texture/icons/44_32_7.png, tinted 1.0, 0.1, 0.1 at 0.8).
+  const VIEW_FITTING_SKILL_OK = clientTexture("res:/ui/texture/icons/38_16_193.png");
+  const VIEW_FITTING_SKILL_MISSING = clientTexture("res:/ui/texture/icons/38_16_194.png");
+  const VIEW_FITTING_WARNING = clientTexture("res:/ui/texture/icons/44_32_7.png");
+  /**
+   * An entry's mark (FittingModuleEntry.Load, 121 to 160): an obsolete type's warning with its error frame; else the
+   * skills' mark (HasSkill: a rig in its slot always has them, godma.CheckSkillRequirementsForType for any other), and a
+   * type under Other Items (isValidGroup false) framed as an error, or a dynamic one framed in orange with the Abyssal
+   * module's warning in the skills' mark's place. None while the marks are read.
+   */
+  function viewFittingEntryMark(header: FittingContentsGroup["header"], typeID: number, marks: Readonly<Record<number, ViewFittingTypeMark>> | null):
+    { readonly icon: string | null; readonly tinted: boolean; readonly hint: string; readonly frame: "error" | "dynamic" | null } {
+    const mark = marks?.[typeID] ?? null;
+    if (mark === null) return { icon: null, tinted: false, hint: "", frame: null };
+    if (mark.obsolete) return { icon: VIEW_FITTING_WARNING, tinted: true, hint: viewWord("UI/Fitting/TypeIsObsolete"), frame: "error" };
+    const hasSkill = "effectID" in header && header.effectID === RACK_EFFECTS.rigSlots ? true : mark.skillsMet;
+    const icon = hasSkill === null ? null : hasSkill ? VIEW_FITTING_SKILL_OK : VIEW_FITTING_SKILL_MISSING;
+    const hint = hasSkill === null ? "" : viewWord(hasSkill ? "UI/Control/Entries/FittingModuleSkillOK" : "UI/Control/Entries/FittingModuleSkillMissing");
+    if ("label" in header && header.label === CONTENTS_LABELS.other) return { icon, tinted: false, hint, frame: "error" };
+    if (mark.dynamic) return { icon: VIEW_FITTING_WARNING, tinted: true, hint: viewWord("UI/Fitting/FittingWindow/FittingManagement/AbyssalModuleWarning"), frame: "dynamic" };
+    return { icon, tinted: false, hint, frame: null };
+  }
+  // An entry's menu on its right click (Item.GetMenu, item.py 80 to 95: GetMenuFromItemIDTypeID(None, typeID,
+  // includeMarketDetails=True), menusvc.py 2281 to 2352): Show Info; View Market Details where the type has a market
+  // group; Find in Contracts and Find Personal Assets where it is published; Compare for a category in compareCategories.
+  // Not the page's: a GM's "GM / WM Extras".
+  let viewFittingEntryMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  function openViewFittingEntryMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    viewFittingEntryMenu = { typeID, x: event.clientX, y: event.clientY };
+  }
+  $effect(() => {
+    if (viewFittingEntryMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".view-fitting-entry-menu"))) viewFittingEntryMenu = null;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") viewFittingEntryMenu = null;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+  $effect(() => {
+    if ($viewFittingAsked === null) viewFittingEntryMenu = null;
   });
   const viewWord = (label: string): string => plainText(wordOf(label, VIEW_FITTING_WORDS[label] ?? ""));
   /** A heading of the contents: a slot kind's effect's name (the client's message), or the kind's label. */
@@ -1160,11 +1246,12 @@
         </span>
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerViewFitting(view.n, "close")}>✕</button>
       </span>
-      <span class="multibuy-row">
+      <span class="multibuy-row view-fitting-name-row">
         <TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" />
         <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
           title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
-        <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship. -->
+        <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship; and its info icon, the
+             hull's (LoadNewFitting: infoicon.SetTypeID(fitting.shipTypeID)). -->
         <span class="multibuy-export">
           <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSettingsOpen} title={viewWord("UI/Common/Settings")}
             onclick={() => (viewFittingSettingsOpen = !viewFittingSettingsOpen)}>⚙</button>
@@ -1177,6 +1264,8 @@
             </span>
           {/if}
         </span>
+        <button type="button" class="fit-entry-info" title={viewWord("UI/Commands/ShowInfo")} aria-label={viewWord("UI/Commands/ShowInfo")}
+          onclick={() => showInfo({ kind: "type", typeID: view.fitting.shipTypeID })}><img src={VIEW_FITTING_INFO_ICON} alt="" width="16" height="16" /></button>
       </span>
       <span class="answers">
         <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
@@ -1190,9 +1279,19 @@
             {#each view.contents as group, at (at)}
               <li class="multibuy-row"><strong>{contentsHeading(group.header, view.effectNames)}</strong></li>
               {#each group.entries as entry (entry.typeID)}
-                <li class="multibuy-row">
+                {@const mark = viewFittingEntryMark(group.header, entry.typeID, view.marks)}
+                <li class="multibuy-row fit-entry" class:fit-entry-error={mark.frame === "error"} class:fit-entry-dynamic={mark.frame === "dynamic"}
+                  oncontextmenu={(event) => openViewFittingEntryMenu(entry.typeID, event)}>
                   <TypeIcon typeID={entry.typeID} name={nameOf("type", entry.typeID)} size="sm" />
                   <span class="multibuy-name">{groupedNumber(entry.qty)}x {nameOf("type", entry.typeID)}</span>
+                  {#if mark.icon !== null && mark.tinted}
+                    <span class="fit-entry-mark tinted" role="img" title={mark.hint} aria-label={mark.hint}
+                      style={`mask-image: url(${mark.icon}); -webkit-mask-image: url(${mark.icon})`}></span>
+                  {:else if mark.icon !== null}
+                    <img class="fit-entry-mark" src={mark.icon} alt={mark.hint} title={mark.hint} width="16" height="16" />
+                  {/if}
+                  <button type="button" class="fit-entry-info" title={viewWord("UI/Commands/ShowInfo")} aria-label={viewWord("UI/Commands/ShowInfo")}
+                    onclick={() => showInfo({ kind: "type", typeID: entry.typeID })}><img src={VIEW_FITTING_INFO_ICON} alt="" width="16" height="16" /></button>
                 </li>
               {/each}
             {/each}
@@ -1201,8 +1300,26 @@
       {:else}
         <textarea rows="6" maxlength="500" bind:value={viewFittingDescription} aria-label={viewWord("UI/Common/Description")}></textarea>
       {/if}
+      {#if viewFittingEntryMenu !== null}
+        {@const menuFor = viewFittingEntryMenu}
+        {@const facts = $hullBrowser?.types.get(menuFor.typeID) ?? null}
+        <span class="hull-menu view-fitting-entry-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; showInfo({ kind: "type", typeID }); }}>{viewWord("UI/Commands/ShowInfo")}</button>
+          {#if (facts?.marketGroupID ?? null) !== null}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; showMarketDetails(typeID); }}>{viewWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+          {/if}
+          {#if facts?.published === true}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; findInContracts(typeID); }}>{viewWord("UI/Inventory/ItemActions/FindInContracts")}</button>
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; findInPersonalAssets(assetSearchTextForType(viewWord("UI/Inventory/AssetSearch/KeywordTypeExact"), nameOf("type", typeID))); }}>{viewWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+          {/if}
+          {#if facts !== null && facts.categoryID !== null && COMPARE_CATEGORIES.includes(facts.categoryID)}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; compareType(typeID); }}>{viewWord("UI/Compare/CompareButton")}</button>
+          {/if}
+        </span>
+      {/if}
       <span class="answers">
-        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
+        <!-- LoadNewFitting (235 to 238): Fit disabled for a structure's fitting (categoryStructure). -->
+        <button type="button" disabled={view.shipCategoryID === 65} onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
         <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
              its alliance's executor, Save for Corporation, and for the pilot. -->
         <span class="multibuy-export" role="group" onpointerleave={() => (viewFittingSavePanelOpen = false)}>
@@ -1229,6 +1346,8 @@
           {/if}
         </span>
         <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        <!-- TryAddSimulationBtn: Simulate (SimulateFitting: the Fitting window raised or opened, then the fitting simulated). -->
+        <button type="button" class="view-fitting-simulate" onclick={() => { openFittingWindow(); void flow.answerViewFitting(view.n, "simulate").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/Simulate")}</button>
       </span>
     </div>
   </div>
@@ -1608,6 +1727,19 @@
   .multibuy-delta.above { color: #ff5050; }
   .multibuy-delta.below { color: #00ff00; }
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
+  /* The fitting display window's name row and entries: the name, then the marks and the info icon at the right. */
+  .view-fitting-name-row { grid-template-columns: auto 1fr auto auto; }
+  .multibuy-row.fit-entry { display: flex; padding: 1px 2px; }
+  .fit-entry .multibuy-name { flex: 1; min-width: 0; }
+  /* FittingModuleEntry's ErrorFrame: red (1, 0, 0) for an obsolete type or one under Other Items, orange (1, 0.35, 0)
+     for a dynamic one, at an opacity of 0.1 to 0.2. */
+  .fit-entry.fit-entry-error { background: rgba(255, 0, 0, 0.15); box-shadow: inset 0 0 0 1px rgba(255, 0, 0, 0.2); }
+  .fit-entry.fit-entry-dynamic { background: rgba(255, 89, 0, 0.15); box-shadow: inset 0 0 0 1px rgba(255, 89, 0, 0.2); }
+  .fit-entry-mark { width: 16px; height: 16px; flex: none; }
+  /* The warning tinted as the client tints it (SetRGBA(1.0, 0.1, 0.1, 0.8)). */
+  .fit-entry-mark.tinted { display: inline-block; background: rgba(255, 26, 26, 0.8); mask-size: 16px 16px; -webkit-mask-size: 16px 16px;
+    mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; }
+  .fit-entry-info { flex: none; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0; }
   .multibuy-qty { display: flex; flex-direction: column; }
   .multibuy-qty input { width: 6rem; }
   .multibuy-price, .multibuy-total { text-align: right; }

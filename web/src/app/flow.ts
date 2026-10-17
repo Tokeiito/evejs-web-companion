@@ -1227,6 +1227,24 @@ export interface ViewFittingAsk {
   readonly contents: readonly FittingContentsGroup[] | null;
   /** Each slot kind's effect's name, as the number of its message (get_effect_display_name); null where none is had. */
   readonly effectNames: Readonly<Record<number, number | null>>;
+  /** Each type's marks, by the type, as its entry draws them (FittingModuleEntry.Load); null while they are read. */
+  readonly marks: Readonly<Record<number, ViewFittingTypeMark>> | null;
+  /** The hull's category (evetypes.GetCategoryID): Fit is disabled for a structure's (LoadNewFitting); null while read. */
+  readonly shipCategoryID: number | null;
+}
+
+/**
+ * What a fitting display entry is marked by (fittingSvc._GetDataForFittingEntry, 963 to 966; FittingModuleEntry.Load,
+ * fitting.py 121 to 160): an obsolete type's mark; else the skills' mark, then a frame for a type under Other Items
+ * (isValidGroup) or, for a dynamic type, the Abyssal module's frame and mark.
+ */
+export interface ViewFittingTypeMark {
+  /** godma.CheckSkillRequirementsForType; null where the client's table of required skills could not be had. */
+  readonly skillsMet: boolean | null;
+  /** clientDogmaStaticSvc.GetTypeAttribute(typeID, attributeModuleIsObsolete), as a bool. */
+  readonly obsolete: boolean;
+  /** dynamicitemattributes.IsDynamicType: a type made by a mutaplasmid. */
+  readonly dynamic: boolean;
 }
 
 /** The client's Buy All box (missingItemsPopup.BuyAllMessageBox): what a fitting could not load, each type and how many. */
@@ -2607,8 +2625,12 @@ export interface AppFlow {
   readonly viewFittingAsked: ReadableSignal<ViewFittingAsk | null>;
   /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
   viewFitting(fittingID: number): Promise<void>;
-  /** Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed), its Buy (multiBuyUtil.BuyFit), or closed. */
-  answerViewFitting(n: number, answer: "fit" | "buy" | "multifit" | "close"): Promise<void>;
+  /**
+   * Its Fit (fittingMgmtCont.Fit: the fitting loaded, the Buy All box for what failed, else the simulation left), its
+   * Buy (multiBuyUtil.BuyFit), its Simulate (fittingMgmtCont.SimulateFitting: the fitting simulated; the Fitting window
+   * is the caller's to open), or closed.
+   */
+  answerViewFitting(n: number, answer: "fit" | "buy" | "simulate" | "multifit" | "close"): Promise<void>;
   /**
    * Its menu's Export to Clipboard (ViewFitting._AddCustomMenuOptions, fittingSvc.ExportFittingToClipboard): the
    * fitting as the text the client copies (GetFittingEFTString), its types named first; null with no window.
@@ -6091,7 +6113,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const { ship, pilot } = simulation.simulated;
       const holds = [...ship.fitted.values()].some((item) => item !== ship && item !== pilot) || ship.drones.size > 0;
       if (holds && !(await askDialog("LoadSimulatedShip", { type: "dict", entries: [] }, "Load another ship into the simulation? What was changed in it is not kept."))) {
-        throw new Error(templateWords("UI/Fitting/FittingWindow/LoadngOfShipCancelled", {}, "Loading of the ship was cancelled."));
+        // UserError('CustomNotify', LoadngOfShipCancelled): said as the client says a notify, and nothing loaded.
+        const notify = templateWords("UI/Fitting/FittingWindow/LoadngOfShipCancelled", {}, "Loading of the ship was cancelled.");
+        sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+        return;
       }
     }
     // The pilot's security status, as the active ship's row carries it (_ApplyPilotSecurityStatusToShip).
@@ -8441,6 +8466,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (failed !== null && failed.length > 0) {
       const notify = templateWords("UI/Market/MarketQuote/SomeItemsCouldNotBeFitted", {}, "Some of the items could not be fitted.");
       sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+    } else if (failed !== null) {
+      // ghostFittingSvc.TryExitSimulation(): the simulation left, where there is one, after the question.
+      await exitSimulation();
     }
   }
 
@@ -9822,18 +9850,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * LoadFittingFromFittingListAndGetBuyOptionOnFailure: the fitting loaded, and where anything failed to load, the Buy
-   * All box with it (OpenBuyAllBox). (With nothing failed the client leaves its fitting simulation, which the page has
-   * not.)
+   * LoadFittingFromFittingListAndGetBuyOptionOnFailure (484 to 491): the fitting loaded, and where anything failed to
+   * load, the Buy All box with it (OpenBuyAllBox); with nothing failed, the simulation left (TryExitSimulation, its
+   * question asked).
    */
   async function fitFittingToActiveShip(fittingID: number): Promise<void> {
     await fitToActiveShip(savedFittingOf(fittingID));
   }
 
-  /** LoadFittingFromFittingListAndGetBuyOptionOnFailure, and fittingMgmtCont.Fit, of a fitting as it is held. */
+  /**
+   * LoadFittingFromFittingListAndGetBuyOptionOnFailure, and fittingMgmtCont.Fit (268 to 279), of a fitting as it is
+   * held. Fit leaves the simulation only with the Fitting window open, and the client simulates only in that window.
+   */
   async function fitToActiveShip(fitting: SourcedFitting | null): Promise<void> {
     const failed = await loadSavedFitting(fitting);
-    if (failed === null || failed.length === 0 || fitting === null) return;
+    if (failed !== null && failed.length === 0) {
+      // ghostFittingSvc.TryExitSimulation(askQuestion=True): the simulation left, where there is one, after the question.
+      await exitSimulation();
+      return;
+    }
+    if (failed === null || fitting === null) return;
     dialogsSaidCount += 1;
     buyAllAskedSignal.set({ n: dialogsSaidCount, missing: failed, fitting });
   }
@@ -9880,10 +9916,46 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function openViewFitting(fitting: SourcedFitting): Promise<void> {
     const open = viewFittingAskedSignal.get();
     const n = open?.n ?? (dialogsSaidCount += 1);
-    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {} });
-    const { contents, effectNames } = await fittingInfo(fitting);
+    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {}, marks: null, shipCategoryID: null });
+    const [{ contents, effectNames }, { marks, shipCategoryID }] = await Promise.all([fittingInfo(fitting), fittingTypeMarks(fitting)]);
     const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames });
+    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames, marks, shipCategoryID });
+  }
+
+  /**
+   * What the display window's entries are marked by (fittingSvc._GetDataForFittingEntry, 963 to 966, and
+   * FittingModuleEntry.HasSkill, fitting.py 113 to 117): each type's skills (godma.CheckSkillRequirementsForType),
+   * whether it is obsolete (attributeModuleIsObsolete) and whether it is dynamic; and the hull's category.
+   */
+  async function fittingTypeMarks(fitting: SourcedFitting): Promise<{ readonly marks: Readonly<Record<number, ViewFittingTypeMark>>; readonly shipCategoryID: number | null }> {
+    const types = [...new Set(fitting.modules.map((module) => module.typeID))];
+    const asked = [...new Set([fitting.shipTypeID, ...types])];
+    const [met, attributes, prices] = await Promise.all([
+      typesMeetingSkills(types).catch(() => null),
+      types.length > 0
+        ? api.fetchTypeDogma(types, [ATTRIBUTE_MODULE_IS_OBSOLETE], callOptions).catch(() => ({} as Readonly<Record<number, Readonly<Record<number, number>>>>))
+        : Promise.resolve({} as Readonly<Record<number, Readonly<Record<number, number>>>>),
+      (async () => {
+        const dynamic: Record<number, boolean | null> = {};
+        const categoryID: Record<number, number | null> = {};
+        for (let at = 0; at < asked.length; at += 50) {
+          const read = await api.getTypePrices(asked.slice(at, at + 50), callOptions).catch(() => null);
+          if (read === null) continue;
+          Object.assign(dynamic, read.dynamic);
+          Object.assign(categoryID, read.categoryID);
+        }
+        return { dynamic, categoryID };
+      })(),
+    ]);
+    const marks: Record<number, ViewFittingTypeMark> = {};
+    for (const typeID of types) {
+      marks[typeID] = {
+        skillsMet: met === null ? null : met.has(typeID),
+        obsolete: Boolean(attributes[typeID]?.[ATTRIBUTE_MODULE_IS_OBSOLETE]),
+        dynamic: prices.dynamic[typeID] === true,
+      };
+    }
+    return { marks, shipCategoryID: prices.categoryID[fitting.shipTypeID] ?? null };
   }
 
   // The rack effects' names, as the numbers of their messages, read once.
@@ -10123,8 +10195,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
   }
 
-  /** The display window's Fit and Buy (FittingMgmtContInStandalone's buttons), or the window closed. */
-  async function answerViewFitting(n: number, answer: "fit" | "buy" | "multifit" | "close"): Promise<void> {
+  /** The display window's Fit, Buy and Simulate (FittingMgmtContInStandalone's buttons), or the window closed. */
+  async function answerViewFitting(n: number, answer: "fit" | "buy" | "simulate" | "multifit" | "close"): Promise<void> {
     const open = viewFittingAskedSignal.get();
     if (open === null || open.n !== n) return;
     if (answer === "close") {
@@ -10134,7 +10206,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // ViewFitting._AddCustomMenuOptions (414 to 419): Open Multifit, docked, on a copy of the fitting shown.
     if (answer === "multifit") await openMultiFitWith(open.fitting);
     else if (answer === "fit") await fitToActiveShip(open.fitting);
-    else await buyFitOf(open.fitting);
+    // fittingMgmtCont.SimulateFitting (299 to 301): SimulateFitting(fitting), 405 to 413, the Fitting window raised or
+    // opened (the caller's), then ghostFittingSvc.SimulateFitting of the fitting as the window holds it.
+    else if (answer === "simulate") {
+      await simulateFitting({
+        shipTypeID: open.fitting.shipTypeID,
+        fitData: open.fitting.modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: module.quantity })),
+        name: open.fitting.name,
+      });
+    } else await buyFitOf(open.fitting);
   }
 
   /**
