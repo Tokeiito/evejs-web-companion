@@ -275,6 +275,7 @@ export type FeedEvent =
       readonly shipID: number;
       readonly resources: FittingResources;
       readonly stats: ShipStats;
+      readonly fighterBay: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null;
     }
   // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
   | {

@@ -1395,7 +1395,7 @@ export function createClientStore(): ClientStore {
       case "fitting/reckoned": {
         const current = fitting.get();
         if (current.activeShipID !== event.shipID) break;
-        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page" });
+        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page", fighterBay: event.fighterBay });
         break;
       }
       case "fitting/simulated": {

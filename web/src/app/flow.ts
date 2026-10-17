@@ -14,6 +14,7 @@ import {
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
+import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -4664,6 +4665,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // (clientDogmaLocation.GetActiveDrones).
       const fittingNow = store.fitting.get();
       if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
+      // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
+      // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
+      // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
+      else if (fittingNow.statsFrom === "page" && fittingNow.fighterBay?.shipID === fittingNow.activeShipID) {
+        const places = itemChangeLocations(args);
+        if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
+      }
       // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
       // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
       // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
@@ -5906,15 +5914,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       .catch(() => ({ bay: [], inSpace: [] }));
     const bay = droneRead.bay;
     const inSpace = droneRead.inSpace.map((drone) => ({ itemID: drone.itemID, typeID: drone.typeID as number }));
-    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID), ...inSpace.map((drone) => drone.typeID)];
+    // The squadrons of its tubes, in them or out in space, as the client's ship fighter state holds them
+    // (fighterMgr.GetFightersForShip; clientDogmaLocation.GetFightersForTube: each tube's). None where unread.
+    const squadrons = await bridgeAsk("fighterMgr", "GetFightersForShip", [])
+      .then((answer) => squadronsByTube(decodeShipFighters(answer)))
+      .catch(() => []);
+    const typeIDs = [shipInfo.typeID, pilotTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID), ...inSpace.map((drone) => drone.typeID), ...squadrons.map((squadron) => squadron.typeID)];
     const attributeIDs = [
       ...shipInfo.attributes.map((attribute) => attribute.attributeID),
       ...[...brain.shipEffects, ...brain.charEffects].map((effect) => effect.toAttribID),
       458,
     ];
-    const staticData = await dogmaStaticFor(typeIDs, attributeIDs);
+    const [staticData] = await Promise.all([dogmaStaticFor(typeIDs, attributeIDs), ensureFighterAbilities(squadrons.map((squadron) => squadron.typeID))]);
     if (!staticData || store.fitting.get().activeShipID !== shipID) return null;
-    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, staticData };
+    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, squadrons, staticData };
   }
 
   /**
@@ -5949,7 +5962,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const docked = status.docked === true;
     const inputs = await ownShipInputs();
     if (!inputs) return;
-    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, staticData } = inputs;
+    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, inSpace, squadrons, staticData } = inputs;
     // Loaded at the moment the ship's state was the server's (MakeShipActive), read at each moment after.
     let loadingAt: number | null = infoTimeMs(shipInfo.time) ?? serverNow();
     const reckoned = loadSimulatedFitting(
@@ -5963,6 +5976,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
     for (const stack of bay) reckoned.location.loadDrone(reckoned.ship, String(stack.itemID), stack.typeID, stack.quantity);
     const dronesOut = inSpace.map((drone) => reckoned.location.loadDrone(reckoned.ship, String(drone.itemID), drone.typeID, 1));
+    // Each tube's squadron, a fighter of the pilot's in the location (FighterDogmaItem), for its damage (GetFighterDamage).
+    for (const squadron of squadrons) {
+      reckoned.location.loadFighter(reckoned.ship, String(squadron.itemID), squadron.typeID, squadron.tubeFlagID, squadron.squadronSize);
+    }
     // What the location has taken since: each damage-state change heard after the ship's state was the server's, set
     // on its item (where it is loaded) at the moment it was heard.
     const loadedAt = loadingAt;
@@ -6017,8 +6034,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         accurate,
         value: (item, attributeID) => reckoned.location.value(item, attributeID),
       }, dronesOut),
+      // GetTotalFighterDps of the location's tubes, their figures as GetAccurateAttributeValue gives them.
+      fighterDps: totalFighterDps(reckoned.location, reckoned.ship, fighterAbilitiesOf, accurate),
     });
-    store.apply({ type: "fitting/reckoned", shipID, ...figures });
+    // The fighter bay's readout, in the drone bay's place where the hull has one (fittingWnd.ContructDroneAndFighterIcons:
+    // HasFighterBay, GetAccurateAttributeValue(fighterCapacity)): its use as the ship's inventory gives it
+    // (CargoFighterSlots.GetCapacity: invCtrl.ShipFighterBay(shipID).GetCapacity()), over GetFighterCapacity (GetStatsInfo:
+    // the controller's GetAttribute, to ten places). Its use is unknown where the inventory cannot be read.
+    let fighterBay: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null = null;
+    if (accurate(reckoned.ship, 2055)) {
+      const used = await api.getShipBays(shipID, callOptions, ["fighter"])
+        .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === "fighter")?.capacity?.used ?? null)
+        .catch(() => null);
+      if (store.fitting.get().activeShipID !== shipID) return;
+      fighterBay = { shipID, capacity: roundTo10(shipValue(2055)), used };
+    }
+    store.apply({ type: "fitting/reckoned", shipID, ...figures, fighterBay });
   }
 
   /**

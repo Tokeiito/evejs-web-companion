@@ -1573,6 +1573,11 @@
       return left < right ? -1 : left > right ? 1 : 0;
     });
   }
+  /** The active ship's own fighter bay (CargoFighterSlots, not simulated), where the hull has one. */
+  const realFighterBay = $derived.by(() => {
+    const bay = $fitting.fighterBay ?? null;
+    return bay !== null && bay.shipID === $fitting.activeShipID ? bay : null;
+  });
   /** The cargo hold's used / total, from the inventory slice's own capacity read. */
   const cargoBayText = $derived.by<string>(() => {
     const cap = $inventory.cargo.capacity;
@@ -2264,6 +2269,13 @@
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
           <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
             {toFixed(simulation.fighterBay.used, 1)} / {toFixed(simulation.fighterBay.capacity, 1)} m³</button></dd>
+        </div>
+      {:else if !simulation && realFighterBay}
+        <!-- The ship's own fighter bay in the drone bay's place (CargoFighterSlots: its inventory's use, over
+             GetFighterCapacity). -->
+        <div>
+          <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
+          <dd>{realFighterBay.used === null ? "—" : toFixed(realFighterBay.used, 1)} / {toFixed(realFighterBay.capacity, 1)} m³</dd>
         </div>
       {:else}
         <div>

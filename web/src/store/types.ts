@@ -433,6 +433,11 @@ export interface FittingState {
    */
   readonly statsFrom?: "server" | "page";
   /**
+   * The active ship's fighter bay as the window's readout gives it, where the hull has one (the page's reckoning,
+   * flow.reckonActiveShip): its capacity (GetFighterCapacity) and its use (the ship's inventory; null where unread).
+   */
+  readonly fighterBay?: { readonly shipID: number; readonly capacity: number; readonly used: number | null } | null;
+  /**
    * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
    * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
    * moduleStates.ts: OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3). Absent or null where it is not.
