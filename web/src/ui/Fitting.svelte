@@ -63,6 +63,8 @@
   import { showInfo } from "./showInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import { showMarketDetails } from "./marketDetails.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
   let {
@@ -289,6 +291,9 @@
     "UI/InfoWindow/TraitWithoutNumber": "- {bonusText}",
     "UI/Commands/ShowInfo": "About it",
     "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
+    // The asset search's exact-type keyword (assetSearchUtil, KeywordTypeExact): a word the search reads, not shown.
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
     "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
     // The fitting window's own button (hullAndHardwareTypeBrowser.py 577).
     "UI/Fitting/FittingWindow/SaveFitAs": "Save this ship's fitting",
@@ -535,8 +540,9 @@
   }
   // A hull's menu (HullTypeListGroup.GetMenu, 693 to 695: menusvc.GetMenuFromItemIDTypeID(None, typeID,
   // includeMarketDetails=True), 2281 to 2352) on its right click: Show Info, and View Market Details where the type has a
-  // market group. Not the page's: Find in Contracts and Find Personal Assets (no search by type in its windows), Compare,
-  // and a GM's "GM / WM Extras".
+  // market group, and Find Personal Assets where it is published (invItemFunctions.FindInPersonalAssets: the assets
+  // window's search for the type's exact name, assetsSearch.ts). Not the page's: Find in Contracts, Compare, and a GM's
+  // "GM / WM Extras".
   let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
   function openHullMenu(typeID: number, event: MouseEvent): void {
     event.preventDefault();
@@ -1859,6 +1865,9 @@
         <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
         {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+        {/if}
+        {#if $hullBrowser?.types.get(menuFor.typeID)?.published === true}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), hullName(typeID))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
         {/if}
       </span>
     {/if}

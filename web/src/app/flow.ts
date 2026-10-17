@@ -123,14 +123,15 @@ import {
   decodeContractSearch,
   decodeContractSummary,
 } from "../bridge/contracts.ts";
-import { decodeAssetItems } from "../bridge/personalAssets.ts";
+import { decodeAssetItems, decodeAssetSearchItems } from "../bridge/personalAssets.ts";
+import { ASSET_SEARCH_KEYWORDS, assetSearchConditions, parseAssetSearch, searchAssets, type AssetSearchItem, type AssetSearchLocation, type AssetSearchNames } from "../bridge/assetSearch.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
 import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
 import { filetimeOf } from "../bridge/journalWords.ts";
-import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
+import { readAllAssets, readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   arrivalAwaited,
   decodeMissionInfo,
@@ -1770,6 +1771,11 @@ export interface AppFlow {
    * containers in the browser to rebuild it.
    */
   loadPersonalAssets(): Promise<void>;
+  /**
+   * The assets window's search (assetsWindow.Search_thread): the stations of what matches the text, and the keywords
+   * typed that the page does not search by.
+   */
+  searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly unsupported: readonly string[] }>;
   /**
    * Expand one asset location and read what is there; null collapses it and
    * touches no server. A read that fails is recorded against that station
@@ -10919,6 +10925,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   // --- R37 Personal Assets --------------------------------------------------
+
+  // Everything of the pilot's as last listed for the assets search, kept five minutes as the client keeps it
+  // (invCache.inv5MinCacheContainer.ListIncludingContainers and _DeleteCachedItemsAll, 878 to 896).
+  let allAssetsKept: { readonly at: number; readonly items: readonly AssetSearchItem[] } | null = null;
+
+  /**
+   * assetsWindow.Search_thread (407 to 457): everything of the pilot's (bridge/assetReads.ts readAllAssets), the text
+   * lowercased and read by ParseString, the typed keywords' conditions (GetConditions), GetSearchResults with the names
+   * lowercased (SearchNamesHelper), and the stations the pilot's things are at (ListStations) to keep only stations.
+   */
+  async function searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly unsupported: readonly string[] }> {
+    const now = Date.now();
+    if (allAssetsKept === null || now - allAssetsKept.at > 5 * 60_000) {
+      allAssetsKept = { at: now, items: decodeAssetSearchItems(await readAllAssets(bridgeAsk)) };
+    }
+    const items = allAssetsKept.items;
+    const typeIDs = [...new Set(items.map((item) => item.typeID))];
+    await Promise.all([
+      resolveNamesNow(typeIDs.flatMap((id) => [{ kind: "type" as const, id }, { kind: "typeGroup" as const, id }, { kind: "typeCategory" as const, id }])),
+      wordsNow(ASSET_SEARCH_KEYWORDS.map((keyword) => keyword.label)),
+    ]);
+    const lowered = (kind: "type" | "typeGroup" | "typeCategory", id: number): string | null => {
+      const name = nameCache.get(nameKey(kind, id));
+      return typeof name === "string" ? name.toLowerCase() : null;
+    };
+    const names: AssetSearchNames = {
+      typeName: (id) => lowered("type", id),
+      groupName: (id) => lowered("typeGroup", id),
+      categoryName: (id) => lowered("typeCategory", id),
+    };
+    const templates = store.words.get().templates;
+    const keywordWords = Object.fromEntries(ASSET_SEARCH_KEYWORDS.map((keyword) => {
+      const template = templates[keyword.label];
+      return [keyword.label, typeof template === "string" ? plainText(template) : ""];
+    }));
+    const { searchType, matches } = parseAssetSearch(text.toLowerCase());
+    const { conditions, unsupported } = assetSearchConditions(matches, keywordWords, names);
+    const read = await readAssetStations(bridgeAsk);
+    const ownerStations = new Map(read.stations.map((row) => [row.stationID, { solarSystemID: row.solarSystemID }]));
+    const locations = searchAssets(items, searchType, conditions, names, ownerStations);
+    requestNames(locations.flatMap((location) => [
+      { kind: "station" as const, id: location.stationID },
+      ...location.containers.map((each) => ({ kind: "type" as const, id: each.container.typeID })),
+    ]));
+    return { locations, unsupported };
+  }
 
   async function loadPersonalAssets(): Promise<void> {
     let read: AssetStationsRead;
@@ -22456,6 +22508,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeContract,
     acceptContract,
     loadPersonalAssets,
+    searchPersonalAssets,
     openAssetStation,
     setDestinationToAssetStation,
 

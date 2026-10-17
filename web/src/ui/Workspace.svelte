@@ -26,6 +26,7 @@
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
+  import { assetsSearchTarget } from "./assetsSearch.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -288,6 +289,17 @@
   // as the skill windows ask for the Skill Injector's): the market window opened, which takes the type and reads its
   // market. It watches the request counter, as the Show Info effect above does, and starts at the count it finds, so
   // that a workspace mounted later does not answer a request made before it.
+  // A search of the pilot's things asked for from outside the assets window (assetsSearch.ts: FindInPersonalAssets):
+  // the assets window opened, which takes the text and searches; watched as the market's details are, below.
+  let servedAssetsSearches = assetsSearchTarget.requests.get();
+  const assetsSearchRequests = assetsSearchTarget.requests;
+  $effect(() => {
+    const count = $assetsSearchRequests;
+    if (count === servedAssetsSearches) return;
+    servedAssetsSearches = count;
+    open("assets");
+  });
+
   let servedMarketRequests = marketDetailsTarget.requests.get();
   const marketRequests = marketDetailsTarget.requests;
   $effect(() => {

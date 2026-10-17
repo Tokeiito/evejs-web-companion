@@ -654,6 +654,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "allianceFittingMgr.SaveFitting", "allianceFittingMgr.UpdateFitting", "allianceFittingMgr.UpdateNameAndDescription",
   "corpFittingMgr.DeleteFitting", "allianceFittingMgr.DeleteFitting",
   "corpFittingMgr.DeleteManyFittings", "allianceFittingMgr.DeleteManyFittings",
+  // Everything of the pilot's, for the assets window's search (invCache.py 880). The web gateway refuses it on purpose
+  // (a wider read than its assets panel wanted: evejsWebGatewayRuntime.js), so it goes on the game port alone.
+  "charMgr.ListIncludingContainers",
   // The dungeon a character is in, the keeper's (dungeonTracking.py 66), asked as its session starts in space.
   "keeper.GetCurrentDungeonForCharacter",
   // The ship's fighters, which the client's ship fighter state asks at every change of the session's ship. The
@@ -2228,6 +2231,8 @@ const RETAIL_CALLS = Object.freeze({
   "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),
   "charMgr.ListStationItems": judged(`${INV_CACHE}:849`, oneStationAlone,
     "invCache's global container: self.moniker.ListStationItems(stationID), with the one station. No recording has one. The client keeps each station's answer five minutes; the page asks each time a station is opened in its assets window, and the transport keeps nothing of it."),
+  "charMgr.ListIncludingContainers": judged(`${INV_CACHE}:880`, sentWithNothing,
+    "invCache's global container: self.moniker.ListIncludingContainers(), with nothing, for the assets window's search (assetsWindow.py 415). No recording has one. The client keeps the answer five minutes (_DeleteCachedItemsAll); so does the page's flow."),
   "charMgr.ListStations": judged(`${INV_CACHE}:833`, sentWithNothing,
     "invCache's global container, Moniker('charMgr', (session.charid, const.containerGlobal)): self.moniker.ListStations(), with nothing. Recorded on Tranquility so, three times, twice riding the bind. The client keeps the answer five minutes; the page asks each time its assets window asks, and the transport keeps nothing of it."),
 
