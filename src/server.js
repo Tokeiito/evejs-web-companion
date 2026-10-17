@@ -13351,7 +13351,9 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 // Types' meta level, meta group and tech level from the client's types records (evetypes.GetMetaLevel, GetMetaGroupID,
 // GetTechLevel: null where a record has none), and each meta group's name as the number of its message
 // (metaGroups.get_name): what the assets search's metalevel, metagroup and techlevel keywords read
-// (assetSearchUtil.py 437 to 475). At most 500 types at once.
+// (assetSearchUtil.py 437 to 475). With them each type's market group, whether it is published, its group and its
+// category (evetypes.GetMarketGroupID, IsPublished, GetGroupID, GetCategoryIDByGroup): what a type's menu offers by
+// (menusvc.GetMenuFromItemIDTypeID) and what the market's quickbar fades a type by (QuickbarItem.Load). At most 500.
 app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -13360,7 +13362,9 @@ app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
       if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
     }
     const wanted = asked.slice(0, 500);
-    const [typeRows, metaGroupNames] = await Promise.all([clientBuiltData.rows("types", wanted), clientBuiltData.table("metaGroupNameIDs")]);
+    const [typeRows, metaGroupNames, groupCategories] = await Promise.all([
+      clientBuiltData.rows("types", wanted), clientBuiltData.table("metaGroupNameIDs"), clientBuiltData.table("groupCategories"),
+    ]);
     if (!typeRows || !metaGroupNames) {
       res.json({ ok: true, available: false, types: {}, metaGroupNameIDs: {} });
       return;
@@ -13370,7 +13374,15 @@ app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
     for (const typeID of wanted) {
       const type = typeRows[String(typeID)];
       types[typeID] = type && typeof type === "object"
-        ? { metaLevel: whole(type.metaLevel), metaGroupID: whole(type.metaGroupID), techLevel: whole(type.techLevel) }
+        ? {
+          metaLevel: whole(type.metaLevel),
+          metaGroupID: whole(type.metaGroupID),
+          techLevel: whole(type.techLevel),
+          marketGroupID: whole(type.marketGroupID),
+          published: Boolean(Number(type.published || 0)),
+          groupID: whole(type.groupID),
+          categoryID: whole(type.groupID) !== null && groupCategories && groupCategories[String(type.groupID)] !== undefined ? whole(groupCategories[String(type.groupID)]) : null,
+        }
         : null;
     }
     const metaGroupNameIDs = {};

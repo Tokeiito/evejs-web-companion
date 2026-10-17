@@ -3856,10 +3856,21 @@ export async function getShipTraits(
   return { available: data.available === true, traits, unitNameIDs };
 }
 
-/** Types' meta level, meta group and tech level, and the meta groups' names' messages (GET /api/client-data/type-meta). */
+/** A type's facts from the client's types record (GET /api/client-data/type-meta). */
+export interface TypeMetaFacts {
+  readonly metaLevel: number | null;
+  readonly metaGroupID: number | null;
+  readonly techLevel: number | null;
+  readonly marketGroupID: number | null;
+  readonly published: boolean;
+  readonly groupID: number | null;
+  readonly categoryID: number | null;
+}
+
+/** Types' meta level, meta group, tech level, market group, group and category, and the meta groups' names' messages. */
 export interface TypeMetaRead {
   readonly available: boolean;
-  readonly types: ReadonlyMap<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>;
+  readonly types: ReadonlyMap<number, TypeMetaFacts | null>;
   readonly metaGroupNameIDs: ReadonlyMap<number, number | null>;
 }
 
@@ -3868,12 +3879,20 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
   const data = await getJson(`/api/client-data/type-meta?typeIDs=${typeIDs.join(",")}`, options);
   const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
   const numberOrNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
-  const types = new Map<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>();
+  const types = new Map<number, TypeMetaFacts | null>();
   for (const [key, value] of Object.entries(record(data.types))) {
     const typeID = Number(key);
     if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
     const row = value === null || typeof value !== "object" || Array.isArray(value) ? null : (value as Record<string, JsonValue>);
-    types.set(typeID, row === null ? null : { metaLevel: numberOrNull(row.metaLevel), metaGroupID: numberOrNull(row.metaGroupID), techLevel: numberOrNull(row.techLevel) });
+    types.set(typeID, row === null ? null : {
+      metaLevel: numberOrNull(row.metaLevel),
+      metaGroupID: numberOrNull(row.metaGroupID),
+      techLevel: numberOrNull(row.techLevel),
+      marketGroupID: numberOrNull(row.marketGroupID),
+      published: row.published === true,
+      groupID: numberOrNull(row.groupID),
+      categoryID: numberOrNull(row.categoryID),
+    });
   }
   const metaGroupNameIDs = new Map<number, number | null>();
   for (const [key, value] of Object.entries(record(data.metaGroupNameIDs))) {

@@ -507,6 +507,7 @@ import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { type HullBrowserData, type ShipTraitsHeld } from "../bridge/hullBrowser.ts";
 import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeComparison.ts";
+import type { TypeMetaFacts } from "./api.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
@@ -2437,6 +2438,11 @@ export interface AppFlow {
    * once), read once it is had; null where it is not had yet.
    */
   cfgAveragePrices(): Promise<ReadonlyMap<number, number | null> | null>;
+  /**
+   * Types' facts from the client's types records (evetypes: market group, published, group, category, meta and tech),
+   * kept: static data. All that is held of those asked; null where the client's tables could not be read.
+   */
+  typeFacts(typeIDs: readonly number[]): Promise<ReadonlyMap<number, TypeMetaFacts | null> | null>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -7471,6 +7477,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       requestNames(refs);
     }
     return { types: new Map(comparisonTypesHeld), attributes: new Map(comparisonRecordsHeld), unitNameIDs: new Map(comparisonUnitNamesHeld) };
+  }
+
+  const typeFactsHeld = new Map<number, TypeMetaFacts | null>();
+  async function typeFacts(typeIDs: readonly number[]): Promise<ReadonlyMap<number, TypeMetaFacts | null> | null> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !typeFactsHeld.has(typeID));
+    for (let at = 0; at < wanted.length; at += 500) {
+      const read = await api.getTypeMeta(wanted.slice(at, at + 500), callOptions).catch(() => null);
+      if (read === null || !read.available) return null;
+      for (const [typeID, facts] of read.types) typeFactsHeld.set(typeID, facts);
+    }
+    return new Map(typeIDs.map((typeID) => [typeID, typeFactsHeld.get(typeID) ?? null]));
   }
 
   let cfgPricesHeld: ReadonlyMap<number, number | null> | null = null;
@@ -21961,6 +21978,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestShipTraits,
     comparisonTypes,
     cfgAveragePrices,
+    typeFacts,
     deleteFitting,
     deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),

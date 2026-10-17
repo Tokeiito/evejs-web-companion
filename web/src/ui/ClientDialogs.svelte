@@ -31,6 +31,9 @@
   import { resolvedName, type NameKind } from "../store/names.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { romanLevel } from "../bridge/skills.ts";
+  import NamePopup from "./NamePopup.svelte";
+  import { changeQuickbar } from "./marketQuickbar.ts";
+  import { addFolder, addType } from "../bridge/marketQuickbar.ts";
   import {
     DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionMarkup, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
@@ -284,8 +287,10 @@
   // with its icon and name, its quantity, the total where the orders are more than one, its best price at the station
   // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel, and Buy and Fit
   // first of them where it was opened for a fitting (AddBuyAndFitBtn). Its words are the install's; the page's own stand
-  // in. Not done: the other markets of the system in the station list, dropping types in, Add Order to Quickbar, and
-  // Buy and Fit's tooltip (LoadFittingInfoTooltip).
+  // in. Not done: the other markets of the system in the station list, dropping types in, and Buy and Fit's tooltip
+  // (LoadFittingInfoTooltip). Add Order to Quickbar (AddToQuickbar, 207 to 212): AddNewQuickbarFolder's name popup, then
+  // a folder of that name at the quickbar's top and each row's type in it with its whole quantity (GetTotalQty: the
+  // row's times the orders') as its extra text (ui/marketQuickbar.ts).
   const MULTIBUY_WORDS: Readonly<Record<string, string>> = {
     "UI/Inventory/ItemActions/MultiBuy": "Shopping list",
     "UI/Market/MarketQuote/CurrentStation": "Here: {stationName}",
@@ -319,6 +324,12 @@
     "UI/Market/MarketQuote/ImportShoppingListOption": "Paste a shopping list",
     "UI/Market/MarketQuote/ImportShoppingListOptionHint": "One type to a line, with how many before or after its name.",
     "UI/Market/MarketQuote/CopyOrderToClipboard": "Copy the list",
+    "UI/Market/MarketQuote/AddOrderToQuickbar": "Keep the list in the quickbar",
+    "UI/Market/Marketbase/FolderName": "Folder",
+    "UI/Market/Marketbase/TypeFolderName": "Its name",
+    "UI/Common/PleaseTypeSomething": "Type something first.",
+    "UI/Common/Buttons/OK": "OK",
+    "UI/Common/Buttons/Cancel": "Cancel",
     "UI/Market/MarketQuote/TotalPrice": "Total",
     // The import's lines not read (ImportShoppingList, CustomInfo): asked here, said by the flow.
     "UI/SkillQueue/CouldNotReadLines": "These lines were not understood:",
@@ -369,6 +380,16 @@
   }
   /** The export menu's Copy Order to Clipboard (ExportShoppingListLocalized): the list put on the clipboard. */
   let exportOpen = $state(false);
+  /** The multibuy whose list is being kept in the quickbar (its number), its folder's name asked; null where none is. */
+  let quickbarNaming = $state<number | null>(null);
+  /** AddToQuickbar: the folder, then each row's type in it with its whole quantity. */
+  function addOrderToQuickbar(name: string, buy: { readonly rows: readonly { readonly typeID: number; readonly qty: number }[]; readonly multiplier: number }): void {
+    quickbarNaming = null;
+    changeQuickbar((quickbar) => {
+      const made = addFolder(quickbar, name, 0);
+      return buy.rows.reduce((held, row) => addType(held, row.typeID, made.folder.id, row.qty * buy.multiplier), made.quickbar);
+    });
+  }
   /** A percentage as FmtAmt(percentage * 100, showFraction=1) writes it: to a tenth. */
   const tenths = (fraction: number): number => Math.round(fraction * 1000) / 10;
   /**
@@ -990,8 +1011,8 @@
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>✕</button>
       </span>
       <!-- The import button at the top left (_AddImportButton, its hint the option and how a line is read), and the export
-           menu (GetExportMenu): Copy Order to Clipboard. Not here: the English copy (only a client in another language
-           has it) and Add Order to Quickbar (the market's quickbar, which the page has not). -->
+           menu (GetExportMenu): Copy Order to Clipboard and Add Order to Quickbar. Not here: the English copy (only a
+           client in another language has it). -->
       <span class="multibuy-tools">
         <button type="button" class="multibuy-import" disabled={buy.busy}
           title={`${buyWord("UI/Market/MarketQuote/ImportShoppingListOption")}\n\n${buyWord("UI/Market/MarketQuote/ImportShoppingListOptionHint", { type1: 1230, type2: 34 })}`}
@@ -1001,10 +1022,16 @@
           {#if exportOpen}
             <span class="multibuy-menu" role="menu">
               <button type="button" role="menuitem" onclick={() => { exportOpen = false; void navigator.clipboard.writeText(multiBuyExport(buy, sum)).catch(() => {}); }}>{buyWord("UI/Market/MarketQuote/CopyOrderToClipboard")}</button>
+              <button type="button" role="menuitem" onclick={() => { exportOpen = false; quickbarNaming = buy.n; }}>{buyWord("UI/Market/MarketQuote/AddOrderToQuickbar")}</button>
             </span>
           {/if}
         </span>
       </span>
+      {#if quickbarNaming === buy.n}
+        <NamePopup caption={buyWord("UI/Market/Marketbase/FolderName")} label={buyWord("UI/Market/Marketbase/TypeFolderName")} maxLength={20}
+          refusal={buyWord("UI/Common/PleaseTypeSomething")} okWord={buyWord("UI/Common/Buttons/OK")} cancelWord={buyWord("UI/Common/Buttons/Cancel")}
+          onok={(name) => addOrderToQuickbar(name, buy)} oncancel={() => (quickbarNaming = null)} />
+      {/if}
       <span class="multibuy-place">
         <select disabled>
           {#if buy.stationID === null}
