@@ -1727,6 +1727,20 @@ test("the game port carries the customs office's transfer, the station's offices
     "subscriptionMgr.GetCloneGrade",
     // An acceleration gate's activation, the keeper's. The gateway's list has nothing of the keeper's.
     "keeper.ActivateAccelerationGate",
+    "charFittingMgr.SaveFitting",
+    "charFittingMgr.UpdateFitting",
+    "corpFittingMgr.SaveFitting",
+    "corpFittingMgr.UpdateFitting",
+    "corpFittingMgr.UpdateNameAndDescription",
+    "allianceFittingMgr.SaveFitting",
+    "allianceFittingMgr.UpdateFitting",
+    "allianceFittingMgr.UpdateNameAndDescription",
+    "corpFittingMgr.DeleteFitting",
+    "allianceFittingMgr.DeleteFitting",
+    "corpFittingMgr.DeleteManyFittings",
+    "allianceFittingMgr.DeleteManyFittings",
+    "charMgr.ListIncludingContainers",
+    "structureDirectory.GetMyCharacterStructures",
     // The dungeon a character is in, the keeper's, asked as its session starts in space.
     "keeper.GetCurrentDungeonForCharacter",
     // The ship's fighters, asked at every change of the session's ship. The gateway's list has the manager's writes only.
@@ -1766,6 +1780,9 @@ test("the game port carries the customs office's transfer, the station's offices
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",
+    "skillHandler.PurchaseSkills",
+    "skillHandler.GetFreeSkillPointsAppliedToSkills",
+    "skillHandler.ApplyFreeSkillPointsToSkills",
     "userSvc.GetMultiCharactersTrainingSlots",
     // The repair shop's two repairs by the client's names. The gateway's list has the server's own name for both.
     "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure",
@@ -1819,6 +1836,9 @@ test("the game port carries the customs office's transfer, the station's offices
     "missionTrackerMgr.GetAllMissionObjectives", "missionTrackerMgr.IsInActiveDungeonID",
     // And its asking after missions (UpdateMissionStatusData, 216 to 220). The gateway's list has it not.
     "missionTrackerMgr.UpdateAllMissions",
+    "beyonce.CmdGotoDirection",
+    // The factions a player corporation may enlist with, its Show Info. The gateway's list has nothing of the enlistment manager's.
+    "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.

@@ -233,6 +233,25 @@ function formatDateTime(filetime: number, settings: Readonly<Record<string, stri
   return `${date} ${time}`;
 }
 
+/** time.strftime(format) of the moment, in UTC (the server's clock): the year, month, day, hours, minutes and seconds. */
+function formatStrftime(filetime: number, format: string): string {
+  const when = new Date(filetimeToMs(filetime));
+  if (Number.isNaN(when.getTime())) {
+    return "";
+  }
+  const parts: Readonly<Record<string, string>> = {
+    Y: String(when.getUTCFullYear()),
+    y: two(when.getUTCFullYear() % 100),
+    m: two(when.getUTCMonth() + 1),
+    d: two(when.getUTCDate()),
+    H: two(when.getUTCHours()),
+    M: two(when.getUTCMinutes()),
+    S: two(when.getUTCSeconds()),
+    "%": "%",
+  };
+  return format.replace(/%(.)/g, (code: string, letter: string) => parts[letter] ?? code);
+}
+
 function formatInterval(ticks: number): string {
   let seconds = Math.max(0, Math.floor(ticks / 10_000_000));
   const parts: string[] = [];
@@ -259,7 +278,12 @@ function formatNumber(value: number, token: TemplateToken, whole = false): strin
   if (token.modifiers.includes("useGrouping")) {
     return value.toLocaleString("en-US", places === null ? {} : { minimumFractionDigits: places, maximumFractionDigits: places });
   }
-  return places === null ? String(value) : value.toFixed(places);
+  const text = places === null ? String(value) : value.toFixed(places);
+  // leadingZeroes: the whole part written to at least that many digits (format.py 122 to 124: an hour as "05").
+  const zeroes = /^\d+$/.test(token.settings.leadingZeroes ?? "") ? Number(token.settings.leadingZeroes) : 0;
+  const [sign, digits] = text.startsWith("-") ? ["-", text.slice(1)] : ["", text];
+  const [wholePart = "", fraction] = digits.split(".");
+  return zeroes > wholePart.length ? `${sign}${wholePart.padStart(zeroes, "0")}${fraction === undefined ? "" : `.${fraction}`}` : text;
 }
 
 function applyModifiers(text: string, modifiers: readonly string[]): string {
@@ -316,7 +340,10 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
     case "datetime":
     case "formattedtime": {
       const value = numberOf(given);
-      text = value === null ? "" : formatDateTime(value, token.settings);
+      // A formattedtime tag's format is strftime's (localization/parser.py 227 to 228: its one setting; the labels FmtDate
+      // words a moment with, "%Y.%m.%d" alone for a date, "%H:%M" alone for a time).
+      const format = token.type === "formattedtime" ? token.settings.format : undefined;
+      text = value === null ? "" : format !== undefined ? formatStrftime(value, format) : formatDateTime(value, token.settings);
       break;
     }
     case "timeinterval": {

@@ -1833,6 +1833,19 @@ const NAMES_MAX_ITEMS = 500;
 // known at the call site (a station owner, or a standings `fromID`, is a corp,
 // faction, character, or alliance). It tries each in turn and returns the first
 // that resolves, so one request covers all four.
+/**
+ * An NPC character (an NPC corporation's CEO, an agent) by its number, from the static NPC characters: the client puts
+ * every one of them in its table of owners as it starts (eveCfg.py LoadEveOwners, 570 to 579: iter_npc_characters, its
+ * name and typeCharacter), so it names one without asking anyone.
+ */
+function getNpcCharacter(characterID) {
+  const numericCharacterID = Number(characterID) || 0;
+  return numericCharacterID ? buildJsonlIndex("npcCharacters.jsonl").get(numericCharacterID) || null : null;
+}
+
+/** inventorycommon/const.py typeCharacter: the type the client gives an NPC character in its table of owners. */
+const NPC_CHARACTER_TYPE_ID = 1373;
+
 function resolveOwnerName(id) {
   if (getCorporation(id)) {
     return getCorporationName(id);
@@ -1842,6 +1855,10 @@ function resolveOwnerName(id) {
   }
   if (getCharacter(id)) {
     return getCharacterName(id);
+  }
+  const npcCharacter = getNpcCharacter(id);
+  if (npcCharacter) {
+    return getLocalizedName(npcCharacter, `Character ${Number(id)}`);
   }
   if (getAlliance(id)) {
     return getAllianceName(id);
@@ -1872,6 +1889,9 @@ function resolveOwnerGroupName(id) {
   const character = getCharacter(id);
   if (character) {
     return getKnownTypeGroupName(Number(character.typeID) || 0);
+  }
+  if (getNpcCharacter(id)) {
+    return getKnownTypeGroupName(NPC_CHARACTER_TYPE_ID);
   }
   if (getAlliance(id)) {
     return getKnownTypeGroupName(OWNER_TYPE_IDS.alliance);

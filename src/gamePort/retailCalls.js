@@ -815,6 +815,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The ship turned toward a direction: a probe result's Align To (scanSvc.AlignToPosition, 459 to 465), and the
   // double click in space. The gateway's list has it not.
   "beyonce.CmdGotoDirection",
+  // The factions a player corporation's members may enlist with, the Permitted Faction Enlistments row of its Show Info
+  // (infosvc.UpdateDataCorp: fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions). The gateway's list has nothing of the
+  // enlistment manager's.
+  "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
 ]);
 
 /**
@@ -2189,6 +2193,9 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionKeywords": same(`${AGENTS}:633`, "GetAgentMoniker(agentID).GetMissionKeywords(contentID), on the agent's own object"),
 
   // ── a corporation's assets ────────────────────────────────────────────────
+  "corpmgr.GetPublicInfo": same("eve/client/script/ui/shared/info/corporationInfoWindow.py:49", "RemoteSvc('corpmgr').GetPublicInfo(item_id): Show Info on a corporation"),
+  "corpmgr.GetAggressionSettings": same(`${CORP_SVC}/base_corporation.py:259`, "RemoteSvc('corpmgr').GetAggressionSettings(corpID): the friendly fire row of a corporation's Show Info, kept per corporation"),
+  "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions": same("eve/client/script/ui/services/fwEnlistmentSvc.py:104", "RemoteSvc('fwCharacterEnlistmentMgr').GetCorpAllowedEnlistmentFactions(corporationID): a player corporation's Show Info"),
   "corpmgr.GetAssetInventory": same(`${CORP_ASSETS}:100`, "RemoteSvc('corpmgr').GetAssetInventory(session.corpid, which)"),
   "corpmgr.GetAssetInventoryForLocation": same(`${CORP_ASSETS}:423`, "RemoteSvc('corpmgr').GetAssetInventoryForLocation(session.corpid, locationID, which)"),
   "corpmgr.SearchAssets": Object.freeze({
@@ -2663,6 +2670,7 @@ const RETAIL_CALLS = Object.freeze({
     note: "GetMoniker().GetAlliance(), no arguments, on the alliance's moniker, for the session's own alliance; RemoteSvc('allianceRegistry').GetAlliance(allianceID) by name for any other (53)",
     shape: ofAnAlliance,
   }),
+  "allianceRegistry.GetAlliancePublicInfo": same(`${ALLIANCE_SVC}/all_cso.py:136`, "RemoteSvc('allianceRegistry').GetAlliancePublicInfo(allianceID), by name: Show Info on an alliance"),
   "allianceRegistry.GetAllianceContacts": same(`${ALLIANCE_SVC}/all_cso.py:243`, "GetMoniker().GetAllianceContacts(), no arguments, on the alliance's moniker: the address book asks it as the character is chosen, for a pilot in an alliance"),
   "allianceRegistry.GetApplications": same(`${ALLIANCE_SVC}/all_cso_applications.py:26`, "GetMoniker().GetApplications(), no arguments, on the alliance's moniker, kept"),
   "allianceRegistry.GetBulletins": same(`${ALLIANCE_SVC}/all_cso.py:231`, "GetMoniker().GetBulletins(), no arguments, on the alliance's moniker, kept for fifteen minutes"),

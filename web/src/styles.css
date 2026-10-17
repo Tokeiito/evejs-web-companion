@@ -4623,6 +4623,19 @@
     overflow-wrap: anywhere;
   }
   .show-info h3 { margin-top: 0.8rem; }
+  /* A corporation's and an alliance's window: the CEO beside the picture (corporationInfoWindow.py
+   * construct_ceo_picture_info), the description's and the URL's lines with their links, a row with more to say
+   * (LabelTextSidesMoreInfo) hinted, a list of names one under another. */
+  .info-ceo { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 0.1rem; font-size: 12px; }
+  .info-ceo-label { color: var(--color-muted); }
+  .info-description { font-size: 12px; overflow-wrap: anywhere; }
+  .show-info .info-line { margin: 0 0 0.25rem; min-height: 1em; }
+  .show-info dd .info-line { margin: 0; }
+  .info-bold { font-weight: 700; }
+  .info-italic { font-style: italic; }
+  .info-underline { text-decoration: underline; }
+  .info-more { cursor: help; }
+  .info-part { display: block; }
   .show-info .controls { margin-top: 0.7rem; }
 
   /* ============================================ the dock / undock fade (R75) --
@@ -9708,7 +9721,8 @@
    evelink/client/color.py: default_link_color_info (#d98d00, hovered #ffb732) for skill plans (registered with no
    colour of their own) and Show Info; external_link_color_info (#ffe400, hovered TextColor.HIGHLIGHT) for the web.
    The registry's links are bold (register: bold=True). */
-.evelink { padding: 0; border: 0; background: none; font: inherit; font-weight: 700; color: #d98d00; cursor: pointer; }
+/* A link in a line of text, as tall as the text (the buttons' 40px minimum would open the line up). */
+.evelink { padding: 0; border: 0; background: none; font: inherit; font-weight: 700; color: #d98d00; cursor: pointer; min-height: 0; vertical-align: baseline; }
 .evelink:hover { color: #ffb732; }
 .evelink.web { color: #ffe400; }
 .evelink.web:hover { color: #ffffff; }

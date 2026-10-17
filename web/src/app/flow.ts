@@ -577,7 +577,8 @@ import { marketDockableLocations, multiBuyStationList as multiBuyStationList_, t
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
-import { decodeAllianceInfo } from "../bridge/allianceInfo.ts";
+import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
+import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -2436,6 +2437,18 @@ export interface AppFlow {
    * and null answered.
    */
   sharedSkillPlan(skillPlanID: string, ownerID: number | null): Promise<(PersonalSkillPlanEntry & { readonly linked: true }) | null>;
+  /**
+   * Show Info on a corporation (corporationInfoWindow.py reconstruct_info_window; infosvc.UpdateDataCorp): its public
+   * record (corpmgr.GetPublicInfo), its friendly fire (the corp service's GetAggressionSettings, corpmgr's) and, for a
+   * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
+   * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
+   */
+  corporationShowInfo(corporationID: number): Promise<CorporationShowInfo | null>;
+  /**
+   * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
+   * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
+   */
+  allianceShowInfo(allianceID: number): Promise<AllianceInfoExtra | null>;
   /** Its answers: Buy and Inject, or the window closed. An answer to a window no longer open is nothing. */
   answerSkillBooks(n: number, answer: "buy" | "close" | "market-available" | "market-unavailable" | "market-all"): Promise<void>;
   /** The client's multibuy window open now (ClientDialogs.svelte shows it); null with none. */
@@ -9008,6 +9021,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
    * the alliance's moniker).
    */
+  async function corporationShowInfo(corporationID: number): ReturnType<AppFlow["corporationShowInfo"]> {
+    const info = corporationPublicInfoOf(await bridgeAsk("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
+    if (info === null) return null;
+    const [aggression, enlistmentFactions] = await Promise.all([
+      bridgeAsk("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null),
+      isNpcCorporation(corporationID)
+        ? Promise.resolve(null)
+        : bridgeAsk("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null),
+    ]);
+    return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+  }
+
+  async function allianceShowInfo(allianceID: number): ReturnType<AppFlow["allianceShowInfo"]> {
+    return decodeAllianceInfo(await bridgeAsk("allianceRegistry", "GetAlliancePublicInfo", [allianceID]).catch(() => null));
+  }
+
   async function saveForAllianceOffered(): Promise<boolean> {
     const online = store.station.get().online;
     const allianceID = online?.allianceID ?? null;
@@ -22984,6 +23013,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openSkillPlanLink,
     takeSkillPlanLink,
     sharedSkillPlan,
+    corporationShowInfo,
+    allianceShowInfo,
     answerSkillBooks,
     applySkillPointsRequired,
     applyPointsAsked: readonlySignal(applyPointsAskedSignal),
