@@ -36,6 +36,15 @@
   // order, the pilot's own chosen with a career path, none for the Industrialist; and the chosen ones' plans, by name. A
   // certified plan opened has no Edit or Delete (IsEditable), is tracked as any plan, and has its table's milestones.
   //
+  // Corporation Plans (corpPlansPanel.py, bridge/corpSkillPlans.ts), the third tab, only for a pilot in a player
+  // corporation (IsPlayerCorporation): the corporation's plans (flow.corpSkillPlans); where there are any, the career
+  // paths as category buttons (one chosen or none), NumShown and the filter on the name; twelve to a page by name, the
+  // page buttons where there is more than one page; NoCorpSkillPlans or NoSkillPlansMatchingFilters with none shown.
+  // A corporation plan opened (its caption CorpSkillPlan) has Delete, as its entry's menu has, only for a pilot with
+  // corpRoleSkillPlanManager (IsEditable). It cannot be tracked (IsTrackable): Track (its hint SaveAnTrackPlan) saves a
+  // copy among the personal plans, opens it and tracks it (_CreateCopySelectAndTrack), and Start Training tracks such
+  // a copy (_CheckSetCurrentSkillPlanAsTracked). Its milestones are the corporation's.
+  //
   // Create (CreatePersonalPlanButton, under the plans or alone where there are none: off where there are ten,
   // MaximumSkillPlanReached; its tooltip CreatePersonalSkillPlan and PlansInTotal), the opened plan's Edit (its hint
   // EditPlan) and an entry's menu's Edit open the editor (SkillPlanEditor.svelte) in the list's place, on a new plan
@@ -44,7 +53,7 @@
   // Not done: Save and Share, the omega button's upgrade window, the progress gauge and milestones, the faction and
   // career icons, the omega mark and banner, the missing books' buy button, a level's add-to-queue button, a skill
   // row's selection, menu, tooltip and drag, the contents' menu (copy to clipboard), the tooltip and drag of an entry,
-  // and the Certified and Corporation plans.
+  // and a corporation plan's Create and Edit.
   import { onMount } from "svelte";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
   import { MAX_PERSONAL_PLANS } from "../bridge/skillPlans.ts";
@@ -60,14 +69,24 @@
   } from "../bridge/skillPlans.ts";
   import { milestoneLastSkillIndex, type MilestoneEntry } from "../bridge/skillPlanMilestones.ts";
   import { CAREER_PATH_INDUSTRIALIST, PLAN_ID_AIR, certifiedPlanUuid, certifiedPlansShown, empireFactions } from "../bridge/certifiedSkillPlans.ts";
-  import type { CertifiedPlanEntry } from "../app/flow.ts";
+  import type { CertifiedPlanEntry, CorpPlanEntry } from "../app/flow.ts";
+  import { CORP_PLANS_PER_PAGE, corpPlanPages, corpPlansFiltered, inPlayerCorporation } from "../bridge/corpSkillPlans.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+
+  /** A plan as it is opened: a personal one, a certified one (with its table's milestones) or a corporation's. */
+  type OpenedPlan = PersonalSkillPlanEntry & {
+    readonly certified?: true;
+    readonly milestoneList?: CertifiedPlanEntry["milestoneList"];
+    readonly corp?: CorpPlanEntry["corp"];
+  };
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
 
   /** The page's own words, where the install's are not to hand. */
   const OWN: Readonly<Record<string, string>> = {
@@ -116,20 +135,30 @@
     "UI/SkillPlan/CareerPathsLockedByAIR": "Finish the AIR plan to open the career paths.",
     "UI/SkillPlan/CertifiedSkillPlan": "Ready-made plan",
     "UI/SkillPlan/SavePlan": "Keep a copy among your own plans",
+    "UI/SkillPlan/CorpPlans": "My corporation's plans",
+    "UI/SkillPlan/CorpPlansHoverTooltip": "Plans your corporation keeps for its members.",
+    "UI/SkillPlan/NumShown": "{numShown} of {numTotal} shown",
+    "UI/SkillPlan/CorpSkillPlan": "Corporation plan",
+    "UI/SkillPlan/NoSkillPlansMatchingFilters": "No plan matches these filters.",
+    "UI/SkillPlan/NoCorpSkillPlans": "Your corporation keeps no skill plan.",
+    "UI/SkillPlan/SaveAnTrackPlan": "Keep a copy among your own plans, and follow that.",
   };
 
-  // The panels (skillPlansBrowserPanel's toggle buttons): Certified Plans, then Personal Plans; the choice kept
-  // (skillPlanUtil.GetPersistedPanelID, its default the certified one).
+  // The panels (skillPlansBrowserPanel's toggle buttons): Certified Plans, Personal Plans, and Corporation Plans for a
+  // pilot in a player corporation; the choice kept (skillPlanUtil.GetPersistedPanelID, its default the certified one;
+  // the certified one shown where the corporation's is kept and not had).
   const PANEL_KEY = "evejs.skillPlansPanel";
-  function storedPanel(): "certified" | "personal" {
+  type Panel = "certified" | "personal" | "corporation";
+  function storedPanel(): Panel {
     try {
-      return localStorage.getItem(PANEL_KEY) === "personal" ? "personal" : "certified";
+      const kept = localStorage.getItem(PANEL_KEY);
+      return kept === "personal" || kept === "corporation" ? kept : "certified";
     } catch {
       return "certified";
     }
   }
-  let panel = $state<"certified" | "personal">(storedPanel());
-  function choosePanel(next: "certified" | "personal"): void {
+  let panel = $state<Panel>(storedPanel());
+  function choosePanel(next: Panel): void {
     panel = next;
     try {
       localStorage.setItem(PANEL_KEY, next);
@@ -181,6 +210,45 @@
   const certifiedShown = $derived(sortPlansByName(certifiedPlansShown(certifiedEntries, careerPathID, factionID)));
   const airPlan = $derived(certifiedEntries.find((plan) => plan.id === certifiedPlanUuid(PLAN_ID_AIR)) ?? null);
 
+  // The Corporation Plans panel (corpPlansPanel.py): its plans, the category and filter chosen, the page shown.
+  const inCorp = $derived(inPlayerCorporation($station.online?.corporationID ?? null));
+  const shownPanel = $derived<Panel>(panel === "corporation" && !inCorp ? "certified" : panel);
+  let corp = $state<Awaited<ReturnType<AppFlow["corpSkillPlans"]>> | undefined>(undefined);
+  let corpCategoryID = $state<number | null>(null);
+  let corpFilter = $state("");
+  let corpPage = $state(0);
+  let corpReading = false;
+
+  async function loadCorp(): Promise<void> {
+    if (corpReading) return;
+    corpReading = true;
+    try {
+      corp = await flow.corpSkillPlans().catch(() => null);
+    } finally {
+      corpReading = false;
+    }
+  }
+
+  // Show: the panel's plans read when it is shown.
+  $effect(() => {
+    if (shownPanel === "corporation" && corp === undefined) void loadCorp();
+  });
+
+  /** OnCategoryButtonGroup (isOptional: the chosen one clicked again, none chosen), then the first page. */
+  function chooseCorpCategory(id: number): void {
+    corpCategoryID = corpCategoryID === id ? null : id;
+    corpPage = 0;
+  }
+
+  /** OnQuickFilterEdit, then the first page. */
+  function setCorpFilter(text: string): void {
+    corpFilter = text;
+    corpPage = 0;
+  }
+
+  const corpAll = $derived(corp ? corpPlansFiltered(corp.plans, corpCategoryID, corpFilter) : []);
+  const corpShown = $derived(corpAll.slice(corpPage * CORP_PLANS_PER_PAGE, (corpPage + 1) * CORP_PLANS_PER_PAGE));
+
   onMount(() => {
     flow.requestWords([...Object.keys(OWN), ...SHORT_INTERVAL_WORD_LABELS]);
     void load();
@@ -224,7 +292,7 @@
   }
 
   // The entry's menu (SkillPlanEntry.GetMenu), one open at a time; kept while it closes so nothing reads it gone.
-  let menu = $state<{ readonly plan: PersonalSkillPlanEntry; readonly x: number; readonly y: number } | null>(null);
+  let menu = $state<{ readonly plan: OpenedPlan; readonly x: number; readonly y: number } | null>(null);
   let menuUp = $state(false);
 
   $effect(() => {
@@ -246,22 +314,29 @@
     };
   });
 
-  function openMenu(plan: PersonalSkillPlanEntry, event: MouseEvent): void {
+  function openMenu(plan: OpenedPlan, event: MouseEvent): void {
     event.preventDefault();
     menu = { plan, x: event.clientX, y: event.clientY };
     menuUp = true;
   }
 
-  async function deletePlan(plan: PersonalSkillPlanEntry): Promise<void> {
+  async function deletePlan(plan: OpenedPlan): Promise<void> {
     menuUp = false;
     error = "";
     try {
-      if (await flow.deletePersonalSkillPlan(plan.id)) {
+      if (plan.corp) {
+        // _DeleteCorp; OnSkillPlanDeleted: the panel's pages made again, the first shown.
+        if (await flow.deleteCorpSkillPlan(plan.id)) {
+          if (selectedID === plan.id) selectedID = null;
+          await loadCorp();
+          corpPage = 0;
+        }
+      } else if (await flow.deletePersonalSkillPlan(plan.id)) {
         if (selectedID === plan.id) selectedID = null;
         await load();
       }
     } catch {
-      // _DeletePersonal: message_player(ConnectionError).
+      // _DeletePersonal, _DeleteCorp: message_player(ConnectionError).
       error = word("UI/SkillPlan/ConnectionError");
     }
   }
@@ -292,8 +367,13 @@
   }
 
   let selectedID = $state<string | null>(null);
-  const selected = $derived<(PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }) | null>(
-    selectedID === null ? null : (read?.plans.find((plan) => plan.id === selectedID) ?? certifiedEntries.find((plan) => plan.id === selectedID) ?? null),
+  const selected = $derived<OpenedPlan | null>(
+    selectedID === null
+      ? null
+      : (read?.plans.find((plan) => plan.id === selectedID)
+        ?? certifiedEntries.find((plan) => plan.id === selectedID)
+        ?? corp?.plans.find((plan) => plan.id === selectedID)
+        ?? null),
   );
   let contentsShown = $state(false);
   /** The plan opened, as read (its rows, books, locks): undefined while read, null where it could not be. */
@@ -321,7 +401,7 @@
     }
   }
 
-  function open(plan: PersonalSkillPlanEntry): void {
+  function open(plan: OpenedPlan): void {
     selectedID = plan.id;
     notice = "";
     void readContents(plan);
@@ -338,7 +418,7 @@
   // The opened plan's milestones (flow.skillPlanMilestones): undefined while read, a null list where they could not be.
   let milestones = $state<{ readonly planID: string; readonly list: readonly MilestoneEntry[] | null } | undefined>(undefined);
 
-  async function readMilestones(plan: PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }): Promise<void> {
+  async function readMilestones(plan: OpenedPlan): Promise<void> {
     milestones = undefined;
     // A certified plan's milestones are its table's (CertifiedSkillPlanController.GetMilestones): nothing asked, nothing put right.
     if (plan.certified) {
@@ -346,15 +426,16 @@
       if (selectedID === plan.id) milestones = { planID: plan.id, list };
       return;
     }
-    const read_ = await flow.skillPlanMilestones(plan).catch(() => null);
+    // A corporation plan's are the corporation's (CorpSkillPlanMilestoneService).
+    const read_ = await flow.skillPlanMilestones(plan, plan.corp ? "corporation" : "character").catch(() => null);
     if (selectedID !== plan.id) return;
     milestones = { planID: plan.id, list: read_ ? read_.milestones : null };
     // _AddSkillsMissingForMilestones put skills in the plan: the plan as it now is, and its view read again.
-    if (read_ && read_.requirements !== null && read) {
+    if (read_ && read_.requirements !== null) {
       const requirements = read_.requirements;
-      read = { ...read, plans: read.plans.map((each) => (each.id === plan.id ? { ...each, requirements } : each)) };
-      const updated = read.plans.find((each) => each.id === plan.id);
-      if (updated) await readContents(updated);
+      if (plan.corp && corp) corp = { ...corp, plans: corp.plans.map((each) => (each.id === plan.id ? { ...each, requirements } : each)) };
+      else if (!plan.corp && read) read = { ...read, plans: read.plans.map((each) => (each.id === plan.id ? { ...each, requirements } : each)) };
+      if (selected !== null && selected.id === plan.id) await readContents(selected);
     }
   }
 
@@ -378,13 +459,15 @@
   }
 
   /** TrainSkills */
-  async function startTraining(plan: PersonalSkillPlanEntry): Promise<void> {
+  async function startTraining(plan: OpenedPlan): Promise<void> {
     if (!read || training) return;
     training = true;
     error = "";
     notice = "";
     try {
-      const outcome = await flow.trainSkillPlan(plan, read.trackedID);
+      // _CheckSetCurrentSkillPlanAsTracked: a corporation's plan tracked by a copy among the personal plans.
+      const outcome = await flow.trainSkillPlan(plan, read.trackedID, plan.corp ? () => copyAsPersonal(plan) : undefined);
+      if (plan.corp) await load();
       if (read) read = { ...read, trackedID: outcome.trackedID };
       if (outcome.added !== null && outcome.added > 0) notice = word("UI/SkillPlan/SkillsAddedNotification", { numSkills: outcome.added, planName: plan.name });
     } catch {
@@ -400,18 +483,12 @@
    * SaveSkillPlan: a copy of the plan saved as a personal plan (GetSkillPlanCopy: with its milestones, a certified
    * plan's from its table, a personal plan's as read), then opened (on_selected).
    */
-  async function savePlanCopy(plan: PersonalSkillPlanEntry & { readonly certified?: true; readonly milestoneList?: CertifiedPlanEntry["milestoneList"] }): Promise<void> {
+  async function savePlanCopy(plan: OpenedPlan): Promise<void> {
     if (copying) return;
     copying = true;
     error = "";
     try {
-      const milestoneList = plan.certified
-        ? plan.milestoneList ?? []
-        : milestones !== undefined && milestones.planID === plan.id && milestones.list !== null ? milestones.list : [];
-      const newID = await flow.copySkillPlan(
-        { name: plan.name, description: plan.description, requirements: plan.requirements, milestones: milestoneList },
-        read ? read.plans.length : null,
-      );
+      const newID = await copyAsPersonal(plan);
       if (newID === null) return;
       await load();
       const copy = read?.plans.find((each) => each.id === newID);
@@ -422,9 +499,48 @@
   }
   let copying = $state(false);
 
+  /** GetSkillPlanCopy: SkillPlanCopied said, the copy saved among the personal plans; its id, null where not saved. */
+  function copyAsPersonal(plan: OpenedPlan): Promise<string | null> {
+    const milestoneList = plan.certified
+      ? plan.milestoneList ?? []
+      : milestones !== undefined && milestones.planID === plan.id && milestones.list !== null ? milestones.list : [];
+    return flow.copySkillPlan(
+      { name: plan.name, description: plan.description, requirements: plan.requirements, milestones: milestoneList },
+      read ? read.plans.length : null,
+    );
+  }
+
+  /** _CreateCopySelectAndTrack: the copy saved, opened (on_selected), then tracked. */
+  async function trackCopy(plan: OpenedPlan): Promise<void> {
+    if (copying) return;
+    copying = true;
+    error = "";
+    try {
+      const newID = await copyAsPersonal(plan);
+      if (newID === null) return;
+      await load();
+      const copy = read?.plans.find((each) => each.id === newID);
+      if (copy) open(copy);
+      try {
+        const tracked = await flow.setTrackedSkillPlan(newID);
+        if (read) read = { ...read, trackedID: tracked };
+      } catch {
+        error = word("UI/SkillPlan/ConnectionError");
+        if (read) read = { ...read, trackedID: null };
+      }
+    } finally {
+      copying = false;
+    }
+  }
+
   /** OnTrackButton, _ToggleTracked */
-  async function toggleTracked(plan: PersonalSkillPlanEntry): Promise<void> {
+  async function toggleTracked(plan: OpenedPlan): Promise<void> {
     if (!read) return;
+    // A plan that cannot be tracked (IsTrackable: a corporation's): _CreateCopySelectAndTrack.
+    if (plan.corp) {
+      await trackCopy(plan);
+      return;
+    }
     error = "";
     const want = read.trackedID === plan.id ? null : plan.id;
     try {
@@ -447,16 +563,20 @@
 <section>
   <header class="panel-head">
     <div class="skill-plan-tabs" role="tablist">
-      <button type="button" role="tab" aria-selected={panel === "certified"} class:selected={panel === "certified"}
+      <button type="button" role="tab" aria-selected={shownPanel === "certified"} class:selected={shownPanel === "certified"}
         title={word("UI/SkillPlan/CertifiedPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("certified"); }}>{word("UI/SkillPlan/CertifiedPlans")}</button>
-      <button type="button" role="tab" aria-selected={panel === "personal"} class:selected={panel === "personal"}
+      <button type="button" role="tab" aria-selected={shownPanel === "personal"} class:selected={shownPanel === "personal"}
         title={word("UI/SkillPlan/PersonalPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("personal"); }}>{word("UI/SkillPlan/PersonalPlans")}</button>
+      {#if inCorp}
+        <button type="button" role="tab" aria-selected={shownPanel === "corporation"} class:selected={shownPanel === "corporation"}
+          title={word("UI/SkillPlan/CorpPlansHoverTooltip")} onclick={() => { close(); editing = null; choosePanel("corporation"); }}>{word("UI/SkillPlan/CorpPlans")}</button>
+      {/if}
     </div>
     <span class="controls">
-      <button type="button" disabled={busy} onclick={() => { void load(); void loadCertified(); }}>Refresh</button>
+      <button type="button" disabled={busy} onclick={() => { void load(); void loadCertified(); if (inCorp) void loadCorp(); }}>Refresh</button>
     </span>
   </header>
-  {#snippet planCard(plan: PersonalSkillPlanEntry, withMenu: boolean)}
+  {#snippet planCard(plan: OpenedPlan, withMenu: boolean)}
     <li>
       <button type="button" class="skill-plan-card" onclick={() => open(plan)} oncontextmenu={(event) => { if (withMenu) openMenu(plan, event); }}>
         <span class="skill-plan-name">{plan.name}</span>
@@ -478,23 +598,28 @@
   {:else if selected !== null}
     {@const plan = selected}
     {@const tracked = read?.trackedID === plan.id}
+    {@const trackHint = plan.corp ? "UI/SkillPlan/SaveAnTrackPlan" : tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint"}
     <div class="skill-plan-view">
       <div class="skill-plan-view-head">
-        <span class="skill-plan-caption">{word(plan.certified ? "UI/SkillPlan/CertifiedSkillPlan" : "UI/SkillPlan/SkillPlan")}</span>
+        <span class="skill-plan-caption">{word(plan.certified ? "UI/SkillPlan/CertifiedSkillPlan" : plan.corp ? "UI/SkillPlan/CorpSkillPlan" : "UI/SkillPlan/SkillPlan")}</span>
         <span class="skill-plan-view-name">{plan.name}</span>
         <button type="button" class="skill-plan-close" aria-label="Close" onclick={close}>✕</button>
       </div>
       <div class="skill-plan-view-buttons">
-        <!-- UpdateInformation: Edit and Delete only where the plan is editable (not a certified one). -->
-        {#if !plan.certified}
+        <!-- UpdateInformation: Edit and Delete only where the plan is editable (IsEditable: not a certified one; a
+             corporation's only with corpRoleSkillPlanManager, its Edit not here yet). -->
+        {#if plan.corp}
+          {#if corp?.canEdit}
+            <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
+          {/if}
+        {:else if !plan.certified}
           <button type="button" title={word("UI/SkillPlan/EditPlan")} aria-label={word("UI/SkillPlan/EditPlan")} onclick={() => edit(plan)}>✎</button>
           <button type="button" title={word("UI/SkillPlan/DeletePlan")} aria-label={word("UI/SkillPlan/DeletePlan")} onclick={() => void deletePlan(plan)}>🗑</button>
         {/if}
         <!-- saveButton: on every plan, a copy among the personal plans. -->
         <button type="button" disabled={copying} title={word("UI/SkillPlan/SavePlan")} aria-label={word("UI/SkillPlan/SavePlan")} onclick={() => void savePlanCopy(plan)}>💾</button>
-        <button type="button" class="skill-plan-track" class:tracked
-          title={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
-          aria-label={word(tracked ? "UI/SkillPlan/UntrackPlanHint" : "UI/SkillPlan/TrackPlanHint")}
+        <button type="button" class="skill-plan-track" class:tracked disabled={plan.corp && copying}
+          title={word(trackHint)} aria-label={word(trackHint)}
           aria-pressed={tracked} onclick={() => void toggleTracked(plan)}>👁</button>
       </div>
       <button type="button" class="skill-plan-toggle" onclick={toggleContents}>
@@ -585,7 +710,7 @@
         </div>
       {/if}
     </div>
-  {:else if panel === "certified"}
+  {:else if shownPanel === "certified"}
     <!-- The Certified Plans panel: the AIR plan alone until it is trained or queued, the career paths locked; then the
          career paths, the factions (none for the Industrialist) and the chosen ones' plans. -->
     {#if certified === undefined}
@@ -624,6 +749,44 @@
         {/if}
       {/if}
     {/if}
+  {:else if shownPanel === "corporation"}
+    <!-- The Corporation Plans panel: the category buttons, NumShown and the filter where there are plans; twelve to a
+         page by name, the page buttons where there is more than one page. -->
+    {#if corp === undefined}
+      <p class="note">Reading your corporation's plans…</p>
+    {:else if corp === null}
+      <p class="error">{word("UI/SkillPlan/ConnectionError")}</p>
+    {:else}
+      {@const corpRead = corp}
+      {#if corpRead.plans.length > 0}
+        <div class="skill-plan-corp-filters">
+          <div class="skill-plan-categories" role="group">
+            {#each certified?.careerPaths ?? [] as career (career.careerPathID)}
+              <button type="button" aria-pressed={corpCategoryID === career.careerPathID} class:selected={corpCategoryID === career.careerPathID}
+                title={message(career.nameID)} onclick={() => chooseCorpCategory(career.careerPathID)}>{message(career.nameID)}</button>
+            {/each}
+          </div>
+          <span class="skill-plan-num-shown">{word("UI/SkillPlan/NumShown", { numShown: corpShown.length, numTotal: corpRead.plans.length })}</span>
+          <input type="search" value={corpFilter} aria-label="Filter" oninput={(event) => setCorpFilter((event.currentTarget as HTMLInputElement).value)} />
+        </div>
+      {/if}
+      {#if corpShown.length === 0}
+        <p class="empty">{word(corpRead.plans.length > 0 ? "UI/SkillPlan/NoSkillPlansMatchingFilters" : "UI/SkillPlan/NoCorpSkillPlans")}</p>
+      {:else}
+        <ul class="skill-plan-cards">
+          {#each corpShown as plan (plan.id)}
+            {@render planCard(plan, corpRead.canEdit)}
+          {/each}
+        </ul>
+        {#if corpPlanPages(corpAll.length) > 1}
+          <div class="skill-plan-pages" role="group">
+            {#each Array.from({ length: corpPlanPages(corpAll.length) }, (_, at) => at) as at (at)}
+              <button type="button" aria-pressed={corpPage === at} class:selected={corpPage === at} onclick={() => { corpPage = at; }}>{at + 1}</button>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+    {/if}
   {:else if read === undefined}
     <p class="note">Reading your skill plans…</p>
   {:else if read === null}
@@ -643,7 +806,9 @@
   {#if menuUp && menu !== null}
     {@const menuFor = menu}
     <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
-      <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
+      {#if !menuFor.plan.corp}
+        <button type="button" role="menuitem" onclick={() => edit(menuFor.plan)}>{word("UI/Neocom/Edit")}</button>
+      {/if}
       <button type="button" role="menuitem" onclick={() => void deletePlan(menuFor.plan)}>{word("UI/Common/Buttons/Delete")}</button>
     </span>
   {/if}
@@ -657,6 +822,12 @@
   .skill-plan-factions { justify-content: center; margin-bottom: 0.75rem; }
   .skill-plan-hint { text-align: center; font-size: 1.1rem; opacity: 0.8; }
   .skill-plan-air { max-width: 20rem; margin: 0 auto 0.75rem; }
+  /* corpPlansPanel: the category buttons at the left, NumShown and the filter at the right; the page buttons below. */
+  .skill-plan-corp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+  .skill-plan-categories, .skill-plan-pages { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .skill-plan-categories { flex: 1; }
+  .skill-plan-pages { margin-top: 0.75rem; }
+  .skill-plan-categories button.selected, .skill-plan-pages button.selected { outline: 1px solid currentColor; }
   /* SkillPlanScroll: as many to a row as fit at 325 wide, each entry 134 high. */
   .skill-plan-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
   .skill-plan-card { position: relative; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 0.5rem;

@@ -214,6 +214,16 @@ import {
   PLAN_ID_AIR, airPlanFinished, certifiedMilestones, certifiedPlanUuid, empireFactions, factionOfRace, type CareerPath, type CertifiedPlanData,
 } from "../bridge/certifiedSkillPlans.ts";
 
+import { corpPlanRequirements, corpPlansFromGetAll, hasSkillPlanManagerRole, type CorpPlanSummary } from "../bridge/corpSkillPlans.ts";
+
+/** A corporation plan as its entry shows it. */
+export type CorpPlanEntry = CorpPlanSummary & {
+  readonly requirements: readonly (readonly [number, number])[];
+  readonly corp: true;
+  readonly completed: boolean;
+  readonly trainingTicks: number | null;
+};
+
 /** A certified plan as its entry shows it: its name and description are messages (nameID, descriptionID). */
 export type CertifiedPlanEntry = CertifiedPlanData & {
   readonly id: string;
@@ -2515,9 +2525,15 @@ export interface AppFlow {
    * to the end of the queue and the queue saved started (AddToTrainingQueue: skillQueueSvc.AddSkillsToQueue, then
    * OnClientQueueModified's commit); then the plan tracked (_CheckSetCurrentSkillPlanAsTracked): at once where none
    * is tracked, on the client's AskTrackPlan question where another is. The levels added (null where the queue was
-   * refused: its refusal is said as any queue's is, and nothing is tracked) and the plan tracked after it.
+   * refused: its refusal is said as any queue's is, and nothing is tracked) and the plan tracked after it. A plan that
+   * cannot be tracked (IsTrackable: a corporation's) is copied first, whatever is tracked (GetSkillPlanCopy:
+   * trackedCopy, the copy's id, null where it was not saved and nothing is tracked), and the copy is the one tracked.
    */
-  trainSkillPlan(plan: PersonalSkillPlan, trackedID: string | null): Promise<{ readonly added: number | null; readonly trackedID: string | null }>;
+  trainSkillPlan(
+    plan: PersonalSkillPlan,
+    trackedID: string | null,
+    trackedCopy?: () => Promise<string | null>,
+  ): Promise<{ readonly added: number | null; readonly trackedID: string | null }>;
   /**
    * The skill plan editor's catalogue (bridge/skillPlanEditor.ts): every skill type, and which the pilot holds (the
    * catalogue lists a skill published or held). Kept once read. Null where it could not be read.
@@ -2552,7 +2568,16 @@ export interface AppFlow {
    * null). Each with its kind, whether it is completed and the time left to train what its type needs
    * (GetSkillTrainingTimeLeftToUseType, no boosters). The types' names asked for. Null where they could not be read.
    */
-  skillPlanMilestones(plan: PersonalSkillPlan): Promise<{
+  /**
+   * The corporation's skill plans (bridge/corpSkillPlans.ts), read as the client reads them: GetAll, each plan's skills
+   * by Get, put right as on reading (CorpSkillPlanController.skillRequirements: ValidateSkillPlan, SetRequiredSkills
+   * where it changed them); as their entries show them; and whether the pilot may edit them (IsEditable: its
+   * corporation's, and corpRoleSkillPlanManager). Null where they could not be read.
+   */
+  corpSkillPlans(): Promise<{ readonly plans: readonly CorpPlanEntry[]; readonly canEdit: boolean } | null>;
+  /** skillPlanService._DeleteCorp: the client's DeleteSkillPlan question, then Delete; true where deleted. A refusal is thrown. */
+  deleteCorpSkillPlan(id: string): Promise<boolean>;
+  skillPlanMilestones(plan: PersonalSkillPlan, scope?: "character" | "corporation"): Promise<{
     readonly milestones: readonly MilestoneEntry[];
     readonly requirements: readonly (readonly [number, number])[] | null;
   } | null>;
@@ -7846,7 +7871,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function trainSkillPlan(plan: PersonalSkillPlan, trackedID: string | null): Promise<{ readonly added: number | null; readonly trackedID: string | null }> {
+  async function trainSkillPlan(
+    plan: PersonalSkillPlan,
+    trackedID: string | null,
+    trackedCopy?: () => Promise<string | null>,
+  ): Promise<{ readonly added: number | null; readonly trackedID: string | null }> {
     const [answered, allSkillsAnswer] = await Promise.all([
       bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []),
       bridgeAsk("skillHandler", "GetAllSkills", []),
@@ -7857,11 +7886,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const levels = untrainedSkills(plan, (typeID) => lapsed.get(typeID)?.trainedSkillLevel ?? null, maxQueued);
     const next = queueWithLevels(queue, levels);
     if (!(await saveSkillQueueSaved(next, "Added to your skill queue", "those skills", true))) return { added: null, trackedID };
+    const trackID = trackedCopy ? await trackedCopy() : plan.id;
+    if (trackID === null) return { added: next.length - queue.length, trackedID };
     let tracked = trackedID;
     if (tracked === null) {
-      tracked = await setTrackedSkillPlan(plan.id).catch(() => null);
-    } else if (tracked !== plan.id && (await askDialog("AskTrackPlan", {}, "Follow this plan from now on?"))) {
-      tracked = await setTrackedSkillPlan(plan.id).catch(() => null);
+      tracked = await setTrackedSkillPlan(trackID).catch(() => null);
+    } else if (tracked !== trackID && (await askDialog("AskTrackPlan", {}, "Follow this plan from now on?"))) {
+      tracked = await setTrackedSkillPlan(trackID).catch(() => null);
     }
     return { added: next.length - queue.length, trackedID: tracked };
   }
@@ -7962,11 +7993,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return planID;
   }
 
-  async function skillPlanMilestones(plan: PersonalSkillPlan): ReturnType<AppFlow["skillPlanMilestones"]> {
+  // A corporation plan's milestones are the corporation's (CorpSkillPlanMilestoneService: corpMilestoneRequest); the
+  // skills they lack are set by the personal request even so (_AddSkillsMissingForMilestones calls
+  // personalSkillPlanRequest.SetRequiredSkills whatever the plan is), as the client does.
+  async function skillPlanMilestones(plan: PersonalSkillPlan, scope: "character" | "corporation" = "character"): ReturnType<AppFlow["skillPlanMilestones"]> {
     const uuid = bytesFromUuid(plan.id);
     let read;
     try {
-      read = milestonesFromGetAll(await gatewayAsk("eve_public.character.skill.plan.milestone.GetAllRequest", { skill_plan: { uuid } }));
+      read = milestonesFromGetAll(await gatewayAsk(`eve_public.${scope}.skill.plan.milestone.GetAllRequest`, { skill_plan: { uuid } }));
     } catch {
       return null;
     }
@@ -7987,7 +8021,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const valid = [];
     for (const milestone of read) {
       if (milestoneValid(milestone, factsOf(milestone.typeID))) valid.push(milestone);
-      else await gatewayAsk("eve_public.character.skill.plan.milestone.DeleteRequest", { milestone: { uuid: bytesFromUuid(milestone.id) } }, true).catch(() => null);
+      else await gatewayAsk(`eve_public.${scope}.skill.plan.milestone.DeleteRequest`, { milestone: { uuid: bytesFromUuid(milestone.id) } }, true).catch(() => null);
     }
     // The skills they need that the plan lacks, put in it.
     let requirements: (readonly [number, number])[] | null = null;
@@ -8076,6 +8110,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function setTrackedSkillPlan(id: string | null): Promise<string | null> {
     await gatewayAsk("eve_public.character.skill.plan.SetActiveRequest", { skill_plan: { uuid: bytesFromUuid(id ?? NO_SKILL_PLAN) } }, true);
     return id;
+  }
+
+  async function corpSkillPlans(): ReturnType<AppFlow["corpSkillPlans"]> {
+    let summaries;
+    try {
+      summaries = corpPlansFromGetAll(await gatewayAsk("eve_public.corporation.skill.plan.GetAllRequest"));
+    } catch {
+      return null;
+    }
+    const read = await Promise.all(summaries.map((summary) =>
+      gatewayAsk("eve_public.corporation.skill.plan.GetRequest", { skill_plan: { uuid: bytesFromUuid(summary.id) } })
+        .then((payload) => ({ ...summary, requirements: corpPlanRequirements(payload) }))
+        .catch(() => ({ ...summary, requirements: [] as (readonly [number, number])[] }))));
+    const validation = await skillPlanValidationFacts([...new Set(read.flatMap((plan) => plan.requirements.map(([skill]) => skill)))]).catch(() => null);
+    const plans = read.map((plan) => {
+      if (validation === null) return plan;
+      const requirements: PlanSkillLevel[] = plan.requirements.map(([skill, level]) => [skill, level] as const);
+      try {
+        if (validateSkillPlan(requirements, validation)) {
+          void gatewayAsk("eve_public.corporation.skill.plan.SetSkillRequirementsRequest", {
+            skill_plan: { uuid: bytesFromUuid(plan.id) },
+            requirements: requirements.map(([skill, level]) => ({ skill_type: { sequential: String(skill) }, level })),
+          }, true).catch(() => null);
+        }
+      } catch {
+        return plan;
+      }
+      return { ...plan, requirements };
+    });
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    const entries = await planEntries(plans, skillsAnswer, allSkillsAnswer);
+    return {
+      plans: entries.map((entry) => ({ ...entry, corp: true as const })),
+      canEdit: hasSkillPlanManagerRole(store.station.get().online?.corpRole ?? null),
+    };
+  }
+
+  async function deleteCorpSkillPlan(id: string): Promise<boolean> {
+    if (!(await askDialog("DeleteSkillPlan", {}, "Delete this skill plan for good?"))) return false;
+    await gatewayAsk("eve_public.corporation.skill.plan.DeleteRequest", { skill_plan: { uuid: bytesFromUuid(id) } }, true);
+    return true;
   }
 
   async function deletePersonalSkillPlan(id: string): Promise<boolean> {
@@ -22630,6 +22705,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     personalSkillPlans,
     certifiedSkillPlans,
     certifiedPlanMilestones,
+    corpSkillPlans,
+    deleteCorpSkillPlan,
     copySkillPlan,
     deletePersonalSkillPlan,
     skillPlanDetail,

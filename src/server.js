@@ -13472,6 +13472,10 @@ const PUBLIC_GATEWAY_READS = new Set([
   "eve_public.character.skill.plan.GetActiveRequest",
   // skills/skillplan/grpc/message_bus/milestoneRequestsMessenger.py
   "eve_public.character.skill.plan.milestone.GetAllRequest",
+  // corpSkillPlanRequestsMessenger.py, corpMilestoneRequest.py
+  "eve_public.corporation.skill.plan.GetAllRequest",
+  "eve_public.corporation.skill.plan.GetRequest",
+  "eve_public.corporation.skill.plan.milestone.GetAllRequest",
 ]);
 const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.DeleteRequest",
@@ -13482,6 +13486,9 @@ const PUBLIC_GATEWAY_WRITES = new Set([
   "eve_public.character.skill.plan.SetDescriptionRequest",
   "eve_public.character.skill.plan.milestone.DeleteRequest",
   "eve_public.character.skill.plan.milestone.CreateRequest",
+  "eve_public.corporation.skill.plan.SetSkillRequirementsRequest",
+  "eve_public.corporation.skill.plan.DeleteRequest",
+  "eve_public.corporation.skill.plan.milestone.DeleteRequest",
 ]);
 let publicGatewayClient = null;
 app.post("/api/public-gateway/request", requireAuth, async (req, res, next) => {

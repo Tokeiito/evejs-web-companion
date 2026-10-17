@@ -813,6 +813,529 @@
     }
    ]
   },
+  "eve_public.corporation.skill.plan.Attributes": {
+   "fields": [
+    {
+     "name": "name",
+     "number": 1,
+     "type": 9,
+     "label": 1
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    },
+    {
+     "name": "skill_requirements",
+     "number": 3,
+     "type": 11,
+     "label": 3,
+     "typeName": "eve_public.skill.plan.SkillRequirement"
+    },
+    {
+     "name": "category",
+     "number": 4,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.category.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.CategoryUpdatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "category",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.category.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.CreateRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.CreateResponse": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.CreatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "skill_plan",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.DeleteRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.DeleteResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.DeletedNotice": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.DescriptionUpdatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetAllRequest": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.GetAllResponse": {
+   "fields": [
+    {
+     "name": "skill_plans",
+     "number": 1,
+     "type": 11,
+     "label": 3,
+     "typeName": "eve_public.corporation.skill.plan.GetAllResponse.SkillPlans"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetAllResponse.SkillPlans": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "skill_plan",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Summary"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetResponse": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetSharedRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.GetSharedResponse": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.NameUpdatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "name",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.SetCategoryRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "category",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.category.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.SetCategoryResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.SetDescriptionRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.SetDescriptionResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.SetNameRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "name",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.SetNameResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.SetSkillRequirementsRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "requirements",
+     "number": 2,
+     "type": 11,
+     "label": 3,
+     "typeName": "eve_public.skill.plan.SkillRequirement"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.SetSkillRequirementsResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.SkillRequirementsUpdatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "requirements",
+     "number": 2,
+     "type": 11,
+     "label": 3,
+     "typeName": "eve_public.skill.plan.SkillRequirement"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.Summary": {
+   "fields": [
+    {
+     "name": "name",
+     "number": 1,
+     "type": 9,
+     "label": 1
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    },
+    {
+     "name": "category",
+     "number": 3,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.category.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.UpdatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    },
+    {
+     "name": "skill_plan",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.corporation.skill.plan.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.category.Identifier": {
+   "fields": [
+    {
+     "name": "uuid",
+     "number": 1,
+     "type": 12,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.CreateRequest": {
+   "fields": [
+    {
+     "name": "milestone",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.CreateResponse": {
+   "fields": [
+    {
+     "name": "milestone",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.CreatedNotice": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    },
+    {
+     "name": "milestone",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Attributes"
+    },
+    {
+     "name": "skill_plan",
+     "number": 3,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.DeleteRequest": {
+   "fields": [
+    {
+     "name": "milestone",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.DeleteResponse": {
+   "fields": []
+  },
+  "eve_public.corporation.skill.plan.milestone.DeletedNotice": {
+   "fields": [
+    {
+     "name": "milestone",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.DescriptionSetNotice": {
+   "fields": [
+    {
+     "name": "milestone",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.GetAllRequest": {
+   "fields": [
+    {
+     "name": "skill_plan",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.Identifier"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.GetAllResponse": {
+   "fields": [
+    {
+     "name": "milestones",
+     "number": 1,
+     "type": 11,
+     "label": 3,
+     "typeName": "eve_public.corporation.skill.plan.milestone.GetAllResponse.Milestone"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.GetAllResponse.Milestone": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    },
+    {
+     "name": "data",
+     "number": 2,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Attributes"
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.SetDescriptionRequest": {
+   "fields": [
+    {
+     "name": "identifier",
+     "number": 1,
+     "type": 11,
+     "label": 1,
+     "typeName": "eve_public.skill.plan.milestone.Identifier"
+    },
+    {
+     "name": "description",
+     "number": 2,
+     "type": 9,
+     "label": 1
+    }
+   ]
+  },
+  "eve_public.corporation.skill.plan.milestone.SetDescriptionResponse": {
+   "fields": []
+  },
   "eve_public.inventory.genericitemtype.Attributes": {
    "fields": [
     {
