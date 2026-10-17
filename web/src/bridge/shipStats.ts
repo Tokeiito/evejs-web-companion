@@ -195,6 +195,8 @@ export interface ShipStats {
     readonly warpSpeedAuPerSecond: Stat;
     readonly signatureRadius: Stat;
     readonly mass: Stat;
+    /** The agility (inertia modifier). */
+    readonly inertiaModifier: Stat;
   };
 
   readonly targeting: {
@@ -457,6 +459,7 @@ export function deriveShipStats(
       warpSpeedAuPerSecond: warpSpeed(attributes),
       signatureRadius: readPositive(attributes, ATTR.signatureRadius, "its signature radius"),
       mass: readPositive(attributes, ATTR.mass, "its mass"),
+      inertiaModifier: readPositive(attributes, ATTR.inertiaModifier, "its inertia modifier"),
     },
 
     targeting: {

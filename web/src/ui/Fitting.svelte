@@ -62,6 +62,8 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { fmtDist } from "../space/overview.ts";
   import { hullTree, NON_EMPIRE, type HullFacts, type ShipTraitBonus, type ShipTraits } from "../bridge/hullBrowser.ts";
   import { showInfo } from "./showInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
@@ -399,6 +401,41 @@
       ? capacitorWord("UI/Fitting/FittingWindow/Stable")
       : capacitorWord("UI/Fitting/FittingWindow/CapacitorNotStable", { time: Math.trunc(simulation.ttl ?? 0) });
   }
+  // The targeting and navigation panels' words (targetingPanel.py, navigationPanel.py), the client's from the install;
+  // the page's own where it has none.
+  const SHIP_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/TargetingHeader": "{[numeric]maxRange, useGrouping} km",
+    "UI/Fitting/FittingWindow/ScanResolution": "{[numeric]resolution} mm",
+    "UI/Fitting/FittingWindow/MaxLockedTargets": "{[numeric]maxTargets} at once",
+    "UI/Fitting/FittingWindow/TargetingRange": "{[numeric]range.distance, decimalPlaces=1}",
+    "UI/Fitting/FittingWindow/SensorStrength": "{[numeric]points} {[numeric]points -> \"point\", \"points\"}",
+    "UI/Fitting/FittingWindow/MassTonnes": "{[numeric]mass, useGrouping} tonnes",
+    "UI/Fitting/FittingWindow/MassKg": "{[numeric]mass, useGrouping} kilograms",
+    "UI/Fitting/FittingWindow/ColoredMaxVelocity": "{[numeric]maxVelocity, decimalPlaces=1} metres a second",
+    "UI/Fitting/FittingWindow/InertiaModifier": "{[numeric]value, decimalPlaces=4} times",
+    "UI/Fitting/FittingWindow/AlignTime": "{[numeric]value, decimalPlaces=2} seconds",
+    "UI/Fitting/FittingWindow/WarpSpeed": "{distText} a second",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords([...Object.keys(SHIP_WORDS), ...DISTANCE_WORD_LABELS]);
+  });
+  const say = $derived(distanceSay($words.templates));
+  /** A targeting or navigation label filled: the client's template where the install has it, the page's own otherwise. */
+  function shipWord(label: string, args: Record<string, string | number> = {}): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SHIP_WORDS[label] ?? "", args, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+      writeDistance: (metres, decimals) => fmtDist(metres, decimals, say),
+    }));
+  }
+  /** const.AU, in metres. */
+  const METRES_PER_AU = 149_597_870_700;
+  /** The worded figure of a known statistic; "—" where it is not known. */
+  function knownWord(stat: Stat, word: (value: number) => string): string {
+    return stat.known ? word(stat.value) : "—";
+  }
+
   // The defense panel's words (defensePanel.py), the client's from the install; the page's own where it has none.
   const DEFENSE_WORDS: Readonly<Record<string, string>> = {
     "UI/Fitting/FittingWindow/ColoredEffectiveHp": "{[numeric]effectiveHp, useGrouping} effective hit points",
@@ -1556,8 +1593,29 @@
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Targeting</span>
-        <span class="fit-sec-headline">{@render statValue(stats.targeting.maxTargetRange, asDistance)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{knownWord(stats.targeting.maxTargetRange, (v) => shipWord("UI/Fitting/FittingWindow/TargetingHeader", { maxRange: v / 1000.0 }))}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.targeting.maxTargetRange, asDistance)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <!-- targetingPanel.UpdateTargetingPanel: the strongest sensor, the scan resolution's whole part, the targets
+             rounded up, the signature radius as a distance. -->
+        <div class="fit-sec-body">
+          <table class="guests">
+            <tbody>
+              <tr>
+                <th scope="row">{stats.targeting.sensorName ? `${stats.targeting.sensorName} sensor strength` : "Sensor strength"}</th>
+                <td>{knownWord(stats.targeting.sensorStrength, (v) => shipWord("UI/Fitting/FittingWindow/SensorStrength", { points: v }))}</td>
+              </tr>
+              <tr><th scope="row">Scan resolution</th><td>{knownWord(stats.targeting.scanResolution, (v) => shipWord("UI/Fitting/FittingWindow/ScanResolution", { resolution: Math.trunc(v) }))}</td></tr>
+              <tr><th scope="row">Signature radius</th><td>{knownWord(stats.navigation.signatureRadius, (v) => shipWord("UI/Fitting/FittingWindow/TargetingRange", { range: v }))}</td></tr>
+              <tr><th scope="row">Targets at once</th><td>{knownWord(stats.targeting.maxLockedTargets, (v) => shipWord("UI/Fitting/FittingWindow/MaxLockedTargets", { maxTargets: Math.ceil(v) }))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
@@ -1574,13 +1632,37 @@
           </tbody>
         </table>
       </div>
+      {/if}
     </details>
 
     <details class="fit-sec" open>
       <summary class="fit-sec-head">
         <span class="fit-sec-name">Navigation</span>
-        <span class="fit-sec-headline">{@render statValue(stats.navigation.maxVelocity, (v) => `${toFixed(v, 1)} m/s`)}</span>
+        {#if stats.defense}
+          <span class="fit-sec-headline">{knownWord(stats.navigation.maxVelocity, (v) => shipWord("UI/Fitting/FittingWindow/ColoredMaxVelocity", { maxVelocity: v }))}</span>
+        {:else}
+          <span class="fit-sec-headline">{@render statValue(stats.navigation.maxVelocity, (v) => `${toFixed(v, 1)} m/s`)}</span>
+        {/if}
       </summary>
+      {#if stats.defense}
+        <!-- navigationPanel.UpdateNavigationPanel: the mass in tonnes past ten thousand kilograms, the inertia modifier,
+             the align time, the warp speed as a distance a second (base times multiplier times an AU). -->
+        <div class="fit-sec-body">
+          <table class="guests">
+            <tbody>
+              <tr>
+                <th scope="row">Mass</th>
+                <td>{knownWord(stats.navigation.mass, (v) => (v > 10000.0
+                  ? shipWord("UI/Fitting/FittingWindow/MassTonnes", { mass: v / 1000.0 })
+                  : shipWord("UI/Fitting/FittingWindow/MassKg", { mass: v })))}</td>
+              </tr>
+              <tr><th scope="row">Inertia modifier</th><td>{knownWord(stats.navigation.inertiaModifier, (v) => shipWord("UI/Fitting/FittingWindow/InertiaModifier", { value: v }))}</td></tr>
+              <tr><th scope="row">Time to align</th><td>{knownWord(stats.navigation.alignTimeSeconds, (v) => shipWord("UI/Fitting/FittingWindow/AlignTime", { value: v }))}</td></tr>
+              <tr><th scope="row">Warp speed</th><td>{knownWord(stats.navigation.warpSpeedAuPerSecond, (v) => shipWord("UI/Fitting/FittingWindow/WarpSpeed", { distText: fmtDist(v * METRES_PER_AU, 2, say) }))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      {:else}
       <div class="fit-sec-body">
         <table class="guests">
           <tbody>
@@ -1592,6 +1674,7 @@
           </tbody>
         </table>
       </div>
+      {/if}
     </details>
 
     <details class="fit-sec" open>
