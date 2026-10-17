@@ -19,7 +19,10 @@
 // - **Nothing Found:** where an owner's fittings are asked for and none is let through, or where nothing at all is
 //   listed.
 //
-// A group or race holding the ship the pilot is in is marked so (isGroupForCurrentShip), as is the hull itself.
+// A group or race holding the ship the pilot is in is marked so (isGroupForCurrentShip), as is the hull itself. A group
+// or race node carries the hulls its Compare compares, in the order the client's node holds them (compareTypeIDs).
+
+import { intDictOrder } from "./py27DictOrder.ts";
 
 /** A type's facts as the client's data has them (GET /api/client-data/hull-browser); null for a type it has not. */
 export interface HullFacts {
@@ -92,6 +95,8 @@ export interface RaceNode<F extends TreeFitting> {
   readonly raceID: number;
   readonly hulls: readonly HullNode<F>[];
   readonly hasCurrent: boolean;
+  /** The hulls its Compare compares, in the client's order (the node's typeIDs: its race's set of hulls). */
+  readonly compareTypeIDs: readonly number[];
 }
 
 export interface GroupNode<F extends TreeFitting> {
@@ -101,6 +106,8 @@ export interface GroupNode<F extends TreeFitting> {
   readonly namedBy: number;
   readonly races: readonly RaceNode<F>[];
   readonly hasCurrent: boolean;
+  /** The hulls its Compare compares, in the client's order (the node's typeIDs: each race's set, in its dict's order). */
+  readonly compareTypeIDs: readonly number[];
 }
 
 export interface HullTree<F extends TreeFitting> {
@@ -118,6 +125,8 @@ export interface HullTreeInput<F extends TreeFitting> {
   readonly ownerFilterIsSet: boolean;
   /** With no owner's fittings asked for: the market's hulls the filters let through. */
   readonly marketHulls: readonly number[];
+  /** Every one of the market's hulls, filtered or not: the set the client walks for them (for the order it walks). */
+  readonly allMarketHulls?: readonly number[];
   readonly specialTypeIDs: ReadonlySet<number>;
   /** A type's facts; undefined while they are not had. */
   readonly facts: (typeID: number) => HullFacts | null | undefined;
@@ -165,12 +174,50 @@ export function hullTree<F extends TreeFitting>(input: HullTreeInput<F>): HullTr
     place(fitting.shipTypeID, facts);
     fittingsByType.set(fitting.shipTypeID, [...(fittingsByType.get(fitting.shipTypeID) ?? []), fitting]);
   }
+  // The order the client's nodes hold their hulls in, which is the order a node's Compare compares them in
+  // (ShipParentGroup.GetMenu: menusvc.CompareTypes(node.typeIDs)). GetAllShipGroupsAndShipsByGroupID (359 to 383) walks
+  // the set of the market's hulls, putting each the filters let through in a set of its group's race (a dict of
+  // races by group, defaultdict(set)); GetShipsAndGroups (322 to 352) then puts each fitting's hull in too. A race
+  // node's typeIDs are its set; a group node's are its races' sets one after another, in the dict's order
+  // (GetScrollListForShipGroups, 107: itertools.chain of the dict's values). Python 2.7 iterates a set of whole numbers
+  // as its dict does (intDictOrder; measured against the client's python27.dll, sixty sets of up to 700 hulls). The
+  // market's set is filled from its groups' lists (marketQuote.AddTypesToMarketGroups: each the keys of a dict merged
+  // from its subgroups), an order not had here: the hulls go in by number, and the fittings in the page's order (the
+  // client merges its owners' dicts of them). Either changes only which of two hulls that fall on one slot comes first.
+  const raceOrder = new Map<number, number[]>();
+  const raceSets = new Map<string, number[]>();
+  const note = (typeID: number, facts: HullFacts): void => {
+    if (facts.groupID === null) return;
+    const groupID = input.specialTypeIDs.has(typeID) ? -facts.groupID : facts.groupID;
+    const raceID = raceOfFaction(facts.factionID);
+    const races = raceOrder.get(groupID) ?? [];
+    raceOrder.set(groupID, races);
+    if (!races.includes(raceID)) races.push(raceID);
+    const ships = raceSets.get(`${groupID}:${raceID}`) ?? [];
+    raceSets.set(`${groupID}:${raceID}`, ships);
+    if (!ships.includes(typeID)) ships.push(typeID);
+  };
+  if (!input.ownerFilterIsSet) {
+    const shown = new Set(input.marketHulls);
+    for (const typeID of intDictOrder(input.allMarketHulls ?? input.marketHulls)) {
+      const facts = shown.has(typeID) ? input.facts(typeID) : null;
+      if (facts) note(typeID, facts);
+    }
+  }
+  for (const fitting of input.fittings) {
+    const facts = input.facts(fitting.shipTypeID);
+    if (facts && facts.published) note(fitting.shipTypeID, facts);
+  }
+  const raceCompare = (groupID: number, raceID: number): number[] => intDictOrder(raceSets.get(`${groupID}:${raceID}`) ?? []);
+  const groupCompare = (groupID: number): number[] => intDictOrder(raceOrder.get(groupID) ?? []).flatMap((raceID) => raceCompare(groupID, raceID));
+
   const current = input.currentShipTypeID;
   const metaKey = (typeID: number): number => input.facts(typeID)?.metaGroupID ?? Number.NEGATIVE_INFINITY;
   const groupNode = (groupID: number, races: Map<number, Set<number>>): GroupNode<F> => {
     const raceNodes = [...races].map(([raceID, ships]): RaceNode<F> => ({
       raceID,
       hasCurrent: current !== null && ships.has(current),
+      compareTypeIDs: raceCompare(groupID, raceID),
       hulls: [...ships]
         .sort((left, right) => metaKey(left) - metaKey(right) || pyCompare(input.typeName(left), input.typeName(right)))
         .map((typeID) => ({
@@ -179,7 +226,7 @@ export function hullTree<F extends TreeFitting>(input: HullTreeInput<F>): HullTr
           fittings: (fittingsByType.get(typeID) ?? []).slice().sort((left, right) => OWNER_ORDER[left.source] - OWNER_ORDER[right.source] || pyCompare(left.name.toLowerCase(), right.name.toLowerCase())),
         })),
     })).sort((left, right) => pyCompare(input.raceName(left.raceID), input.raceName(right.raceID)));
-    return { groupID, namedBy: namedBy.get(groupID) ?? 0, races: raceNodes, hasCurrent: raceNodes.some((race) => race.hasCurrent) };
+    return { groupID, namedBy: namedBy.get(groupID) ?? 0, races: raceNodes, hasCurrent: raceNodes.some((race) => race.hasCurrent), compareTypeIDs: groupCompare(groupID) };
   };
   const byName = (left: GroupNode<F>, right: GroupNode<F>): number => pyCompare(input.groupName(left.namedBy), input.groupName(right.namedBy));
   const all = [...shipsByGroupAndRace].map(([groupID, races]) => groupNode(groupID, races));

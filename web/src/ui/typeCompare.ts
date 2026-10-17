@@ -41,6 +41,14 @@ export function compareType(typeID: number): void {
   typeCompareTarget.ask([typeID]);
 }
 
+/**
+ * menusvc.CompareTypes(typeIDs) (2365 to 2377): the compare tool opened and comparing the types, in their order
+ * (open_and_compare_multiple); opened even for none.
+ */
+export function compareTypes(typeIDs: readonly number[]): void {
+  typeCompareTarget.ask(typeIDs);
+}
+
 const ONLY_DIFFERENT_KEY = "evejs.compare_onlyShowDifferent";
 
 function storedOnlyDifferent(): boolean {

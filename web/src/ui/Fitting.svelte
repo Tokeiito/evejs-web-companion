@@ -65,7 +65,7 @@
   import { showMarketDetails } from "./marketDetails.ts";
   import { findInPersonalAssets } from "./assetsSearch.ts";
   import { findInContracts } from "./contractsSearch.ts";
-  import { compareType } from "./typeCompare.ts";
+  import { compareType, compareTypes } from "./typeCompare.ts";
   import { assetSearchTextForType } from "../bridge/assetSearch.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
@@ -279,8 +279,8 @@
   // tooltips of a fitting and of a hull (its traits with them), a hull's menu (Show Info, View Market Details, Find in
   // Contracts, Find Personal Assets and Compare), and the selection's Delete Fitting for several at once
   // (DeleteManyFittings). Its words are the install's; the page's own stand in. Not done: a hull's Simulate button, the
-  // menu's Simulate Fitting, a fitting clicked (simulated), the groups' Compare, and an unsupported fitting shown whole
-  // to a game master. Delete Fitting is offered as GetDeletableNodes offers it (the
+  // menu's Simulate Fitting, a fitting clicked (simulated), and an unsupported fitting shown whole to a game master. A
+  // group's or a race's menu is the client's ShipParentGroup's: Compare, then Expand or Collapse. Delete Fitting is offered as GetDeletableNodes offers it (the
   // corporation's and the alliance's by role). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
@@ -296,6 +296,9 @@
     "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
     "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
     "UI/Compare/CompareButton": "Side by side",
+    // A group's menu after its Compare (ListGroup.GetMenu, 299 to 304).
+    "UI/Common/Expand": "Open it",
+    "UI/Common/Collapse": "Close it",
     // The asset search's exact-type keyword (assetSearchUtil, KeywordTypeExact): a word the search reads, not shown.
     "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
     "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
@@ -552,15 +555,34 @@
   let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
   function openHullMenu(typeID: number, event: MouseEvent): void {
     event.preventDefault();
+    nodeMenu = null;
     hullMenu = { typeID, x: event.clientX, y: event.clientY };
   }
+  // A group's or a race's menu (ShipParentGroup.GetMenu, fittingBrowser.py 579 to 583): Compare, which compares the
+  // node's hulls in the order it holds them (menusvc.CompareTypes(node.typeIDs): the compare tool opened, typeCompare.ts);
+  // then the list group's own (ListGroup.GetMenu, 284 to 311): Expand or Collapse, the node being locked (no Change
+  // Label, no Delete Folder) and kept from a window of its own (BlockOpenWindow). The Special Edition Ships group is
+  // given its hulls as "typeIds" (fittingBrowser.py 138), so its typeIDs are None, and its Compare raises in CompareTypes
+  // before anything opens: here it does nothing (typeIDs null).
+  let nodeMenu = $state<{ readonly typeIDs: readonly number[] | null; readonly id: string; readonly x: number; readonly y: number } | null>(null);
+  function openNodeMenu(typeIDs: readonly number[] | null, id: string, event: MouseEvent): void {
+    event.preventDefault();
+    hullMenu = null;
+    nodeMenu = { typeIDs, id, x: event.clientX, y: event.clientY };
+  }
   $effect(() => {
-    if (hullMenu === null) return;
+    if (hullMenu === null && nodeMenu === null) return;
     const close = (event: Event): void => {
-      if (!(event.target instanceof Element && event.target.closest(".hull-menu"))) hullMenu = null;
+      if (!(event.target instanceof Element && event.target.closest(".hull-menu"))) {
+        hullMenu = null;
+        nodeMenu = null;
+      }
     };
     const key = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") hullMenu = null;
+      if (event.key === "Escape") {
+        hullMenu = null;
+        nodeMenu = null;
+      }
     };
     const timer = setTimeout(() => {
       window.addEventListener("pointerdown", close);
@@ -634,6 +656,7 @@
       fittings: shownFittings,
       ownerFilterIsSet,
       marketHulls,
+      allMarketHulls: data.hullTypeIDs,
       specialTypeIDs: data.specialTypeIDs,
       facts: (typeID): HullFacts | null | undefined => (data.types.has(typeID) ? data.types.get(typeID) : undefined),
       typeName: hullName,
@@ -1879,6 +1902,14 @@
         <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
       </span>
     {/if}
+    {#if nodeMenu !== null}
+      {@const menuFor = nodeMenu}
+      <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+        <button type="button" role="menuitem" onclick={() => { const typeIDs = menuFor.typeIDs; nodeMenu = null; if (typeIDs !== null) compareTypes(typeIDs); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        <hr />
+        <button type="button" role="menuitem" onclick={() => { const id = menuFor.id; nodeMenu = null; opened[id] = opened[id] !== true; }}>{fitWord(opened[menuFor.id] === true ? "UI/Common/Collapse" : "UI/Common/Expand")}</button>
+      </span>
+    {/if}
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
     <p class="controls">
       <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
@@ -2002,12 +2033,12 @@
     {#snippet groupEntry(group: NonNullable<typeof browserTree>["groups"][number], prefix: string)}
       {@const id = `${prefix}g:${group.groupID}`}
       <details class="browser-node" class:holds-current={group.hasCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
-        <summary>{hullGroupName(group.namedBy)}</summary>
+        <summary oncontextmenu={(event) => openNodeMenu(group.compareTypeIDs, id, event)}>{hullGroupName(group.namedBy)}</summary>
         {#if opened[id] === true}
           {#each group.races as race (race.raceID)}
             {@const raceID = `${id}_${race.raceID}`}
             <details class="browser-node" class:holds-current={race.hasCurrent} open={opened[raceID] === true} ontoggle={(event) => toggled(raceID, event)}>
-              <summary>{raceName(race.raceID)}</summary>
+              <summary oncontextmenu={(event) => openNodeMenu(race.compareTypeIDs, raceID, event)}>{raceName(race.raceID)}</summary>
               {#if opened[raceID] === true}
                 {#each race.hulls as hull (hull.typeID)}
                   {@render hullEntry(hull)}
@@ -2039,7 +2070,7 @@
         {/each}
         {#if browserTree.special.length > 0}
           <details class="browser-node" class:holds-current={browserTree.specialHasCurrent} open={opened.special === true} ontoggle={(event) => toggled("special", event)}>
-            <summary>{fitWord("UI/Fitting/FittingWindow/SpecialEditionShips")}</summary>
+            <summary oncontextmenu={(event) => openNodeMenu(null, "special", event)}>{fitWord("UI/Fitting/FittingWindow/SpecialEditionShips")}</summary>
             {#if opened.special === true}
               {#each browserTree.special as group (group.groupID)}
                 {@render groupEntry(group, "special")}
