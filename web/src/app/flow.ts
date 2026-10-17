@@ -486,7 +486,7 @@ import { scannerStateFromRead, type ScannerOperationsSnapshot } from "../scanner
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeAllianceFittings, decodeCommunityFittings, decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { type HullBrowserData } from "../bridge/hullBrowser.ts";
+import { type HullBrowserData, type ShipTraitsHeld } from "../bridge/hullBrowser.ts";
 import { createFittingData, fittingContents, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
@@ -2388,6 +2388,10 @@ export interface AppFlow {
   readonly hullBrowser: ReadableSignal<HullBrowserData | null>;
   /** Reads them where not had, with the facts of each type named that is not had (a saved fitting's hull). */
   loadHullBrowser(typeIDs: readonly number[]): Promise<void>;
+  /** Ships' traits as read (a hull's tooltip shows them: HullTypeListGroup.LoadTooltipPanel, TraitsContainer). */
+  readonly shipTraits: ReadableSignal<ShipTraitsHeld>;
+  /** Asks the traits of the ships named that are not asked yet, with the words and names they are written with. */
+  requestShipTraits(typeIDs: readonly number[]): Promise<void>;
   /**
    * A saved fitting's Delete Fitting (fittingUtil.DeleteFittings for one: the DeleteFitting question, then
    * fittingSvc.DeleteFitting on the owner's fitting manager, and the fitting let go).
@@ -7356,6 +7360,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } finally {
       hullBrowserRead = null;
     }
+  }
+
+  // Ships' traits (the client's infobubbles), asked type by type as a hull is pointed at, and kept: static data.
+  const shipTraitsSignal = createSignal<ShipTraitsHeld>({ traits: new Map(), unitNameIDs: new Map() });
+  const shipTraitsAsked = new Set<number>();
+
+  /**
+   * The traits of the ships not asked yet (GET /api/client-data/ship-traits), kept; and the words they are written with
+   * (traits.TraitsContainer: each bonus's words and its unit's name by their messages, the skills' names).
+   */
+  async function requestShipTraits(typeIDs: readonly number[]): Promise<void> {
+    const wanted = [...new Set(typeIDs)].filter((typeID) => Number.isSafeInteger(typeID) && typeID > 0 && !shipTraitsAsked.has(typeID)).slice(0, 50);
+    if (wanted.length === 0) return;
+    for (const typeID of wanted) shipTraitsAsked.add(typeID);
+    const read = await api.getShipTraits(wanted, callOptions).catch(() => null);
+    if (read === null || !read.available) {
+      for (const typeID of wanted) shipTraitsAsked.delete(typeID);
+      return;
+    }
+    const held = shipTraitsSignal.get();
+    const traits = new Map(held.traits);
+    const unitNameIDs = new Map(held.unitNameIDs);
+    for (const [key, value] of Object.entries(read.traits)) traits.set(Number(key), value);
+    for (const [key, value] of Object.entries(read.unitNameIDs)) unitNameIDs.set(Number(key), value);
+    shipTraitsSignal.set({ traits, unitNameIDs });
+    const all = Object.values(read.traits).flatMap((each) => (each === null ? [] : [...each.skills.flatMap((skill) => skill.bonuses), ...each.role, ...each.misc]));
+    requestWords([
+      ...all.flatMap((bonus) => (bonus.nameID === null ? [] : [`#${bonus.nameID}`])),
+      ...Object.values(read.unitNameIDs).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])),
+    ]);
+    requestNames(Object.values(read.traits).flatMap((each) => (each === null ? [] : each.skills.map((skill) => ({ kind: "type" as const, id: skill.skillTypeID })))));
   }
 
   /** globalConfig/const.py SHOW_COMMUNITY_FITTINGS_CONFIG, and its default ('1'). */
@@ -21674,6 +21709,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     hullsWithSkills,
     hullBrowser: readonlySignal(hullBrowserSignal),
     loadHullBrowser,
+    shipTraits: readonlySignal(shipTraitsSignal),
+    requestShipTraits,
     deleteFitting,
     deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),

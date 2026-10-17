@@ -29,6 +29,29 @@ export interface HullFacts {
   readonly factionID: number | null;
   readonly metaGroupID: number | null;
   readonly published: boolean;
+  /** evetypes.GetMarketGroupID: the type's market group; null for none (the type menu's View Market Details goes by it). */
+  readonly marketGroupID: number | null;
+}
+
+/** One of a ship's traits (infobubbles' bonuses): its number where it has one, its order, its words' message and its unit. */
+export interface ShipTraitBonus {
+  readonly bonus: number | null;
+  readonly importance: number;
+  readonly nameID: number | null;
+  readonly unitID: number | null;
+}
+
+/** A ship's traits (infobubbles.iter_ship_skill_bonuses, get_role_bonus, get_misc_bonus): per skill, its role's, others. */
+export interface ShipTraits {
+  readonly skills: readonly { readonly skillTypeID: number; readonly bonuses: readonly ShipTraitBonus[] }[];
+  readonly role: readonly ShipTraitBonus[];
+  readonly misc: readonly ShipTraitBonus[];
+}
+
+/** The ships' traits as read (null for a ship with none), and the units' names as the numbers of their messages. */
+export interface ShipTraitsHeld {
+  readonly traits: ReadonlyMap<number, ShipTraits | null>;
+  readonly unitNameIDs: ReadonlyMap<number, number | null>;
 }
 
 /** The browser's hulls as the page keeps them (the flow's hullBrowser): as read, and each type's facts by its number. */

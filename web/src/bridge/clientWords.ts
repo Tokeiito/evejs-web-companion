@@ -166,6 +166,13 @@ export function parseTemplate(template: string): Array<string | TemplateToken> {
   return parts;
 }
 
+/** A Python int as the wire gives one ({type: "long", value: its digits}). */
+function isLongValue(value: JsonValue | undefined): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, JsonValue>;
+  return record.type === "long" && typeof record.value === "string" && /^-?\d+$/.test(record.value);
+}
+
 /** A number the server sent, however the bridge spelled it; null when it is not one. */
 function numberOf(value: JsonValue | undefined): number | null {
   if (typeof value === "number") {
@@ -241,8 +248,14 @@ function formatInterval(ticks: number): string {
   return parts.join(" ");
 }
 
-function formatNumber(value: number, token: TemplateToken): string {
-  const places = /^\d+$/.test(token.settings.decimalPlaces ?? "") ? Number(token.settings.decimalPlaces) : null;
+/**
+ * eveLocalization.FormatNumeric (the client's _evelocalization.dll, measured through its python27.dll): a float with
+ * decimalPlaces written to that many places (5.0 is "5.0", 0.25 "0.3"), an int as itself whatever the places (5 is
+ * "5"). A JavaScript number cannot say which it was, so it is taken for a float; a value given as a long (the wire's
+ * {type: "long"}, a Python int) is written as an int (`whole`).
+ */
+function formatNumber(value: number, token: TemplateToken, whole = false): string {
+  const places = whole ? null : /^\d+$/.test(token.settings.decimalPlaces ?? "") ? Number(token.settings.decimalPlaces) : null;
   if (token.modifiers.includes("useGrouping")) {
     return value.toLocaleString("en-US", places === null ? {} : { minimumFractionDigits: places, maximumFractionDigits: places });
   }
@@ -287,7 +300,7 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
         ? ""
         : token.property === "distance" && context.writeDistance
           ? context.writeDistance(value, places(3))
-          : isk ?? formatNumber(value, token);
+          : isk ?? formatNumber(value, token, isLongValue(given));
       break;
     }
     case "item":

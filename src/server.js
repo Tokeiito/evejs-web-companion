@@ -13212,6 +13212,52 @@ app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => 
   }
 });
 
+// A ship's traits as the client's data has them (infobubbles: get_info_bubble_type_bonuses), for the types asked: its
+// bonuses per skill, its role bonuses and its other bonuses, each {bonus, importance, nameID, unitID} (traits.py
+// TraitsContainer); null for a type with none (infobubbles.has_traits). With them, each unit's name as the number of its
+// message (dogma/units.py get_display_name). `available` is false when the client's data could not be read. At most 50.
+app.get("/api/client-data/ship-traits", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const [bonuses, unitNames] = await Promise.all([clientBuiltData.infoBubbleTypeBonuses(), clientBuiltData.table("unitDisplayNames")]);
+    if (!bonuses) {
+      res.json({ ok: true, available: false, traits: {}, unitNameIDs: {} });
+      return;
+    }
+    const bonusOf = (value) => ({
+      bonus: Number.isFinite(Number(value && value.bonus)) && value.bonus !== undefined && value.bonus !== null ? Number(value.bonus) : null,
+      importance: Number(value && value.importance) || 0,
+      nameID: Number(value && value.nameID) || null,
+      unitID: Number(value && value.unitID) || null,
+    });
+    const listOf = (value) => (Array.isArray(value) ? value.map(bonusOf) : []);
+    const traits = {};
+    const units = new Set();
+    for (const typeID of asked.slice(0, 50)) {
+      const entry = bonuses[String(typeID)];
+      if (!entry || typeof entry !== "object") {
+        traits[typeID] = null;
+        continue;
+      }
+      const skills = Object.entries(entry.types && typeof entry.types === "object" ? entry.types : {})
+        .map(([skillTypeID, list]) => ({ skillTypeID: Number(skillTypeID), bonuses: listOf(list) }));
+      traits[typeID] = { skills, role: listOf(entry.roleBonuses), misc: listOf(entry.miscBonuses) };
+      for (const bonus of [...skills.flatMap((skill) => skill.bonuses), ...traits[typeID].role, ...traits[typeID].misc]) {
+        if (bonus.unitID !== null) units.add(bonus.unitID);
+      }
+    }
+    const unitNameIDs = {};
+    for (const unitID of units) unitNameIDs[unitID] = unitNames && unitNames[String(unitID)] !== undefined ? Number(unitNames[String(unitID)]) || null : null;
+    res.json({ ok: true, available: true, traits, unitNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

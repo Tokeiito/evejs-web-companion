@@ -71,6 +71,8 @@ function hullBrowserData({ marketGroupParents, typeMarketGroups, typePublished, 
       factionID: numberOrNull(typeFactions[key]),
       metaGroupID: numberOrNull(typeMetaGroups[key]),
       published: isPublished(key),
+      // evetypes.GetMarketGroupID: the type's market group (the type menu's View Market Details goes by it).
+      marketGroupID: numberOrNull(typeMarketGroups[key]),
     };
   }
   const races = {};

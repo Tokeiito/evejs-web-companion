@@ -70,6 +70,9 @@ const TABLES = Object.freeze({
   // A dogma effect's name, the number of its message (dogma.data.get_effect_display_name: the effect's displayNameID),
   // which the fitting display heads each slot kind of a fitting with (fittingSvc.GetFittingInfoForScrollList).
   effectDisplayNames: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", attribute: "displayNameID" }),
+  // A dogma unit's name, the number of its message (dogma/units.py get_display_name: the unit's displayNameID), which a
+  // ship's trait is written with (traits.TraitsContainer._GetBonusText).
+  unitDisplayNames: Object.freeze({ loader: "dogmaUnitsLoader", resource: "res:/staticdata/dogmaunits.fsdbinary", attribute: "displayNameID" }),
   // What the fitting browser lists its hulls by (fittingBrowser.py GetShipsAndGroups and GetAllShipGroupsAndShipsByGroupID;
   // src/clientData/hullBrowser.js): a market group's parent (marketgroups/data.py get_market_group_parent_id), a
   // type's market group, group, faction and meta group (evetypes.GetMarketGroupID, GetGroupID, GetFactionID,
@@ -207,6 +210,35 @@ function createClientBuiltData({
     return infoBubbleGroupsRead;
   }
 
+  // The ships' traits, once (INFO_BUBBLES, its infoBubbleTypeBonuses: infobubbles.get_info_bubble_type_bonuses): by
+  // ship type, its bonuses per skill ("types": {skillTypeID: [bonus]}), its role bonuses and its other bonuses, each
+  // bonus {bonus, importance, nameID, unitID}; null where they cannot be read.
+  let infoBubbleTypeBonusesRead = null;
+  function infoBubbleTypeBonuses() {
+    if (!available()) return Promise.resolve(null);
+    if (!infoBubbleTypeBonusesRead) {
+      infoBubbleTypeBonusesRead = Promise.resolve().then(() => {
+        const index = readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
+        const relative = index.get(INFO_BUBBLES);
+        if (!relative) throw new Error(`The client's index has no ${INFO_BUBBLES}.`);
+        const { DatabaseSync } = require("node:sqlite");
+        const database = new DatabaseSync(path.join(clientRoot, "ResFiles", relative), { readOnly: true });
+        try {
+          const row = database.prepare("SELECT value FROM cache WHERE key = ?").get("infoBubbleTypeBonuses");
+          const bonuses = row ? JSON.parse(String(row.value)) : null;
+          if (!bonuses || typeof bonuses !== "object") throw new Error("The client's ship tree has no traits.");
+          return bonuses;
+        } finally {
+          database.close();
+        }
+      }).catch((error) => {
+        onError(error);
+        return null;
+      });
+    }
+    return infoBubbleTypeBonusesRead;
+  }
+
   // The alpha clone's skills, once (CLONE_GRADES): {raceID: {skillTypeID: level}}, or null where they cannot be read.
   let cloneGradesRead = null;
   function cloneGrades() {
@@ -244,6 +276,7 @@ function createClientBuiltData({
     available,
     table,
     infoBubbleGroups,
+    infoBubbleTypeBonuses,
     cloneGrades,
     async lookup(name, key) {
       const loaded = await table(name);

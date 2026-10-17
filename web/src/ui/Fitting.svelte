@@ -59,7 +59,10 @@
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
-  import { hullTree, NON_EMPIRE, type HullFacts } from "../bridge/hullBrowser.ts";
+  import { hullTree, NON_EMPIRE, type HullFacts, type ShipTraitBonus, type ShipTraits } from "../bridge/hullBrowser.ts";
+  import { showInfo } from "./showInfo.ts";
+  import type { JsonValue } from "../bridge/wire.ts";
+  import { showMarketDetails } from "./marketDetails.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
 
   let {
@@ -269,14 +272,23 @@
   // fitting's menu (GetFittingMenu) View Fitting, Fit to Active Ship, Buy All and Delete Fitting (for the pilot's own:
   // CanDeleteFit) and Open Multifit (the multifit window, ClientDialogs.svelte), its import and export menu's Import
   // from Clipboard and Export to Clipboard (not its Simulate from Clipboard, its files nor Copy All Skills), and the
-  // tooltips of a fitting and of a hull. Its words are the install's; the page's own stand in. Not done: a hull's menu,
-  // its traits and its Simulate button, the menu's Simulate Fitting, a fitting clicked (simulated), the groups'
-  // Compare, an unsupported fitting shown whole to a game master, and deleting several fittings at once
-  // (DeleteManyFittings). Delete Fitting is offered as GetDeletableNodes offers it (the corporation's and the
-  // alliance's by role). The tree's open groups are kept while the window is.
+  // tooltips of a fitting and of a hull (its traits with them), a hull's menu (Show Info and View Market Details),
+  // and the selection's Delete Fitting for several at once (DeleteManyFittings). Its words are the install's; the
+  // page's own stand in. Not done: a hull's Simulate button, the menu's Simulate Fitting, a fitting clicked
+  // (simulated), the hull menu's Find in Contracts, Find Personal Assets and Compare, the groups' Compare, and an
+  // unsupported fitting shown whole to a game master. Delete Fitting is offered as GetDeletableNodes offers it (the
+  // corporation's and the alliance's by role). The tree's open groups are kept while the window is.
   const FITTING_BROWSER_WORDS: Readonly<Record<string, string>> = {
     // The browser's own button (fittingWnd.py 100, BROWSE_FITTINGS).
     "UI/Fitting/FittingWindow/ShipAndFittings": "Ships and fittings",
+    // A hull's traits in its tooltip (traits.TraitsContainer) and its menu (menusvc.GetMenuFromItemIDTypeID).
+    "UI/ShipTree/SkillNameCaption": "With each level of {skillName}:",
+    "UI/ShipTree/RoleBonus": "By its role:",
+    "UI/ShipTree/MiscBonus": "Besides:",
+    "UI/InfoWindow/TraitWithNumber": "{value}{unit} {bonusText}",
+    "UI/InfoWindow/TraitWithoutNumber": "- {bonusText}",
+    "UI/Commands/ShowInfo": "About it",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
     "UI/Fitting/FittingWindow/ViewFitting": "Look at it",
     // The fitting window's own button (hullAndHardwareTypeBrowser.py 577).
     "UI/Fitting/FittingWindow/SaveFitAs": "Save this ship's fitting",
@@ -477,8 +489,77 @@
    * HullTypeListGroup.LoadTooltipPanel (fittingBrowser.py 705 to 738): the hull's name; then each owner's count of its
    * fittings that has any, the community's only where community fittings are on and the alliance's only for a pilot
    * in one, in short words under "Saved Fittings" where two owners or more have any; NoFittingsSaved where none has.
-   * (The hull's traits, which it shows after, are not the page's.)
+   * Then the hull's traits, where it has any (HasTraits, TraitsContainer: traitLines).
    */
+  // svelte-ignore state_referenced_locally
+  const shipTraits = flow.shipTraits;
+  /** A message of the client's by its number, made plain; none where the page has not got it. */
+  const messageText = (messageID: number | null): string => {
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" ? plainText(template) : "";
+  };
+  /**
+   * TraitsContainer (traits.py 34 to 125) as lines of a hint: a caption for each skill the bonuses go with, by the
+   * skill's number (SkillNameCaption), then for the role's (RoleBonus) and the others (MiscBonus); under each its bonuses
+   * by importance (_GetBonusText: TraitWithNumber, the bonus rounded to a tenth and a whole one as such, with its unit's
+   * name; TraitWithoutNumber where it has no number). The markup is made plain, its tab a space.
+   */
+  function traitLines(traits: ShipTraits): string[] {
+    const traitWords = (label: string, args: Record<string, JsonValue>): string => {
+      const template = $words.templates[label];
+      const text = typeof template === "string" && template !== "" ? template : FITTING_BROWSER_WORDS[label] ?? "";
+      return plainText(formatTemplate(text.split("<t>").join(" "), args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }));
+    };
+    const bonusLine = (bonus: ShipTraitBonus): string => {
+      const bonusText = messageText(bonus.nameID);
+      if (bonus.bonus === null) return traitWords("UI/InfoWindow/TraitWithoutNumber", { color: "", bonusText });
+      // round(bonus, 1), and an int where int(bonus) == bonus (Python 2 rounds a half away from nought): given as a long,
+      // which the numeric tag writes as an int ("5", where the float would be "5.0").
+      const value: JsonValue = Number.isInteger(bonus.bonus)
+        ? { type: "long", value: String(bonus.bonus) }
+        : (Math.sign(bonus.bonus) * Math.round(Math.abs(bonus.bonus) * 10)) / 10;
+      const unit = messageText(bonus.unitID === null ? null : $shipTraits.unitNameIDs.get(bonus.unitID) ?? null);
+      return traitWords("UI/InfoWindow/TraitWithNumber", { color: "", value, unit, bonusText });
+    };
+    const lines: string[] = [];
+    const add = (caption: string, bonuses: readonly ShipTraitBonus[]): void => {
+      lines.push(caption);
+      for (const bonus of [...bonuses].sort((left, right) => left.importance - right.importance)) lines.push(`  ${bonusLine(bonus)}`);
+    };
+    for (const skill of [...traits.skills].sort((left, right) => left.skillTypeID - right.skillTypeID)) {
+      add(traitWords("UI/ShipTree/SkillNameCaption", { skillName: hullName(skill.skillTypeID) }), skill.bonuses);
+    }
+    if (traits.role.length > 0) add(fitWord("UI/ShipTree/RoleBonus"), traits.role);
+    if (traits.misc.length > 0) add(fitWord("UI/ShipTree/MiscBonus"), traits.misc);
+    return lines;
+  }
+  // A hull's menu (HullTypeListGroup.GetMenu, 693 to 695: menusvc.GetMenuFromItemIDTypeID(None, typeID,
+  // includeMarketDetails=True), 2281 to 2352) on its right click: Show Info, and View Market Details where the type has a
+  // market group. Not the page's: Find in Contracts and Find Personal Assets (no search by type in its windows), Compare,
+  // and a GM's "GM / WM Extras".
+  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  function openHullMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    hullMenu = { typeID, x: event.clientX, y: event.clientY };
+  }
+  $effect(() => {
+    if (hullMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".hull-menu"))) hullMenu = null;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") hullMenu = null;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
   function hullTooltip(typeID: number): string {
     const count = fittingNumByTypeID.get(typeID) ?? { personal: 0, corporation: 0, community: 0, alliance: 0 };
     const owners = [count.personal, count.corporation, count.community, count.alliance].filter((each) => each > 0).length;
@@ -495,6 +576,9 @@
       if (numFittings) lines.push(fitWords(short ? `${path}Short` : path, { numFittings }));
     }
     if (!owners) lines.push(fitWord("UI/Fitting/FittingWindow/NoFittingsSaved"));
+    // HasTraits: then its traits (TraitsContainer), asked as the hull is pointed at.
+    const traits = $shipTraits.traits.get(typeID);
+    if (traits) lines.push("", ...traitLines(traits));
     return lines.join("\n");
   }
   /** A hull's fittings of each owner, every one read (fittingBrowser.GetNumShipsByTypeID, 200 to 211). */
@@ -1769,6 +1853,15 @@
 
   <!-- ===================== saved fittings ============================= -->
   <section bind:this={browserSection}>
+    {#if hullMenu !== null}
+      {@const menuFor = hullMenu}
+      <span class="hull-menu" role="menu" style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
+        {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+        {/if}
+      </span>
+    {/if}
     <h2>{fitWord("UI/Fitting/FittingWindow/ShipAndFittings")}</h2>
     <p class="controls">
       <button type="button" disabled={busy} onclick={() => void flow.saveFitAs().catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/SaveFitAs")}</button>
@@ -1871,7 +1964,8 @@
       {@const id = `h:${hull.typeID}`}
       {@const count = fittingNumByTypeID.get(hull.typeID)}
       <details class="browser-node" class:current-hull={hull.isCurrent} open={opened[id] === true} ontoggle={(event) => toggled(id, event)}>
-        <summary title={hullTooltip(hull.typeID)}>
+        <summary title={hullTooltip(hull.typeID)} onpointerenter={() => void flow.requestShipTraits([hull.typeID]).catch(() => {})}
+          oncontextmenu={(event) => openHullMenu(hull.typeID, event)}>
           <TypeIcon typeID={hull.typeID} name={hullName(hull.typeID)} size="sm" />
           <strong>{hullName(hull.typeID)}</strong>
           {#if count?.personal}<small class="note" title={fitWord("UI/Fitting/FittingWindow/SavedPersonalFittings")}>👤 {count.personal}</small>{/if}

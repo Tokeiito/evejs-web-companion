@@ -32,7 +32,7 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
-import type { HullFacts } from "../bridge/hullBrowser.ts";
+import type { HullFacts, ShipTraitBonus, ShipTraits } from "../bridge/hullBrowser.ts";
 import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
@@ -3807,7 +3807,7 @@ export async function getHullBrowser(
       continue;
     }
     const facts = value as Record<string, JsonValue>;
-    types[typeID] = { groupID: orNull(facts.groupID), categoryID: orNull(facts.categoryID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true };
+    types[typeID] = { groupID: orNull(facts.groupID), categoryID: orNull(facts.categoryID), factionID: orNull(facts.factionID), metaGroupID: orNull(facts.metaGroupID), published: facts.published === true, marketGroupID: orNull(facts.marketGroupID) };
   }
   const raceNameIDs: Record<number, number | null> = {};
   for (const [key, value] of Object.entries(record(data.raceNameIDs))) {
@@ -3815,6 +3815,44 @@ export async function getHullBrowser(
     if (Number.isSafeInteger(raceID) && raceID > 0) raceNameIDs[raceID] = orNull(value);
   }
   return { available: data.available === true, hullTypeIDs: numbers(data.hullTypeIDs), specialTypeIDs: numbers(data.specialTypeIDs), types, raceNameIDs };
+}
+
+/**
+ * Ships' traits (GET /api/client-data/ship-traits, the client's infobubbles): each type's bonuses per skill, its role's and
+ * the others (null for a type with none), and each unit's name as the number of its message. At most 50 at once.
+ */
+export async function getShipTraits(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly traits: Readonly<Record<number, ShipTraits | null>>; readonly unitNameIDs: Readonly<Record<number, number | null>> }> {
+  const data = await getJson(`/api/client-data/ship-traits?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const orNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const bonuses = (value: JsonValue | undefined): ShipTraitBonus[] => (Array.isArray(value) ? value : []).map((each) => {
+    const bonus = record(each);
+    return { bonus: orNull(bonus.bonus), importance: orNull(bonus.importance) ?? 0, nameID: orNull(bonus.nameID), unitID: orNull(bonus.unitID) };
+  });
+  const traits: Record<number, ShipTraits | null> = {};
+  for (const [key, value] of Object.entries(record(data.traits))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      traits[typeID] = null;
+      continue;
+    }
+    const entry = value as Record<string, JsonValue>;
+    const skills = (Array.isArray(entry.skills) ? entry.skills : []).map((each) => {
+      const skill = record(each);
+      return { skillTypeID: Number(skill.skillTypeID), bonuses: bonuses(skill.bonuses) };
+    }).filter((skill) => Number.isSafeInteger(skill.skillTypeID) && skill.skillTypeID > 0);
+    traits[typeID] = { skills, role: bonuses(entry.role), misc: bonuses(entry.misc) };
+  }
+  const unitNameIDs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(record(data.unitNameIDs))) {
+    const unitID = Number(key);
+    if (Number.isSafeInteger(unitID) && unitID > 0) unitNameIDs[unitID] = orNull(value);
+  }
+  return { available: data.available === true, traits, unitNameIDs };
 }
 
 /**
