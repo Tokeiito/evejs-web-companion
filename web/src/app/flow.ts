@@ -634,6 +634,7 @@ import type { ComparisonTypeData, DogmaAttributeRecord } from "../bridge/typeCom
 import type { TypeMetaFacts } from "./api.ts";
 import { marketDockableLocations, multiBuyStationList as multiBuyStationList_, type SystemItem } from "../bridge/multiBuyStations.ts";
 import { createFittingData, fittingContents, fittingTypesForSkillPlan, RACK_EFFECTS, TYPE_LIST_FILAMENTS, TYPE_LIST_OTHER_CARGO_HOLD_TYPES, type FittingContentsGroup, type TypeFacts } from "../bridge/fittingContents.ts";
+import { shiftHeld } from "./keyState.ts";
 import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl, simpleHtmlUnescape, typeIDsInFittingString, type FittingLinkTypeFacts } from "../bridge/fittingLink.ts";
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
@@ -1223,6 +1224,10 @@ export interface MultiFitAsk {
 /** The client's fitting display window open now (fittingMgmtWindow.ViewFitting, FittingMgmtContInStandalone). */
 export interface ViewFittingAsk {
   readonly n: number;
+  /** Its windowID (DisplayFitting): ViewFitting, or with Shift held the fitting's own, of its sorted fitData. */
+  readonly windowID: string;
+  /** How many times a fitting has been loaded into it (Open, then each ReloadWnd): what it shows is set afresh with each. */
+  readonly loaded: number;
   readonly fitting: SourcedFitting;
   /** Its contents by heading (fittingSvc.GetFittingInfoForScrollList); null while they are reckoned. */
   readonly contents: readonly FittingContentsGroup[] | null;
@@ -2646,8 +2651,13 @@ export interface AppFlow {
   answerBuyAll(n: number, answer: "buy" | "gm-give-all" | "close"): Promise<void>;
   /** The loading service's progress window up now (ClientDialogs.svelte shows it); null with none. */
   readonly progressWnd: ReadableSignal<ProgressWndShown | null>;
-  /** The fitting display window open now (ClientDialogs.svelte shows it); null with none. */
-  readonly viewFittingAsked: ReadableSignal<ViewFittingAsk | null>;
+  /**
+   * The fitting display windows open now, the one in front last (ClientDialogs.svelte shows them): the one window
+   * DisplayFitting reloads, and one for each fitting it was asked for with Shift held.
+   */
+  readonly viewFittingsAsked: ReadableSignal<readonly ViewFittingAsk[]>;
+  /** A display window clicked, brought in front of the others (Window.SetOrder on a click). */
+  raiseViewFitting(n: number): void;
   /** A saved fitting's View Fitting (fittingBrowser.ViewFitting, fittingSvc.DisplayFitting): the window opened on it, or reloaded with it. */
   viewFitting(fittingID: number): Promise<void>;
   /**
@@ -7871,7 +7881,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // globalConfig.AreCommunityFittingsEnabled, as last looked at with the fittings read (its default until then).
   const communityFittingsEnabledSignal = createSignal<boolean>(true);
   const buyAllAskedSignal = createSignal<BuyAllAsk | null>(null);
-  const viewFittingAskedSignal = createSignal<ViewFittingAsk | null>(null);
+  const viewFittingsAskedSignal = createSignal<readonly ViewFittingAsk[]>([]);
+  /** The display window of that number; null where it is not open. */
+  const viewFittingOf = (n: number): ViewFittingAsk | null => viewFittingsAskedSignal.get().find((view) => view.n === n) ?? null;
+  /** The display window of that number closed. */
+  const closeViewFitting = (n: number): void => viewFittingsAskedSignal.set(viewFittingsAskedSignal.get().filter((view) => view.n !== n));
+  function raiseViewFitting(n: number): void {
+    const windows = viewFittingsAskedSignal.get();
+    const view = windows.find((each) => each.n === n);
+    if (view === undefined || windows[windows.length - 1] === view) return;
+    viewFittingsAskedSignal.set([...windows.filter((each) => each !== view), view]);
+  }
   let busyFitting = false;
 
   /**
@@ -10030,14 +10050,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return facts;
   }
 
-  /** fittingSvc.DisplayFitting of a fitting as it is held, saved or not; truncated for one read from a link cut short. */
+  /**
+   * fittingSvc.DisplayFitting (752 to 766) of a fitting as it is held, saved or not; truncated for one read from a link
+   * cut short. With Shift held (uicore.uilib.Key(VK_SHIFT)) the window is the fitting's own, its windowID made of its
+   * fitData sorted ('ViewFitting_%s'); else the one window, ViewFitting. Where that window is open it is reloaded with
+   * the fitting (ReloadWnd) and brought in front (Maximize); else it is opened, in front.
+   */
   async function openViewFitting(fitting: SourcedFitting, truncated = false): Promise<void> {
-    const open = viewFittingAskedSignal.get();
+    const sorted = fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const)
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    const windowID = shiftHeld() ? `ViewFitting_${JSON.stringify(sorted)}` : "ViewFitting";
+    const windows = viewFittingsAskedSignal.get();
+    const open = windows.find((view) => view.windowID === windowID) ?? null;
     const n = open?.n ?? (dialogsSaidCount += 1);
-    viewFittingAskedSignal.set({ n, fitting, contents: null, effectNames: open?.effectNames ?? {}, marks: null, shipCategoryID: null, truncated });
-    const [{ contents, effectNames }, { marks, shipCategoryID }] = await Promise.all([fittingInfo(fitting), fittingTypeMarks(fitting)]);
-    const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n && now.fitting === fitting) viewFittingAskedSignal.set({ ...now, contents, effectNames, marks, shipCategoryID });
+    const loaded = (open?.loaded ?? 0) + 1;
+    const effectNames = open?.effectNames ?? windows[0]?.effectNames ?? {};
+    const view: ViewFittingAsk = { n, windowID, loaded, fitting, contents: null, effectNames, marks: null, shipCategoryID: null, truncated };
+    viewFittingsAskedSignal.set([...windows.filter((each) => each.n !== n), view]);
+    const [{ contents, effectNames: names }, { marks, shipCategoryID }] = await Promise.all([fittingInfo(fitting), fittingTypeMarks(fitting)]);
+    viewFittingsAskedSignal.set(viewFittingsAskedSignal.get().map((each) => (each.n === n && each.loaded === loaded ? { ...each, contents, effectNames: names, marks, shipCategoryID } : each)));
   }
 
   /**
@@ -10256,8 +10287,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!(Number.isSafeInteger(fittingID) && fittingID > 0)) return;
     const saved: SourcedFitting = { fittingID, ownerID, name: newName, description: newDescription, shipTypeID: fit.shipTypeID, savedDate: null, modules: fit.modules, source: owner.source };
     savedFittingsSignal.set([...(savedFittingsSignal.get() ?? []).filter((each) => each.fittingID !== fittingID), saved]);
-    const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
+    closeViewFitting(n);
   }
 
   /**
@@ -10272,9 +10302,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * server refuses the corporation's and the alliance's without the role (and the alliance's to any but its executor).
    */
   async function saveViewFitting(n: number, name: string, description: string, forOwner?: "character" | "corporation" | "alliance"): Promise<void> {
-    const open = viewFittingAskedSignal.get();
+    const open = viewFittingOf(n);
     const online = store.station.get().online;
-    if (open === null || open.n !== n || online === null) return;
+    if (open === null || online === null) return;
     const corporationID = online.corporationID ?? 0;
     const ownerID = forOwner === undefined
       ? (open.fitting.ownerID === corporationID && hasFittingManagerRole() ? corporationID : online.characterID)
@@ -10309,16 +10339,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         savedFittingsSignal.set(kept.map((each) => (each.fittingID === fitting.fittingID ? { ...each, name: newName, description } : each)));
       }
     }
-    const now = viewFittingAskedSignal.get();
-    if (now !== null && now.n === n) viewFittingAskedSignal.set(null);
+    closeViewFitting(n);
   }
 
   /** The display window's Fit, Buy and Simulate (FittingMgmtContInStandalone's buttons), or the window closed. */
   async function answerViewFitting(n: number, answer: "fit" | "buy" | "simulate" | "multifit" | "close"): Promise<void> {
-    const open = viewFittingAskedSignal.get();
-    if (open === null || open.n !== n) return;
+    const open = viewFittingOf(n);
+    if (open === null) return;
     if (answer === "close") {
-      viewFittingAskedSignal.set(null);
+      closeViewFitting(n);
       return;
     }
     // ViewFitting._AddCustomMenuOptions (414 to 419): Open Multifit, docked, on a copy of the fitting shown.
@@ -10366,8 +10395,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** fittingSvc.ExportFittingToClipboard(fitting) (1145 to 1148): GetFittingEFTString, the English names. */
   async function viewFittingText(n: number): Promise<string | null> {
-    const open = viewFittingAskedSignal.get();
-    if (open === null || open.n !== n) return null;
+    const open = viewFittingOf(n);
+    if (open === null) return null;
     return fittingText(open.fitting);
   }
 
@@ -24639,7 +24668,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buyAllAsked: readonlySignal(buyAllAskedSignal),
     answerBuyAll,
     progressWnd: readonlySignal(progressWndSignal),
-    viewFittingAsked: readonlySignal(viewFittingAskedSignal),
+    viewFittingsAsked: readonlySignal(viewFittingsAskedSignal),
+    raiseViewFitting,
     viewFitting,
     answerViewFitting,
     viewFittingText,

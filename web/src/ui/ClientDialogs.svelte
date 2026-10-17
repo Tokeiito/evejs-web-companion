@@ -82,7 +82,7 @@
   // svelte-ignore state_referenced_locally
   const buyAllAsked = flow.buyAllAsked;
   // svelte-ignore state_referenced_locally
-  const viewFittingAsked = flow.viewFittingAsked;
+  const viewFittingsAsked = flow.viewFittingsAsked;
   // The types' facts its entries' menus go by (a market group, published, the category), as the fitting browser holds them.
   const hullBrowser = flow.hullBrowser;
   // svelte-ignore state_referenced_locally
@@ -224,44 +224,78 @@
     [CONTENTS_LABELS.otherInCargo]: "Other things in the hold",
     [CONTENTS_LABELS.other]: "Everything else",
   };
-  let viewFittingTab = $state<"contents" | "description">("contents");
-  let viewFittingMenuOpen = $state(false);
-  let viewFittingSettingsOpen = $state(false);
-  let viewFittingSaveMenuOpen = $state(false);
-  let viewFittingSaveForAlliance = $state(false);
-  // Save's tooltip panel (fittingMgmtCont.LoadSaveBtnTooltipPanel, 157 to 180): shown on the pointer over Save, to a
-  // pilot with the fitting manager's role only; the same three as the menu, each a button.
-  let viewFittingSavePanelOpen = $state(false);
-  function viewFittingSaveHovered(): void {
-    if (!flow.hasFittingManagerRole()) return;
-    viewFittingSavePanelOpen = true;
-    void flow.saveForAllianceOffered().then((offered) => (viewFittingSaveForAlliance = offered)).catch(() => {});
+  // Each display window's own (one for each fitting DisplayFitting was asked for with Shift held, and the one it
+  // reloads), by its number: its tab, its menus, Save's tooltip panel (fittingMgmtCont.LoadSaveBtnTooltipPanel, 157 to
+  // 180: on the pointer over Save, for a pilot with the fitting manager's role only, the same three as the menu), the
+  // name and the description as edited, and where it has been dragged to from the middle, where a window opens
+  // (Window.default_left and default_top, '__center__'). What is edited is set afresh with each fitting loaded into it
+  // (ReloadWnd), and only then: its contents arriving leave what is being typed.
+  interface ViewFittingState {
+    tab: "contents" | "description";
+    menuOpen: boolean;
+    settingsOpen: boolean;
+    saveMenuOpen: boolean;
+    saveForAlliance: boolean;
+    savePanelOpen: boolean;
+    name: string;
+    description: string;
+    loaded: number;
+    dx: number;
+    dy: number;
   }
-  // The name and the description as edited, set afresh when another fitting is shown (only then: the window's own
-  // changes, as its contents arrive, leave what is being typed).
-  let viewFittingName = $state("");
-  let viewFittingDescription = $state("");
-  let viewFittingShown = "";
+  let viewStates = $state<Record<number, ViewFittingState>>({});
   $effect(() => {
-    const view = $viewFittingAsked;
-    const key = view === null ? "" : `${view.n}:${view.fitting.fittingID}`;
-    if (key === viewFittingShown) return;
-    viewFittingShown = key;
-    if (view !== null) {
-      viewFittingName = view.fitting.name;
-      viewFittingDescription = view.fitting.description;
+    const views = $viewFittingsAsked;
+    const held = untrack(() => viewStates);
+    const next: Record<number, ViewFittingState> = {};
+    let changed = Object.keys(held).length !== views.length;
+    for (const view of views) {
+      const kept = held[view.n];
+      if (kept !== undefined && kept.loaded === view.loaded) {
+        next[view.n] = kept;
+        continue;
+      }
+      changed = true;
+      next[view.n] = {
+        tab: kept?.tab ?? "contents", menuOpen: false, settingsOpen: false, saveMenuOpen: false, saveForAlliance: kept?.saveForAlliance ?? false,
+        savePanelOpen: false, name: view.fitting.name, description: view.fitting.description, loaded: view.loaded, dx: kept?.dx ?? 0, dy: kept?.dy ?? 0,
+      };
     }
+    if (changed) viewStates = next;
   });
+  function viewFittingSaveHovered(state: ViewFittingState): void {
+    if (!flow.hasFittingManagerRole()) return;
+    state.savePanelOpen = true;
+    void flow.saveForAllianceOffered().then((offered) => (state.saveForAlliance = offered)).catch(() => {});
+  }
+  /** A display window moved by its caption, as a window is (the caption's buttons are its own). */
+  function dragViewFitting(event: PointerEvent, state: ViewFittingState): void {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, input, textarea, [role=menu]"))) return;
+    event.preventDefault();
+    const fromX = event.clientX - state.dx;
+    const fromY = event.clientY - state.dy;
+    const move = (moved: PointerEvent): void => {
+      state.dx = moved.clientX - fromX;
+      state.dy = moved.clientY - fromY;
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
   $effect(() => {
-    if ($viewFittingAsked === null) return;
-    flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...Object.values($viewFittingAsked.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`]))]);
+    const views = $viewFittingsAsked;
+    if (views.length === 0) return;
+    flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...views.flatMap((view) => Object.values(view.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])))]);
     flow.requestNames([
-      { kind: "type" as const, id: $viewFittingAsked.fitting.shipTypeID },
+      ...views.map((view) => ({ kind: "type" as const, id: view.fitting.shipTypeID })),
       // SaveForCharacter names the pilot as an owner (charID).
       ...($station.online ? [{ kind: "owner" as const, id: $station.online.characterID }] : []),
-      ...($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID }))),
+      ...views.flatMap((view) => (view.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID })))),
     ]);
-    const types = ($viewFittingAsked.contents ?? []).flatMap((group) => group.entries.map((entry) => entry.typeID));
+    const types = views.flatMap((view) => (view.contents ?? []).flatMap((group) => group.entries.map((entry) => entry.typeID)));
     if (types.length > 0) void flow.loadHullBrowser(types).catch(() => {});
   });
   /** InfoIcon's picture (infoIcon.py default_texturePath). */
@@ -317,7 +351,7 @@
     };
   });
   $effect(() => {
-    if ($viewFittingAsked === null) viewFittingEntryMenu = null;
+    if ($viewFittingsAsked.length === 0) viewFittingEntryMenu = null;
   });
   const viewWord = (label: string): string => plainText(wordOf(label, VIEW_FITTING_WORDS[label] ?? ""));
   /** A heading of the contents: a slot kind's effect's name (the client's message), or the kind's label. */
@@ -1226,24 +1260,29 @@
   </div>
 {/if}
 
-{#if $viewFittingAsked !== null}
-  {@const view = $viewFittingAsked}
-  <div class="client-dialog-shade" class:modal={inFront}>
-    <div class="client-dialog multibuy" role="dialog" aria-label={viewWord("UI/Fitting/ShipFitting")} data-dialog="ViewFitting" data-in-front={inFront}>
+{#if $viewFittingsAsked.length > 0}
+  <!-- The display windows, each opened in the middle and moved by its caption, the one last clicked or loaded in front. -->
+  <div class="client-dialog-shade view-fitting-shade" class:modal={inFront}>
+    {#each $viewFittingsAsked as view, order (view.n)}
+    {@const st = viewStates[view.n]}
+    {#if st !== undefined}
+    <div class="client-dialog multibuy" role="dialog" tabindex="-1" aria-label={viewWord("UI/Fitting/ShipFitting")} data-dialog="ViewFitting" data-window-id={view.windowID} data-in-front={inFront}
+      style:z-index={order + 1} style:transform={`translate(${st.dx}px, ${st.dy}px)`} onpointerdown={() => flow.raiseViewFitting(view.n)}>
       {#if !inFront && pilotName !== null}
         <span class="for-pilot">For {pilotName}</span>
       {/if}
-      <span class="book-title">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span class="book-title view-fitting-caption" onpointerdown={(event) => dragViewFitting(event, st)}>
         <strong>{viewWord("UI/Fitting/ShipFitting")}: {nameOf("type", view.fitting.shipTypeID)}</strong>
         <span class="multibuy-export">
-          <button type="button" aria-haspopup="menu" aria-expanded={viewFittingMenuOpen} onclick={() => (viewFittingMenuOpen = !viewFittingMenuOpen)}>☰</button>
-          {#if viewFittingMenuOpen}
+          <button type="button" aria-haspopup="menu" aria-expanded={st.menuOpen} onclick={() => (st.menuOpen = !st.menuOpen)}>☰</button>
+          {#if st.menuOpen}
             <span class="multibuy-menu" role="menu">
               {#if ($inventory.stationID ?? $inventory.structureID ?? null) !== null}
-                <button type="button" role="menuitem" onclick={() => { viewFittingMenuOpen = false; void flow.answerViewFitting(view.n, "multifit").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}</button>
+                <button type="button" role="menuitem" onclick={() => { st.menuOpen = false; void flow.answerViewFitting(view.n, "multifit").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}</button>
               {/if}
               <button type="button" role="menuitem" title={viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint")}
-                onclick={() => { viewFittingMenuOpen = false; void flow.viewFittingText(view.n).then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}</button>
+                onclick={() => { st.menuOpen = false; void flow.viewFittingText(view.n).then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}</button>
             </span>
           {/if}
         </span>
@@ -1259,14 +1298,14 @@
             fitData: view.fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
             name: view.fitting.name,
           })}><TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" /></span>
-        <input class="multibuy-name" maxlength="40" bind:value={viewFittingName} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
+        <input class="multibuy-name" maxlength="40" bind:value={() => st.name, (value) => (st.name = value)} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
           title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
         <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship; and its info icon, the
              hull's (LoadNewFitting: infoicon.SetTypeID(fitting.shipTypeID)). -->
         <span class="multibuy-export">
-          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSettingsOpen} title={viewWord("UI/Common/Settings")}
-            onclick={() => (viewFittingSettingsOpen = !viewFittingSettingsOpen)}>⚙</button>
-          {#if viewFittingSettingsOpen}
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={st.settingsOpen} title={viewWord("UI/Common/Settings")}
+            onclick={() => (st.settingsOpen = !st.settingsOpen)}>⚙</button>
+          {#if st.settingsOpen}
             <span class="multibuy-menu" role="menu">
               <label class="keep">
                 <input type="checkbox" checked={$useFittingNameForShips} onchange={(event) => flow.setUseFittingNameForShips(event.currentTarget.checked)} />
@@ -1283,10 +1322,10 @@
         <span class="view-fitting-truncated">{viewWord("UI/Fitting/FittingWindow/FittingManagement/Truncated")}</span>
       {/if}
       <span class="answers">
-        <button type="button" class:active={viewFittingTab === "contents"} onclick={() => (viewFittingTab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
-        <button type="button" class:active={viewFittingTab === "description"} onclick={() => (viewFittingTab = "description")}>{viewWord("UI/Common/Description")}</button>
+        <button type="button" class:active={st.tab === "contents"} onclick={() => (st.tab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
+        <button type="button" class:active={st.tab === "description"} onclick={() => (st.tab = "description")}>{viewWord("UI/Common/Description")}</button>
       </span>
-      {#if viewFittingTab === "contents"}
+      {#if st.tab === "contents"}
         {#if view.contents === null}
           <p>…</p>
         {:else}
@@ -1313,8 +1352,44 @@
           </ul>
         {/if}
       {:else}
-        <textarea rows="6" maxlength="500" bind:value={viewFittingDescription} aria-label={viewWord("UI/Common/Description")}></textarea>
+        <textarea rows="6" maxlength="500" bind:value={() => st.description, (value) => (st.description = value)} aria-label={viewWord("UI/Common/Description")}></textarea>
       {/if}
+      <span class="answers">
+        <!-- LoadNewFitting (235 to 238): Fit disabled for a structure's fitting (categoryStructure). -->
+        <button type="button" disabled={view.shipCategoryID === 65} onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
+        <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
+             its alliance's executor, Save for Corporation, and for the pilot. -->
+        <span class="multibuy-export" role="group" onpointerleave={() => (st.savePanelOpen = false)}>
+          <button type="button" onpointerenter={() => viewFittingSaveHovered(st)}
+            onclick={() => void flow.saveViewFitting(view.n, st.name, st.description).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={st.saveMenuOpen}
+            onclick={() => { st.saveMenuOpen = !st.saveMenuOpen; if (st.saveMenuOpen) void flow.saveForAllianceOffered().then((offered) => (st.saveForAlliance = offered)).catch(() => {}); }}>▾</button>
+          {#if st.saveMenuOpen}
+            <span class="multibuy-menu" role="menu">
+              {#if st.saveForAlliance}
+                <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {:else if st.savePanelOpen}
+            <span class="multibuy-menu save-panel" role="group" data-panel="LoadSaveBtnTooltipPanel">
+              {#if st.saveForAlliance}
+                <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {/if}
+        </span>
+        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        <!-- TryAddSimulationBtn: Simulate (SimulateFitting: the Fitting window raised or opened, then the fitting simulated). -->
+        <button type="button" class="view-fitting-simulate" onclick={() => { openFittingWindow(); void flow.answerViewFitting(view.n, "simulate").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/Simulate")}</button>
+      </span>
+    </div>
+    {/if}
+    {/each}
+  </div>
       {#if viewFittingEntryMenu !== null}
         {@const menuFor = viewFittingEntryMenu}
         {@const facts = $hullBrowser?.types.get(menuFor.typeID) ?? null}
@@ -1332,40 +1407,6 @@
           {/if}
         </span>
       {/if}
-      <span class="answers">
-        <!-- LoadNewFitting (235 to 238): Fit disabled for a structure's fitting (categoryStructure). -->
-        <button type="button" disabled={view.shipCategoryID === 65} onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
-        <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
-             its alliance's executor, Save for Corporation, and for the pilot. -->
-        <span class="multibuy-export" role="group" onpointerleave={() => (viewFittingSavePanelOpen = false)}>
-          <button type="button" onpointerenter={viewFittingSaveHovered}
-            onclick={() => void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
-          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={viewFittingSaveMenuOpen}
-            onclick={() => { viewFittingSaveMenuOpen = !viewFittingSaveMenuOpen; if (viewFittingSaveMenuOpen) void flow.saveForAllianceOffered().then((offered) => (viewFittingSaveForAlliance = offered)).catch(() => {}); }}>▾</button>
-          {#if viewFittingSaveMenuOpen}
-            <span class="multibuy-menu" role="menu">
-              {#if viewFittingSaveForAlliance}
-                <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
-              {/if}
-              <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
-              <button type="button" role="menuitem" onclick={() => { viewFittingSaveMenuOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
-            </span>
-          {:else if viewFittingSavePanelOpen}
-            <span class="multibuy-menu save-panel" role="group" data-panel="LoadSaveBtnTooltipPanel">
-              {#if viewFittingSaveForAlliance}
-                <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
-              {/if}
-              <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
-              <button type="button" onclick={() => { viewFittingSavePanelOpen = false; void flow.saveViewFitting(view.n, viewFittingName, viewFittingDescription, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
-            </span>
-          {/if}
-        </span>
-        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
-        <!-- TryAddSimulationBtn: Simulate (SimulateFitting: the Fitting window raised or opened, then the fitting simulated). -->
-        <button type="button" class="view-fitting-simulate" onclick={() => { openFittingWindow(); void flow.answerViewFitting(view.n, "simulate").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/Simulate")}</button>
-      </span>
-    </div>
-  </div>
 {/if}
 
 {#if $multiFitAsked !== null}
@@ -1744,6 +1785,10 @@
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
   /* The fitting display window's name row and entries: the name, then the marks and the info icon at the right. */
   .view-fitting-name-row { grid-template-columns: auto 1fr auto auto; }
+  /* The display windows over one another in the middle, each where it was dragged to. */
+  .view-fitting-shade { display: grid; place-items: center; }
+  .view-fitting-shade > .client-dialog { grid-area: 1 / 1; }
+  .view-fitting-caption { cursor: move; user-select: none; }
   .view-fitting-ship { cursor: grab; line-height: 0; }
   .view-fitting-truncated { display: block; }
   .multibuy-row.fit-entry { display: flex; padding: 1px 2px; }
