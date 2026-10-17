@@ -28,6 +28,7 @@
   import PersonalSkillPlans from "./PersonalSkillPlans.svelte";
   import { showMarketDetails } from "./marketDetails.ts";
   import { endSkillDrag, skillDragged, startSkillDrag } from "./skillDrag.ts";
+  import { DRAG_MIME, decodeDrag } from "./dragDrop.ts";
   import { formatTemplate } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import {
@@ -42,7 +43,7 @@
     trainingReadout,
   } from "../bridge/skills.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  import type { AppFlow, SkillQueueDrop } from "../app/flow.ts";
   import type { SkillRow } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { plainText } from "../bridge/clientWords.ts";
@@ -227,6 +228,8 @@
   // dropped on, or at the end (flow.skillQueueDrop, the client's AddSkillToQueue and MoveSkillToPosition). As it is
   // dragged over, the line where it would land (ShowPosIndicator, IsMoveAllowed): white where it may go there, red
   // where a skill may not, none for a type's drag. A skill not had opens the purchase overlay (SkillPurchaseOverlay).
+  // A skill book dragged from an inventory (an InvItem) is injected, then its level I put in where it is dropped; as it
+  // is dragged over, no line (IsMoveAllowed and IsSkillEntry both no).
 
   /** The flow's judge of the drag under way, read as it enters the queue. */
   let dropFacts = $state<Awaited<ReturnType<AppFlow["skillQueueDropFacts"]>>>(null);
@@ -257,7 +260,22 @@
     else dropLine = drop.kind === "type" ? null : { at, color: "refused" };
   }
 
+  /** An inventory's item dragged over (its data unread until the drop). */
+  const itemDragged = (event: DragEvent): boolean => skillDragged() === null && (event.dataTransfer?.types.includes(DRAG_MIME) ?? false);
+
+  /** The inventory's item dropped, as the queue takes it; null where none was. */
+  function itemDropped(event: DragEvent): SkillQueueDrop | null {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    return payload !== null && payload.kind === "inventoryItem" ? { kind: "invItem", itemID: payload.itemID, typeID: payload.typeID } : null;
+  }
+
   function rowDragOver(event: DragEvent, index: number): void {
+    if (itemDragged(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      dropLine = null;
+      return;
+    }
     if (skillDragged() === null) return;
     event.preventDefault();
     event.stopPropagation();
@@ -266,6 +284,11 @@
   }
 
   function queueDragOver(event: DragEvent): void {
+    if (itemDragged(event)) {
+      event.preventDefault();
+      dropLine = null;
+      return;
+    }
     if (skillDragged() === null) return;
     event.preventDefault();
     readDropFacts();
@@ -279,7 +302,7 @@
 
   /** DoDropData at the entry's place (an entry's OnDropData), or at the end. */
   async function queueDrop(event: DragEvent, place: number | null): Promise<void> {
-    const drop = skillDragged();
+    const drop = skillDragged() ?? itemDropped(event);
     if (drop === null) return;
     event.preventDefault();
     event.stopPropagation();

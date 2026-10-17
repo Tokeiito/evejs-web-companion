@@ -228,7 +228,9 @@ import { parseSkillPlanUrl } from "../bridge/skillPlanLink.ts";
 export type SkillQueueDrop =
   | { readonly kind: "type"; readonly typeID: number }
   | { readonly kind: "skillEntry"; readonly typeID: number; readonly trained: boolean }
-  | { readonly kind: "queueEntry"; readonly typeID: number; readonly level: number };
+  | { readonly kind: "queueEntry"; readonly typeID: number; readonly level: number }
+  /** An inventory's item (xtriui.InvItem, listentry.InvItem): taken where it is a skill book. */
+  | { readonly kind: "invItem"; readonly itemID: number; readonly typeID: number };
 
 export interface SkillPlanLinkFollowed {
   readonly n: number;
@@ -2486,8 +2488,9 @@ export interface AppFlow {
   /**
    * A drop onto the skill queue (skillQueuePanelNew.DoDropData) at a place (the end where null): a queue entry moved
    * (MoveSkillToPosition; with Shift, its next level added); a skill entry's next level added
-   * (AddSkillThroughSkillEntry); a type's next level added (AddSkillsThroughOtherEntry); a refusal said as the client
-   * says it. A skill not had answers it as missing, for the purchase overlay.
+   * (AddSkillThroughSkillEntry); a type's next level added (AddSkillsThroughOtherEntry); an inventory's skill book
+   * injected, then its level I added; a refusal said as the client says it. A skill not had answers it as missing, for
+   * the purchase overlay.
    */
   skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): Promise<{ readonly missing: { readonly typeID: number; readonly position: number } | null }>;
   /** The purchase overlay's facts (SkillPurchaseOverlayController): sold directly, its price, its needs trained. */
@@ -10020,7 +10023,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return {
         queueLength: read.queue.length,
         allowed: (drop: SkillQueueDrop, place: number | null): boolean => {
-          if (drop.kind === "type") return false;
+          if (drop.kind === "type" || drop.kind === "invItem") return false;
           const level = drop.kind === "queueEntry" ? drop.level : nextLevelToQueue(drop.typeID, read.includingLapsed, read.queue);
           return queueInsertionRefusal(drop.typeID, level, place ?? read.queue.length, read.queue, read.includingLapsed, read.mine, read.required, read.ceiling) === null;
         },
@@ -10030,7 +10033,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * The InvItem branch of DoDropData, up to its wait: nothing for an item that is no skill book (its rec.categoryID);
+   * skills.InjectSkillIntoBrain([item]): an unpublished one ItemNotASkill (the client's own check), else
+   * GetDogmaLM().InjectSkillIntoBrain([itemID]), a refusal put up as the client puts up a UserError; then
+   * SleepWallclock(500). True where it was injected.
+   */
+  async function injectDroppedBook(itemID: number, typeID: number): Promise<boolean> {
+    const meta = await api.getTypeMeta([typeID], callOptions);
+    const type = meta.available ? meta.types.get(typeID) : undefined;
+    if (type === undefined || type === null || type.categoryID !== CATEGORY_SKILL_TYPES) return false;
+    if (!type.published) {
+      sayDialog("ItemNotASkill", { type: "dict", entries: [["skillName", typeID]] }, "That is no skill book.");
+      return false;
+    }
+    try {
+      await bridgeDo("dogmaIM", "InjectSkillIntoBrain", [[itemID]]);
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      const message = errorWords(error);
+      if (!sayRefusalDialog(error, message)) sayDialog("CustomNotify", { type: "dict", entries: [["notify", message]] }, message);
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return true;
+  }
+
   async function skillQueueDrop(drop: SkillQueueDrop, place: number | null, shift: boolean): ReturnType<AppFlow["skillQueueDrop"]> {
+    if (drop.kind === "invItem" && !(await injectDroppedBook(drop.itemID, drop.typeID))) return { missing: null };
     const read = await queueDropRead([drop.typeID]);
     const queue = read.queue;
     const position = place === null || place < 0 ? queue.length : place;
@@ -10093,9 +10123,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return { missing: null };
     }
     // AddSkillsThroughOtherEntry: a type's drag (a catalogue skill, a plan's level): not had, the purchase overlay; else
-    // its next level put in, nothing past V.
+    // its next level put in, nothing past V. A book injected: level I (nextLevel=1).
     if (!read.includingLapsed.has(drop.typeID)) return { missing: { typeID: drop.typeID, position } };
-    await addToQueue(drop.typeID, nextLevelToQueue(drop.typeID, read.includingLapsed, queue), position);
+    await addToQueue(drop.typeID, drop.kind === "invItem" ? 1 : nextLevelToQueue(drop.typeID, read.includingLapsed, queue), position);
     return { missing: null };
   }
 

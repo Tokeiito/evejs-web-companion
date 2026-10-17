@@ -2696,6 +2696,11 @@ const RETAIL_CALLS = Object.freeze({
   "officeManager.HasCorpImpoundedItems": judged(`${CORP_SVC}/officeManager.py:143`, sentWithNothing, "Moniker('officeManager', stationID).HasCorpImpoundedItems(), no arguments, where a player's corporation has no office in the station (139 to 142). Recorded on Tranquility after an office was given up."),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
+  "dogmaIM.InjectSkillIntoBrain": reshaped(
+    `${SKILL_SVC}:784`,
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "GetDogmaLM().InjectSkillIntoBrain([itemID, ...]): the books' item ids, a list",
+  ),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
   "dogmaIM.Overload": needing(Object.freeze({
     status: "same",
