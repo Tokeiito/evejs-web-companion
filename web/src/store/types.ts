@@ -431,6 +431,19 @@ export interface FittingState {
    */
   readonly statsFrom?: "server" | "page";
   /**
+   * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
+   * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
+   * moduleStates.ts: OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3). Absent or null where it is not.
+   */
+  readonly simulation?: {
+    readonly shipID: number;
+    readonly resources: FittingResources;
+    readonly stats: ShipStats;
+    readonly moduleStates: Readonly<Record<number, number>>;
+    /** Each simulated module's kind by its slot (moduleStateUtil: PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
+    readonly moduleKinds: Readonly<Record<number, number>>;
+  } | null;
+  /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the
    * active ship and every fitted module with the SERVER's post-dogma attribute
    * map, so a clicked module can show its EFFECTIVE stats. Null until the

@@ -228,13 +228,15 @@ export function isFittingFlag(flagID: number): boolean {
   return (flagID >= 11 && flagID <= 34) || (flagID >= 125 && flagID <= 128) || (flagID >= 92 && flagID <= 94) || (flagID >= 164 && flagID <= 171);
 }
 
-/** A UserError the client raises (eveexceptions.UserError): its message key. */
+/** A UserError the client raises (eveexceptions.UserError): its message key, and the values its words are filled with. */
 export class DogmaUserError extends Error {
   readonly key: string;
+  readonly values: Readonly<Record<string, number>>;
 
-  constructor(key: string) {
+  constructor(key: string, values: Readonly<Record<string, number>> = {}) {
     super(key);
     this.key = key;
+    this.values = values;
   }
 }
 
@@ -970,7 +972,9 @@ export class DogmaLocation {
     if (maxGroupOnline === null) return;
     let online = 0;
     for (const fitted of ship.fitted.values()) if (fitted !== item && fitted.groupID === item.groupID && this.isOnline(fitted)) online += 1;
-    if (online >= maxGroupOnline) throw new DogmaUserError("CannotOnlineReachedMaxGroupOnline");
+    if (online >= maxGroupOnline) {
+      throw new DogmaUserError("CannotOnlineReachedMaxGroupOnline", { type: item.typeID, group: item.groupID ?? 0, maxGroupOnline });
+    }
   }
 
   /** ModuleDogmaItem.IsOnline: its online effect running. */
@@ -1016,7 +1020,7 @@ export class DogmaLocation {
     if (!this.value(ship, ATTRIBUTE_CAN_CLOAK)) throw new DogmaUserError("CantCloakTooShipUnsuitable");
     for (const [fitted] of this.activatedEffectsOnShip(ship)) {
       const disallow = this.static.types[fitted.typeID]?.attributes.find(([id]) => id === ATTRIBUTE_DISALLOW_EARLY_DEACTIVATION)?.[1];
-      if (disallow) throw new DogmaUserError("CantCloakModuleActive");
+      if (disallow) throw new DogmaUserError("CantCloakModuleActive", { module: fitted.typeID });
     }
     if (this.value(ship, ATTRIBUTE_DISALLOW_CLOAKING)) throw new DogmaUserError("CantCloak");
   }
@@ -1057,7 +1061,7 @@ export class DogmaLocation {
   startEffect(item: DogmaItem, effectID: number): void {
     const facts = this.static.types[item.typeID];
     if (!facts || !facts.effects.includes(effectID)) return;
-    if (item.activeEffects.has(effectID)) throw new DogmaUserError("EffectAlreadyActive2");
+    if (item.activeEffects.has(effectID)) throw new DogmaUserError("EffectAlreadyActive2", { modulename: item.typeID });
     const effect = this.static.effects[effectID] ?? null;
     // BaseDogmaLocation.StartEffect_PreChecks
     if (effectID === EFFECT_ONLINE) {
@@ -1067,7 +1071,7 @@ export class DogmaLocation {
     // FittingDogmaLocation.StartEffect_PreChecks
     if (effect && (effect.category === EFFECT_CATEGORY_ACTIVATION || effect.category === EFFECT_CATEGORY_TARGET) && this.isOnline(item)) {
       this.checkGroupActive(item);
-      if (this.value(item, ATTRIBUTE_ACTIVATION_BLOCKED) !== 0) throw new DogmaUserError("ModuleIsBlocked");
+      if (this.value(item, ATTRIBUTE_ACTIVATION_BLOCKED) !== 0) throw new DogmaUserError("ModuleIsBlocked", { moduleName: item.typeID });
     }
     // _StartEffect: PreStartEffectChecks, of the online effects too where it is the online effect.
     const python = PYTHON_EFFECTS.get(effectID);
@@ -1100,7 +1104,7 @@ export class DogmaLocation {
     if (maxGroupActive <= 0) return;
     let total = 0;
     for (const fitted of ship.fitted.values()) if (fitted.groupID === item.groupID && this.isActive(fitted)) total += 1;
-    if (total >= maxGroupActive) throw new DogmaUserError("EffectCrowdedOut");
+    if (total >= maxGroupActive) throw new DogmaUserError("EffectCrowdedOut", { module: item.typeID, count: total });
   }
 
   /**

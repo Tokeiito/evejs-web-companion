@@ -1968,6 +1968,33 @@
     opacity: 0.6;
     border-color: var(--color-warn);
   }
+  /* A simulated module's state (moduleStateUtil COLOR_BY_ACTIVATION_STATE): offline grey and faint, online light
+   * grey, active green, overheated red. The socket's name says the state too. */
+  .fit-socket.sim-offline {
+    opacity: 0.45;
+    border-color: rgb(128 128 128);
+  }
+  .fit-socket.sim-online {
+    border-color: rgb(153 153 153);
+  }
+  .fit-socket.sim-active {
+    border-color: rgb(140 222 33);
+    box-shadow: 0 0 0 2px rgb(140 222 33 / 0.3);
+  }
+  .fit-socket.sim-overheated {
+    border-color: rgb(255 43 38);
+    box-shadow: 0 0 0 2px rgb(255 43 38 / 0.35);
+  }
+  /* The ghost ship icon's Simulate / Exit Simulation, under the hull. */
+  .fit-simulate {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 0.15rem 0.5rem;
+  }
+  .fit-simulate.simulating {
+    border-color: rgb(140 222 33);
+  }
   /* The socket a pending action is armed on. */
   .fit-socket.armed {
     border-color: var(--color-danger);

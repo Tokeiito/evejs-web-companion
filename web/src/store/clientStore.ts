@@ -1398,6 +1398,19 @@ export function createClientStore(): ClientStore {
         fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page" });
         break;
       }
+      case "fitting/simulated": {
+        const current = fitting.get();
+        fitting.set({
+          ...current,
+          simulation: { shipID: event.shipID, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds },
+        });
+        break;
+      }
+      case "fitting/simulation-ended": {
+        const current = fitting.get();
+        if (current.simulation) fitting.set({ ...current, simulation: null });
+        break;
+      }
       case "fitting/charge-quantity": {
         const current = fitting.get();
         const slots = applyChargeQuantityChanges(current.slots, current.activeShipID, event.changes);

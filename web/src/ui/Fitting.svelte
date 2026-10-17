@@ -26,6 +26,7 @@
     chargeLooksCompatible,
     isChargeRow,
     isFittableRow,
+    slotFlagOf,
     slotsOfFamily,
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
@@ -1107,7 +1108,122 @@
     { key: "explosive", label: "Exp", cls: "dmg-exp" },
   ] as const;
 
-  const stats = $derived.by(() => $fitting.stats);
+  // Simulate Fitting (ghostFittingSvc): while the window simulates the ship, its figures are the simulation's.
+  const simulation = $derived.by(() => $fitting.simulation ?? null);
+  const stats = $derived.by(() => (simulation ? simulation.stats : $fitting.stats));
+  const resources = $derived.by(() => (simulation ? simulation.resources : $fitting.resources));
+
+  // The simulation's words: the ghost ship icon's (ghostShipIcon.py, simulationModeTooltip.py) and a module's state's
+  // (moduleStateUtil activationStateLabels), each the page's own where the install's are not to be had.
+  const SIMULATION_WORDS: Record<string, string> = {
+    "UI/Fitting/FittingWindow/Simulate": "Simulate",
+    "UI/Fitting/FittingWindow/ExitSimulation": "Exit simulation",
+    "UI/Fitting/FittingWindow/SimulateShipFitting": "Simulate this fitting",
+    "Tooltips/FittingWindow/SimulateShipFittingDescription": "Try the ship's modules in every state without touching the ship itself.",
+    "UI/Fitting/FittingWindow/ExitSimulationMode": "Leave the simulation",
+    "Tooltips/FittingWindow/ExitSimulationModeDescription": "Show the ship as it really is again.",
+    "UI/Fitting/FittingWindow/ModuleMode": "Module state",
+    "UI/Fitting/FittingWindow/ModuleModeHint": "Click to go to the next state; shift-click to go back.",
+    "UI/Fitting/FittingWindow/ModuleModeOffline": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflinePassive": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflineRig": "Offline",
+    "UI/Fitting/FittingWindow/ModuleModeOfflineSubsystem": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnline": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnlinePassive": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeOnlineRig": "Online",
+    "UI/Fitting/FittingWindow/ModuleModeActive": "Active",
+    "UI/Fitting/FittingWindow/ModuleModeOverheated": "Overheated",
+  };
+  $effect(() => {
+    if (!$fitting.activeShipID) return;
+    flow.requestWords(Object.keys(SIMULATION_WORDS));
+  });
+  /** A simulation word: the client's where the install has it, the page's own otherwise. */
+  function simulationWord(label: string): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", {}, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    }));
+  }
+  /** activationStateLabels: a module's state's label, by its state and its kind (PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
+  const MODULE_MODE_LABELS: Readonly<Record<string, string>> = {
+    "0:1": "ModuleModeOffline",
+    "0:0": "ModuleModeOfflinePassive",
+    "0:2": "ModuleModeOfflineRig",
+    "1:3": "ModuleModeOfflineSubsystem",
+    "1:1": "ModuleModeOnline",
+    "1:0": "ModuleModeOnlinePassive",
+    "1:2": "ModuleModeOnlineRig",
+    "2:1": "ModuleModeActive",
+    "2:0": "ModuleModeOnlinePassive",
+    "3:1": "ModuleModeOverheated",
+  };
+  /** A simulated module's state (OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3), by its slot; null where there is none. */
+  function simulatedState(slot: FittingSlot): number | null {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (!simulation || !slot.module || flagID === null) return null;
+    return simulation.moduleStates[flagID] ?? null;
+  }
+  /** GetTextForCurrentStateForDogmaItem: the simulated module's state, said. */
+  function simulatedStateText(slot: FittingSlot): string | null {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    const state = simulatedState(slot);
+    if (!simulation || state === null || flagID === null) return null;
+    const label = MODULE_MODE_LABELS[`${state}:${simulation.moduleKinds[flagID] ?? 1}`];
+    return label ? simulationWord(`UI/Fitting/FittingWindow/${label}`) : null;
+  }
+  /** A simulated socket said: its slot, its module and the module's simulated state (not the ship's own online state). */
+  function simulatedSocketDescription(slot: FittingSlot): string {
+    return slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}, ${simulatedStateText(slot) ?? ""}` : socketDescription(slot);
+  }
+  /** The ghost ship icon's tooltip (LoadSimulationIconTooltip): its header and its description. */
+  const simulateHint = $derived.by(() =>
+    simulation
+      ? `${simulationWord("UI/Fitting/FittingWindow/ExitSimulationMode")}: ${simulationWord("Tooltips/FittingWindow/ExitSimulationModeDescription")}`
+      : `${simulationWord("UI/Fitting/FittingWindow/SimulateShipFitting")}: ${simulationWord("Tooltips/FittingWindow/SimulateShipFittingDescription")}`,
+  );
+  /** The ghost ship icon clicked (ToggleGhostFitting): into the simulation, or out of it. */
+  function toggleSimulation(): void {
+    simulationError = null;
+    void run(async () => {
+      if (simulation) flow.exitSimulation();
+      else await flow.simulateShip();
+    });
+  }
+  /**
+   * A simulated module clicked (OnClickSimulated): its next state, backwards with shift. Where it cannot be put in it,
+   * the client's UserError is said: its dialog's title and body.
+   */
+  function clickSimulated(slot: FittingSlot, event: MouseEvent): void {
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (!slot.module || flagID === null) return;
+    error = "";
+    simulationError = null;
+    try {
+      flow.switchSimulatedModule(flagID, event.shiftKey);
+    } catch (cause) {
+      const key = cause instanceof Error ? cause.message : String(cause);
+      const values = (cause as { values?: Readonly<Record<string, number>> }).values ?? {};
+      simulationError = { key, typeID: slot.module.typeID, values };
+      flow.requestWords([`dialog:${key}/title`, `dialog:${key}/body`]);
+    }
+  }
+  /** The last UserError a simulated module's click met, and the module's type. */
+  let simulationError = $state<{ readonly key: string; readonly typeID: number; readonly values: Readonly<Record<string, number>> } | null>(null);
+  const simulationErrorText = $derived.by(() => {
+    if (!simulationError) return "";
+    const { key, typeID, values } = simulationError;
+    const args = { modulename: typeID, moduleName: typeID, module: typeID, type: typeID, ...values };
+    const fill = (part: "title" | "body"): string => {
+      const template = $words.templates[`dialog:${key}/${part}`];
+      return typeof template === "string" && template !== ""
+        ? plainText(formatTemplate(template, args, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) }))
+        : "";
+    };
+    const title = fill("title");
+    const body = fill("body");
+    return title || body ? [title, body].filter(Boolean).join(": ") : key;
+  });
 
   /** The resistance grid: one row per layer, four damage types across. */
   const defenceRows = $derived.by(() =>
@@ -1733,40 +1849,40 @@
       <div class="hud-gauge cpu">
         <div class="hud-head">
           <span class="hud-label">CPU</span>
-          <span class="hud-value">{resourceText($fitting.resources.cpu, "tf")}</span>
+          <span class="hud-value">{resourceText(resources.cpu, "tf")}</span>
         </div>
         <div
           class="hud-track"
           role="meter"
           aria-label="CPU"
-          aria-valuenow={percent($fitting.resources.cpu) ?? 0}
+          aria-valuenow={percent(resources.cpu) ?? 0}
           aria-valuemin="0"
           aria-valuemax="100"
         >
-          <span class="hud-fill" style={`width: ${percent($fitting.resources.cpu) ?? 0}%`}></span>
+          <span class="hud-fill" style={`width: ${percent(resources.cpu) ?? 0}%`}></span>
         </div>
       </div>
       <div class="hud-gauge powergrid">
         <div class="hud-head">
           <span class="hud-label">Power grid</span>
-          <span class="hud-value">{resourceText($fitting.resources.powergrid, "MW")}</span>
+          <span class="hud-value">{resourceText(resources.powergrid, "MW")}</span>
         </div>
         <div
           class="hud-track"
           role="meter"
           aria-label="Power grid"
-          aria-valuenow={percent($fitting.resources.powergrid) ?? 0}
+          aria-valuenow={percent(resources.powergrid) ?? 0}
           aria-valuemin="0"
           aria-valuemax="100"
         >
-          <span class="hud-fill" style={`width: ${percent($fitting.resources.powergrid) ?? 0}%`}></span>
+          <span class="hud-fill" style={`width: ${percent(resources.powergrid) ?? 0}%`}></span>
         </div>
       </div>
     </div>
     <dl class="fit-readouts">
       <div>
         <dt>Calibration</dt>
-        <dd>{resourceText($fitting.resources.calibration, "")}</dd>
+        <dd>{resourceText(resources.calibration, "")}</dd>
       </div>
       <div>
         <dt>Cargo hold</dt>
@@ -1827,6 +1943,9 @@
   <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
   {#if $fitting.actionError && !$fitting.actionErrorSaid}
     <p class="error">Last change failed: {$fitting.actionError}</p>
+  {/if}
+  {#if simulationErrorText}
+    <p class="error" role="alert">{simulationErrorText}</p>
   {/if}
   {#if $fitting.resourcesError}
     <p class="error">The ship's readings could not be loaded: {$fitting.resourcesError}</p>
@@ -1892,6 +2011,18 @@
               <div class="fit-ring-guide" aria-hidden="true"></div>
               <div class="fit-hull">
                 <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="lg" />
+                <!-- The ghost ship icon (ghostShipIcon.py): Simulate, or Exit Simulation while simulating. -->
+                <button
+                  type="button"
+                  class="fit-simulate"
+                  class:simulating={simulation !== null}
+                  title={simulateHint}
+                  aria-pressed={simulation !== null}
+                  disabled={busy}
+                  onclick={toggleSimulation}
+                >
+                  {simulation ? simulationWord("UI/Fitting/FittingWindow/ExitSimulation") : simulationWord("UI/Fitting/FittingWindow/Simulate")}
+                </button>
               </div>
 
               {#each sockets as socket (`${socket.slot.family}:${socket.slot.index}`)}
@@ -1905,12 +2036,16 @@
                     slot.family !== "rig" &&
                     slot.family !== "subsystem"}
                   class:armed={isSelected(slot)}
+                  class:sim-offline={simulatedState(slot) === 0}
+                  class:sim-online={simulatedState(slot) === 1}
+                  class:sim-active={simulatedState(slot) === 2}
+                  class:sim-overheated={simulatedState(slot) === 3}
                   style={`left: ${socket.xPercent}%; top: ${socket.yPercent}%`}
-                  title={socketDescription(slot)}
-                  aria-label={socketDescription(slot)}
+                  title={simulation && slot.module ? `${slotName(slot)}, ${moduleName(slot.module.typeID)}. ${simulationWord("UI/Fitting/FittingWindow/ModuleMode")}: ${simulatedStateText(slot) ?? ""}. ${simulationWord("UI/Fitting/FittingWindow/ModuleModeHint")}` : socketDescription(slot)}
+                  aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
-                  onclick={() => clickSocket(slot)}
+                  onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
                   ondragover={(event) => overSocket(event, slot)}
                   ondragleave={() => (dropSlot = null)}
                   ondrop={(event) => dropOnSocket(event, slot)}

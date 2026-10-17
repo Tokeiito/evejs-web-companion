@@ -276,6 +276,17 @@ export type FeedEvent =
       readonly resources: FittingResources;
       readonly stats: ShipStats;
     }
+  // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
+  | {
+      readonly type: "fitting/simulated";
+      readonly shipID: number;
+      readonly resources: FittingResources;
+      readonly stats: ShipStats;
+      readonly moduleStates: Readonly<Record<number, number>>;
+      readonly moduleKinds: Readonly<Record<number, number>>;
+    }
+  // The simulation left (flow.exitSimulation).
+  | { readonly type: "fitting/simulation-ended" }
   // R21 slice B — the bound-dogma snapshot that accompanies the fit: the active
   // ship and every fitted module with the SERVER's post-dogma attributes. Its
   // own event because it rides a SEPARATE read that is a companion to the fit,

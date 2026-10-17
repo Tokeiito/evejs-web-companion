@@ -28,14 +28,18 @@ import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } f
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, resourcesOf, slotFlagOf } from "../bridge/fitting.ts";
 import { decodeItemAttributeChanges, locationAttributeChanges } from "../bridge/shipAttributeNotifications.ts";
-import { deriveShipStats, known, unavailable } from "../bridge/shipStats.ts";
+import { deriveShipStats, known, unavailable, type ShipStats } from "../bridge/shipStats.ts";
 import { capacitorSimulator, capSimulatorValues, isOnlineModule } from "../bridge/dogma/capacitor.ts";
 import { offense } from "../bridge/dogma/offense.ts";
 import { defense } from "../bridge/dogma/defense.ts";
-import { dockedDrones } from "../bridge/dogma/drones.ts";
+import { dockedDrones, type DroneReading } from "../bridge/dogma/drones.ts";
+import { simulateCurrentShip, simulatedDrones, type SimulatedShip } from "../bridge/dogma/simulation.ts";
+import { moduleInSlot, moduleKind, moduleState, offlineSlots, RIG_SLOT_FLAGS, switchModuleState } from "../bridge/dogma/moduleStates.ts";
 import {
   DAMAGE_STATE_ATTRIBUTES,
   decodeBrain,
+  type DogmaItem,
+  type DogmaLocation,
   instanceRowAttributes,
   loadSimulatedFitting,
   type DogmaAttributeRecord as DogmaLocationAttributeRecord,
@@ -375,7 +379,7 @@ import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneB
 import * as api from "./api.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
-import type { MarketEscrow } from "../store/types.ts";
+import type { FittingResources, MarketEscrow } from "../store/types.ts";
 import type {
   ActivityRead,
   AgentAction,
@@ -1415,6 +1419,12 @@ export interface AppFlow {
   unfitModule(itemID: number): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
+  /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
+  simulateShip(): Promise<void>;
+  /** Leave the simulation: the ship's own figures shown again. */
+  exitSimulation(): void;
+  /** A simulated module clicked (OnClickSimulated): its next state, backwards with shift. */
+  switchSimulatedModule(flagID: number, backwards: boolean): void;
   /**
    * Load charges into modules, then re-read the fit so the panel shows what the
    * SERVER put in them. Compatibility is the server's call — an incompatible
@@ -5684,40 +5694,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * The Fitting window's figures for the active ship as the client gives them when it is not simulating. Its dogma
-   * location then is clientDogmaIM's (fittingController.SetDogmaLocation), which the page makes of what godma holds
-   * (GetAllInfo: the hull, its modules in their slots and their online state, its charges and the pilot's brain;
-   * bridge/dogma/location.ts). But for the session's own ship each panel reads as the client reads it:
-   *
-   *   the controller's figures   godma's (fittingController.GetAttribute: GetShipAttributeWithDogmaLocation, godma's
-   *                              item where the ship is the session's), each as GetStatsInfo gives it, rounded to
-   *                              ten places: the resources, navigation, targeting, the layers, the effective hit
-   *                              points, the passive recharge; align time off godma's agility and mass as they are
-   *                              (GetAlignTimeForShip)
-   *   the dogma location's       the capacitor simulation, each damage, the repairers (GetAccurateAttributeValue:
-   *                              docked, the location's own), the pilot's drone control range (GetDroneControlRange)
-   *   godma's again              the weapons' rates, multipliers and reloads (GetTurretMissileAndAoeDps:
-   *                              GetGodmaAttributeValue)
-   *
-   * A figure godma's row does not list is read off the dogma location. The ship and its modules are loaded with the
-   * server's instance rows (the ship's state: MakeShipActive), at the moment they were the server's (the ship's row's
-   * time: godma was primed with both), and the location runs by the server's clock from then: the charged attributes
-   * (the capacitor's and the shield's charge) are brought up to each moment they are read. No panel shows them, and
-   * the window's figures leave them out.
-   *
-   * Docked only for now. In space a module may be running, and the running effects are a later part, so there the
-   * server's figures stand.
+   * What the client's dogma location of the pilot's own ship is made of: godma's GetAllInfo (the hull, its modules and
+   * their online state, its charges, the instance rows, the brain), the drone bay, and the static data. Null where any
+   * is not to be had.
    */
-  async function reckonActiveShip(): Promise<void> {
-    if (store.flight.get().status?.docked !== true) return;
+  async function ownShipInputs() {
     const allInfo = store.dogma.get().allInfo;
     const shipID = store.fitting.get().activeShipID;
-    if (!allInfo || shipID === null) return;
+    if (!allInfo || shipID === null) return null;
     const brain = decodeBrain(allInfo.charBrain);
     const characterID = Number(allInfo.characterID);
     const pilotTypeID = allInfo.character?.typeID ?? null;
     const shipInfo = allInfo.ships.find((item) => Number(item.itemID) === shipID && item.sublocation == null);
-    if (!brain || !shipInfo || shipInfo.typeID === null || !Number.isSafeInteger(characterID) || pilotTypeID === null) return;
+    if (!brain || !shipInfo || shipInfo.typeID === null || !Number.isSafeInteger(characterID) || pilotTypeID === null) return null;
     // The instance rows the client's dogma location loads the ship and its items with (the ship's state).
     const instances = decodeInstanceRows(allInfo.shipState);
     const instanceOf = (itemID: number | string | null): Map<number, number> | undefined => {
@@ -5749,12 +5738,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       458,
     ];
     const staticData = await dogmaStaticFor(typeIDs, attributeIDs);
-    if (!staticData || store.fitting.get().activeShipID !== shipID) return;
+    if (!staticData || store.fitting.get().activeShipID !== shipID) return null;
+    return { allInfo, shipID, shipInfo, shipTypeID: shipInfo.typeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, staticData };
+  }
+
+  /**
+   * The Fitting window's figures for the active ship as the client gives them when it is not simulating. Its dogma
+   * location then is clientDogmaIM's (fittingController.SetDogmaLocation), which the page makes of what godma holds
+   * (GetAllInfo: the hull, its modules in their slots and their online state, its charges and the pilot's brain;
+   * bridge/dogma/location.ts). But for the session's own ship each panel reads as the client reads it:
+   *
+   *   the controller's figures   godma's (fittingController.GetAttribute: GetShipAttributeWithDogmaLocation, godma's
+   *                              item where the ship is the session's), each as GetStatsInfo gives it, rounded to
+   *                              ten places: the resources, navigation, targeting, the layers, the effective hit
+   *                              points, the passive recharge; align time off godma's agility and mass as they are
+   *                              (GetAlignTimeForShip)
+   *   the dogma location's       the capacitor simulation, each damage, the repairers (GetAccurateAttributeValue:
+   *                              docked, the location's own), the pilot's drone control range (GetDroneControlRange)
+   *   godma's again              the weapons' rates, multipliers and reloads (GetTurretMissileAndAoeDps:
+   *                              GetGodmaAttributeValue)
+   *
+   * A figure godma's row does not list is read off the dogma location. The ship and its modules are loaded with the
+   * server's instance rows (the ship's state: MakeShipActive), at the moment they were the server's (the ship's row's
+   * time: godma was primed with both), and the location runs by the server's clock from then: the charged attributes
+   * (the capacitor's and the shield's charge) are brought up to each moment they are read. No panel shows them, and
+   * the window's figures leave them out.
+   *
+   * Docked only for now. In space a module may be running, and the running effects are a later part, so there the
+   * server's figures stand.
+   */
+  async function reckonActiveShip(): Promise<void> {
+    if (store.flight.get().status?.docked !== true) return;
+    const inputs = await ownShipInputs();
+    if (!inputs) return;
+    const { allInfo, shipID, shipInfo, shipTypeID, brain, characterID, pilotTypeID, security, instanceOf, modules, charges, bay, staticData } = inputs;
     // Loaded at the moment the ship's state was the server's (MakeShipActive), read at each moment after.
     let loadingAt: number | null = infoTimeMs(shipInfo.time) ?? serverNow();
     const reckoned = loadSimulatedFitting(
       staticData,
-      shipInfo.typeID,
+      shipTypeID,
       { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
       brain,
       modules,
@@ -5793,43 +5815,70 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     /** The controller's GetAttribute for the session's own ship: godma's, else the location's. */
     const shipValue = (attributeID: number): number =>
       godmaRows.get(reckoned.ship.key)?.get(attributeID) ?? reckoned.location.value(reckoned.ship, attributeID);
+    const figures = panelFigures({
+      location: reckoned.location,
+      ship: reckoned.ship,
+      pilot: reckoned.pilot,
+      staticData,
+      listed: new Set([...shipInfo.attributes.map((attribute) => attribute.attributeID), ...reckoned.location.values(reckoned.ship).keys()]),
+      shipValue,
+      // The offense panel's rates, multipliers and reloads off godma, the pilot's missile damage multiplier among them.
+      gav: (item, attributeID) => godmaRows.get(item.key)?.get(attributeID) ?? reckoned.location.value(item, attributeID),
+      // clientDogmaLocation.IsModuleIncludedInCalculation: the modules online; every repairer counted for the ship
+      // itself (IncludeModuleInHpCalculation); no spool (GetMaxDamageMultiplier: 1).
+      included: isOnlineModule,
+      hpIncluded: () => true,
+      maxDamageMultiplier: () => 1.0,
+      // The drone panel's: docked, the bay's best set is the active one (clientDogmaLocation.GetActiveDrones).
+      drones: dockedDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
+        accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
+        value: (item, attributeID) => reckoned.location.value(item, attributeID),
+      }),
+    });
+    store.apply({ type: "fitting/reckoned", shipID, ...figures });
+  }
+
+  /**
+   * The Fitting window's figures of a ship, each read as the window reads it (the panels: bridge/dogma/*). `view` says
+   * where from: the controller's GetAttribute (`shipValue`), the offense panel's rates (`gav`), which modules the
+   * capacitor, offense and repairs count (IsModuleIncludedInCalculation, IncludeModuleInHpCalculation), the spool
+   * (GetMaxDamageMultiplier) and the drones. Each figure as GetStatsInfo gives it, rounded to ten places; the align time
+   * off agility and mass as they are (GetAlignTimeForShip); the charged attributes left out. The drones' damage is part
+   * of the offense's total (GetAllDpsInfo).
+   */
+  function panelFigures(view: {
+    readonly location: DogmaLocation;
+    readonly ship: DogmaItem;
+    readonly pilot: DogmaItem;
+    readonly staticData: DogmaStatic;
+    readonly listed: Iterable<number>;
+    readonly shipValue: (attributeID: number) => number;
+    readonly gav: (item: DogmaItem, attributeID: number) => number;
+    readonly included: (module: DogmaItem) => boolean;
+    readonly hpIncluded: (module: DogmaItem) => boolean;
+    readonly maxDamageMultiplier: (item: DogmaItem) => number;
+    readonly drones: DroneReading;
+  }): { readonly resources: FittingResources; readonly stats: ShipStats } {
+    const { location, ship, pilot, staticData, shipValue, drones } = view;
+    const accurate = (item: DogmaItem, attributeID: number): number => location.value(item, attributeID);
     const attributes = new Map<number, number>();
-    const listed = new Set([...shipInfo.attributes.map((attribute) => attribute.attributeID), ...reckoned.location.values(reckoned.ship).keys()]);
-    for (const attributeID of listed) {
+    for (const attributeID of view.listed) {
       if (staticData.attributes[attributeID]?.chargeRechargeTimeID) continue;
       attributes.set(attributeID, roundTo10(shipValue(attributeID)));
     }
-    const pilotAttributes = new Map<number, number>([[458, roundTo10(reckoned.location.value(reckoned.pilot, 458))]]);
+    const pilotAttributes = new Map<number, number>([[458, roundTo10(location.value(pilot, 458))]]);
     const derived = deriveShipStats(attributes, undefined, pilotAttributes);
-    // GetAlignTimeForShip: -ln(0.25) * agility * mass / 1e6, godma's agility and mass as they are.
+    // GetAlignTimeForShip: -ln(0.25) * agility * mass / 1e6.
     const alignTime = (-Math.log(0.25) * shipValue(70) * shipValue(4)) / 1_000_000;
-    // The capacitor panel's simulation, of the modules online (clientDogmaLocation.IsModuleIncludedInCalculation).
-    const simulator = capSimulatorValues(capacitorSimulator(reckoned.location, reckoned.ship, isOnlineModule));
-    // The offense panel's: each damage off the dogma location, the rates, multipliers and reloads off godma, the
-    // pilot's missile damage multiplier among them; no spool (clientDogmaLocation.GetMaxDamageMultiplier: 1).
-    const weapons = offense(reckoned.location, reckoned.ship, reckoned.pilot, {
-      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
-      gav: (item, attributeID) => godmaRows.get(item.key)?.get(attributeID) ?? reckoned.location.value(item, attributeID),
-      included: isOnlineModule,
-      maxDamageMultiplier: () => 1.0,
-    });
-    // The drone panel's: docked, the bay's best set is the active one (clientDogmaLocation.GetActiveDrones), each
-    // figure off the dogma location; its damage is part of the offense's total (GetAllDpsInfo).
-    const drones = dockedDrones(reckoned.location, reckoned.ship, reckoned.pilot, {
-      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
-      value: (item, attributeID) => reckoned.location.value(item, attributeID),
-    });
-    // The defense panel's: the ship's figures as GetStatsInfo reads them, each repairer counted (the ship itself:
-    // IncludeModuleInHpCalculation), docked each off the dogma location.
-    const layers = defense(reckoned.location, reckoned.ship, {
+    const simulator = capSimulatorValues(capacitorSimulator(location, ship, view.included));
+    const weapons = offense(location, ship, pilot, { accurate, gav: view.gav, included: view.included, maxDamageMultiplier: view.maxDamageMultiplier });
+    const layers = defense(location, ship, {
       stat: (attributeID) => roundTo10(shipValue(attributeID)),
       attribute: shipValue,
-      accurate: (item, attributeID) => reckoned.location.value(item, attributeID),
-      included: () => true,
+      accurate,
+      included: view.hpIncluded,
     });
-    store.apply({
-      type: "fitting/reckoned",
-      shipID,
+    return {
       resources: resourcesOf(attributes),
       stats: {
         ...derived,
@@ -5851,7 +5900,93 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           simulator,
         },
       },
+    };
+  }
+
+  /** The Fitting window's simulation of the pilot's own ship (ghostFittingSvc), while there is one, and the ship it is of. */
+  let simulation: { readonly shipID: number; readonly simulated: SimulatedShip } | null = null;
+
+  /**
+   * ToggleGhostFitting into a simulation (LoadCurrentShip): the pilot's own ship simulated from what godma holds of it
+   * and its drone bay (bridge/dogma/simulation.ts), its modules switched on as loading switches them, then shown.
+   */
+  async function simulateShip(): Promise<void> {
+    const inputs = await ownShipInputs();
+    if (!inputs) throw new Error("The ship's own dogma has not been read yet.");
+    const { shipID, shipTypeID, brain, characterID, pilotTypeID, security, modules, charges, bay, staticData } = inputs;
+    simulation = {
+      shipID,
+      simulated: simulateCurrentShip(
+        staticData,
+        shipTypeID,
+        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
+        brain,
+        modules.map((module) => ({ key: module.key, typeID: module.typeID, flagID: module.flagID })),
+        charges,
+        bay.map((stack) => ({ typeID: stack.typeID, quantity: stack.quantity })),
+        serverNow,
+      ),
+    };
+    showSimulation();
+  }
+
+  /**
+   * The simulation's figures, read as the window reads a simulated ship's: each off its own dogma location (the ghost is
+   * no item of godma's: GetShipAttributeWithDogmaLocation, GetTurretMissileAndAoeDps' GAV), the modules active counted
+   * (FittingDogmaLocation.IsModuleIncludedInCalculation, IncludeModuleInHpCalculation), a spool's top
+   * (damageMultiplierBonusMax), the drones selected; and each module's state by its slot.
+   */
+  function showSimulation(): void {
+    if (!simulation) return;
+    const { location, ship, pilot } = simulation.simulated;
+    const figures = panelFigures({
+      location,
+      ship,
+      pilot,
+      staticData: location.static,
+      listed: location.values(ship).keys(),
+      shipValue: (attributeID) => location.value(ship, attributeID),
+      gav: (item, attributeID) => location.value(item, attributeID),
+      included: (module) => location.isActive(module),
+      hpIncluded: (module) => location.isActive(module),
+      maxDamageMultiplier: (item) => (item.attributes.has(2734) ? 1.0 + location.value(item, 2734) : 1.0),
+      drones: simulatedDrones(simulation.simulated),
     });
+    const moduleStates: Record<number, number> = {};
+    const moduleKinds: Record<number, number> = {};
+    for (const item of ship.fitted.values()) {
+      if (item === ship || item.flagID === null || ship.subLocations.get(item.flagID) === item) continue;
+      moduleStates[item.flagID] = moduleState(location, item);
+      moduleKinds[item.flagID] = moduleKind(location, item);
+    }
+    store.apply({ type: "fitting/simulated", shipID: simulation.shipID, ...figures, moduleStates, moduleKinds });
+  }
+
+  /**
+   * A simulated module clicked (FittingSlotController.OnClickSimulated): one in a slot other than a rig's that cannot be
+   * online only put offline; any other put in its next state, backwards with shift (SwitchBetweenModes). A state it
+   * cannot be put in fails with the client's UserError.
+   */
+  function switchSimulatedModule(flagID: number, backwards: boolean): void {
+    if (!simulation) return;
+    const { location, ship } = simulation.simulated;
+    const module = moduleInSlot(ship, flagID);
+    if (!module) return;
+    try {
+      if (!RIG_SLOT_FLAGS.includes(flagID) && !location.static.types[module.typeID]?.effects.includes(16)) {
+        if (location.isOnline(module)) offlineSlots(location, ship, [flagID]);
+      } else {
+        switchModuleState(location, module, backwards);
+      }
+    } finally {
+      showSimulation();
+    }
+  }
+
+  /** ToggleGhostFitting out of the simulation: the ship's own figures shown again. */
+  function exitSimulation(): void {
+    simulation = null;
+    store.apply({ type: "fitting/simulation-ended" });
   }
 
   let shipReckoningTimer: ReturnType<typeof setTimeout> | null = null;
@@ -24552,6 +24687,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID));
     },
 
+    simulateShip() {
+      return simulateShip();
+    },
+    exitSimulation() {
+      exitSimulation();
+    },
+    switchSimulatedModule(flagID, backwards) {
+      switchSimulatedModule(flagID, backwards);
+    },
     async setModuleOnline(itemID, online) {
       // ⚠ NOT runFittingAction. That helper decides "declined" from the api
       // verb's `applied` flag, and setModuleOnline returns VOID — so its check

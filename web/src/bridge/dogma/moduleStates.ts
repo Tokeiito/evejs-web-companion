@@ -77,6 +77,21 @@ export function moduleState(location: DogmaLocation, module: DogmaItem): number 
   return ACTIVE;
 }
 
+/** moduleStateUtil: a module's kind, which its state's label goes by. */
+export const PASSIVE = 0;
+export const ACTIVATABLE = 1;
+export const RIG = 2;
+export const SUBSYSTEM = 3;
+
+/** GetTextForCurrentStateForDogmaItem's moduleType: a rig, a subsystem, passive (IsPassive) or activatable. */
+export function moduleKind(location: DogmaLocation, module: DogmaItem): number {
+  const flagID = module.flagID ?? 0;
+  if (isRigSlot(flagID)) return RIG;
+  if (isSubsystemSlot(flagID)) return SUBSYSTEM;
+  const info = location.typeEffectInfo(module.typeID);
+  return info.defaultEffectID === null || !info.isActivatable ? PASSIVE : ACTIVATABLE;
+}
+
 /** GetNewState and, with shift, GetNewStateBackwards: the state a click puts the module in. */
 export function nextState(location: DogmaLocation, module: DogmaItem, backwards: boolean): number | null {
   const flagID = module.flagID ?? 0;
