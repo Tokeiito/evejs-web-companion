@@ -94,6 +94,9 @@ const TABLES = Object.freeze({
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).
   typeDogma: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", rowsOnly: true }),
+  // A meta group's name, the number of its message (metaGroups/data.py get_name: the meta group's nameID), which the
+  // assets search's metagroup keyword matches (assetSearchUtil.MatchMetagroup).
+  metaGroupNameIDs: Object.freeze({ loader: "metaGroupsLoader", resource: "res:/staticdata/metagroups.fsdbinary", attribute: "nameID" }),
   types: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", rowsOnly: true }),
 });
 

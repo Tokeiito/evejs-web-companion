@@ -6,8 +6,13 @@
 // The text is lowercased whole and split by ParseString into the plain words before the first "keyword:" and the
 // keyword/value pairs. With plain words, an item is kept where its type's, group's or category's name holds them, and
 // the keywords count for nothing; with none, every keyword's condition must hold. Each keyword is the first of the
-// client's keywords, sorted by their words, that begins with what was typed. Of them the page has the four that go by
-// a name (type, typeExact, group, category); any other typed is passed over and said so.
+// client's keywords, sorted by their words, that begins with what was typed; all seventeen are the page's.
+//
+// A keyword of a place (security, system, constellation, region, station) asks where each thing is: the station the
+// client gives its row (AddStationIDToFakeRow: a container's station for what is in one, the location of what lies in
+// a hangar or in asset safety). A thing with none, as a ship's cargo and fitting are, has no system to find: the
+// client's lookup raises there (_GetSolarSystemID: neither GetStation nor GetStructureInfo has None), out of its search
+// thread, and the search never finishes. The page's does the same (AssetSearchStopped).
 
 /** One of the pilot's things as the search sees it (GetFakeRowset's row). */
 export interface AssetSearchItem {
@@ -28,29 +33,118 @@ export interface AssetSearchNames {
   categoryName(typeID: number): string | null;
 }
 
-/** The kinds of keyword the page searches by; null for one it does not. */
-export type AssetKeywordKind = "type" | "typeExact" | "group" | "category" | null;
+/** The kinds of keyword (AssetKeywordSearch's Match functions). */
+export type AssetKeywordKind =
+  | "type" | "typeExact" | "group" | "category" | "minimumQuantity" | "maximumQuantity" | "metaLevel" | "metaGroup"
+  | "techLevel" | "minSecurity" | "maxSecurity" | "securityClass" | "solarSystem" | "constellation" | "region"
+  | "stationName" | "blueprint";
 
-/** AssetKeywordSearch.GetSearchKeywords (408 to 435): each keyword's label, and what the page does with it. */
+/** What the search knows of a station a thing is at, its names lowercased (GetSolarsystemName and the others). */
+export interface AssetSearchStation {
+  readonly stationName: string;
+  readonly systemName: string;
+  readonly constellationName: string;
+  readonly regionName: string;
+  /** mapSvc.GetSecurityStatus: the system's level, rounded to a place (FmtSystemSecStatus); null where not had. */
+  readonly security: number | null;
+}
+
+/** What the conditions read besides the names: a type's meta and tech, a station's place, and the options' words. */
+export interface AssetSearchFacts {
+  /** evetypes.GetMetaLevel, GetMetaGroupID, GetTechLevel; null where the type has none. */
+  metaLevel(typeID: number): number | null;
+  metaGroupID(typeID: number): number | null;
+  techLevel(typeID: number): number | null;
+  /** metaGroups.get_name, lowercased. */
+  metaGroupName(metaGroupID: number): string;
+  /** The station's facts; null where the client's lookup of it would raise (no station, or none it knows). */
+  station(stationID: number | null): AssetSearchStation | null;
+  /** The options' words (OptionSecurityHigh and the rest), as the client's labels have them. */
+  readonly options: Readonly<Record<AssetSearchOption, string>>;
+}
+
+export type AssetSearchOption = "high" | "low" | "null" | "zero" | "empire" | "safe" | "blueprintCopy" | "blueprintOriginal";
+
+/** AssetKeywordSearch's option labels (__init__, 61 to 68). */
+export const ASSET_SEARCH_OPTION_LABELS: Readonly<Record<AssetSearchOption, string>> = Object.freeze({
+  safe: "UI/Inventory/AssetSearch/OptionSecuritySafe",
+  high: "UI/Inventory/AssetSearch/OptionSecurityHigh",
+  low: "UI/Inventory/AssetSearch/OptionSecurityLow",
+  null: "UI/Inventory/AssetSearch/OptionSecurityNull",
+  zero: "UI/Inventory/AssetSearch/OptionSecurityZero",
+  empire: "UI/Inventory/AssetSearch/OptionSecurityEmpire",
+  blueprintCopy: "UI/Inventory/AssetSearch/OptionBlueprintCopy",
+  blueprintOriginal: "UI/Inventory/AssetSearch/OptionBlueprintOriginal",
+});
+
+/** The keywords whose conditions ask where a thing is, and those that ask of its type's meta and tech. */
+export const PLACE_KEYWORDS: ReadonlySet<AssetKeywordKind> = new Set(["minSecurity", "maxSecurity", "securityClass", "solarSystem", "constellation", "region", "stationName"]);
+export const META_KEYWORDS: ReadonlySet<AssetKeywordKind> = new Set(["metaLevel", "metaGroup", "techLevel"]);
+
+/** The client's search thread raising: a thing's place asked of a row with none. */
+export class AssetSearchStopped extends Error {
+  constructor() {
+    super("The search asked where a thing is that lies in no station.");
+    this.name = "AssetSearchStopped";
+  }
+}
+
+/** A condition of a keyword: of a thing, and the station its row is given (null for none). */
+export type AssetSearchCondition = (item: AssetSearchItem, stationID: number | null) => boolean;
+
+/** AssetKeywordSearch.GetSearchKeywords (408 to 435): each keyword's label, and its kind. */
 export const ASSET_SEARCH_KEYWORDS: readonly { readonly label: string; readonly kind: AssetKeywordKind }[] = Object.freeze([
   { label: "UI/Inventory/AssetSearch/KeywordType", kind: "type" },
   { label: "UI/Inventory/AssetSearch/KeywordTypeExact", kind: "typeExact" },
   { label: "UI/Inventory/AssetSearch/KeywordGroup", kind: "group" },
   { label: "UI/Inventory/AssetSearch/KeywordCategory", kind: "category" },
-  { label: "UI/Inventory/AssetSearch/KeywordMinimumQuantity", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordMaximumQuantity", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordMetalevel", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordMetagroup", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordTechLevel", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordMinSecurityLevel", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordMaxSecurityLevel", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordSecurityClass", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordSolarSystem", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordConstellation", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordRegion", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordStationName", kind: null },
-  { label: "UI/Inventory/AssetSearch/KeywordBlueprint", kind: null },
+  { label: "UI/Inventory/AssetSearch/KeywordMinimumQuantity", kind: "minimumQuantity" },
+  { label: "UI/Inventory/AssetSearch/KeywordMaximumQuantity", kind: "maximumQuantity" },
+  { label: "UI/Inventory/AssetSearch/KeywordMetalevel", kind: "metaLevel" },
+  { label: "UI/Inventory/AssetSearch/KeywordMetagroup", kind: "metaGroup" },
+  { label: "UI/Inventory/AssetSearch/KeywordTechLevel", kind: "techLevel" },
+  { label: "UI/Inventory/AssetSearch/KeywordMinSecurityLevel", kind: "minSecurity" },
+  { label: "UI/Inventory/AssetSearch/KeywordMaxSecurityLevel", kind: "maxSecurity" },
+  { label: "UI/Inventory/AssetSearch/KeywordSecurityClass", kind: "securityClass" },
+  { label: "UI/Inventory/AssetSearch/KeywordSolarSystem", kind: "solarSystem" },
+  { label: "UI/Inventory/AssetSearch/KeywordConstellation", kind: "constellation" },
+  { label: "UI/Inventory/AssetSearch/KeywordRegion", kind: "region" },
+  { label: "UI/Inventory/AssetSearch/KeywordStationName", kind: "stationName" },
+  { label: "UI/Inventory/AssetSearch/KeywordBlueprint", kind: "blueprint" },
 ]);
+
+/** int(text) in Python: a whole number, spaces about it allowed; null where it raises ValueError. */
+function pyInt(text: string): number | null {
+  return /^\s*[+-]?\d+\s*$/.test(text) ? Number.parseInt(text.trim(), 10) : null;
+}
+
+/** float(text) in Python: a decimal, an exponent, inf or nan, spaces about it allowed; null where it raises. */
+function pyFloat(text: string): number | null {
+  const trimmed = text.trim();
+  if (/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(trimmed)) return Number(trimmed);
+  if (/^[+-]?inf(inity)?$/i.test(trimmed)) return trimmed.startsWith("-") ? -Infinity : Infinity;
+  if (/^[+-]?nan$/i.test(trimmed)) return Number.NaN;
+  return null;
+}
+
+/** "not x" in Python, for a number or None: nought and None are false; nan is not. */
+const pyNot = (value: number | null): boolean => value === null || value === 0;
+
+/** IsPartOfText(text, value): the text begins with the value, both lowercased. */
+const isPartOfText = (text: string, value: string): boolean => text.toLowerCase().startsWith(value.toLowerCase());
+
+/** appConst.securityClassZeroSec and the others (eveuniverse/security.py), and SecurityClassFromLevel. */
+const SECURITY_CLASS = { zero: 0, low: 1, high: 2, safe: 3 } as const;
+function securityClassFromLevel(level: number): number {
+  if (level <= 0) return SECURITY_CLASS.zero;
+  if (level < 0.45) return SECURITY_CLASS.low;
+  if (level < 0.95) return SECURITY_CLASS.high;
+  return SECURITY_CLASS.safe;
+}
+
+/** inventorycommon.const.categoryBlueprint; appConst.singletonBlueprintCopy. */
+const CATEGORY_BLUEPRINT = 9;
+const SINGLETON_BLUEPRINT_COPY = 2;
 
 // assetSearchUtil.REGEX: a word followed by ':' (a keyword), then a decimal, a whole number, or a run of word
 // characters, spaces and some others; not followed by a word character, '+' or ':' (the next keyword's start). Python's
@@ -72,33 +166,50 @@ export function parseAssetSearch(text: string): { readonly searchType: string; r
   return { searchType: rest.trim(), matches: matches.map(([key, value]) => [key, value.replace(/\s+$/u, "")] as const) };
 }
 
+/** The keywords in the client's order (localization.util.Sort by their words; here a case-blind compare). */
+function sortedKeywords(keywordWords: Readonly<Record<string, string>>): { readonly word: string; readonly kind: AssetKeywordKind }[] {
+  return ASSET_SEARCH_KEYWORDS
+    .map((keyword) => ({ word: keywordWords[keyword.label] ?? "", kind: keyword.kind }))
+    .filter((keyword) => keyword.word !== "")
+    .sort((left, right) => left.word.localeCompare(right.word, undefined, { sensitivity: "base" }));
+}
+
+/** The kinds of the keywords typed (each the first keyword that begins with the word typed): what the search must read. */
+export function assetSearchKinds(matches: readonly (readonly [string, string])[], keywordWords: Readonly<Record<string, string>>): Set<AssetKeywordKind> {
+  const keywords = sortedKeywords(keywordWords);
+  const kinds = new Set<AssetKeywordKind>();
+  for (const [word] of matches) {
+    const keyword = keywords.find((each) => isPartOfText(each.word, word));
+    if (keyword !== undefined) kinds.add(keyword.kind);
+  }
+  return kinds;
+}
+
 /**
- * GetConditions (387 to 401) with the keywords' words (localization.util.Sort of them; here a case-blind compare):
- * each typed keyword's condition, from the first keyword that begins with it (IsPartOfText). Answers the conditions and
- * the keywords typed that the page does not search by.
+ * GetConditions (387 to 401) with the keywords' words: each typed keyword's condition, from the first keyword that
+ * begins with it (IsPartOfText), as its Match function makes it (assetSearchUtil.py 89 to 406).
  */
 export function assetSearchConditions(
   matches: readonly (readonly [string, string])[],
   keywordWords: Readonly<Record<string, string>>,
   names: AssetSearchNames,
-): { readonly conditions: readonly ((item: AssetSearchItem) => boolean)[]; readonly unsupported: readonly string[] } {
-  const keywords = ASSET_SEARCH_KEYWORDS
-    .map((keyword) => ({ word: keywordWords[keyword.label] ?? "", kind: keyword.kind }))
-    .filter((keyword) => keyword.word !== "")
-    .sort((left, right) => left.word.localeCompare(right.word, undefined, { sensitivity: "base" }));
+  facts: AssetSearchFacts,
+): readonly AssetSearchCondition[] {
+  const keywords = sortedKeywords(keywordWords);
   // The per-run caches (ResetPerRunDicts): type and typeExact share theirs, by the type's number.
   const typeMatched = new Map<number, boolean>();
   const groupMatched = new Map<number, boolean>();
   const categoryMatched = new Map<number, boolean>();
-  const conditions: ((item: AssetSearchItem) => boolean)[] = [];
-  const unsupported: string[] = [];
+  const conditions: AssetSearchCondition[] = [];
+  /** _GetSolarSystemID's raising, where the row has no station the client can find. */
+  const placeOf = (stationID: number | null): AssetSearchStation => {
+    const station = facts.station(stationID);
+    if (station === null) throw new AssetSearchStopped();
+    return station;
+  };
   for (const [word, value] of matches) {
-    const keyword = keywords.find((each) => each.word.toLowerCase().startsWith(word.toLowerCase()));
+    const keyword = keywords.find((each) => isPartOfText(each.word, word));
     if (keyword === undefined) continue;
-    if (keyword.kind === null) {
-      unsupported.push(keyword.word);
-      continue;
-    }
     const cached = (cache: Map<number, boolean>, key: number, decide: () => boolean): boolean => {
       const had = cache.get(key);
       if (had !== undefined) return had;
@@ -112,11 +223,103 @@ export function assetSearchConditions(
       conditions.push((item) => cached(typeMatched, item.typeID, () => (names.typeName(item.typeID) ?? "").trim() === value));
     } else if (keyword.kind === "group") {
       conditions.push((item) => cached(groupMatched, item.groupID, () => (names.groupName(item.typeID) ?? "").includes(value)));
-    } else {
+    } else if (keyword.kind === "category") {
       conditions.push((item) => cached(categoryMatched, item.categoryID, () => (names.categoryName(item.typeID) ?? "").includes(value)));
+    } else if (keyword.kind === "minimumQuantity" || keyword.kind === "maximumQuantity") {
+      // MatchMinimumQuantity, MatchMaximumQuantity: a whole number (none, and nought, match only an empty value) and
+      // the stack's size against it.
+      const quantity = pyInt(value);
+      const atLeast = keyword.kind === "minimumQuantity";
+      conditions.push((item) => {
+        if (pyNot(quantity)) return value === "";
+        const stacksize = item.quantity < 0 ? 1 : item.quantity;
+        return atLeast ? stacksize >= quantity! : stacksize <= quantity!;
+      });
+    } else if (keyword.kind === "metaLevel" || keyword.kind === "techLevel") {
+      // MatchMetalevel, MatchTechlevel: the level asked (nought too matching only an empty value), the type's own
+      // (GetMetaLevel: nought where none; GetTechLevel: one where none).
+      const level = pyInt(value);
+      const meta = keyword.kind === "metaLevel";
+      conditions.push((item) => {
+        if (pyNot(level)) return value === "";
+        const own = meta ? Math.trunc(facts.metaLevel(item.typeID) || 0) : Math.trunc(facts.techLevel(item.typeID) || 1);
+        return level === own;
+      });
+    } else if (keyword.kind === "metaGroup") {
+      // MatchMetagroup: the type's meta group's name holds the value; a type with none matches nothing.
+      const matched = new Map<number, boolean>();
+      conditions.push((item) => {
+        const metaGroupID = Math.trunc(facts.metaGroupID(item.typeID) || 0);
+        return cached(matched, metaGroupID, () => metaGroupID > 0 && facts.metaGroupName(metaGroupID).includes(value));
+      });
+    } else if (keyword.kind === "minSecurity" || keyword.kind === "maxSecurity") {
+      // MatchMinSecurity, MatchMaxSecurity: a number (none, and nought, match only an empty value) against the
+      // rounded level of the system the thing's station is in.
+      const secLevel = pyFloat(value);
+      const atLeast = keyword.kind === "minSecurity";
+      const matched = new Map<number | null, boolean>();
+      conditions.push((item, stationID) => {
+        if (pyNot(secLevel)) return value === "";
+        const had = matched.get(stationID);
+        if (had !== undefined) return had;
+        const security = placeOf(stationID).security;
+        const result = security !== null && (atLeast ? security >= secLevel! : security <= secLevel!);
+        matched.set(stationID, result);
+        return result;
+      });
+    } else if (keyword.kind === "securityClass") {
+      // MatchSecurityClass: the option the value begins (high, low, null or zero, empire, safe, in that order), and the
+      // class of the thing's system's rounded level among the option's.
+      const options = facts.options;
+      const classes: readonly number[] | null = isPartOfText(options.high, value) ? [SECURITY_CLASS.high]
+        : isPartOfText(options.low, value) ? [SECURITY_CLASS.low]
+        : isPartOfText(options.null, value) || isPartOfText(options.zero, value) ? [SECURITY_CLASS.zero]
+        : isPartOfText(options.empire, value) ? [SECURITY_CLASS.safe, SECURITY_CLASS.high, SECURITY_CLASS.low]
+        : isPartOfText(options.safe, value) ? [SECURITY_CLASS.safe]
+        : null;
+      const matched = new Map<number | null, boolean>();
+      conditions.push((item, stationID) => {
+        if (classes === null) return value === "";
+        const had = matched.get(stationID);
+        if (had !== undefined) return had;
+        const security = placeOf(stationID).security;
+        const result = security !== null && classes.includes(securityClassFromLevel(security));
+        matched.set(stationID, result);
+        return result;
+      });
+    } else if (keyword.kind === "solarSystem" || keyword.kind === "constellation" || keyword.kind === "region" || keyword.kind === "stationName") {
+      // MatchSolarSystem, MatchConstellation, MatchRegion, MatchStationName: the lowercased name of the thing's
+      // station's system, constellation, region, or of the station itself, holds the value.
+      const kind = keyword.kind;
+      const matched = new Map<number | null, boolean>();
+      conditions.push((item, stationID) => {
+        const had = matched.get(stationID);
+        if (had !== undefined) return had;
+        const place = placeOf(stationID);
+        const name = kind === "solarSystem" ? place.systemName
+          : kind === "constellation" ? place.constellationName
+          : kind === "region" ? place.regionName
+          : place.stationName;
+        const result = name.includes(value);
+        matched.set(stationID, result);
+        return result;
+      });
+    } else {
+      // MatchBlueprint: copy or original by the option the value begins (copy first); an empty value matches all, an
+      // unknown one nothing; a blueprint an original where its singleton is not the copy's.
+      const isOriginal = isPartOfText(facts.options.blueprintCopy, value) ? false
+        : isPartOfText(facts.options.blueprintOriginal, value) ? true
+        : null;
+      conditions.push((item) => {
+        if (value === "") return true;
+        if (isOriginal === null) return false;
+        if (item.categoryID !== CATEGORY_BLUEPRINT) return false;
+        const singleton = item.quantity < 0 ? -item.quantity : 0;
+        return isOriginal ? singleton !== SINGLETON_BLUEPRINT_COPY : singleton === SINGLETON_BLUEPRINT_COPY;
+      });
     }
   }
-  return { conditions, unsupported };
+  return conditions;
 }
 
 /** const.groupSecureCargoContainer, groupAuditLogSecureContainer, groupFreightContainer, groupCargoContainer. */
@@ -126,6 +329,8 @@ const TYPE_ASSET_SAFETY_WRAP = 60;
 const TYPE_PLASTIC_WRAP = 3468;
 /** const.flagHangar, flagWallet, flagAssetSafety: what a station's search results list of what lies there. */
 const LISTED_FLAGS: ReadonlySet<number> = new Set([4, 1, 36]);
+/** const.flagHangar, flagAssetSafety: what AddStationIDToFakeRow gives its location as its station. */
+const STATION_FLAGS: ReadonlySet<number> = new Set([4, 36]);
 
 /** A station of the results: the things there, and its containers with the things in them that matched. */
 export interface AssetSearchLocation {
@@ -147,7 +352,7 @@ export interface AssetSearchLocation {
 export function searchAssets(
   items: readonly AssetSearchItem[],
   searchType: string,
-  conditions: readonly ((item: AssetSearchItem) => boolean)[],
+  conditions: readonly AssetSearchCondition[],
   names: AssetSearchNames,
   ownerStations: ReadonlyMap<number, { readonly solarSystemID: number }>,
 ): AssetSearchLocation[] {
@@ -172,8 +377,12 @@ export function searchAssets(
         failedTypeCheck.add(item.typeID);
         continue;
       }
-    } else if (!conditions.every((condition) => condition(item))) {
-      continue;
+    } else {
+      // AddStationIDToFakeRow (35 to 43): a container's station for what is in it, the location of what lies in a
+      // hangar or asset safety, else none.
+      const container = containers.get(item.locationID);
+      const stationID = container !== undefined ? container.locationID : STATION_FLAGS.has(item.flagID) ? item.locationID : null;
+      if (!conditions.every((condition) => condition(item, stationID))) continue;
     }
     if (containers.has(item.locationID)) {
       const held = itemsByContainer.get(item.locationID) ?? [];

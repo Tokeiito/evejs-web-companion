@@ -13348,6 +13348,39 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
   }
 });
 
+// Types' meta level, meta group and tech level from the client's types records (evetypes.GetMetaLevel, GetMetaGroupID,
+// GetTechLevel: null where a record has none), and each meta group's name as the number of its message
+// (metaGroups.get_name): what the assets search's metalevel, metagroup and techlevel keywords read
+// (assetSearchUtil.py 437 to 475). At most 500 types at once.
+app.get("/api/client-data/type-meta", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) asked.push(typeID);
+    }
+    const wanted = asked.slice(0, 500);
+    const [typeRows, metaGroupNames] = await Promise.all([clientBuiltData.rows("types", wanted), clientBuiltData.table("metaGroupNameIDs")]);
+    if (!typeRows || !metaGroupNames) {
+      res.json({ ok: true, available: false, types: {}, metaGroupNameIDs: {} });
+      return;
+    }
+    const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    const types = {};
+    for (const typeID of wanted) {
+      const type = typeRows[String(typeID)];
+      types[typeID] = type && typeof type === "object"
+        ? { metaLevel: whole(type.metaLevel), metaGroupID: whole(type.metaGroupID), techLevel: whole(type.techLevel) }
+        : null;
+    }
+    const metaGroupNameIDs = {};
+    for (const [metaGroupID, nameID] of Object.entries(metaGroupNames)) metaGroupNameIDs[metaGroupID] = whole(nameID);
+    res.json({ ok: true, available: true, types, metaGroupNameIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/effect-names", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

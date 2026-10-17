@@ -3856,6 +3856,33 @@ export async function getShipTraits(
   return { available: data.available === true, traits, unitNameIDs };
 }
 
+/** Types' meta level, meta group and tech level, and the meta groups' names' messages (GET /api/client-data/type-meta). */
+export interface TypeMetaRead {
+  readonly available: boolean;
+  readonly types: ReadonlyMap<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>;
+  readonly metaGroupNameIDs: ReadonlyMap<number, number | null>;
+}
+
+/** The client's types records' meta level, meta group and tech level, at most 500 types at once. */
+export async function getTypeMeta(typeIDs: readonly number[], options: ApiOptions = {}): Promise<TypeMetaRead> {
+  const data = await getJson(`/api/client-data/type-meta?typeIDs=${typeIDs.join(",")}`, options);
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const numberOrNull = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const types = new Map<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>();
+  for (const [key, value] of Object.entries(record(data.types))) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0) continue;
+    const row = value === null || typeof value !== "object" || Array.isArray(value) ? null : (value as Record<string, JsonValue>);
+    types.set(typeID, row === null ? null : { metaLevel: numberOrNull(row.metaLevel), metaGroupID: numberOrNull(row.metaGroupID), techLevel: numberOrNull(row.techLevel) });
+  }
+  const metaGroupNameIDs = new Map<number, number | null>();
+  for (const [key, value] of Object.entries(record(data.metaGroupNameIDs))) {
+    const metaGroupID = Number(key);
+    if (Number.isSafeInteger(metaGroupID) && metaGroupID > 0) metaGroupNameIDs.set(metaGroupID, numberOrNull(value));
+  }
+  return { available: data.available === true, types, metaGroupNameIDs };
+}
+
 /** What the compare tool reads of some types (GET /api/client-data/type-attributes). */
 export interface TypeAttributesRead {
   readonly available: boolean;

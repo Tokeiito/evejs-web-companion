@@ -167,7 +167,7 @@
   // The Search tab (LoadSearch, Search_thread, _LoadSearch, GetSubContent): its text, and the stations of what matched.
   let searchText = $state("");
   let searching = $state(false);
-  let searchResults = $state.raw<{ readonly locations: readonly AssetSearchLocation[]; readonly unsupported: readonly string[] } | null>(null);
+  let searchResults = $state.raw<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean } | null>(null);
   function search(): void {
     void run(async () => {
       searching = true;
@@ -245,10 +245,12 @@
     {#if searching}
       <p class="note">{word(TAB_WORDS.searching, "Searching")}</p>
     {:else if searchResults !== null}
-      {#if searchResults.unsupported.length > 0}
-        <p class="note">Not searched by here: {searchResults.unsupported.join(", ")}.</p>
-      {/if}
-      {#if searchResults.locations.length === 0}
+      {#if searchResults.stopped}
+        <!-- The client's search thread raising out (assetSearchUtil._GetSolarSystemID with a row of no station): its
+             scroll is left with the Searching hint, and no results come. -->
+        <p class="note">{word(TAB_WORDS.searching, "Searching")}</p>
+        <p class="note">The search stopped: a place was asked of a thing lying in no station (in a ship, say), as the game's own search stops there.</p>
+      {:else if searchResults.locations.length === 0}
         <p class="note">{word(TAB_WORDS.nothingFound, "Nothing found")}</p>
       {:else}
         <!-- _LoadSearch: a group for each station, its name and how many things matched there; within it, a group for

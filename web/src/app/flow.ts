@@ -126,7 +126,23 @@ import {
   type ContractSearchEntry,
 } from "../bridge/contracts.ts";
 import { decodeAssetItems, decodeAssetSearchItems } from "../bridge/personalAssets.ts";
-import { ASSET_SEARCH_KEYWORDS, assetSearchConditions, parseAssetSearch, searchAssets, type AssetSearchItem, type AssetSearchLocation, type AssetSearchNames } from "../bridge/assetSearch.ts";
+import {
+  ASSET_SEARCH_KEYWORDS,
+  ASSET_SEARCH_OPTION_LABELS,
+  AssetSearchStopped,
+  META_KEYWORDS,
+  PLACE_KEYWORDS,
+  assetSearchConditions,
+  assetSearchKinds,
+  parseAssetSearch,
+  searchAssets,
+  type AssetSearchFacts,
+  type AssetSearchItem,
+  type AssetSearchLocation,
+  type AssetSearchNames,
+  type AssetSearchOption,
+} from "../bridge/assetSearch.ts";
+import { shownSecurity } from "../bridge/systemSecurity.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
@@ -1783,7 +1799,7 @@ export interface AppFlow {
    * The assets window's search (assetsWindow.Search_thread): the stations of what matches the text, and the keywords
    * typed that the page does not search by.
    */
-  searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly unsupported: readonly string[] }>;
+  searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean }>;
   /**
    * Expand one asset location and read what is there; null collapses it and
    * touches no server. A read that fails is recorded against that station
@@ -11053,8 +11069,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * assetsWindow.Search_thread (407 to 457): everything of the pilot's (bridge/assetReads.ts readAllAssets), the text
    * lowercased and read by ParseString, the typed keywords' conditions (GetConditions), GetSearchResults with the names
    * lowercased (SearchNamesHelper), and the stations the pilot's things are at (ListStations) to keep only stations.
+   * What the keywords typed read besides: the types' meta and tech (evetypes, the client's own data), and the stations'
+   * names, their systems', constellations' and regions' names and the systems' security (cfg and the map). `stopped`
+   * where the search ended as the client's thread does when a place keyword meets a thing in no station.
    */
-  async function searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly unsupported: readonly string[] }> {
+  async function searchPersonalAssets(text: string): Promise<{ readonly locations: readonly AssetSearchLocation[]; readonly stopped: boolean }> {
     const now = Date.now();
     if (allAssetsKept === null || now - allAssetsKept.at > 5 * 60_000) {
       allAssetsKept = { at: now, items: decodeAssetSearchItems(await readAllAssets(bridgeAsk)) };
@@ -11063,7 +11082,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const typeIDs = [...new Set(items.map((item) => item.typeID))];
     await Promise.all([
       resolveNamesNow(typeIDs.flatMap((id) => [{ kind: "type" as const, id }, { kind: "typeGroup" as const, id }, { kind: "typeCategory" as const, id }])),
-      wordsNow(ASSET_SEARCH_KEYWORDS.map((keyword) => keyword.label)),
+      wordsNow([...ASSET_SEARCH_KEYWORDS.map((keyword) => keyword.label), ...Object.values(ASSET_SEARCH_OPTION_LABELS)]),
     ]);
     const lowered = (kind: "type" | "typeGroup" | "typeCategory", id: number): string | null => {
       const name = nameCache.get(nameKey(kind, id));
@@ -11074,21 +11093,79 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       groupName: (id) => lowered("typeGroup", id),
       categoryName: (id) => lowered("typeCategory", id),
     };
-    const templates = store.words.get().templates;
-    const keywordWords = Object.fromEntries(ASSET_SEARCH_KEYWORDS.map((keyword) => {
-      const template = templates[keyword.label];
-      return [keyword.label, typeof template === "string" ? plainText(template) : ""];
-    }));
+    const wordOf = (label: string): string => {
+      const template = store.words.get().templates[label];
+      return typeof template === "string" ? plainText(template) : "";
+    };
+    const keywordWords = Object.fromEntries(ASSET_SEARCH_KEYWORDS.map((keyword) => [keyword.label, wordOf(keyword.label)]));
     const { searchType, matches } = parseAssetSearch(text.toLowerCase());
-    const { conditions, unsupported } = assetSearchConditions(matches, keywordWords, names);
+    const kinds = assetSearchKinds(matches, keywordWords);
     const read = await readAssetStations(bridgeAsk);
     const ownerStations = new Map(read.stations.map((row) => [row.stationID, { solarSystemID: row.solarSystemID }]));
-    const locations = searchAssets(items, searchType, conditions, names, ownerStations);
+    // The keywords count only where no plain words were typed (GetSearchResults); then what they ask of is read.
+    const typeMeta = new Map<number, { readonly metaLevel: number | null; readonly metaGroupID: number | null; readonly techLevel: number | null } | null>();
+    const metaGroupNameIDs = new Map<number, number | null>();
+    if (searchType === "" && [...kinds].some((kind) => META_KEYWORDS.has(kind))) {
+      for (let at = 0; at < typeIDs.length; at += 500) {
+        const facts = await api.getTypeMeta(typeIDs.slice(at, at + 500), callOptions);
+        if (!facts.available) throw new Error("The client's types could not be read for the search.");
+        for (const [typeID, meta] of facts.types) typeMeta.set(typeID, meta);
+        for (const [metaGroupID, nameID] of facts.metaGroupNameIDs) metaGroupNameIDs.set(metaGroupID, nameID);
+      }
+      await wordsNow([...metaGroupNameIDs.values()].flatMap((nameID) => (nameID === null ? [] : [`#${nameID}`])));
+    }
+    const systemSecurity = new Map<number, number | null>();
+    if (searchType === "" && [...kinds].some((kind) => PLACE_KEYWORDS.has(kind))) {
+      const systems = [...new Set([...ownerStations.values()].map((station) => station.solarSystemID))];
+      const [, security] = await Promise.all([
+        resolveNamesNow([
+          ...[...ownerStations.keys()].map((id) => ({ kind: "station" as const, id })),
+          ...systems.flatMap((id) => [{ kind: "system" as const, id }, { kind: "systemConstellation" as const, id }, { kind: "systemRegion" as const, id }]),
+        ]),
+        api.loadSystemSecurity(systems, callOptions),
+      ]);
+      store.apply({ type: "names/system-security", security });
+      for (const [systemID, level] of Object.entries(security)) systemSecurity.set(Number(systemID), level);
+    }
+    const lowerName = (kind: "station" | "system" | "systemConstellation" | "systemRegion", id: number): string => {
+      const name = nameCache.get(nameKey(kind, id));
+      return typeof name === "string" ? name.toLowerCase() : "";
+    };
+    const facts: AssetSearchFacts = {
+      metaLevel: (typeID) => typeMeta.get(typeID)?.metaLevel ?? null,
+      metaGroupID: (typeID) => typeMeta.get(typeID)?.metaGroupID ?? null,
+      techLevel: (typeID) => typeMeta.get(typeID)?.techLevel ?? null,
+      metaGroupName: (metaGroupID) => {
+        const nameID = metaGroupNameIDs.get(metaGroupID) ?? null;
+        return nameID === null ? "" : wordOf(`#${nameID}`).toLowerCase();
+      },
+      station: (stationID) => {
+        const station = stationID === null ? undefined : ownerStations.get(stationID);
+        if (stationID === null || station === undefined) return null;
+        const level = systemSecurity.get(station.solarSystemID) ?? null;
+        return {
+          stationName: lowerName("station", stationID),
+          systemName: lowerName("system", station.solarSystemID),
+          constellationName: lowerName("systemConstellation", station.solarSystemID),
+          regionName: lowerName("systemRegion", station.solarSystemID),
+          security: level === null ? null : shownSecurity(level),
+        };
+      },
+      options: Object.fromEntries(Object.entries(ASSET_SEARCH_OPTION_LABELS).map(([option, label]) => [option, wordOf(label)])) as Record<AssetSearchOption, string>,
+    };
+    const conditions = assetSearchConditions(matches, keywordWords, names, facts);
+    let locations: AssetSearchLocation[];
+    try {
+      locations = searchAssets(items, searchType, conditions, names, ownerStations);
+    } catch (error) {
+      if (error instanceof AssetSearchStopped) return { locations: [], stopped: true };
+      throw error;
+    }
     requestNames(locations.flatMap((location) => [
       { kind: "station" as const, id: location.stationID },
       ...location.containers.map((each) => ({ kind: "type" as const, id: each.container.typeID })),
     ]));
-    return { locations, unsupported };
+    return { locations, stopped: false };
   }
 
   async function loadPersonalAssets(): Promise<void> {
