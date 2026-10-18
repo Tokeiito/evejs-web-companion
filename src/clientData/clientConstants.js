@@ -53,19 +53,45 @@ const CONSTANTS = Object.freeze({
     stubs: Object.freeze(["eve.common.lib.appConst"]),
     names: Object.freeze(["IN_ICONS", "IN_CORP_ICONS", "IN_SMALL_ICONS", "CORP_ICONS"]),
   }),
+  // A player corporation's logo library (appConst.py: graphicCorpLogoLibShapes, graphicCorpLogoLibColors and their
+  // blends), which eveIcon.CorpIcon draws its three layers by. appConst takes everything from a dozen modules; the
+  // three whose names it uses while it is run are given, the rest are empty.
+  corpLogoLibrary: Object.freeze({
+    module: "eve/common/lib/appConst.pyj",
+    given: Object.freeze([
+      Object.freeze(["carbon.common.lib.const", "carbon/common/lib/const.pyj"]),
+      Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"]),
+      Object.freeze(["dogma.const", "dogma/const.pyj"]),
+    ]),
+    stubs: Object.freeze(["collections", "eveuniverse.security"]),
+    empty: Object.freeze([
+      "eve.common.lib.infoEventConst", "crimewatch.const", "eveexceptions.const", "probescanning.const",
+      "eve.common.script.util.notificationconst", "evefleet.const", "marketutil.const",
+    ]),
+    names: Object.freeze([
+      "graphicCorpLogoLibShapes", "graphicCorpLogoLibNoShape", "graphicCorpLogoLibColors",
+      "CORPLOGO_BLEND", "CORPLOGO_SOLID", "CORPLOGO_GRADIENT", "CORPLOGO_DEFAULT_COLOR",
+    ]),
+  }),
 });
 
 /** What scripts/client-constants.py is told, after the Python and the script itself. */
-function moduleArguments({ binFolder, archive, module, given, stubs, names }) {
-  return [binFolder, archive, module, ...given.flatMap(([name, path]) => ["--with", `${name}=${path}`]), ...stubs.flatMap((name) => ["--stub", name]), ...names];
+function moduleArguments({ binFolder, archive, module, given, stubs, empty = [], names }) {
+  return [
+    binFolder, archive, module,
+    ...given.flatMap(([name, path]) => ["--with", `${name}=${path}`]),
+    ...stubs.flatMap((name) => ["--stub", name]),
+    ...empty.flatMap((name) => ["--empty", name]),
+    ...names,
+  ];
 }
 
 /** Runs one module of the client's code and answers what it printed of the names asked for. */
-function runModule({ python, binFolder, archive, module, given, stubs, names, timeoutMs = RUN_TIMEOUT_MS }) {
+function runModule({ python, binFolder, archive, module, given, stubs, empty = [], names, timeoutMs = RUN_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     childProcess.execFile(
       python,
-      [SCRIPT, ...moduleArguments({ binFolder, archive, module, given, stubs, names })],
+      [SCRIPT, ...moduleArguments({ binFolder, archive, module, given, stubs, empty, names })],
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (error) {
@@ -123,6 +149,7 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
       module: described.module,
       given: (described.given ?? []).map((pair) => [...pair]),
       stubs: [...(described.stubs ?? [])],
+      ...(described.empty ? { empty: [...described.empty] } : {}),
       names: [...described.names],
     });
     return JSON.parse(said);
@@ -192,6 +219,36 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
         factionCorporations: iconsByID("IN_CORP_ICONS"),
         factionsSmall: iconsByID("IN_SMALL_ICONS"),
         corporations: iconsByID("CORP_ICONS"),
+      });
+    }),
+    corpLogoLibrary: () => read("corpLogoLibrary", (values) => {
+      const shapes = new Map();
+      for (const [key, resPath] of Object.entries(tableOf(values.graphicCorpLogoLibShapes, "graphicCorpLogoLibShapes"))) {
+        const id = Number(key);
+        if (!Number.isSafeInteger(id) || typeof resPath !== "string") throw new Error("The client's graphicCorpLogoLibShapes has an entry that is not a texture by an ID.");
+        shapes.set(id, resPath);
+      }
+      const colorOf = (value, what) => {
+        const [rgba, blend] = Array.isArray(value) ? value : [];
+        if (!Array.isArray(rgba) || rgba.length !== 4 || !rgba.every(Number.isFinite) || !Number.isSafeInteger(blend)) throw new Error(`The client's ${what} is not a colour and its blend.`);
+        return Object.freeze({ rgba: Object.freeze([...rgba]), blend });
+      };
+      const colors = new Map();
+      for (const [key, value] of Object.entries(tableOf(values.graphicCorpLogoLibColors, "graphicCorpLogoLibColors"))) {
+        const id = Number(key);
+        if (!Number.isSafeInteger(id)) throw new Error("The client's graphicCorpLogoLibColors has an entry that is not by an ID.");
+        colors.set(id, colorOf(value, "graphicCorpLogoLibColors"));
+      }
+      const whole = (name) => {
+        if (!Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not a number.`);
+        return values[name];
+      };
+      return Object.freeze({
+        shapes,
+        noShape: whole("graphicCorpLogoLibNoShape"),
+        colors,
+        blends: Object.freeze({ blend: whole("CORPLOGO_BLEND"), solid: whole("CORPLOGO_SOLID"), gradient: whole("CORPLOGO_GRADIENT") }),
+        defaultColor: colorOf(values.CORPLOGO_DEFAULT_COLOR, "CORPLOGO_DEFAULT_COLOR"),
       });
     }),
     status() {

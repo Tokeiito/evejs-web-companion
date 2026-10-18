@@ -4134,6 +4134,72 @@ export async function getNpcCorporationHeadquarters(corporationID: number, optio
   return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
 }
 
+/** A colour of the corporation logo library: its RGBA and its blend (CORPLOGO_BLEND, _SOLID, _GRADIENT). */
+export interface CorpLogoColor {
+  readonly rgba: readonly number[];
+  readonly blend: number;
+}
+
+/** The client's corporation logo library (GET /api/client-data/corp-logo-library). */
+export interface CorpLogoLibrary {
+  /** Each shape's texture, its res: path, by the shape. */
+  readonly shapes: Readonly<Record<string, string>>;
+  readonly noShape: number;
+  readonly colors: Readonly<Record<string, CorpLogoColor>>;
+  readonly blends: { readonly blend: number; readonly solid: number; readonly gradient: number };
+  readonly defaultColor: CorpLogoColor;
+}
+
+/** A player corporation's logo as cfg.corptickernames has it: three shapes and three colours, each a number or none. */
+export interface CorpLogoData {
+  readonly shapes: readonly (number | null)[];
+  readonly colors: readonly (number | null)[];
+}
+
+export async function loadCorpLogoLibrary(options: ApiOptions = {}): Promise<CorpLogoLibrary | null> {
+  const data = await getJson("/api/client-data/corp-logo-library", options);
+  if (data.available !== true) return null;
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    (value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const colorOf = (value: JsonValue | undefined): CorpLogoColor | null => {
+    const row = record(value);
+    const rgba = Array.isArray(row.rgba) ? row.rgba.map(Number) : [];
+    return rgba.length === 4 && rgba.every(Number.isFinite) && typeof row.blend === "number" ? { rgba, blend: row.blend } : null;
+  };
+  const shapes: Record<string, string> = {};
+  for (const [id, resPath] of Object.entries(record(data.shapes))) if (typeof resPath === "string") shapes[id] = resPath;
+  const colors: Record<string, CorpLogoColor> = {};
+  for (const [id, value] of Object.entries(record(data.colors))) {
+    const color = colorOf(value);
+    if (color !== null) colors[id] = color;
+  }
+  const blends = record(data.blends);
+  const defaultColor = colorOf(data.defaultColor);
+  if (defaultColor === null || typeof data.noShape !== "number") return null;
+  return {
+    shapes,
+    noShape: data.noShape,
+    colors,
+    blends: { blend: Number(blends.blend), solid: Number(blends.solid), gradient: Number(blends.gradient) },
+    defaultColor,
+  };
+}
+
+/** Player corporations' logos (POST /api/corp-logos): each one's, null where the server has none; `unresolved` not asked. */
+export async function corpLogos(corpIDs: readonly number[], options: ApiOptions = {}): Promise<{ readonly logos: Readonly<Record<string, CorpLogoData | null>>; readonly unresolved: readonly number[] }> {
+  const data = await postJson("/api/corp-logos", { corpIDs }, options);
+  const raw = data.logos !== null && typeof data.logos === "object" && !Array.isArray(data.logos) ? (data.logos as Record<string, JsonValue>) : {};
+  const ids = (value: JsonValue | undefined): (number | null)[] =>
+    [0, 1, 2].map((at) => (Array.isArray(value) && typeof value[at] === "number" ? (value[at] as number) : null));
+  const logos: Record<string, CorpLogoData | null> = {};
+  for (const [corpID, value] of Object.entries(raw)) {
+    const row = value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : null;
+    logos[corpID] = row === null ? null : { shapes: ids(row.shapes), colors: ids(row.colors) };
+  }
+  const unresolved = Array.isArray(data.unresolved) ? data.unresolved.filter((id): id is number => typeof id === "number") : [];
+  return { logos, unresolved };
+}
+
 /** The owners' logos the client draws from its own tables, each a texture's res: path by the owner (GET /api/client-data/owner-logos). */
 export interface OwnerLogos {
   readonly factions: Readonly<Record<string, string>>;

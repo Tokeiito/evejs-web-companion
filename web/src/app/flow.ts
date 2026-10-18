@@ -2094,6 +2094,12 @@ export interface AppFlow {
   readonly ownerLogos: ReadableSignal<api.OwnerLogos | null>;
   /** The owners' logos read, once. */
   loadOwnerLogos(): void;
+  /** The client's corporation logo library (appConst's shapes and colours); null until read, or where it is not had. */
+  readonly corpLogoLibrary: ReadableSignal<api.CorpLogoLibrary | null>;
+  /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
+  readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
+  /** The library read once, and the logos of these corporations asked for where they are not had. */
+  requestCorpLogos(corpIDs: readonly number[]): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -14867,6 +14873,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     api.loadOwnerLogos(callOptions)
       .then((read) => ownerLogosSignal.set(read.available ? read.logos : { factions: {}, factionsSmall: {}, corporations: {} }))
       .catch(() => setTimeout(() => (ownerLogosAsked = false), ASK_AGAIN_MS));
+  }
+
+  // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
+  const corpLogoLibrarySignal = createSignal<api.CorpLogoLibrary | null>(null);
+  const corpLogosSignal = createSignal<Readonly<Record<string, api.CorpLogoData | null>>>({});
+  let corpLogoLibraryAsked = false;
+  const corpLogosAsked = new Set<number>();
+  function requestCorpLogos(corpIDs: readonly number[]): void {
+    if (!corpLogoLibraryAsked) {
+      corpLogoLibraryAsked = true;
+      api.loadCorpLogoLibrary(callOptions)
+        .then((library) => corpLogoLibrarySignal.set(library))
+        .catch(() => setTimeout(() => (corpLogoLibraryAsked = false), ASK_AGAIN_MS));
+    }
+    const wanted = [...new Set(corpIDs)].filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0 && !(corpID >= 1_000_000 && corpID < 2_000_000) && !corpLogosAsked.has(corpID));
+    if (wanted.length === 0) return;
+    for (const corpID of wanted) corpLogosAsked.add(corpID);
+    api.corpLogos(wanted, callOptions)
+      .then((read) => {
+        corpLogosSignal.set({ ...corpLogosSignal.get(), ...read.logos });
+        for (const corpID of read.unresolved) corpLogosAsked.delete(corpID);
+      })
+      .catch(() => {
+        for (const corpID of wanted) corpLogosAsked.delete(corpID);
+      });
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -27824,6 +27855,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationFactions: readonlySignal(corporationFactionsSignal),
     loadCorporationFactions,
     ownerLogos: readonlySignal(ownerLogosSignal),
+    corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
+    corpLogos: readonlySignal(corpLogosSignal),
+    requestCorpLogos,
     loadOwnerLogos,
     addAgentToAddressBook,
     contactNotifications,

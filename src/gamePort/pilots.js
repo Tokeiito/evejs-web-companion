@@ -1797,6 +1797,8 @@ function createGamePortPilots({
       locationsWork: Promise.resolve(),
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
+      /** cfg.corptickernames' logo of each corporation asked about: its three shapes and colours, or null for none. */
+      corpLogos: new Map(),
       tickersWork: Promise.resolve(),
       /** cfg.allianceshortnames: each alliance the server has been asked about, its short name, or null for one it had no row for; and the askings, one after another. */
       allianceTickers: new Map(),
@@ -3021,13 +3023,31 @@ function createGamePortPilots({
         const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiCorpTickerNamesEx", [{ type: "list", items: asked }], null));
         const columns = itemsOf(header).map(textOf);
         const [corporationID, tickerName] = ["corporationID", "tickerName"].map((column) => columns.indexOf(column));
-        for (const row of itemsOf(rows).map(itemsOf)) entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+        // The row's logo too (eveIcon.CorpIcon.DoLayout: shape1 to shape3, color1 to color3), each a number or none.
+        const logoColumns = ["shape1", "shape2", "shape3", "color1", "color2", "color3"].map((column) => columns.indexOf(column));
+        const wholeOrNull = (value) => (Number.isSafeInteger(Number(value)) && value !== null && value !== undefined ? Number(value) : null);
+        for (const row of itemsOf(rows).map(itemsOf)) {
+          entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+          const [s1, s2, s3, c1, c2, c3] = logoColumns.map((at) => (at < 0 ? null : wholeOrNull(row[at])));
+          entry.corpLogos.set(positive(row[corporationID]), { shapes: [s1, s2, s3], colors: [c1, c2, c3] });
+        }
         for (const corpID of asked) if (!entry.tickers.has(corpID)) entry.tickers.set(corpID, null);
       }
       return new Map(wanted.map((corpID) => [corpID, entry.tickers.get(corpID) ?? null]));
     }));
     entry.tickersWork = priming.catch(() => {});
     return priming;
+  }
+
+  /**
+   * cfg.corptickernames' logos (eveIcon.CorpIcon: logoData's shape1 to shape3 and color1 to color3) of the player
+   * corporations asked about, primed as their tickers are (corpTickersNamed). Answers a Map of each to its
+   * { shapes, colors }, or to null for one with no row. Fails as the priming fails.
+   */
+  async function corpLogosNamed(corpIDs, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const named = await corpTickersNamed(corpIDs, false, sessionFields, bridgeSessionID);
+    return new Map([...named.keys()].map((corpID) => [corpID, entry.corpLogos.get(corpID) ?? null]));
   }
 
   /**
@@ -6110,6 +6130,7 @@ function createGamePortPilots({
     ownersNamed,
     locationsNamed,
     corpTickersNamed,
+    corpLogosNamed,
     allianceTickersNamed,
     shipInfo,
     shipAttribute,

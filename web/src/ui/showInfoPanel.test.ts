@@ -21,10 +21,13 @@ const ORE_TYPE_ID = 1230;
 const SHIP_ID = 9001;
 
 function fakeFlow(): unknown {
-  // Its two stores, the NPC corporations' factions (a corporation's window names its faction by them) and the
-  // owners' logos, read none; every other member does nothing.
+  // Its stores, the NPC corporations' factions (a corporation's window names its faction by them), the owners'
+  // logos, the corporation logo library and the player corporations' logos, read none; every other member does nothing.
   const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
-  return new Proxy({}, { get: (_target, key) => (key === "corporationFactions" || key === "ownerLogos" ? none : () => {}) });
+  const noLogos = { subscribe: (run: (value: unknown) => void) => (run({}), () => {}) };
+  return new Proxy({}, {
+    get: (_target, key) => (key === "corpLogos" ? noLogos : key === "corporationFactions" || key === "ownerLogos" || key === "corpLogoLibrary" ? none : () => {}),
+  });
 }
 
 /** A snapshot with one rock 12 km out (or `rockX` metres), half its shield gone. */

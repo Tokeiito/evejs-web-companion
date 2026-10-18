@@ -7,7 +7,8 @@ one module's compiled code out of the client's code archive, runs it inside the
 client's own python27.dll, and prints the values asked for as one JSON object.
 
     python scripts/client-constants.py <client bin64 folder> <client code.ccp> <module path ending>
-        [--with <dotted.name>=<module path ending> ...] [--stub <dotted.name> ...] <name> [<name> ...]
+        [--with <dotted.name>=<module path ending> ...] [--stub <dotted.name> ...] [--empty <dotted.name> ...]
+        <name> [<name> ...]
 
     python scripts/client-constants.py "D:/EVE/tq/bin64" "D:/EVE/tq/code.ccp" inventorycommon/const.pyj typePlasticWrap
 
@@ -18,6 +19,9 @@ another of the client's must be given it:
                                          the order they need each other)
     --stub evetypes                      a name the module imports and does not use while it is being run: an
                                          empty stand-in, whose every attribute is None
+    --empty dogma.const                  a module the module takes everything from (from dogma.const import *)
+                                         and does not use while it is being run: an empty module, from which
+                                         nothing is taken
 
 A name may be dotted, to reach through something the module imported:
 dogma.const.attributeCapacity. A dict is printed as an object (its keys as
@@ -40,7 +44,7 @@ import zipfile
 import zlib
 
 # Python 2.7 source, run inside the client's interpreter. Only its builtin modules are there: no json and no
-# codecs, so the JSON is written by hand. CODE, WITH, STUBS, NAMES and OUT are put in front of it.
+# codecs, so the JSON is written by hand. CODE, WITH, STUBS, EMPTY, NAMES and OUT are put in front of it.
 RUN = r'''
 import imp
 import marshal
@@ -118,6 +122,8 @@ def walk(value, depth):
 
 for __name in STUBS:
     install(__name, Stub())
+for __name in EMPTY:
+    install(__name, imp.new_module(__name))
 for __name, __path in WITH:
     __given = imp.new_module(__name)
     install(__name, __given)
@@ -147,16 +153,18 @@ def main():
     if len(arguments) < 4:
         sys.exit(__doc__)
     dll_dir, archive, ending = arguments[:3]
-    given, stubs, names = [], [], []
+    given, stubs, empty, names = [], [], [], []
     rest = arguments[3:]
     while rest:
         word = rest.pop(0)
-        if word in ("--with", "--stub"):
+        if word in ("--with", "--stub", "--empty"):
             if not rest:
                 sys.exit("%s wants a value." % word)
             value = rest.pop(0)
             if word == "--stub":
                 stubs.append(value)
+            elif word == "--empty":
+                empty.append(value)
             else:
                 name, _, path = value.partition("=")
                 given.append((name, path))
@@ -164,7 +172,7 @@ def main():
             names.append(word)
     if not names:
         sys.exit(__doc__)
-    for name in names + stubs + [name for name, _ in given]:
+    for name in names + stubs + empty + [name for name, _ in given]:
         if not re.match(DOTTED, name):
             sys.exit("Not a name: %r" % name)
     if not os.path.isfile(archive):
@@ -191,10 +199,11 @@ def main():
 
     try:
         out_path = kept(b"", ".json")
-        said = "CODE = %r\nWITH = %r\nSTUBS = %r\nNAMES = %r\nOUT = %r\n" % (
+        said = "CODE = %r\nWITH = %r\nSTUBS = %r\nEMPTY = %r\nNAMES = %r\nOUT = %r\n" % (
             kept(compiled, ".marshal"),
             [(name, kept(content, ".marshal")) for name, content in compiled_given],
             list(stubs),
+            list(empty),
             list(names),
             out_path,
         )

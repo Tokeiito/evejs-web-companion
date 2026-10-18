@@ -14340,6 +14340,55 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
 // the game-port transport, which keeps each it is answered (pilots.js corpTickersNamed): in one call, or in one for
 // each where `each` is said, as the client's own askings go. A ticker that could not be asked (no pilot on the game
 // port, or the call refused) is named in `unresolved`; null is the server's answer of none.
+// Player corporations' logos as cfg.corptickernames has them (eveIcon.CorpIcon: three shapes and colours, each a
+// number or null), primed with their tickers by the pilot's game-port transport (config.GetMultiCorpTickerNamesEx).
+// A logo is null where the server answered no row; one in `unresolved` was not asked.
+app.post("/api/corp-logos", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];
+    const players = [...new Set(asked.filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0 && !(corpID >= 1000000 && corpID < 2000000)))].slice(0, 200);
+    const logos = {};
+    const unresolved = [];
+    const held = bridgeSessions.get(req.webSessionID) || null;
+    if (players.length > 0 && (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID))) {
+      unresolved.push(...players);
+    } else if (players.length > 0) {
+      try {
+        const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corpLogosNamed(players, { userid: held.accountID }, held.bridgeSessionID));
+        for (const corpID of players) logos[corpID] = named.get(corpID) ?? null;
+      } catch (_error) {
+        unresolved.push(...players);
+      }
+    }
+    res.json({ ok: true, logos, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The client's corporation logo library (appConst: graphicCorpLogoLibShapes, graphicCorpLogoLibColors), each shape
+// a texture's res: path and each colour its RGBA and blend. `available` is false when it could not be read.
+app.get("/api/client-data/corp-logo-library", requireAuth, async (req, res, next) => {
+  try {
+    const library = await clientConstants.corpLogoLibrary();
+    if (!library) {
+      res.json({ ok: true, available: false });
+      return;
+    }
+    res.json({
+      ok: true,
+      available: true,
+      shapes: Object.fromEntries(library.shapes),
+      noShape: library.noShape,
+      colors: Object.fromEntries(library.colors),
+      blends: library.blends,
+      defaultColor: library.defaultColor,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
   try {
     const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];

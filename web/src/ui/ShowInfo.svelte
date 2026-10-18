@@ -13,6 +13,7 @@
   // would make a player check every other number by hand.
   import { onMount } from "svelte";
   import TypeIcon from "./TypeIcon.svelte";
+  import CorpLogo from "./CorpLogo.svelte";
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import type { MapRouteStep } from "../app/flow.ts";
@@ -61,6 +62,21 @@
   const corporationFactions = flow.corporationFactions;
   // svelte-ignore state_referenced_locally
   const ownerLogos = flow.ownerLogos;
+  // svelte-ignore state_referenced_locally
+  const corpLogoLibrary = flow.corpLogoLibrary;
+  // svelte-ignore state_referenced_locally
+  const corpLogos = flow.corpLogos;
+  /** A player corporation's logo (eveIcon.CorpIcon), where it has any shape and the library is had; else null. */
+  const playerCorpLogo = $derived.by(() => {
+    const current = $subject;
+    if (current?.kind !== "corporation" || isNpcCorporation(current.corporationID) || $corpLogoLibrary === null) return null;
+    const logo = $corpLogos[String(current.corporationID)] ?? null;
+    return logo !== null && logo.shapes.some((shape) => shape !== null) ? { library: $corpLogoLibrary, logo } : null;
+  });
+  $effect(() => {
+    const current = $subject;
+    if (current?.kind === "corporation" && !isNpcCorporation(current.corporationID)) flow.requestCorpLogos([current.corporationID]);
+  });
   /**
    * eveIcon.GetLogoIcon for an owner the client's own tables draw (LogoIcon): a faction's (GetFactionIconID) or an NPC
    * corporation's (CORP_ICONS), as its texture's address; null for any other.
@@ -1008,12 +1024,17 @@
     </p>
   {:else}
     <header class="info-head">
+      {#if playerCorpLogo !== null}
+        <!-- GetLogoIcon for a player corporation: its own logo, eveIcon.CorpIcon's three layers. -->
+        <span class="type-icon type-icon-lg"><CorpLogo library={playerCorpLogo.library} logo={playerCorpLogo.logo} name={title} /></span>
+      {:else}
       <TypeIcon
         {typeID}
         name={title}
         size="lg"
         imageUrl={$subject.kind === "faction" ? ownerLogoUrl($subject.factionID) : $subject.kind === "corporation" ? ownerLogoUrl($subject.corporationID) : null}
         fallbackText={corporationRead?.info.tickerName || allianceRead?.shortName || ($subject.kind === "faction" || $subject.kind === "character" ? null : abbreviate(title))} />
+      {/if}
       <div class="info-identity">
         <h2>{title}</h2>
         <p class="info-kind">{subjectKindLabel($subject)}</p>
