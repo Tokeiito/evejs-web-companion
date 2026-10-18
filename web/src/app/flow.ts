@@ -634,7 +634,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
+import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadModuleToCargo as unloadModuleToCargoCall, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
@@ -1522,6 +1522,12 @@ export interface AppFlow {
   rackAmmoMenu(moduleID: number, context: { readonly reloading: boolean; readonly bankCount: number }): Promise<readonly (AmmoMenuEntry & { readonly text: string })[] | null>;
   /** The rack menu's Unload to Cargo: UnloadAmmoToContainer of the module's charge to the cargo. */
   unloadRackCharge(moduleID: number): Promise<void>;
+  /**
+   * Reload all, as the client's slotsContainer.OnReloadAmmo: each module of the rack that takes charges, reloaded with
+   * the type it holds or last held, where the cargo has it; `reloading` the modules reloading now. Answers each load's
+   * outcome.
+   */
+  reloadAll(reloading: ReadonlySet<number>): Promise<readonly { readonly moduleID: number; readonly outcome: AmmoOutcome }[]>;
   /** A fitted module dropped on a slot of the ship (the slot's OnDropData): grouped with Shift held, else moved there. */
   dropFittedModuleOnSlot(moduleID: number, flagID: number, shift: boolean): Promise<void>;
   /** The charge in one slot dropped on another's module (FitCharges): unloaded to the cargo, then loaded there. */
@@ -3761,6 +3767,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * module is switched on with none (1341) or is no longer in a slot (godma.OnItemChange).
    */
   const usedChargeTypes = new Map<number, number>();
+  /**
+   * LoadChargesToModule as the page asks it (loadAmmo): one module that is a bank's slave asked for by its master
+   * (988 to 989), the charge's skills checked first (986), then LoadAmmo.
+   */
+  async function loadAmmoNow(requestedModuleIDs: readonly number[], chargeItemIDs: readonly number[], source: AmmoPlace): Promise<AmmoOutcome> {
+    const banks = heldWeaponBanks();
+    const moduleIDs = requestedModuleIDs.length === 1
+      ? [[...banks].find(([, slaves]) => slaves.includes(requestedModuleIDs[0]!))?.[0] ?? requestedModuleIDs[0]!]
+      : requestedModuleIDs;
+    // The skill check, by the charge's type as the hold lists it (the rack's menu and its reload, LoadAmmoTypeToModule;
+    // a charge loaded from the window's list). A type not listed is the server's to judge.
+    const inventory = store.inventory.get();
+    const typeID = [...inventory.cargo.rows, ...inventory.hangar.rows].find((row) => row.itemID === chargeItemIDs[0])?.typeID ?? null;
+    const refusal = typeID === null ? null : await chargeSkillsRefusal(typeID);
+    if (refusal !== null) {
+      store.apply({ type: "fitting/action-error", message: refusal, said: true });
+      return "refused";
+    }
+    return runAmmoAction(
+      moduleIDs,
+      () => loadAmmoFrom(moduleIDs, chargeItemIDs, source),
+      // Nothing about what the module holds changed, so nothing was loaded —
+      // unless the server queued it: in space the charges land after the
+      // module's reload time, and its announcement is the proof.
+      (before, after, reloadAnnounced) => before === after && !reloadAnnounced,
+      "The server accepted that and loaded nothing, and gave no reason. " +
+        "A module only takes certain kinds of charge.",
+    );
+  }
   /** UnloadAmmoToContainer of the charge in the slot of this flag, to the cargo. */
   async function unloadChargeInSlot(flagID: number): Promise<void> {
     // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
@@ -26441,30 +26476,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async loadAmmo(requestedModuleIDs, chargeItemIDs, source) {
-      // LoadChargesToModule (988 to 989): one module that is a bank's slave is asked for by its master.
+      return loadAmmoNow(requestedModuleIDs, chargeItemIDs, source);
+    },
+
+    async reloadAll(reloading) {
+      // slotsContainer.OnReloadAmmo (574 to 609): the rack's modules (a bank's slaves have no button: 293 to 297) that
+      // take charges (cfg.IsChargeCompatible), by the charge each holds or last held (GetChargeReloadInfo); for each
+      // type the cargo's matching stacks of it (GetMatchingAmmo of its first module), and where there are any, each
+      // module's AutoReload(force) (727 to 738): one reloading or with no room left alone, else LoadAmmoTypeToModule (973
+      // to 978: every cargo stack of the type, to LoadChargesToModule). The stack OnReloadAmmo picks for each
+      // (bestItemID) AutoReload does not use.
       const banks = heldWeaponBanks();
-      const moduleIDs = requestedModuleIDs.length === 1
-        ? [[...banks].find(([, slaves]) => slaves.includes(requestedModuleIDs[0]!))?.[0] ?? requestedModuleIDs[0]!]
-        : requestedModuleIDs;
-      // LoadChargesToModule's skill check, by the charge's type as the hold lists it (the rack's menu and its reload,
-      // LoadAmmoTypeToModule; a charge loaded from the window's list). A type not listed is the server's to judge.
-      const inventory = store.inventory.get();
-      const typeID = [...inventory.cargo.rows, ...inventory.hangar.rows].find((row) => row.itemID === chargeItemIDs[0])?.typeID ?? null;
-      const refusal = typeID === null ? null : await chargeSkillsRefusal(typeID);
-      if (refusal !== null) {
-        store.apply({ type: "fitting/action-error", message: refusal, said: true });
-        return "refused";
+      const isSlave = (moduleID: number): boolean => [...banks.values()].some((slaves) => slaves.includes(moduleID));
+      const modules = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []))
+        .filter((module) => !isSlave(module.itemID) && CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1));
+      const byCharge = new Map<number, FittedModule[]>();
+      for (const module of modules) {
+        const chargeTypeID = module.charge && module.charge.quantity !== 0 ? module.charge.typeID : usedChargeTypes.get(module.itemID) ?? null;
+        if (chargeTypeID === null) continue;
+        byCharge.set(chargeTypeID, [...(byCharge.get(chargeTypeID) ?? []), module]);
       }
-      return runAmmoAction(
-        moduleIDs,
-        () => loadAmmoFrom(moduleIDs, chargeItemIDs, source),
-        // Nothing about what the module holds changed, so nothing was loaded —
-        // unless the server queued it: in space the charges land after the
-        // module's reload time, and its announcement is the proof.
-        (before, after, reloadAnnounced) => before === after && !reloadAnnounced,
-        "The server accepted that and loaded nothing, and gave no reason. " +
-          "A module only takes certain kinds of charge.",
-      );
+      if (byCharge.size === 0) return [];
+      const cargo = store.inventory.get().cargo.rows.filter((row) => row.categoryID === 8);
+      const chargeTypes = [...byCharge.keys()];
+      const staticData = await dogmaStaticFor([...new Set([...modules.map((module) => module.typeID), ...chargeTypes])], AMMO_MENU_ATTRIBUTES);
+      if (staticData === null) return [];
+      const needs = await api.getRequiredSkills(chargeTypes, callOptions);
+      const needing = needs.available ? chargeTypes.filter((typeID) => (needs.order[typeID] ?? []).length > 0) : [];
+      const mine = needing.length > 0 ? skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])) : null;
+      const usable = (typeID: number): boolean => !needs.available || mine === null || missingSkills(typeID, needs.order, mine).size === 0;
+      const outcomes: { readonly moduleID: number; readonly outcome: AmmoOutcome }[] = [];
+      for (const [chargeTypeID, group] of byCharge) {
+        const matching = cargo.filter((row) => row.typeID === chargeTypeID && usable(chargeTypeID)
+          && isChargeCompatibleWithLauncher(staticData, row.typeID, row.groupID, group[0]!.typeID));
+        if (matching.length === 0) continue;
+        for (const module of group) {
+          if (reloading.has(module.itemID)) continue;
+          const room = roomForReload(staticData, module.typeID, chargeTypeID, module.charge && module.charge.typeID === chargeTypeID ? module.charge.quantity : 0);
+          if (room <= 0) continue;
+          const stacks = cargo.filter((row) => row.typeID === chargeTypeID).map((row) => row.itemID);
+          outcomes.push({ moduleID: module.itemID, outcome: await loadAmmoNow([module.itemID], stacks, "cargo") });
+        }
+      }
+      return outcomes;
     },
 
     async unloadAmmo(moduleIDs, destination) {

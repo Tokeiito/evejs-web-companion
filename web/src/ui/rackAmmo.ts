@@ -217,73 +217,8 @@ export function weaponGroups(rows: readonly RackRow[], chargeFits: ChargeFits): 
   });
 }
 
-/** One load "Reload all" will send. */
-export interface ReloadStep {
-  readonly moduleTypeID: number;
-  readonly moduleIDs: readonly number[];
-  readonly choice: AmmoChoice;
-}
-
-/** A group "Reload all" left alone, and why. */
-export interface ReloadSkip {
-  readonly moduleTypeID: number;
-  /**
-   * `out`: what these guns use is not in cargo. `choose`: they are empty and
-   * nothing in cargo is known to fit, so the pilot has to pick.
-   */
-  readonly reason: "out" | "choose";
-  /** The charge type they were using, for `out`. */
-  readonly chargeTypeID: number | null;
-}
-
-/**
- * What "Reload all" does — the retail Ctrl+R, which tops every gun up with
- * what it already uses.
- *
- * A group keeps its own ammunition: the type most of its guns hold is the one
- * reloaded, and the guns holding something else are left out of that load
- * rather than having their choice overwritten. An EMPTY group gets the best
- * likely fit from cargo, and only a likely one — see the file comment.
- */
-export function reloadAllPlan(
-  groups: readonly WeaponGroup[],
-  cargoRows: readonly InventoryItemRow[],
-  chargeFits: ChargeFits,
-): { readonly steps: readonly ReloadStep[]; readonly skipped: readonly ReloadSkip[] } {
-  const steps: ReloadStep[] = [];
-  const skipped: ReloadSkip[] = [];
-  for (const group of groups) {
-    const choices = ammoChoices(group.moduleTypeID, cargoRows, chargeFits);
-    const using = group.chargeTypeIDs[0] ?? null;
-    if (using !== null) {
-      const choice = choices.find((entry) => entry.typeID === using);
-      if (!choice) {
-        skipped.push({ moduleTypeID: group.moduleTypeID, reason: "out", chargeTypeID: using });
-        continue;
-      }
-      steps.push({
-        moduleTypeID: group.moduleTypeID,
-        // The empty guns join the majority; a gun holding another type keeps it.
-        moduleIDs: group.modules
-          .filter((module) => module.charge === null || module.charge.typeID === using)
-          .map((module) => module.itemID),
-        choice,
-      });
-      continue;
-    }
-    const choice = choices.find((entry) => entry.verdict === true);
-    if (!choice) {
-      skipped.push({ moduleTypeID: group.moduleTypeID, reason: "choose", chargeTypeID: null });
-      continue;
-    }
-    steps.push({
-      moduleTypeID: group.moduleTypeID,
-      moduleIDs: group.modules.map((module) => module.itemID),
-      choice,
-    });
-  }
-  return { steps, skipped };
-}
+// Reload all is the client's slotsContainer.OnReloadAmmo, in the flow (flow.reloadAll): until 2026-10-18 a plan of the
+// page's own (reloadAllPlan) gave an empty group a likely fit from the cargo, which the client never does.
 
 /** The badge on a charge-taking slot: rounds held, with a singleton as one. */
 export function rackChargeBadge(module: RackModule): string {

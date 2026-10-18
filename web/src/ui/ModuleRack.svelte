@@ -40,7 +40,6 @@
     rackReloading,
     rackSlotAction,
     rackTakesCharges,
-    reloadAllPlan,
     weaponGroups,
   } from "./rackAmmo.ts";
   import type { AmmoChoice, WeaponGroup } from "./rackAmmo.ts";
@@ -485,11 +484,10 @@
   }
 
   /**
-   * Reload all — every weapon group topped up with what it already uses.
-   *
-   * ⚠ IT READS CARGO FIRST. The plan is built from the cargo rows, and a plan
-   * made from a list that is several volleys old would name stacks that are
-   * gone. One load per group, one after another: they share the cargo.
+   * Reload all, the client's Ctrl+R (slotsContainer.OnReloadAmmo, flow.reloadAll): each module that takes charges
+   * reloaded with what it holds or last held, where the cargo has it, one after another. The cargo is read first, the
+   * stacks named being the ones it lists. As in the client, nothing is said of a module left alone; a refusal the
+   * server gave a reason for has said it already.
    */
   async function reloadAll(): Promise<void> {
     if (!flow || pendingItemID !== null) {
@@ -497,36 +495,17 @@
     }
     closeMenu();
     await readCargo();
-    const plan = reloadAllPlan(groups, $inventory.cargo.rows, chargeFits);
+    const reloading = new Set(rows.flatMap((row) => row.slots.flatMap((slot) => (slot.module && reloadingNow(slot.module) ? [slot.module.itemID] : []))));
     const problems: string[] = [];
-    for (const skip of plan.skipped) {
-      const gun = moduleName(skip.moduleTypeID);
-      problems.push(
-        skip.reason === "out" && skip.chargeTypeID !== null
-          ? `${gun}: no ${moduleName(skip.chargeTypeID)} left in cargo.`
-          : `${gun}: empty, and nothing in cargo is known to fit - pick a charge from its menu.`,
-      );
-    }
-    for (const step of plan.steps) {
-      pendingItemID = step.moduleIDs[0] ?? null;
-      try {
-        const outcome = await flow.loadAmmo(step.moduleIDs, step.choice.itemIDs, "cargo");
-        if (outcome === "unchanged") {
-          // ⚠ NOT CALLED A FAILURE. Reload all sends every gun, full or not,
-          // and a group that was already full answers exactly like this.
-          problems.push(`${moduleName(step.moduleTypeID)}: nothing loaded - probably already full.`);
-        } else if (outcome === "refused" && !$fitting.actionError) {
-          // A refusal WITH a reason already popped up through the bridge.
-          problems.push(`${moduleName(step.moduleTypeID)}: refused.`);
+    try {
+      for (const { moduleID, outcome } of await flow.reloadAll(reloading)) {
+        if (outcome === "refused" && !$fitting.actionError) {
+          const typeID = rows.flatMap((row) => row.slots).find((slot) => slot.module?.itemID === moduleID)?.module?.typeID;
+          problems.push(`${typeID === undefined ? "A module" : moduleName(typeID)}: refused.`);
         }
-      } catch (cause) {
-        problems.push(`${moduleName(step.moduleTypeID)}: ${String(cause)}`);
-      } finally {
-        pendingItemID = null;
       }
-    }
-    if (plan.steps.length === 0 && problems.length === 0) {
-      problems.push("No weapons to reload.");
+    } catch (cause) {
+      problems.push(String(cause));
     }
     if (problems.length > 0) {
       sayRackProblem("Reload all", problems.join(" "), "warn");
