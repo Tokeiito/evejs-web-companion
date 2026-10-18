@@ -511,7 +511,7 @@ import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatc
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, AgentRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
-import { readCharacterInfoHeader, type CharacterInfoHeader } from "../bridge/characterInfo.ts";
+import { readCharacterBloodline, readCharacterInfoHeader, readNpcCharacterCorporation, type CharacterInfoHeader } from "../bridge/characterInfo.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
   ABYSS_LOOTABLE_OBJECTIVE,
@@ -2766,8 +2766,14 @@ export interface AppFlow {
   characterCorporation(characterID: number): Promise<number | null>;
   /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
   corporationAlliance(corporationID: number): Promise<number | null>;
-  /** A character's Show Info header's reads (construct_header_character): its start, militia, corporation, titles and security status. */
+  /** A character's Show Info header's reads (construct_header_character): its Bio, bloodline, start, militia, corporation, titles and security status. */
   characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
+  /** A character's bloodline as its window's Description reads it for one that is no agent (charMgr.GetPublicInfo3), or null. */
+  characterBloodline(characterID: number): Promise<number | null>;
+  /** An NPC character's corporation, for one that is no agent (corpmgr.GetCorporationIDForCharacter), or null. */
+  npcCharacterCorporation(characterID: number): Promise<number | null>;
+  /** A bloodline's description, the number of its message (the client's bloodlines table), or null; asked once each. */
+  bloodlineDescriptionID(bloodlineID: number): Promise<number | null>;
   /** An agent's row in the table of agents (agents.GetAgentByID), or null where it is none. */
   agentRecord(agentID: number): Promise<AgentRow | null>;
   /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
@@ -16385,6 +16391,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** The NPCs' standings with each other, once read (standingsvc's npcnpcstandingsfrom). */
   let npcNpcStandingsRead: Promise<readonly NpcNpcStanding[]> | null = null;
+  /** The bloodlines' description messages, each asked once (a failed ask is asked again). */
+  const bloodlineDescriptionReads = new Map<number, Promise<number | null>>();
 
   // R55 — the drill-down for one selected entity. A char row shows its standing
   // HISTORY (GetStandingTransactions); a corp row shows the per-member breakdown
@@ -26398,6 +26406,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     characterInfoHeader(characterID) {
       return readCharacterInfoHeader(bridgeAsk, characterID);
+    },
+    characterBloodline(characterID) {
+      return readCharacterBloodline(bridgeAsk, characterID);
+    },
+    npcCharacterCorporation(characterID) {
+      return readNpcCharacterCorporation(bridgeAsk, characterID);
+    },
+    bloodlineDescriptionID(bloodlineID) {
+      let read = bloodlineDescriptionReads.get(bloodlineID);
+      if (read === undefined) {
+        read = api.getBloodlineDescriptionID(bloodlineID, callOptions);
+        bloodlineDescriptionReads.set(bloodlineID, read);
+        read.catch(() => bloodlineDescriptionReads.delete(bloodlineID));
+      }
+      return read;
     },
     async agentRecord(agentID) {
       return (await agentsKnown()).find((agent) => agent.agentID === agentID) ?? null;

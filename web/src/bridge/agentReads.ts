@@ -11,6 +11,10 @@
 // table: a Rowset of a header and some eleven thousand lines, an agent each (its type, division, level, station,
 // corporation, and what missions it gives). Nothing in it is the pilot's own.
 //
+// TRANQUILITY'S TABLE (its MachoNet cache of the call) has nine fields: agentID, agentTypeID, divisionID, level,
+// stationID, bloodlineID, corporationID, gender and isLocatorAgent; its corporationID is None for an agent at a station
+// of its own corporation's, which the client fills from the station's owner (agents.py 98). EveJS's has fifteen.
+//
 // WHAT IS KEPT. The client asks once for the life of its agents service and keeps the table, with indexes by
 // station, system, corporation and so on. Whoever asks here keeps it likewise (the flow does): the table is a
 // megabyte and a half as it comes, and the game port's transport keeps it too.
@@ -45,6 +49,7 @@ function decodeAgentsTable(answered: JsonValue | undefined): readonly AgentRow[]
   const where = {
     agentID: at("agentID"), agentTypeID: at("agentTypeID"), divisionID: at("divisionID"), level: at("level"), stationID: at("stationID"),
     corporationID: at("corporationID"), missionKind: at("missionKind"), missionTypeLabel: at("missionTypeLabel"),
+    bloodlineID: at("bloodlineID"),
   };
   const agents: AgentRow[] = [];
   for (const line of lines.items) {
@@ -63,6 +68,7 @@ function decodeAgentsTable(answered: JsonValue | undefined): readonly AgentRow[]
       corporationID: numberOrNull(values[where.corporationID]),
       missionKind: textOrNull(values[where.missionKind]),
       missionTypeLabel: textOrNull(values[where.missionTypeLabel]),
+      ...(numberOrNull(values[where.bloodlineID]) === null ? {} : { bloodlineID: numberOrNull(values[where.bloodlineID]) as number }),
     });
   }
   return agents;

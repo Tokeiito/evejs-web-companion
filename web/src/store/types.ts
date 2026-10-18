@@ -1327,6 +1327,8 @@ export interface AgentRow {
   readonly corporationID: number | null;
   readonly missionKind: string | null;
   readonly missionTypeLabel: string | null;
+  /** The agent's bloodline (Tranquility's table has it), where the table gives one: its Show Info's Description is the bloodline's. */
+  readonly bloodlineID?: number;
 }
 
 /**

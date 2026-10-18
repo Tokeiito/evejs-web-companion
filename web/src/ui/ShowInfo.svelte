@@ -418,11 +418,12 @@
       () => {},
     );
   });
-  /** The header's corporation: a pilot's (GetInfoWindowDataForChar's corpID), an agent's (its row's). */
+  /** The header's corporation: a pilot's (GetInfoWindowDataForChar's corpID), an agent's (its row's), another NPC's (its own). */
   const characterCorporationID = $derived.by<number | null>(() => {
     const current = $subject;
     if (current?.kind !== "character") return null;
-    return isNpcOwner(current.characterID) ? (agentRead?.agent?.corporationID ?? null) : (characterHeaderRead?.corporationID ?? null);
+    if (!isNpcOwner(current.characterID)) return characterHeaderRead?.corporationID ?? null;
+    return agentRead?.agent ? agentRead.agent.corporationID : npcCorporationRead;
   });
   $effect(() => {
     const corporationID = characterCorporationID;
@@ -438,6 +439,87 @@
     if (read.militiaFactionID !== null) refs.push({ kind: "faction", id: read.militiaFactionID });
     if (refs.length > 0) flow.requestNames(refs);
   });
+  /**
+   * An NPC character that is no agent (a CEO): its bloodline by GetPublicInfo3 (update_description_caption_and_sub_caption
+   * 194) and its corporation by corpmgr.GetCorporationIDForCharacter (construct_header_character 111); once read.
+   */
+  let npcBloodlineRead = $state<{ readonly bloodlineID: number | null } | null>(null);
+  let npcCorporationRead = $state<number | null>(null);
+  /** The latest such reading asked; an older one's answers are dropped. Not reactive. */
+  let npcBloodlineReads = 0;
+  $effect(() => {
+    const current = $subject;
+    const read = agentRead;
+    const ticket = ++npcBloodlineReads;
+    npcBloodlineRead = null;
+    npcCorporationRead = null;
+    if (current?.kind !== "character" || !isNpcOwner(current.characterID) || read === null || read.agent !== null) return;
+    void flow.characterBloodline(current.characterID).then(
+      (bloodlineID) => {
+        if (ticket === npcBloodlineReads) npcBloodlineRead = { bloodlineID };
+      },
+      () => {
+        if (ticket === npcBloodlineReads) npcBloodlineRead = { bloodlineID: null };
+      },
+    );
+    void flow.npcCharacterCorporation(current.characterID).then(
+      (corporationID) => {
+        if (ticket === npcBloodlineReads) npcCorporationRead = corporationID;
+      },
+      () => {},
+    );
+  });
+  /**
+   * The bloodline the window's Description is (update_description_caption_and_sub_caption, 185 to 199): an agent's by
+   * its row of the agents' table, any other character's by GetPublicInfo3's; null while that is not read.
+   */
+  const characterBloodline = $derived.by<{ readonly bloodlineID: number | null } | null>(() => {
+    const current = $subject;
+    if (current?.kind !== "character") return null;
+    if (!isNpcOwner(current.characterID)) return characterHeaderRead === null ? null : { bloodlineID: characterHeaderRead.bloodlineID };
+    const read = agentRead;
+    if (read === null) return null;
+    return read.agent !== null ? { bloodlineID: read.agent.bloodlineID ?? null } : npcBloodlineRead;
+  });
+  /** The bloodline's description message (get_bloodline_description), once known; its number null where it has none. */
+  let bloodlineDescriptionRead = $state<{ readonly messageID: number | null } | null>(null);
+  /** The latest description reading asked; an older one's answer is dropped. Not reactive. */
+  let bloodlineDescriptionReads = 0;
+  $effect(() => {
+    const known = characterBloodline;
+    const ticket = ++bloodlineDescriptionReads;
+    bloodlineDescriptionRead = null;
+    if (known === null) return;
+    if (known.bloodlineID === null) {
+      bloodlineDescriptionRead = { messageID: null };
+      return;
+    }
+    void flow.bloodlineDescriptionID(known.bloodlineID).then(
+      (messageID) => {
+        if (ticket !== bloodlineDescriptionReads) return;
+        bloodlineDescriptionRead = { messageID };
+        if (messageID !== null) flow.requestWords([`#${messageID}`]);
+      },
+      () => {
+        if (ticket === bloodlineDescriptionReads) bloodlineDescriptionRead = { messageID: null };
+      },
+    );
+  });
+  /**
+   * The Description tab's text (apply_description_caption_and_sub_caption: desc or capt): the bloodline's description,
+   * else the window's caption; null while either is being read.
+   */
+  const characterDescription = $derived.by<string | null>(() => {
+    const read = bloodlineDescriptionRead;
+    if (read === null) return null;
+    if (read.messageID !== null) {
+      const text = $words.templates[`#${read.messageID}`];
+      if (text === undefined) return null;
+      if (typeof text === "string" && text !== "") return text;
+    }
+    return title;
+  });
+
   /** MemberFor's time: FmtDateTimeInterval(startDateTime, now, 'day'), the calendar's years, months and days. */
   const memberForText = $derived.by(() => {
     const started = characterHeaderRead?.startDateTime ?? null;
@@ -731,6 +813,7 @@
     "UI/InfoWindow/MemberOf": "In the corporation",
     "UI/InfoWindow/MemberFor": "for {timePeriod}",
     "UI/InfoWindow/ClickForCorpInfo": "The corporation's information",
+    "UI/InfoWindow/TabNames/Bio": "In their own words",
   };
   /** A faction's labels the window uses, with the page's own words where the install's are not had. */
   const FACTION_INFO_WORDS: Readonly<Record<string, string>> = {
@@ -1413,6 +1496,16 @@
         <p class="note">Reading…</p>
       {/if}
     {:else if $subject.kind === "character"}
+      <!-- INFO_TABS' order: the Bio, there only where it has words (construct_main_tabs: `if text`), the Description,
+           then the Standings. -->
+      {#if characterHeaderRead !== null && characterHeaderRead.description !== ""}
+        <h3>{word("UI/InfoWindow/TabNames/Bio")}</h3>
+        <div class="info-description">{@render markupLines(characterHeaderRead.description)}</div>
+      {/if}
+      {#if characterDescription !== null && characterDescription !== ""}
+        <h3>{word("UI/InfoWindow/TabNames/Description")}</h3>
+        <div class="info-description">{@render markupLines(characterDescription)}</div>
+      {/if}
       {@render standingsTab()}
     {:else if $subject.kind === "corporation" || $subject.kind === "alliance"}
       {@const rows = $subject.kind === "corporation" ? corporationRows : allianceRows}

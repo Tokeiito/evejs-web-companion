@@ -95,6 +95,9 @@ const TABLES = Object.freeze({
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
   typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
   raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),
+  // The bloodlines (characterdata/bloodlines.py): each one's name and description messages, its race and its
+  // corporation. A character's Show Info words its Description by its bloodline's (get_bloodline_description).
+  bloodlines: Object.freeze({ loader: "bloodlinesLoader", resource: "res:/staticdata/bloodlines.fsdbinary" }),
   // A group's category (evetypes.GetCategoryIDByGroup), by which a structure's fitting's menu has no Fit to Active Ship
   // (fittingBrowser.GetFittingMenu, 513).
   groupCategories: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", attribute: "categoryID" }),

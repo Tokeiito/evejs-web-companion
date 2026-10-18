@@ -4134,6 +4134,14 @@ export async function getNpcCorporationHeadquarters(corporationID: number, optio
   return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
 }
 
+/** A bloodline's description, the number of its message (bloodlines.get_bloodline_description: its descriptionID); null where none is had. */
+export async function getBloodlineDescriptionID(bloodlineID: number, options: ApiOptions = {}): Promise<number | null> {
+  const data = await getJson(`/api/client-data/bloodlines/${bloodlineID}`, options);
+  const bloodline = typeof data.bloodline === "object" && data.bloodline !== null && !Array.isArray(data.bloodline) ? (data.bloodline as Record<string, JsonValue>) : null;
+  const messageID = bloodline === null ? 0 : Number(bloodline.descriptionID);
+  return Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;
+}
+
 /** A colour of the corporation logo library: its RGBA and its blend (CORPLOGO_BLEND, _SOLID, _GRADIENT). */
 export interface CorpLogoColor {
   readonly rgba: readonly number[];

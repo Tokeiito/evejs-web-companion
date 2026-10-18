@@ -13170,6 +13170,34 @@ app.get("/api/client-data/system-objects/:id", requireAuth, (req, res, next) => 
   }
 });
 
+// A bloodline as the client's own data has it (characterdata/bloodlines.py get_bloodline): the messages of its name and
+// its description, its race and its corporation. A character's Show Info words its Description by the description
+// (characterInfoWindow.update_description_caption_and_sub_caption: get_bloodline_description). `available` is false
+// when the table could not be read; `bloodline` is null for one it has not.
+app.get("/api/client-data/bloodlines/:id", requireAuth, async (req, res, next) => {
+  const bloodlineID = Number(req.params.id);
+  if (!Number.isSafeInteger(bloodlineID) || bloodlineID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_BLOODLINE", message: "A bloodline's number is required." });
+    return;
+  }
+  try {
+    const { available, row } = await clientBuiltData.lookup("bloodlines", bloodlineID);
+    const messageOf = (value) => (Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null);
+    const bloodline = row
+      ? {
+          bloodlineID,
+          nameID: messageOf(row.nameID),
+          descriptionID: messageOf(row.descriptionID),
+          raceID: Number(row.raceID) || null,
+          corporationID: Number(row.corporationID) || null,
+        }
+      : null;
+    res.json({ ok: true, available, bloodline });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // An NPC corporation's headquarters, as its Show Info names it (corporationInfoWindow.get_corporation_headquarters:
 // the client's own NPC corporation's stationID, the station's type; else its solarSystemID). `available` is false
 // when the table could not be read; `headquarters` is null for a corporation it has not, or one with neither.
