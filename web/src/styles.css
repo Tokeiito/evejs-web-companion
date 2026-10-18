@@ -2784,6 +2784,17 @@
   .work-main > .desktop { grid-area: surface; }
   .work-main > .dock-panel { grid-area: panel; }
   .work-main > .hud-bar { grid-area: hud; }
+  /* Align HUD to Top (shipUI.UpdatePosition: the HUD CENTERTOP): its row above the view, and its header, the action
+   * indication, under the instruments, toward the view's middle (_update_indicator_cont_top). */
+  .workspace.in-space.hud-top .work-main {
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "hud     panel"
+      "surface panel";
+  }
+  .workspace.hud-top .hud-bar { grid-template-rows: 1fr auto; }
+  .workspace.hud-top .hud-bar > .hud-head { grid-row: 2; }
+  .workspace.hud-top .hud-bar > .hud-body { grid-row: 1; }
 
   /* The Neocom inside the workspace: full-height, its own scroll, no sticky. */
   .workspace .neocom {

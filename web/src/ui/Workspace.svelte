@@ -29,6 +29,7 @@
   import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
   import { shipHoldTarget } from "./shipHold.ts";
   import { windowToggleTarget } from "./windowToggle.ts";
+  import { hudSetting } from "../store/hudSettings.ts";
   import { untrack } from "svelte";
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
@@ -145,6 +146,7 @@
 
   // ── the desktop: open windows + the collapsible dock panel ──────────────
   let wins = $state<WinState[]>([]);
+  const hudTopAligned = hudSetting("shipuialigntop");
   let dockCollapsed = $state(false);
   let dockWidth = $state(DEFAULT_DOCK_WIDTH);
   /**
@@ -501,7 +503,8 @@
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
-  <div class="workspace" class:in-space={!isDocked}>
+  <!-- The HUD options' Align HUD to Top (shipUI.ToggleAlign): the HUD's row above the view. -->
+  <div class="workspace" class:in-space={!isDocked} class:hud-top={$hudTopAligned}>
     <!-- Every piece of always-on chrome gets its own boundary. These are mounted
          for the whole session and refresh on every poll, so before this an error
          in any one of them froze the entire tab (see ErrorBoundary.svelte). -->

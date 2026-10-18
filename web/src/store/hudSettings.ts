@@ -23,6 +23,11 @@ export const HUD_SETTING_DEFAULTS = Object.freeze({
   lockModules: false,
   /** 653, holdTrackerSettings.IsCargoHoldBlinkEnabled: the cargo button blinks as its tracked hold changes. */
   BlinkCargoHudIcon: true,
+  /**
+   * 657, eve/client/script/util/settings.py IsShipHudTopAligned (SETTING_SHIP_TOP_ALIGNED): the HUD at the top of the
+   * view, its action indication under it (shipUI.UpdatePosition, _update_indicator_cont_top).
+   */
+  shipuialigntop: false,
 });
 
 export type HudSettingName = keyof typeof HUD_SETTING_DEFAULTS;
