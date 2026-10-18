@@ -1523,6 +1523,15 @@ export interface AppFlow {
   /** The rack menu's Unload to Cargo: UnloadAmmoToContainer of the module's charge to the cargo. */
   unloadRackCharge(moduleID: number): Promise<void>;
   /**
+   * The rack button's own toggles (shipmodulebutton.GetMenu): Set Auto-Reload On or Off for a module that takes charges,
+   * and Set Auto-Repeat On or Off for one whose effect repeats; each with its words. Null where the module is not had.
+   */
+  rackModuleToggles(moduleID: number): Promise<{ readonly autoReload: { readonly on: boolean; readonly text: string } | null; readonly autoRepeat: { readonly on: boolean; readonly text: string } | null } | null>;
+  /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
+  setAutoReload(moduleID: number, on: boolean): Promise<void>;
+  /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
+  setAutoRepeat(moduleID: number, on: boolean): void;
+  /**
    * Reload all, as the client's slotsContainer.OnReloadAmmo: each module of the rack that takes charges, reloaded with
    * the type it holds or last held, where the cargo has it; `reloading` the modules reloading now. Answers each load's
    * outcome.
@@ -3806,6 +3815,107 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
     });
   }
+  /**
+   * settings.char.autoreload and settings.char.autorepeat, as the rack's buttons keep them (shipmodulebutton.Setup,
+   * SetAutoReload, SetRepeat): per character and module, kept in this browser.
+   */
+  function charModuleSettings(name: "autoreload" | "autorepeat"): Record<string, number> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return {};
+    try {
+      const kept = JSON.parse(settingsStorage?.getItem(`evejs.char.${characterID}.${name}`) ?? "{}") as unknown;
+      return kept && typeof kept === "object" ? (kept as Record<string, number>) : {};
+    } catch {
+      return {};
+    }
+  }
+  function setCharModuleSetting(name: "autoreload" | "autorepeat", moduleID: number, value: number): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`evejs.char.${characterID}.${name}`, JSON.stringify({ ...charModuleSettings(name), [moduleID]: value }));
+    } catch {
+      // Storage refused: the choice lasts the page.
+    }
+  }
+  /** settings.char.autoreload.Get(itemID, 1): on unless the pilot set it off. */
+  const autoReloadOn = (moduleID: number): boolean => (charModuleSettings("autoreload")[moduleID] ?? 1) !== 0;
+  /** shipmodulebutton GROUPS_THAT_ALWAYS_AUTO_REPEAT: mining lasers, strip miners, entosis links. */
+  const ALWAYS_AUTO_REPEAT_GROUPS: ReadonlySet<number> = new Set([54, 464, 1313]);
+  /** dogma/const.py: dgmEffActivation, dgmEffTarget, dgmEffArea; effectOnline; attributeDisallowRepeatingActivation. */
+  const ACTIVATION_CATEGORIES: ReadonlySet<number> = new Set([1, 2, 3]);
+  const EFFECT_ONLINE = 16;
+  const ATTRIBUTE_DISALLOW_REPEATING = 1014;
+  /**
+   * IsEffectRepeatable of the module's default effect (894 to 899, IsEffectActivatible 901): its category activation or
+   * target, not online, the type not disallowing repeats, and the effect timed (a durationAttributeID).
+   */
+  function defaultEffectRepeats(staticData: DogmaStatic, typeID: number): boolean {
+    const facts = staticData.types[typeID];
+    const effectID = facts?.defaultEffectID ?? null;
+    if (!facts || effectID === null || effectID === EFFECT_ONLINE) return false;
+    const effect = staticData.effects[effectID];
+    if (!effect || (effect.category !== 1 && effect.category !== 2)) return false;
+    if (facts.attributes.find(([id]) => id === ATTRIBUTE_DISALLOW_REPEATING)?.[1]) return false;
+    return effect.durationAttributeID !== null && effect.durationAttributeID !== undefined;
+  }
+  /**
+   * The module's repeat count as its button holds it (GetRepeatCount, 112 to 122, written to the setting at Setup): a
+   * group that always repeats 1000; else the setting where there is one; else 1000 for an effect that repeats, 0 for
+   * one that does not. Null where the static data is not had.
+   */
+  async function moduleRepeatCount(moduleID: number, typeID: number, groupID: number | null): Promise<number | null> {
+    if (ALWAYS_AUTO_REPEAT_GROUPS.has(groupID ?? -1)) return 1000;
+    const kept = charModuleSettings("autorepeat")[moduleID];
+    if (kept !== undefined && kept !== -1) return kept;
+    const staticData = await dogmaStaticFor([typeID], [ATTRIBUTE_DISALLOW_REPEATING]);
+    return staticData === null ? null : defaultEffectRepeats(staticData, typeID) ? 1000 : 0;
+  }
+  /** godma's IsModuleReloading: a reload announced for it and not run out. */
+  function moduleReloading(moduleID: number): boolean {
+    const reload = store.fitting.get().reloads[moduleID];
+    return !!reload && Date.now() < reload.startedAtMs + reload.durationMs;
+  }
+  /**
+   * shipmodulebutton.AutoReload (727 to 738): nothing while it reloads, for a module that takes no charges, or where
+   * auto-reload is off and it is not forced; the charge type it holds or last held and its room (GetChargeReloadInfo);
+   * nothing where it holds some and it is not forced, or has no room; nothing docked (the HUD is not up); else
+   * LoadAmmoTypeToModule (973 to 978): every cargo stack of the type, through LoadChargesToModule, which says
+   * CannotLoadNotEnoughCharges where there is none.
+   */
+  async function autoReload(moduleID: number, force: boolean): Promise<void> {
+    const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+    if (module === null || moduleReloading(moduleID)) return;
+    if (!CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1) || !(autoReloadOn(moduleID) || force)) return;
+    const quantity = module.charge && module.charge.quantity > 0 ? module.charge.quantity : 0;
+    const chargeTypeID = quantity > 0 ? module.charge!.typeID : usedChargeTypes.get(moduleID) ?? null;
+    if (chargeTypeID === null) return;
+    const staticData = await dogmaStaticFor([module.typeID, chargeTypeID], AMMO_MENU_ATTRIBUTES);
+    if (staticData === null) return;
+    if ((quantity > 0 && !force) || roomForReload(staticData, module.typeID, chargeTypeID, quantity) <= 0) return;
+    if (dockedNow() !== null) return;
+    await loadInventory().catch(() => {});
+    const stacks = store.inventory.get().cargo.rows.filter((row) => row.typeID === chargeTypeID).map((row) => row.itemID);
+    if (stacks.length === 0) {
+      sayDialog("CannotLoadNotEnoughCharges", null, "The cargo holds too few of those charges to load the module.");
+      return;
+    }
+    await loadAmmoNow([moduleID], stacks, "cargo");
+  }
+  /**
+   * OnGodmaShipEffect's stop (1290 to 1297): an effect of the activation, target or area kind, not online, stopping on a
+   * module with no charge left in it reloads it (AutoReload).
+   */
+  async function autoReloadOnStop(moduleID: number, effectID: number): Promise<void> {
+    if (effectID === EFFECT_ONLINE) return;
+    const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+    if (module === null || (module.charge && module.charge.quantity > 0)) return;
+    if (!CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)) return;
+    const staticData = await dogmaStaticFor([module.typeID], []);
+    const category = staticData?.effects[effectID]?.category ?? null;
+    if (category === null || !ACTIVATION_CATEGORIES.has(category)) return;
+    await autoReload(moduleID, false);
+  }
   /** The slot of the active ship with this flag, or null. */
   const slotWithFlag = (flagID: number): FittingSlot | null =>
     store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flagID) ?? null;
@@ -4804,6 +4914,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ) {
         scheduleReloadRefresh(0);
       }
+      if (Number(args[3]) !== 1) void autoReloadOnStop(moduleID, Number(args[1]) || 0).catch(() => {});
       return;
     }
     if (method === "OnModuleAttributeChanges") {
@@ -16639,7 +16750,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     opts: { effect?: string; typeID?: number; targetID?: number | null; repeat?: -1 | 0 } = {},
   ): Promise<void> {
     // shipmodulebutton 1340 to 1341: a module switched on with no charge in it forgets the type it last held.
-    if (!store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module?.charge) usedChargeTypes.delete(itemID);
+    const fittedModule = store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
+    if (!fittedModule?.charge) usedChargeTypes.delete(itemID);
+    // Its repeats (1337 to 1339): Ctrl's 1000 where the caller says so, else the button's count; 0 for one the pilot
+    // set not to repeat, and -1 otherwise, which the transport makes 1000 for an effect that repeats and 0 else.
+    if (opts.repeat === undefined && fittedModule !== null) {
+      const count = await moduleRepeatCount(itemID, fittedModule.typeID, fittedModule.groupID).catch(() => null);
+      if (count === 0) opts = { ...opts, repeat: 0 };
+    }
     await runTargetingAction(
       "Switch on",
       () => switchModuleOn(itemID, opts, callOptions),
@@ -26299,6 +26417,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async unloadChargeToCargo(flagID) {
       await unloadChargeInSlot(flagID);
+    },
+
+    async rackModuleToggles(moduleID) {
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+      if (module === null) return null;
+      const labels = ["AutoReloadOn", "AutoReloadOff", "AutoRepeatOn", "AutoRepeatOff"].map((name) => `UI/Inflight/ModuleRacks/${name}`);
+      await wordsNow(labels).catch(() => {});
+      const said = (label: string, own: string): string => templateWords(`UI/Inflight/ModuleRacks/${label}`, {}, own);
+      // GetMenu (462 to 466): a module that takes charges, auto-reload's opposite of what it is.
+      const reloadOn = autoReloadOn(moduleID);
+      const autoReloadEntry = CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)
+        ? { on: reloadOn, text: reloadOn ? said("AutoReloadOff", "Stop reloading by itself") : said("AutoReloadOn", "Reload by itself") }
+        : null;
+      // GetMenu (473 to 478): a repeating effect not of a group that always repeats.
+      const staticData = await dogmaStaticFor([module.typeID], [ATTRIBUTE_DISALLOW_REPEATING]);
+      const repeats = staticData !== null && defaultEffectRepeats(staticData, module.typeID) && !ALWAYS_AUTO_REPEAT_GROUPS.has(module.groupID ?? -1);
+      const count = repeats ? await moduleRepeatCount(moduleID, module.typeID, module.groupID) : null;
+      const autoRepeatEntry = repeats && count !== null
+        ? { on: count !== 0, text: count === 0 ? said("AutoRepeatOn", "Repeat by itself") : said("AutoRepeatOff", "Stop repeating by itself") }
+        : null;
+      return { autoReload: autoReloadEntry, autoRepeat: autoRepeatEntry };
+    },
+
+    async setAutoReload(moduleID, on) {
+      setCharModuleSetting("autoreload", moduleID, on ? 1 : 0);
+      await autoReload(moduleID, false);
+    },
+
+    setAutoRepeat(moduleID, on) {
+      setCharModuleSetting("autorepeat", moduleID, on ? 1000 : 0);
     },
 
     async unloadRackCharge(moduleID) {

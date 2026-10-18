@@ -321,11 +321,36 @@
    * is read. Null while it is being read.
    */
   let slotMenu = $state<readonly (AmmoMenuEntry & { readonly text: string })[] | null>(null);
+  /** The button's own toggles after the ammunition (GetMenu: Set Auto-Reload, Set Auto-Repeat). */
+  let slotToggles = $state<Awaited<ReturnType<AppFlow["rackModuleToggles"]>>>(null);
   async function readSlotMenu(module: RackModule): Promise<void> {
     if (!flow) return;
-    const entries = await flow.rackAmmoMenu(module.itemID, { reloading: reloadingNow(module), bankCount: module.bankSize }).catch(() => null);
-    if (menu?.target.kind === "slot" && menu.target.module.itemID === module.itemID) slotMenu = entries ?? [];
+    const [entries, toggles] = await Promise.all([
+      takesCharges(module)
+        ? flow.rackAmmoMenu(module.itemID, { reloading: reloadingNow(module), bankCount: module.bankSize }).catch(() => null)
+        : Promise.resolve([]),
+      flow.rackModuleToggles(module.itemID).catch(() => null),
+    ]);
+    if (menu?.target.kind === "slot" && menu.target.module.itemID === module.itemID) {
+      slotMenu = entries ?? [];
+      slotToggles = toggles;
+    }
   }
+  async function toggleAutoReload(module: RackModule, on: boolean): Promise<void> {
+    closeMenu();
+    if (!flow) return;
+    try {
+      await flow.setAutoReload(module.itemID, on);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
+    }
+  }
+  function toggleAutoRepeat(module: RackModule, on: boolean): void {
+    closeMenu();
+    flow?.setAutoRepeat(module.itemID, on);
+  }
+  /** Ctrl held as the press began: the click's 1000 repeats (OnClick, 927 to 929). */
+  let ctrlRepeat = false;
   /** One of the slot menu's entries: LoadChargesToModule with its stacks, Reload all, or Unload to Cargo. */
   async function chooseSlotEntry(module: RackModule, entry: AmmoMenuEntry): Promise<void> {
     if (entry.kind === "load") {
@@ -379,6 +404,7 @@
     };
     menuOpener = opener;
     slotMenu = null;
+    slotToggles = null;
     void readCargo().then(() => (target.kind === "slot" ? readSlotMenu(target.module) : undefined));
   }
 
@@ -717,6 +743,7 @@
         await flow.activateModule(module.itemID, {
           typeID: module.typeID,
           targetID: autoTargetID > 0 ? autoTargetID : null,
+          ...(ctrlRepeat ? { repeat: -1 as const } : {}),
         });
       }
       // Read the AUTHORITY, not the resolved promise: the flow's targeting
@@ -906,12 +933,12 @@
                 class:holding={holdItemID === slot.module.itemID}
                 disabled={!clickable || pendingItemID !== null}
                 aria-pressed={slot.module.active}
-                aria-haspopup={ammo && flow ? "menu" : undefined}
+                aria-haspopup={flow ? "menu" : undefined}
                 data-rack-module={slot.module.itemID}
                 title={slotTitle(slot.module)}
                 aria-label={slotTitle(slot.module)}
                 oncontextmenu={(event) => {
-                  if (!ammo || !flow || !slot.module) return;
+                  if (!flow || !slot.module) return;
                   event.preventDefault();
                   // ⚠ A TOUCH LONG-PRESS ALSO FIRES `contextmenu`, at about
                   // the time the overload hold is filling. The hold is the
@@ -920,6 +947,7 @@
                   openMenu({ kind: "slot", module: slot.module }, event.currentTarget as HTMLElement);
                 }}
                 onpointerdown={(event) => {
+                  ctrlRepeat = event.ctrlKey;
                   if (event.button === 0 && slot.module) pressStart(slot.module);
                 }}
                 onpointerup={() => slot.module && pressEnd(slot.module)}
@@ -930,7 +958,7 @@
                   // (getModifierState, not the shift flag: a source guard holds
                   // shift-CLICK out of this file, and this is not a click.)
                   if (
-                    ammo && flow && slot.module &&
+                    flow && slot.module &&
                     (event.key === "ContextMenu" || (event.key === "F10" && event.getModifierState("Shift")))
                   ) {
                     event.preventDefault();
@@ -1174,14 +1202,27 @@
         <!-- GetAmmoMenu: Reload used and Reload, Reload all, Unload to Cargo, the other kinds (bridge/ammoMenu.ts). -->
         {#if slotMenu === null}
           <span class="rack-menu-note">Reading cargo...</span>
-        {:else if slotMenu.length === 0}
-          <span class="rack-menu-note">No ammunition in cargo for it.</span>
         {:else}
+          {#if slotMenu.length === 0 && takesCharges(target.module)}
+            <span class="rack-menu-note">No ammunition in cargo for it.</span>
+          {/if}
           {#each slotMenu as entry, index (index)}
             <button type="button" role="menuitem" onclick={() => chooseSlotEntry(target.module, entry)}>
               <span class="rack-menu-name">{entry.text}</span>
             </button>
           {/each}
+          {#if slotToggles?.autoReload}
+            {@const reload = slotToggles.autoReload}
+            <button type="button" role="menuitem" onclick={() => toggleAutoReload(target.module, !reload.on)}>
+              <span class="rack-menu-name">{reload.text}</span>
+            </button>
+          {/if}
+          {#if slotToggles?.autoRepeat}
+            {@const repeat = slotToggles.autoRepeat}
+            <button type="button" role="menuitem" onclick={() => toggleAutoRepeat(target.module, !repeat.on)}>
+              <span class="rack-menu-name">{repeat.text}</span>
+            </button>
+          {/if}
         {/if}
       {:else}
       {#if choices.length === 0}
