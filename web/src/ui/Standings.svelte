@@ -25,6 +25,9 @@
   import type { CharStanding } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
+  import OwnerPicture from "./OwnerPicture.svelte";
+  import { clientTexture } from "./skillGroupIcons.ts";
+  import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -32,6 +35,10 @@
   const standings = store.standings;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const ownerLogos = flow.ownerLogos;
+  // svelte-ignore state_referenced_locally
+  const imageServer = flow.imageServer;
 
   let busy = $state(false);
   let error = $state("");
@@ -58,7 +65,25 @@
 
   onMount(() => {
     refresh();
+    // The rows' owners' pictures: the client's own logo tables, and the image server's portraits.
+    flow.loadOwnerLogos();
+    flow.loadImageServer();
   });
+
+  /**
+   * standingEntry.UpdateIcon: a faction's or a corporation's logo (eveIcon.GetLogoIcon: LogoIcon, the client's own
+   * tables), a character's portrait (photo.GetPortrait(ownerID, 64), the client's silhouette where the image server
+   * has none). The pictures to try, in turn.
+   */
+  function pictureOf(fromID: number): readonly string[] {
+    const kind = classifyStandingKind(fromID);
+    if (kind === "agent") {
+      const portrait = portraitUrl($imageServer, fromID, 64);
+      return [...(portrait === null ? [] : [portrait]), clientTexture(portraitDefaultPath(64))];
+    }
+    const resPath = kind === "faction" ? $ownerLogos?.factions[String(fromID)] : kind === "corporation" ? $ownerLogos?.corporations[String(fromID)] : undefined;
+    return resPath ? [clientTexture(resPath)] : [];
+  }
 
   // The name for a standing's entity, ALWAYS a name and never the id (R7d).
   // The kind is the same one the flow resolved the id under.
@@ -236,6 +261,7 @@
           if (subject !== null) showInfo(subject);
         }}
       >
+        <OwnerPicture name={entityName(row.fromID)} urls={pictureOf(row.fromID)} />
         <span class="name">{entityName(row.fromID)}</span>
         <span class="meter" aria-hidden="true">
           <span class="track">
@@ -341,7 +367,7 @@
   }
   button.row {
     display: grid;
-    grid-template-columns: minmax(8rem, 1fr) minmax(4rem, 12rem) 4.5rem;
+    grid-template-columns: 32px minmax(8rem, 1fr) minmax(4rem, 12rem) 4.5rem;
     align-items: center;
     gap: 0.5rem;
     width: 100%;

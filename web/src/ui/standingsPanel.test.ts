@@ -27,7 +27,9 @@ const Standings = (await import("./Standings.svelte")).default;
 type CharStanding = import("../store/types.ts").CharStanding;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // The owners' logos and the image server (the rows' pictures) read none; every other member does nothing.
+  const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
+  return new Proxy({}, { get: (_target, key) => (key === "ownerLogos" || key === "imageServer" ? none : async () => {}) });
 }
 
 function visibleText(body: string): string {
