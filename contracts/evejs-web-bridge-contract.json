@@ -1271,6 +1271,7 @@
       "industryMonitor.ConnectJob",
       "industryMonitor.DisconnectJob",
       "invbroker.Add",
+      "invbroker.AssembleCargoContainer",
       "invbroker.DestroyFitting",
       "invbroker.FitFitting",
       "invbroker.ImportExportWithPlanet",

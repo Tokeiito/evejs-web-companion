@@ -224,6 +224,27 @@ export function isBoardableShip(
  *   649  Freight Container
  */
 const CONTAINER_GROUP_IDS = new Set([12, 340, 448, 649]);
+/**
+ * inventorycommon/const.py playerDeployedContainers (the cargo, secure, audit log secure and freight containers and
+ * groupSiphonPseudoSilo), less the siphon's silo, which itemCheckers.OfferAssembleContainer leaves out.
+ */
+const ASSEMBLED_FROM_THE_MENU_GROUP_IDS = new Set([12, 340, 448, 649]);
+/** item.py _CONTAINER_GROUPS: the groups whose packaged item a double click assembles (a wreck's among them). */
+const ASSEMBLED_BY_A_DOUBLE_CLICK_GROUP_IDS = new Set([186, 12, 340, 448, 649]);
+
+/**
+ * Does the item's menu offer Assemble Container (itemCheckers.OfferAssembleContainer, 79 to 90)? A player's container
+ * that is not a siphon's silo, packaged, with the pilot docked and the container where the pilot is
+ * (IsInPilotLocation), which the caller reads from the place it is listed in.
+ */
+export function offersAssembleContainer(row: InventoryItemRow, docked: boolean, inPilotLocation: boolean): boolean {
+  return row.groupID !== null && ASSEMBLED_FROM_THE_MENU_GROUP_IDS.has(row.groupID) && !row.singleton && docked && inPilotLocation;
+}
+
+/** Does a double click on it assemble it (item.py isUnassembledContainer, 420; OnDblClick 838 and 839)? */
+export function isUnassembledContainer(row: InventoryItemRow): boolean {
+  return row.groupID !== null && ASSEMBLED_BY_A_DOUBLE_CLICK_GROUP_IDS.has(row.groupID) && !row.singleton;
+}
 const CATEGORY_CELESTIAL = 2;
 
 /**

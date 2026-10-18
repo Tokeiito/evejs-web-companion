@@ -638,7 +638,7 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -1474,6 +1474,11 @@ export interface AppFlow {
   ): Promise<void>;
   /** DESTROY items. The caller must have confirmed first — this is irreversible. */
   trashItems(itemIDs: readonly number[], place: InventoryPlace): Promise<void>;
+  /**
+   * A packaged container listed in this place assembled, as its menu's Assemble Container and a double click on it
+   * assemble it (menusvc.AssembleContainer; item.py 838 and 839). Every open place is read again after.
+   */
+  assembleContainer(itemID: number, place: InventoryPlace): Promise<void>;
   /** Read the corporation hangar at the docked station. */
   loadCorpHangar(): Promise<void>;
   /** The lobby's offices where the pilot is docked, listed when the player asks for them. */
@@ -26610,6 +26615,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           declinedSilently: merged <= 0,
           message: merged > 0 ? `Merged ${merged} into the stack.` : "The server did not merge those stacks, and gave no reason.",
         };
+      });
+    },
+
+    async assembleContainer(itemID, place) {
+      // The inventory manager's AssembleCargoContainer of it (bridge/inventoryWrites.ts). The client says nothing
+      // after it; the page says so where the server assembled nothing and gave no reason (a stack's one assembled is
+      // taken off the stack, a single one assembled where it lies).
+      await runInventoryAction(async () => {
+        const before = rowsAt(place)?.find((row) => row.itemID === itemID) ?? null;
+        if (before === null) {
+          throw new Error("That container is no longer where the panel last saw it; refresh and try again.");
+        }
+        await assembleCargoContainerCall(bridgeDo, itemID);
+        await refreshOpenPlaces();
+        const after = rowsAt(place)?.find((row) => row.itemID === itemID) ?? null;
+        if (after === null || after.singleton || after.quantity < before.quantity) return null;
+        return { applied: false, declinedSilently: true, message: "The server did not assemble that container, and gave no reason." };
       });
     },
 

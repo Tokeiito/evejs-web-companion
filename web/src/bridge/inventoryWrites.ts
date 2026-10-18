@@ -249,6 +249,16 @@ export async function setLabel(act: Ask, itemID: number, name: string): Promise<
   await act("invbroker", "SetLabel", [itemID, name.replace(/\n/g, " ")]);
 }
 
+/**
+ * Assembles a packaged container, on the inventory manager of where the pilot is, as the client's Assemble Container
+ * and a double click on the container do (menusvc.AssembleContainer, 3561 to 3564: AssembleCargoContainer(itemID,
+ * None, 0.0); item.py 838 and 839): no name, and a real zero. Fails as the call fails.
+ */
+export async function assembleCargoContainer(act: Ask, itemID: number): Promise<void> {
+  if (!whole(itemID)) throw new Error("Which item that is is not known.");
+  await act("invbroker", "AssembleCargoContainer", [itemID, null, { type: "real", value: 0 }]);
+}
+
 export async function trashItems(act: Ask, itemIDs: readonly number[], locationID: number): Promise<void> {
   if (itemIDs.length === 0 || !itemIDs.every(whole)) throw new Error("At least one item is required.");
   if (!whole(locationID)) throw new Error("Where those items lie is not known.");
