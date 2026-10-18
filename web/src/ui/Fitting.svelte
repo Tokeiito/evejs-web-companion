@@ -31,7 +31,8 @@
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
   import { abbreviate } from "./fittingIcons.ts";
-  import { HANGAR_NAME } from "./inventoryModel.ts";
+  import { HANGAR_NAME, moveQuantityFor, rowsIn } from "./inventoryModel.ts";
+  import type { InventoryPlace } from "../store/types.ts";
   // R78 — drag and drop. The RULES (what may be dropped where, and why not) live
   // in a pure module, because a target that decides inside `dragover` can only be
   // checked by dragging onto it — and `dragover` is also what tells the cursor
@@ -41,6 +42,7 @@
     DRAG_MIME,
     carriesOurPayload,
     decodeDrag,
+    dropOnPlaceVerdict,
     dropOnSocketVerdict,
     encodeDrag,
     type DragPayload,
@@ -1862,6 +1864,31 @@
     const row = rows.find((each) => each.itemID === payload.itemID);
     return { typeID: payload.typeID, categoryID: row?.categoryID ?? null, quantity: row?.quantity ?? 1 };
   }
+  /**
+   * A hold's readout given items dragged out of the inventory, not simulating (CargoCargoSlots, CargoDroneSlots and
+   * CargoFighterSlots OnDropData: invCtrl.ShipCargo, ShipDroneBay, ShipFighterBay(activeShip).OnDropData): the drag's
+   * selection (its nodes) moved into that hold of the active ship, as the inventory moves them (a single stack held to
+   * what fits; a drop on the place it is in refused and said).
+   */
+  function dropOnRealHold(event: DragEvent, to: InventoryPlace): void {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    if (payload?.kind !== "inventoryItem") return;
+    event.preventDefault();
+    const verdict = dropOnPlaceVerdict(payload, to);
+    if (verdict !== null) {
+      error = verdict;
+      return;
+    }
+    const from = payload.from;
+    const ticked = $inventory.selection.length > 0 ? [...$inventory.selection] : [payload.itemID];
+    const selectedRows = rowsIn($inventory, from).filter((row) => ticked.includes(row.itemID));
+    const quantity = moveQuantityFor({ inventory: $inventory, destination: to, selection: ticked, selectedRows, typedQuantity: null });
+    if (quantity.kind === "refused") {
+      error = quantity.message;
+      return;
+    }
+    void run(() => flow.transferItems(ticked, from, to, quantity.quantity));
+  }
   /** A simulated hold's readout taking an item dragged out of the inventory (its OnDropData). */
   function overSimulatedHold(event: DragEvent): void {
     if (carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) event.preventDefault();
@@ -2688,8 +2715,10 @@
             ondragover={overSimulatedHold} ondrop={dropOnSimulatedCargo}>
             {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
-          <!-- OnHoldClicked: the ship's cargo hold in the inventory (OpenCargoHoldOfActiveShip). -->
-          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("cargo")}>{cargoBayText}</button></dd>
+          <!-- OnHoldClicked: the ship's cargo hold in the inventory (OpenCargoHoldOfActiveShip); a drop from the inventory
+               moved into it. -->
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("cargo")}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "cargo" })}>{cargoBayText}</button></dd>
         {/if}
       </div>
       {#if simulation?.fighterBay}
@@ -2718,13 +2747,15 @@
         <div class:fit-readout-warning={frame !== null} style={frame ? `--slot-warning: ${frame}` : undefined}>
           <dt>{realBayReadout.kind === "fighter" ? offenseWord("UI/Fitting/FittingWindow/FighterBay") : "Drone bay"}</dt>
           <!-- OnHoldClicked: the bay in the inventory (OpenFighterBayOfActiveShip, OpenDroneBayOfActiveShip). -->
-          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold(realBayReadout.kind)}>
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold(realBayReadout.kind)}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "shipBay", bay: realBayReadout.kind })}>
             {holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</button></dd>
         </div>
       {:else}
         <div>
           <dt>Drone bay</dt>
-          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("drone")}>{@render statValue(stats.bays.droneCapacity, asVolume)}</button></dd>
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("drone")}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "shipBay", bay: "drone" })}>{@render statValue(stats.bays.droneCapacity, asVolume)}</button></dd>
         </div>
       {/if}
       <div class="fit-readout-value">
