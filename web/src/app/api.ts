@@ -3833,6 +3833,22 @@ export async function getTypePrices(
  * read. At most 50 types an asking.
  */
 /** The ships' info bubble elements (cfg.infoBubbleTypeElements): each type's, in its slots' order; null for one with none. */
+/** The types of each group asked (evetypes.GetTypeIDsByGroup), at most 32 groups a read; null where not to be had. */
+export async function getGroupTypes(
+  groupIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly groups: Readonly<Record<number, readonly number[] | null>> }> {
+  const data = await getJson(`/api/client-data/group-types?groupIDs=${groupIDs.join(",")}`, options);
+  const groups: Record<number, readonly number[] | null> = {};
+  const record = typeof data.groups === "object" && data.groups !== null && !Array.isArray(data.groups) ? (data.groups as Record<string, JsonValue>) : {};
+  for (const [key, value] of Object.entries(record)) {
+    const groupID = Number(key);
+    if (!Number.isSafeInteger(groupID) || groupID <= 0) continue;
+    groups[groupID] = Array.isArray(value) ? value.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id)) : null;
+  }
+  return { available: data.available === true, groups };
+}
+
 export async function getInfoBubbleElements(
   typeIDs: readonly number[],
   options: ApiOptions = {},

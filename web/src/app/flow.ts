@@ -15,7 +15,7 @@ import {
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
-import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
+import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, usedWithTypeIDs, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -6070,10 +6070,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const used = bays?.find((entry) => entry.key === kind)?.capacity?.used ?? null;
     if (store.fitting.get().activeShipID !== shipID) return;
     const bayReadout = { shipID, kind, capacity: roundTo10(shipValue(kind === "fighter" ? 2055 : 283)), used };
-    // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
-    // it (GetFittingDictForActiveShip: CreateFittingData of its fitted modules), its cargo hold's capacity and use as
-    // the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline (FindOfflineModules).
-    await ensureWarningFacts(modules.map((module) => module.typeID), shipTypeID).catch(() => false);
     // FindModulesWithMissingCharges' fitting of the ship: what is in its module slots (a module one, a charge its
     // quantity as godma has it: clientDogmaLocation.GetQuantity of a sublocation, its quantity attribute), and the stacks
     // of its cargo hold and its specialized ammo hold (GetHoldItems: the ship's inventory). Only a ship's.
@@ -6081,20 +6077,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ...store.inventory.get().cargo.rows.map((row) => [row.typeID, 5, row.quantity] as const),
       ...(bays?.find((entry) => entry.key === "ammo")?.items ?? []).map((row) => [row.typeID, 143, row.quantity] as const),
     ];
-    await dogmaStaticFor(holdStacks.map(([typeID]) => typeID), []).catch(() => null);
+    // The fighter bay's stacks, where the hull has one.
+    const fighterBay = kind === "fighter" ? (bays?.find((entry) => entry.key === "fighter")?.items ?? []) : [];
+    await dogmaStaticFor([...holdStacks.map(([typeID]) => typeID), ...fighterBay.map((row) => row.typeID)], []).catch(() => null);
     const inModuleSlot = (flagID: number) => flagID >= 11 && flagID <= 34;
+    const chargeQuantity = (charge: (typeof charges)[number]) => godmaRows.get(`${reckoned.ship.key}|${charge.flagID}|${charge.typeID}`)?.get(805) ?? 1;
+    // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
+    // it (GetFittingDictForActiveShip: CreateFittingData of its items, the drones out in space as in its drone bay), its
+    // cargo hold's capacity and use as the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline
+    // (FindOfflineModules).
+    const shipFit = createFittingData([
+      ...modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: 1 })),
+      ...charges.map((charge) => ({ typeID: charge.typeID, flagID: charge.flagID, quantity: chargeQuantity(charge) })),
+      ...store.inventory.get().cargo.rows.map((row) => ({ typeID: row.typeID, flagID: 5, quantity: row.quantity })),
+      ...bay.map((stack) => ({ typeID: stack.typeID, flagID: 87, quantity: stack.quantity })),
+      ...inSpace.map((drone) => ({ typeID: drone.typeID, flagID: 87, quantity: 1 })),
+      ...fighterBay.map((row) => ({ typeID: row.typeID, flagID: 158, quantity: row.quantity })),
+    ], staticTypeFacts(staticData));
+    await ensureWarningFacts(shipFit.map(([typeID]) => typeID), shipTypeID).catch(() => false);
     const chargesFit = staticData.types[shipTypeID]?.categoryID === 6
       ? [
         ...modules.filter((module) => inModuleSlot(module.flagID)).map((module) => [module.typeID, module.flagID, 1] as const),
-        ...charges.filter((charge) => inModuleSlot(charge.flagID))
-          .map((charge) => [charge.typeID, charge.flagID, godmaRows.get(`${reckoned.ship.key}|${charge.flagID}|${charge.typeID}`)?.get(805) ?? 1] as const),
+        ...charges.filter((charge) => inModuleSlot(charge.flagID)).map((charge) => [charge.typeID, charge.flagID, chargeQuantity(charge)] as const),
         ...holdStacks,
       ]
       : null;
     const warnings = evaluateFit({
       static: staticData,
       shipTypeID,
-      fit: createFittingData(modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: 1 })), staticTypeFacts(staticData)),
+      fit: shipFit,
       slotExists: (flagID) => reckoned.location.slotExists(reckoned.ship, flagID),
       resources: resourceLoads(figures.resources),
       cargo: store.inventory.get().cargo.capacity ?? null,
@@ -6103,38 +6114,95 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       typeLists: warningListsOf,
       shipElements: bubbleElementsKept.get(shipTypeID) ?? null,
       chargesFit,
+      fighterTypesInTubes: squadrons.map((squadron) => squadron.typeID),
+      groupTypes: groupTypesOf,
+      requiredSkillsOf,
     });
     store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings });
   }
 
   // What the warnings go by that the static data does not hold, read once a type: each fitted type's warning lists
-  // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID) and each hull's info bubble elements (cfg.infoBubbleTypeElements).
+  // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID), each hull's info bubble elements (cfg.infoBubbleTypeElements),
+  // the types of the charge groups of each (evetypes.GetTypeIDsByGroup), and the skills each type needs and those the
+  // charges its launchers may use need, however deep (requiredSkillsForTypes).
   const warningListsKept = new Map<number, ReadonlySet<number>>();
   let pythonEffectAttributesRead = false;
   const bubbleElementsKept = new Map<number, readonly number[] | null>();
+  const groupTypesKept = new Map<number, readonly number[]>();
+  const requiredSkillsKept: Record<number, readonly (readonly [number, number])[]> = {};
+  const requiredSkillsAsked = new Set<number>();
   /** The warnings' facts of the types and the hull named that are not held yet, read; true where any were. */
   async function ensureWarningFacts(typeIDs: readonly number[], shipTypeID: number): Promise<boolean> {
     const types = [...new Set(typeIDs)].filter((typeID) => !warningListsKept.has(typeID));
     const hull = !bubbleElementsKept.has(shipTypeID);
-    if (types.length === 0 && !hull && pythonEffectAttributesRead) return false;
+    let read = false;
     const reads: Promise<unknown>[] = [];
     for (let at = 0; at < types.length; at += 32) {
       const chunk = types.slice(at, at + 32);
       reads.push(api.loadTypeListsHolding(chunk, WARNING_TYPE_LISTS, callOptions).then((lists) => {
         for (const typeID of chunk) warningListsKept.set(typeID, new Set(lists[typeID] ?? []));
+        read = true;
       }));
     }
-    if (hull) reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((read) => bubbleElementsKept.set(shipTypeID, read.types[shipTypeID] ?? null)));
+    if (hull) {
+      reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((answer) => {
+        bubbleElementsKept.set(shipTypeID, answer.types[shipTypeID] ?? null);
+        read = true;
+      }));
+    }
     // The records of the attributes the python effects change, for the stacking warnings (dogma_data.get_attribute).
     if (!pythonEffectAttributesRead) {
       pythonEffectAttributesRead = true;
-      reads.push(dogmaStaticFor([], PYTHON_EFFECT_ATTRIBUTES).then((read) => {
-        if (!read) pythonEffectAttributesRead = false;
+      reads.push(dogmaStaticFor([], PYTHON_EFFECT_ATTRIBUTES).then((answer) => {
+        if (!answer) pythonEffectAttributesRead = false;
+        else read = true;
       }));
     }
-    const settled = await Promise.allSettled(reads);
-    return settled.some((each) => each.status === "fulfilled");
+    reads.push(ensureUsedWithAndSkills([...new Set(typeIDs)]).then((more) => {
+      if (more) read = true;
+    }));
+    await Promise.allSettled(reads);
+    return read;
   }
+  /**
+   * The used-with table's makings of the types (InfoSvc._AddUsedWithTypeIDs): the types of their charge groups and those
+   * types' static facts; and the skills of the types and of the charges their launchers may use (GetUsedWithTypeIDs),
+   * for GetRequiredSkillsRecursive. True where any were read.
+   */
+  async function ensureUsedWithAndSkills(typeIDs: readonly number[]): Promise<boolean> {
+    let read = false;
+    const staticData = await dogmaStaticFor(typeIDs, []);
+    if (!staticData) return false;
+    const groupsOf = (typeID: number) => (staticData.types[typeID]?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+    const groups = [...new Set(typeIDs.flatMap(groupsOf))].filter((groupID) => !groupTypesKept.has(groupID));
+    for (let at = 0; at < groups.length; at += 32) {
+      const chunk = groups.slice(at, at + 32);
+      const answer = await api.getGroupTypes(chunk, callOptions);
+      if (!answer.available) break;
+      for (const groupID of chunk) groupTypesKept.set(groupID, answer.groups[groupID] ?? []);
+      read = true;
+    }
+    const groupTypes = [...new Set(typeIDs.flatMap((typeID) => groupsOf(typeID).flatMap((groupID) => groupTypesKept.get(groupID) ?? [])))];
+    const unread = groupTypes.filter((typeID) => !Object.hasOwn(staticData.types, typeID));
+    if (unread.length > 0 && (await dogmaStaticFor(unread, []))) read = true;
+    const launcherCharges = typeIDs
+      .filter((typeID) => staticData.types[typeID]?.effects.includes(40))
+      .flatMap((typeID) => usedWithTypeIDs(staticData, typeID, groupTypesOf) ?? []);
+    const wanted = [...new Set([...typeIDs, ...launcherCharges])].filter((typeID) => !requiredSkillsAsked.has(typeID));
+    if (wanted.length > 0) {
+      const table = await requiredSkillsFor(wanted);
+      if (table) {
+        Object.assign(requiredSkillsKept, table);
+        for (const typeID of wanted) requiredSkillsAsked.add(typeID);
+        read = true;
+      }
+    }
+    return read;
+  }
+  const groupTypesOf = (groupID: number): readonly number[] | undefined => groupTypesKept.get(groupID);
+  /** GetRequiredSkillsRecursive's skills of a type, where read. */
+  const requiredSkillsOf = (typeID: number): ReadonlySet<number> | null =>
+    requiredSkillsAsked.has(typeID) ? new Set(requiredSkillsRecursive(typeID, requiredSkillsKept).keys()) : null;
   const warningListsOf = (typeID: number): ReadonlySet<number> => warningListsKept.get(typeID) ?? new Set<number>();
 
   /** A type's group and category as the page's static dogma data holds them (no type list among them). */
@@ -6370,6 +6438,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         fittedItems: [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null).map((item) => [item.typeID, item.flagID as number] as const),
         typeLists: warningListsOf,
         shipElements: bubbleElementsKept.get(ship.typeID) ?? null,
+        // GetFighterTypesInTubes: the fighters the simulation has in its tubes.
+        fighterTypesInTubes: [...ship.fighters.values()].filter((fighter) => fighter.flagID !== null && fighter.flagID >= 159 && fighter.flagID <= 163).map((fighter) => fighter.typeID),
+        groupTypes: groupTypesOf,
+        requiredSkillsOf,
         // FindModulesWithMissingCharges: what is in the module slots (a charge its stacksize: the fitting location's
         // GetQuantity), and the cargo hold's stacks; only a ship's.
         chargesFit: ship.categoryID === 6

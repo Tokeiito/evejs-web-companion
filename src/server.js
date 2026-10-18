@@ -13871,6 +13871,40 @@ app.get("/api/client-data/fighter-abilities", requireAuth, async (req, res, next
 // The ships' info bubble elements (cfg.infoBubbleTypeElements): of each type asked, up to 50, its elements in its
 // slots' order, or null for one that has none. The Fitting window's tanking warnings go by them
 // (fittingWarnings.GetProblematicShipAndTankingCombo).
+// The types of each group asked (evetypes.GetTypeIDsByGroup), out of the client's types table's groups (typeGroups),
+// in type order: what a module's charge groups hold, which the client's used-with table is made of
+// (InfoSvc._AddUsedWithTypeIDs). The index is made once.
+let typeIDsByGroup = null;
+app.get("/api/client-data/group-types", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.groupIDs) || "").split(",")) {
+      const groupID = Number(part);
+      if (Number.isSafeInteger(groupID) && groupID > 0 && !asked.includes(groupID)) asked.push(groupID);
+    }
+    if (!typeIDsByGroup) {
+      const table = await clientBuiltData.table("typeGroups");
+      if (table) {
+        const index = new Map();
+        for (const [key, value] of Object.entries(table)) {
+          const typeID = Number(key);
+          const groupID = Number(value);
+          if (!Number.isSafeInteger(typeID) || !Number.isSafeInteger(groupID)) continue;
+          if (!index.has(groupID)) index.set(groupID, []);
+          index.get(groupID).push(typeID);
+        }
+        for (const list of index.values()) list.sort((a, b) => a - b);
+        typeIDsByGroup = index;
+      }
+    }
+    const groups = {};
+    for (const groupID of asked.slice(0, 32)) groups[groupID] = typeIDsByGroup ? typeIDsByGroup.get(groupID) ?? [] : null;
+    res.json({ ok: true, available: typeIDsByGroup !== null, groups });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/info-bubble-elements", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

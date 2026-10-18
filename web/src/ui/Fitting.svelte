@@ -1203,6 +1203,8 @@
     "UI/Fitting/FittingWindow/Warnings/InefficientPropModHint": "A freighter gains little from a propulsion module.",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledShort": "Bubble immunity lost",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledHint": "A fitted module takes away the hull's immunity to warp bubbles.",
+    "UI/Fitting/FittingWindow/Warnings/NotProvidingBonusShort": "Modules with nothing to improve",
+    "UI/Fitting/FittingWindow/Warnings/NotProvidingBonusHint": "These modules improve other equipment, and nothing fitted or carried is of the kind they improve.",
     "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedShort": "Penalized several times over",
     "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedHint": "More than three modules change the same thing, each a little less than the last.",
     "UI/Fitting/FittingWindow/Warnings/StackingPenaltyLowShort": "Penalized when stacked",
