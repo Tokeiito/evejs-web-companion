@@ -51,8 +51,11 @@
     focusedId as computeFocusedId,
     loadLayout,
     saveLayout,
+    placeOnDesktop,
+    registerPlace,
     DEFAULT_DOCK_WIDTH,
     DEFAULT_TARGETS_POS,
+    type RegisteredPlace,
     type WinState,
   } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -146,6 +149,15 @@
 
   // ── the desktop: open windows + the collapsible dock panel ──────────────
   let wins = $state<WinState[]>([]);
+  // Each window's place as the client keeps it by its ID (desktop.ts RegisteredPlace): registered as it is moved or
+  // resized, and taken when it is opened again.
+  let places = $state<Record<string, RegisteredPlace>>({});
+  let desktopView = $state<{ surfaceSize(): { readonly w: number; readonly h: number } | null } | null>(null);
+  function registerWindowPlace(id: TabID): void {
+    const win = wins.find((each) => each.id === id);
+    const desktop = desktopView?.surfaceSize() ?? null;
+    if (win && desktop) places = registerPlace(places, win, desktop);
+  }
   const hudTopAligned = hudSetting("shipuialigntop");
   let dockCollapsed = $state(false);
   let dockWidth = $state(DEFAULT_DOCK_WIDTH);
@@ -186,7 +198,9 @@
       return;
     }
     expandPreferred = false;
-    wins = openWindow(wins, id);
+    const registered = places[id];
+    const desktop = desktopView?.surfaceSize() ?? null;
+    wins = openWindow(wins, id, undefined, registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null);
   };
   // The Neocom pick, with one de-dupe: while docked, Inventory & Ship IS the
   // permanent dock panel — expand it, snap it to the Ship Inventory tab (the
@@ -233,8 +247,8 @@
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
     if (id === "industry") void flow.industryWindowClosed();
   };
-  const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); };
-  const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); };
+  const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); registerWindowPlace(id); };
+  const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); registerWindowPlace(id); };
   const minimize = (id: TabID): void => { wins = toggleMinimize(wins, id); };
   const toggleDock = (): void => { dockCollapsed = !dockCollapsed; };
 
@@ -252,6 +266,7 @@
       targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
       targetsY = saved ? saved.targetsY : DEFAULT_TARGETS_POS.y;
       expandPreferred = saved ? saved.stationExpanded : false;
+      places = saved?.places ? { ...saved.places } : {};
       loadedFor = online.characterID;
     } else if (!online && loadedFor !== null) {
       wins = [];
@@ -260,6 +275,7 @@
       targetsX = DEFAULT_TARGETS_POS.x;
       targetsY = DEFAULT_TARGETS_POS.y;
       expandPreferred = false;
+      places = {};
       loadedFor = null;
     }
   });
@@ -274,6 +290,7 @@
       targetsX,
       targetsY,
       stationExpanded: expandPreferred,
+      places: { ...places },
     };
     if (id === null) return;
     const handle = setTimeout(() => saveLayout(id, layout), 300);
@@ -525,6 +542,7 @@
       <div class="work-main" class:station-expanded={stationExpanded}>
         <ErrorBoundary name="Desktop">
           <Desktop
+            bind:this={desktopView}
             {store}
             {flow}
             {sessions}

@@ -90,6 +90,11 @@
   const shown = $derived(openHere.filter((w) => !w.minimized));
 
   let deskEl = $state<HTMLElement | null>(null);
+  /** The desktop's size now, in whole pixels, or null before it is laid out (a window's place is registered with it). */
+  export function surfaceSize(): { readonly w: number; readonly h: number } | null {
+    const box = deskEl?.getBoundingClientRect();
+    return box && box.width > 0 && box.height > 0 ? { w: Math.round(box.width), h: Math.round(box.height) } : null;
+  }
 
   // A window is absolutely positioned and the desktop clips anything past its
   // own box (the same clip R70's tactical view relies on) — so a window placed
