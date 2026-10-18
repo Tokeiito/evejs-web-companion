@@ -4155,6 +4155,10 @@
   /* The cargo's fill, from the bottom (SetFillRatio). */
   .hud-button-fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--color-accent-dim); }
   .hud-button-wrap { position: relative; }
+  /* The cargo button's blink (BlinkWhite): bright in over a second, out over a quarter. */
+  .hud-button.blinking { animation: hud-button-blink 1.25s ease-out; }
+  @keyframes hud-button-blink { 0% { background: var(--color-panel); } 80% { background: var(--color-text-bright); } 100% { background: var(--color-panel); } }
+  .hud-button-menu-head { padding: 4px 8px; color: var(--color-muted); white-space: nowrap; }
   .hud-button-menu {
     position: absolute;
     left: calc(100% + 4px);

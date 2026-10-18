@@ -93,6 +93,7 @@
   const lockOverload = hudSetting("lockOverload");
   const lockModules = hudSetting("lockModules");
   const hudButtonsExpanded = hudSetting("hudButtonsExpanded");
+  const blinkCargo = hudSetting("BlinkCargoHudIcon");
   const HUD_OPTIONS: readonly ({ readonly name: HudSettingName; readonly label: string; readonly own: string; readonly needs?: HudSettingName } | null)[] = [
     { name: "showPassiveModules", label: "UI/Inflight/HUDOptions/DisplayPassiveModules", own: "Show the passive modules" },
     { name: "showEmptySlots", label: "UI/Inflight/HUDOptions/DisplayEmptySlots", own: "Show the empty slots" },
@@ -103,6 +104,7 @@
     { name: "showModuleTooltips", label: "UI/Inflight/HUDOptions/DisplayModuleTooltips", own: "Show the modules' tooltips" },
     null,
     { name: "lockModules", label: "UI/Inflight/HUDOptions/LockModulesInPlace", own: "Keep the modules where they are" },
+    { name: "BlinkCargoHudIcon", label: "UI/Inflight/HUDOptions/BlinkCargo", own: "Flash the cargo button as it fills" },
     { name: "lockOverload", label: "UI/Inflight/HUDOptions/LockOverloadState", own: "Keep the overload state as it is" },
   ];
   const hudValues = $derived<Readonly<Record<HudSettingName, boolean>>>({
@@ -114,6 +116,7 @@
     lockOverload: $lockOverload,
     lockModules: $lockModules,
     hudButtonsExpanded: $hudButtonsExpanded,
+    BlinkCargoHudIcon: $blinkCargo,
   });
   /** The ship's order of the HUD's places (GetSlotOrder: settings.user.ui slotOrder, kept where its pilot moved them). */
   const slotOrders = slotOrdersSignal;

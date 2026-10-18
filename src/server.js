@@ -10275,6 +10275,10 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
           else entry.capacity.used = used;
         }));
         byFlag = new Map(presentReadings.map((entry) => [entry.bay.flag, []]));
+        // Each stack's unit volume as the client's GetItemVolume has it (packaged where it is not assembled), as the
+        // other routes that list items give theirs (readTypeVolumes): what a move's want of room is answered by
+        // (invControllers._AddItem, the page's noRoomForAll).
+        const volumes = readTypeVolumes(listed.result, await packagedTablesOrNull());
         for (const row of decodeInventoryRows(listed.result)) {
           const bucket = byFlag.get(row.flagID);
           if (bucket) {
@@ -10288,6 +10292,7 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
               categoryID: row.categoryID,
               quantity: row.quantity,
               singleton: row.singleton,
+              volume: (!row.singleton ? volumes[`p${row.typeID}`] : undefined) ?? volumes[String(row.typeID)] ?? null,
             });
           }
         }

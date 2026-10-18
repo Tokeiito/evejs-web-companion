@@ -14,6 +14,7 @@ import {
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
+import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
 import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, usedWithTypeIDs, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { fittingSkillWarning, type FittingSkillWarning } from "../bridge/fittingSkills.ts";
@@ -1590,6 +1591,21 @@ export interface AppFlow {
    * it, from where it lies, into that slot's flag, quantity None.
    */
   fitCargoModuleToRackSlot(itemID: number, flag: number): Promise<void>;
+  /**
+   * The HUD's cargo button's holds as its hold tracker has them (holdTracker.FetchInventoryControllers): the active
+   * ship's (GetHoldsInType, by the type's attributes) in the order the tracker's dict of them iterates, each named in
+   * the client's words (GetNameForFlag) with how full it is from the ship's bays (null where not read); and the hold
+   * tracked for the ship's type (CargoTrackingSettings.GetTrackedHoldForShip: settings.char.ui
+   * cargoHoldForShipType<typeID>, else the cargo). Null where the ship is not known.
+   */
+  cargoTrackerHolds(): Promise<{
+    readonly shipID: number;
+    readonly shipTypeID: number;
+    readonly tracked: string;
+    readonly holds: readonly { readonly holdName: string; readonly name: string; readonly capacity: CapacityInfo | null }[];
+  } | null>;
+  /** CargoTrackingSettings.SaveTrackedHoldForShip: the hold tracked for the ship's type. */
+  setTrackedHold(shipTypeID: number, holdName: string): void;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -3897,6 +3913,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (characterID === null) return;
     try {
       settingsStorage?.setItem(`evejs.char.${characterID}.${name}`, JSON.stringify({ ...charModuleSettings(name), [moduleID]: value }));
+    } catch {
+      // Storage refused: the choice lasts the page.
+    }
+  }
+  /** A settings.char.ui text kept in this browser for the pilot (evejs.char.<characterID>.<name>), or null. */
+  function charUiSetting(name: string): string | null {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return null;
+    try {
+      return settingsStorage?.getItem(`evejs.char.${characterID}.${name}`) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function setCharUiSetting(name: string, value: string): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`evejs.char.${characterID}.${name}`, value);
     } catch {
       // Storage refused: the choice lasts the page.
     }
@@ -26908,6 +26943,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
       if (locationID === null) return;
       await runFittingAction(() => dropLoadChargeToModule(module, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.flagID, stacksize: charge.quantity }, charge.from, shift));
+    },
+
+    async cargoTrackerHolds() {
+      const shipID = store.fitting.get().activeShipID ?? store.space.get().snapshot?.shipID ?? null;
+      const shipTypeID = store.flight.get().status?.shipTypeID ?? null;
+      if (shipID === null || shipTypeID === null) return null;
+      const bayKeys = [CARGO_HOLD, ...SHIP_HOLDS].flatMap((hold) => (hold.bayKey ? [hold.bayKey] : []));
+      const [staticData, bays] = await Promise.all([
+        dogmaStaticFor([shipTypeID], SHIP_HOLD_ATTRIBUTES),
+        api.getShipBays(shipID, callOptions, bayKeys).then((read) => decodeShipBays(read.bays)).catch(() => null),
+        wordsNow([CARGO_HOLD, ...SHIP_HOLDS].map((hold) => hold.label)).catch(() => {}),
+      ]);
+      if (staticData === null) return null;
+      const typeValue = (attributeID: number): number | null =>
+        staticData.types[shipTypeID]?.attributes.find(([id]) => id === attributeID)?.[1] ?? null;
+      const holds = trackedShipHolds(typeValue).map((hold) => {
+        const bay = hold.bayKey === null ? null : bays?.find((each) => each.key === hold.bayKey) ?? null;
+        return { holdName: hold.holdName, name: templateWords(hold.label, {}, bay?.label ?? hold.holdName), capacity: bay?.capacity ?? null };
+      });
+      return { shipID, shipTypeID, tracked: charUiSetting(`cargoHoldForShipType${shipTypeID}`) ?? CARGO_HOLD.holdName, holds };
+    },
+
+    setTrackedHold(shipTypeID, holdName) {
+      setCharUiSetting(`cargoHoldForShipType${shipTypeID}`, holdName);
     },
 
     async fitCargoModuleToRackSlot(itemID, flag) {

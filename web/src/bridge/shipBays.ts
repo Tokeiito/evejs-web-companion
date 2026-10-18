@@ -85,6 +85,8 @@ function decodeBayItems(value: JsonValue | undefined): readonly InventoryItemRow
     }
     seen.add(itemID);
     const singleton = raw.singleton === true;
+    // A unit's volume where the read gives it (the route's readTypeVolumes), as the inventory's rows have theirs.
+    const volume = numberOrNull(raw.volume);
     rows.push({
       itemID,
       typeID,
@@ -97,6 +99,7 @@ function decodeBayItems(value: JsonValue | undefined): readonly InventoryItemRow
       // caption it, and this number is never shown for such a row.
       quantity: singleton ? 1 : Math.max(0, numberOrNull(raw.quantity) ?? 0),
       singleton,
+      ...(volume !== null && volume >= 0 ? { volume } : {}),
     });
   }
   return rows;

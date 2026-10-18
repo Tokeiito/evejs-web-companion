@@ -21,6 +21,8 @@ export const HUD_SETTING_DEFAULTS = Object.freeze({
   lockOverload: false,
   /** 650, shipmodulebutton.GetDragData 980 and groupAllIcon.OnClick 29: the rack's modules locked in their places. */
   lockModules: false,
+  /** 653, holdTrackerSettings.IsCargoHoldBlinkEnabled: the cargo button blinks as its tracked hold changes. */
+  BlinkCargoHudIcon: true,
 });
 
 export type HudSettingName = keyof typeof HUD_SETTING_DEFAULTS;
