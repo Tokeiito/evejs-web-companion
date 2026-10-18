@@ -161,19 +161,19 @@ export function samePlace(a: InventoryPlace, b: InventoryPlace): boolean {
  */
 export type DropVerdict = string | null;
 
-/** Can this payload be fitted into a slot? */
-export function dropOnSocketVerdict(payload: DragPayload | null): DropVerdict {
+/**
+ * Can this payload be fitted into a slot? The real ship's slots take a module
+ * or a charge off another slot (the fitting slot's OnDropData: grouped or moved,
+ * loaded); a simulation's do not, its slots taking what comes from the hangar.
+ */
+export function dropOnSocketVerdict(payload: DragPayload | null, simulating = false): DropVerdict {
   if (payload === null) {
     return "That is not something you can fit.";
   }
-  if (payload.kind === "fittedModule") {
-    // ⚠ NOT SUPPORTED, AND SAID RATHER THAN SILENTLY DROPPED. Moving a module
-    // straight from one slot to another would be an unfit followed by a fit, and
-    // the fitting flow only accepts a source of hangar or cargo — so a socket
-    // cannot honestly take a module that is already fitted. Unfit it first.
+  if (simulating && payload.kind === "fittedModule") {
     return "Take it off the ship first, then fit it to the new slot.";
   }
-  if (payload.kind === "fittedCharge") {
+  if (simulating && payload.kind === "fittedCharge") {
     return "Unload it first, then load it into the other module.";
   }
   return null;

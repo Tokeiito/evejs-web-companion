@@ -438,6 +438,7 @@ import type {
   DroneInSpace,
   DroneBayStack,
   DroneOrderReport,
+  FittedModule,
   FittingSlot,
   FleetAction,
   FlightStatus,
@@ -633,7 +634,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadModuleToCargo as unloadModuleToCargoCall, type WeaponBanks } from "../bridge/fitModule.ts";
+import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadModuleToCargo as unloadModuleToCargoCall, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
@@ -1513,6 +1514,12 @@ export interface AppFlow {
   unloadModuleToCargo(itemID: number): Promise<void>;
   /** The charge in the slot of this flag put into the ship's cargo, as the client's UnloadAmmoToContainer puts it. */
   unloadChargeToCargo(flagID: number): Promise<void>;
+  /** A fitted module dropped on a slot of the ship (the slot's OnDropData): grouped with Shift held, else moved there. */
+  dropFittedModuleOnSlot(moduleID: number, flagID: number, shift: boolean): Promise<void>;
+  /** The charge in one slot dropped on another's module (FitCharges): unloaded to the cargo, then loaded there. */
+  dropFittedChargeOnSlot(fromFlagID: number, flagID: number, shift: boolean): Promise<void>;
+  /** A charge from the cargo or the hangar dropped on a slot's module (FitCharges, DropLoadChargeToModule). */
+  dropChargeOnSlot(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace }, flagID: number, shift: boolean): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
@@ -3735,6 +3742,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const allInfo = store.dogma.get().allInfo;
     const shipID = store.fitting.get().activeShipID;
     return allInfo && shipID !== null && Number(allInfo.activeShipID) === shipID ? decodeWeaponBanks(allInfo.shipState) : new Map();
+  }
+  /** The slot of the active ship with this flag, or null. */
+  const slotWithFlag = (flagID: number): FittingSlot | null =>
+    store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flagID) ?? null;
+  /** Each slot family's fitting effect, its GetPowerType: hiPower, medPower, loPower, rigSlot, subSystem. */
+  const POWER_EFFECT_OF_FAMILY: Readonly<Record<SlotFamily, number>> = { high: 12, mid: 13, low: 11, rig: 2663, subsystem: 3772 };
+  const POWER_WORDS: Readonly<Record<SlotFamily, string>> = { high: "high", mid: "medium", low: "low", rig: "rig", subsystem: "subsystem" };
+  /**
+   * ItemDoesntFitPower, as the slot's AddRealItem says it of a module whose fitting effect is not the slot's: the
+   * item, and the two effects' names (dogma_data.get_effect_display_name).
+   */
+  async function sayDoesntFitPower(typeID: number, slotFamily: SlotFamily, itemFamily: SlotFamily): Promise<void> {
+    const effects = [POWER_EFFECT_OF_FAMILY[slotFamily], POWER_EFFECT_OF_FAMILY[itemFamily]];
+    const ids = await api.getEffectDisplayNameIDs(effects, callOptions).then((read) => read.displayNameIDs).catch(() => ({} as Readonly<Record<number, number | null>>));
+    await Promise.all([
+      wordsNow(effects.flatMap((effectID) => (ids[effectID] ? [`#${ids[effectID]}`] : []))).catch(() => {}),
+      resolveNamesNow([{ kind: "type", id: typeID }]).catch(() => {}),
+    ]);
+    const powerName = (family: SlotFamily): string => {
+      const messageID = ids[POWER_EFFECT_OF_FAMILY[family]];
+      return messageID ? templateWords(`#${messageID}`, {}, POWER_WORDS[family]) : POWER_WORDS[family];
+    };
+    const item = nameCache.get(nameKey("type", typeID)) ?? String(typeID);
+    const [slotpower, itempower] = [powerName(slotFamily), powerName(itemFamily)];
+    sayDialog("ItemDoesntFitPower", { type: "dict", entries: [["item", item], ["slotpower", slotpower], ["itempower", itempower]] },
+      `${item} needs a ${itempower} slot, and this is a ${slotpower} one.`);
+  }
+  /**
+   * DropLoadChargeToModule (clientDogmaLocation 999 to 1028) and LoadChargesToModule (980 to 991): with Shift held, how
+   * many is asked (QtyPopup, up to the stack, from none), and that many split off the stack where it lies first (its
+   * container's Add, the same place and flag); then LoadAmmo of the module, its bank's master where it is a slave, with
+   * the charges and where they lie. The skill check LoadChargesToModule makes first is not the page's yet.
+   */
+  async function dropLoadChargeToModule(
+    module: FittedModule,
+    charge: { readonly itemID: number; readonly locationID: number; readonly flagID: number; readonly stacksize: number },
+    from: AmmoPlace,
+    shift: boolean,
+  ): Promise<void> {
+    let chargeIDs = [charge.itemID];
+    if (shift) {
+      const most = Math.trunc(charge.stacksize);
+      const label = most === 0 ? "UI/Common/NoMoreUnits" : "UI/Common/SetQuantity";
+      await wordsNow([label]).catch(() => {});
+      const qty = await askQuantity({ min: 0, max: most, value: most, hintLabel: label, hint: most === 0 ? "There are none left where they were." : "How many?" });
+      if (qty === null || qty <= 0) return;
+      // containerInventory: GetInventoryFromId(chargeLocationID), the inventory of where the charges lie.
+      const split = await bridgeDo("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
+      const splitID = typeof split === "number" ? split : Number(unwrapLong(split));
+      if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
+      chargeIDs = [splitID];
+    }
+    const banks = heldWeaponBanks();
+    const masterID = [...banks].find(([, slaves]) => slaves.includes(module.itemID))?.[0] ?? module.itemID;
+    await loadAmmoCall(bridgeDo, ammoSession(), [masterID], chargeIDs, from);
   }
   /** ClearGroupModule (fittingSlotController.UnfitModule, clientDogmaLocation.UnloadModuleToContainer): Yes to break the bank up. */
   const askClearGroup = (): Promise<boolean> =>
@@ -26061,13 +26123,84 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFittingAction(() => unloadModuleToCargoCall(bridgeDo, fittedNow, ammoSession(), itemID, heldWeaponBanks(), askClearGroup));
     },
 
+    async dropFittedModuleOnSlot(moduleID, flagID, shift) {
+      // The fitting slot's OnDropData and AddRealItem (fittingScreen/fittingSlotController.py 82 to 136).
+      const from = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID) ?? null;
+      const to = slotWithFlag(flagID);
+      if (!from?.module || !to) return;
+      if (to.module && to.present === false) return;
+      // RigFittingCheck: a rig asks first, on a ship that is not modular (one with subsystem slots is).
+      if (from.family === "rig" && !store.fitting.get().slots.some((slot) => slot.family === "subsystem")
+        && !(await askDialog("RigFittingInfo", { type: "dict", entries: [] }, "A rig comes off its ship only by being destroyed. Fit it anyway?", "okcancel"))) return;
+      if (from.family !== to.family) {
+        await sayDoesntFitPower(from.module.typeID, to.family, from.family);
+        return;
+      }
+      const dragged = from.module;
+      if (shift && to.module) {
+        const target = to.module;
+        if (target.typeID !== dragged.typeID) {
+          await wordsNow(["UI/Fitting/GroupingIncompatible"]).catch(() => {});
+          const notify = templateWords("UI/Fitting/GroupingIncompatible", {}, "Only modules of one type group together.");
+          sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+          return;
+        }
+        // LinkWithWeapon: clientDogmaLocation.LinkWeapons (751 to 782).
+        if (target.itemID === dragged.itemID) return;
+        if (!target.online || !dragged.online) {
+          sayDialog("CantLinkModuleNotOnline", null, "A module groups with others only while it is online.");
+          return;
+        }
+        if (!GROUPABLE_GROUP_IDS.has(target.groupID ?? -1)) return;
+        await runFittingAction(() => linkWeaponsCall(bridgeDo, ammoSession(), target.itemID, dragged.itemID, heldWeaponBanks()));
+        return;
+      }
+      // FitModule: TryFit, the ship's inventory's Add of the module where it lies, the ship, into this slot.
+      await runFittingAction(() => fitModuleCall(bridgeDo, fittedNow, ammoSession(), moduleID, "slot", { family: to.family, index: to.index }));
+    },
+
+    async dropFittedChargeOnSlot(fromFlagID, flagID, shift) {
+      // OnDropData: a charge for a module that takes charges (IsChargeable), FitCharges (fitting/fittingSlotController 142 to 155).
+      const from = slotWithFlag(fromFlagID);
+      const to = slotWithFlag(flagID);
+      const charge = from?.module?.charge ?? null;
+      if (!from?.module || !charge || !to?.module || to.present === false || !CHARGEABLE_GROUP_IDS.has(to.module.groupID ?? -1)) return;
+      const target = to.module;
+      const shipID = ammoSession().shipID;
+      await runFittingAction(async () => {
+        let item = { itemID: typeof charge.itemID === "number" ? charge.itemID : 0, locationID: shipID, flagID: fromFlagID, stacksize: charge.quantity };
+        // A charge in a module by its tuple: UnloadAmmoToContainer to the cargo first, and loaded from what that answers.
+        if (Array.isArray(charge.itemID)) {
+          const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), from.module!.itemID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
+          if (outcome.kind === "bankWithoutRoom") {
+            sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+            return;
+          }
+          // The client goes on with the charge's tuple where the answer names no stack; the page has none to load then.
+          if (outcome.stackIDs.length === 0) return;
+          item = { ...item, itemID: outcome.stackIDs[0]!, flagID: 5 };
+        }
+        await dropLoadChargeToModule(target, item, "cargo", shift);
+      });
+    },
+
+    async dropChargeOnSlot(charge, flagID, shift) {
+      const to = slotWithFlag(flagID);
+      if (!to?.module || to.present === false || !CHARGEABLE_GROUP_IDS.has(to.module.groupID ?? -1)) return;
+      const session = ammoSession();
+      const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
+      if (locationID === null) return;
+      const target = to.module;
+      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, locationID, flagID: charge.from === "cargo" ? 5 : 4, stacksize: charge.quantity }, charge.from, shift));
+    },
+
     async unloadChargeToCargo(flagID) {
       // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
       const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
       if (moduleID === null) throw new Error("No module holds a charge in that slot.");
       await runFittingAction(async () => {
         const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
-        if (outcome === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
       });
     },
 

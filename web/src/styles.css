@@ -1995,6 +1995,11 @@
   .fit-simulate.simulating {
     border-color: rgb(140 222 33);
   }
+  /* The slot linking mode (baseFitting.OnStartSlotLinkingMode): a slot whose module is of another type than the one
+   * being dragged with Shift, at a tenth. */
+  .fit-socket.link-faded {
+    opacity: 0.1;
+  }
   /* The socket a pending action is armed on. */
   .fit-socket.armed {
     border-color: var(--color-danger);

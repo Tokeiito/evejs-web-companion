@@ -116,10 +116,11 @@ test("an item from the cargo hold may be fitted", () => {
   );
 });
 
-test("an ALREADY-FITTED module is refused with a reason, not silently ignored", () => {
-  // The fitting flow only accepts a source of hangar or cargo, so a socket
-  // cannot honestly take a module that is already on the ship.
-  const verdict = dropOnSocketVerdict(FITTED);
+test("an ALREADY-FITTED module is taken by the real ship's slots, and refused with a reason in a simulation", () => {
+  // The fitting slot's OnDropData groups it (Shift) or moves it (AddRealItem); a simulation's slots take what comes
+  // from the hangar.
+  assert.equal(dropOnSocketVerdict(FITTED), null);
+  const verdict = dropOnSocketVerdict(FITTED, true);
   assert.notEqual(verdict, null);
   assert.match(verdict!, /take it off the ship first/i);
 });

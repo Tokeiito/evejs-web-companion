@@ -85,26 +85,37 @@ function fitLanded(before: ReadonlyMap<number, string>, after: ReadonlyMap<numbe
 }
 
 /**
- * Fits a module from the hangar or from the ship's own hold, into a slot or wherever the server picks ("auto").
- * Answers whether the slots say it landed. Fails as the call fails.
+ * Fits a module from the hangar or from the ship's own hold, into a slot or wherever the server picks ("auto"); or
+ * one fitted already into another slot ("slot": dropped on it, the fitting slot's FitModule, TryFit with the item
+ * where it lies, the ship). Answers whether the slots say it landed. Fails as the call fails.
  */
 export async function fitModule(
   act: Ask,
   fitted: FittedNow,
   place: FittingPlace,
   itemID: number,
-  source: "hangar" | "cargo",
+  source: "hangar" | "cargo" | "slot",
   slot: { readonly family: SlotFamily; readonly index: number } | "auto",
 ): Promise<{ readonly applied: boolean }> {
   const flag = slot === "auto" ? FLAG_AUTO_FIT : slotFlagOf(slot.family, slot.index);
   if (flag === null) throw new Error("That is not a slot this ship has.");
   if (source === "hangar" && place.dockedAt === null) throw new Error("The hangar is at hand only while docked.");
-  const liesIn = source === "cargo" ? place.shipID : place.dockedAt!;
+  const liesIn = source === "hangar" ? place.dockedAt! : place.shipID;
   const before = await fitted();
   if (flag === FLAG_AUTO_FIT) await act("invbroker", "MultiAdd", [[itemNumber(itemID)], liesIn], { flag }, place.shipID);
   else await act("invbroker", "Add", [itemNumber(itemID), liesIn], { qty: 1, flag }, place.shipID);
   return { applied: fitLanded(before, await fitted(), itemID) };
 }
+
+/** dogma/const.py dgmGroupableGroupIDs (1754): the weapons that group, turrets and launchers, inventorycommon's numbers. */
+export const GROUPABLE_GROUP_IDS: ReadonlySet<number> = new Set([53, 55, 74, 56, 511, 524, 1674, 1673, 506, 512, 510, 771, 507, 508, 509, 1245, 1328, 1562, 1327]);
+
+/** eveCfg.py 406 to 457, cfg.__chargecompatiblegroups__: the modules a charge is loaded into (the slot's IsChargeable). */
+export const CHARGEABLE_GROUP_IDS: ReadonlySet<number> = new Set([
+  483, 53, 55, 56, 76, 74, 481, 317, 862, 506, 512, 511, 508, 510, 771, 507, 509, 524, 1674, 1673, 501, 4807, 589, 212, 1332,
+  290, 208, 213, 291, 209, 899, 1156, 1199, 1226, 1245, 646, 1396, 1328, 1549, 1562, 1327, 1699, 1700, 1697, 1698, 1770,
+  1442, 1974, 1986, 2013, 4060, 1330,
+]);
 
 /** A ship's weapon banks as the page's dogma location holds them: each master with its slaves. */
 export type WeaponBanks = ReadonlyMap<number, readonly number[]>;
@@ -198,6 +209,21 @@ export async function unloadModuleToCargo(
 }
 
 /**
+ * One fitted weapon grouped with another by a drop on its slot with Shift held (the fitting slot's LinkWithWeapon,
+ * clientDogmaLocation.LinkWeapons 751 to 782, merge as it is given there): onto the bank of the slot dropped on, its
+ * master where it is in one, else the module itself; the one dragged by itself LinkWeapons(shipID, master, it), as
+ * Tranquility recorded it, and one in a bank MergeModuleGroups(shipID, master, the master of its bank). The answer is
+ * the ship's banks, which the transport keeps. The client's own refusals before it asks are its caller's.
+ */
+export async function linkWeapons(act: Ask, place: AmmoSession, toID: number, fromID: number, banks: WeaponBanks): Promise<void> {
+  if (toID === fromID) return;
+  const masterID = masterOf(banks, toID) ?? toID;
+  const inBank = weaponBankOf(banks, fromID);
+  if (inBank !== null) await act("dogmaIM", "MergeModuleGroups", [place.shipID, masterID, inBank]);
+  else await act("dogmaIM", "LinkWeapons", [place.shipID, masterID, itemNumber(fromID)]);
+}
+
+/**
  * The charge in a slot put into the ship's cargo, as the client's dogma location puts it there
  * (UnloadAmmoToContainer, 1106 to 1134), with (the ship, the pilot, the cargo's flag) for where: a slot's charge
  * dragged off it and dropped on the fitting window's cargo readout (minihangar 290) or on the ship's cargo hold
@@ -206,9 +232,9 @@ export async function unloadModuleToCargo(
  *
  *   remoteDogmaLM.UnloadAmmo(shipID, moduleID, (shipID, charID, const.flagCargo), None)
  *
- * The cargo too full for a bank's charges (NotEnoughCargoSpace, unloading through a master) is said by the client's
- * own NotEnoughCargoSpaceToUnloadBank, which this answers as "bankWithoutRoom"; any other refusal fails as the call
- * fails.
+ * It answers the stacks the charges went to (what the client's FitCharges loads from next: itemID[0]). The cargo too
+ * full for a bank's charges (NotEnoughCargoSpace, unloading through a master) is said by the client's own
+ * NotEnoughCargoSpaceToUnloadBank, which this answers as "bankWithoutRoom"; any other refusal fails as the call fails.
  */
 export async function unloadChargeToCargo(
   act: Ask,
@@ -216,15 +242,18 @@ export async function unloadChargeToCargo(
   moduleID: number,
   banks: WeaponBanks,
   isNoRoom: (error: unknown) => boolean,
-): Promise<"unloaded" | "bankWithoutRoom"> {
+): Promise<{ readonly kind: "unloaded"; readonly stackIDs: readonly number[] } | { readonly kind: "bankWithoutRoom" }> {
   const masterID = masterOf(banks, itemNumber(moduleID));
+  let answered;
   try {
-    await act("dogmaIM", "UnloadAmmo", [place.shipID, masterID ?? moduleID, [place.shipID, place.characterID, FLAG_CARGO], null]);
+    answered = await act("dogmaIM", "UnloadAmmo", [place.shipID, masterID ?? moduleID, [place.shipID, place.characterID, FLAG_CARGO], null]);
   } catch (error) {
-    if (masterID !== null && isNoRoom(error)) return "bankWithoutRoom";
+    if (masterID !== null && isNoRoom(error)) return { kind: "bankWithoutRoom" };
     throw error;
   }
-  return "unloaded";
+  const listed = Array.isArray(answered) ? answered : answered && typeof answered === "object" && Array.isArray((answered as { items?: unknown }).items) ? (answered as { items: readonly unknown[] }).items : [];
+  const stackIDs = listed.map((id) => (typeof id === "number" ? id : Number(unwrapLong(id)))).filter((id) => Number.isSafeInteger(id) && id > 0);
+  return { kind: "unloaded", stackIDs };
 }
 
 /**

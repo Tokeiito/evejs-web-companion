@@ -1793,6 +1793,16 @@ const ownShipAndModule = (args, kwargs, context) => {
     : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
 };
 
+/** LinkWeapons and MergeModuleGroups(shipID, masterID, moduleID): the ship the session is flying, and two modules by their numbers. */
+const ownShipAndTwoModules = (args, kwargs, context) => {
+  if (!(args.length === 3 && args.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client names the ship its session is flying, the bank's master and a module, and nothing else." };
+  }
+  return context.shipID === null || context.shipID === undefined || Number(context.shipID) === args[0]
+    ? {}
+    : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
+};
+
 /** godma's Deactivate(itemID, effectName): the effect is the one the client holds as running, by name. */
 function deactivation(args, kwargs, context) {
   const [itemID, effectName] = args;
@@ -2739,6 +2749,10 @@ const RETAIL_CALLS = Object.freeze({
     "GetDogmaLM().StopModuleRepair(itemID): godma's own doing when the repair's time is up (the damage over the character's repair rate, in minutes, and a second), at Cancel Repair, and at a session's change. The server mends the module at this call. No recording has one."),
   "dogmaIM.LinkAllWeapons": judged(`${CLIENT_DOGMA}:800`, ownShipAlone,
     "remoteDogmaLM.LinkAllWeapons(shipID), on the dogma location: the group-all button, with session.shipid (groupAllIcon.py 36), where some weapon could still be grouped. It answers the ship's banks. No recording has one; LinkWeapons(shipID, master, slave) is recorded, riding the dogma location's bind."),
+  "dogmaIM.LinkWeapons": judged(`${CLIENT_DOGMA}:780`, ownShipAndTwoModules,
+    "remoteDogmaLM.LinkWeapons(shipID, masterID, moduleID), on the dogma location: a weapon dropped with Shift held on a slot of the same type (the fitting slot's LinkWithWeapon), with the master of that slot's bank or its module. It answers the ship's banks. Tranquility recorded it twice: (ship, master, module), riding the dogma location's bind."),
+  "dogmaIM.MergeModuleGroups": judged(`${CLIENT_DOGMA}:776`, ownShipAndTwoModules,
+    "remoteDogmaLM.MergeModuleGroups(shipID, masterID, otherMasterID), on the dogma location: as LinkWeapons, where the weapon dropped is in a bank already, with that bank's master. It answers the ship's banks. No recording has one."),
   "dogmaIM.DestroyWeaponBank": judged(`${CLIENT_DOGMA}:865`, ownShipAndModule,
     "remoteDogmaLM.DestroyWeaponBank(shipID, masterID), on the dogma location: a grouped weapon put into a container off its slot once its pilot has said Yes to ClearGroupModule (UnloadModuleToContainer, 1086), with the bank's master. It answers nothing, and the client's own banks lose that bank (OnWeaponGroupDestroyed). No recording has one."),
   "dogmaIM.UnlinkModule": judged(`${CLIENT_DOGMA}:785`, ownShipAndModule,

@@ -68,6 +68,7 @@
   import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
   import { createSkillPlanButton } from "./skillPlanTemplate.ts";
   import { openShipHold } from "./shipHold.ts";
+  import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
   import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
   import type { TypeMetaFacts } from "../app/api.ts";
   import TypeIcon from "./TypeIcon.svelte";
@@ -1907,14 +1908,15 @@
     void run(() => flow.transferItems(ticked, from, to, quantity.quantity));
   }
   /**
-   * dogmaConst.dgmGroupableGroupIDs: the weapons that group (turrets and launchers), read from the client's dogma
-   * const, the numbers inventorycommon's.
+   * The type a Shift-held drag of a module that groups is linking (OnStartSlotLinkingMode, baseFitting 147 to 155):
+   * while it lasts every slot with a module of another type is faded to a tenth, and back at the drag's end
+   * (OnResetSlotLinkingMode, slot.OnEndDrag).
    */
-  const GROUPABLE_GROUP_IDS: ReadonlySet<number> = new Set([53, 55, 74, 56, 511, 524, 1674, 1673, 506, 512, 510, 771, 507, 508, 509, 1245, 1328, 1562, 1327]);
+  let linkingTypeID = $state<number | null>(null);
   /**
    * A real slot dragged (fittingSlotController.GetDragData): the charge where one is loaded (its nodes, whatever is
-   * held), else the module; with Shift held a module that groups is dragged as ever (the client also starts linking
-   * slots then: OnStartSlotLinkingMode, which the page does not have) and one that does not is not dragged at all.
+   * held), else the module; with Shift held a module that groups is dragged as ever and starts the slot linking mode,
+   * and one that does not is not dragged at all.
    */
   function startSlotDrag(event: DragEvent, slot: FittingSlot): void {
     const module = slot.module;
@@ -1931,6 +1933,7 @@
       return;
     } else {
       payload = { kind: "fittedModule", itemID: module.itemID, typeID: module.typeID };
+      if (event.shiftKey) linkingTypeID = module.typeID;
     }
     event.dataTransfer.setData(DRAG_MIME, encodeDrag(payload));
     event.dataTransfer.setData("text/plain", moduleName(payload.typeID));
@@ -2192,14 +2195,50 @@
 
   function dropOnSocket(event: DragEvent, slot: FittingSlot): void {
     dropSlot = null;
+    linkingTypeID = null;
     const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
-    const verdict = dropOnSocketVerdict(payload);
+    const verdict = dropOnSocketVerdict(payload, simulation !== null);
     event.preventDefault();
     if (verdict !== null) {
       // Refused, and SAID — the panel's existing error line, so a rejected drop
       // reads the same way a rejected click does.
       error = verdict;
       return;
+    }
+    // The real ship's slot (fittingScreen/fittingSlotController.OnDropData, Shift as it is at the drop): a module off
+    // another slot is grouped with this one's with Shift held, else moved here; a charge, off another slot or out of
+    // a hold, is loaded into the module here (FitCharges), and taken nowhere else.
+    const flagID = slotFlagOf(slot.family, slot.index);
+    const shift = event.shiftKey;
+    if (!simulation && flagID !== null && payload !== null) {
+      if (payload.kind === "fittedModule") {
+        void run(async () => {
+          await flow.dropFittedModuleOnSlot(payload.itemID, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
+      if (payload.kind === "fittedCharge") {
+        void run(async () => {
+          await flow.dropFittedChargeOnSlot(payload.flagID, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
+      const row = rowsIn($inventory, payload.from).find((each) => each.itemID === payload.itemID);
+      // fittingUtil.IsCharge: the charge category (and the frequency crystals' number, as the client compares it).
+      if (row && (row.categoryID === 8 || row.categoryID === 86)) {
+        const from = payload.from.kind;
+        if (from !== "cargo" && from !== "hangar") {
+          error = "The page loads charges from the cargo hold or the hangar so far.";
+          return;
+        }
+        void run(async () => {
+          await flow.dropChargeOnSlot({ itemID: row.itemID, typeID: row.typeID, quantity: row.quantity, from }, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
     }
     // Narrowed by the verdict above: only an inventory item can reach here.
     const item = payload as Extract<DragPayload, { kind: "inventoryItem" }>;
@@ -3212,6 +3251,8 @@
                   disabled={busy}
                   draggable={!simulation && slot.module !== null}
                   ondragstart={(event) => startSlotDrag(event, slot)}
+                  ondragend={() => (linkingTypeID = null)}
+                  class:link-faded={linkingTypeID !== null && slot.module !== null && slot.module.typeID !== linkingTypeID}
                   onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
                   oncontextmenu={(event) => unfitSimulated(slot, event)}
                   ondragover={(event) => overSocket(event, slot)}
