@@ -76,7 +76,16 @@
     type StandingsSort,
   } from "./standingsList.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let {
+    store,
+    flow,
+    scopes = ["char", "corp"],
+  }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** The panels shown: the pilot's and its corporation's, or one alone (the Character Sheet's Interactions has the pilot's). */
+    scopes?: readonly ("char" | "corp")[];
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const standings = store.standings;
@@ -848,11 +857,15 @@
     </div>
   {/snippet}
 
-  <h3>Your standings</h3>
-  {@render standingList($standings.char, $standings.charError, "char")}
+  {#if scopes.includes("char")}
+    {#if scopes.length > 1}<h3>Your standings</h3>{/if}
+    {@render standingList($standings.char, $standings.charError, "char")}
+  {/if}
 
-  <h3>Your corporation's standings</h3>
-  {@render standingList($standings.corp, $standings.corpError, "corp")}
+  {#if scopes.includes("corp")}
+    {#if scopes.length > 1}<h3>Your corporation's standings</h3>{/if}
+    {@render standingList($standings.corp, $standings.corpError, "corp")}
+  {/if}
 
 </section>
 
