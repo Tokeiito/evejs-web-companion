@@ -4935,6 +4935,11 @@
     position: absolute; inset: 0; background-size: 100% 100%; background-repeat: no-repeat;
     mask-size: 100% 100%; mask-repeat: no-repeat; -webkit-mask-size: 100% 100%; -webkit-mask-repeat: no-repeat;
   }
+  /* A character's corporation in its header: the logo, which opens it, beside Member Of and its name. */
+  .show-info .info-corporation { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.3rem; }
+  .show-info .info-corporation p { margin: 0; }
+  .show-info .info-corporation-logo { width: 2.5rem; height: 2.5rem; padding: 0; border: 0; background: none; cursor: pointer; flex: none; }
+  .show-info .info-corporation-logo img { width: 100%; height: 100%; }
   /* An owner's logo beside its name (eveIcon.LogoIcon: a faction's or an NPC corporation's). */
   .show-info .info-owner-logo { vertical-align: middle; margin-right: 0.3rem; }
   .show-info dd .info-line { margin: 0; }

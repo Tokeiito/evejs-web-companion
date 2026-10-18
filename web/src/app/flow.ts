@@ -511,6 +511,7 @@ import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatc
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow, AgentRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import { readCharacterInfoHeader, type CharacterInfoHeader } from "../bridge/characterInfo.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
   ABYSS_LOOTABLE_OBJECTIVE,
@@ -2765,6 +2766,8 @@ export interface AppFlow {
   characterCorporation(characterID: number): Promise<number | null>;
   /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
   corporationAlliance(corporationID: number): Promise<number | null>;
+  /** A character's Show Info header's reads (construct_header_character): its start, militia, corporation, titles and security status. */
+  characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
   /** An agent's row in the table of agents (agents.GetAgentByID), or null where it is none. */
   agentRecord(agentID: number): Promise<AgentRow | null>;
   /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
@@ -26392,6 +26395,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     corporationAlliance(corporationID) {
       return corporationAllianceOf(bridgeAsk, corporationID);
+    },
+    characterInfoHeader(characterID) {
+      return readCharacterInfoHeader(bridgeAsk, characterID);
     },
     async agentRecord(agentID) {
       return (await agentsKnown()).find((agent) => agent.agentID === agentID) ?? null;

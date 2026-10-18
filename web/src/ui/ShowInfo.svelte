@@ -24,6 +24,8 @@
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { DATE_LABELS, formatTemplate, plainText, type FormatContext } from "../bridge/clientWords.ts";
+  import { INTERVAL_WORD_LABELS, dateTimeIntervalWritten } from "../bridge/timeInterval.ts";
+  import type { CharacterInfoHeader } from "../bridge/characterInfo.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import {
     OWNER_INFO_WORDS,
@@ -304,6 +306,8 @@
   onMount(() => {
     // eveIcon.LogoIcon's tables, for the owners' logos.
     flow.loadOwnerLogos();
+    // A character's header: its labels, and the written interval's for Member For.
+    flow.requestWords([...Object.keys(CHARACTER_HEADER_WORDS), ...INTERVAL_WORD_LABELS]);
     flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS), ...Object.keys(FACTION_INFO_WORDS)]);
     // The map places' type names (evetypes.GetName of typeRegion, typeConstellation, typeSolarSystem).
     flow.requestNames([3, 4, 5].map((id) => ({ kind: "type" as const, id })));
@@ -398,6 +402,58 @@
     if (hq !== null) flow.requestNames([{ kind: hq.typeID === 5 ? "system" : "station", id: hq.itemID }]);
   });
 
+  /** A character's header (construct_header_character), for one that is no NPC; once read. */
+  let characterHeaderRead = $state<CharacterInfoHeader | null>(null);
+  /** The latest header reading asked; an older one's answer is dropped. Not reactive. */
+  let characterHeaderReads = 0;
+  $effect(() => {
+    const current = $subject;
+    const ticket = ++characterHeaderReads;
+    characterHeaderRead = null;
+    if (current?.kind !== "character" || isNpcOwner(current.characterID)) return;
+    void flow.characterInfoHeader(current.characterID).then(
+      (read) => {
+        if (ticket === characterHeaderReads) characterHeaderRead = read;
+      },
+      () => {},
+    );
+  });
+  /** The header's corporation: a pilot's (GetInfoWindowDataForChar's corpID), an agent's (its row's). */
+  const characterCorporationID = $derived.by<number | null>(() => {
+    const current = $subject;
+    if (current?.kind !== "character") return null;
+    return isNpcOwner(current.characterID) ? (agentRead?.agent?.corporationID ?? null) : (characterHeaderRead?.corporationID ?? null);
+  });
+  $effect(() => {
+    const corporationID = characterCorporationID;
+    if (corporationID === null) return;
+    flow.requestNames([{ kind: "corporation", id: corporationID }]);
+    if (!isNpcCorporation(corporationID)) flow.requestCorpLogos([corporationID]);
+  });
+  $effect(() => {
+    const read = characterHeaderRead;
+    if (read === null) return;
+    const refs: NameRef[] = [];
+    if (read.allianceID !== null) refs.push({ kind: "alliance", id: read.allianceID });
+    if (read.militiaFactionID !== null) refs.push({ kind: "faction", id: read.militiaFactionID });
+    if (refs.length > 0) flow.requestNames(refs);
+  });
+  /** MemberFor's time: FmtDateTimeInterval(startDateTime, now, 'day'), the calendar's years, months and days. */
+  const memberForText = $derived.by(() => {
+    const started = characterHeaderRead?.startDateTime ?? null;
+    if (started === null) return null;
+    const now = BigInt(Date.now()) * 10_000n + 116_444_736_000_000_000n;
+    const written = dateTimeIntervalWritten(started, now, "day", $words.templates);
+    return written === null ? null : word("UI/InfoWindow/MemberFor", { timePeriod: written });
+  });
+  /** CorpStandingOfCharacter: standingsvc.GetStanding(session.corpid, the character): a player corporation's contact's, else neutral. */
+  const corporationStandingOfCharacter = $derived.by(() => {
+    const current = $subject;
+    if (current?.kind !== "character" || isNpcOwner(current.characterID) || contactStandingsRead === null) return null;
+    const myCorporationID = $station.online?.corporationID ?? null;
+    return myCorporationID !== null && !isNpcOwner(myCorporationID) ? (contactStandingsRead.corporate.get(current.characterID) ?? 0) : 0;
+  });
+
   /** A player owner's Standings tab: the address book's standings, and the owners the tab's sections are toward. */
   let contactStandingsRead = $state<ContactStandings | null>(null);
   let standingTargetsRead = $state<readonly number[] | null>(null);
@@ -431,14 +487,15 @@
       }
       return;
     }
-    // The pilot's own window has no Standings tab (infosvc 1143).
-    if (current.kind === "character" && current.characterID === store.station.get().online?.characterID) return;
+    // The address book's standings, which the header's corporation standing reads too (the pilot's own window's as
+    // well, which has no Standings tab: infosvc 1143).
     void flow.contactStandings().then(
       (read) => {
         if (ticket === standingReads) contactStandingsRead = read;
       },
       () => {},
     );
+    if (current.kind === "character" && current.characterID === store.station.get().online?.characterID) return;
     const allianceOf = (corporationID: number): Promise<number | null> => flow.corporationAlliance(corporationID).catch(() => null);
     void (async (): Promise<readonly number[]> => {
       if (current.kind === "alliance") return [current.allianceID];
@@ -535,7 +592,8 @@
     }
     const contacts = contactStandingsRead;
     const targets = standingTargetsRead;
-    if (contacts === null || targets === null) return [];
+    // The pilot's own window has no Standings tab (infosvc 1143).
+    if (contacts === null || targets === null || (current.kind === "character" && current.characterID === myID)) return [];
     const myCorporationID = online?.corporationID ?? null;
     const myAllianceID = online?.allianceID ?? null;
     const fromIDs = [
@@ -665,6 +723,15 @@
     };
   }
 
+  /** A character's header's labels, with the page's own words where the install's are not had. */
+  const CHARACTER_HEADER_WORDS: Readonly<Record<string, string>> = {
+    "UI/InfoWindow/CorpTitle": "Holds {title}",
+    "UI/InfoWindow/SecurityStatusOfCharacter": "Security {[numeric]secStatus, decimalPlaces=1}",
+    "UI/InfoWindow/CorpStandingOfCharacter": "Your corporation's standing {[numeric]corpStanding, decimalPlaces=1}",
+    "UI/InfoWindow/MemberOf": "In the corporation",
+    "UI/InfoWindow/MemberFor": "for {timePeriod}",
+    "UI/InfoWindow/ClickForCorpInfo": "The corporation's information",
+  };
   /** A faction's labels the window uses, with the page's own words where the install's are not had. */
   const FACTION_INFO_WORDS: Readonly<Record<string, string>> = {
     "UI/InfoWindow/HeadquartersLocation": "Based in {hqLink}",
@@ -734,7 +801,7 @@
   function word(label: string, args: Readonly<Record<string, JsonValue>> = {}, nameOf: FormatContext["nameOf"] = () => ""): string {
     const template = $words.templates[label];
     return formatTemplate(
-      typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? MAP_INFO_WORDS[label] ?? FACTION_INFO_WORDS[label] ?? "",
+      typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? MAP_INFO_WORDS[label] ?? FACTION_INFO_WORDS[label] ?? CHARACTER_HEADER_WORDS[label] ?? "",
       args,
       { nameOf },
     );
@@ -1080,6 +1147,45 @@
         {#if factionRead !== null && factionRead.headquarters !== null}
           <!-- ConstructHeaderFaction: its headquarters, the solar system's link. -->
           <div class="info-class">{@render markupLines(word("UI/InfoWindow/HeadquartersLocation", { hqLink: `<url=showinfo:5//${factionRead.headquarters.itemID}>${factionRead.headquarters.name}</url>` }))}</div>
+        {/if}
+        {#if $subject.kind === "character"}
+          {@const header = characterHeaderRead}
+          {#if header !== null && header.titles.length > 0}
+            <!-- CorpTitle over FormatGenericList: the character's titles. -->
+            <p class="info-class">{word("UI/InfoWindow/CorpTitle", { title: header.titles.join(word("UI/Common/Formatting/ListGenericDelimiter")) })}</p>
+          {/if}
+          {#if characterCorporationID !== null}
+            {@const corporationID = characterCorporationID}
+            {@const corpLogo = isNpcCorporation(corporationID) ? null : ($corpLogos[String(corporationID)] ?? null)}
+            <!-- The corporation's logo, which opens the corporation (ClickForCorpInfo), Member Of and its name beside it,
+                 and how long the character has been in it. -->
+            <div class="info-corporation">
+              <button type="button" class="info-corporation-logo" title={word("UI/InfoWindow/ClickForCorpInfo")} onclick={() => showInfo({ kind: "corporation", corporationID })}>
+                {#if corpLogo !== null && $corpLogoLibrary !== null && corpLogo.shapes.some((shape) => shape !== null)}
+                  <CorpLogo library={$corpLogoLibrary} logo={corpLogo} name={resolvedName($names.resolved, "corporation", corporationID, "")} />
+                {:else if ownerLogoUrl(corporationID) !== null}
+                  <img src={ownerLogoUrl(corporationID)} alt="" width="40" height="40" />
+                {/if}
+              </button>
+              <div>
+                <p class="info-class">{word("UI/InfoWindow/MemberOf")}</p>
+                <p><button type="button" class="evelink showInfo" title={word("UI/InfoWindow/ClickForCorpInfo")} onclick={() => showInfo({ kind: "corporation", corporationID })}>{resolvedName($names.resolved, "corporation", corporationID, "")}</button></p>
+                {#if memberForText !== null}<p class="info-class">{memberForText}</p>{/if}
+              </div>
+            </div>
+          {/if}
+          {#if header !== null && header.militiaFactionID !== null}
+            <p class="info-class">{word("UI/FactionWarfare/MilitiaAndFaction", { factionName: resolvedName($names.resolved, "faction", header.militiaFactionID, "") })}</p>
+          {/if}
+          {#if header !== null && header.allianceID !== null}
+            <p class="info-class">{resolvedName($names.resolved, "alliance", header.allianceID, "")}</p>
+          {/if}
+          {#if header !== null && header.securityStatus !== null}
+            <div class="info-class">{@render markupLines(word("UI/InfoWindow/SecurityStatusOfCharacter", { secStatus: header.securityStatus, text_color: "" }))}</div>
+          {/if}
+          {#if corporationStandingOfCharacter !== null}
+            <div class="info-class">{@render markupLines(word("UI/InfoWindow/CorpStandingOfCharacter", { corpStanding: corporationStandingOfCharacter, text_color: "" }))}</div>
+          {/if}
         {/if}
         {#if allianceRead !== null && allianceRead.warFactionID !== null}
           <!-- ConstructHeaderAlliance: the militia it fights for. -->
