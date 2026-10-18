@@ -2731,6 +2731,8 @@ export interface AppFlow {
   wantBuffBar(): void;
   /** A region, constellation or solar system as the info window shows it, or null for none (api.getMapLocation). */
   mapLocationShowInfo(itemID: number): Promise<api.MapLocationInfo | null>;
+  /** A faction as the info window shows it, or null for none (api.getFaction). */
+  factionShowInfo(factionID: number): Promise<api.FactionInfo | null>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
@@ -26285,6 +26287,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     mapLocationShowInfo(itemID) {
       return api.getMapLocation(itemID, callOptions);
+    },
+    factionShowInfo(factionID) {
+      return api.getFaction(factionID, callOptions);
     },
     dismissDialog,
     answerDialog,

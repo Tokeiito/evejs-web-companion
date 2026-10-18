@@ -4046,6 +4046,90 @@ export interface MapLocationInfo extends MapPlaceRow {
   readonly neighbours: readonly MapPlaceRow[];
 }
 
+/** A place a faction holds (GET /api/factions/:id): its name, and the names of the places it lies in. */
+export interface FactionPlaceRow {
+  readonly itemID: number;
+  readonly name: string;
+  readonly constellationID?: number;
+  readonly constellationName?: string;
+  readonly regionID?: number;
+  readonly regionName?: string;
+}
+
+/** A type a faction holds illegal, and what carrying it costs (contrabandtypes' factions entry). */
+export interface FactionIllegalType {
+  readonly typeID: number;
+  readonly name: string;
+  readonly standingLoss: number;
+  readonly confiscateMinSec: number;
+  readonly fineByValue: number;
+  readonly attackMinSec: number;
+}
+
+/** A faction as the client's info window shows it (GET /api/factions/:id). */
+export interface FactionInfo {
+  readonly factionID: number;
+  readonly name: string;
+  readonly description: string | null;
+  readonly headquarters: { readonly itemID: number; readonly name: string } | null;
+  readonly memberRaces: readonly { readonly raceID: number; readonly name: string }[];
+  readonly settledSystems: number;
+  readonly stations: number;
+  /** In the client's order (SortFunc: by name, a leading "The " left off). */
+  readonly corporations: readonly { readonly corporationID: number; readonly name: string }[];
+  readonly regions: readonly FactionPlaceRow[];
+  readonly constellations: readonly FactionPlaceRow[];
+  readonly systems: readonly FactionPlaceRow[];
+  /** By the type's name. */
+  readonly illegalTypes: readonly FactionIllegalType[];
+}
+
+/** A faction, or null where the id is none. */
+export async function getFaction(factionID: number, options: ApiOptions = {}): Promise<FactionInfo | null> {
+  const data = await getJson(`/api/factions/${factionID}`, options).catch(() => null);
+  const raw = data && typeof data.faction === "object" && data.faction !== null && !Array.isArray(data.faction) ? (data.faction as Record<string, JsonValue>) : null;
+  if (raw === null) return null;
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> | null =>
+    (value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : null);
+  const list = (value: JsonValue | undefined): Record<string, JsonValue>[] =>
+    (Array.isArray(value) ? value : []).map(record).filter((each): each is Record<string, JsonValue> => each !== null);
+  const id = (value: JsonValue | undefined): number => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0);
+  const text = (value: JsonValue | undefined): string => (typeof value === "string" ? value : "");
+  const number = (value: JsonValue | undefined): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const place = (row: Record<string, JsonValue>): FactionPlaceRow => ({
+    itemID: id(row.itemID),
+    name: text(row.name),
+    ...(id(row.constellationID) ? { constellationID: id(row.constellationID), constellationName: text(row.constellationName) } : {}),
+    ...(id(row.regionID) ? { regionID: id(row.regionID), regionName: text(row.regionName) } : {}),
+  });
+  const ownID = id(raw.factionID);
+  if (!ownID) return null;
+  const hq = record(raw.headquarters);
+  return {
+    factionID: ownID,
+    name: text(raw.name),
+    description: typeof raw.description === "string" ? raw.description : null,
+    headquarters: hq !== null && id(hq.itemID) ? { itemID: id(hq.itemID), name: text(hq.name) } : null,
+    memberRaces: list(raw.memberRaces).map((row) => ({ raceID: id(row.raceID), name: text(row.name) })),
+    settledSystems: number(raw.settledSystems),
+    stations: number(raw.stations),
+    corporations: list(raw.corporations).map((row) => ({ corporationID: id(row.corporationID), name: text(row.name) })).filter((row) => row.corporationID > 0),
+    regions: list(raw.regions).map(place).filter((row) => row.itemID > 0),
+    constellations: list(raw.constellations).map(place).filter((row) => row.itemID > 0),
+    systems: list(raw.systems).map(place).filter((row) => row.itemID > 0),
+    illegalTypes: list(raw.illegalTypes)
+      .map((row) => ({
+        typeID: id(row.typeID),
+        name: text(row.name),
+        standingLoss: number(row.standingLoss),
+        confiscateMinSec: number(row.confiscateMinSec),
+        fineByValue: number(row.fineByValue),
+        attackMinSec: number(row.attackMinSec),
+      }))
+      .filter((row) => row.typeID > 0),
+  };
+}
+
 /** A map place, or null where the id is none. */
 export async function getMapLocation(itemID: number, options: ApiOptions = {}): Promise<MapLocationInfo | null> {
   const data = await getJson(`/api/map/location/${itemID}`, options).catch(() => null);

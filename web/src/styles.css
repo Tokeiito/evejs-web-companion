@@ -4904,7 +4904,14 @@
   /* A map place's lists (its children, its neighbours): a row a place, its type, a system's security, its name's link. */
   .info-places { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   .info-places li { display: grid; grid-template-columns: 7rem 2.2rem 1fr; gap: 0.4rem; align-items: baseline; padding: 1px 0; }
-  .info-places .info-place-type { color: var(--color-text-muted, #888); }
+  .info-places .info-place-type { color: var(--color-muted); }
+  /* A faction's window (infosvc.UpdateDataFaction): a tab's headers (Header), the banned types each with what carrying
+   * it costs under it (Generic, sublevel 2), and the territory's and corporations' lists. */
+  .show-info .info-subhead { margin: 0.5rem 0 0.2rem; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-muted); }
+  .info-legality, .info-territory { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .info-legality li { display: flex; flex-direction: column; padding: 2px 0; }
+  .info-legality .info-legality-line { padding-left: 1.2rem; color: var(--color-muted); }
+  .info-territory li { padding: 1px 0; }
   .show-info dd .info-line { margin: 0; }
   .info-bold { font-weight: 700; }
   .info-italic { font-style: italic; }

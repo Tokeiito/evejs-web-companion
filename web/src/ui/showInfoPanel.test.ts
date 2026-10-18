@@ -21,7 +21,10 @@ const ORE_TYPE_ID = 1230;
 const SHIP_ID = 9001;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => () => {} });
+  // Its one store, the NPC corporations' factions (a corporation's window names its faction by them), reads none;
+  // every other member does nothing.
+  const corporationFactions = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
+  return new Proxy({}, { get: (_target, key) => (key === "corporationFactions" ? corporationFactions : () => {}) });
 }
 
 /** A snapshot with one rock 12 km out (or `rockX` metres), half its shield gone. */

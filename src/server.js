@@ -29,6 +29,7 @@ const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = requir
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
 const { createMapLocationInfo } = require("./mapLocationInfo");
+const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
@@ -12524,6 +12525,23 @@ app.get("/api/map/location/:id", requireAuth, (req, res, next) => {
       return;
     }
     res.json({ ok: true, place });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A faction as the client's info window shows it (factionInfo.js): its description and headquarters, its member races,
+// settled systems and stations, its corporations, the territory it holds and the types it holds illegal.
+let factionInfoOf = null;
+app.get("/api/factions/:id", requireAuth, (req, res, next) => {
+  try {
+    factionInfoOf ??= createFactionInfo(staticData).factionInfo;
+    const faction = factionInfoOf(Number(req.params.id) || 0);
+    if (faction === null) {
+      res.status(404).json({ ok: false, error: "NOT_A_FACTION", message: "That is no faction." });
+      return;
+    }
+    res.json({ ok: true, faction });
   } catch (error) {
     next(error);
   }

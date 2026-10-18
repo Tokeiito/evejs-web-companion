@@ -24,6 +24,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { CharStanding } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { showInfo, type InfoSubject } from "./showInfo.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -67,6 +68,20 @@
       return "Unknown entity";
     }
     return resolvedName($names.resolved, kind, fromID, "Unknown entity");
+  }
+
+  // standingEntry.ShowInfo (OnDblClick): Show Info on the owner, a faction, an NPC corporation or an agent.
+  function infoOf(fromID: number): InfoSubject | null {
+    switch (classifyStandingKind(fromID)) {
+      case "faction":
+        return { kind: "faction", factionID: fromID };
+      case "corporation":
+        return { kind: "corporation", corporationID: fromID };
+      case "agent":
+        return { kind: "character", characterID: fromID };
+      default:
+        return null;
+    }
   }
 
   // A composition owner is a corporation member (a player character); it may not
@@ -216,6 +231,10 @@
         class="row"
         class:open={isOpen(row.fromID, scope)}
         onclick={() => toggleDetail(row.fromID, scope)}
+        ondblclick={() => {
+          const subject = infoOf(row.fromID);
+          if (subject !== null) showInfo(subject);
+        }}
       >
         <span class="name">{entityName(row.fromID)}</span>
         <span class="meter" aria-hidden="true">

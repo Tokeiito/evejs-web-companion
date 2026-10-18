@@ -16,7 +16,7 @@
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
-  import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { DATE_LABELS, formatTemplate, plainText, type FormatContext } from "../bridge/clientWords.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import {
     OWNER_INFO_WORDS,
@@ -31,7 +31,7 @@
   import type { JsonValue } from "../bridge/wire.ts";
   import { moduleEffectiveStats } from "../bridge/moduleAttributes.ts";
   import { securityStatusColor, shownSecurity } from "../bridge/systemSecurity.ts";
-  import type { MapLocationInfo, MapPlaceRow } from "../app/api.ts";
+  import type { FactionInfo, FactionPlaceRow, MapLocationInfo, MapPlaceRow } from "../app/api.ts";
   import { fmtDist, hostileLabel, isHostile, ratioPercent, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
@@ -51,6 +51,8 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const standings = store.standings;
+  // svelte-ignore state_referenced_locally
+  const corporationFactions = flow.corporationFactions;
   const subject = showInfoTarget.subject;
 
   const typeID = $derived(subjectTypeID($subject));
@@ -115,6 +117,10 @@
     // A map place's own name (cfg.evelocations), its type's while it is not read.
     if (current.kind === "mapLocation") {
       return mapLocationRead?.name || mapTypeName(current.typeID);
+    }
+    // A faction's name (cfg.eveowners).
+    if (current.kind === "faction") {
+      return factionRead?.name || resolvedName($names.resolved, "faction", current.factionID, "Unknown faction");
     }
     // update_description_caption_and_sub_caption: the owner's name, "[Closed]" before it where it is no more.
     if (current.kind === "corporation" || current.kind === "alliance") {
@@ -192,6 +198,8 @@
   let corporationRead = $state<CorporationShowInfo | null>(null);
   /** A map place's read (infosvc.UpdateDataCelestial for a region, a constellation or a solar system). */
   let mapLocationRead = $state<MapLocationInfo | null>(null);
+  /** A faction's read (infosvc.UpdateDataFaction). */
+  let factionRead = $state<FactionInfo | null>(null);
   let allianceRead = $state<AllianceInfoExtra | null>(null);
   /** Whether the owner's read has answered, so a record not had is said rather than waited for. */
   let ownerReadDone = $state(false);
@@ -204,8 +212,11 @@
     corporationRead = null;
     allianceRead = null;
     mapLocationRead = null;
+    factionRead = null;
     ownerReadDone = false;
     if (current?.kind === "corporation") {
+      // construct_header's faction (get_corporation_faction_id), from the client's table of NPC corporations.
+      flow.loadCorporationFactions();
       void flow.corporationShowInfo(current.corporationID).then((read) => {
         if (ticket !== ownerReads) return;
         corporationRead = read;
@@ -223,11 +234,17 @@
         mapLocationRead = read;
         ownerReadDone = true;
       });
+    } else if (current?.kind === "faction") {
+      void flow.factionShowInfo(current.factionID).then((read) => {
+        if (ticket !== ownerReads) return;
+        factionRead = read;
+        ownerReadDone = true;
+      });
     }
   });
 
   onMount(() => {
-    flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS)]);
+    flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS), ...Object.keys(FACTION_INFO_WORDS)]);
     // The map places' type names (evetypes.GetName of typeRegion, typeConstellation, typeSolarSystem).
     flow.requestNames([3, 4, 5].map((id) => ({ kind: "type" as const, id })));
   });
@@ -254,17 +271,89 @@
   const MAP_TYPE_NAMES: Readonly<Record<number, string>> = { 3: "Region", 4: "Constellation", 5: "Solar system" };
   /** A map place's type name (evetypes.GetName), the page's own while it is not read. */
   const mapTypeName = (typeID: number): string => resolvedName($names.resolved, "type", typeID, MAP_TYPE_NAMES[typeID] ?? "");
-  // localization.util.Sort on the names (SortListOfTuples): the collator on the names in lower case, then as they are
-  // the other way about.
-  const placeCollator = new Intl.Collator("en");
-  const byPlaceName = (a: MapPlaceRow, b: MapPlaceRow): number =>
-    placeCollator.compare(a.name.toLowerCase(), b.name.toLowerCase()) || placeCollator.compare(b.name, a.name);
+  // SortListOfTuples (carbonui sortUtil, as infosvc imports it): Python's sort on the keys as they are, a string by its
+  // code points and a list by its first unequal part.
+  const byCodePoints = (a: readonly string[], b: readonly string[]): number => {
+    for (let at = 0; at < Math.min(a.length, b.length); at += 1) {
+      if (a[at]! !== b[at]!) return a[at]! < b[at]! ? -1 : 1;
+    }
+    return a.length - b.length;
+  };
+  const byPlaceName = (a: MapPlaceRow, b: MapPlaceRow): number => byCodePoints([a.name], [b.name]);
   const placeSubject = (place: MapPlaceRow): InfoSubject => ({ kind: "mapLocation", typeID: place.typeID, itemID: place.itemID });
 
+  /** A faction's labels the window uses, with the page's own words where the install's are not had. */
+  const FACTION_INFO_WORDS: Readonly<Record<string, string>> = {
+    "UI/InfoWindow/HeadquartersLocation": "Based in {hqLink}",
+    "UI/InfoWindow/ClickForFactionInfo": "The faction's information",
+    "UI/InfoWindow/TabNames/Statistics": "Figures",
+    "UI/InfoWindow/MemberRaces": "Its peoples",
+    "UI/Common/Formatting/ListGenericDelimiter": ", ",
+    "UI/InfoWindow/SettledSystems": "Systems with its stations",
+    "UI/Common/Stations": "Its stations",
+    "UI/InfoWindow/TabNames/Legality": "Law",
+    "UI/InfoWindow/IllegalTypes": "Goods it bans",
+    "UI/InfoWindow/StandingLoss": "Costs {[numeric]standingLoss, decimalPlaces=2} standing",
+    "UI/InfoWindow/ConfiscationInSec": "Taken where security is {[numeric]confiscateMinSec, decimalPlaces=2} or more",
+    "UI/InfoWindow/FineOfEstimatedMarketValue": "Fined {[numeric]fine, decimalPlaces=2}% of its market worth",
+    "UI/InfoWindow/AttackInSec": "Fired on where security is {[numeric]attackMinSec, decimalPlaces=2} or more",
+    "UI/InfoWindow/ControlledTerritory": "Space it holds",
+    "UI/Common/Regions": "Regions",
+    "UI/Common/Constellations": "Constellations",
+    "UI/Common/SolarSystems": "Systems",
+    "UI/InfoWindow/ConstellationLocation": "{[location]constellation.name}, {[location]region.name}",
+    "UI/InfoWindow/SolarsystemLocation": "{[location]solarsystem.name}, {[location]constellation.name}, {[location]region.name}",
+    "UI/InfoWindow/TabNames/MemberCorps": "Its corporations",
+  };
+  const factionSubject = (factionID: number): InfoSubject => ({ kind: "faction", factionID });
+  /** A place a faction holds, named with the places it lies in (ConstellationLocation, SolarsystemLocation). */
+  function factionPlaceLabel(place: FactionPlaceRow, typeID: 3 | 4 | 5): string {
+    if (typeID === 3) return place.name;
+    const placeNames = new Map<number, string>([[place.itemID, place.name]]);
+    if (place.constellationID !== undefined) placeNames.set(place.constellationID, place.constellationName ?? "");
+    if (place.regionID !== undefined) placeNames.set(place.regionID, place.regionName ?? "");
+    const nameOf = (_kind: unknown, id: number): string => placeNames.get(id) ?? "";
+    return typeID === 4
+      ? word("UI/InfoWindow/ConstellationLocation", { region: place.regionID ?? 0, constellation: place.itemID }, nameOf)
+      : word("UI/InfoWindow/SolarsystemLocation", { region: place.regionID ?? 0, constellation: place.constellationID ?? 0, solarsystem: place.itemID }, nameOf);
+  }
+  /** UpdateDataFaction's Controlled Territory: the regions by name, the constellations by region and name, the systems by region, constellation and name. */
+  const factionTerritory = $derived.by(() => {
+    const read = factionRead;
+    if (read === null) return [];
+    const keyed = (rows: readonly FactionPlaceRow[], key: (row: FactionPlaceRow) => string[]) =>
+      [...rows].sort((a, b) => byCodePoints(key(a), key(b)));
+    return [
+      { label: "UI/Common/Regions", typeID: 3 as const, rows: keyed(read.regions, (row) => [row.name]) },
+      { label: "UI/Common/Constellations", typeID: 4 as const, rows: keyed(read.constellations, (row) => [row.regionName ?? "", row.name]) },
+      { label: "UI/Common/SolarSystems", typeID: 5 as const, rows: keyed(read.systems, (row) => [row.regionName ?? "", row.constellationName ?? "", row.name]) },
+    ].filter((group) => group.rows.length > 0);
+  });
+  /** __GetIllegalityStringList: what carrying a banned type costs, each where it applies. */
+  function illegalityLines(type: FactionInfo["illegalTypes"][number]): string[] {
+    const lines: string[] = [];
+    if (type.standingLoss > 0) lines.push(word("UI/InfoWindow/StandingLoss", { standingLoss: type.standingLoss }));
+    if (type.confiscateMinSec <= 1) lines.push(word("UI/InfoWindow/ConfiscationInSec", { confiscateMinSec: Math.max(type.confiscateMinSec, 0) }));
+    if (type.fineByValue > 0) lines.push(word("UI/InfoWindow/FineOfEstimatedMarketValue", { fine: type.fineByValue * 100 }));
+    if (type.attackMinSec <= 1) lines.push(word("UI/InfoWindow/AttackInSec", { attackMinSec: Math.max(type.attackMinSec, 0) }));
+    return lines;
+  }
+  /** construct_header: an NPC corporation's faction, by its logo (ClickForFactionInfo); null where it has none. */
+  const corporationFactionID = $derived.by<number | null>(() => {
+    const current = $subject;
+    if (current?.kind !== "corporation") return null;
+    const factionID = $corporationFactions?.[String(current.corporationID)];
+    return typeof factionID === "number" && factionID > 0 ? factionID : null;
+  });
+
   /** The client's words for a label, filled; the page's own (OWNER_INFO_WORDS) where the install's are not had. */
-  function word(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
+  function word(label: string, args: Readonly<Record<string, JsonValue>> = {}, nameOf: FormatContext["nameOf"] = () => ""): string {
     const template = $words.templates[label];
-    return formatTemplate(typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? MAP_INFO_WORDS[label] ?? "", args, { nameOf: () => "" });
+    return formatTemplate(
+      typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? MAP_INFO_WORDS[label] ?? FACTION_INFO_WORDS[label] ?? "",
+      args,
+      { nameOf },
+    );
   }
 
   /** FmtDate(ticks, fmt): the moment as its format's label words it (carbon format.py 71 to 114). */
@@ -398,9 +487,14 @@
         : word("UI/Sovereignty/VulnerabilityTime", { hour: read.currentPrimeHour }),
     });
     rows.push({ key: "war", label: word("UI/WarPermit/WarPermitStatus"), text: word(warPermitLabel(read.allowWar)), hint: plainText(word("UI/WarPermit/WarPermitExplanation")) });
-    // The capital's link is to its solar system, which the page's window does not show: its name.
+    // The capital's link (GetShowInfoLink(typeSolarSystem, ...)): the solar system's window.
     if (read.currentCapital !== null && read.currentCapital > 0) {
-      rows.push({ key: "capital", label: word("UI/Sovereignty/CurrentCapital"), text: resolvedName($names.resolved, "system", read.currentCapital, "") });
+      rows.push({
+        key: "capital",
+        label: word("UI/Sovereignty/CurrentCapital"),
+        text: resolvedName($names.resolved, "system", read.currentCapital, ""),
+        opens: { kind: "mapLocation", typeID: 5, itemID: read.currentCapital },
+      });
     }
     if (read.url !== null && read.url !== "") {
       rows.push({
@@ -432,6 +526,12 @@
     }
     if (current?.kind === "alliance") {
       refs.push({ kind: "alliance", id: current.allianceID });
+    }
+    if (current?.kind === "faction") {
+      refs.push({ kind: "faction", id: current.factionID });
+    }
+    if (corporationFactionID !== null) {
+      refs.push({ kind: "faction", id: corporationFactionID });
     }
     const corporation = corporationRead?.info ?? null;
     if (corporation !== null) {
@@ -478,6 +578,8 @@
         return "Item";
       case "mapLocation":
         return mapTypeName(current.typeID);
+      case "faction":
+        return "Faction";
     }
   }
 </script>
@@ -511,7 +613,7 @@
         {typeID}
         name={title}
         size="lg"
-        fallbackText={corporationRead?.info.tickerName || allianceRead?.shortName || abbreviate(title)} />
+        fallbackText={corporationRead?.info.tickerName || allianceRead?.shortName || ($subject.kind === "faction" || $subject.kind === "character" ? null : abbreviate(title))} />
       <div class="info-identity">
         <h2>{title}</h2>
         <p class="info-kind">{subjectKindLabel($subject)}</p>
@@ -538,6 +640,20 @@
               </button>
             </p>
           {/if}
+          {#if !(info.allianceID !== null && info.allianceID > 0) && corporationFactionID !== null}
+            {@const factionID = corporationFactionID}
+            <!-- The faction's logo, which opens the faction (ClickForFactionInfo), MemberOfAlliance beside it naming the
+                 faction where the corporation is in no alliance. -->
+            <p class="info-class">
+              <button type="button" class="evelink showInfo" title={word("UI/InfoWindow/ClickForFactionInfo")} onclick={() => showInfo(factionSubject(factionID))}>
+                {word("UI/InfoWindow/MemberOfAlliance", { allianceName: resolvedName($names.resolved, "faction", factionID, "Unknown faction") })}
+              </button>
+            </p>
+          {/if}
+        {/if}
+        {#if factionRead !== null && factionRead.headquarters !== null}
+          <!-- ConstructHeaderFaction: its headquarters, the solar system's link. -->
+          <div class="info-class">{@render markupLines(word("UI/InfoWindow/HeadquartersLocation", { hqLink: `<url=showinfo:5//${factionRead.headquarters.itemID}>${factionRead.headquarters.name}</url>` }))}</div>
         {/if}
         {#if allianceRead !== null && allianceRead.warFactionID !== null}
           <!-- ConstructHeaderAlliance: the militia it fights for. -->
@@ -665,6 +781,61 @@
         {/each}
       {:else if ownerReadDone}
         <p class="note">The page has no record of this place.</p>
+      {:else}
+        <p class="note">Reading…</p>
+      {/if}
+    {:else if $subject.kind === "faction"}
+      {#if factionRead !== null}
+        {@const read = factionRead}
+        {#if read.description}
+          <h3>{word("UI/InfoWindow/TabNames/Description")}</h3>
+          <div class="info-description">{@render markupLines(read.description)}</div>
+        {/if}
+        <!-- The Attributes tab, named Statistics: the member races (FormatGenericList), its settled systems, its stations. -->
+        <h3>{word("UI/InfoWindow/TabNames/Statistics")}</h3>
+        <dl class="kv">
+          {#if read.memberRaces.length > 0}
+            <dt>{word("UI/InfoWindow/MemberRaces")}</dt>
+            <dd>{read.memberRaces.map((race) => race.name).join(word("UI/Common/Formatting/ListGenericDelimiter"))}</dd>
+          {/if}
+          <dt>{word("UI/InfoWindow/SettledSystems")}</dt>
+          <dd>{read.settledSystems.toLocaleString("en-US")}</dd>
+          <dt>{word("UI/Common/Stations")}</dt>
+          <dd>{read.stations.toLocaleString("en-US")}</dd>
+        </dl>
+        {#if read.illegalTypes.length > 0}
+          <h3>{word("UI/InfoWindow/TabNames/Legality")}</h3>
+          <h4 class="info-subhead">{word("UI/InfoWindow/IllegalTypes")}</h4>
+          <ul class="info-legality">
+            {#each read.illegalTypes as type (type.typeID)}
+              <li>
+                <button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "type", typeID: type.typeID })}>{type.name}</button>
+                {#each illegalityLines(type) as line, at (at)}<span class="info-legality-line">{line}</span>{/each}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if factionTerritory.length > 0}
+          <h3>{word("UI/InfoWindow/ControlledTerritory")}</h3>
+          {#each factionTerritory as group (group.typeID)}
+            <h4 class="info-subhead">{word(group.label)}</h4>
+            <ul class="info-territory">
+              {#each group.rows as place (place.itemID)}
+                <li><button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "mapLocation", typeID: group.typeID, itemID: place.itemID })}>{factionPlaceLabel(place, group.typeID)}</button></li>
+              {/each}
+            </ul>
+          {/each}
+        {/if}
+        {#if read.corporations.length > 0}
+          <h3>{word("UI/InfoWindow/TabNames/MemberCorps")}</h3>
+          <ul class="info-territory">
+            {#each read.corporations as corporation (corporation.corporationID)}
+              <li><button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "corporation", corporationID: corporation.corporationID })}>{corporation.name}</button></li>
+            {/each}
+          </ul>
+        {/if}
+      {:else if ownerReadDone}
+        <p class="note">The page has no record of this faction.</p>
       {:else}
         <p class="note">Reading…</p>
       {/if}

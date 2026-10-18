@@ -2304,6 +2304,7 @@ function getDogmaUnitDisplayName(unitID) {
 }
 
 module.exports = {
+  buildJsonlIndex,
   getDbuffCollection,
   getDogmaUnitDisplayName,
   getSkillGroupCertificates,
