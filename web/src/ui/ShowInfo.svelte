@@ -23,6 +23,7 @@
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
+  import { allianceLogoUrl } from "./ownerImages.ts";
   import { DATE_LABELS, formatTemplate, plainText, type FormatContext } from "../bridge/clientWords.ts";
   import { INTERVAL_WORD_LABELS, dateTimeIntervalWritten } from "../bridge/timeInterval.ts";
   import type { CharacterInfoHeader } from "../bridge/characterInfo.ts";
@@ -67,6 +68,8 @@
   // svelte-ignore state_referenced_locally
   const corpLogoLibrary = flow.corpLogoLibrary;
   // svelte-ignore state_referenced_locally
+  const imageServer = flow.imageServer;
+  // svelte-ignore state_referenced_locally
   const corpLogos = flow.corpLogos;
   /** A player corporation's logo (eveIcon.CorpIcon), where it has any shape and the library is had; else null. */
   const playerCorpLogo = $derived.by(() => {
@@ -85,6 +88,8 @@
    */
   function ownerLogoUrl(id: number | null): string | null {
     if (id === null) return null;
+    // GetLogoIcon and GetOwnerLogo for an alliance: photo.GetAllianceLogo, the image server's picture.
+    if (ownerKindOf(id) === "alliance") return allianceLogoUrl($imageServer, id);
     const resPath = $ownerLogos?.factions[String(id)] ?? $ownerLogos?.corporations[String(id)];
     return resPath ? clientTexture(resPath) : null;
   }
@@ -306,6 +311,7 @@
   onMount(() => {
     // eveIcon.LogoIcon's tables, for the owners' logos.
     flow.loadOwnerLogos();
+    flow.loadImageServer();
     // A character's header: its labels, and the written interval's for Member For.
     flow.requestWords([...Object.keys(CHARACTER_HEADER_WORDS), ...INTERVAL_WORD_LABELS]);
     flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS), ...Object.keys(FACTION_INFO_WORDS)]);
@@ -1182,7 +1188,7 @@
         {typeID}
         name={title}
         size="lg"
-        imageUrl={$subject.kind === "faction" ? ownerLogoUrl($subject.factionID) : $subject.kind === "corporation" ? ownerLogoUrl($subject.corporationID) : null}
+        imageUrl={$subject.kind === "faction" ? ownerLogoUrl($subject.factionID) : $subject.kind === "corporation" ? ownerLogoUrl($subject.corporationID) : $subject.kind === "alliance" ? ownerLogoUrl($subject.allianceID) : null}
         fallbackText={corporationRead?.info.tickerName || allianceRead?.shortName || ($subject.kind === "faction" || $subject.kind === "character" ? null : abbreviate(title))} />
       {/if}
       <div class="info-identity">
@@ -1211,6 +1217,7 @@
             <!-- MemberOfAlliance beside the alliance's logo, which opens the alliance (ClickForAllianceInfo). -->
             <p class="info-class">
               <button type="button" class="evelink showInfo" title={word("UI/InfoWindow/ClickForAllianceInfo")} onclick={() => showInfo({ kind: "alliance", allianceID })}>
+                <TypeIcon typeID={null} name={allianceName(allianceID)} size="md" imageUrl={ownerLogoUrl(allianceID)} fallbackText={null} />
                 {word("UI/InfoWindow/MemberOfAlliance", { allianceName: allianceName(allianceID) })}
               </button>
             </p>

@@ -22,11 +22,12 @@ const SHIP_ID = 9001;
 
 function fakeFlow(): unknown {
   // Its stores, the NPC corporations' factions (a corporation's window names its faction by them), the owners'
-  // logos, the corporation logo library and the player corporations' logos, read none; every other member does nothing.
+  // logos, the corporation logo library, the image server (an alliance's logo) and the player corporations' logos, read
+  // none; every other member does nothing.
   const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
   const noLogos = { subscribe: (run: (value: unknown) => void) => (run({}), () => {}) };
   return new Proxy({}, {
-    get: (_target, key) => (key === "corpLogos" ? noLogos : key === "corporationFactions" || key === "ownerLogos" || key === "corpLogoLibrary" ? none : () => {}),
+    get: (_target, key) => (key === "corpLogos" ? noLogos : key === "corporationFactions" || key === "ownerLogos" || key === "corpLogoLibrary" || key === "imageServer" ? none : () => {}),
   });
 }
 

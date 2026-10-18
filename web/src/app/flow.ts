@@ -2097,6 +2097,10 @@ export interface AppFlow {
   loadOwnerLogos(): void;
   /** The client's corporation logo library (appConst's shapes and colours); null until read, or where it is not had. */
   readonly corpLogoLibrary: ReadableSignal<api.CorpLogoLibrary | null>;
+  /** The image server the game server names (the global config's 'imageserverurl'); null until read, or where it names none. */
+  readonly imageServer: ReadableSignal<string | null>;
+  /** The image server's address read from the pilot's global config, once. */
+  loadImageServer(): void;
   /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
   readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
   /** The library read once, and the logos of these corporations asked for where they are not had. */
@@ -14882,6 +14886,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     api.loadOwnerLogos(callOptions)
       .then((read) => ownerLogosSignal.set(read.available ? read.logos : { factions: {}, factionsSmall: {}, corporations: {} }))
       .catch(() => setTimeout(() => (ownerLogosAsked = false), ASK_AGAIN_MS));
+  }
+
+  // photo.GetImageServerURL (evePhotosvc.py 714 to 718): the global config's 'imageserverurl', as the pilot's login gave
+  // it, which the alliances' logos (and the portraits) are asked of.
+  const IMAGE_SERVER_CONFIG = "imageserverurl";
+  const imageServerSignal = createSignal<string | null>(null);
+  let imageServerAsked = false;
+  function loadImageServer(): void {
+    if (imageServerAsked) return;
+    imageServerAsked = true;
+    api.getGlobalConfig([IMAGE_SERVER_CONFIG], callOptions)
+      .then((read) => {
+        const value = read.values[IMAGE_SERVER_CONFIG];
+        imageServerSignal.set(typeof value === "string" ? value : null);
+      })
+      .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
   }
 
   // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
@@ -27885,6 +27905,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadCorporationFactions,
     ownerLogos: readonlySignal(ownerLogosSignal),
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
+    imageServer: readonlySignal(imageServerSignal),
+    loadImageServer,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
     loadOwnerLogos,
