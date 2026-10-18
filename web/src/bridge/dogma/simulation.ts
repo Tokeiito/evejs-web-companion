@@ -193,6 +193,24 @@ export function simulatedFighterBayCapacity(simulation: SimulatedShip): { readon
   return { capacity: location.value(ship, ATTRIBUTE_FIGHTER_CAPACITY), used };
 }
 
+/**
+ * GetMaxQty for the fighter bay of several types at once: the room left over the types' volumes added up, whole; null
+ * where not one of any type would fit.
+ */
+export function fighterBayRoomForAll(simulation: SimulatedShip, typeIDs: readonly number[]): number | null {
+  const { capacity, used } = simulatedFighterBayCapacity(simulation);
+  const volumeLeft = capacity - used;
+  let maxQtyForType = 0;
+  let allTypeVol = 0;
+  for (const typeID of typeIDs) {
+    const typeVolume = typeAttribute(simulation.location, typeID, ATTRIBUTE_VOLUME);
+    allTypeVol += typeVolume;
+    maxQtyForType = Math.max(maxQtyForType, Math.trunc(volumeLeft / typeVolume));
+  }
+  const maxQty = allTypeVol ? volumeLeft / allTypeVol : 0;
+  return maxQtyForType ? Math.trunc(maxQty) : null;
+}
+
 /** GetMaxQty for the fighter bay: as many more of the type as its room left takes; null where none. */
 export function fighterBayRoomFor(simulation: SimulatedShip, typeID: number): number | null {
   const { capacity, used } = simulatedFighterBayCapacity(simulation);

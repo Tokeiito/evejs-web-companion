@@ -62,6 +62,7 @@ import {
   simulatedHoldUse,
   emptyFighterBay,
   fighterBayRoomFor,
+  fighterBayRoomForAll,
   fitFighterToEmptyTube,
   fitFighterToTube,
   fitItemsToFighterBay,
@@ -6610,21 +6611,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5 || item.flagID === 158).map((item) => item.typeID)),
       ensureFighterAbilities(fitting.fitData.filter((item) => item.flagID >= 158 && item.flagID <= 163).map((item) => item.typeID)),
     ]);
+    const pilotFacts = { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 };
+    // FitFighters' TryFitItemsToFighterBay asks with Shift held (GetModifiedQtyDict: FindQty, the QtyPopup up to
+    // GetMaxQty of the bay's types as the load comes to them, the bay still empty, from one): every type in the bay that
+    // many; none where the question is let go or none fits. (Its drones and cargo do not ask.) The room is the bay's
+    // once the fitting is loaded without them.
+    let fitData = fitting.fitData;
+    const bayTypes = [...new Set(fitData.filter((item) => item.flagID === 158).map((item) => item.typeID))];
+    if (bayTypes.length > 0 && shiftHeld()) {
+      const withoutBay = fitData.filter((item) => item.flagID !== 158);
+      const probe = simulateFitData(staticData, fitting.shipTypeID, pilotFacts, brain, withoutBay, serverNow, { facts, notInFitting: [], errors: [] });
+      const most = fighterBayRoomForAll(probe, bayTypes);
+      const qty = most
+        ? await askQuantity({
+          min: 1, max: most, value: 1,
+          hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+        })
+        : null;
+      fitData = qty === null ? withoutBay : [...withoutBay, ...bayTypes.map((typeID) => ({ typeID, flagID: 158, quantity: qty }))];
+    }
     const notInFitting: number[] = [];
     const errors: SimulationUserError[] = [];
     simulation = {
       shipID: null,
       name: fitting.name,
       loadedFit: (fitting.fittingID ?? 0) > 0 && (fitting.ownerID ?? 0) > 0 ? { ownerID: fitting.ownerID!, fittingID: fitting.fittingID! } : null,
-      simulated: simulateFitData(
-        staticData,
-        fitting.shipTypeID,
-        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
-        brain,
-        fitting.fitData,
-        serverNow,
-        { facts, notInFitting, errors },
-      ),
+      simulated: simulateFitData(staticData, fitting.shipTypeID, pilotFacts, brain, fitData, serverNow, { facts, notInFitting, errors }),
     };
     sayNotInFitting(notInFitting);
     await sayFighterErrors(errors);
@@ -6873,12 +6885,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showSimulation();
   }
 
-  /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
+  /**
+   * As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones): more through
+   * TryFitDronesToDroneBay, which with Shift held asks how many to add instead (GetModifiedQtyDict: FindQty, the QtyPopup
+   * up to the bay's room, from one; let go, none).
+   */
   async function setSimulatedDrones(typeID: number, wanted: number): Promise<void> {
     if (!simulation) return;
     await dogmaStaticFor([typeID], []);
     if (!simulation) return;
-    setDronesOfType(simulation.simulated, typeID, wanted);
+    const had = [...simulation.simulated.ship.drones.values()].filter((drone) => drone.typeID === typeID).length;
+    if (wanted > had && shiftHeld()) {
+      const most = droneBayRoomFor(simulation.simulated, typeID);
+      if (most === null) return;
+      const asked = await askQuantity({
+        min: 1, max: most, value: 1,
+        hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+      });
+      if (asked === null || !simulation) return;
+      addDronesOfType(simulation.simulated, typeID, asked);
+    } else {
+      setDronesOfType(simulation.simulated, typeID, wanted);
+    }
     showSimulation();
   }
 
