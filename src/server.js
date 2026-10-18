@@ -7228,8 +7228,12 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
 // --- R56 Character Sheet -----------------------------------------------------
 // "Who is this character." Four plain TOP-LEVEL charMgr reads the retail
 // charactersheet window issues, each scoped server-side off the docked session:
-//   • charMgr.GetPublicInfo3   -> {type:"list", items:[util.KeyVal{name, corp,
-//     alliance, security, ...}]} — public identity.
+//   • charMgr.GetPublicInfo3   -> a CRowset of one row (bounty, title, startDateTime,
+//     description, corporationID, militiaFactionID, bloodlineID), as Tranquility
+//     answers it. ⚠ The page has read the sheet by its own calls since 2026-10-10
+//     (web/src/bridge/characterSheetReads.ts: charMgr.GetPublicInfo and
+//     crimewatch.GetMySecurityStatus, as the client's sheet asks them); no page
+//     reads this route.
 //   • charMgr.GetCharacterDescription -> a plain STRING (the bio).
 //   • charMgr.GetHomeStationRow -> util.KeyVal carrying the home stationID: the
 //     read the client's character sheet makes (charactersheet.py 59). EveJS

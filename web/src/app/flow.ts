@@ -16456,7 +16456,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const reads = await characterSheetReads.read({ characterID: store.station.get().online?.characterID ?? null });
     const identity = reads.errors.publicInfo
       ? null
-      : decodeCharacterIdentity(reads.publicInfo);
+      : decodeCharacterIdentity(reads.publicInfo, reads.errors.securityStatus ? null : reads.securityStatus);
     const description = reads.errors.description
       ? null
       : decodeCharacterDescription(reads.description);

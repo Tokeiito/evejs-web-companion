@@ -2,7 +2,9 @@
 // character that is no NPC, the three asked side by side:
 //
 //   charMgr.GetPublicInfo3(charID)                        its start in its corporation (startDateTime) and its
-//                                                         militia (militiaFactionID)
+//                                                         militia (militiaFactionID): Tranquility's answer is a
+//                                                         CRowset of one packed row (bounty, title, startDateTime,
+//                                                         description, corporationID, militiaFactionID, bloodlineID)
 //   corp.GetInfoWindowDataForChar(charID, 1)              its corporation, its alliance and its titles: title, then
 //     (GetCorpRegistry().GetInfoWindowDataForChar)        title1 to title16, each one it holds a name, else None
 //   crimewatchSvc.GetCharacterSecurityStatus(charID)      its security status
@@ -10,7 +12,7 @@
 //
 // A read that fails leaves its part of the header out, as the client's window has none of it.
 import type { Ask } from "./ask.ts";
-import { isKeyValValue, isListValue, readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
+import { isKeyValValue, isListValue, readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
 
 export interface CharacterInfoHeader {
   /** When it joined its corporation (100 ns since 1601), or null. */
@@ -33,8 +35,12 @@ const textOf = (value: JsonValue | undefined): string => {
   return "";
 };
 
-/** GetPublicInfo3's row: the first of its rows (char_info[0]). */
+/** GetPublicInfo3's row: the first of its rows (char_info[0]), a CRowset's packed row (a list's or a KeyVal's read too). */
 function publicInfoRow(answer: JsonValue): JsonValue | null {
+  if (answer !== null && typeof answer === "object" && !Array.isArray(answer) && (answer as { type?: unknown }).type === "objectex2") {
+    const rows = (answer as { list?: unknown }).list;
+    return Array.isArray(rows) ? ((rows[0] as JsonValue | undefined) ?? null) : null;
+  }
   if (isListValue(answer)) return answer.items[0] ?? null;
   return isKeyValValue(answer) ? answer : null;
 }
@@ -47,7 +53,7 @@ export async function readCharacterInfoHeader(ask: Ask, characterID: number): Pr
     ask("crimewatch", "GetCharacterSecurityStatus", [characterID]),
   ]);
   const row = publicInfo.status === "fulfilled" ? publicInfoRow(publicInfo.value) : null;
-  const started = row === null ? null : unwrapLong(readKeyVal(row, "startDateTime") ?? null);
+  const started = row === null ? null : unwrapLong(readRowField(row, "startDateTime") ?? null);
   const corp = corporation.status === "fulfilled" ? corporation.value : null;
   // construct_header_character 79 to 86: its own title, then title1 to title16, each one that is not empty.
   const titles = corp === null ? [] : ["title", ...Array.from({ length: 16 }, (_, at) => `title${at + 1}`)].map((key) => textOf(readKeyVal(corp, key))).filter((title) => title !== "");
@@ -55,7 +61,7 @@ export async function readCharacterInfoHeader(ask: Ask, characterID: number): Pr
   const securityStatus = typeof securityValue === "number" ? securityValue : Number.isFinite(Number((securityValue as { value?: unknown } | null)?.value)) && securityValue !== null ? Number((securityValue as { value: unknown }).value) : null;
   return {
     startDateTime: started === null || started <= 0n ? null : started,
-    militiaFactionID: row === null ? null : idOf(readKeyVal(row, "militiaFactionID")),
+    militiaFactionID: row === null ? null : idOf(readRowField(row, "militiaFactionID")),
     corporationID: corp === null ? null : idOf(readKeyVal(corp, "corpID")),
     allianceID: corp === null ? null : idOf(readKeyVal(corp, "allianceID")),
     titles,

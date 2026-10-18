@@ -1703,7 +1703,7 @@ export interface StandingsState {
 // --- R56 Character Sheet ----------------------------------------------------
 
 /**
- * Who this character is, from charMgr.GetPublicInfo3 (goal R56). Public identity
+ * Who this character is, from charMgr.GetPublicInfo and crimewatch.GetMySecurityStatus (goal R56). Public identity
  * only — the same fields any character can see about another. Every id here is
  * kept ONLY to be resolved to a name (R7d): `corporationID`/`allianceID` are
  * name-resolved by the page and NEVER rendered as numbers; a PLAYER corp that
