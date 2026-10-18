@@ -411,7 +411,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
-import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -3770,14 +3770,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       `${item} needs a ${itempower} slot, and this is a ${slotpower} one.`);
   }
   /**
+   * clientDogmaLocation.CheckSkillRequirementsForType(None, typeID, 'FittingHasSkillPrerequisites') (447 to 457), which
+   * LoadChargesToModule (986) and LoadChargeToAllModules (1032) ask before a charge is loaded: the skills the pilot is
+   * short of for the charge (GetMissingSkills: the skill service's skills, their effective levels, the type's needs in
+   * the order the client's table gives them), each worded by UI/SkillQueue/Skills/SkillNameAndLevel and joined as
+   * FormatGenericList joins (UI/Common/Formatting/ListGenericDelimiter). Where any is missing the dialog is said with
+   * requiredSkills, item and skillCount, and its words are answered; null where none is, and where the client's table
+   * could not be read (the server is asked as before).
+   */
+  async function chargeSkillsRefusal(typeID: number): Promise<string | null> {
+    const needs = await api.getRequiredSkills([typeID], callOptions);
+    // A type that needs nothing is not looked at further (GetMissingSkills iterates its needs).
+    if (!needs.available || (needs.order[typeID] ?? []).length === 0) return null;
+    const missing = missingSkills(typeID, needs.order, skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])));
+    if (missing.size === 0) return null;
+    const label = "UI/SkillQueue/Skills/SkillNameAndLevel";
+    await Promise.all([
+      wordsNow([label, LIST_DELIMITER]).catch(() => {}),
+      resolveNamesNow([typeID, ...missing.keys()].map((id) => ({ kind: "type" as const, id }))).catch(() => {}),
+    ]);
+    const nameOf = (id: number): string => nameCache.get(nameKey("type", id)) ?? `Type ${id}`;
+    const words = [...missing].map(([skill, level]) => templateWords(label, { skill, amount: level }, `${nameOf(skill)} : Level ${level}`));
+    const delimiter = store.words.get().templates[LIST_DELIMITER];
+    const requiredSkills = words.join(typeof delimiter === "string" && delimiter !== "" ? delimiter : ", ");
+    const fallback = `Loading ${nameOf(typeID)} needs ${requiredSkills}.`;
+    sayDialog("FittingHasSkillPrerequisites", { type: "dict", entries: [["requiredSkills", requiredSkills], ["item", typeID], ["skillCount", words.length]] }, fallback);
+    return fallback;
+  }
+  /**
    * DropLoadChargeToModule (clientDogmaLocation 999 to 1028) and LoadChargesToModule (980 to 991): with Shift held, how
    * many is asked (QtyPopup, up to the stack, from none), and that many split off the stack where it lies first (its
-   * container's Add, the same place and flag); then LoadAmmo of the module, its bank's master where it is a slave, with
-   * the charges and where they lie. The skill check LoadChargesToModule makes first is not the page's yet.
+   * container's Add, the same place and flag); then the charge's skills checked (chargeSkillsRefusal), and LoadAmmo of
+   * the module, its bank's master where it is a slave, with the charges and where they lie.
    */
   async function dropLoadChargeToModule(
     module: FittedModule,
-    charge: { readonly itemID: number; readonly locationID: number; readonly flagID: number; readonly stacksize: number },
+    charge: { readonly itemID: number; readonly typeID: number; readonly locationID: number; readonly flagID: number; readonly stacksize: number },
     from: AmmoPlace,
     shift: boolean,
   ): Promise<void> {
@@ -3794,6 +3822,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
       chargeIDs = [splitID];
     }
+    if ((await chargeSkillsRefusal(charge.typeID)) !== null) return;
     const banks = heldWeaponBanks();
     const masterID = [...banks].find(([, slaves]) => slaves.includes(module.itemID))?.[0] ?? module.itemID;
     await loadAmmoCall(bridgeDo, ammoSession(), [masterID], chargeIDs, from);
@@ -26168,7 +26197,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const target = to.module;
       const shipID = ammoSession().shipID;
       await runFittingAction(async () => {
-        let item = { itemID: typeof charge.itemID === "number" ? charge.itemID : 0, locationID: shipID, flagID: fromFlagID, stacksize: charge.quantity };
+        let item = { itemID: typeof charge.itemID === "number" ? charge.itemID : 0, typeID: charge.typeID, locationID: shipID, flagID: fromFlagID, stacksize: charge.quantity };
         // A charge in a module by its tuple: UnloadAmmoToContainer to the cargo first, and loaded from what that answers.
         if (Array.isArray(charge.itemID)) {
           const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), from.module!.itemID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
@@ -26191,7 +26220,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
       if (locationID === null) return;
       const target = to.module;
-      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, locationID, flagID: charge.from === "cargo" ? 5 : 4, stacksize: charge.quantity }, charge.from, shift));
+      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.from === "cargo" ? 5 : 4, stacksize: charge.quantity }, charge.from, shift));
     },
 
     async unloadChargeToCargo(flagID) {
@@ -26312,6 +26341,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async loadAmmo(moduleIDs, chargeItemIDs, source) {
+      // LoadChargesToModule's skill check, by the charge's type as the hold lists it (the rack's menu and its reload,
+      // LoadAmmoTypeToModule; a charge loaded from the window's list). A type not listed is the server's to judge.
+      const inventory = store.inventory.get();
+      const typeID = [...inventory.cargo.rows, ...inventory.hangar.rows].find((row) => row.itemID === chargeItemIDs[0])?.typeID ?? null;
+      const refusal = typeID === null ? null : await chargeSkillsRefusal(typeID);
+      if (refusal !== null) {
+        store.apply({ type: "fitting/action-error", message: refusal, said: true });
+        return "refused";
+      }
       return runAmmoAction(
         moduleIDs,
         () => loadAmmoFrom(moduleIDs, chargeItemIDs, source),
