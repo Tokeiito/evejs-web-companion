@@ -1847,6 +1847,46 @@
     }
     simFightersOpen = !simFightersOpen;
   }
+  /**
+   * An item dragged out of the inventory onto a simulated hold (minihangar CargoSlots.OnDropData, its nodes): its row,
+   * as the inventory holds it (the hangar, the cargo, a ship's bays or a container open), for its type, category and
+   * stack. Any item: the hold's own rules then take what they take.
+   */
+  function droppedItem(event: DragEvent): { readonly typeID: number; readonly categoryID: number | null; readonly quantity: number } | null {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    if (payload?.kind !== "inventoryItem") return null;
+    const rows = [
+      ...$inventory.hangar.rows, ...$inventory.cargo.rows, ...($inventory.container?.rows ?? []),
+      ...($inventory.openShip?.bays ?? []).flatMap((bay) => bay.items ?? []),
+    ];
+    const row = rows.find((each) => each.itemID === payload.itemID);
+    return { typeID: payload.typeID, categoryID: row?.categoryID ?? null, quantity: row?.quantity ?? 1 };
+  }
+  /** A simulated hold's readout taking an item dragged out of the inventory (its OnDropData). */
+  function overSimulatedHold(event: DragEvent): void {
+    if (carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) event.preventDefault();
+  }
+  /** CargoCargoSlots.AddSimulatedCargo: one of each item dropped (GetQtyByTypeIDs), put in the hold (TryFitItemsToCargo). */
+  function dropOnSimulatedCargo(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    void run(() => flow.addSimulatedCargo(item.typeID));
+  }
+  /** CargoDroneSlots.AddSimulatedDrones: one of each item dropped, a drone only (TryFitDronesToDroneBay). */
+  function dropOnSimulatedDroneBay(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    void run(() => flow.addSimulatedDrones(item.typeID));
+  }
+  /** CargoFighterSlots.AddSimulatedFighters: one of each item dropped, a fighter only, to a tube or the bay. */
+  function dropOnSimulatedFighterBay(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    if (item.categoryID === 87) void run(() => flow.addSimulatedFighters(item.typeID, 1));
+  }
   /** The picked item's stack (a dropped item's stacksize). */
   function pickedQuantity(): number {
     return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.quantity ?? 1;
@@ -1891,6 +1931,13 @@
     if (typeID !== null && fighter) void run(() => flow.addSimulatedFighterBay(typeID, qty));
   }
   function dropOnFighterBayList(event: DragEvent): void {
+    // An item dragged out of the inventory: _TryAddToFighterBay, as many as its stack, a fighter only.
+    const item = droppedItem(event);
+    if (item) {
+      event.preventDefault();
+      if (item.categoryID === 87) void run(() => flow.addSimulatedFighterBay(item.typeID, item.quantity));
+      return;
+    }
     const drag = fighterDrag;
     fighterDrag = null;
     if (drag?.from !== "tube") return;
@@ -2637,7 +2684,8 @@
         <dt>Cargo hold</dt>
         {#if simulation}
           <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
-          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
+          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedCargo}>
             {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
           <!-- OnHoldClicked: the ship's cargo hold in the inventory (OpenCargoHoldOfActiveShip). -->
@@ -2650,7 +2698,8 @@
              shows its picker, a picked fighter put on it goes to a tube or the bay. -->
         <div class:fit-readout-warning={fighterBayWarningColor() !== null} style={fighterBayWarningColor() ? `--slot-warning: ${fighterBayWarningColor()}` : undefined}>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
-          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
+          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedFighterBay}>
             {holdReadout(simulation.holdUse.fighter, simulation.fighterBay.capacity)}</button></dd>
         </div>
       {:else if simulation}
@@ -2658,7 +2707,8 @@
              GetDroneCapacity; a picked drone put on it goes in the bay, a click shows its drones. -->
         <div>
           <dt>Drone bay</dt>
-          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}>
+          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedDroneBay}>
             {holdReadout(simulation.holdUse.drone, stats.bays.droneCapacity.known ? stats.bays.droneCapacity.value : 0)}</button></dd>
         </div>
       {:else if realBayReadout}
@@ -2773,7 +2823,7 @@
         </ol>
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <div class="fit-sim-fighter-bay" role="group" aria-label={offenseWord("UI/Fitting/FittingWindow/FighterBay")}
-          ondragover={(event) => { if (fighterDrag?.from === "tube") event.preventDefault(); }}
+          ondragover={(event) => { if (fighterDrag?.from === "tube" || carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) event.preventDefault(); }}
           ondrop={dropOnFighterBayList}
           onclick={clickFighterBayList}>
           {#if simulation.fighterBayTypes.length === 0}
