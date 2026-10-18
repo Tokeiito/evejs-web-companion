@@ -155,6 +155,30 @@ export function buildModuleRack(
   }));
 }
 
+/**
+ * The slots the rack draws, as the client's slotsContainer draws them: a bank's slave has no button (InitSlots, 293
+ * to 297: its slot is left empty, the master's button standing for the bank); an empty slot is drawn only where the
+ * pilot shows empty slots (settings.user.ui showEmptySlots, off at first: the HUD options' Display Empty Slots), and
+ * then not the high rack's first empty slots, as many as there are slaves (CheckButtonVisibility, 474 to 481). The
+ * rows themselves (buildModuleRack) keep every slot and every slave: what is drawn is this.
+ */
+export function rackShownRows(rows: readonly RackRow[], showEmptySlots: boolean): readonly RackRow[] {
+  const slaves = rows.flatMap((row) => row.slots).filter((slot) => slot.module !== null && slot.module.bankMasterID !== null).length;
+  return rows.map((row) => {
+    let ignored = 0;
+    const slots = row.slots.flatMap((slot) => {
+      if (slot.module !== null && slot.module.bankMasterID === null) return [slot];
+      if (!showEmptySlots) return [];
+      if (row.family === "high" && ignored < slaves) {
+        ignored += 1;
+        return [];
+      }
+      return [{ ...slot, module: null }];
+    });
+    return { ...row, slots };
+  });
+}
+
 /** What one click on a rack module means right now. */
 export type RackClickAction = "activate" | "deactivate" | null;
 

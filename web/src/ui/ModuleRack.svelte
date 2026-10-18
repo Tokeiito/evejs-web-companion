@@ -31,6 +31,7 @@
     rackIsEmpty,
     rackModuleBurntOut,
     rackSlotTitle,
+    rackShownRows,
     OVERLOAD_HOLD_MS,
   } from "./moduleRack.ts";
   import {
@@ -70,6 +71,33 @@
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
   const inventory = store.inventory;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  /**
+   * The HUD options' Display Empty Slots (shipUI.GetHUDOptionMenu, slotsContainer.ToggleShowEmpty), off at first, kept
+   * in this browser as the client keeps it in the user's settings.
+   */
+  const SHOW_EMPTY_SLOTS_KEY = "evejs.ui.showEmptySlots";
+  const SHOW_EMPTY_SLOTS_LABEL = "UI/Inflight/HUDOptions/DisplayEmptySlots";
+  let showEmptySlots = $state((() => {
+    try {
+      return globalThis.localStorage?.getItem(SHOW_EMPTY_SLOTS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })());
+  let hudOptionsOpen = $state(false);
+  function toggleShowEmptySlots(): void {
+    showEmptySlots = !showEmptySlots;
+    try {
+      globalThis.localStorage?.setItem(SHOW_EMPTY_SLOTS_KEY, showEmptySlots ? "1" : "0");
+    } catch {
+      // Storage refused: the choice lasts the page.
+    }
+  }
+  $effect(() => {
+    flow?.requestWords([SHOW_EMPTY_SLOTS_LABEL]);
+  });
 
   const rows = $derived(
     buildModuleRack(
@@ -732,7 +760,7 @@
 </script>
 
 <div class="module-rack-rows" aria-label="Module rack">
-  {#each rows as row (row.family)}
+  {#each rackShownRows(rows, showEmptySlots) as row (row.family)}
     <div class="rack-row">
       <!--
         THE GUTTER CELL — empty on every rack but the high one.
@@ -792,6 +820,21 @@
               {/if}
             </svg>
           </button>
+        {/if}
+        {#if row.family === "low" && flow}
+          <!-- The HUD's settings (shipUI's hudSettingsMenu, GetHUDOptionMenu): Display Empty Slots. -->
+          <button type="button" class="rack-hud-options" aria-expanded={hudOptionsOpen} title="HUD options"
+            aria-label="HUD options" onclick={() => (hudOptionsOpen = !hudOptionsOpen)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" /></svg>
+          </button>
+          {#if hudOptionsOpen}
+            <div class="rack-hud-menu" role="menu">
+              <label class="rack-hud-option">
+                <input type="checkbox" checked={showEmptySlots} onchange={toggleShowEmptySlots} />
+                {$words.templates[SHOW_EMPTY_SLOTS_LABEL] || "Show the empty slots"}
+              </label>
+            </div>
+          {/if}
         {/if}
       </span>
       <!--

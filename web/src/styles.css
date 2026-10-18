@@ -5551,6 +5551,37 @@
   /* Banked: lit in the accent, and the glyph itself is a joined chain rather
    * than a broken one — the state never rests on the colour. */
   .rack-bank.linked { color: var(--color-accent); }
+  /* The HUD's settings (shipUI's hudSettingsMenu), in the low rack's gutter: the bank button's shape, and its menu
+   * opening upwards beside it. */
+  .rack-gutter { position: relative; }
+  .rack-hud-options {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: var(--rack-slot, 42px);
+    min-height: 0;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    color: var(--color-muted);
+  }
+  .rack-hud-options svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+  .rack-hud-options:hover, .rack-hud-options[aria-expanded="true"] { border-color: var(--color-line-strong); color: var(--color-text-bright); }
+  .rack-hud-menu {
+    position: absolute;
+    left: 0;
+    bottom: 100%;
+    z-index: 20;
+    min-width: 12rem;
+    padding: 0.35rem 0.5rem;
+    background: var(--color-surface, #111);
+    border: 1px solid var(--color-line-strong);
+  }
+  .rack-hud-option { display: flex; gap: 0.4rem; align-items: center; white-space: nowrap; font-size: 12px; }
+  @media (pointer: coarse) {
+    .rack-hud-options { width: var(--rack-slot, 42px); }
+  }
   @media (pointer: coarse) {
     /* Only the WIDTH needs the touch minimum — the height is already a slot. */
     .rack-bank { width: var(--rack-slot, 42px); }
