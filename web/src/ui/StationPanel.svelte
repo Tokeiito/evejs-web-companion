@@ -750,14 +750,14 @@
       error = verdict;
       return;
     }
-    // One item off a slot of the active ship, onto its cargo (invCtrl.ShipCargo.AddItems, invControllers 504 to
-    // 517): a module is UnloadModuleToContainer to the cargo, a charge UnloadAmmoToContainer. It carries no selection.
+    // One item off a slot of the active ship, onto this place (invControllers BaseInvContainer.AddItems 509 to 517):
+    // a module is UnloadModuleToContainer to its container, a charge UnloadAmmoToContainer. It carries no selection.
     if (payload?.kind === "fittedModule" || payload?.kind === "fittedCharge") {
       const taken = payload;
       void run(async () => {
-        if (taken.kind === "fittedModule") await flow.unloadModuleToCargo(taken.itemID);
-        else await flow.unloadChargeToCargo(taken.flagID);
-        await flow.loadInventory();
+        // (Each re-reads every open place itself: the open container it went into too.)
+        if (taken.kind === "fittedModule") await flow.unloadModuleToPlace(taken.itemID, place);
+        else await flow.unloadChargeToPlace(taken.flagID, place);
       });
       return;
     }

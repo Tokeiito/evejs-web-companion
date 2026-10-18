@@ -194,11 +194,11 @@ export function dropOnPlaceVerdict(
     return "That is not something you can put there.";
   }
   if (payload.kind === "fittedModule" || payload.kind === "fittedCharge") {
-    // The ship's cargo takes it as the client's does (ShipCargo and the fitting
-    // window's cargo readout: UnloadModuleToContainer, UnloadAmmoToContainer).
-    // Into any other place the client takes it too, but by calls no recording
-    // shows, so the page does not make them yet and says so.
-    return to.kind === "cargo" ? null : "Only the cargo hold takes an item off the fitting so far: drop it there.";
+    // Each container takes it as its controller does (invControllers BaseInvContainer.AddItems 509 to 517:
+    // UnloadModuleToContainer, UnloadAmmoToContainer with its own arguments and flag): the cargo and the ship's other
+    // holds, the hangar, a container. The corporation's hangar takes it too in the client, by its office's arguments,
+    // which the page does not make yet, and says so.
+    return to.kind === "corp" ? "The corporation's hangar does not take an item off the fitting from here yet." : null;
   }
   if (samePlace(payload.from, to)) {
     // Not an error — just nothing to do. Refusing WITH a reason keeps the

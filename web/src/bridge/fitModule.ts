@@ -197,14 +197,57 @@ export async function unloadModuleToCargo(
   banks: WeaponBanks,
   clearGroup: () => Promise<boolean>,
 ): Promise<{ readonly applied: boolean } | undefined> {
+  return unloadModuleToContainer(act, fitted, place, itemID, banks, clearGroup, { inventory: place.shipID, containerItemID: place.shipID, flag: FLAG_CARGO });
+}
+
+/**
+ * Where UnloadModuleToContainer (1077 to 1104) puts a module: the container's inventory (`containerArgs`: the ship's,
+ * the hangar's binding, a container's), its item (containerInv.GetItem(), which UnloadAmmo names), the container's flag
+ * (its controller's locationFlag, None for a container), and, for an audit log secure container named with no flag,
+ * the owner UnloadAmmo names with it (1089 to 1095: the corporation where the container is the corporation's).
+ */
+export interface ModuleDestination {
+  readonly inventory: number | typeof THE_HANGAR;
+  readonly containerItemID: number;
+  readonly flag: number | null;
+  readonly auditLogOwnerID?: number | null;
+}
+
+/**
+ * A fitted module put into a container as the client's dogma location puts it (UnloadModuleToContainer, 1077 to 1104):
+ * a module in a weapon bank asks its pilot first (ClearGroupModule) and on Yes the bank is broken up; then, charge or
+ * none, UnloadAmmo(shipID, the bank's master or the module, the container's item) (for an audit log secure container
+ * named with no flag, (the container, its owner, None)); then the container's inventory's Add of it from the ship:
+ * the ship's own or one with a flag with qty=None and the flag, else with nothing named (1097 to 1103). The cargo
+ * (unloadModuleToCargo) is the ship with flagCargo, as Tranquility recorded it. Answers whether the slots say it is
+ * gone, and nothing where the pilot answered No. Fails as a call fails.
+ */
+export async function unloadModuleToContainer(
+  act: Ask,
+  fitted: FittedNow,
+  place: AmmoSession,
+  itemID: number,
+  banks: WeaponBanks,
+  clearGroup: () => Promise<boolean>,
+  destination: ModuleDestination,
+): Promise<{ readonly applied: boolean } | undefined> {
   let masterModuleID: number | null = null;
   if (weaponBankOf(banks, itemID) !== null) {
     if (!(await clearGroup())) return undefined;
     masterModuleID = masterOf(banks, itemID) ?? itemID;
     await act("dogmaIM", "DestroyWeaponBank", [place.shipID, masterModuleID]);
   }
-  await act("dogmaIM", "UnloadAmmo", [place.shipID, masterModuleID ?? itemNumber(itemID), place.shipID]);
-  await act("invbroker", "Add", [itemNumber(itemID), place.shipID], { qty: null, flag: FLAG_CARGO }, place.shipID);
+  const unloaded = masterModuleID ?? itemNumber(itemID);
+  if (destination.auditLogOwnerID !== undefined && destination.auditLogOwnerID !== null && destination.flag === null) {
+    await act("dogmaIM", "UnloadAmmo", [place.shipID, unloaded, [destination.containerItemID, destination.auditLogOwnerID, null]]);
+  } else {
+    await act("dogmaIM", "UnloadAmmo", [place.shipID, unloaded, destination.containerItemID]);
+  }
+  if (destination.inventory === place.shipID || destination.flag !== null) {
+    await act("invbroker", "Add", [itemNumber(itemID), place.shipID], { qty: null, flag: destination.flag }, destination.inventory);
+  } else {
+    await act("invbroker", "Add", [itemNumber(itemID), place.shipID], null, destination.inventory);
+  }
   return { applied: !(await fitted()).has(itemID) };
 }
 
@@ -245,10 +288,27 @@ export async function unloadChargeToCargo(
   banks: WeaponBanks,
   isNoRoom: (error: unknown) => boolean,
 ): Promise<{ readonly kind: "unloaded"; readonly stackIDs: readonly number[] } | { readonly kind: "bankWithoutRoom" }> {
+  return unloadChargeToContainer(act, place, moduleID, banks, isNoRoom, [place.shipID, place.characterID, FLAG_CARGO]);
+}
+
+/**
+ * The charge in a slot put into a container as UnloadAmmoToContainer (1106 to 1134) puts it: `destination` is the
+ * client's (the container's first argument, the owner, its flag): the ship, the pilot and a hold's flag; the hangar's
+ * (const.containerHangar, the pilot, flagHangar: AddItems 515 to 517); a container's own, its owner and None. The rest
+ * as unloadChargeToCargo.
+ */
+export async function unloadChargeToContainer(
+  act: Ask,
+  place: AmmoSession,
+  moduleID: number,
+  banks: WeaponBanks,
+  isNoRoom: (error: unknown) => boolean,
+  destination: readonly [number, number, number | null],
+): Promise<{ readonly kind: "unloaded"; readonly stackIDs: readonly number[] } | { readonly kind: "bankWithoutRoom" }> {
   const masterID = masterOf(banks, itemNumber(moduleID));
   let answered;
   try {
-    answered = await act("dogmaIM", "UnloadAmmo", [place.shipID, masterID ?? moduleID, [place.shipID, place.characterID, FLAG_CARGO], null]);
+    answered = await act("dogmaIM", "UnloadAmmo", [place.shipID, masterID ?? moduleID, [...destination], null]);
   } catch (error) {
     if (masterID !== null && isNoRoom(error)) return { kind: "bankWithoutRoom" };
     throw error;
