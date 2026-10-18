@@ -13,6 +13,8 @@ export const HUD_SETTING_DEFAULTS = Object.freeze({
   showReadout: false,
   /** 634, UpdateReadouts: the readout as percentages (else as hit points left of the whole). */
   readoutType: true,
+  /** 641, shipUI.ToggleHudButtons: the HUD's utility buttons shown (HudButtons). */
+  hudButtonsExpanded: true,
   /** 644, shipmodulebutton.OnMouseEnter 1088: a module's tooltip shown. */
   showModuleTooltips: true,
   /** 657, shipmodulebutton.ToggleOverload 221 and GetMenu 467: the overload state locked. */

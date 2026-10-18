@@ -21,6 +21,7 @@
   // surface that is always on screen — and it must never be disabled; see below.
   import ModuleRack from "./ModuleRack.svelte";
   import ShipHud from "./ShipHud.svelte";
+  import HudButtons from "./HudButtons.svelte";
   import CargoBays from "./CargoBays.svelte";
   import { onMount } from "svelte";
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
@@ -342,6 +343,11 @@
     <section class="hud-cluster cargo-cluster" aria-label="Cargo holds">
       <CargoBays {store} {flow} />
     </section>
+
+    <!-- The HUD's utility buttons beside the wheel (shipUI's hudButtons). -->
+    <div class="hud-cluster hud-utility">
+      <HudButtons {store} {flow} />
+    </div>
 
     <section class="hud-cluster ship-gauges" aria-label="Ship status">
       <ShipHud {store} />

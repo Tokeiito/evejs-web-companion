@@ -92,12 +92,14 @@
   const showModuleTooltips = hudSetting("showModuleTooltips");
   const lockOverload = hudSetting("lockOverload");
   const lockModules = hudSetting("lockModules");
+  const hudButtonsExpanded = hudSetting("hudButtonsExpanded");
   const HUD_OPTIONS: readonly ({ readonly name: HudSettingName; readonly label: string; readonly own: string; readonly needs?: HudSettingName } | null)[] = [
     { name: "showPassiveModules", label: "UI/Inflight/HUDOptions/DisplayPassiveModules", own: "Show the passive modules" },
     { name: "showEmptySlots", label: "UI/Inflight/HUDOptions/DisplayEmptySlots", own: "Show the empty slots" },
     { name: "showReadout", label: "UI/Inflight/HUDOptions/DisplayReadout", own: "Show the hit point numbers" },
     // 636 to 640: a choice only while the readout is shown.
     { name: "readoutType", label: "UI/Inflight/HUDOptions/DisplayReadoutAsPercentage", own: "Numbers as percentages", needs: "showReadout" },
+    { name: "hudButtonsExpanded", label: "UI/Inflight/HUDOptions/DisplayUtilityButtons", own: "Show the utility buttons" },
     { name: "showModuleTooltips", label: "UI/Inflight/HUDOptions/DisplayModuleTooltips", own: "Show the modules' tooltips" },
     null,
     { name: "lockModules", label: "UI/Inflight/HUDOptions/LockModulesInPlace", own: "Keep the modules where they are" },
@@ -111,6 +113,7 @@
     showModuleTooltips: $showModuleTooltips,
     lockOverload: $lockOverload,
     lockModules: $lockModules,
+    hudButtonsExpanded: $hudButtonsExpanded,
   });
   /** The ship's order of the HUD's places (GetSlotOrder: settings.user.ui slotOrder, kept where its pilot moved them). */
   const slotOrders = slotOrdersSignal;

@@ -66,7 +66,9 @@ function fakeFlow(): unknown {
   const walletOverview = { get: () => overviewUnread, subscribe: (listener: (value: typeof overviewUnread) => void) => (listener(overviewUnread), () => {}) };
   const tradesUnread = { loaded: false, transactions: [], error: null };
   const marketTransactions = { get: () => tradesUnread, subscribe: (listener: (value: typeof tradesUnread) => void) => (listener(tradesUnread), () => {}) };
-  return new Proxy({ walletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  // The HUD's autopilot button (HudButtons) follows whether the autopilot is on: off.
+  const autopilotOn = { get: () => false, subscribe: (listener: (value: boolean) => void) => (listener(false), () => {}) };
+  return new Proxy({ walletJournal, walletOverview, marketTransactions, autopilotOn } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 const SHIP_ID = 9001;

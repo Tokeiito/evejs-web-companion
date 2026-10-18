@@ -28,6 +28,8 @@
   import { marketDetailsTarget } from "./marketDetails.ts";
   import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
   import { shipHoldTarget } from "./shipHold.ts";
+  import { windowToggleTarget } from "./windowToggle.ts";
+  import { untrack } from "svelte";
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
   import { typeCompareTarget } from "./typeCompare.ts";
@@ -368,6 +370,24 @@
     openFromNeocom("inventory");
   });
 
+  // A window toggled from the HUD's utility buttons (windowToggle.ts): closed where it is open, else opened; the
+  // inventory as OpenCargoHoldOfActiveShip opens it, on the cargo (shipHold.ts).
+  let servedToggleRequests = windowToggleTarget.requests.get();
+  const toggleRequests = windowToggleTarget.requests;
+  $effect(() => {
+    const count = $toggleRequests;
+    if (count === servedToggleRequests) return;
+    servedToggleRequests = count;
+    const id = untrack(() => windowToggleTarget.take());
+    if (id === null) return;
+    if (untrack(() => wins.some((win) => win.id === id))) {
+      wins = closeWindow(wins, id);
+      return;
+    }
+    if (id === "inventory") shipHoldTarget.ask("cargo");
+    else open(id);
+  });
+
   let servedMarketRequests = marketDetailsTarget.requests.get();
   const marketRequests = marketDetailsTarget.requests;
   $effect(() => {
@@ -538,7 +558,9 @@
                the whole left side. -->
           <ErrorBoundary name="HUD bar">
             <!-- No `onOpen`: the HUD's nav buttons went, because every one
-                 of them is a Neocom rail entry that is on screen anyway. -->
+                 of them is a Neocom rail entry that is on screen anyway. The
+                 client's own utility buttons (HudButtons) ask through
+                 windowToggle.ts, which this workspace serves. -->
             <HudBar {store} {flow} />
           </ErrorBoundary>
           <ErrorBoundary name="Locked targets">
