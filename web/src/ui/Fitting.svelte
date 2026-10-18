@@ -65,6 +65,7 @@
   import SkillTrainingAction from "./SkillTrainingAction.svelte";
   import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
   import { createSkillPlanButton } from "./skillPlanTemplate.ts";
+  import { openShipHold } from "./shipHold.ts";
   import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
   import type { TypeMetaFacts } from "../app/api.ts";
   import TypeIcon from "./TypeIcon.svelte";
@@ -1550,6 +1551,18 @@
   }
   /** FilterResultsForWarningLevel: the open level's warnings, in the tooltip's order. */
   const tooltipWarnings = $derived.by(() => (warningTooltipLevel === null ? [] : fitWarnings.filter((warning) => warning.level === warningTooltipLevel)));
+  /**
+   * CargoFighterSlots.ChangeWarningDisplay: the fighter bay's readout framed at the highest level its bay's or its
+   * tubes' flags are shown with (the drone bay's readout has no frame).
+   */
+  function fighterBayWarningColor(): string | null {
+    let level: number | null = null;
+    for (const flagID of [158, 159, 160, 161, 162, 163]) {
+      const at = warningSlots.get(flagID);
+      if (at !== undefined && (level === null || at > level)) level = at;
+    }
+    return level === null ? null : COLOR_BY_LEVEL[level] ?? null;
+  }
   /** A warning's colour at a slot's flag, where it is shown with one. */
   function slotWarningColor(flagID: number | null): string | null {
     const level = flagID === null ? undefined : warningSlots.get(flagID);
@@ -2627,14 +2640,15 @@
           <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
             {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
-          <dd>{cargoBayText}</dd>
+          <!-- OnHoldClicked: the ship's cargo hold in the inventory (OpenCargoHoldOfActiveShip). -->
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("cargo")}>{cargoBayText}</button></dd>
         {/if}
       </div>
       {#if simulation?.fighterBay}
         <!-- The simulated fighter bay (minihangar CargoFighterSlots) in the drone bay's place, where the hull has one
              (ContructDroneAndFighterIcons: HasFighterBay): its use and capacity (GetCapacity(flagFighterBay)); a click
              shows its picker, a picked fighter put on it goes to a tube or the bay. -->
-        <div>
+        <div class:fit-readout-warning={fighterBayWarningColor() !== null} style={fighterBayWarningColor() ? `--slot-warning: ${fighterBayWarningColor()}` : undefined}>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
           <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
             {holdReadout(simulation.holdUse.fighter, simulation.fighterBay.capacity)}</button></dd>
@@ -2650,14 +2664,17 @@
       {:else if realBayReadout}
         <!-- The ship's own fighter bay, or its drone bay where it has none (CargoFighterSlots, CargoDroneSlots): its
              inventory's use over GetFighterCapacity or GetDroneCapacity. -->
-        <div>
+        {@const frame = realBayReadout.kind === "fighter" ? fighterBayWarningColor() : null}
+        <div class:fit-readout-warning={frame !== null} style={frame ? `--slot-warning: ${frame}` : undefined}>
           <dt>{realBayReadout.kind === "fighter" ? offenseWord("UI/Fitting/FittingWindow/FighterBay") : "Drone bay"}</dt>
-          <dd>{holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</dd>
+          <!-- OnHoldClicked: the bay in the inventory (OpenFighterBayOfActiveShip, OpenDroneBayOfActiveShip). -->
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold(realBayReadout.kind)}>
+            {holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</button></dd>
         </div>
       {:else}
         <div>
           <dt>Drone bay</dt>
-          <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("drone")}>{@render statValue(stats.bays.droneCapacity, asVolume)}</button></dd>
         </div>
       {/if}
       <div class="fit-readout-value">

@@ -32,7 +32,8 @@
   // ⚠ AND VOLUME IS USUALLY UNKNOWN. Ship-bay contents carry no per-unit m³ at
   // all (the read does not send it), so the m³ columns are empty in the bays
   // view. That is normal. Unknown renders as "—" / "not known", never 0.
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { shipHoldTarget } from "./shipHold.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import KeyActivationWindow from "./KeyActivationWindow.svelte";
   import { ABYSS_WINDOW_LABELS, offersActivateAbyssalKey, type FilamentPlace } from "../bridge/abyssalKeys.ts";
@@ -299,6 +300,26 @@
     if (shown === null || shown.n === servedCargoShown) return;
     servedCargoShown = shown.n;
     if ($inventory.container?.itemID === shown.itemID) view = "container";
+  });
+
+  // A hold of the active ship asked for from outside (shipHold.ts: the Fitting window's readouts' OnHoldClicked): the
+  // ship's holds shown, that one unfolded and brought into view; the active ship's holds read first where another's
+  // are open.
+  const holdRequests = shipHoldTarget.requests;
+  $effect(() => {
+    void $holdRequests;
+    const key = untrack(() => shipHoldTarget.take());
+    if (key === null) return;
+    untrack(() => {
+      view = "ship";
+      collapsedBays = { ...collapsedBays, [key]: false };
+      const activeID = store.inventory.get().activeShipID;
+      void (async () => {
+        if (activeID !== null && store.inventory.get().openShip?.itemID !== activeID) await flow.openShipBays(activeID).catch(() => {});
+        await tick();
+        document.querySelector(`[data-bay-group="${key}"]`)?.scrollIntoView({ block: "nearest" });
+      })();
+    });
   });
 
   // The container closed under us (or was never open): fall back rather than
@@ -1301,7 +1322,7 @@
      the rows. In the bays view the header folds the bay away. -->
 {#snippet group(g: Group)}
   {@const allPicked = g.shown.length > 0 && g.shown.every((row) => isPicked(row, g.place))}
-  <section class="stn-group">
+  <section class="stn-group" data-bay-group={g.key}>
     <div class="stn-group-head">
       {#if g.collapsible}
         <button

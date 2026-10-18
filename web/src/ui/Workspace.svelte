@@ -27,6 +27,7 @@
   import { showInfoTarget } from "./showInfo.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
   import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
+  import { shipHoldTarget } from "./shipHold.ts";
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
   import { typeCompareTarget } from "./typeCompare.ts";
@@ -354,6 +355,17 @@
     if (count === servedSkillPlanRequests) return;
     servedSkillPlanRequests = count;
     open("skills");
+  });
+
+  // A hold of the active ship asked for (shipHold.ts: the Fitting window's readouts, cmd.OpenCargoHoldOfActiveShip and
+  // its kin): the inventory as the Neocom opens it, the dock panel while docked.
+  let servedHoldRequests = shipHoldTarget.requests.get();
+  const holdRequests = shipHoldTarget.requests;
+  $effect(() => {
+    const count = $holdRequests;
+    if (count === servedHoldRequests) return;
+    servedHoldRequests = count;
+    openFromNeocom("inventory");
   });
 
   let servedMarketRequests = marketDetailsTarget.requests.get();
