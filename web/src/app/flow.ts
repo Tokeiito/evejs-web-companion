@@ -634,6 +634,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
+import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadModuleToCargo as unloadModuleToCargoCall, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
@@ -1514,6 +1515,13 @@ export interface AppFlow {
   unloadModuleToCargo(itemID: number): Promise<void>;
   /** The charge in the slot of this flag put into the ship's cargo, as the client's UnloadAmmoToContainer puts it. */
   unloadChargeToCargo(flagID: number): Promise<void>;
+  /**
+   * A charge-taking module's ammunition menu on the rack, as the client's GetAmmoMenu makes it (bridge/ammoMenu.ts),
+   * each entry with its words; null where the module or the static data is not to be had.
+   */
+  rackAmmoMenu(moduleID: number, context: { readonly reloading: boolean; readonly bankCount: number }): Promise<readonly (AmmoMenuEntry & { readonly text: string })[] | null>;
+  /** The rack menu's Unload to Cargo: UnloadAmmoToContainer of the module's charge to the cargo. */
+  unloadRackCharge(moduleID: number): Promise<void>;
   /** A fitted module dropped on a slot of the ship (the slot's OnDropData): grouped with Shift held, else moved there. */
   dropFittedModuleOnSlot(moduleID: number, flagID: number, shift: boolean): Promise<void>;
   /** The charge in one slot dropped on another's module (FitCharges): unloaded to the cargo, then loaded there. */
@@ -3747,6 +3755,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const shipID = store.fitting.get().activeShipID;
     return allInfo && shipID !== null && Number(allInfo.activeShipID) === shipID ? decodeWeaponBanks(allInfo.shipState) : new Map();
   }
+  /**
+   * godma's chargeTypeByModule (ChangeAmmoTypeForModule, GetAmmoTypeForModule): the charge type each module last held,
+   * set as the rack's buttons are given a charge (shipmodulebutton.SetCharge), kept when it is spent, let go when the
+   * module is switched on with none (1341) or is no longer in a slot (godma.OnItemChange).
+   */
+  const usedChargeTypes = new Map<number, number>();
+  /** UnloadAmmoToContainer of the charge in the slot of this flag, to the cargo. */
+  async function unloadChargeInSlot(flagID: number): Promise<void> {
+    // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
+    const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
+    if (moduleID === null) throw new Error("No module holds a charge in that slot.");
+    await runFittingAction(async () => {
+      const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
+      if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+    });
+  }
   /** The slot of the active ship with this flag, or null. */
   const slotWithFlag = (flagID: number): FittingSlot | null =>
     store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flagID) ?? null;
@@ -5961,6 +5985,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slotsError: reads.errors.slots || reads.errors.online,
       resourcesError: reads.errors.shipInfo,
     });
+    // ChangeAmmoTypeForModule as the rack's buttons are given their charges (shipmodulebutton.SetCharge), and a module
+    // no longer in a slot let go (godma.OnItemChange).
+    const fittedIDs = new Set<number>();
+    for (const slot of store.fitting.get().slots) {
+      if (!slot.module) continue;
+      fittedIDs.add(slot.module.itemID);
+      if (slot.module.charge && slot.module.charge.quantity !== 0) usedChargeTypes.set(slot.module.itemID, slot.module.charge.typeID);
+    }
+    for (const moduleID of [...usedChargeTypes.keys()]) if (!fittedIDs.has(moduleID)) usedChargeTypes.delete(moduleID);
     // R24 slice C — seed each fitted module's BASE cycle length from static
     // data, so the panel can say how long a module takes before it has ever
     // been switched on. Best-effort and never blocking: it is reference data,
@@ -16570,6 +16603,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     itemID: number,
     opts: { effect?: string; typeID?: number; targetID?: number | null; repeat?: -1 | 0 } = {},
   ): Promise<void> {
+    // shipmodulebutton 1340 to 1341: a module switched on with no charge in it forgets the type it last held.
+    if (!store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module?.charge) usedChargeTypes.delete(itemID);
     await runTargetingAction(
       "Switch on",
       () => switchModuleOn(itemID, opts, callOptions),
@@ -26228,13 +26263,74 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async unloadChargeToCargo(flagID) {
-      // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
-      const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
-      if (moduleID === null) throw new Error("No module holds a charge in that slot.");
-      await runFittingAction(async () => {
-        const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
-        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+      await unloadChargeInSlot(flagID);
+    },
+
+    async unloadRackCharge(moduleID) {
+      const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+      const flagID = slot === null ? null : slotFlagOf(slot.family, slot.index);
+      if (flagID === null) throw new Error("That module is not in a slot of the ship.");
+      await unloadChargeInSlot(flagID);
+    },
+
+    async rackAmmoMenu(moduleID, context) {
+      const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+      const module = slot?.module ?? null;
+      const flagID = slot === null ? null : slotFlagOf(slot.family, slot.index);
+      if (module === null || flagID === null) return null;
+      if (module.charge && module.charge.quantity !== 0) usedChargeTypes.set(moduleID, module.charge.typeID);
+      // GetMatchingAmmo's cargo: the ship's own hold as the inventory lists it.
+      const cargo = store.inventory.get().cargo.rows
+        .filter((row) => row.categoryID === 8)
+        .map((row) => ({ itemID: row.itemID, typeID: row.typeID, groupID: row.groupID, stacksize: row.singleton || row.quantity < 0 ? 1 : row.quantity, singleton: row.singleton }));
+      const chargeTypes = [...new Set(cargo.map((row) => row.typeID))];
+      const staticData = await dogmaStaticFor([module.typeID, ...chargeTypes], AMMO_MENU_ATTRIBUTES);
+      if (staticData === null) return null;
+      // GetMissingSkills of each kind: the types' needs, and the pilot's skills where any has some.
+      const needs = chargeTypes.length > 0 ? await api.getRequiredSkills(chargeTypes, callOptions) : null;
+      const needing = needs?.available ? chargeTypes.filter((typeID) => (needs.order[typeID] ?? []).length > 0) : [];
+      const mine = needing.length > 0 ? skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])) : null;
+      const usable = (typeID: number): boolean =>
+        !needs?.available || mine === null || missingSkills(typeID, needs.order, mine).size === 0;
+      // GetAccurateAttributeValue: the module's reach, and the loaded charge's multipliers, as the dogma location has them.
+      const ships = store.dogma.get().allInfo?.ships ?? [];
+      const valueOf = (item: DogmaItemInfo | undefined, attributeID: number): number | null => {
+        const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+        return typeof value === "number" ? value : null;
+      };
+      const moduleInfo = ships.find((item) => Number(item.itemID) === moduleID);
+      const chargeInfo = ships.find((item) => item.flagID === flagID && (item.sublocation || item.categoryID === 8));
+      await Promise.all([
+        resolveNamesNow(chargeTypes.map((id) => ({ kind: "type" as const, id }))).catch(() => {}),
+        wordsNow(["ReloadUsed", "Reload", "ReloadAll", "UnloadToCargo", "AmmoTypeAndStatus", "AmmoTypeAndQuantity"].map((name) => `UI/Inflight/ModuleRacks/${name}`)).catch(() => {}),
+      ]);
+      const nameOf = (typeID: number): string => nameCache.get(nameKey("type", typeID)) ?? `Type ${typeID}`;
+      const entries = ammoMenu(staticData, {
+        moduleTypeID: module.typeID,
+        charge: module.charge && module.charge.quantity !== 0
+          ? { typeID: module.charge.typeID, quantity: module.charge.quantity, rangeMultiplier: valueOf(chargeInfo, AMMO_ATTRIBUTE.WEAPON_RANGE_MULTIPLIER), falloffMultiplier: valueOf(chargeInfo, AMMO_ATTRIBUTE.FALLOFF_MULTIPLIER) }
+          : null,
+        usedChargeTypeID: usedChargeTypes.get(moduleID) ?? null,
+        reloading: context.reloading,
+        bankCount: context.bankCount,
+        module: { maxRange: valueOf(moduleInfo, AMMO_ATTRIBUTE.MAX_RANGE), falloff: valueOf(moduleInfo, AMMO_ATTRIBUTE.FALLOFF) },
+        cargo,
+        usable,
+        nameOf,
       });
+      // The page's own words for each label, where the install's are not had.
+      const own: Readonly<Record<string, (entry: AmmoMenuEntry) => string>> = {
+        "UI/Inflight/ModuleRacks/ReloadUsed": (entry) => `Reload used (${entry.kind === "load" ? nameOf(entry.typeID) : ""})`,
+        "UI/Inflight/ModuleRacks/Reload": (entry) => entry.kind === "load" ? `Reload ${nameOf(entry.typeID)}: ${entry.sumqty.toLocaleString("en-US")}` : "",
+        "UI/Inflight/ModuleRacks/ReloadAll": () => "Reload every weapon",
+        "UI/Inflight/ModuleRacks/UnloadToCargo": () => "Unload into the cargo",
+        "UI/Inflight/ModuleRacks/AmmoTypeAndStatus": (entry) => entry.kind === "load" ? `${nameOf(entry.typeID)}, used` : "",
+        "UI/Inflight/ModuleRacks/AmmoTypeAndQuantity": (entry) => entry.kind === "load" ? `${nameOf(entry.typeID)}: ${entry.sumqty.toLocaleString("en-US")}` : "",
+      };
+      return entries.map((entry) => ({
+        ...entry,
+        text: templateWords(entry.label, entry.kind === "load" ? { typeID: entry.typeID, sumqty: entry.sumqty } : {}, own[entry.label]?.(entry) ?? ""),
+      }));
     },
 
     simulateShip() {
@@ -26344,7 +26440,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     },
 
-    async loadAmmo(moduleIDs, chargeItemIDs, source) {
+    async loadAmmo(requestedModuleIDs, chargeItemIDs, source) {
+      // LoadChargesToModule (988 to 989): one module that is a bank's slave is asked for by its master.
+      const banks = heldWeaponBanks();
+      const moduleIDs = requestedModuleIDs.length === 1
+        ? [[...banks].find(([, slaves]) => slaves.includes(requestedModuleIDs[0]!))?.[0] ?? requestedModuleIDs[0]!]
+        : requestedModuleIDs;
       // LoadChargesToModule's skill check, by the charge's type as the hold lists it (the rack's menu and its reload,
       // LoadAmmoTypeToModule; a charge loaded from the window's list). A type not listed is the server's to judge.
       const inventory = store.inventory.get();

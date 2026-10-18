@@ -44,6 +44,7 @@
     weaponGroups,
   } from "./rackAmmo.ts";
   import type { AmmoChoice, WeaponGroup } from "./rackAmmo.ts";
+  import type { AmmoMenuEntry } from "../bridge/ammoMenu.ts";
   import { notify } from "./notices.ts";
   import { abbreviate } from "./fittingIcons.ts";
   import { resolvedName } from "../store/names.ts";
@@ -288,6 +289,39 @@
   let menuOpener: HTMLElement | null = null;
   let menuEl = $state<HTMLElement | null>(null);
   let cargoReading = $state(false);
+  /**
+   * A slot's menu as the client's GetAmmoMenu makes it (flow.rackAmmoMenu): read when the menu opens, once the cargo
+   * is read. Null while it is being read.
+   */
+  let slotMenu = $state<readonly (AmmoMenuEntry & { readonly text: string })[] | null>(null);
+  async function readSlotMenu(module: RackModule): Promise<void> {
+    if (!flow) return;
+    const entries = await flow.rackAmmoMenu(module.itemID, { reloading: reloadingNow(module), bankCount: module.bankSize }).catch(() => null);
+    if (menu?.target.kind === "slot" && menu.target.module.itemID === module.itemID) slotMenu = entries ?? [];
+  }
+  /** One of the slot menu's entries: LoadChargesToModule with its stacks, Reload all, or Unload to Cargo. */
+  async function chooseSlotEntry(module: RackModule, entry: AmmoMenuEntry): Promise<void> {
+    if (entry.kind === "load") {
+      await loadChoice([module], { typeID: entry.typeID, itemIDs: entry.itemIDs, quantity: entry.sumqty, verdict: null });
+      return;
+    }
+    if (entry.kind === "reloadAll") {
+      closeMenu();
+      await reloadAll();
+      return;
+    }
+    if (!flow || pendingItemID !== null) return;
+    closeMenu();
+    pendingItemID = module.itemID;
+    try {
+      await flow.unloadRackCharge(module.itemID);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
+    } finally {
+      pendingItemID = null;
+    }
+    void readCargo();
+  }
 
   /** Re-read cargo. Counts change with every shot, so a menu always asks. */
   async function readCargo(): Promise<void> {
@@ -317,7 +351,8 @@
       bottom: Math.max(8, window.innerHeight - rect.top + 4),
     };
     menuOpener = opener;
-    void readCargo();
+    slotMenu = null;
+    void readCargo().then(() => (target.kind === "slot" ? readSlotMenu(target.module) : undefined));
   }
 
   function closeMenu(returnFocus = false): void {
@@ -1113,6 +1148,20 @@
       onkeydown={onMenuKey}
     >
       <span class="rack-menu-head">{menuHead(target)}</span>
+      {#if target.kind === "slot"}
+        <!-- GetAmmoMenu: Reload used and Reload, Reload all, Unload to Cargo, the other kinds (bridge/ammoMenu.ts). -->
+        {#if slotMenu === null}
+          <span class="rack-menu-note">Reading cargo...</span>
+        {:else if slotMenu.length === 0}
+          <span class="rack-menu-note">No ammunition in cargo for it.</span>
+        {:else}
+          {#each slotMenu as entry, index (index)}
+            <button type="button" role="menuitem" onclick={() => chooseSlotEntry(target.module, entry)}>
+              <span class="rack-menu-name">{entry.text}</span>
+            </button>
+          {/each}
+        {/if}
+      {:else}
       {#if choices.length === 0}
         <span class="rack-menu-note">
           {cargoReading ? "Reading cargo..." : "No ammunition in cargo."}
@@ -1141,6 +1190,7 @@
         <button type="button" role="menuitem" onclick={() => unloadModules(menuModules(target))}
           >Unload to cargo</button
         >
+      {/if}
       {/if}
     </div>
   {/if}
