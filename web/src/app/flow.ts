@@ -638,7 +638,7 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -1534,8 +1534,8 @@ export interface AppFlow {
   unloadChargeToCargo(flagID: number): Promise<void>;
   /**
    * A fitted module dropped on a place of the inventory, as that container's controller takes it
-   * (BaseInvContainer.AddItems 509 to 514: UnloadModuleToContainer with its container's arguments and flag): the cargo
-   * and the ship's other holds, the hangar, a container. The corporation's hangar is not taken yet.
+   * (BaseInvContainer.AddItems 505 to 514: UnloadModuleToContainer with its container's arguments and flag): the cargo
+   * and the ship's other holds, the hangar, a container, the corporation's hangar (asked first, ConfirmOneWayItemMove).
    */
   unloadModuleToPlace(itemID: number, place: InventoryPlace): Promise<void>;
   /** The charge in the slot of this flag dropped on a place of the inventory (AddItems 515 to 517: UnloadAmmoToContainer). */
@@ -3902,13 +3902,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const CONTAINER_HANGAR = 10004;
   const GROUP_AUDIT_LOG_SECURE_CONTAINER = 448;
   /**
+   * invControllers BaseCorpContainer.oneWay (820) and PromptOneWayMove (595 and 596): the corporation's hangar asks,
+   * OK and Cancel, before anything from elsewhere is put into it (__AddItem 197 to 202, AddItems 507 and 529,
+   * MultiMerge 330, StackAll 383). The pilot may say not to be asked again.
+   */
+  const askOneWayMove = (): Promise<boolean> =>
+    askDialog("ConfirmOneWayItemMove", { type: "dict", entries: [] }, "Once it is in the corporation's hangar you may not be allowed to take it out again. Go ahead?", "okcancel");
+  /** The session's corporation (session.corpid), which owns its hangar's office and what is listed in it. */
+  function corporationNow(): number {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    if (corporationID === null) throw new Error("Which corporation this is is not known yet.");
+    return corporationID;
+  }
+  /**
+   * The owner of a container the panel lists (its controller's GetOwnerID: the container's item's owner): the
+   * corporation's where it is listed in the corporation's hangar, the pilot's otherwise.
+   */
+  function containerOwnerOf(itemID: number, characterID: number): number {
+    const inventory = store.get().inventory;
+    if ([...inventory.hangar.rows, ...inventory.cargo.rows].some((row) => row.itemID === itemID)) return characterID;
+    if (inventory.corp.divisions.some((division) => (division.rows ?? []).some((row) => row.itemID === itemID))) return corporationNow();
+    return characterID;
+  }
+  /**
    * Where a container's controller has UnloadModuleToContainer put a module (_GetContainerArgs, locationFlag; the
    * container's GetItem): a hold of the ship, the ship with the hold's flag; the hangar (StationItems:
    * containerHangar, flagHangar), its item the docked station's or structure's, as the hangar's inventory answers it
    * (bound by where the pilot is docked); a container, itself with no flag, an audit log secure container naming its
-   * owner (the pilot's, or the corporation's where it is the corporation's).
+   * owner (the pilot's, or the corporation's where it is the corporation's); the corporation's hangar
+   * (StationCorpHangar), the office where the pilot is docked with the division's flag (corpFlagByDivision).
    */
-  function moduleDestinationOf(place: InventoryPlace): ModuleDestination {
+  async function moduleDestinationOf(place: InventoryPlace): Promise<ModuleDestination> {
     const session = ammoSession();
     if (place.kind === "cargo") return { inventory: session.shipID, containerItemID: session.shipID, flag: 5 };
     if (place.kind === "shipBay") {
@@ -3922,21 +3946,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (place.kind === "container") {
       const inventory = store.get().inventory;
-      const row = [...inventory.hangar.rows, ...inventory.cargo.rows].find((each) => each.itemID === place.itemID) ?? null;
+      const row = [...inventory.hangar.rows, ...inventory.cargo.rows, ...inventory.corp.divisions.flatMap((division) => division.rows ?? [])]
+        .find((each) => each.itemID === place.itemID) ?? null;
       const auditLog = row?.groupID === GROUP_AUDIT_LOG_SECURE_CONTAINER;
-      return { inventory: place.itemID, containerItemID: place.itemID, flag: null, auditLogOwnerID: auditLog ? session.characterID : null };
+      return { inventory: place.itemID, containerItemID: place.itemID, flag: null, auditLogOwnerID: auditLog ? containerOwnerOf(place.itemID, session.characterID) : null };
     }
-    throw new Error("The corporation's hangar does not take an item off the fitting from the page yet.");
+    const office = await inventoryOfPlace(place);
+    if (office.inventory === "hangar") throw new Error("The corporation's hangar is not where the office is.");
+    return { inventory: office.inventory, containerItemID: office.liesIn, flag: corpDivisionFlag(place.division) };
   }
   /**
    * UnloadAmmoToContainer's destination from a container's controller (AddItems 515 to 517): (the container's first
-   * argument, the owner, its flag): a hold, (the ship, the pilot, the hold's flag); the hangar, (containerHangar, the
-   * pilot, flagHangar); a container, (itself, the pilot, None).
+   * argument, the owner, its flag), the owner the pilot where the flag is flagHangar and the controller's owner
+   * otherwise: a hold, (the ship, the pilot, the hold's flag); the hangar, (containerHangar, the pilot, flagHangar); a
+   * container, (itself, its owner, None); the corporation's hangar, (the office, the corporation, the division's flag).
    */
-  function chargeDestinationOf(place: InventoryPlace): readonly [number, number, number | null] {
+  async function chargeDestinationOf(place: InventoryPlace): Promise<readonly [number, number, number | null]> {
     const session = ammoSession();
-    const module = moduleDestinationOf(place);
     if (place.kind === "hangar") return [CONTAINER_HANGAR, session.characterID, 4];
+    const module = await moduleDestinationOf(place);
+    if (place.kind === "corp") return [module.containerItemID, corporationNow(), module.flag];
+    if (place.kind === "container") return [module.containerItemID, containerOwnerOf(place.itemID, session.characterID), module.flag];
     return [module.containerItemID, session.characterID, module.flag];
   }
   async function unloadChargeInSlot(flagID: number): Promise<void> {
@@ -26545,6 +26575,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
+        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
+        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
+        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -26769,7 +26802,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async unloadModuleToPlace(itemID, place) {
-      const destination = moduleDestinationOf(place);
+      // (The corporation's hangar asks first, AddItems 505 to 509.)
+      if (place.kind === "corp" && !(await askOneWayMove())) return;
+      const destination = await moduleDestinationOf(place);
       await runFittingAction(() => unloadModuleToContainerCall(bridgeDo, fittedNow, ammoSession(), itemID, heldWeaponBanks(), askClearGroup, destination));
       // The place it went into is on screen (an open container, the open ship's bays): every open place is re-read.
       await refreshOpenPlaces();
@@ -26778,7 +26813,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async unloadChargeToPlace(flagID, place) {
       const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
       if (moduleID === null) throw new Error("No module holds a charge in that slot.");
-      const destination = chargeDestinationOf(place);
+      if (place.kind === "corp" && !(await askOneWayMove())) return;
+      const destination = await chargeDestinationOf(place);
       await runFittingAction(async () => {
         const outcome = await unloadChargeToContainerCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", destination);
         if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");

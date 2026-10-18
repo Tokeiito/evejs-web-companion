@@ -155,15 +155,13 @@ test("a fitted module dropped on the cargo is taken off into it, and is allowed"
   assert.equal(dropOnPlaceVerdict(FITTED, CARGO), null);
 });
 
-test("a fitted module dropped on the hangar, a hold or a container is taken off into it; on the corporation's hangar it is refused", () => {
-  // invControllers BaseInvContainer.AddItems (509 to 517): each container's UnloadModuleToContainer and
-  // UnloadAmmoToContainer with its own arguments and flag. The corporation's office's arguments the page does not make.
-  for (const to of [HANGAR, ORE_BAY, { kind: "container", itemID: 1 } as InventoryPlace]) {
+test("a fitted module dropped on the hangar, a hold, a container or the corporation's hangar is taken off into it", () => {
+  // invControllers BaseInvContainer.AddItems (505 to 517): each container's UnloadModuleToContainer and
+  // UnloadAmmoToContainer with its own arguments and flag; the corporation's hangar's are its office's and its
+  // division's flag, the pilot asked first (ConfirmOneWayItemMove), which is the flow's and not the verdict's.
+  for (const to of [HANGAR, ORE_BAY, { kind: "container", itemID: 1 } as InventoryPlace, { kind: "corp", division: 1 } as InventoryPlace]) {
     assert.equal(dropOnPlaceVerdict(FITTED, to), null, `${to.kind} must take it`);
   }
-  const verdict = dropOnPlaceVerdict(FITTED, { kind: "corp", division: 1 });
-  assert.notEqual(verdict, null, "the corporation's hangar must refuse");
-  assert.match(verdict!, /corporation/i);
 });
 
 // --- samePlace ---------------------------------------------------------------
