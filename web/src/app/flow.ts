@@ -1518,8 +1518,12 @@ export interface AppFlow {
   dropFittedModuleOnSlot(moduleID: number, flagID: number, shift: boolean): Promise<void>;
   /** The charge in one slot dropped on another's module (FitCharges): unloaded to the cargo, then loaded there. */
   dropFittedChargeOnSlot(fromFlagID: number, flagID: number, shift: boolean): Promise<void>;
-  /** A charge from the cargo or the hangar dropped on a slot's module (FitCharges, DropLoadChargeToModule). */
-  dropChargeOnSlot(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace }, flagID: number, shift: boolean): Promise<void>;
+  /**
+   * A charge from the hangar or a hold of the ship flown dropped on a slot's module (FitCharges,
+   * DropLoadChargeToModule): `from` where it lies ("cargo" for any hold of the ship, which is where it lies), `flagID`
+   * its own flag.
+   */
+  dropChargeOnSlot(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace; readonly flagID: number }, flagID: number, shift: boolean): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
@@ -26220,7 +26224,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
       if (locationID === null) return;
       const target = to.module;
-      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.from === "cargo" ? 5 : 4, stacksize: charge.quantity }, charge.from, shift));
+      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.flagID, stacksize: charge.quantity }, charge.from, shift));
     },
 
     async unloadChargeToCargo(flagID) {

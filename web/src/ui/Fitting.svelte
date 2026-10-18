@@ -69,6 +69,7 @@
   import { createSkillPlanButton } from "./skillPlanTemplate.ts";
   import { openShipHold } from "./shipHold.ts";
   import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
+  import { BAY_FLAGS } from "../bridge/inventoryWrites.ts";
   import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
   import type { TypeMetaFacts } from "../app/api.ts";
   import TypeIcon from "./TypeIcon.svelte";
@@ -2228,13 +2229,19 @@
       const row = rowsIn($inventory, payload.from).find((each) => each.itemID === payload.itemID);
       // fittingUtil.IsCharge: the charge category (and the frequency crystals' number, as the client compares it).
       if (row && (row.categoryID === 8 || row.categoryID === 86)) {
-        const from = payload.from.kind;
-        if (from !== "cargo" && from !== "hangar") {
-          error = "The page loads charges from the cargo hold or the hangar so far.";
+        // Where it lies (DropLoadChargeToModule: chargeItems[0].locationID): the hangar, or the ship flown for its
+        // cargo and every other hold of it, the charge's own flag kept for a split.
+        const from = payload.from;
+        const ofShipFlown = from.kind === "cargo" || (from.kind === "shipBay" && $inventory.openShip?.itemID === $inventory.activeShipID);
+        if (from.kind !== "hangar" && !ofShipFlown) {
+          error = "The page loads charges from the hangar or the holds of the ship you fly so far.";
           return;
         }
+        const place = from.kind === "hangar" ? "hangar" : "cargo";
+        // The hold's own flag, the place's (measured: the row's own flag gave a split into the cargo).
+        const chargeFlag = from.kind === "hangar" ? 4 : from.kind === "cargo" ? 5 : BAY_FLAGS[from.bay] ?? row.flagID ?? 5;
         void run(async () => {
-          await flow.dropChargeOnSlot({ itemID: row.itemID, typeID: row.typeID, quantity: row.quantity, from }, flagID, shift);
+          await flow.dropChargeOnSlot({ itemID: row.itemID, typeID: row.typeID, quantity: row.quantity, from: place, flagID: chargeFlag }, flagID, shift);
           await flow.loadInventory();
         });
         return;
