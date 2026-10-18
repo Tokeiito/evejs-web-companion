@@ -1580,6 +1580,16 @@ export interface AppFlow {
    * (UngroupModule) and that one moved.
    */
   rackSwapSlots(flag1: number, flag2: number, shift: boolean): Promise<void>;
+  /**
+   * A charge from a hold dropped on a module's button on the HUD (shipmodulebutton.OnDropData 1004 to 1023):
+   * DropLoadChargeToModule, the quantity asked first with `shift`. `charge` as dropChargeOnSlot has it.
+   */
+  dropChargeOnRackModule(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace; readonly flagID: number }, moduleID: number, shift: boolean): Promise<void>;
+  /**
+   * A module from the cargo dropped on a slot's place on the HUD (ShipSlot.OnDropData): the ship's inventory's Add of
+   * it, from where it lies, into that slot's flag, quantity None.
+   */
+  fitCargoModuleToRackSlot(itemID: number, flag: number): Promise<void>;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -26888,6 +26898,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async rackSwapSlots(flag1, flag2, shift) {
       await swapRackSlots(flag1, flag2, shift);
+    },
+
+    async dropChargeOnRackModule(charge, moduleID, shift) {
+      // The button's own drop goes to DropLoadChargeToModule whatever the module (the server judges it): no IsChargeable.
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+      if (module === null) return;
+      const session = ammoSession();
+      const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
+      if (locationID === null) return;
+      await runFittingAction(() => dropLoadChargeToModule(module, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.flagID, stacksize: charge.quantity }, charge.from, shift));
+    },
+
+    async fitCargoModuleToRackSlot(itemID, flag) {
+      // invCache.GetInventoryFromId(session.shipid).Add(item.itemID, item.locationID, qty=None, flag=flag1): a cargo
+      // item lies in the ship.
+      const shipID = ammoSession().shipID;
+      await runFittingAction(async () => {
+        await bridgeDo("invbroker", "Add", [itemID, shipID], { qty: null, flag }, shipID);
+      });
+      await Promise.all([loadInventory().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
     },
 
     async clearRackGroup(moduleID) {

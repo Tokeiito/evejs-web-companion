@@ -55,6 +55,9 @@
   import { DEFAULT_SLOT_ORDER, hudSetting, setHudSetting, slotOrdersSignal, type HudSettingName } from "../store/hudSettings.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
+  import { DRAG_MIME, carriesOurPayload, decodeDrag } from "./dragDrop.ts";
+  import { rowsIn } from "./inventoryModel.ts";
+  import { BAY_FLAGS } from "../bridge/inventoryWrites.ts";
 
   let { store, flow = null }: {
     store: ClientStore;
@@ -134,20 +137,52 @@
   function endRackDrag(): void {
     rackDragging = null;
   }
+  /** A drag the HUD takes: one of its own buttons, or an item from a hold (the inventory's DRAG_MIME). */
   function rackDragOver(event: DragEvent): void {
-    if (!event.dataTransfer?.types.includes(RACK_DRAG_MIME)) return;
+    const types = event.dataTransfer?.types;
+    if (!types || !(types.includes(RACK_DRAG_MIME) || carriesOurPayload([...types]))) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer!.dropEffect = "move";
+  }
+  /**
+   * An item from a hold the drop carries, with its row, and where a charge of it is loaded from (the hangar while
+   * docked, or the ship flown for its cargo and every other hold of it, its own flag kept for a split, as the
+   * Fitting window's drop has it); null for anything else.
+   */
+  function droppedHoldItem(event: DragEvent) {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME));
+    if (!payload || payload.kind !== "inventoryItem") return null;
+    const row = rowsIn($inventory, payload.from).find((each) => each.itemID === payload.itemID) ?? null;
+    if (row === null) return null;
+    const from = payload.from;
+    const ofShipFlown = from.kind === "cargo" || (from.kind === "shipBay" && $inventory.openShip?.itemID === $inventory.activeShipID);
+    const place = from.kind === "hangar" ? ("hangar" as const) : ofShipFlown ? ("cargo" as const) : null;
+    const flagID = from.kind === "hangar" ? 4 : from.kind === "cargo" ? 5 : from.kind === "shipBay" ? BAY_FLAGS[from.bay] ?? row.flagID ?? 5 : row.flagID ?? null;
+    return { row, place, flagID };
   }
   function draggedRackFlag(event: DragEvent): number | null {
     const raw = event.dataTransfer?.getData(RACK_DRAG_MIME) ?? "";
     const flag = Number(raw);
     return raw !== "" && Number.isInteger(flag) ? flag : null;
   }
-  /** Dropped on a module's button (shipmodulebutton.OnDropData 993 to 1003): on itself nothing, else ChangeSlots. */
-  async function dropOnRackModule(event: DragEvent, flag: number): Promise<void> {
+  /**
+   * Dropped on a module's button (shipmodulebutton.OnDropData 993 to 1023): another button, ChangeSlots (on itself
+   * nothing); a charge from a hold, DropLoadChargeToModule (only charges: 1013 to 1018).
+   */
+  async function dropOnRackModule(event: DragEvent, flag: number, moduleID: number): Promise<void> {
     const from = draggedRackFlag(event);
-    if (from === null) return;
+    if (from === null) {
+      const item = droppedHoldItem(event);
+      if (item === null || !flow) return;
+      event.preventDefault();
+      if (item.row.categoryID !== 8 || item.place === null || item.flagID === null) return;
+      try {
+        await flow.dropChargeOnRackModule({ itemID: item.row.itemID, typeID: item.row.typeID, quantity: item.row.quantity, from: item.place, flagID: item.flagID }, moduleID, event.shiftKey);
+      } catch (cause) {
+        sayRackProblem(moduleName(item.row.typeID), String(cause));
+      }
+      return;
+    }
     event.preventDefault();
     rackDragging = null;
     if (from === flag || !flow) return;
@@ -157,10 +192,24 @@
       sayRackProblem("Modules", String(cause));
     }
   }
-  /** Dropped on a place with no button (ShipSlot.OnDropData): SwapSlots. */
+  /**
+   * Dropped on a place with no button (ShipSlot.OnDropData): a button, SwapSlots; a module from the cargo
+   * (item.flagID flagCargo, IsFittingModule: a module or a structure module), the ship's inventory's Add of it there.
+   */
   async function dropOnRackPlace(event: DragEvent, flag: number): Promise<void> {
     const from = draggedRackFlag(event);
-    if (from === null) return;
+    if (from === null) {
+      const item = droppedHoldItem(event);
+      if (item === null || !flow) return;
+      event.preventDefault();
+      if (item.row.flagID !== 5 || (item.row.categoryID !== 7 && item.row.categoryID !== 66)) return;
+      try {
+        await flow.fitCargoModuleToRackSlot(item.row.itemID, flag);
+      } catch (cause) {
+        sayRackProblem(moduleName(item.row.typeID), String(cause));
+      }
+      return;
+    }
     event.preventDefault();
     rackDragging = null;
     if (!flow) return;
@@ -1093,7 +1142,7 @@
                 ondragstart={(event) => slot.module && startRackDrag(event, place.flag, slot.module)}
                 ondragend={endRackDrag}
                 ondragover={rackDragOver}
-                ondrop={(event) => dropOnRackModule(event, place.flag)}
+                ondrop={(event) => slot.module && dropOnRackModule(event, place.flag, slot.module.itemID)}
                 title={$showModuleTooltips ? slotTitle(slot.module) : undefined}
                 aria-label={slotTitle(slot.module)}
                 oncontextmenu={(event) => {
