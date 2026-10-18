@@ -140,6 +140,69 @@ export function strDictOrder(keys: readonly string[], copies = 0): string[] {
   return table.filter((entry): entry is Slot<string> => entry !== undefined).map((entry) => entry.key);
 }
 
+/** long_hash (30-bit digits, a C unsigned long of 32 bits), as py27.js hashLong; -1 kept for an error. */
+function longHashOf(value: bigint): number {
+  let magnitude = value < 0n ? -value : value;
+  const digits: bigint[] = [];
+  while (magnitude > 0n) {
+    digits.push(magnitude & ((1n << 30n) - 1n));
+    magnitude >>= 30n;
+  }
+  let x = 0n;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    x = BigInt.asUintN(32, (x >> 2n) | (x << 30n));
+    x = BigInt.asUintN(32, x + digits[index]!);
+    if (x < digits[index]!) x += 1n;
+  }
+  const signed = Number(BigInt.asIntN(32, value < 0n ? -x : x));
+  return signed === -1 ? -2 : signed;
+}
+
+/**
+ * hash() of a whole number on this platform: an int (within 32 bits) is itself, a long beyond is long_hash, and a
+ * float of a whole value hashes as that number does; -1 is kept for an error.
+ */
+export function wholeHashOf(value: number): number {
+  if (!Number.isSafeInteger(value)) throw new TypeError("A whole number is hashed here.");
+  return value >= -2147483648 && value <= 2147483647 ? hashOf(value) : longHashOf(BigInt(value));
+}
+
+/** tuplehash (a C long of 32 bits) of a tuple whose items hash to `hashes`. */
+export function tupleHashOf(hashes: readonly number[]): number {
+  let x = 0x345678n;
+  let mult = 1000003n;
+  let left = hashes.length;
+  for (const y of hashes) {
+    left -= 1;
+    x = BigInt.asIntN(32, BigInt.asIntN(32, x ^ BigInt(y)) * mult);
+    mult = BigInt.asIntN(32, mult + 82520n + BigInt(left) + BigInt(left));
+  }
+  x = BigInt.asIntN(32, x + 97531n);
+  return x === -1n ? -2 : Number(x);
+}
+
+/**
+ * The order a set that began empty iterates `items` in, added in that order (s.add each: set_add_key, the table
+ * grown to four times the keys when two-thirds of it is filled; no discards): each by its hash, and by `idOf` for
+ * which two are the same key.
+ */
+export function hashedSetOrder<T>(items: readonly T[], hashOf: (item: T) => number, idOf: (item: T) => string): T[] {
+  let table: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+  const byID = new Map<string, T>();
+  let used = 0;
+  for (const item of items) {
+    const key = idOf(item);
+    const hash = hashOf(item);
+    const slot = findSlot(table, hash, key);
+    if (table[slot] !== undefined) continue;
+    table[slot] = { key, hash };
+    byID.set(key, item);
+    used += 1;
+    if (used * 3 >= table.length * 2) table = resized(table, (used > 50000 ? 2 : 4) * used);
+  }
+  return table.filter((entry): entry is Slot<string> => entry !== undefined).map((entry) => byID.get(entry.key)!);
+}
+
 /** A dict set with `keys` in that order (IntDict.set each). */
 export function intDictOf(keys: readonly number[]): IntDict {
   const dict = new IntDict();

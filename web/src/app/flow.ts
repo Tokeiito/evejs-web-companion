@@ -739,7 +739,7 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
-import { IntDict, intDictOf, strDictOrder } from "../bridge/py27DictOrder.ts";
+import { IntDict, hashedSetOrder, intDictOf, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -1052,7 +1052,8 @@ export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
  */
 export type RackMenuEntry =
   | { readonly kind: "autoReload" | "autoRepeat" | "online" | "overload"; readonly on: boolean; readonly text: string }
-  | { readonly kind: "overloadRack" | "stopOverloadRack" | "clearGroup" | "showInfo"; readonly text: string }
+  | { readonly kind: "overloadRack" | "stopOverloadRack" | "repair" | "cancelRepair" | "clearGroup" | "showInfo"; readonly text: string }
+  | { readonly kind: "repairAll" | "cancelAllRepairs"; readonly text: string; readonly moduleIDs: readonly number[] }
   | { readonly kind: "rule" };
 
 /**
@@ -1536,8 +1537,10 @@ export interface AppFlow {
    * Auto-Reload for a module that takes charges; then, by the module's effects as godma's dict of them iterates, Set
    * Auto-Repeat for a repeating one, a rule and Put Online or Offline (not for a bank's master) for the online one, and
    * the overload toggle, Overload Rack and Stop Overloading Rack for the overload one where Thermodynamics is trained to
-   * the module's need; Clear Group for a bank's master; Show Info. Each with its words; null where the module is not
-   * had. (The repair entries are not the page's yet.)
+   * the module's need; for a damaged module (the most damaged of its bank) Repair, with the paste it takes, or Cancel
+   * Repair; Repair All for more than one damaged module not being repaired, and Cancel All Repairs for more than one
+   * being repaired, each with its modules in the order godma's set of them gives; Clear Group for a bank's master;
+   * Show Info. Each with its words; null where the module is not had.
    */
   rackModuleMenu(moduleID: number): Promise<readonly RackMenuEntry[] | null>;
   /** The button's ChangeOnline (823 to 846): an offline asked first (PutOffline), then the online effect switched. */
@@ -1546,6 +1549,14 @@ export interface AppFlow {
   setRackOverload(moduleID: number, overloaded: boolean): Promise<void>;
   /** The button's UnlinkModule (684): the bank the module is master of broken up (DestroyWeaponBank). */
   clearRackGroup(moduleID: number): Promise<void>;
+  /** The button's RepairModule (560 to 586): the module's repair begun (godma.RepairModule), then each of its bank's slaves'. */
+  repairRackModule(moduleID: number): Promise<void>;
+  /** CancelRepair (592 to 601): the module's repair ended (godma.StopRepairModule), then each slave's. */
+  cancelRackRepair(moduleID: number): Promise<void>;
+  /** RepairManyModules (588): godma's, of the modules named in that order, what became of them said (CustomNotify). */
+  repairRackModules(moduleIDs: readonly number[]): Promise<void>;
+  /** CancelRepairManyModuels (603): godma's StopRepairModuleManyModules, each named module's repair ended in turn. */
+  cancelRackRepairs(moduleIDs: readonly number[]): Promise<void>;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -3988,6 +3999,58 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ?? staticData.types[typeID]?.attributes.find(([id]) => id === attributeID)?.[1]
       ?? staticData.attributes[attributeID]?.defaultValue
       ?? null;
+  }
+  /** dogma/const.py attributeDamage and attributeShipBrokenModuleRepairCostMultiplier; inventorycommon typeNaniteRepairPaste. */
+  const ATTRIBUTE_DAMAGE = 3;
+  const ATTRIBUTE_REPAIR_COST_MULTIPLIER = 1277;
+  const TYPE_NANITE_REPAIR_PASTE = 28668;
+  /**
+   * The active ship's fitted modules as activeShipController.GetModules has them (shipItem.modules, godma.py 1928 to
+   * 1937: of the ship's itemsByLocationID set, the items in a fitting slot), in that set's order. The set holds the
+   * ship's items godma was primed with, its pilot among them, added as they were primed (godma.py 1612 to 1617): here
+   * the fitted modules, as the page's priming lists them, then the pilot.
+   */
+  function godmaShipModules() {
+    const fitted = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []));
+    const allInfo = store.dogma.get().allInfo;
+    const primed = (allInfo?.ships ?? []).map((item) => Number(item.itemID));
+    const ids = [
+      ...primed.filter((id) => fitted.some((module) => module.itemID === id)),
+      ...fitted.map((module) => module.itemID).filter((id) => !primed.includes(id)),
+    ];
+    const pilot = Number(allInfo?.characterID) || null;
+    return hashedSetOrder(pilot === null ? ids : [...ids, pilot], wholeHashOf, String)
+      .flatMap((id) => fitted.filter((module) => module.itemID === id));
+  }
+  /**
+   * A fitted module's damage in hit points (GetAccurateAttributeValue(itemID, attributeDamage)): the ship's reading of
+   * it, a share of its hit points (none listed: whole), else godma's priming.
+   */
+  function moduleDamageHP(staticData: DogmaStatic, moduleID: number, typeID: number): number {
+    const shares = store.space.get().snapshot?.ship?.moduleDamage ?? null;
+    if (shares !== null) return (fittedAttributeValue(staticData, moduleID, typeID, ATTRIBUTE_HP) ?? 0) * (shares[moduleID] ?? 0);
+    const primed = store.dogma.get().allInfo?.ships.find((item) => Number(item.itemID) === moduleID) ?? null;
+    return dogmaNumber(primed, ATTRIBUTE_DAMAGE) ?? 0;
+  }
+  /**
+   * activeShipController.GetNumUnitsToRepairModule (339 to 346) by baseDogmaLocation.FindNumUnitsToRepairModule (1948
+   * to 1958): the type's computed worth (GetComputedBasePrice(typeID, 1)) over the module's hit points, times its
+   * damage and the character's shipBrokenModuleRepairCostMultiplier, over the paste's base price, rounded up; 0 for a
+   * type of no worth, and where a figure is not had (its TypeError's 0).
+   */
+  function unitsToRepairModule(staticData: DogmaStatic, moduleID: number, typeID: number): number {
+    const damage = moduleDamageHP(staticData, moduleID, typeID);
+    const hp = fittedAttributeValue(staticData, moduleID, typeID, ATTRIBUTE_HP);
+    const basePrice = staticData.types[typeID]?.computedBasePrice ?? null;
+    const pastePrice = staticData.types[TYPE_NANITE_REPAIR_PASTE]?.basePrice ?? null;
+    const multiplier = dogmaNumber(store.dogma.get().allInfo?.character ?? null, ATTRIBUTE_REPAIR_COST_MULTIPLIER)
+      ?? staticData.attributes[ATTRIBUTE_REPAIR_COST_MULTIPLIER]?.defaultValue ?? null;
+    if (basePrice === null || basePrice === 0 || !hp || !pastePrice || multiplier === null) return 0;
+    return Math.ceil((damage * (basePrice / hp) * multiplier) / pastePrice);
+  }
+  /** godma's IsBeingRepaired (2234 to 2242): the module, or one of its bank's slaves, among the repairs begun. */
+  function isBeingRepaired(moduleID: number): boolean {
+    return moduleRepairs.beingRepaired(moduleID) || (heldWeaponBanks().get(moduleID) ?? []).some((slave) => moduleRepairs.beingRepaired(slave));
   }
   /** The slot of the active ship with this flag, or null. */
   const slotWithFlag = (flagID: number): FittingSlot | null =>
@@ -26510,14 +26573,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const labels = [
         ...["AutoReloadOn", "AutoReloadOff", "AutoRepeatOn", "AutoRepeatOff", "PutModuleOnline", "PutModuleOffline"].map(racks),
         "UI/Inflight/Overload/TurnOnOverload", "UI/Inflight/Overload/TurnOffOverload", "UI/Inflight/OverloadRack",
-        "UI/Inflight/StopOverloadingRack", "UI/Fitting/ClearGroup", "UI/Commands/ShowInfo",
+        "UI/Inflight/StopOverloadingRack", "UI/Fitting/ClearGroup", "UI/Commands/ShowInfo", "UI/Inflight/menuCancelRepair",
+        "UI/Inflight/RepairWithQty", "UI/Commands/Repair", "UI/Inflight/RepairAllWithQty", "UI/Commands/RepairAll",
+        "UI/Inflight/menuCancelAllRepairs",
       ];
+      const fittedTypes = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module.typeID] : []));
       const [staticData, skills] = await Promise.all([
-        dogmaStaticFor([module.typeID], [ATTRIBUTE_DISALLOW_REPEATING, ATTRIBUTE_REQUIRED_THERMODYNAMICS]),
+        dogmaStaticFor([module.typeID, ...fittedTypes, TYPE_NANITE_REPAIR_PASTE], [ATTRIBUTE_DISALLOW_REPEATING, ATTRIBUTE_REQUIRED_THERMODYNAMICS, ATTRIBUTE_HP, ATTRIBUTE_DAMAGE, ATTRIBUTE_REPAIR_COST_MULTIPLIER]),
         bridgeAsk("skillHandler", "GetSkills", []).then(skillLevelsOf).catch(() => null),
         wordsNow(labels).catch(() => {}),
       ]);
-      const said = (label: string, own: string): string => templateWords(label, {}, own);
+      const said = (label: string, own: string, args: Readonly<Record<string, number>> = {}): string => templateWords(label, args, own);
       const entries: RackMenuEntry[] = [];
       // GetMenu (462 to 466): a module that takes charges, auto-reload's opposite of what it is.
       if (CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)) {
@@ -26553,6 +26619,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             );
           }
         }
+      }
+      if (staticData !== null) {
+        // 496 to 506: GetModuleGroupDamage, the most damage of the bank's modules (the master's button stands for the
+        // bank); Cancel Repair where it is being repaired, else Repair with what GetNumUnitsToRepairModuleBank says it
+        // takes (each of the bank's by the master's type), or with no figure where that is none.
+        const bank = [moduleID, ...slaves];
+        if (Math.max(...bank.map((id) => moduleDamageHP(staticData, id, module.typeID))) > 0) {
+          if (isBeingRepaired(moduleID)) {
+            entries.push({ kind: "cancelRepair", text: said("UI/Inflight/menuCancelRepair", "Stop the repair") });
+          } else {
+            const units = Math.trunc(bank.reduce((sum, id) => sum + unitsToRepairModule(staticData, id, module.typeID), 0));
+            entries.push({ kind: "repair", text: units ? said("UI/Inflight/RepairWithQty", `Mend it (${units} paste)`, { qty: units }) : said("UI/Commands/Repair", "Mend it") });
+          }
+        }
+        // 507 to 515: GetDamagedModulesAndRepairCost (299 to 313), a set of (module, paste) of the ship's modules not
+        // being repaired that are damaged; for more than one, Repair All with the sum, its modules the set's, the one
+        // clicked first.
+        const modules = godmaShipModules();
+        const damaged = hashedSetOrder(
+          modules
+            .filter((each) => staticData.types[each.typeID]?.categoryID === 7 && !isBeingRepaired(each.itemID) && moduleDamageHP(staticData, each.itemID, each.typeID) > 0)
+            .map((each) => [each.itemID, unitsToRepairModule(staticData, each.itemID, each.typeID)] as const),
+          ([id, cost]) => tupleHashOf([wholeHashOf(id), wholeHashOf(cost)]),
+          ([id, cost]) => `${id},${cost}`,
+        );
+        if (damaged.length > 1) {
+          const units = damaged.reduce((sum, [, cost]) => sum + cost, 0);
+          const moduleIDs = damaged.map(([id]) => id);
+          if (moduleIDs.indexOf(moduleID) > 0) {
+            moduleIDs.splice(moduleIDs.indexOf(moduleID), 1);
+            moduleIDs.unshift(moduleID);
+          }
+          entries.push({ kind: "repairAll", moduleIDs, text: units ? said("UI/Inflight/RepairAllWithQty", `Mend every damaged module (${Math.trunc(units)} paste)`, { qty: Math.trunc(units) }) : said("UI/Commands/RepairAll", "Mend every damaged module") });
+        }
+        // 516 to 518: GetAllRepairingModules (315 to 322), a set of the modules being repaired; for more than one,
+        // Cancel All Repairs.
+        const repairing = hashedSetOrder(modules.filter((each) => isBeingRepaired(each.itemID)).map((each) => each.itemID), wholeHashOf, String);
+        if (repairing.length > 1) entries.push({ kind: "cancelAllRepairs", moduleIDs: repairing, text: said("UI/Inflight/menuCancelAllRepairs", "Stop every repair") });
       }
       // 519 to 523: Clear Group for a bank's master, then Show Info.
       if (slaves.length > 0) entries.push({ kind: "clearGroup", text: said("UI/Fitting/ClearGroup", "Break up the group") });
@@ -26590,6 +26694,75 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         () => true,
         "",
       );
+    },
+
+    async repairRackModule(moduleID) {
+      // RepairModule (560 to 586): the module's repair begun, then each slave's; a want of paste
+      // (NotEnoughRepairMaterialToFinishAllRepairs) kept and raised once the rest were asked, any other at once.
+      const slaves = heldWeaponBanks().get(moduleID) ?? [];
+      await runTargetingAction(
+        "Repair",
+        async () => {
+          let wanting: unknown = null;
+          for (const id of [moduleID, ...slaves]) {
+            try {
+              await moduleRepairs.begin(id, await repairWaitOf(id));
+            } catch (error) {
+              if (refusalDialogOf(error)?.dialog !== "NotEnoughRepairMaterialToFinishAllRepairs") throw error;
+              wanting = error;
+            }
+          }
+          if (wanting !== null) throw wanting;
+        },
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async cancelRackRepair(moduleID) {
+      // CancelRepair (592 to 601): StopRepairModule of the module and each slave, each only where it is being repaired.
+      for (const id of [moduleID, ...(heldWeaponBanks().get(moduleID) ?? [])]) await moduleRepairs.end(id).catch(() => {});
+    },
+
+    async repairRackModules(moduleIDs) {
+      // godma.RepairManyModules (2204 to 2223): InitiateModuleRepairMany, then a CustomNotify of how many were begun,
+      // how many wanted paste, how many failed; each begun ended when its time is up (RepairModule_thread).
+      await runTargetingAction(
+        "Repair all",
+        async () => {
+          const waits = new Map<number, number>();
+          for (const id of moduleIDs) waits.set(id, await repairWaitOf(id));
+          const outcome = await moduleRepairs.beginMany(moduleIDs, (id) => waits.get(id) ?? 0);
+          await Promise.all([
+            wordsNow(["UI/Inflight/SuccessfullyStartedRepairing", "UI/Inflight/NotEnoughNaniteToRepairAll", "UI/Inflight/FailedToStartRepair"]).catch(() => {}),
+            resolveNamesNow([{ kind: "type", id: TYPE_NANITE_REPAIR_PASTE }]).catch(() => {}),
+          ]);
+          const paste = nameCache.get(nameKey("type", TYPE_NANITE_REPAIR_PASTE)) ?? String(TYPE_NANITE_REPAIR_PASTE);
+          const texts: string[] = [];
+          if (outcome.success.length > 0) {
+            const n = outcome.success.length;
+            texts.push(templateWords("UI/Inflight/SuccessfullyStartedRepairing", { numModules: n }, `Repairs begun on ${n} module${n === 1 ? "" : "s"}.`));
+          }
+          if (outcome.missingCharges.length > 0) {
+            const n = outcome.missingCharges.length;
+            texts.push(templateWords("UI/Inflight/NotEnoughNaniteToRepairAll", { typeName: paste, numModules: n }, `Too little ${paste} for ${n} module${n === 1 ? "" : "s"}.`));
+          }
+          if (outcome.failed.length > 0) {
+            const n = outcome.failed.length;
+            texts.push(templateWords("UI/Inflight/FailedToStartRepair", { numModules: n }, `${n} module${n === 1 ? "" : "s"} could not begin a repair.`));
+          }
+          if (texts.length > 0) sayDialog("CustomNotify", { type: "dict", entries: [["notify", texts.join("<br><br>")]] }, texts.join("\n\n"));
+        },
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async cancelRackRepairs(moduleIDs) {
+      // StopRepairModuleManyModules (2268 to 2271): StopRepairModule of each, in turn.
+      for (const id of moduleIDs) await moduleRepairs.end(id).catch(() => {});
     },
 
     async clearRackGroup(moduleID) {

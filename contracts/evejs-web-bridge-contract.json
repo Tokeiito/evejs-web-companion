@@ -1226,6 +1226,7 @@
       "dogmaIM.Deactivate",
       "dogmaIM.DestroyWeaponBank",
       "dogmaIM.InitiateModuleRepair",
+      "dogmaIM.InitiateModuleRepairMany",
       "dogmaIM.InjectSkillIntoBrain",
       "dogmaIM.LaunchProbes",
       "dogmaIM.LinkAllWeapons",

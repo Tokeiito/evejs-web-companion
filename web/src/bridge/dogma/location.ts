@@ -107,6 +107,9 @@ export interface DogmaTypeFacts {
   readonly defaultEffectID?: number | null;
   /** Every effect its typeDogma marks isDefault, in its order. */
   readonly defaultEffectIDs?: readonly number[];
+  /** evetypes.GetBasePrice, and inventoryUtil.GetComputedBasePrice(typeID, 1) (by its materials); null where not read. */
+  readonly basePrice?: number | null;
+  readonly computedBasePrice?: number | null;
   readonly groupID: number | null;
   readonly categoryID: number | null;
   /** get_dogma_required_skills: the skills it requires (an item's reqSkills). */

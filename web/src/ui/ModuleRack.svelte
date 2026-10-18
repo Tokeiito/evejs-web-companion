@@ -365,6 +365,10 @@
       if (entry.kind === "online") await flow?.setRackModuleOnline(module.itemID, !entry.on);
       else if (entry.kind === "overloadRack" || entry.kind === "stopOverloadRack") await flow?.setRackOverload(module.itemID, entry.kind === "overloadRack");
       else if (entry.kind === "clearGroup") await flow?.clearRackGroup(module.itemID);
+      else if (entry.kind === "repair") await flow?.repairRackModule(module.itemID);
+      else if (entry.kind === "cancelRepair") await flow?.cancelRackRepair(module.itemID);
+      else if (entry.kind === "repairAll") await flow?.repairRackModules(entry.moduleIDs);
+      else if (entry.kind === "cancelAllRepairs") await flow?.cancelRackRepairs(entry.moduleIDs);
     } catch (cause) {
       sayRackProblem(moduleName(module.typeID), String(cause));
     }

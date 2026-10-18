@@ -100,6 +100,12 @@ export interface ModuleRepairs {
    * Otherwise the repair is ended after `waitMs`, unless it was ended before. Fails as the call fails.
    */
   begin(moduleID: number, waitMs: number): Promise<boolean>;
+  /**
+   * Begins several at once, as godma.RepairManyModules (2204 to 2223): InitiateModuleRepairMany(moduleIDs), answered
+   * (success, missingCharges, failed); each begun one kept and ended after its own wait (`waitMsOf`). Fails as the
+   * call fails.
+   */
+  beginMany(moduleIDs: readonly number[], waitMsOf: (moduleID: number) => number): Promise<{ readonly success: readonly number[]; readonly missingCharges: readonly number[]; readonly failed: readonly number[] }>;
   /** Ends a repair begun here, which is when the server mends the module. Nothing for a module not being repaired. */
   end(moduleID: number): Promise<void>;
   /** Ends every repair begun here: godma's doing at a session's change. One that fails does not keep the rest. */
@@ -128,16 +134,33 @@ export function createModuleRepairs(
       options.ended?.(moduleID);
     }
   }
+  function keep(moduleID: number, waitMs: number): void {
+    const mark = {};
+    begun.set(moduleID, mark);
+    // RepairModule_thread (2253): when the time is up, only the beginning that is still this module's ends it.
+    later(waitMs, () => {
+      if (begun.get(moduleID) === mark) void end(moduleID).catch(() => {});
+    });
+  }
+  /** One of the answer's lists of modules (a list or tuple as the bridge carries it), as whole numbers. */
+  const modulesIn = (value: unknown): number[] => {
+    const items = Array.isArray(value) ? value : value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items) ? (value as { items: unknown[] }).items : [];
+    return items.map((item) => Number(item && typeof item === "object" && "value" in item ? (item as { value: unknown }).value : item)).filter((id) => Number.isSafeInteger(id) && id > 0);
+  };
   return {
     async begin(moduleID, waitMs) {
       if ((await act("dogmaIM", "InitiateModuleRepair", [moduleID])) === false) return false;
-      const mark = {};
-      begun.set(moduleID, mark);
-      // RepairModule_thread (2253): when the time is up, only the beginning that is still this module's ends it.
-      later(waitMs, () => {
-        if (begun.get(moduleID) === mark) void end(moduleID).catch(() => {});
-      });
+      keep(moduleID, waitMs);
       return true;
+    },
+    async beginMany(moduleIDs, waitMsOf) {
+      const answer = await act("dogmaIM", "InitiateModuleRepairMany", [[...moduleIDs]]);
+      // (success, missingCharges, failed): a tuple of three lists.
+      const parts = Array.isArray(answer) ? answer : answer && typeof answer === "object" && Array.isArray((answer as { items?: unknown }).items) ? (answer as { items: unknown[] }).items : [];
+      const [success, missingCharges, failed] = [modulesIn(parts[0]), modulesIn(parts[1]), modulesIn(parts[2])];
+      // 2216 to 2218: each begun kept, its time stamp its own.
+      for (const moduleID of success) keep(moduleID, waitMsOf(moduleID));
+      return { success, missingCharges, failed };
     },
     end,
     async endAll() {

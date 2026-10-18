@@ -114,6 +114,9 @@ const TABLES = Object.freeze({
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).
   typeDogma: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", rowsOnly: true }),
+  // A type's materials (typematerials/data.py get_type_materials_by_id: typeMaterials.fsdbinary, its materials), which
+  // inventoryUtil.GetComputedBasePrice prices a type by. Read by the rows asked for only.
+  typeMaterials: Object.freeze({ loader: "typeMaterialsLoader", resource: "res:/staticdata/typematerials.fsdbinary", rowsOnly: true }),
   // A meta group's name, the number of its message (metaGroups/data.py get_name: the meta group's nameID), which the
   // assets search's metagroup keyword matches (assetSearchUtil.MatchMetagroup).
   metaGroupNameIDs: Object.freeze({ loader: "metaGroupsLoader", resource: "res:/staticdata/metagroups.fsdbinary", attribute: "nameID" }),

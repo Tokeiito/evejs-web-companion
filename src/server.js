@@ -13560,7 +13560,8 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 //                  then its mass, capacity, volume and radius), its effects (its typeDogma dogmaEffects, in their
 //                  order) and those marked isDefault, its group and category, and the skills it requires
 //                  (get_dogma_required_skills: the item's reqSkills, which a location's required-skill modifiers go
-//                  by)
+//                  by), and its base price and computed base price (evetypes.GetBasePrice; inventoryUtil
+//                  GetComputedBasePrice(typeID, 1), which baseDogmaLocation.FindNumUnitsToRepairModule prices a repair by)
 //   each effect    of those types: its name, its category, the attribute a fitting's chance goes by
 //                  (fittingUsageChanceAttributeID), its modifierInfo (null where it has none: the compiler makes
 //                  it a neutral effect, baseEffectCompiler SetupDogmaEffects), and the attributes it goes by for its
@@ -13580,12 +13581,15 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
     };
     const wanted = listed("typeIDs", 50);
     const askedAttributes = listed("attributeIDs", 200);
-    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills] = await Promise.all([
+    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills, materialRows, basePrices, portionSizes] = await Promise.all([
       clientBuiltData.rows("typeDogma", wanted),
       clientBuiltData.rows("types", wanted),
       clientBuiltData.table("dogmaAttributes"),
       clientBuiltData.table("groupCategories"),
       clientBuiltData.table("requiredSkillsForTypes"),
+      clientBuiltData.rows("typeMaterials", wanted),
+      clientBuiltData.table("typeBasePrices"),
+      clientBuiltData.table("typePortionSizes"),
     ]);
     if (!dogmaRows || !typeRows || !attributeRows) {
       res.json({ ok: true, available: false, types: {}, effects: {}, attributes: {} });
@@ -13593,6 +13597,30 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
     }
     const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    // inventoryUtil.GetComputedBasePrice (9 to 33): by the materials, each material's base price over its portion
+    // size cut to a whole number, times its quantity, times the quantity asked over the material's portion size (the
+    // loop reads each material's into the name the type's portion size was in); with none, the type's own base price
+    // times the quantity over its portion size; cut to a whole number. Null where the tables are not had.
+    const basePriceOf = (typeID) => Number(basePrices && basePrices[String(typeID)]) || 0;
+    const portionSizeOf = (typeID) => Number(portionSizes && portionSizes[String(typeID)]) || 0;
+    const computedBasePrice = (typeID, quantity) => {
+      if (!materialRows || !basePrices || !portionSizes) return null;
+      let portionSize = portionSizeOf(typeID) || 1;
+      const asked = quantity ?? portionSize;
+      const row = materialRows[String(typeID)];
+      const materials = row && Array.isArray(row.materials) ? row.materials : [];
+      let price = 0;
+      if (materials.length > 0) {
+        for (const material of materials) {
+          portionSize = portionSizeOf(material.materialTypeID);
+          if (portionSize === 0) continue;
+          price += (Number(material.quantity) || 0) * Math.trunc(basePriceOf(material.materialTypeID) / portionSize) * (asked / portionSize);
+        }
+      } else {
+        price = basePriceOf(typeID) * (asked / portionSize);
+      }
+      return Math.trunc(price);
+    };
     const types = {};
     const effectIDs = [];
     const attributeIDs = new Set(askedAttributes);
@@ -13652,6 +13680,8 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
         // evetypes.IsPublished.
         published: type.published === undefined || type.published === null ? null : Boolean(type.published),
+        basePrice: number(type.basePrice),
+        computedBasePrice: computedBasePrice(typeID, 1),
       };
     }
     const effectRows = effectIDs.length > 0 ? await clientBuiltData.rows("dogmaEffects", effectIDs) : {};

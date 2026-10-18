@@ -1765,6 +1765,19 @@ function overloading(args, kwargs, context) {
     : "The client names the module's own overload effect. This call names another." };
 }
 
+/**
+ * godma.RepairManyModules (2206): InitiateModuleRepairMany(itemIDs), the list the module button's Repair All makes
+ * (shipmodulebutton.GetMenu 507 to 516), and nothing else. The page's array goes as the client's list.
+ */
+const moduleList = (args, kwargs) => {
+  const [itemIDs] = args;
+  const items = Array.isArray(itemIDs) ? itemIDs : itemIDs && itemIDs.type === "list" && Array.isArray(itemIDs.items) ? itemIDs.items : null;
+  if (!(args.length === 1 && items && items.length > 0 && items.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client sends one list of the modules, and nothing else." };
+  }
+  return { args: [{ type: "list", items }] };
+};
+
 /** godma.RepairModule and StopRepairModule (2227, 2261): the one module, a whole number above nought, and nothing else. */
 const oneModule = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
@@ -2749,6 +2762,8 @@ const RETAIL_CALLS = Object.freeze({
     "GetDogmaLM().StopOverloadRack(itemID): the button's Stop Overloading Rack (699), the same module. It answers the modules stopped. No recording has one."),
   "dogmaIM.InitiateModuleRepair": judged(`${GODMA}:2227`, oneModule,
     "GetDogmaLM().InitiateModuleRepair(itemID), on the dogma location bound for where the pilot is: the module button's Repair, for a module with damage. The server takes the paste and begins; an answer of False begins nothing. No recording has one."),
+  "dogmaIM.InitiateModuleRepairMany": judged(`${GODMA}:2206`, moduleList,
+    "GetDogmaLM().InitiateModuleRepairMany(itemIDs), on the dogma location bound for where the pilot is: the module button's Repair All (shipmodulebutton 516, RepairManyModules), the ship's damaged modules not being repaired, in the order godma's set of them gives, the one clicked first. It answers (success, missingCharges, failed), each a list of modules. No recording has one."),
   "dogmaIM.StopModuleRepair": judged(`${GODMA}:2261`, oneModule,
     "GetDogmaLM().StopModuleRepair(itemID): godma's own doing when the repair's time is up (the damage over the character's repair rate, in minutes, and a second), at Cancel Repair, and at a session's change. The server mends the module at this call. No recording has one."),
   "dogmaIM.LinkAllWeapons": judged(`${CLIENT_DOGMA}:800`, ownShipAlone,
