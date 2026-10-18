@@ -2164,6 +2164,7 @@
   .fit-skill-section { margin: 0.4rem 0 0.2rem; font-size: 13px; color: #58a7bf; }
   .fit-skill-section.cargo-alone { margin-top: 1rem; }
   .fit-skill-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.25rem; }
+  .fit-skill-training { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.6rem; }
   .fit-socket.warning { outline: 2px solid var(--slot-warning); outline-offset: 1px; }
   .hud-gauge.warning, .fit-readout-warning { outline: 1px solid var(--slot-warning); outline-offset: 2px; }
   /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */

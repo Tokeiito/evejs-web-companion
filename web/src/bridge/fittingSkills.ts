@@ -1,9 +1,10 @@
 // The Fitting window's skill warning as the client reckons it (ui/shared/fittingScreen/skillRequirements.py,
 // warningIconCont.py, shipfitting/fittingWarnings.py GetSlotsMissingSkills): how many skills the ship and what it
-// holds are missing, the slots and holds showing it, and the skills its tooltip lists for the ship and fit and for the
-// cargo hold.
+// holds are missing, the slots and holds showing it, the skills its tooltip lists for the ship and fit and for the
+// cargo hold, and the list its training time and actions go by, in the order the client's sets and dicts give it.
 
 import { isSkillRequirementMet, missingSkillsRecursive, type PilotSkills, type RequiredSkills } from "./missingSkills.ts";
+import { intDictOrder, intSetOf, intSetUnion, type IntSet } from "./py27DictOrder.ts";
 
 /** inventorycommon const categoryBlueprint: a blueprint's skills are not counted. */
 const CATEGORY_BLUEPRINT = 9;
@@ -25,12 +26,22 @@ export interface FittingSkillWarning {
   readonly cargoListed: boolean;
   /** Whether both have (the Ship and Fit heading shown). */
   readonly shipAndFitHeading: boolean;
+  /**
+   * The skills the training time and the actions go by (GetSkillsMissingToUseAllSkillsFromListRecursiveAsList of both
+   * lists joined): each at its level, a skill's own missing needs before it.
+   */
+  readonly listed: readonly (readonly [number, number])[];
+  /** GetMissingSkillBooksFromList of them: those the pilot has not (GetSkill). */
+  readonly missingBooks: readonly number[];
 }
 
 /** What the warning goes by: the types, the items in their slots and holds, the skills needed and the pilot's. */
 export interface FittingSkillInputs {
-  /** _GetAllTypesForShipAndFit: the ship's type, the items fitted to it, and the drone bay's, fighter bay's and tubes' types. */
-  readonly shipAndFit: readonly number[];
+  /** _GetAllTypesForShipAndFit: the hull's type, then each item fitted to it's, in the order its dict iterates them. */
+  readonly ship: number;
+  readonly fitted: readonly number[];
+  /** The drone bay's, fighter bay's and each tube's types (_GetTypesInFlag), in that order of flags. */
+  readonly bays: readonly (readonly number[])[];
   /** _GetAllTypesForCargoHold. */
   readonly cargo: readonly number[];
   /** The items fitted to the ship and those of its holds, (typeID, flagID). */
@@ -43,52 +54,105 @@ export interface FittingSkillInputs {
   readonly categoryOf: (typeID: number) => number | null;
 }
 
+type SkillFacts = Pick<FittingSkillInputs, "required" | "mine" | "lapsed" | "categoryOf">;
+
 /**
- * GetMissingSkills_HighestLevelByTypeID: of each type (none that does not exist, nor a blueprint), each skill missing
- * to use it however deep (GetSkillsMissingToUseItemRecursive), at the highest level any needs it; and each type's
- * missing skills.
+ * GetMissingSkills_HighestLevelByTypeID: of each type in the order given (none that does not exist, nor a blueprint),
+ * each skill missing to use it however deep (GetSkillsMissingToUseItemRecursive), at the highest level any needs it,
+ * in the order the dict of them iterates (each skill set first as it is met); and each type's missing skills.
  */
-export function missingSkillsHighestLevel(
-  typeIDs: Iterable<number>,
-  inputs: Pick<FittingSkillInputs, "required" | "mine" | "lapsed" | "categoryOf">,
-): { readonly highest: Map<number, number>; readonly byType: Map<number, Set<number>> } {
-  const highest = new Map<number, number>();
+export function missingSkillsHighestLevel(typeIDs: Iterable<number>, inputs: SkillFacts): { readonly highest: Map<number, number>; readonly byType: Map<number, Set<number>> } {
+  const met = new Map<number, number>();
   const byType = new Map<number, Set<number>>();
   for (const typeID of typeIDs) {
     const categoryID = inputs.categoryOf(typeID);
     if (categoryID === null || categoryID === CATEGORY_BLUEPRINT) continue;
     for (const [skill, level] of missingSkillsRecursive(typeID, inputs.required, inputs.mine, inputs.lapsed)) {
-      highest.set(skill, Math.trunc(Math.max(level, highest.get(skill) ?? 0)));
+      met.set(skill, Math.trunc(Math.max(level, met.get(skill) ?? 0)));
       const skills = byType.get(typeID) ?? new Set<number>();
       skills.add(skill);
       byType.set(typeID, skills);
     }
   }
-  return { highest, byType };
+  return { highest: new Map(intDictOrder([...met.keys()]).map((skill) => [skill, met.get(skill) ?? 0])), byType };
+}
+
+/** GetMissingSkillsForTypeIDs: a set of the types, in the order given, whose own skills are not met (IsSkillRequirementMet). */
+function typesMissingSkills(typeIDs: Iterable<number>, inputs: SkillFacts): IntSet {
+  return intSetOf([...typeIDs].filter((typeID) => !isSkillRequirementMet(typeID, inputs.required, inputs.mine)));
 }
 
 /**
- * The skill warning: the icon's count and the slots (of every type of the ship and what it holds), and the tooltip's
- * lists (GetSkillTooltip: the types whose own skills are not met, the cargo's those of the ship and fit left out).
+ * GetSkillsMissingToUseAllSkillsFromListRecursive: of each skill listed short of its level, its own missing needs
+ * however deep (unless the skill is had, lapsed, with points), then the skill at the highest level asked, each first
+ * set where it is met (an OrderedDict).
+ */
+function missingFromListRecursive(listed: readonly (readonly [number, number])[], inputs: SkillFacts): [number, number][] {
+  const found = new Map<number, number>();
+  const short = (skill: number, level: number) => {
+    const trained = inputs.mine.get(skill)?.trainedSkillLevel;
+    return trained === undefined || trained < level;
+  };
+  const walkable = (skill: number) => {
+    const had = inputs.lapsed.get(skill);
+    return had === undefined || had.trainedSkillPoints <= 0;
+  };
+  const walk = (of: number): void => {
+    for (const [skill, level] of inputs.required[of] ?? []) {
+      if (!short(skill, level)) continue;
+      if (skill !== of && walkable(skill)) walk(skill);
+      found.set(skill, Math.max(found.get(skill) ?? 0, level));
+    }
+  };
+  for (const [skill, level] of listed) {
+    if (!short(skill, level)) continue;
+    // `skillTypeID not in skills` of a list of pairs: always so, the skill's own needs walked.
+    if (walkable(skill)) walk(skill);
+    found.set(skill, Math.max(found.get(skill) ?? 0, level));
+  }
+  return [...found];
+}
+
+/**
+ * The skill warning: the icon's count and the slots (of every type of the ship and what it holds), the tooltip's lists
+ * (GetSkillTooltip: the types whose own skills are not met, the cargo's those of the ship and fit left out), and the
+ * list its training time and actions go by.
  */
 export function fittingSkillWarning(inputs: FittingSkillInputs): FittingSkillWarning {
-  const all = new Set([...inputs.shipAndFit, ...inputs.cargo]);
-  const { highest, byType } = missingSkillsHighestLevel(all, inputs);
+  // _GetAllTypesForShipAndFit: a set the hull and each fitted item's type were added to, each bay's set merged in;
+  // made afresh at each call.
+  const shipAndFitSet = () => {
+    const set = intSetOf([inputs.ship, ...inputs.fitted]);
+    for (const bay of inputs.bays) set.update(intSetOf(bay));
+    return set;
+  };
+  const shipAndFit = shipAndFitSet();
+  const cargo = intSetOf(inputs.cargo);
+  // The icon (GetAllTypeIDsMissingSkillsForShipAndContent: the cargo's set merged into the ship and fit's).
+  const all = shipAndFitSet();
+  all.update(cargo);
+  const { highest, byType } = missingSkillsHighestLevel(all.keys(), inputs);
   const validFlags = new Set([...MODULE_SLOT_FLAGS, ...EXTRA_HOLDS]);
   const flags = [...new Set(inputs.items.filter(([typeID, flagID]) => validFlags.has(flagID) && byType.has(typeID)).map(([, flagID]) => flagID))];
-  // GetMissingSkillsForTypeIDs: the types whose own skills are not met (IsSkillRequirementMet).
-  const unmet = (typeIDs: Iterable<number>) => new Set([...typeIDs].filter((typeID) => !isSkillRequirementMet(typeID, inputs.required, inputs.mine)));
-  const fitMissing = unmet(new Set(inputs.shipAndFit));
-  const fitHighest = missingSkillsHighestLevel(fitMissing, inputs).highest;
-  const cargoMissing = new Set([...unmet(new Set(inputs.cargo))].filter((typeID) => !fitMissing.has(typeID)));
-  const cargoHighest = missingSkillsHighestLevel(cargoMissing, inputs).highest;
+  // GetSkillTooltip's lists.
+  const fitMissing = typesMissingSkills(shipAndFit.keys(), inputs);
+  const fitHighest = missingSkillsHighestLevel(fitMissing.keys(), inputs).highest;
+  const cargoMissing = typesMissingSkills(cargo.keys(), inputs);
+  cargoMissing.differenceUpdate(fitMissing);
+  const cargoHighest = missingSkillsHighestLevel(cargoMissing.keys(), inputs).highest;
   for (const [skill, level] of [...cargoHighest]) if ((fitHighest.get(skill) ?? 0) >= level) cargoHighest.delete(skill);
+  // allSkillLevelsByID: the two lists' skills (a set of each's keys, joined), each at the higher of their levels.
+  const joined = intSetUnion(intSetOf(fitHighest.keys()), intSetOf(cargoHighest.keys())).keys()
+    .map((skill) => [skill, Math.max(fitHighest.get(skill) ?? 0, cargoHighest.get(skill) ?? 0)] as const);
+  const listed = missingFromListRecursive(joined, inputs);
   return {
     count: highest.size,
     flags,
-    fit: inputs.shipAndFit.length > 0 ? [...fitHighest] : [],
+    fit: shipAndFit.keys().length > 0 ? [...fitHighest] : [],
     cargo: [...cargoHighest],
-    cargoListed: cargoMissing.size > 0,
-    shipAndFitHeading: fitMissing.size > 0 && cargoMissing.size > 0,
+    cargoListed: cargoMissing.keys().length > 0,
+    shipAndFitHeading: fitMissing.keys().length > 0 && cargoMissing.keys().length > 0,
+    listed,
+    missingBooks: listed.map(([skill]) => skill).filter((skill) => !inputs.mine.has(skill)),
   };
 }

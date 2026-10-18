@@ -106,3 +106,117 @@ export function intDictOf(keys: readonly number[]): IntDict {
   for (const key of keys) dict.set(key);
   return dict;
 }
+
+/** setobject.c's dummy: the mark a discarded key leaves in its slot. */
+const DUMMY = Symbol("dummy");
+
+/**
+ * A set of whole numbers as CPython 2.7 lays out its table (setobject.c), for the order it iterates in. `add` is
+ * s.add(key), set(list) and a set comprehension (set_add_key: the table grown to four times the keys when two-thirds
+ * of it is filled, dummies counted). `discard` leaves a dummy. `update` is set(other) and s | other of a set
+ * (set_merge: the table first made big enough for both where they would fill two-thirds of it, then the other's keys
+ * put in the order it iterates in, with no growing after). `differenceUpdate` is s -= other (the table remade where a
+ * fifth of it is dummies). A merge grows the table to above twice the keys of both, as the source reads (measured
+ * against the client's python27.dll: set(list), s | t, s -= t, s.add and a comprehension, 400 lists alike; its dict
+ * merge grows by four). Whole numbers within 32 bits.
+ */
+export class IntSet {
+  private table: (Slot | typeof DUMMY | undefined)[] = new Array(MIN_TABLE_SIZE);
+  private fill = 0;
+  private used = 0;
+
+  /** set_lookkey: the slot holding `key`, else the first dummy met, else the empty slot the probe ends at. */
+  private lookup(hash: number, key: number): number {
+    const mask = BigInt(this.table.length - 1);
+    let perturb = BigInt.asUintN(64, BigInt(hash));
+    let index = perturb & mask;
+    let freeSlot: number | null = null;
+    for (;;) {
+      const entry = this.table[Number(index)];
+      if (entry === undefined) return freeSlot ?? Number(index);
+      if (entry === DUMMY) freeSlot ??= Number(index);
+      else if (entry.hash === hash && entry.key === key) return Number(index);
+      index = BigInt.asUintN(64, index * 5n + perturb + 1n) & mask;
+      perturb >>= PERTURB_SHIFT;
+    }
+  }
+
+  /** set_insert_key: the key put where the lookup ends, unless it is there already. */
+  private insert(key: number): void {
+    if (!Number.isInteger(key) || key < -2147483648 || key > 2147483647) throw new TypeError("A whole number within 32 bits is a set key here.");
+    const hash = hashOf(key);
+    const slot = this.lookup(hash, key);
+    const entry = this.table[slot];
+    if (entry === undefined) {
+      this.fill += 1;
+      this.used += 1;
+      this.table[slot] = { key, hash };
+    } else if (entry === DUMMY) {
+      this.used += 1;
+      this.table[slot] = { key, hash };
+    }
+  }
+
+  /** set_table_resize: the smallest power of two above `minimumUsed`, the keys put back in slot order. */
+  private resize(minimumUsed: number): void {
+    let size = MIN_TABLE_SIZE;
+    while (size <= minimumUsed) size *= 2;
+    const old = this.table;
+    this.table = new Array(size);
+    this.fill = 0;
+    this.used = 0;
+    for (const entry of old) if (entry !== undefined && entry !== DUMMY) this.insert(entry.key);
+  }
+
+  add(key: number): void {
+    const before = this.used;
+    this.insert(key);
+    if (this.used > before && this.fill * 3 >= this.table.length * 2) this.resize(this.used > 50000 ? this.used * 2 : this.used * 4);
+  }
+
+  discard(key: number): void {
+    const slot = this.lookup(hashOf(key), key);
+    const entry = this.table[slot];
+    if (entry === undefined || entry === DUMMY) return;
+    this.table[slot] = DUMMY;
+    this.used -= 1;
+  }
+
+  update(other: IntSet): void {
+    const keys = other.keys();
+    if (keys.length === 0) return;
+    if ((this.fill + keys.length) * 3 >= this.table.length * 2) this.resize((this.used + keys.length) * 2);
+    for (const key of keys) this.insert(key);
+  }
+
+  differenceUpdate(other: IntSet): void {
+    for (const key of other.keys()) this.discard(key);
+    if ((this.fill - this.used) * 5 < this.table.length - 1) return;
+    this.resize(this.used > 50000 ? this.used * 2 : this.used * 4);
+  }
+
+  has(key: number): boolean {
+    const entry = this.table[this.lookup(hashOf(key), key)];
+    return entry !== undefined && entry !== DUMMY;
+  }
+
+  /** The keys in the order the set iterates them: its table's slots in order. */
+  keys(): number[] {
+    return this.table.filter((entry): entry is Slot => entry !== undefined && entry !== DUMMY).map((entry) => entry.key);
+  }
+}
+
+/** set(keys) of a list, or a set comprehension over it (IntSet.add each). */
+export function intSetOf(keys: Iterable<number>): IntSet {
+  const set = new IntSet();
+  for (const key of keys) set.add(key);
+  return set;
+}
+
+/** left | right of two sets: a copy of the left (set_copy: merged into an empty set), the right merged into it. */
+export function intSetUnion(left: IntSet, right: IntSet): IntSet {
+  const result = new IntSet();
+  result.update(left);
+  result.update(right);
+  return result;
+}

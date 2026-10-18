@@ -40,12 +40,14 @@
   } from "../bridge/questions.ts";
   import { labelEscaped } from "../bridge/labelMarkup.ts";
   import LabelText from "./LabelText.svelte";
-  import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
+  import { SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
   import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import RequiredSkillRow from "./RequiredSkillRow.svelte";
+  import SkillTrainingAction from "./SkillTrainingAction.svelte";
+  import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
   import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
   import { CONTENTS_LABELS, RACK_EFFECTS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
   import type { ViewFittingTypeMark } from "../app/flow.ts";
@@ -842,12 +844,7 @@
    * the install's words; the page's own where they are not to hand. None is the window's Training Complete.
    */
   function trainingTime(ticks: number | null): string {
-    if (ticks === null || !(ticks > 0)) return skillWord("Tooltips/SkillPlanner/TrainingComplete");
-    const written = shortWrittenInterval(BigInt(Math.trunc(ticks)), $words.templates, "year", "minute");
-    if (written !== null) return written;
-    const minutes = Math.ceil(ticks / 600_000_000);
-    const [days, hours, mins] = [Math.floor(minutes / 1440), Math.floor((minutes % 1440) / 60), minutes % 60];
-    return [days > 0 ? `${days}d` : "", hours > 0 ? `${hours}h` : "", mins > 0 || minutes === 0 ? `${mins}m` : ""].filter(Boolean).join(" ");
+    return trainingTimeText(ticks, $words.templates, skillWord("Tooltips/SkillPlanner/TrainingComplete"));
   }
   // The client's books window (characterskills/client/UI/missingSkillbooksWnd.py), which Buy and train opens: its
   // title; the books sold, each by name, with what they cost and Buy and Inject; the books not sold, by name, under a
@@ -876,10 +873,6 @@
       writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, $words.templates, nameOf),
     }));
   }
-  /** inventorycommon.const typeSkillInjector: what the apply-points button's market details are of, without free points. */
-  const TYPE_SKILL_INJECTOR = 40520;
-  /** inventorycommon.const typeAlphaTrainingInjector: what an alpha clone's apply-points button offers in the store. */
-  const TYPE_ALPHA_TRAINING_INJECTOR = 46375;
   // The skill requirement window's apply-points button (skillBtns.ApplySkillPointsButton) and the client's Apply Skill
   // Points window it opens where the pilot has free points (skilltrading/applySkillPointsWindow.py): its title and
   // words, each level a row with its gauges (trained, and with the points), the time saved and the percentages, and
@@ -912,27 +905,6 @@
   }
   /** round(x * 100, 1), as the window's percentages are. */
   const percent = (fraction: number): number => Math.round(fraction * 1000) / 10;
-  /**
-   * The apply-points button (ApplySkillPointsButton.UpdateState and ClickFunc): with free points it puts them into the
-   * levels, offered where no book is missing; without, an omega clone's opens the Skill Injector's market details, and
-   * an alpha clone's the store at the Alpha Training Injector (vgsService.OpenStore), which the page has not: `why`.
-   */
-  function applyPointsButton(open: { readonly freeSkillPoints: number; readonly offerInjection: boolean; readonly omega: boolean }): { readonly hint: string; readonly enabled: boolean; readonly why?: string; readonly use: () => void } {
-    if (open.freeSkillPoints > 0) {
-      return { hint: applyWord("UI/SkillQueue/ApplySkillPoints"), enabled: open.offerInjection, use: () => void flow.applySkillPointsRequired().catch(() => {}) };
-    }
-    if (!open.omega) {
-      return { hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_ALPHA_TRAINING_INJECTOR }), enabled: false, why: "The page has no store.", use: () => {} };
-    }
-    return {
-      hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_SKILL_INJECTOR }),
-      enabled: true,
-      use: () => {
-        flow.dismissSkillsRequired();
-        showMarketDetails(TYPE_SKILL_INJECTOR);
-      },
-    };
-  }
   /** eveformat.number: whole, grouped by thousands. */
   const groupedNumber = (value: number): string => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
   /** A label of the window filled with `args`, as plain text. */
@@ -1611,55 +1583,12 @@
           <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={skillWord} />
         {/each}
       </ul>
-      <!-- AddTrainingTimeForType: an omega's time, or an alpha's row (its time and an omega's), which an alpha whose
-           need is above its clone (NeedsOmegaUpgrade) has even with no time, its warning under it, and the Upgrade
-           button of every alpha row (AlphaTrainingTimeContainer). The page has no clone upgrade window to open. -->
-      {#if open.trainingTicks !== null || (!open.omega && open.omegaRestricted)}
-        <div class="skill-time">
-          {#if open.omega}
-            <span class="dim">{skillWord("Tooltips/SkillPlanner/OmegaTrainingTime")}</span>
-            <span>{trainingTime(open.trainingTicks ?? 0)}</span>
-          {:else}
-            {#if open.trainingTicks !== null}
-              <span class="dim">{skillWord("Tooltips/SkillPlanner/TrainingTime")}</span>
-              <span class:restricted={open.omegaRestricted}>α {trainingTime(open.trainingTicks)}</span>
-              <span class="omega">Ω {trainingTime(Math.floor(open.trainingTicks / 2))}</span>
-            {/if}
-            {#if open.omegaRestricted}
-              <span class="omega-warning">⚠ {skillWord("Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity", { doActivity: skillWord("Tooltips/SkillPlanner/ActivityFlyShip") })}</span>
-            {/if}
-            <button type="button" class="omega-upgrade" disabled title="The page has no clone upgrade window.">Ω {skillWord("UI/CloneState/Upgrade")}</button>
-          {/if}
-        </div>
-      {/if}
-      {#if open.action !== null}
-        {@const button = applyPointsButton(open)}
-        <div class="skill-points">
-          <span class="dim">{skillWord("UI/Skills/SkillPointsRequired")}</span>
-          <span>{open.skillPointsRequired === null ? "" : groupedNumber(open.skillPointsRequired)}</span>
-          <button type="button" class="apply-points" title={button.why === undefined ? button.hint : `${button.hint} (${button.why})`} aria-label={button.hint} disabled={!button.enabled} onclick={button.use}>+</button>
-        </div>
-        {#if open.action.kind === "train"}
-          <span class="answers">
-            <button
-              type="button"
-              disabled={open.action.queued}
-              title={skillWord(open.action.queued ? "Tooltips/SkillPlanner/AddAllSkillsToQueueButtonFinished" : "Tooltips/SkillPlanner/AddAllSkillsToQueueButton")}
-              onclick={() => void flow.trainSkillsRequired().catch(() => {})}
-            >{skillWord("UI/Skills/TrainSkills")}</button>
-          </span>
-        {:else}
-          <!-- BuyAndTrainButton: its hint says where a book is a rare one (isRareSkill, IsMissingRarePrereqs). -->
-          {@const rare = open.action.missing.some((skill) => open.books[skill]?.sold !== true)}
-          <span class="answers">
-            <button
-              type="button"
-              title={rare ? skillWord("UI/Skills/ErrorRareRequirements") : ""}
-              onclick={() => void flow.buySkillsRequired().catch(() => {})}
-            >{skillWord("UI/Skills/BuyAndTrain")}</button>
-          </span>
-        {/if}
-      {/if}
+      <!-- AddTrainingTimeForType and AddSkillAction (SkillTrainingAction): the time, the points and Train Skills or Buy
+           and Train. -->
+      <SkillTrainingAction record={open} activity="Tooltips/SkillPlanner/ActivityFlyShip"
+        word={skillWord} timeText={trainingTime}
+        apply={applyPointsButton(open, applyWord, () => void flow.applySkillPointsRequired().catch(() => {}), () => flow.dismissSkillsRequired())}
+        onTrain={() => void flow.trainSkillsRequired().catch(() => {})} onBuy={() => void flow.buySkillsRequired().catch(() => {})} />
       <span class="answers">
         <button type="button" onclick={() => flow.dismissSkillsRequired()}>{skillWord("Achievements/AuraText/laterButton")}</button>
       </span>
@@ -1711,10 +1640,6 @@
   .skill-head { display: flex; align-items: center; gap: 0.75rem; }
   .skill-mark { width: 12px; height: 14px; flex: none; }
   .skill-mark.book { background: #e0a43c; border-radius: 1px 3px 3px 1px; }
-  .skill-time .omega-upgrade { align-self: flex-start; margin-top: 0.4rem; }
-  .skill-time, .skill-points { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0.6rem; background: rgba(25, 25, 25, 0.7); }
-  .skill-points { flex-direction: row; justify-content: space-between; }
-  .skill-time .omega { color: #ff9e1b; }
   .dim { opacity: 0.7; }
   .book-title { display: flex; justify-content: space-between; align-items: center; }
   .book-title .close { padding: 0 0.4rem; border: none; background: none; }
@@ -1722,7 +1647,6 @@
   .book-heading { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.3rem; background: rgba(51, 51, 51, 0.5); font-size: 1.05rem; }
   .book-heading.unavailable { color: #ff4d4d; }
   .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
-  .apply-points { margin-left: 0.6rem; padding: 0 0.5rem; }
   .multibuy { width: min(40rem, calc(100vw - 2rem)); }
   /* The multifit window (multiFitWnd.py): the counts red where short of the count (WARNING_COLOR), the main area faded
      while the ships are fitted (layoutGrid.opacity = 0.2). */

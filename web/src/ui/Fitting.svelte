@@ -62,12 +62,14 @@
     type FitWarningRow,
   } from "../bridge/dogma/fittingWarnings.ts";
   import RequiredSkillRow from "./RequiredSkillRow.svelte";
+  import SkillTrainingAction from "./SkillTrainingAction.svelte";
+  import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow, SkillsRequiredRow } from "../app/flow.ts";
+  import type { AppFlow, SkillsRequiredRow, SkillTrainingRecord } from "../app/flow.ts";
   import type {
     FittingResource,
     FittingSlot,
@@ -1180,6 +1182,21 @@
     "UI/SkillQueue/SkillBookMissing": "The book is not injected",
     "UI/SkillQueue/RareSkillBookMissing": "The book is not injected, and is not sold",
     "UI/InfoWindow/SkillNotTrainedToRequiredLevel": "Short of the level needed",
+    // The tooltip's training time and action (AddTrainingTime, SkillActionContainer).
+    "Tooltips/SkillPlanner/OmegaTrainingTime": "Time to train it (omega)",
+    "Tooltips/SkillPlanner/TrainingTime": "Time to train it",
+    "Tooltips/SkillPlanner/TrainingComplete": "Trained",
+    "Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity": "Only an omega clone can {doActivity}",
+    "Tooltips/SkillPlanner/ActivityFlyFittedShip": "fly this ship as fitted",
+    "UI/CloneState/Upgrade": "Upgrade",
+    "UI/Skills/SkillPointsRequired": "Points it takes",
+    "UI/Skills/TrainSkills": "Train them",
+    "Tooltips/SkillPlanner/AddAllSkillsToQueueButton": "Put them all in the queue",
+    "Tooltips/SkillPlanner/AddAllSkillsToQueueButtonFinished": "They are all in the queue",
+    "UI/Skills/BuyAndTrain": "Buy them and train",
+    "UI/Skills/ErrorRareRequirements": "A book this needs is not sold directly",
+    "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
+    "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
     "UI/Fitting/FittingWindow/Warnings/SubsystemShort": "Subsystem slots empty",
     "UI/Fitting/FittingWindow/Warnings/SubsystemHint": "A strategic cruiser needs a subsystem in each of its subsystem slots.",
     "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsShort": "Modules in slots the hull lacks",
@@ -1443,8 +1460,9 @@
   const fitSkillWarning = $derived.by(() => (simulation ? simulation.skillWarning : $fitting.skillWarning ?? null));
   const SKILL_WARNING_ICON = clientTexture("res:/ui/Texture/classes/Fitting/warningSkills.png");
   let skillTooltipOpen = $state(false);
-  /** The tooltip's rows as read when it opened, by skill and level. */
+  /** The tooltip's rows as read when it opened, by skill and level; and its training time and action. */
   let skillRows = $state<ReadonlyMap<string, SkillsRequiredRow>>(new Map());
+  let skillTraining = $state<SkillTrainingRecord | null>(null);
   /**
    * LoadSkillTooltip: the tooltip open (GetSkillTooltip), its rows read as the pilot's skills and queue stand now, and
    * the slots and holds whose items miss skills shown at the skill level (GetSlotsMissingSkills).
@@ -1455,9 +1473,11 @@
     warningTooltipLevel = null;
     skillTooltipOpen = true;
     warningSlots = new Map(warning.flags.map((flagID) => [flagID, WARNING_LEVEL_SKILL]));
-    void flow.fittingSkillRows([...warning.fit, ...warning.cargo])
-      .then((rows) => {
+    skillTraining = null;
+    void flow.fittingSkillTooltip(warning)
+      .then(({ rows, training }) => {
         skillRows = new Map(rows.map((row) => [`${row.skill}:${row.level}`, row]));
+        skillTraining = training;
       })
       .catch(() => {});
   }
@@ -1583,8 +1603,9 @@
         else if (row.kind === "attribute" && row.skillTypeID !== null) refs.push({ kind: "type", id: row.skillTypeID });
       }
     }
-    // The skills the skill tooltip lists.
+    // The skills the skill tooltip lists, and the injectors its apply-points button may name.
     for (const [skill] of [...(fitSkillWarning?.fit ?? []), ...(fitSkillWarning?.cargo ?? [])]) refs.push({ kind: "type", id: skill });
+    if ((fitSkillWarning?.count ?? 0) > 0) refs.push({ kind: "type", id: TYPE_SKILL_INJECTOR }, { kind: "type", id: TYPE_ALPHA_TRAINING_INJECTOR });
     if (fitWarnings.length > 0 || (fitSkillWarning?.count ?? 0) > 0) flow.requestNames(refs);
   });
   /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
@@ -2862,6 +2883,18 @@
                           <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={simulationWord} />
                         {/each}
                       </ul>
+                    {/if}
+                    {#if skillTraining !== null}
+                      <!-- AddTrainingTime (the fitted ship's activity) and AddSkillActionForList: the time to train the
+                           list, the points, Train Skills or Buy and Train, shown however the clone stands. -->
+                      {@const training = skillTraining}
+                      <div class="fit-skill-training">
+                        <SkillTrainingAction record={training} activity="Tooltips/SkillPlanner/ActivityFlyFittedShip" word={simulationWord}
+                          timeText={(ticks) => trainingTimeText(ticks, $words.templates, simulationWord("Tooltips/SkillPlanner/TrainingComplete"))}
+                          apply={applyPointsButton(training, simulationWord, () => void flow.applySkillPointsFor(training).catch(() => {}), closeSkillTooltip)}
+                          onTrain={() => void flow.trainSkillsFor(training).catch(() => {})}
+                          onBuy={() => void flow.buySkillsFor(training).catch(() => {})} />
+                      </div>
                     {/if}
                   </div>
                 {/if}

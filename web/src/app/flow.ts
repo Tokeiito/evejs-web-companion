@@ -1322,6 +1322,9 @@ export interface SkillBooksAsk {
   readonly cost: number | null;
 }
 
+/** The training time and the skill action of a type's needs or of a list of skills (AddTrainingTime, SkillActionContainer). */
+export type SkillTrainingRecord = Pick<SkillsRequired, "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">;
+
 /** A skill of the skill requirement window: its level, its mark and its five boxes. */
 export interface SkillsRequiredRow {
   readonly skill: number;
@@ -2905,10 +2908,15 @@ export interface AppFlow {
    */
   attributeDisplay(attributeIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }> | null>;
   /**
-   * The Fitting window's skill tooltip's rows (skillRequirements.AddMissingSkillRequirements: RequiredSkillRow), each
-   * skill at its level with its mark and its skill bar, as the pilot's skills and queue stand now.
+   * The Fitting window's skill tooltip (GetSkillTooltip) as the pilot's skills and queue stand now: its rows
+   * (AddMissingSkillRequirements: RequiredSkillRow), each skill at its level with its mark and its skill bar; and its
+   * training time and action (AddTrainingTime, AddSkillActionForList), null where there is no time to train.
    */
-  fittingSkillRows(listed: readonly (readonly [number, number])[]): Promise<readonly SkillsRequiredRow[]>;
+  fittingSkillTooltip(warning: FittingSkillWarning): Promise<{ readonly rows: readonly SkillsRequiredRow[]; readonly training: SkillTrainingRecord | null }>;
+  /** A skill action's Train Skills, Buy and Train, and apply-points button, of a record not the skill window's. */
+  trainSkillsFor(record: SkillTrainingRecord): Promise<void>;
+  buySkillsFor(record: SkillTrainingRecord): Promise<void>;
+  applySkillPointsFor(record: SkillTrainingRecord): Promise<void>;
   /**
    * Each skill group's certificates claimed (SkillGroupController GetAccumulatedCertificateLevelsTrained: each of its
    * certificates' levels, Certificate.GetLevel, summed) of all (GetAccumulatedCertificateLevelsTotal: five each). Null
@@ -6107,8 +6115,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // _GetAllTypesForShipAndFit (the hull, what is fitted to it, the drone bay's, fighter bay's and tubes' types) and
     // _GetAllTypesForCargoHold, with the items in their slots and holds (GetSlotsMissingSkills).
     const cargoRows = store.inventory.get().cargo.rows;
-    const skillShipAndFit = [shipTypeID, ...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID), ...bay.map((stack) => stack.typeID),
-      ...fighterBay.map((row) => row.typeID), ...squadrons.map((squadron) => squadron.typeID)];
+    // The items fitted to the ship as the page has them, then each bay's (the drone bay, fighter bay and each tube).
+    const skillTypes = {
+      ship: shipTypeID,
+      fitted: [...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID)],
+      bays: [bay.map((stack) => stack.typeID), fighterBay.map((row) => row.typeID),
+        ...[159, 160, 161, 162, 163].map((flagID) => squadrons.filter((squadron) => squadron.tubeFlagID === flagID).map((squadron) => squadron.typeID))],
+      cargo: cargoRows.map((row) => row.typeID),
+    };
+    const skillShipAndFit = [skillTypes.ship, ...skillTypes.fitted, ...skillTypes.bays.flat()];
     const skillItems = [
       ...modules.map((module) => [module.typeID, module.flagID] as const), ...charges.map((charge) => [charge.typeID, charge.flagID] as const),
       ...cargoRows.map((row) => [row.typeID, 5] as const), ...bay.map((stack) => [stack.typeID, 87] as const),
@@ -6138,7 +6153,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       groupTypes: groupTypesOf,
       requiredSkillsOf,
     });
-    const skillWarning = skillWarningOf(skillShipAndFit, cargoRows.map((row) => row.typeID), skillItems);
+    const skillWarning = skillWarningOf(skillTypes, skillItems);
     store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings, skillWarning });
   }
 
@@ -6245,13 +6260,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * The window's skill warning (WarningIconCont: GetAllTypeIDsMissingSkillsForShipAndContent, GetSkillTooltip) of the
    * ship and fit's types, the cargo's, and the items in the slots and holds; null where a fact it goes by is not held.
    */
-  function skillWarningOf(shipAndFit: readonly number[], cargo: readonly number[], items: readonly (readonly [number, number])[]): FittingSkillWarning | null {
+  function skillWarningOf(
+    types: { readonly ship: number; readonly fitted: readonly number[]; readonly bays: readonly (readonly number[])[]; readonly cargo: readonly number[] },
+    items: readonly (readonly [number, number])[],
+  ): FittingSkillWarning | null {
     const held = pilotSkillsHeld;
     if (held === null || held.characterID !== (store.station.get().online?.characterID ?? null)) return null;
-    if ([...shipAndFit, ...cargo].some((typeID) => !requiredSkillsAsked.has(typeID))) return null;
+    if ([types.ship, ...types.fitted, ...types.bays.flat(), ...types.cargo].some((typeID) => !requiredSkillsAsked.has(typeID))) return null;
     return fittingSkillWarning({
-      shipAndFit: [...new Set(shipAndFit)],
-      cargo: [...new Set(cargo)],
+      ...types,
       items,
       required: requiredSkillsKept,
       mine: held.mine,
@@ -6416,8 +6433,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The skill warning's types and items (the fitting location's fitted items and holds).
     const fittedToShip = [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null);
     const simulatedCargo = [...simulation.simulated.cargo.keys()];
-    const skillShipAndFit = [ship.typeID, ...fittedToShip.map((item) => item.typeID), ...[...ship.drones.values()].map((drone) => drone.typeID),
-      ...[...ship.fighters.values()].map((fighter) => fighter.typeID)];
+    const fighters = [...ship.fighters.values()];
+    const skillTypes = {
+      ship: ship.typeID,
+      fitted: fittedToShip.map((item) => item.typeID),
+      bays: [[...ship.drones.values()].map((drone) => drone.typeID),
+        ...[158, 159, 160, 161, 162, 163].map((flagID) => fighters.filter((fighter) => fighter.flagID === flagID).map((fighter) => fighter.typeID))],
+      cargo: simulatedCargo,
+    };
+    const skillShipAndFit = [skillTypes.ship, ...skillTypes.fitted, ...skillTypes.bays.flat()];
     const skillItems = [
       ...fittedToShip.map((item) => [item.typeID, item.flagID as number] as const), ...simulatedCargo.map((typeID) => [typeID, 5] as const),
       ...[...ship.drones.values()].map((drone) => [drone.typeID, 87] as const),
@@ -6522,7 +6546,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           ]
           : null,
       }),
-      skillWarning: skillWarningOf(skillShipAndFit, simulatedCargo, skillItems),
+      skillWarning: skillWarningOf(skillTypes, skillItems),
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
       // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
       fighterTubes: simulatedFighterTubes(simulation.simulated),
@@ -8845,22 +8869,56 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function fittingSkillRows(listed: readonly (readonly [number, number])[]): Promise<readonly SkillsRequiredRow[]> {
+  async function fittingSkillTooltip(warning: FittingSkillWarning): Promise<{ readonly rows: readonly SkillsRequiredRow[]; readonly training: SkillTrainingRecord | null }> {
     const held = pilotSkillsHeld;
-    if (held === null || listed.length === 0) return [];
-    const skills = [...new Set(listed.map(([skill]) => skill))];
+    const shown = [...warning.fit, ...warning.cargo];
+    if (held === null || (shown.length === 0 && warning.listed.length === 0)) return { rows: [], training: null };
+    const skills = [...new Set([...shown, ...warning.listed].map(([skill]) => skill))];
     const skillTypes = [...new Set(skills.flatMap((skill) => [skill, ...requiredSkillsRecursive(skill, requiredSkillsKept).keys()]))];
     const lists: Record<number, readonly number[]> = {};
     const [facts, prices] = await Promise.all([
       pilotTrainingFacts(skillTypes, held.skillsAnswer, held.allSkillsAnswer),
-      api.getTypePrices(skills, callOptions).catch(() => ({ available: false, published: {} as Readonly<Record<number, boolean | null>> })),
+      api.getTypePrices(skills, callOptions)
+        .catch(() => ({ available: false, published: {} as Readonly<Record<number, boolean | null>>, basePrice: {} as Readonly<Record<number, number | null>> })),
       (async () => {
         for (let at = 0; at < skills.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(skills.slice(at, at + 32), [SKILLS_FOR_PURCHASE_LIST], callOptions));
       })(),
     ]);
     // evetypes.IsSkillAvailableForPurchase: published, and on the list (the list alone where the client's data is not to hand).
-    return listed.map(([skill, level]) => requiredSkillRow(skill, level, requiredSkillsKept, facts,
-      lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)));
+    const sold = (skill: number) => lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true);
+    const rows = shown.map(([skill, level]) => requiredSkillRow(skill, level, requiredSkillsKept, facts, sold(skill)));
+    // After the rows: the time to train the list (GetSkillTrainingTimeLeftForTypesAndLevels, boosters left out); none
+    // and the tooltip ends there.
+    const { listed, missingBooks } = warning;
+    const ticks = trainingTimeForSkills(listed, facts.mine, facts.lapsed, { rank: facts.rank, rate: facts.rate, pointsNow: facts.pointsNow });
+    if (ticks === null || ticks <= 0) return { rows, training: null };
+    // ItemObject(skill).NeedsOmegaUpgrade of any listed (its level trained or queued: MySkillLevelIncludingQueued).
+    const ownLevel = (skill: number) => (facts.lapsed.has(skill)
+      ? Math.max(facts.lapsed.get(skill)?.trainedSkillLevel ?? 0, ...facts.queued.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel))
+      : 0);
+    const omegaRestricted = listed.some(([skill]) => needsOmegaUpgrade(skill, requiredSkillsKept, facts.mine, facts.ceilings, ownLevel(skill)));
+    // AddSkillActionForList: SkillActionContainer of the list and its missing books (shown however the clone stands).
+    const levels = levelsToTrain(listed, facts.mine);
+    const trainable = levels.filter(([skill]) => !missingBooks.includes(skill));
+    const action: SkillsRequired["action"] = missingBooks.length > 0
+      ? { kind: "buy", levels, missing: missingBooks }
+      : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, facts.queued) };
+    skillWindowFacts = { rank: facts.rank, pointsNow: facts.pointsNow, trainingRate: facts.rateWithBoosters, mine: facts.mine, queued: facts.queued };
+    const free = Number(Array.isArray(facts.queueAnswer) ? facts.queueAnswer[1] : 0);
+    return {
+      rows,
+      training: {
+        omega: facts.omega,
+        trainingTicks: ticks,
+        skillPointsRequired: skillPointsRequired(levels, facts.mine, facts.rank),
+        action,
+        books: Object.fromEntries(listed.map(([skill]) => [skill, { sold: sold(skill), basePrice: prices.basePrice[skill] ?? null }])),
+        freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0,
+        applyLevels: trainable,
+        offerInjection: missingBooks.length === 0,
+        omegaRestricted,
+      },
+    };
   }
 
   async function skillWindowRest(
@@ -8934,8 +8992,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function applySkillPointsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
+    if (open !== null) await applySkillPointsOf(open);
+  }
+
+  /** ApplySkillPointsButton with free points: the Apply Skill Points window opened for the record's levels. */
+  async function applySkillPointsOf(open: SkillTrainingRecord): Promise<void> {
     const facts = skillWindowFacts;
-    if (open === null || facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
+    if (facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
     const levels = open.applyLevels;
     const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, levels);
     const reached = new Map<number, readonly [number, number]>();
@@ -11735,7 +11798,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function buySkillsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
-    if (open === null || open.action?.kind !== "buy") return;
+    if (open !== null) await buySkillsOf(open);
+  }
+
+  /** BuyAndTrainButton: the books missing bought (the books window), then the levels queued. */
+  async function buySkillsOf(open: SkillTrainingRecord): Promise<void> {
+    if (open.action?.kind !== "buy") return;
     const action = open.action;
     if (!(await skillPurchaseEnabled())) {
       sayDialog("SkillPurchaseDisabled", null, "Skill books cannot be bought directly here.");
@@ -12167,7 +12235,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function trainSkillsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
-    if (open === null || open.action?.kind !== "train" || open.action.queued) return;
+    if (open !== null) await trainSkillsOf(open);
+  }
+
+  /** AddToQueueButton: the levels added to the queue, those there already passed over. */
+  async function trainSkillsOf(open: SkillTrainingRecord): Promise<void> {
+    if (open.action?.kind !== "train" || open.action.queued) return;
     const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
     const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
     await saveSkillQueue(queueWithLevels(queue, open.action.levels), "Added to your skill queue", "those skills", true);
@@ -25490,7 +25563,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillRowInfoFor,
     skillCatalogueStates,
     attributeDisplay,
-    fittingSkillRows,
+    fittingSkillTooltip,
+    trainSkillsFor: trainSkillsOf,
+    buySkillsFor: buySkillsOf,
+    applySkillPointsFor: applySkillPointsOf,
     skillGroupCertificates,
     expertSystemsHome,
     removeExpertSystem,
