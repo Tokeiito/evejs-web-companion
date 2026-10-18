@@ -56,11 +56,13 @@
     flow.wantBuffBar();
   });
 
+  let nowMs = $state(Date.now());
   /** The bar's children and which show, laid out again at each change of what is on the ship (relaidBuffBar). */
   let layout = $state(newBuffBarLayout());
   $effect(() => {
     const state = $buffBar;
-    layout = relaidBuffBar(untrack(() => layout), state);
+    // (Read again as time goes: an effect's run ends with no notice, CheckForStopCandidates.)
+    layout = relaidBuffBar(untrack(() => layout), state, nowMs);
   });
   const order = $derived(shownBuffSlots(layout));
 
@@ -86,7 +88,6 @@
   });
 
   let tip = $state<{ readonly slot: string; readonly left: number; readonly top: number; readonly below: boolean } | null>(null);
-  let nowMs = $state(Date.now());
   $effect(() => {
     if (order.length === 0 && tip === null) return;
     const handle = setInterval(() => { nowMs = Date.now(); }, 250);

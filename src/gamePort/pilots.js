@@ -933,6 +933,8 @@ function defaultClientCallAnswer({ service, method, args, kwargs }, characterID,
 
 /** The items of a decoded list or tuple, or none. */
 const itemsOf = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+/** buffBarConst.FX_GUIDS_BY_SLOT's effects: the buff bar's slots an effect on the ship brings up. */
+const BUFF_BAR_FX_GUIDS = new Set(["effects.Tethering", "effects.TetheringRepair", "effects.ReserveBankHackingBeam", "effects.MainBankHackingBeam", "effects.DataLink", "effects.LinkedToTraceGate"]);
 /** The events in a destiny update's OnMultiEvent the page is told of as godma scatters them (godma.OnMultiEvent_). */
 const SCATTERED_FROM_MULTI_EVENT = new Set(["OnEwarStart", "OnEwarEnd", "OnJamStart", "OnJamEnd"]);
 
@@ -4556,6 +4558,15 @@ function createGamePortPilots({
       // with the pilot's notifications. Any other special effect is not.
       void travelGuids();
       entry.space.park.onEvent = (name, args) => {
+        // FxSequencer's activations of the buff bar's effects (buffBarConst.FX_GUIDS_THAT_UPDATE_BUFF_BAR) on the pilot's
+        // own ship, as the effect's source or its target (AddActivationToBallRegister files one under both balls).
+        if (name === "OnSpecialFX" && Array.isArray(args) && BUFF_BAR_FX_GUIDS.has(textOf(args[5]))) {
+          const own = positive(attribute(entry, "shipid"));
+          if (own !== null && (positive(args[0]) === own || positive(args[3]) === own) && sessions.has(entry.handle)) {
+            record(entry, notificationToBridgeJson({ method: "OnSpecialFX", args }));
+          }
+          return;
+        }
         // michelle.OnDbuffUpdated (1574) and SetState's (1002): the warfare buffs on the pilot's own ship
         // (IncomingDbuffTracker.OnDbuffUpdated drops another ship's), handed on as the server sent them.
         if (name === "OnDbuffUpdated") {

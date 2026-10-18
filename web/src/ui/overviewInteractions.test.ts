@@ -19,7 +19,7 @@ const heldSignal = <T>(value: T) => ({ get: () => value, subscribe: (listener: (
 const FLOW_SIGNALS: Record<string, unknown> = {
   autopilotOn: heldSignal(false),
   collapseWarning: heldSignal(null),
-  buffBar: heldSignal({ incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "", jammers: new Map(), activeJams: [], jamTimers: new Map() }),
+  buffBar: heldSignal({ incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "", jammers: new Map(), activeJams: [], jamTimers: new Map(), shipEffects: [] }),
 };
 const flow = new Proxy({}, { get: (_target, key) => (typeof key === "string" && key in FLOW_SIGNALS ? FLOW_SIGNALS[key] : async () => {}) });
 const neutral = entity(11, "Neutral ship");

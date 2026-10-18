@@ -41,6 +41,15 @@ export interface BuffBarState {
   readonly activeJams: readonly ActiveJamCycle[];
   /** shipUI's timers on the buttons (StartTimer): by jamming type, each jammer's latest cycle, until its OnEwarEnd. */
   readonly jamTimers: ReadonlyMap<string, readonly JamTimer[]>;
+  /** FxSequencer's activations on the pilot's ship (its ball as the effect's source or target), of the bar's effects. */
+  readonly shipEffects: readonly ShipEffect[];
+}
+
+/** One activation of an effect on the pilot's ship: its key, its effect's guid, and when its run ends (browser clock). */
+export interface ShipEffect {
+  readonly key: string;
+  readonly guid: string;
+  readonly endMs: number | null;
 }
 
 /** One other ship's module working on the pilot's (tactical's (sourceBallID, moduleID)). */
@@ -75,6 +84,7 @@ export const NO_BUFFS: BuffBarState = Object.freeze({
   jammers: new Map(),
   activeJams: [],
   jamTimers: new Map(),
+  shipEffects: [],
 });
 
 const FILETIME_UNIX_EPOCH_MS = 11_644_473_600_000;
@@ -128,8 +138,77 @@ export function slotShowsBuffs(slot: BuffSlot, incoming: IncomingDbuffs): boolea
  * BuffSlotParent._ShouldBeVisible, for the sources the page has: a module of another ship of the slot's jamming type
  * working on the pilot's (jammersByType), or one of the slot's collections on the ship.
  */
-export function slotShows(slot: BuffSlot, state: BuffBarState): boolean {
-  return (state.jammers.get(slot.slot)?.length ?? 0) > 0 || slotShowsBuffs(slot, state.incoming);
+export function slotShows(slot: BuffSlot, state: BuffBarState, nowMs: number = Date.now()): boolean {
+  const guid = FX_GUIDS_BY_SLOT.get(slot.slot);
+  return (state.jammers.get(slot.slot)?.length ?? 0) > 0 ||
+    (guid !== undefined && state.shipEffects.some((effect) => effect.guid === guid && (effect.endMs === null || effect.endMs > nowMs))) ||
+    slotShowsBuffs(slot, state.incoming);
+}
+
+// --- the ship's own effects ---------------------------------------------------
+
+/** buffBarConst.FX_GUIDS_BY_SLOT: the slots an effect on the pilot's ship brings up (FX_GUIDS_THAT_UPDATE_BUFF_BAR). */
+export const FX_GUIDS_BY_SLOT: ReadonlyMap<string, string> = new Map([
+  ["tethering", "effects.Tethering"],
+  ["tetheringRepair", "effects.TetheringRepair"],
+  ["LinkedToESSReserveBank", "effects.ReserveBankHackingBeam"],
+  ["LinkedToESSMainBank", "effects.MainBankHackingBeam"],
+  ["LinkedToTowGameObjective", "effects.DataLink"],
+  ["linkedToTraceGate", "effects.LinkedToTraceGate"],
+]);
+export const BUFF_BAR_FX_GUIDS: ReadonlySet<string> = new Set(FX_GUIDS_BY_SLOT.values());
+
+/** OnSpecialFX(shipID, moduleID, moduleTypeID, targetID, otherTypeID, guid, isOffensive, start, active, duration, repeat, ...). */
+export interface SpecialFxNotice {
+  readonly shipID: number | null;
+  readonly moduleID: number | null;
+  readonly targetID: number | null;
+  readonly guid: string;
+  readonly start: boolean;
+  readonly durationMs: number | null;
+  readonly repeat: number | null;
+}
+
+/** An OnSpecialFX's arguments, or null where they hold no effect's guid. */
+export function decodeSpecialFx(args: readonly JsonValue[]): SpecialFxNotice | null {
+  const guid = args[5];
+  if (typeof guid !== "string" || guid === "") return null;
+  const numeric = (value: JsonValue | undefined): number | null => {
+    const real = realOf(value);
+    return real === null ? null : real;
+  };
+  const start = args[7];
+  return {
+    shipID: idOf(args[0]),
+    moduleID: idOf(args[1]),
+    targetID: idOf(args[3]),
+    guid,
+    start: start === true || start === 1,
+    durationMs: numeric(args[9]),
+    repeat: numeric(args[10]),
+  };
+}
+
+/**
+ * FxSequencer.OnSpecialFX for one of the bar's effects on the pilot's ship (its ball the effect's source or target:
+ * AddActivationToBallRegister files an activation under each of its balls). A start adds or renews its activation
+ * (AddTrigger): its run is the duration times the repeats (OnSpecialFX makes a repeat of none one, and adds one to any
+ * other), and a duration of none is the effect's own, which the page has not, so the run has no end; a stop removes
+ * it (RemoveTrigger). The activation's key is its guid, ship, module and target.
+ */
+export function shipEffectNoticed(state: BuffBarState, fx: SpecialFxNotice, ownShipID: number | null, nowMs: number): BuffBarState {
+  if (!BUFF_BAR_FX_GUIDS.has(fx.guid) || ownShipID === null || (fx.shipID !== ownShipID && fx.targetID !== ownShipID)) return state;
+  const key = `${fx.guid}:${fx.shipID ?? ""}:${fx.moduleID ?? ""}:${fx.targetID ?? ""}`;
+  const others = state.shipEffects.filter((effect) => effect.key !== key && (effect.endMs === null || effect.endMs > nowMs));
+  if (!fx.start) return { ...state, shipEffects: others };
+  const repeat = fx.repeat === null || fx.repeat <= 0 ? 1 : fx.repeat + 1;
+  const endMs = fx.durationMs === null || fx.durationMs <= 0 ? null : nowMs + fx.durationMs * repeat;
+  return { ...state, shipEffects: [...others, { key, guid: fx.guid, endMs }] };
+}
+
+/** The ship's effects let go: another ship, or the ballpark's balls cleared at another place (DoBallClear). */
+export function shipEffectsReset(state: BuffBarState): BuffBarState {
+  return state.shipEffects.length === 0 ? state : { ...state, shipEffects: [] };
 }
 
 /**
@@ -154,11 +233,11 @@ export function newBuffBarLayout(): BuffBarLayout {
  * stand there already; -1 appends, childrenlist.insert): an offensive button to the number of its jammers less one, any
  * other to the end; one that should not show goes (FadeButtonOut) and keeps its place.
  */
-export function relaidBuffBar(layout: BuffBarLayout, state: BuffBarState): BuffBarLayout {
+export function relaidBuffBar(layout: BuffBarLayout, state: BuffBarState, nowMs: number = Date.now()): BuffBarLayout {
   const children = [...layout.children];
   const showing = new Set(layout.showing);
   for (const slot of BUFF_SLOTS) {
-    if (!slotShows(slot, state)) {
+    if (!slotShows(slot, state, nowMs)) {
       showing.delete(slot.slot);
       continue;
     }

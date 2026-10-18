@@ -425,7 +425,7 @@ const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import { BUFF_SLOTS } from "../bridge/dbuffs.ts";
-import { decodeDbuffUpdate, decodeEwarNotice, ewarNoticed, jamNoticed, jammersReset, jammersWithout, NO_BUFFS, type BuffBarState } from "../bridge/buffBar.ts";
+import { BUFF_BAR_FX_GUIDS, decodeDbuffUpdate, decodeEwarNotice, decodeSpecialFx, ewarNoticed, jamNoticed, jammersReset, jammersWithout, NO_BUFFS, shipEffectNoticed, shipEffectsReset, type BuffBarState } from "../bridge/buffBar.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { FittingResources, MarketEscrow } from "../store/types.ts";
@@ -5163,9 +5163,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (sessionNames?.some((name) => name === "shipid" || name === "locationid" || name === "structureid" || name === "stationid" || name === "solarsystemid") && buffBarSignal.get().incoming.size > 0) {
       buffBarSignal.set({ ...buffBarSignal.get(), incoming: new Map() });
     }
-    // tactical.ProcessSessionChange: another station, system or ship, and its jammers are reset (ResetJammers).
-    if (sessionNames?.some((name) => name === "stationid" || name === "solarsystemid" || name === "shipid")) {
-      buffBarSignal.set(jammersReset(buffBarSignal.get()));
+    // tactical.ProcessSessionChange: another station, system or ship, and its jammers are reset (ResetJammers); and the
+    // ship's effects with the balls they were on (another ship, or the ballpark cleared: DoBallClear).
+    if (sessionNames?.some((name) => name === "stationid" || name === "solarsystemid" || name === "shipid" || name === "structureid")) {
+      buffBarSignal.set(shipEffectsReset(jammersReset(buffBarSignal.get())));
     }
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
@@ -5348,6 +5349,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (method === "OnSpecialFX") {
       const fx = args as readonly JsonValue[];
+      // FxSequencer's activations of the buff bar's effects on the pilot's ship (bridge/buffBar.ts); the game port
+      // hands on these and the travel effects, and no other.
+      const special = decodeSpecialFx(fx);
+      if (special !== null && BUFF_BAR_FX_GUIDS.has(special.guid)) {
+        buffBarSignal.set(shipEffectNoticed(buffBarSignal.get(), special, store.flight.get().status?.shipID ?? null, Date.now()));
+        return;
+      }
       const shipID = Number(unwrapLong(fx[0]) ?? NaN);
       const gateID = Number(unwrapLong(fx[3]) ?? NaN);
       const ownShipID = store.flight.get().status?.shipID ?? null;
