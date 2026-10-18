@@ -47,7 +47,6 @@ export type TabID =
   | "chat"
   | "wallet"
   | "corpWallet"
-  | "standings"
   | "characterSheet"
   | "corporation"
   | "showInfo"
@@ -198,7 +197,8 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
-  { id: "standings", label: "Standings", where: "both" },
+  // The client's Neocom offers Character Sheet and Corporation, with standings inside each
+  // (btnDataRaw.py BTNDATARAW_BY_ID); there is no separate Standings window.
   { id: "characterSheet", label: "Character Sheet", where: "both" },
   { id: "corporation", label: "Corporation", where: "both" },
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),

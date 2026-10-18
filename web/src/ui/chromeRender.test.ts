@@ -539,11 +539,14 @@ function renderNeocom(isDocked: boolean): string {
 test("the neocom launches every openable panel for the current state", () => {
   const docked = visibleText(renderNeocom(true));
   const space = visibleText(renderNeocom(false));
-  // The static set — reachable docked or in space — is in both.
-  for (const label of ["Market", "Wallet", "Mail", "Skills", "Standings", "Planets"]) {
+  // btnDataRaw.py BTNDATARAW_BY_ID (78, 82): Character Sheet and Corporation are Neocom entries.
+  // Standings is inside those windows (characterSheetWindow.OpenStandings, 395 to 397), not a launcher.
+  for (const label of ["Market", "Wallet", "Mail", "Skills", "Character Sheet", "Corporation", "Planets"]) {
     assert.match(docked, new RegExp(label), `${label} missing from the docked neocom`);
     assert.match(space, new RegExp(label), `${label} missing from the in-space neocom`);
   }
+  assert.doesNotMatch(docked, /Standings/, "standings belongs inside Character Sheet and Corporation");
+  assert.doesNotMatch(space, /Standings/, "standings belongs inside Character Sheet and Corporation");
   // No state badge in the rail: the workspace header carries docked/in-space —
   // the rail proves its state through WHICH tabs it offers.
   assert.doesNotMatch(docked, /Docked/);
