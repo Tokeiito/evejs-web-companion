@@ -159,14 +159,18 @@ export function buildModuleRack(
  * The slots the rack draws, as the client's slotsContainer draws them: a bank's slave has no button (InitSlots, 293
  * to 297: its slot is left empty, the master's button standing for the bank); an empty slot is drawn only where the
  * pilot shows empty slots (settings.user.ui showEmptySlots, off at first: the HUD options' Display Empty Slots), and
- * then not the high rack's first empty slots, as many as there are slaves (CheckButtonVisibility, 474 to 481). The
+ * then not the high rack's first empty slots, as many as there are slaves (CheckButtonVisibility, 474 to 481); and a
+ * module of `passiveFiltered` (Display Passive Modules off: one with no activatable default effect) not at all. The
  * rows themselves (buildModuleRack) keep every slot and every slave: what is drawn is this.
  */
-export function rackShownRows(rows: readonly RackRow[], showEmptySlots: boolean): readonly RackRow[] {
+export function rackShownRows(rows: readonly RackRow[], showEmptySlots: boolean, passiveFiltered: ReadonlySet<number> = new Set()): readonly RackRow[] {
   const slaves = rows.flatMap((row) => row.slots).filter((slot) => slot.module !== null && slot.module.bankMasterID !== null).length;
   return rows.map((row) => {
     let ignored = 0;
     const slots = row.slots.flatMap((slot) => {
+      // _FitSlot (526 to 528) and CheckButtonVisibility (475): a module Display Passive Modules leaves out is given no
+      // button, and its slot is not drawn as an empty one either.
+      if (slot.module !== null && passiveFiltered.has(slot.module.itemID)) return [];
       if (slot.module !== null && slot.module.bankMasterID === null) return [slot];
       if (!showEmptySlots) return [];
       if (row.family === "high" && ignored < slaves) {

@@ -19,11 +19,40 @@
   import { resourceGauges, capacitorSegments as filledSegments } from "./shipHud.ts";
   import { capacitorSegments, gaugeArc, gaugeTrack } from "./shipHudArcs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
+  import { hudSetting } from "../store/hudSettings.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 
   let { store }: { store: ClientStore } = $props();
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const dogma = store.dogma;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  /**
+   * The HUD options' Display Readout, off at first, and Display Readout as Percentage, on (shipUI CheckShowReadoutCont
+   * and UpdateReadouts, the readout's HudReadout): the numbers beneath the wheel only where the readout is shown.
+   */
+  const showReadout = hudSetting("showReadout");
+  const readoutType = hudSetting("readoutType");
+  /**
+   * Each layer's whole as godma has the ship (activeShipController GetShieldHPMax, GetArmorHPMax, GetStructureHPMax:
+   * shieldCapacity, armorHP, hp), for the readout in hit points: what is left of it (GetShieldHP and the rest) over it,
+   * in the client's words (UI/Inflight/GaugeAbsolute).
+   */
+  const LAYER_WHOLE: Readonly<Record<string, number>> = { shield: 263, armor: 265, hull: 9 };
+  const shipItem = $derived($dogma.allInfo?.ships.find((item) => Number(item.itemID) === Number($space.snapshot?.shipID)) ?? null);
+  function readoutText(key: string, ratio: number | null): string {
+    if (ratio == null) return "—";
+    const whole = shipItem?.attributes.find((attribute) => attribute.attributeID === LAYER_WHOLE[key])?.value;
+    if ($readoutType || typeof whole !== "number") return `${Math.round(ratio * 100)}%`;
+    const left = Math.max(0, ratio * whole);
+    const template = $words.templates["UI/Inflight/GaugeAbsolute"];
+    return typeof template === "string" && template !== ""
+      ? plainText(formatTemplate(template, { left, total: whole }, { nameOf: (_kind, id) => String(id) }))
+      : `${Math.round(left).toLocaleString("en-US")} / ${Math.round(whole).toLocaleString("en-US")}`;
+  }
 
   const SEGMENTS = 12;
   // A 150x150 viewBox — the in-space handoff's box, so its radii can be used as
@@ -122,15 +151,16 @@
     <span class="wheel-speed">{speedText}</span>
   </div>
 
-  <!-- The numbers, as text. The rings are the fast read; this is the exact one,
-       and it is what makes the instrument legible with no colour perception. -->
-  <dl class="hud-readout">
-    {#each gauges as gauge (gauge.key)}
-      {@const pct = gauge.ratio != null ? Math.round(gauge.ratio * 100) : null}
-      <div class={`hud-readout-row ${gauge.key}`}>
-        <dt>{gauge.label}</dt>
-        <dd>{pct != null ? `${pct}%` : "—"}</dd>
-      </div>
-    {/each}
-  </dl>
+  <!-- The numbers, as text, where the readout is shown (the HUD options' Display Readout): the rings are the fast
+       read, this the exact one. The wheel's own label says them whether or not. -->
+  {#if $showReadout}
+    <dl class="hud-readout">
+      {#each gauges as gauge (gauge.key)}
+        <div class={`hud-readout-row ${gauge.key}`}>
+          <dt>{gauge.label}</dt>
+          <dd>{readoutText(gauge.key, gauge.ratio)}</dd>
+        </div>
+      {/each}
+    </dl>
+  {/if}
 </div>

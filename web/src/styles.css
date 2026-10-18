@@ -5579,6 +5579,7 @@
     border: 1px solid var(--color-line-strong);
   }
   .rack-hud-option { display: flex; gap: 0.4rem; align-items: center; white-space: nowrap; font-size: 12px; }
+  .rack-hud-option.unchoosable { color: var(--color-muted); }
   @media (pointer: coarse) {
     .rack-hud-options { width: var(--rack-slot, 42px); }
   }

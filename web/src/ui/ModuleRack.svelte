@@ -52,6 +52,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow, RackMenuEntry } from "../app/flow.ts";
   import { showInfo } from "./showInfo.ts";
+  import { hudSetting, setHudSetting, type HudSettingName } from "../store/hudSettings.ts";
 
   let { store, flow = null }: {
     store: ClientStore;
@@ -75,29 +76,52 @@
   // svelte-ignore state_referenced_locally
   const words = store.words;
   /**
-   * The HUD options' Display Empty Slots (shipUI.GetHUDOptionMenu, slotsContainer.ToggleShowEmpty), off at first, kept
-   * in this browser as the client keeps it in the user's settings.
+   * The HUD options (shipUI.GetHUDOptionMenu, 624 on), kept as the client keeps them in the user's settings
+   * (store/hudSettings.ts): those the page has a part for, in the menu's order, a divider (null) where it has one.
+   * Display Readout's two go to the ship's readout (ShipHud).
    */
-  const SHOW_EMPTY_SLOTS_KEY = "evejs.ui.showEmptySlots";
-  const SHOW_EMPTY_SLOTS_LABEL = "UI/Inflight/HUDOptions/DisplayEmptySlots";
-  let showEmptySlots = $state((() => {
-    try {
-      return globalThis.localStorage?.getItem(SHOW_EMPTY_SLOTS_KEY) === "1";
-    } catch {
-      return false;
-    }
-  })());
+  const showPassiveModules = hudSetting("showPassiveModules");
+  const showEmptySlots = hudSetting("showEmptySlots");
+  const showReadout = hudSetting("showReadout");
+  const readoutType = hudSetting("readoutType");
+  const showModuleTooltips = hudSetting("showModuleTooltips");
+  const lockOverload = hudSetting("lockOverload");
+  const HUD_OPTIONS: readonly ({ readonly name: HudSettingName; readonly label: string; readonly own: string; readonly needs?: HudSettingName } | null)[] = [
+    { name: "showPassiveModules", label: "UI/Inflight/HUDOptions/DisplayPassiveModules", own: "Show the passive modules" },
+    { name: "showEmptySlots", label: "UI/Inflight/HUDOptions/DisplayEmptySlots", own: "Show the empty slots" },
+    { name: "showReadout", label: "UI/Inflight/HUDOptions/DisplayReadout", own: "Show the hit point numbers" },
+    // 636 to 640: a choice only while the readout is shown.
+    { name: "readoutType", label: "UI/Inflight/HUDOptions/DisplayReadoutAsPercentage", own: "Numbers as percentages", needs: "showReadout" },
+    { name: "showModuleTooltips", label: "UI/Inflight/HUDOptions/DisplayModuleTooltips", own: "Show the modules' tooltips" },
+    null,
+    { name: "lockOverload", label: "UI/Inflight/HUDOptions/LockOverloadState", own: "Keep the overload state as it is" },
+  ];
+  const hudValues = $derived<Readonly<Record<HudSettingName, boolean>>>({
+    showPassiveModules: $showPassiveModules,
+    showEmptySlots: $showEmptySlots,
+    showReadout: $showReadout,
+    readoutType: $readoutType,
+    showModuleTooltips: $showModuleTooltips,
+    lockOverload: $lockOverload,
+  });
   let hudOptionsOpen = $state(false);
-  function toggleShowEmptySlots(): void {
-    showEmptySlots = !showEmptySlots;
-    try {
-      globalThis.localStorage?.setItem(SHOW_EMPTY_SLOTS_KEY, showEmptySlots ? "1" : "0");
-    } catch {
-      // Storage refused: the choice lasts the page.
-    }
-  }
   $effect(() => {
-    flow?.requestWords([SHOW_EMPTY_SLOTS_LABEL]);
+    // And the readout's words in hit points (ShipHud, which has no flow to ask with).
+    flow?.requestWords([...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute"]);
+  });
+  /**
+   * The modules Display Passive Modules leaves out where it is off (flow.passiveRackModules), read again as the fitted
+   * modules change.
+   */
+  let passiveModuleIDs = $state<ReadonlySet<number>>(new Set());
+  const fittedModulesKey = $derived($fitting.slots.map((slot) => (slot.module ? `${slot.module.itemID}:${slot.module.typeID}` : "")).join(","));
+  $effect(() => {
+    void fittedModulesKey;
+    if ($showPassiveModules || !flow) {
+      passiveModuleIDs = new Set();
+      return;
+    }
+    void flow.passiveRackModules().then((ids) => (passiveModuleIDs = ids)).catch(() => {});
   });
 
   const rows = $derived(
@@ -726,7 +750,13 @@
    * An offline module, or one with an unknown overload state, is inert here.
    */
   async function overloadModule(module: RackModule): Promise<void> {
-    if (!flow || rackHoldAction(module) === null || pendingItemID !== null) {
+    if (!flow) return;
+    // shipmodulebutton.ToggleOverload (221 to 227): with the overload state locked, the notice and nothing else.
+    if ($lockOverload) {
+      flow.sayOverloadLocked();
+      return;
+    }
+    if (rackHoldAction(module) === null || pendingItemID !== null) {
       return;
     }
     pendingItemID = module.itemID;
@@ -824,7 +854,7 @@
 </script>
 
 <div class="module-rack-rows" aria-label="Module rack">
-  {#each rackShownRows(rows, showEmptySlots) as row (row.family)}
+  {#each rackShownRows(rows, $showEmptySlots, passiveModuleIDs) as row (row.family)}
     <div class="rack-row">
       <!--
         THE GUTTER CELL — empty on every rack but the high one.
@@ -886,17 +916,25 @@
           </button>
         {/if}
         {#if row.family === "low" && flow}
-          <!-- The HUD's settings (shipUI's hudSettingsMenu, GetHUDOptionMenu): Display Empty Slots. -->
+          <!-- The HUD's settings (shipUI's hudSettingsMenu, GetHUDOptionMenu). -->
           <button type="button" class="rack-hud-options" aria-expanded={hudOptionsOpen} title="HUD options"
             aria-label="HUD options" onclick={() => (hudOptionsOpen = !hudOptionsOpen)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" /></svg>
           </button>
           {#if hudOptionsOpen}
             <div class="rack-hud-menu" role="menu">
-              <label class="rack-hud-option">
-                <input type="checkbox" checked={showEmptySlots} onchange={toggleShowEmptySlots} />
-                {$words.templates[SHOW_EMPTY_SLOTS_LABEL] || "Show the empty slots"}
-              </label>
+              {#each HUD_OPTIONS as option, index (index)}
+                {#if option === null}
+                  <span class="rack-menu-rule" aria-hidden="true"></span>
+                {:else}
+                  {@const choosable = !option.needs || hudValues[option.needs]}
+                  <label class="rack-hud-option" class:unchoosable={!choosable}>
+                    <input type="checkbox" checked={hudValues[option.name]} disabled={!choosable}
+                      onchange={() => setHudSetting(option.name, !hudValues[option.name])} />
+                    {$words.templates[option.label] || option.own}
+                  </label>
+                {/if}
+              {/each}
             </div>
           {/if}
         {/if}
@@ -972,7 +1010,7 @@
                 aria-pressed={slot.module.active}
                 aria-haspopup={flow ? "menu" : undefined}
                 data-rack-module={slot.module.itemID}
-                title={slotTitle(slot.module)}
+                title={$showModuleTooltips ? slotTitle(slot.module) : undefined}
                 aria-label={slotTitle(slot.module)}
                 oncontextmenu={(event) => {
                   if (!flow || !slot.module) return;

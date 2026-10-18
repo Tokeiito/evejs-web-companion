@@ -740,6 +740,7 @@ import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { IntDict, hashedSetOrder, intDictOf, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
+import { hudSettingNow } from "../store/hudSettings.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -1557,6 +1558,16 @@ export interface AppFlow {
   repairRackModules(moduleIDs: readonly number[]): Promise<void>;
   /** CancelRepairManyModuels (603): godma's StopRepairModuleManyModules, each named module's repair ended in turn. */
   cancelRackRepairs(moduleIDs: readonly number[]): Promise<void>;
+  /**
+   * The active ship's fitted modules the rack leaves out where Display Passive Modules is off (slotsContainer._FitSlot
+   * 521 to 535): those with no activatable default effect among their effects as godma keeps them (GetDefaultEffect).
+   */
+  passiveRackModules(): Promise<ReadonlySet<number>>;
+  /**
+   * The module button's ToggleOverload with the overload state locked (221 to 227): LockedOverloadState said, unless
+   * it is up already.
+   */
+  sayOverloadLocked(): void;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -26607,8 +26618,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             entries.push({ kind: "online", on: module.online, text: module.online ? said(racks("PutModuleOffline"), "Take it offline") : said(racks("PutModuleOnline"), "Bring it online") });
           }
         }
-        // settings.user.ui lockOverload (467) is a HUD option the page has not: off, as the client's default.
-        if (staticData!.effects[effect.effectID]?.category === EFFECT_CATEGORY_OVERLOAD) {
+        // Not where the overload state is locked (settings.user.ui lockOverload, 467: the HUD options' Lock Overload State).
+        if (!hudSettingNow("lockOverload") && staticData!.effects[effect.effectID]?.category === EFFECT_CATEGORY_OVERLOAD) {
           const required = fittedAttributeValue(staticData!, moduleID, module.typeID, ATTRIBUTE_REQUIRED_THERMODYNAMICS);
           if (thermodynamics !== null && required !== null && thermodynamics >= required) {
             const active = store.space.get().snapshot?.ship?.overloadedModuleIDs?.includes(moduleID) ?? false;
@@ -26763,6 +26774,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async cancelRackRepairs(moduleIDs) {
       // StopRepairModuleManyModules (2268 to 2271): StopRepairModule of each, in turn.
       for (const id of moduleIDs) await moduleRepairs.end(id).catch(() => {});
+    },
+
+    async passiveRackModules() {
+      const modules = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []));
+      const staticData = await dogmaStaticFor(modules.map((module) => module.typeID), []);
+      if (staticData === null) return new Set<number>();
+      // IsEffectActivatible (slotsContainer, as the button's 901): default, not online, of the activation or target kind.
+      const activatable = (typeID: number): boolean | null => {
+        const effects = godmaEffectsOf(staticData, typeID);
+        if (effects === null) return null;
+        return effects.some((effect) => {
+          const category = staticData.effects[effect.effectID]?.category;
+          return effect.isDefault && effect.name !== "online" && (category === 1 || category === 2);
+        });
+      };
+      // A type whose effects are not had is drawn.
+      return new Set(modules.filter((module) => activatable(module.typeID) === false).map((module) => module.itemID));
+    },
+
+    sayOverloadLocked() {
+      // 222 to 226: nothing where the notice is up already; the error sound is the client's alone.
+      if (dialogsSaidSignal.get().some((said) => said.dialog === "LockedOverloadState")) return;
+      sayDialog("LockedOverloadState", null, "The overload state is locked; unlock it in the HUD options to change it.");
     },
 
     async clearRackGroup(moduleID) {

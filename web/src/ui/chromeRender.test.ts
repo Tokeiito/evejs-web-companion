@@ -38,6 +38,7 @@ const SafetyMenu = (await import("./SafetyMenu.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
 const TargetBracket = (await import("./TargetBracket.svelte")).default;
+const { setHudSetting } = await import("../store/hudSettings.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HUD_SOURCE = readFileSync(path.join(UI_DIR, "HudBar.svelte"), "utf8");
@@ -200,7 +201,18 @@ test("the header says where you are while in space", () => {
 // --- the in-space HUD --------------------------------------------------------
 
 test("in space the HUD reads the ship's condition off the live snapshot", () => {
-  const body = renderHud(inSpaceStore());
+  // The numbers as text are the client's readout, shown only where the HUD options' Display Readout is on
+  // (settings.user.ui showReadout, off at first: shipUI.CheckShowReadoutCont); the wheel's label says them whether or not.
+  const hidden = renderHud(inSpaceStore());
+  assert.equal(/class="hud-readout"/.test(hidden), false, "the readout is shown with Display Readout off");
+  assert.match(hidden, /aria-label="[^"]*Armor 50%/, "the wheel does not say the armor reading");
+  setHudSetting("showReadout", true);
+  let body: string;
+  try {
+    body = renderHud(inSpaceStore());
+  } finally {
+    setHudSetting("showReadout", false);
+  }
   const text = visibleText(body);
   // ⚠ ANCHORED TO THE READOUT ELEMENT, not just to the words. "Armor" and
   // "Shield" appear in more than one place in this markup, so a bare text match
