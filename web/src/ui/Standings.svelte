@@ -231,7 +231,7 @@
   let corporationsWithAgents = $state<Readonly<Record<number, boolean>>>({});
 
   onMount(() => {
-    refresh();
+    if (!$standings.loaded) refresh();
     void flow.stationStandingsRestrictions().then((read) => (restrictionsRead = read), () => {});
     // The epic arcs' starter agents (_GetEpicArcThresholdIDs), whose faction and corporation the bar asks.
     for (const agentID of EPIC_ARC_STARTER_AGENTS) flow.requestAgentRecord(agentID);
@@ -518,7 +518,6 @@
     }
     if (isOpen(ownerID, scope)) return;
     selected[scope] = ownerID;
-    void run(() => flow.loadStandingDetail(ownerID, scope));
   }
 
   /** Each list's selected owner (the client's two panels have one each), or none yet. */
@@ -543,20 +542,28 @@
     }
   });
 
-  // LoadPanel, for each list: when it is first had, the owner kept is selected (charactersheetStandingsPanelOwner,
-  // the one setting both panels read), else its first.
+  // LoadPanel selects the kept owner, else the first. Each actual panel reads its own detail
+  // (standingsPanel.py 88 to 111), including after a list refresh discards that detail.
+  // Pending reads are ordinary bookkeeping: store writes must not start the same read again.
+  const pendingDetails = new Set<string>();
   $effect(() => {
     const characterID = $station.online?.characterID ?? null;
     if (characterID === null) return;
-    for (const scope of ["char", "corp"] as const) {
+    for (const scope of scopes) {
       const rows = scope === "char" ? $standings.char : $standings.corp;
-      if (selected[scope] !== null || rows === null) continue;
-      const entries = listGroups(scope, rows, "").flatMap((group) => group.entries);
-      if (entries.length === 0) continue;
-      const kept = keptOwner(characterID);
-      const chosen = entries.find((entry) => entry.ownerID === kept) ?? entries[0]!;
-      selected[scope] = chosen.ownerID;
-      void run(() => flow.loadStandingDetail(chosen.ownerID, scope));
+      if (rows === null) continue;
+      if (selected[scope] === null) {
+        const entries = listGroups(scope, rows, "").flatMap((group) => group.entries);
+        if (entries.length === 0) continue;
+        const kept = keptOwner(characterID);
+        const chosen = entries.find((entry) => entry.ownerID === kept) ?? entries[0]!;
+        selected[scope] = chosen.ownerID;
+      }
+      const ownerID = selected[scope]!;
+      const key = `${scope}:${ownerID}`;
+      if ($standings.details[scope]?.fromID === ownerID || pendingDetails.has(key)) continue;
+      pendingDetails.add(key);
+      void run(() => flow.loadStandingDetail(ownerID, scope)).finally(() => pendingDetails.delete(key));
     }
   });
 
