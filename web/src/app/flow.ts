@@ -740,7 +740,7 @@ import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { IntDict, hashedSetOrder, intDictOf, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
-import { hudSettingNow } from "../store/hudSettings.ts";
+import { hudSettingNow, setSlotOrder, slotOrderOf } from "../store/hudSettings.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -1568,6 +1568,18 @@ export interface AppFlow {
    * it is up already.
    */
   sayOverloadLocked(): void;
+  /**
+   * A module's button dropped on another's on the HUD (shipmodulebutton.OnDropData 1002, slotsContainer.ChangeSlots
+   * 79 to 89): two of a type linked (merged unless `shift`), and their places swapped where that left the one dropped
+   * on no bank's master, or where they are not of a type.
+   */
+  rackChangeSlots(toFlag: number, fromFlag: number, shift: boolean): Promise<void>;
+  /**
+   * A module's button dropped on a place of the HUD's with no button (ShipSlot.OnDropData, slotsContainer.SwapSlots 91 to
+   * 107): the two places swapped in the ship's order; with `shift` and a bank dragged, a module taken out of it
+   * (UngroupModule) and that one moved.
+   */
+  rackSwapSlots(flag1: number, flag2: number, shift: boolean): Promise<void>;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -4062,6 +4074,69 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** godma's IsBeingRepaired (2234 to 2242): the module, or one of its bank's slaves, among the repairs begun. */
   function isBeingRepaired(moduleID: number): boolean {
     return moduleRepairs.beingRepaired(moduleID) || (heldWeaponBanks().get(moduleID) ?? []).some((slave) => moduleRepairs.beingRepaired(slave));
+  }
+  /** slotsContainer.GetModuleType (127 to 134): the module whose button is in the slot of this flag, a slave having none. */
+  function rackButtonModule(flag: number) {
+    const module = store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flag)?.module ?? null;
+    if (module === null || [...heldWeaponBanks().values()].some((slaves) => slaves.includes(module.itemID))) return null;
+    return module;
+  }
+  /** The flag of the slot this module is in, or null. */
+  function flagOfModule(moduleID: number): number | null {
+    const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+    return slot === null ? null : slotFlagOf(slot.family, slot.index);
+  }
+  /**
+   * slotsContainer.SwapSlots (91 to 107): with Shift held, a bank dragged onto a place with no button: a module taken
+   * out of the bank (clientDogmaLocation.UngroupModule, 784: UnlinkModule, answered the module taken out), and it is the
+   * one moved; then the two places swapped in the ship's order (GetSlotOrder), kept for the ship.
+   */
+  async function swapRackSlots(flag1: number, flag2: number, shift: boolean): Promise<void> {
+    const shipID = store.fitting.get().activeShipID;
+    if (shipID === null) return;
+    let moved = flag2;
+    const dragged = rackButtonModule(flag2);
+    if (shift && rackButtonModule(flag1) === null && dragged !== null && heldWeaponBanks().has(dragged.itemID)) {
+      const answer = await bridgeDo("dogmaIM", "UnlinkModule", [shipID, dragged.itemID]);
+      await Promise.all([loadDogma().catch(() => {}), loadSpaceSnapshot().catch(() => {}), loadFitting().catch(() => {})]);
+      const taken = wholeNumberOf(answer);
+      moved = (taken !== null ? flagOfModule(taken) : null) ?? flag2;
+    }
+    const order = [...slotOrderOf(shipID)];
+    const [at1, at2] = [order.indexOf(flag1), order.indexOf(moved)];
+    if (at1 < 0 || at2 < 0) return;
+    order[at1] = moved;
+    order[at2] = flag1;
+    setSlotOrder(shipID, order);
+  }
+  /**
+   * slotsContainer.LinkWeapons (108 to 122) by clientDogmaLocation.LinkWeapons (752 to 782): only turrets and launchers
+   * (WeaponGroupingRule said else); both online (CantLinkModuleNotOnline), of one type; the one dragged linked to the
+   * bank of the one dropped on, its own bank merged in or, not merging, peeled off. The location's answer is None, so
+   * the HUD swaps nothing after (119 to 121).
+   */
+  async function rackLinkWeapons(master: { readonly itemID: number; readonly typeID: number; readonly groupID: number | null; readonly online: boolean }, slave: { readonly itemID: number; readonly typeID: number; readonly online: boolean }, merge: boolean): Promise<void> {
+    if (!GROUPABLE_GROUP_IDS.has(master.groupID ?? -1)) {
+      await wordsNow(["UI/Inflight/WeaponGroupingRule"]).catch(() => {});
+      const notify = templateWords("UI/Inflight/WeaponGroupingRule", {}, "Only weapons group together on the rack.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+      return;
+    }
+    if (master.itemID === slave.itemID) return;
+    if (!master.online || !slave.online) {
+      sayDialog("CantLinkModuleNotOnline", null, "A module groups with others only while it is online.");
+      return;
+    }
+    if (master.typeID !== slave.typeID) return;
+    await runTargetingAction(
+      "Link weapons",
+      () => linkWeaponsCall(bridgeDo, ammoSession(), master.itemID, slave.itemID, heldWeaponBanks(), merge),
+      async () => {
+        await Promise.all([loadDogma().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
+      },
+      () => true,
+      "",
+    );
   }
   /** The slot of the active ship with this flag, or null. */
   const slotWithFlag = (flagID: number): FittingSlot | null =>
@@ -26797,6 +26872,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // 222 to 226: nothing where the notice is up already; the error sound is the client's alone.
       if (dialogsSaidSignal.get().some((said) => said.dialog === "LockedOverloadState")) return;
       sayDialog("LockedOverloadState", null, "The overload state is locked; unlock it in the HUD options to change it.");
+    },
+
+    async rackChangeSlots(toFlag, fromFlag, shift) {
+      const to = rackButtonModule(toFlag);
+      const from = rackButtonModule(fromFlag);
+      if (to && from && to.typeID === from.typeID) {
+        await rackLinkWeapons(to, from, !shift);
+        // 85 to 86: IsModuleMaster, as the banks are now.
+        if (!heldWeaponBanks().has(to.itemID)) await swapRackSlots(fromFlag, toFlag, shift);
+        return;
+      }
+      await swapRackSlots(toFlag, fromFlag, shift);
+    },
+
+    async rackSwapSlots(flag1, flag2, shift) {
+      await swapRackSlots(flag1, flag2, shift);
     },
 
     async clearRackGroup(moduleID) {

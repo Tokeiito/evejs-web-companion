@@ -6310,6 +6310,13 @@
    * have to hide. The dashed `.slot-ring-empty` is the whole of what it looks
    * like now. */
   .module-slot.empty { cursor: default; }
+  /* A place with no slot drawn keeps its column, as the client's HUD places each slot. */
+  .module-slot.gap { visibility: hidden; }
+  /* While a module is dragged about the HUD: every place shown to drop on (StartDragMode, an empty one at 0.7), the
+   * button dragged faint (its icon at 0.2), the others of its type it would group with lit. */
+  .module-slot.drop-target { opacity: 0.7; }
+  .module-slot.drag-source { opacity: 0.2; }
+  .module-slot.group-highlight { box-shadow: 0 0 0 2px var(--color-accent); }
   /* A click in flight: presentation only — the glow itself waits for the poll. */
   .module-slot.pending { animation: rack-pending 0.8s ease-in-out infinite alternate; }
   @keyframes rack-pending {

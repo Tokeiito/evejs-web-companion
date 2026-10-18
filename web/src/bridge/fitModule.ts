@@ -215,11 +215,13 @@ export async function unloadModuleToCargo(
  * Tranquility recorded it, and one in a bank MergeModuleGroups(shipID, master, the master of its bank). The answer is
  * the ship's banks, which the transport keeps. The client's own refusals before it asks are its caller's.
  */
-export async function linkWeapons(act: Ask, place: AmmoSession, toID: number, fromID: number, banks: WeaponBanks): Promise<void> {
+export async function linkWeapons(act: Ask, place: AmmoSession, toID: number, fromID: number, banks: WeaponBanks, merge = true): Promise<void> {
   if (toID === fromID) return;
   const masterID = masterOf(banks, toID) ?? toID;
   const inBank = weaponBankOf(banks, fromID);
-  if (inBank !== null) await act("dogmaIM", "MergeModuleGroups", [place.shipID, masterID, inBank]);
+  // 772 to 776: a module dragged that is in a bank brings its bank (MergeModuleGroups), or, not merging (the HUD's
+  // drag with Shift held), is peeled off it and linked alone (PeelAndLink).
+  if (inBank !== null) await act("dogmaIM", merge ? "MergeModuleGroups" : "PeelAndLink", [place.shipID, masterID, inBank]);
   else await act("dogmaIM", "LinkWeapons", [place.shipID, masterID, itemNumber(fromID)]);
 }
 

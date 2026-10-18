@@ -2772,6 +2772,8 @@ const RETAIL_CALLS = Object.freeze({
     "remoteDogmaLM.LinkWeapons(shipID, masterID, moduleID), on the dogma location: a weapon dropped with Shift held on a slot of the same type (the fitting slot's LinkWithWeapon), with the master of that slot's bank or its module. It answers the ship's banks. Tranquility recorded it twice: (ship, master, module), riding the dogma location's bind."),
   "dogmaIM.MergeModuleGroups": judged(`${CLIENT_DOGMA}:776`, ownShipAndTwoModules,
     "remoteDogmaLM.MergeModuleGroups(shipID, masterID, otherMasterID), on the dogma location: as LinkWeapons, where the weapon dropped is in a bank already, with that bank's master. It answers the ship's banks. No recording has one."),
+  "dogmaIM.PeelAndLink": judged(`${CLIENT_DOGMA}:778`, ownShipAndTwoModules,
+    "remoteDogmaLM.PeelAndLink(shipID, masterID, otherMasterID), on the dogma location: as MergeModuleGroups, where the HUD's drag of a bank onto another weapon has Shift held (slotsContainer.ChangeSlots 84, merge=not shift): a weapon peeled off the bank dragged and linked alone. It answers the ship's banks. No recording has one."),
   "dogmaIM.DestroyWeaponBank": judged(`${CLIENT_DOGMA}:865`, ownShipAndModule,
     "remoteDogmaLM.DestroyWeaponBank(shipID, masterID), on the dogma location: a grouped weapon put into a container off its slot once its pilot has said Yes to ClearGroupModule (UnloadModuleToContainer, 1086), with the bank's master. It answers nothing, and the client's own banks lose that bank (OnWeaponGroupDestroyed). No recording has one."),
   "dogmaIM.UnlinkModule": judged(`${CLIENT_DOGMA}:785`, ownShipAndModule,

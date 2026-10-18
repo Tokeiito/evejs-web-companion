@@ -1235,6 +1235,7 @@
       "dogmaIM.MergeModuleGroups",
       "dogmaIM.Overload",
       "dogmaIM.OverloadRack",
+      "dogmaIM.PeelAndLink",
       "dogmaIM.RemoveTarget",
       "dogmaIM.SetModuleOnline",
       "dogmaIM.StopModuleRepair",

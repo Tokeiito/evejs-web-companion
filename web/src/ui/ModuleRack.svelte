@@ -31,7 +31,7 @@
     rackIsEmpty,
     rackModuleBurntOut,
     rackSlotTitle,
-    rackShownRows,
+    rackPlaces,
     OVERLOAD_HOLD_MS,
   } from "./moduleRack.ts";
   import {
@@ -52,7 +52,9 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow, RackMenuEntry } from "../app/flow.ts";
   import { showInfo } from "./showInfo.ts";
-  import { hudSetting, setHudSetting, type HudSettingName } from "../store/hudSettings.ts";
+  import { DEFAULT_SLOT_ORDER, hudSetting, setHudSetting, slotOrdersSignal, type HudSettingName } from "../store/hudSettings.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
 
   let { store, flow = null }: {
     store: ClientStore;
@@ -86,6 +88,7 @@
   const readoutType = hudSetting("readoutType");
   const showModuleTooltips = hudSetting("showModuleTooltips");
   const lockOverload = hudSetting("lockOverload");
+  const lockModules = hudSetting("lockModules");
   const HUD_OPTIONS: readonly ({ readonly name: HudSettingName; readonly label: string; readonly own: string; readonly needs?: HudSettingName } | null)[] = [
     { name: "showPassiveModules", label: "UI/Inflight/HUDOptions/DisplayPassiveModules", own: "Show the passive modules" },
     { name: "showEmptySlots", label: "UI/Inflight/HUDOptions/DisplayEmptySlots", own: "Show the empty slots" },
@@ -94,6 +97,7 @@
     { name: "readoutType", label: "UI/Inflight/HUDOptions/DisplayReadoutAsPercentage", own: "Numbers as percentages", needs: "showReadout" },
     { name: "showModuleTooltips", label: "UI/Inflight/HUDOptions/DisplayModuleTooltips", own: "Show the modules' tooltips" },
     null,
+    { name: "lockModules", label: "UI/Inflight/HUDOptions/LockModulesInPlace", own: "Keep the modules where they are" },
     { name: "lockOverload", label: "UI/Inflight/HUDOptions/LockOverloadState", own: "Keep the overload state as it is" },
   ];
   const hudValues = $derived<Readonly<Record<HudSettingName, boolean>>>({
@@ -103,11 +107,81 @@
     readoutType: $readoutType,
     showModuleTooltips: $showModuleTooltips,
     lockOverload: $lockOverload,
+    lockModules: $lockModules,
   });
+  /** The ship's order of the HUD's places (GetSlotOrder: settings.user.ui slotOrder, kept where its pilot moved them). */
+  const slotOrders = slotOrdersSignal;
+  const rackOrder = $derived($slotOrders[String($fitting.activeShipID)] ?? DEFAULT_SLOT_ORDER);
+  /**
+   * A module's button being dragged about the HUD (shipmodulebutton.GetDragData, 979 to 991): not where the modules
+   * are locked in place. While it is, every place is shown to drop it on (StartDragMode, 729 to 742): the button
+   * dragged dimmed, the others of its type highlighted where it is a weapon that groups.
+   */
+  const RACK_DRAG_MIME = "application/x-evejs-rack-module";
+  let rackDragging = $state<{ readonly flag: number; readonly itemID: number; readonly typeID: number; readonly groupable: boolean } | null>(null);
+  const groupOfModule = (itemID: number): number | null => $fitting.slots.find((slot) => slot.module?.itemID === itemID)?.module?.groupID ?? null;
+  function startRackDrag(event: DragEvent, flag: number, module: RackModule): void {
+    if ($lockModules || !flow || !event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
+    pressCancel();
+    event.dataTransfer.setData(RACK_DRAG_MIME, String(flag));
+    event.dataTransfer.effectAllowed = "move";
+    rackDragging = { flag, itemID: module.itemID, typeID: module.typeID, groupable: GROUPABLE_GROUP_IDS.has(groupOfModule(module.itemID) ?? -1) };
+  }
+  /** OnEndDrag: ResetSwapMode, the places not drawn hidden again. */
+  function endRackDrag(): void {
+    rackDragging = null;
+  }
+  function rackDragOver(event: DragEvent): void {
+    if (!event.dataTransfer?.types.includes(RACK_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }
+  function draggedRackFlag(event: DragEvent): number | null {
+    const raw = event.dataTransfer?.getData(RACK_DRAG_MIME) ?? "";
+    const flag = Number(raw);
+    return raw !== "" && Number.isInteger(flag) ? flag : null;
+  }
+  /** Dropped on a module's button (shipmodulebutton.OnDropData 993 to 1003): on itself nothing, else ChangeSlots. */
+  async function dropOnRackModule(event: DragEvent, flag: number): Promise<void> {
+    const from = draggedRackFlag(event);
+    if (from === null) return;
+    event.preventDefault();
+    rackDragging = null;
+    if (from === flag || !flow) return;
+    try {
+      await flow.rackChangeSlots(flag, from, event.shiftKey);
+    } catch (cause) {
+      sayRackProblem("Modules", String(cause));
+    }
+  }
+  /** Dropped on a place with no button (ShipSlot.OnDropData): SwapSlots. */
+  async function dropOnRackPlace(event: DragEvent, flag: number): Promise<void> {
+    const from = draggedRackFlag(event);
+    if (from === null) return;
+    event.preventDefault();
+    rackDragging = null;
+    if (!flow) return;
+    try {
+      await flow.rackSwapSlots(flag, from, event.shiftKey);
+    } catch (cause) {
+      sayRackProblem("Modules", String(cause));
+    }
+  }
+  /** groupAllIcon's hint where the modules are locked in place (91 to 92): UI/Inflight/Locked of it. */
+  function lockedHint(hint: string): string {
+    if (!$lockModules) return hint;
+    const template = $words.templates["UI/Inflight/Locked"];
+    return typeof template === "string" && template !== ""
+      ? plainText(formatTemplate(template, { unit: hint }, { nameOf: (_kind, id) => String(id) }))
+      : `${hint} (locked)`;
+  }
   let hudOptionsOpen = $state(false);
   $effect(() => {
     // And the readout's words in hit points (ShipHud, which has no flow to ask with).
-    flow?.requestWords([...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute"]);
+    flow?.requestWords([...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute", "UI/Inflight/Locked"]);
   });
   /**
    * The modules Display Passive Modules leaves out where it is off (flow.passiveRackModules), read again as the fitted
@@ -163,7 +237,8 @@
   );
 
   async function setBanks(linked: boolean): Promise<void> {
-    if (!flow || pendingItemID !== null) {
+    // groupAllIcon.OnClick (29 to 30): nothing where the modules are locked in place.
+    if (!flow || pendingItemID !== null || $lockModules) {
       return;
     }
     try {
@@ -854,7 +929,7 @@
 </script>
 
 <div class="module-rack-rows" aria-label="Module rack">
-  {#each rackShownRows(rows, $showEmptySlots, passiveModuleIDs) as row (row.family)}
+  {#each rackPlaces(rows, rackOrder, $showEmptySlots, passiveModuleIDs, rackDragging !== null) as row (row.family)}
     <div class="rack-row">
       <!--
         THE GUTTER CELL — empty on every rack but the high one.
@@ -892,9 +967,9 @@
             class:linked
             aria-pressed={linked}
             disabled={pendingItemID !== null}
-            title={linked
+            title={lockedHint(linked
               ? `Unlink weapons — ${bankedCount} weapon${bankedCount === 1 ? "" : "s"} banked`
-              : "Link weapons — weapons fire one at a time"}
+              : "Link weapons — weapons fire one at a time")}
             aria-label={linked
               ? `Unlink weapons. ${bankedCount} weapon${bankedCount === 1 ? "" : "s"} banked.`
               : "Link weapons. Weapons fire one at a time."}
@@ -987,10 +1062,11 @@
         </span>
       </span>
       <div class="rack-slots">
-        {#if row.slots.length === 0}
+        {#if row.places.length === 0}
           <span class="rack-empty muted">—</span>
         {:else}
-          {#each row.slots as slot, i (i)}
+          {#each row.places as place, i (i)}
+            {@const slot = { module: place.drawn === "module" ? place.slot?.module ?? null : null }}
             {#if slot.module}
               {@const nm = moduleName(slot.module.typeID)}
               {@const clickable = flow !== null && slotAction(slot.module) !== null}
@@ -1010,6 +1086,14 @@
                 aria-pressed={slot.module.active}
                 aria-haspopup={flow ? "menu" : undefined}
                 data-rack-module={slot.module.itemID}
+                data-rack-flag={place.flag}
+                draggable={flow !== null && !$lockModules}
+                class:drag-source={rackDragging?.itemID === slot.module.itemID}
+                class:group-highlight={rackDragging !== null && rackDragging.groupable && rackDragging.itemID !== slot.module.itemID && rackDragging.typeID === slot.module.typeID}
+                ondragstart={(event) => slot.module && startRackDrag(event, place.flag, slot.module)}
+                ondragend={endRackDrag}
+                ondragover={rackDragOver}
+                ondrop={(event) => dropOnRackModule(event, place.flag)}
                 title={$showModuleTooltips ? slotTitle(slot.module) : undefined}
                 aria-label={slotTitle(slot.module)}
                 oncontextmenu={(event) => {
@@ -1161,11 +1245,17 @@
                 must not look like. The handoff draws it dashed and empty, and
                 that is a shape nothing else on the rack has.
               -->
-              <span class="module-slot empty" title={rackSlotTitle("", null)}>
-                <svg class="slot-ring" viewBox="0 0 42 42" aria-hidden="true">
-                  <circle class="slot-ring-empty" cx="21" cy="21" r="17" />
-                </svg>
-              </span>
+              {#if place.drawn === null}
+                <!-- A place with no slot drawn keeps its column (InitDrawSlots: each place its own). -->
+                <span class="module-slot gap" aria-hidden="true"></span>
+              {:else}
+                <span class="module-slot empty" class:drop-target={place.drawn === "target"} title={rackSlotTitle("", null)}
+                  data-rack-flag={place.flag} role="listitem" ondragover={rackDragOver} ondrop={(event) => dropOnRackPlace(event, place.flag)}>
+                  <svg class="slot-ring" viewBox="0 0 42 42" aria-hidden="true">
+                    <circle class="slot-ring-empty" cx="21" cy="21" r="17" />
+                  </svg>
+                </span>
+              {/if}
             {/if}
           {/each}
         {/if}

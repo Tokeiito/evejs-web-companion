@@ -17,6 +17,8 @@ export const HUD_SETTING_DEFAULTS = Object.freeze({
   showModuleTooltips: true,
   /** 657, shipmodulebutton.ToggleOverload 221 and GetMenu 467: the overload state locked. */
   lockOverload: false,
+  /** 650, shipmodulebutton.GetDragData 980 and groupAllIcon.OnClick 29: the rack's modules locked in their places. */
+  lockModules: false,
 });
 
 export type HudSettingName = keyof typeof HUD_SETTING_DEFAULTS;
@@ -53,6 +55,51 @@ export function hudSetting(name: HudSettingName): ReadableSignal<boolean> {
 /** The setting now. */
 export function hudSettingNow(name: HudSettingName): boolean {
   return signalOf(name).get();
+}
+
+/**
+ * shipHud.GetSlotOrder (8 to 22): the HUD's 24 places in order, the high slots' flags 0 to 7, the medium's, the low's;
+ * a place r * 8 + i is row r, column i (slotsContainer.InitDrawSlots).
+ */
+export const DEFAULT_SLOT_ORDER: readonly number[] = Object.freeze([
+  27, 28, 29, 30, 31, 32, 33, 34,
+  19, 20, 21, 22, 23, 24, 25, 26,
+  11, 12, 13, 14, 15, 16, 17, 18,
+]);
+
+const SLOT_ORDER_KEY = "evejs.ui.slotOrder";
+
+/** settings.user.ui slotOrder: each ship's order of the places, where its pilot changed it (slotsContainer.SwapSlots). */
+const slotOrders = createSignal<Readonly<Record<string, readonly number[]>>>((() => {
+  try {
+    const kept = JSON.parse(globalThis.localStorage?.getItem(SLOT_ORDER_KEY) ?? "{}") as unknown;
+    if (!kept || typeof kept !== "object" || Array.isArray(kept)) return {};
+    const orders: Record<string, readonly number[]> = {};
+    for (const [shipID, order] of Object.entries(kept)) {
+      if (Array.isArray(order) && order.length === DEFAULT_SLOT_ORDER.length && order.every((flag) => DEFAULT_SLOT_ORDER.includes(flag))) orders[shipID] = order;
+    }
+    return orders;
+  } catch {
+    return {};
+  }
+})());
+
+/** Every ship's order kept, for a view to follow. */
+export const slotOrdersSignal: ReadableSignal<Readonly<Record<string, readonly number[]>>> = slotOrders;
+
+/** GetSlotOrder: the ship's order where one is kept, else the default. */
+export function slotOrderOf(shipID: number | null): readonly number[] {
+  return (shipID !== null ? slotOrders.get()[String(shipID)] : undefined) ?? DEFAULT_SLOT_ORDER;
+}
+
+/** SwapSlots (104 to 106): the ship's order kept as it is now. */
+export function setSlotOrder(shipID: number, order: readonly number[]): void {
+  slotOrders.set({ ...slotOrders.get(), [String(shipID)]: [...order] });
+  try {
+    globalThis.localStorage?.setItem(SLOT_ORDER_KEY, JSON.stringify(slotOrders.get()));
+  } catch {
+    // Storage refused: the order lasts the page.
+  }
 }
 
 /** settings.user.ui.Set(name, value): the setting kept, and every view told. */
