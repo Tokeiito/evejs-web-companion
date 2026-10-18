@@ -11,7 +11,9 @@
   // then the pilot's history with it (StandingsHistoryScroll) or what the corporation's members make of the
   // corporation's (StandingCompositionScroll).
   //
-  // Not as the client's yet: the standings bar, the graph and the header's buttons; one selected owner for the two
+  // Above both, the standings bar for the selected owner (ui/StandingsBar.svelte), its threshold icons with it.
+  //
+  // Not as the client's yet: the graph and the header's buttons; one selected owner for the two
   // lists (the client's two panels have one each); and the two panels are one window, not the Character Sheet's and
   // the Corporation window's.
   //
@@ -39,6 +41,15 @@
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
   import StandingsBar from "./StandingsBar.svelte";
+  import {
+    EPIC_ARC_STARTER_AGENTS,
+    STATION_SERVICE_LABELS,
+    THRESHOLD,
+    THRESHOLD_HINTS,
+    THRESHOLD_LABELS,
+    standingThresholdIcons,
+    type ThresholdIcon,
+  } from "./standingsThresholds.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
   import {
@@ -118,6 +129,35 @@
     "UI/Common/Name": "Member",
     "UI/Common/Standing": "Standing",
     "UI/Standings/NoStandingsTransactions": "{ownerName} has not changed its standing toward you.",
+    "UI/Standings/Thresholds/AttackedInSpaceHeader": "Shot at in its space",
+    "UI/Standings/Thresholds/AgentsRestricted": "Agents held back",
+    "UI/Standings/Thresholds/NoAccessHeader": "Closed",
+    "UI/Standings/Thresholds/EpicArcHeader": "An epic arc",
+    "UI/Standings/Thresholds/FactionalWarfareHeader": "Its militia",
+    "UI/Standings/Thresholds/AgentLvl2Available": "Its level 2 agents",
+    "UI/Standings/Thresholds/AgentLvl3Available": "Its level 3 agents",
+    "UI/Standings/Thresholds/AgentLvl4Available": "Its level 4 agents",
+    "UI/Standings/Thresholds/AgentLvl5Available": "Its level 5 agents",
+    "UI/Standings/Thresholds/AgentAvailableHeader": "Working with you",
+    "UI/Station/StationServices": "Station services",
+    "UI/Standings/Thresholds/AttackedInSpace": "{ownerName} fires on you in its space from here down.",
+    "UI/Standings/Thresholds/NoAccessToAgents": "From here down only {ownerName}'s level 1 agents work with you.",
+    "UI/Standings/Thresholds/NoAccessToAgent": "From here down this agent offers you nothing.",
+    "UI/Standings/Thresholds/EpicArc": "From here up {ownerName} opens an epic arc to you.",
+    "UI/Standings/Thresholds/FactinalWarfare": "From here up you may fight in {ownerName}'s militia.",
+    "UI/Standings/Thresholds/AgentsLvl2": "From here up {ownerName}'s level 2 agents work with you.",
+    "UI/Standings/Thresholds/AgentsLvl3": "From here up {ownerName}'s level 3 agents work with you.",
+    "UI/Standings/Thresholds/AgentsLvl4": "From here up {ownerName}'s level 4 agents work with you.",
+    "UI/Standings/Thresholds/AgentsLvl5": "From here up {ownerName}'s level 5 agents work with you.",
+    "UI/Standings/Thresholds/Agent": "From here up {ownerName} offers you missions.",
+    "UI/Standings/Thresholds/StationServiceAccess": "From here these station services are open to you:",
+    "UI/Station/ReprocessingPlant": "Reprocessing",
+    "UI/Station/Repairshop": "Repairs",
+    "UI/Industry/Industry": "Industry",
+    "UI/Station/Fitting": "Fitting",
+    "UI/StructureSettings/ServiceDocking": "Docking",
+    "UI/StructureSettings/ServiceCorpOffices": "Offices",
+    "UI/Medical/JumpClone": "Jump clones",
     "UI/Standings/StandingsBarHint": "{[character]owner.name} toward you: <b>{standing}</b>",
     "UI/Standings/StandingsBarHintToCorp": "{[character]owner.name} toward {corpName}: <b>{standing}</b>",
     "UI/Standings/CompositionWindow/NPCToPlayerCorp": "An NPC's standing toward a player corporation is its members' standings averaged, of those a week or more in it.",
@@ -139,8 +179,16 @@
     }
   }
 
+  /** The client's stations' standings restrictions (the bar's station services icons), once read. */
+  let restrictionsRead = $state<Readonly<Record<string, Readonly<Record<string, number>>>>>({});
+  /** Whether an NPC corporation has agents (GetAgentsByCorpID), by the corporation, once asked. */
+  let corporationsWithAgents = $state<Readonly<Record<number, boolean>>>({});
+
   onMount(() => {
     refresh();
+    void flow.stationStandingsRestrictions().then((read) => (restrictionsRead = read), () => {});
+    // The epic arcs' starter agents (_GetEpicArcThresholdIDs), whose faction and corporation the bar asks.
+    for (const agentID of EPIC_ARC_STARTER_AGENTS) flow.requestAgentRecord(agentID);
     try {
       const kept = localStorage.getItem(SORT_SETTING_KEY);
       const known = STANDINGS_SORTS.find((each) => each.value === kept);
@@ -215,7 +263,22 @@
    * owner, the standing it deals with the pilot by (GetStandingUsed, from the pilot's own standings whichever the
    * panel), and their hints.
    */
-  function barOf(scope: "char" | "corp"): { standing: number; derived: number; hint: string; derivedHint: string } | null {
+  /** A threshold icon's tooltip (ThresholdTooltip, ThresholdTooltipStationService), written out. */
+  function thresholdHint(icon: ThresholdIcon, ownerID: number): string {
+    const heading = word(THRESHOLD_LABELS[icon.typeID] ?? "");
+    if (icon.typeID === THRESHOLD.stationService || icon.typeID === THRESHOLD.stationServiceCorporation) {
+      return [heading, plainText(word(THRESHOLD_HINTS[icon.typeID] ?? "")), ...icon.services.map((service) => `${pyStandingText(service.standing)} ${word(STATION_SERVICE_LABELS[service.serviceID] ?? "")}`)].join("\n");
+    }
+    return [heading, pyStandingText(icon.threshold), plainText(word(THRESHOLD_HINTS[icon.typeID] ?? "", { ownerName: entityName(ownerID) }))].join("\n");
+  }
+  /** GetFunctionByThresholdID: the owner's Show Info for those the client opens it for. */
+  function thresholdClick(icon: ThresholdIcon, ownerID: number): (() => void) | null {
+    const opensInfo: readonly number[] = [THRESHOLD.attackedInSpace, THRESHOLD.noAccessToAgents, THRESHOLD.noAccessToAgent, THRESHOLD.agentOffersMissions, THRESHOLD.agentsLvl2, THRESHOLD.agentsLvl3, THRESHOLD.agentsLvl4, THRESHOLD.agentsLvl5, THRESHOLD.stationService];
+    const subject = infoOf(ownerID);
+    return opensInfo.includes(icon.typeID) && subject !== null ? () => showInfo(subject) : null;
+  }
+
+  function barOf(scope: "char" | "corp"): { standing: number; derived: number; hint: string; derivedHint: string; icons: readonly ThresholdIcon[]; hideZeroLabel: boolean; ownerID: number } | null {
     if ($standings.detailScope !== scope || $standings.detailFromID === null) return null;
     const ownerID = $standings.detailFromID;
     const entry = entryOf(scope, ownerID);
@@ -226,7 +289,19 @@
       plainText(scope === "corp"
         ? word("UI/Standings/StandingsBarHintToCorp", { owner: owner ?? 0, corpName, standing: pyStandingText(standing) })
         : word("UI/Standings/StandingsBarHint", { owner: owner ?? 0, standing: pyStandingText(standing) }));
-    return { standing: entry.standing, derived: used.standing, hint: hintOf(ownerID, entry.standing), derivedHint: hintOf(used.ownerID, used.standing) };
+    const thresholds = standingThresholdIcons({
+      fromID: ownerID,
+      toID: scope === "corp" ? ($station.online?.corporationID ?? 0) : ($station.online?.characterID ?? 0),
+      toIsCorporation: scope === "corp",
+      standing: used.standing,
+      agentOf: (agentID) => {
+        const record = $agents.agentRecords[agentID];
+        return record ? { level: record.level, corporationID: record.corporationID, factionID: record.factionID } : null;
+      },
+      corporationHasAgents: (corporationID) => corporationsWithAgents[corporationID] ?? null,
+      restrictions: restrictionsRead,
+    });
+    return { standing: entry.standing, derived: used.standing, hint: hintOf(ownerID, entry.standing), derivedHint: hintOf(used.ownerID, used.standing), icons: thresholds.icons, hideZeroLabel: thresholds.hideZeroLabel, ownerID };
   }
 
   /** What each panel's quick filter holds, and the text it filters by: taken 0.4 s after the first key (SetQuickFilterInput). */
@@ -304,6 +379,16 @@
   function isOpen(fromID: number, scope: "char" | "corp"): boolean {
     return $standings.detailFromID === fromID && $standings.detailScope === scope;
   }
+
+  // The selected NPC corporation's agents, asked once (the bar's agent icons).
+  $effect(() => {
+    const ownerID = $standings.detailFromID;
+    if (ownerID === null || !(ownerID >= 1_000_000 && ownerID < 2_000_000) || ownerID in corporationsWithAgents) return;
+    void flow.npcCorporationHasAgents(ownerID).then(
+      (has) => (corporationsWithAgents = { ...corporationsWithAgents, [ownerID]: has }),
+      () => {},
+    );
+  });
 
   // LoadPanel: when the pilot's list is first had, the owner kept is selected, else its first.
   let firstSelected = false;
@@ -519,7 +604,15 @@
     <!-- The panel's standings bar, for its selected owner, across its top. -->
     {@const bar = barOf(scope)}
     {#if bar !== null}
-      <StandingsBar standing={bar.standing} usedStanding={bar.derived} hint={bar.hint} derivedHint={bar.derivedHint} />
+      <StandingsBar
+        standing={bar.standing}
+        usedStanding={bar.derived}
+        hint={bar.hint}
+        derivedHint={bar.derivedHint}
+        icons={bar.icons}
+        hideZeroLabel={bar.hideZeroLabel}
+        iconHint={(icon) => thresholdHint(icon, bar.ownerID)}
+        iconClick={(icon) => thresholdClick(icon, bar.ownerID)} />
     {/if}
     <div class="standings-panel">
     <div class="standings-left">

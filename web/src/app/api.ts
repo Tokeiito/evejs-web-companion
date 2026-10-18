@@ -4134,6 +4134,20 @@ export async function getNpcCorporationHeadquarters(corporationID: number, optio
   return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
 }
 
+/** The standings an owner's stations ask for their services (evestations standingsrestriction), by owner and service. */
+export async function loadStationStandingsRestrictions(options: ApiOptions = {}): Promise<Readonly<Record<string, Readonly<Record<string, number>>>>> {
+  const data = await getJson("/api/client-data/station-standings-restrictions", options);
+  const raw = typeof data.restrictions === "object" && data.restrictions !== null && !Array.isArray(data.restrictions) ? (data.restrictions as Record<string, JsonValue>) : {};
+  const out: Record<string, Record<string, number>> = {};
+  for (const [ownerID, services] of Object.entries(raw)) {
+    if (typeof services !== "object" || services === null || Array.isArray(services)) continue;
+    const kept: Record<string, number> = {};
+    for (const [serviceID, standing] of Object.entries(services as Record<string, JsonValue>)) if (typeof standing === "number") kept[serviceID] = standing;
+    out[ownerID] = kept;
+  }
+  return out;
+}
+
 /** A bloodline's description, the number of its message (bloodlines.get_bloodline_description: its descriptionID); null where none is had. */
 export async function getBloodlineDescriptionID(bloodlineID: number, options: ApiOptions = {}): Promise<number | null> {
   const data = await getJson(`/api/client-data/bloodlines/${bloodlineID}`, options);

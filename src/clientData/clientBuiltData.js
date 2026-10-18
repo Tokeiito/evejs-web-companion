@@ -98,6 +98,9 @@ const TABLES = Object.freeze({
   // The bloodlines (characterdata/bloodlines.py): each one's name and description messages, its race and its
   // corporation. A character's Show Info words its Description by its bloodline's (get_bloodline_description).
   bloodlines: Object.freeze({ loader: "bloodlinesLoader", resource: "res:/staticdata/bloodlines.fsdbinary" }),
+  // The standings an owner's stations ask for each service (evestations/standingsrestriction.py: by owner, its
+  // services' required standings), which the standings bar marks (standingsUIUtil._GetStationServiceThresholdIDs).
+  stationStandingsRestrictions: Object.freeze({ loader: "stationStandingsRestrictionsLoader", resource: "res:/staticdata/stationstandingsrestrictions.fsdbinary" }),
   // A group's category (evetypes.GetCategoryIDByGroup), by which a structure's fitting's menu has no Fit to Active Ship
   // (fittingBrowser.GetFittingMenu, 513).
   groupCategories: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", attribute: "categoryID" }),

@@ -13170,6 +13170,26 @@ app.get("/api/client-data/system-objects/:id", requireAuth, (req, res, next) => 
   }
 });
 
+// The standings an owner's stations ask for their services, as the client's own data has them
+// (evestations/standingsrestriction.py get_all_station_standings_restrictions: by owner, each service's required
+// standing). `available` is false when the table could not be read; `restrictions` is then empty.
+app.get("/api/client-data/station-standings-restrictions", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("stationStandingsRestrictions");
+    const restrictions = {};
+    for (const [ownerID, row] of Object.entries(table || {})) {
+      const services = {};
+      for (const [serviceID, standing] of Object.entries((row && row.services) || {})) {
+        if (Number.isFinite(Number(standing))) services[serviceID] = Number(standing);
+      }
+      restrictions[ownerID] = services;
+    }
+    res.json({ ok: true, available: Boolean(table), restrictions });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // A bloodline as the client's own data has it (characterdata/bloodlines.py get_bloodline): the messages of its name and
 // its description, its race and its corporation. A character's Show Info words its Description by the description
 // (characterInfoWindow.update_description_caption_and_sub_caption: get_bloodline_description). `available` is false

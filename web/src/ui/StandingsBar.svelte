@@ -5,9 +5,12 @@
   // derived standing) that one too, after it. Each with its hint (StandingsBarHint, StandingsBarHintToCorp). Its axis
   // labels beneath it.
   //
-  // Not here yet: the threshold icons above it (UpdateThresholdIcons). An increase bar the panel never has (its Update
-  // gives no increase).
+  // Above it its threshold icons (UpdateThresholdIcons, ui/standingsThresholds.ts), each over its standing with the
+  // dashed line down to the bar, a second at one standing below the bar instead; lit in the standing's colour where
+  // the standing dealt by reaches it (GetColorAndOpacity), each with its tooltip, and opening what the client opens.
+  // Not here: an increase bar the panel never has (its Update gives no increase).
   import { clientTexture } from "./skillGroupIcons.ts";
+  import type { ThresholdIcon } from "./standingsThresholds.ts";
 
   interface Props {
     /** GetStanding2To1: the selected owner's standing toward the panel's owner. */
@@ -17,9 +20,17 @@
     /** The bar's hint and the second bar's, filled. */
     hint: string;
     derivedHint: string;
+    /** The threshold icons, and whether the axis's nought is hidden. */
+    icons?: readonly ThresholdIcon[];
+    hideZeroLabel?: boolean;
+    /** An icon's tooltip, written out. */
+    iconHint?: (icon: ThresholdIcon) => string;
+    /** What an icon opens, where it opens anything. */
+    iconClick?: (icon: ThresholdIcon) => (() => void) | null;
   }
 
-  let { standing, usedStanding, hint, derivedHint }: Props = $props();
+  let { standing, usedStanding, hint, derivedHint, icons = [], hideZeroLabel = false, iconHint = () => "", iconClick = () => null }: Props = $props();
+  const line = `url(${clientTexture("res:/UI/Texture/Classes/Standings/thresholdLine.png")})`;
 
   /** standingUIConst COLOR_GOOD and COLOR_BAD by GetStandingColor (THRESHOLD_BAD nought), and Color.GRAY5. */
   const COLOR_GOOD = "rgb(68, 140, 180)";
@@ -48,6 +59,22 @@
 </script>
 
 <div class="standings-bar">
+  {#each icons as icon (icon.key)}
+    {@const open = iconClick(icon)}
+    <!-- ThresholdIcon: at its standing; its colour lit (GetStandingColor), else white and faint. -->
+    <button
+      type="button"
+      class="standings-threshold"
+      class:duplicate={icon.duplicate}
+      title={iconHint(icon)}
+      style:left="calc({((icon.threshold + 10.0) / 20.0) * 100}% - 16px)"
+      style:opacity={icon.unlocked ? 1.0 : 0.2}
+      onclick={() => open?.()}
+    >
+      <span class="standings-threshold-icon" style:background-color={icon.unlocked ? standingColor(usedStanding) : "white"} style:mask-image="url({clientTexture(icon.texture)})" style:-webkit-mask-image="url({clientTexture(icon.texture)})"></span>
+      {#if !icon.duplicate}<span class="standings-threshold-line" style:background-image={line}></span>{/if}
+    </button>
+  {/each}
   <div class="standings-bar-track">
     <span class="standings-bar-bg left" style:background-image={backgroundArrows}></span>
     <span class="standings-bar-bg right" style:background-image={backgroundArrows}></span>
@@ -72,15 +99,54 @@
     {/if}
   </div>
   <!-- ConstructAxisLabels. -->
-  <div class="standings-bar-axis"><span>-10.0</span><span>0.0</span><span>10.0</span></div>
+  <div class="standings-bar-axis"><span>-10.0</span><span class:hidden={hideZeroLabel}>0.0</span><span>10.0</span></div>
 </div>
 
 <style>
+  /* The bar's 72 pixels: the icons over the top 26, the track at 26 for 20, the axis labels under it. */
   .standings-bar {
-    margin: 0.25rem 0 0.75rem;
+    position: relative;
+    height: 72px;
+    margin: 0.25rem 16px 0.75rem;
+  }
+  .standings-threshold {
+    position: absolute;
+    top: 0;
+    width: 32px;
+    height: 46px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    z-index: 1;
+  }
+  .standings-threshold.duplicate {
+    top: 45px;
+    height: 32px;
+  }
+  .standings-threshold-icon {
+    display: block;
+    width: 32px;
+    height: 32px;
+    mask-size: contain;
+    -webkit-mask-size: contain;
+    mask-repeat: no-repeat;
+    -webkit-mask-repeat: no-repeat;
+  }
+  .standings-threshold-line {
+    position: absolute;
+    left: 14px;
+    top: 26px;
+    width: 3px;
+    height: 20px;
+    opacity: 0.7;
+    background-repeat: no-repeat;
   }
   .standings-bar-track {
-    position: relative;
+    position: absolute;
+    top: 26px;
+    left: 0;
+    right: 0;
     height: 20px;
     overflow: hidden;
     background: var(--color-panel-2);
@@ -118,9 +184,16 @@
     transform: rotate(180deg);
   }
   .standings-bar-axis {
+    position: absolute;
+    top: 47px;
+    left: 0;
+    right: 0;
     display: flex;
     justify-content: space-between;
     font-size: 10px;
     opacity: 0.6;
+  }
+  .standings-bar-axis .hidden {
+    visibility: hidden;
   }
 </style>

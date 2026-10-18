@@ -2774,6 +2774,10 @@ export interface AppFlow {
   characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
   /** A character's bloodline as its window's Description reads it for one that is no agent (charMgr.GetPublicInfo3), or null. */
   characterBloodline(characterID: number): Promise<number | null>;
+  /** Whether an NPC corporation has agents (agents.GetAgentsByCorpID: the agents' table's, by corporation). */
+  npcCorporationHasAgents(corporationID: number): Promise<boolean>;
+  /** The standings an owner's stations ask for their services (the client's own table), read once. */
+  stationStandingsRestrictions(): Promise<Readonly<Record<string, Readonly<Record<string, number>>>>>;
   /** An NPC character's corporation, for one that is no agent (corpmgr.GetCorporationIDForCharacter), or null. */
   npcCharacterCorporation(characterID: number): Promise<number | null>;
   /** A bloodline's description, the number of its message (the client's bloodlines table), or null; asked once each. */
@@ -16411,6 +16415,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** The NPCs' standings with each other, once read (standingsvc's npcnpcstandingsfrom). */
   let npcNpcStandingsRead: Promise<readonly NpcNpcStanding[]> | null = null;
+  /** The client's table of stations' standings restrictions, read once (a failed read is read again). */
+  let stationStandingsRestrictionsRead: Promise<Readonly<Record<string, Readonly<Record<string, number>>>>> | null = null;
   /** The bloodlines' description messages, each asked once (a failed ask is asked again). */
   const bloodlineDescriptionReads = new Map<number, Promise<number | null>>();
 
@@ -26432,6 +26438,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     npcCharacterCorporation(characterID) {
       return readNpcCharacterCorporation(bridgeAsk, characterID);
+    },
+    async npcCorporationHasAgents(corporationID) {
+      return (await agentsKnown()).some((agent) => agent.corporationID === corporationID);
+    },
+    stationStandingsRestrictions() {
+      stationStandingsRestrictionsRead ??= api.loadStationStandingsRestrictions(callOptions).catch((error: unknown) => {
+        stationStandingsRestrictionsRead = null;
+        throw error;
+      });
+      return stationStandingsRestrictionsRead;
     },
     bloodlineDescriptionID(bloodlineID) {
       let read = bloodlineDescriptionReads.get(bloodlineID);
