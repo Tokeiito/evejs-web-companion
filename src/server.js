@@ -13434,6 +13434,37 @@ app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next
   }
 });
 
+// The ship HUD's buff bar (buffButtons.py; dbuff/client/uiFormatters.py): each dbuff collection asked as
+// dbuff/storage.py has it (its name, operation and how its value shows), the res: path of each icon asked
+// (Icon.LoadIconByIconID: fsdBuiltData iconIDs), and the relative-percent unit's name (unitModifierRelativePercent,
+// 124, the unit of a PostPercent collection's value). At most 128 collections and 128 icons at once.
+app.get("/api/client-data/dbuff-collections", requireAuth, async (req, res, next) => {
+  try {
+    const askedOf = (text) => {
+      const asked = [];
+      for (const part of String(text || "").split(",")) {
+        const id = Number(part);
+        if (Number.isSafeInteger(id) && id > 0 && !asked.includes(id)) asked.push(id);
+      }
+      return asked.slice(0, 128);
+    };
+    const collections = {};
+    for (const collectionID of askedOf(req.query && req.query.ids)) collections[collectionID] = staticData.getDbuffCollection(collectionID);
+    const iconIDs = askedOf(req.query && req.query.iconIDs);
+    const iconFiles = {};
+    if (iconIDs.length > 0) {
+      const files = await clientBuiltData.table("iconFiles");
+      for (const iconID of iconIDs) {
+        const file = files ? files[String(iconID)] : null;
+        iconFiles[iconID] = typeof file === "string" ? file : null;
+      }
+    }
+    res.json({ ok: true, collections, iconFiles, percentUnitName: staticData.getDogmaUnitDisplayName(124) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // The expert systems as the client's data has them (expertSystems/data.py ExpertSystem): by type, its days, whether
 // it is hidden or retired, and the skills it gives with their levels (skillsGranted, in the order the client's loader
 // iterates its dict).

@@ -2792,9 +2792,85 @@
       "hud     panel"
       "surface panel";
   }
-  .workspace.hud-top .hud-bar { grid-template-rows: 1fr auto; }
-  .workspace.hud-top .hud-bar > .hud-head { grid-row: 2; }
+  .work-main > .hud-bar > .hud-head { grid-row: 1; }
+  .work-main > .hud-bar > .buff-bar { grid-row: 2; }
+  .work-main > .hud-bar > .hud-body { grid-row: 3; }
+  .workspace.hud-top .hud-bar { grid-template-rows: 1fr auto auto; }
+  .workspace.hud-top .hud-bar > .hud-head { grid-row: 3; }
+  .workspace.hud-top .hud-bar > .buff-bar { grid-row: 2; }
   .workspace.hud-top .hud-bar > .hud-body { grid-row: 1; }
+
+  /* The buff bar (buffButtons.py): 48-pixel slots of 40-pixel icons in a row, centred over the instruments. Each slot
+   * is drawn as the client draws its button: its underlay's two textures in the button class's colour, added
+   * (SLOT_COLOR, slot_gradient at 0.25 and slot_base at 0.2), the icon tinted (ICON_COLOR, brighter under the
+   * pointer), and its timer's gauge in TIMER_COLOR at 0.65. */
+  .buff-bar { display: flex; justify-content: center; gap: 0; padding: 2px 0; }
+  .buff-slot {
+    --slot-color: rgb(255 255 255);
+    --icon-tint: none;
+    --timer-color: rgb(255 255 255);
+    position: relative;
+    width: 48px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    outline-offset: -2px;
+  }
+  .buff-slot.offensive { --slot-color: rgb(179 0 0); --icon-tint: sepia(1) saturate(2) hue-rotate(-30deg) brightness(1.1); --timer-color: rgb(255 77 0); }
+  .buff-slot.defensive { --slot-color: rgb(0 153 153); --icon-tint: sepia(1) saturate(2) hue-rotate(130deg) brightness(1.1); --timer-color: rgb(0 204 204); }
+  .buff-slot-underlay,
+  .buff-slot-underlay::after {
+    position: absolute;
+    inset: 0 4px;
+    background: var(--slot-color);
+    mix-blend-mode: plus-lighter;
+    mask-size: 100% 100%;
+    pointer-events: none;
+  }
+  .buff-slot-underlay { mask-image: var(--underlay-grad); opacity: 0.25; }
+  .buff-slot-underlay::after { content: ""; inset: 0; mask-image: var(--underlay-clean); opacity: 0.8; }
+  .buff-slot-icon { position: relative; width: 40px; height: 40px; filter: var(--icon-tint); }
+  .buff-slot:hover .buff-slot-icon,
+  .buff-slot:focus-visible .buff-slot-icon { filter: var(--icon-tint) brightness(1.5); }
+  .buff-slot-timer {
+    position: absolute;
+    inset: 0 4px;
+    border-radius: 50%;
+    opacity: 0.65;
+    background: conic-gradient(var(--timer-color) var(--left), transparent 0);
+    mask: radial-gradient(circle, transparent 15px, black 16px, black 18px, transparent 19px);
+    pointer-events: none;
+  }
+  .buff-slot-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* The hint (LoadGeneric3ColumnTemplate, cellSpacing 10 by 4): the caption across the three columns, then a row a
+   * buff: its value to the right, its name, its time left. */
+  .buff-tip {
+    position: fixed;
+    z-index: 60;
+    transform: translate(-50%, -100%);
+    display: grid;
+    grid-template-columns: auto auto auto;
+    column-gap: 10px;
+    row-gap: 4px;
+    padding: 8px 10px;
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+    font-size: 0.8rem;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .buff-tip.below { transform: translate(-50%, 0); }
+  .buff-tip-caption { grid-column: 1 / -1; font-size: 0.9rem; }
+  .buff-tip-value { text-align: right; }
 
   /* The Neocom inside the workspace: full-height, its own scroll, no sticky. */
   .workspace .neocom {
@@ -3947,8 +4023,9 @@
     flex: 0 0 auto;
     min-height: 0;
     display: grid;
-    /* Two rows, not three. The footer is gone — see the note in HudBar.svelte. */
-    grid-template-rows: auto 1fr;
+    /* The header, the buff bar (no height where nothing is on the ship), the instruments. The footer is gone — see
+     * the note in HudBar.svelte. */
+    grid-template-rows: auto auto 1fr;
     background: var(--color-panel);
     border: 1px solid var(--color-line);
   }

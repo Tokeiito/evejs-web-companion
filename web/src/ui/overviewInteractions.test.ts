@@ -13,7 +13,15 @@ const { overviewTabs } = await import("../space/overviewTabs.ts");
 const { tabHidden, combatToggles, combatToggleMap, tabShows } = await import("../space/overviewHidden.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
-const flow = new Proxy({}, { get: () => async () => {} });
+// The flow's signals HudBar's pieces read as stores (HudButtons' autopilot, BuffBar's buffs, the pocket's collapse
+// warning), each with nothing to show; any other member a no-op.
+const heldSignal = <T>(value: T) => ({ get: () => value, subscribe: (listener: (value: T) => void) => (listener(value), () => {}) });
+const FLOW_SIGNALS: Record<string, unknown> = {
+  autopilotOn: heldSignal(false),
+  collapseWarning: heldSignal(null),
+  buffBar: heldSignal({ incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "" }),
+};
+const flow = new Proxy({}, { get: (_target, key) => (typeof key === "string" && key in FLOW_SIGNALS ? FLOW_SIGNALS[key] : async () => {}) });
 const neutral = entity(11, "Neutral ship");
 const planet = entity(12, "Test planet", { kind: "celestial", groupID: 7, categoryID: 2 });
 const rat = entity(13, "Belt Rat", { isNpc: true, npcEntityType: "npc" });

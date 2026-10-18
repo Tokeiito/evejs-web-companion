@@ -4543,6 +4543,14 @@ function createGamePortPilots({
       // with the pilot's notifications. Any other special effect is not.
       void travelGuids();
       entry.space.park.onEvent = (name, args) => {
+        // michelle.OnDbuffUpdated (1574) and SetState's (1002): the warfare buffs on the pilot's own ship
+        // (IncomingDbuffTracker.OnDbuffUpdated drops another ship's), handed on as the server sent them.
+        if (name === "OnDbuffUpdated") {
+          if (Array.isArray(args) && positive(args[0]) !== null && positive(args[0]) === positive(attribute(entry, "shipid")) && sessions.has(entry.handle)) {
+            record(entry, notificationToBridgeJson({ method: "OnDbuffUpdated", args }));
+          }
+          return;
+        }
         if (name !== "OnSpecialFX" || !Array.isArray(args) || positive(args[0]) === null || positive(args[0]) !== positive(attribute(entry, "shipid"))) return;
         const guid = textOf(args[5]);
         const handOn = (guids) => {

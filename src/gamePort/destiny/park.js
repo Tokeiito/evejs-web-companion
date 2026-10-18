@@ -578,6 +578,8 @@ class Park {
     this.solItem = fields.get("solItem") ?? null;
     // gameui is told of each ball of a state as it is of one added (ProcessBallAdd, then DoBallsAdded).
     this._egoAwaited();
+    // michelle.SetState (1002): the warfare buffs the state carries for the ship, as an OnDbuffUpdated(ego, dbuffState).
+    if (typeof this.onEvent === "function") this.onEvent("OnDbuffUpdated", [fields.get("ego") ?? null, fields.get("dbuffState") ?? null], null);
   }
 
   /**

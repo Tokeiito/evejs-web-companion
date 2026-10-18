@@ -424,6 +424,8 @@ const OWNER_SYSTEM = 1;
 const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
+import { BUFF_SLOTS } from "../bridge/dbuffs.ts";
+import { decodeDbuffUpdate, type BuffBarState } from "../bridge/buffBar.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { FittingResources, MarketEscrow } from "../store/types.ts";
@@ -2719,6 +2721,13 @@ export interface AppFlow {
    * shows them.
    */
   readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
+  /**
+   * The ship HUD's buff bar: the warfare buffs on the pilot's ship as the server last said them (michelle.OnDbuffUpdated,
+   * SetState's dbuffState), let go at another ship or place, and what the bar shows them with (bridge/buffBar.ts).
+   */
+  readonly buffBar: ReadableSignal<BuffBarState>;
+  /** The buff bar shown: the slots' icons read, once. */
+  wantBuffBar(): void;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
@@ -5132,6 +5141,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (pilot !== null && (Number(args[0]) === pilot || Number(args[1]) === pilot)) void loadWalletShares().catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    // IncomingDbuffTracker.OnSessionChanged: another ship or place (shipid, locationid, structureid), and the buffs
+    // known are let go until the server says them again.
+    if (sessionNames?.some((name) => name === "shipid" || name === "locationid" || name === "structureid" || name === "stationid" || name === "solarsystemid") && buffBarSignal.get().incoming.size > 0) {
+      buffBarSignal.set({ ...buffBarSignal.get(), incoming: new Map() });
+    }
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
@@ -5301,6 +5315,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // subwaySvc.OnSpecialFX (417 to 438): a travel effect played on the pilot's own ship (the game port hands on no
     // other) begins its jump through the effect's target: PreJumpServiceCalls' OnJumpStarted(gateID, destinationID),
     // which the objectives hear as OnClientEvent_JumpStarted.
+    // michelle.OnDbuffUpdated (1574): IncomingDbuffTracker.OnDbuffUpdated, of the pilot's own ship alone; the game port
+    // hands on the state's too (SetState, 1002).
+    if (method === "OnDbuffUpdated") {
+      const incoming = decodeDbuffUpdate(args as readonly JsonValue[], store.flight.get().status?.shipID ?? null);
+      if (incoming !== null) {
+        buffBarSignal.set({ ...buffBarSignal.get(), incoming, clockOffsetMs: serverNow() - Date.now() });
+        readBuffBarFacts([...incoming.keys()]);
+      }
+      return;
+    }
     if (method === "OnSpecialFX") {
       const fx = args as readonly JsonValue[];
       const shipID = Number(unwrapLong(fx[0]) ?? NaN);
@@ -9101,6 +9125,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client's quantity question (uix.QtyPopup: modal, OK and Cancel), one open at a time; a newer one cancels it.
   const quantityAskedSignal = createSignal<QuantityAsk | null>(null);
+
+  // The ship HUD's buff bar (bridge/buffBar.ts): the buffs the server said are on the pilot's ship, and the collections
+  // and icons the bar shows them with, each read of the BFF once.
+  const buffBarSignal = createSignal<BuffBarState>({ incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "" });
+  let buffBarIconsAsked = false;
+  function readBuffBarFacts(collectionIDs: readonly number[]): void {
+    const known = buffBarSignal.get();
+    const collections = collectionIDs.filter((collectionID) => !known.facts.has(collectionID));
+    const icons = buffBarIconsAsked ? [] : [...new Set(BUFF_SLOTS.map((slot) => slot.iconID))];
+    if (collections.length === 0 && icons.length === 0) return;
+    buffBarIconsAsked = true;
+    void api.getDbuffCollections(collections, icons, callOptions).then((read) => {
+      const now = buffBarSignal.get();
+      buffBarSignal.set({
+        ...now,
+        facts: new Map([...now.facts, ...read.collections]),
+        iconFiles: new Map([...now.iconFiles, ...read.iconFiles]),
+        percentUnitName: read.percentUnitName || now.percentUnitName,
+      });
+    }).catch(() => {
+      if (icons.length > 0) buffBarIconsAsked = false;
+    });
+  }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
   /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
@@ -26187,6 +26234,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     routeWindowAvoidance,
     moveWaypoint,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
+    buffBar: readonlySignal(buffBarSignal),
+    wantBuffBar() {
+      readBuffBarFacts([...buffBarSignal.get().incoming.keys()]);
+    },
     dismissDialog,
     answerDialog,
     keepDialogAnswer,

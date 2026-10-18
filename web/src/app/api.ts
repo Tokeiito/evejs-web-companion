@@ -4030,6 +4030,46 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
 }
 
 /**
+ * What the ship HUD's buff bar needs (GET /api/client-data/dbuff-collections): each dbuff collection asked as the
+ * client's dbuff storage has it (null for none), the res: path of each icon asked (null for none), and the
+ * relative-percent unit's name.
+ */
+export async function getDbuffCollections(
+  collectionIDs: readonly number[],
+  iconIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly collections: ReadonlyMap<number, { readonly name: string | null; readonly operationName: string; readonly showOutputValueInUI: string } | null>;
+  readonly iconFiles: ReadonlyMap<number, string | null>;
+  readonly percentUnitName: string;
+}> {
+  const data = await getJson(`/api/client-data/dbuff-collections?ids=${collectionIDs.join(",")}&iconIDs=${iconIDs.join(",")}`, options);
+  const recordOf = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
+  const collections = new Map<number, { readonly name: string | null; readonly operationName: string; readonly showOutputValueInUI: string } | null>();
+  for (const [key, value] of Object.entries(recordOf(data.collections))) {
+    const collectionID = Number(key);
+    if (!Number.isSafeInteger(collectionID) || collectionID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      collections.set(collectionID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    collections.set(collectionID, {
+      name: typeof row.name === "string" ? row.name : null,
+      operationName: typeof row.operationName === "string" ? row.operationName : "",
+      showOutputValueInUI: typeof row.showOutputValueInUI === "string" ? row.showOutputValueInUI : "",
+    });
+  }
+  const iconFiles = new Map<number, string | null>();
+  for (const [key, value] of Object.entries(recordOf(data.iconFiles))) {
+    const iconID = Number(key);
+    if (Number.isSafeInteger(iconID) && iconID > 0) iconFiles.set(iconID, typeof value === "string" ? value : null);
+  }
+  return { collections, iconFiles, percentUnitName: typeof data.percentUnitName === "string" ? data.percentUnitName : "" };
+}
+
+/**
  * Dogma attributes as the client draws one by itself (GET /api/client-data/attribute-display): its name as the number
  * of its message, and its picture's res: path; null for one the client's tables have not. At most 32 at once.
  */

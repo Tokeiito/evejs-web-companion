@@ -22,6 +22,7 @@
   import ModuleRack from "./ModuleRack.svelte";
   import ShipHud from "./ShipHud.svelte";
   import HudButtons from "./HudButtons.svelte";
+  import BuffBar from "./BuffBar.svelte";
   import CargoBays from "./CargoBays.svelte";
   import { onMount } from "svelte";
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
@@ -327,6 +328,10 @@
       </span>
     {/if}
   </header>
+
+  <!-- The buff bar (shipUI's BuffBarContainer): above the instruments, and under them where the HUD is aligned to the
+       top (UpdatePosition: CENTERBOTTOM above the HUD, CENTERTOP below it). -->
+  <BuffBar {store} {flow} />
 
   <div class="hud-body">
     <!--
