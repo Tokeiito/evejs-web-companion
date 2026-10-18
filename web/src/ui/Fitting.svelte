@@ -65,6 +65,8 @@
   import SkillTrainingAction from "./SkillTrainingAction.svelte";
   import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
   import { createSkillPlanButton } from "./skillPlanTemplate.ts";
+  import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
+  import type { TypeMetaFacts } from "../app/api.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -769,12 +771,31 @@
   // search for the type's exact name, assetsSearch.ts); and Compare, the type's category being among compareCategories
   // (2347 to 2348: every hull's is; CompareType, the compare tool, typeCompare.ts). Not the page's: a GM's "GM / WM
   // Extras".
-  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  // The same menu is a picker's entry's and a tube's squadron's (ItemPickerBase.GetMenu, SingleTube.GetSquadronMenu:
+  // GetMenuFromItemIDTypeID(itemID, typeID, includeMarketDetails=True); the item only Show Info's, and the simulation's
+  // items have no info of their own), its type's market group, publishing and category read as it opens (`facts`:
+  // undefined for a hull, whose the browser holds; null until read).
+  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number; readonly facts?: TypeMetaFacts | null } | null>(null);
   function openHullMenu(typeID: number, event: MouseEvent): void {
     event.preventDefault();
     nodeMenu = null;
     hullMenu = { typeID, x: event.clientX, y: event.clientY };
   }
+  function openTypeMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    nodeMenu = null;
+    hullMenu = { typeID, x: event.clientX, y: event.clientY, facts: null };
+    void flow.typeFacts([typeID]).then((read) => {
+      const facts = read?.get(typeID) ?? null;
+      if (facts !== null && hullMenu?.typeID === typeID && hullMenu.facts === null) hullMenu = { ...hullMenu, facts };
+    }).catch(() => {});
+  }
+  /** The menu's type's market group, publishing, whether it may be compared (compareCategories), and its name. */
+  type TypeMenu = NonNullable<typeof hullMenu>;
+  const menuMarketGroup = (menu: TypeMenu) => (menu.facts === undefined ? $hullBrowser?.types.get(menu.typeID)?.marketGroupID ?? null : menu.facts?.marketGroupID ?? null);
+  const menuPublished = (menu: TypeMenu) => (menu.facts === undefined ? $hullBrowser?.types.get(menu.typeID)?.published === true : menu.facts?.published === true);
+  const menuComparable = (menu: TypeMenu) => (menu.facts === undefined ? true : COMPARE_CATEGORIES.includes(menu.facts?.categoryID ?? -1));
+  const menuTypeName = (menu: TypeMenu) => (menu.facts === undefined ? hullName(menu.typeID) : moduleName(menu.typeID));
   // A group's or a race's menu (ShipParentGroup.GetMenu, fittingBrowser.py 579 to 583): Compare, which compares the
   // node's hulls in the order it holds them (menusvc.CompareTypes(node.typeIDs): the compare tool opened, typeCompare.ts);
   // then the list group's own (ListGroup.GetMenu, 284 to 311): Expand or Collapse, the node being locked (no Change
@@ -2524,7 +2545,7 @@
             <ul class="fit-sim-drones">
               {#each simulation.drones as entry (entry.typeID)}
                 {@const mark = pickerWarningColor(87, entry.typeID)}
-                <li>
+                <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
                   {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                   <span class="fit-sim-drone-count">{entry.active} of {entry.total} active</span>
@@ -2654,7 +2675,7 @@
           <ul class="fit-sim-drones">
             {#each cargoByName(simulation.cargo) as entry (entry.typeID)}
               {@const mark = pickerWarningColor(5, entry.typeID)}
-              <li>
+              <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
                 {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                 <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                 <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
@@ -2699,6 +2720,7 @@
                 ondragend={() => (fighterDrag = null)}
                 ondragover={(event) => { if (fighterDrag) event.preventDefault(); }}
                 ondrop={(event) => dropOnTube(event, tube)}
+                oncontextmenu={(event) => (tube.squadron ? openTypeMenu(tube.squadron.typeID, event) : event.preventDefault())}
                 onclick={() => clickSimulatedTube(tube)}>
                 <span class="fit-sim-tube-number">{tube.number}</span>
                 {#if tube.squadron}
@@ -2743,7 +2765,7 @@
             <ul class="fit-sim-drones">
               {#each cargoByName(simulation.fighterBayTypes) as entry (entry.typeID)}
                 {@const mark = pickerWarningColor(158, entry.typeID)}
-                <li>
+                <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
                   {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <button type="button" class="fit-sim-drone-name fit-sim-fighter-name" draggable="true" disabled={busy}
                     ondragstart={(event) => startFighterDrag(event, { from: "bay", typeID: entry.typeID })}
@@ -3359,14 +3381,16 @@
       {@const menuFor = hullMenu}
       <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
         <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
-        {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
+        {#if menuMarketGroup(menuFor) !== null}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
         {/if}
-        {#if $hullBrowser?.types.get(menuFor.typeID)?.published === true}
+        {#if menuPublished(menuFor)}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInContracts(typeID); }}>{fitWord("UI/Inventory/ItemActions/FindInContracts")}</button>
-          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), hullName(typeID))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), menuTypeName(menuFor))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
         {/if}
-        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        {#if menuComparable(menuFor)}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        {/if}
       </span>
     {/if}
     {#if nodeMenu !== null}
