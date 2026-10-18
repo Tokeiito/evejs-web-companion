@@ -2874,6 +2874,34 @@
   /* A row with no third column fills the row (FillRow); a text across the three, grey (the failed attempts' line). */
   .buff-tip-name.wide { grid-column: span 2; }
   .buff-tip-full { grid-column: 1 / -1; color: var(--color-text-muted, #888); }
+  /* A slot's menu (GetButtonMenu): its sources, each opening its own menu beneath it. */
+  .buff-menu-shade { position: fixed; inset: 0; z-index: 61; }
+  .buff-menu {
+    position: fixed;
+    z-index: 62;
+    display: flex;
+    flex-direction: column;
+    min-width: 12rem;
+    padding: 4px 0;
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    font-size: 0.85rem;
+  }
+  .buff-menu-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 4px 12px;
+    background: none;
+    border: 0;
+    color: var(--color-text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .buff-menu-item:hover:not(:disabled),
+  .buff-menu-item:focus-visible { background: var(--color-line); }
+  .buff-menu-item:disabled { opacity: 0.5; cursor: default; }
+  .buff-menu-sub { display: flex; flex-direction: column; padding-left: 12px; border-left: 2px solid var(--color-line); margin-left: 8px; }
 
   /* The Neocom inside the workspace: full-height, its own scroll, no sticky. */
   .workspace .neocom {

@@ -29,6 +29,12 @@
   import { resolvedName } from "../store/names.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { portal } from "./portal.ts";
+  import { spaceSelection } from "../space/selection.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { actionsForRow, type RowAction } from "../space/rowActions.ts";
+  import { dispatchRowAction, isSingleCallAction } from "../space/rowActionRunner.ts";
+  import { gateLinkFor } from "../space/gateLinks.ts";
+  import { flyingDistances } from "./flyingDistances.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
   // svelte-ignore state_referenced_locally
@@ -37,6 +43,10 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const buffBar = flow.buffBar;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const targeting = store.targeting;
 
   const HINT_LABELS = {
     numAttacks: "UI/Inflight/NumAttacks",
@@ -158,6 +168,63 @@
     return [...ewar, ...buffs];
   }
 
+  /**
+   * BuffBtnController.GetButtonMenu: each source of the slot's electronic warfare on the ship that is in space, by its
+   * pilot's name or else its type's, in name order (localization.util.Sort on the names), each opening that object's
+   * menu (CelestialMenu; here what the overview and the tactical ring offer for it, after Show Info). A slot with no
+   * source has no menu. OnButtonClick acts only with a combat command held (IsSomeCombatCommandLoaded), which the page
+   * has none of, so a click does nothing.
+   */
+  let menu = $state<{ readonly slot: string; readonly x: number; readonly y: number; readonly open: number | null } | null>(null);
+  function menuSources(name: string): { readonly itemID: number; readonly name: string }[] {
+    const sources = [...new Set(($buffBar.jammers.get(name) ?? []).map((jammer) => jammer.sourceID))];
+    const rows: { readonly itemID: number; readonly name: string }[] = [];
+    for (const itemID of sources) {
+      const item = sourceOf(itemID);
+      if (item === null) continue;
+      rows.push({ itemID, name: item.characterID !== null ? nameOf("character", item.characterID) : nameOf("type", item.typeID) });
+    }
+    return rows.sort((a, b) => ewarWriter.compare(a.name, b.name));
+  }
+  function sourceActions(itemID: number): readonly RowAction[] {
+    const row = $space.snapshot?.entities.find((each) => each.itemID === itemID) ?? null;
+    if (row === null) return [];
+    return actionsForRow({
+      kind: row.kind,
+      locked: $targeting.lockedTargetIDs.includes(itemID),
+      acquiring: $targeting.acquiringTargetIDs.includes(itemID),
+      gateLink: gateLinkFor($space.gateLinks, itemID),
+      groupID: row.groupID ?? null,
+      warping: $space.snapshot?.ship?.mode === "WARP",
+      categoryID: row.categoryID,
+    }).filter((action) => isSingleCallAction(action.id));
+  }
+  function openMenu(event: MouseEvent, name: string): void {
+    event.preventDefault();
+    tip = null;
+    const sources = menuSources(name);
+    if (sources.length === 0) {
+      menu = null;
+      return;
+    }
+    menu = { slot: name, x: event.clientX, y: event.clientY, open: null };
+  }
+  async function pickAction(itemID: number, action: RowAction): Promise<void> {
+    menu = null;
+    if (action.unavailable !== null) return;
+    spaceSelection.select(itemID);
+    await dispatchRowAction(flow, action.id, { itemID, gateLink: gateLinkFor($space.gateLinks, itemID) }, {
+      warp: Number($flyingDistances.warp),
+      orbit: Number($flyingDistances.orbit),
+      hold: Number($flyingDistances.hold),
+    }).catch((error: unknown) => console.error(error));
+  }
+  function pickShowInfo(itemID: number): void {
+    menu = null;
+    const row = $space.snapshot?.entities.find((each) => each.itemID === itemID) ?? null;
+    if (row !== null) showInfo({ kind: "spaceObject", itemID, typeID: row.typeID });
+  }
+
   function showTip(event: Event, name: string): void {
     const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
     // Above the bar where there is room for it, as the client's tooltip stands off its button; below it otherwise.
@@ -182,7 +249,8 @@
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div class="buff-slot {slot.kind}" role="listitem" tabindex="0" data-buff-slot={name}
           onmouseenter={(event) => showTip(event, name)} onmouseleave={() => (tip = null)}
-          onfocus={(event) => showTip(event, name)} onblur={() => (tip = null)}>
+          onfocus={(event) => showTip(event, name)} onblur={() => (tip = null)}
+          oncontextmenu={(event) => openMenu(event, name)}>
           <span class="buff-slot-underlay" style:--underlay-grad={`url(${clientTexture("res:/UI/Texture/classes/ShipUI/EwarBar/ewarBarUnderlayGrad.png")})`}
             style:--underlay-clean={`url(${clientTexture("res:/UI/Texture/classes/ShipUI/EwarBar/ewarBarUnderlayClean.png")})`} aria-hidden="true"></span>
           {#if iconFile !== null}
@@ -192,6 +260,31 @@
             <span class="buff-slot-timer" style:--left={`${left * 360}deg`} aria-hidden="true"></span>
           {/if}
           <span class="buff-slot-name">{said(slot.hint) || "An effect on your ship"}</span>
+        </div>
+      {/if}
+    {/each}
+  </div>
+{/if}
+
+{#if menu !== null}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="buff-menu-shade" use:portal onclick={() => (menu = null)} oncontextmenu={(event) => { event.preventDefault(); menu = null; }}></div>
+  <div class="buff-menu" role="menu" use:portal style:left={`${menu.x}px`} style:top={`${menu.y}px`}
+    tabindex="-1" onkeydown={(event) => { if (event.key === "Escape") menu = null; }}>
+    {#each menuSources(menu.slot) as source, index (source.itemID)}
+      <button type="button" class="buff-menu-item" role="menuitem" aria-haspopup="menu" aria-expanded={menu.open === index}
+        onclick={() => { if (menu !== null) menu = { ...menu, open: menu.open === index ? null : index }; }}>
+        {source.name || "—"} <span aria-hidden="true">›</span>
+      </button>
+      {#if menu.open === index}
+        <div class="buff-menu-sub" role="menu">
+          <button type="button" class="buff-menu-item" role="menuitem" onclick={() => pickShowInfo(source.itemID)}>Show info</button>
+          {#each sourceActions(source.itemID) as action (action.id)}
+            <button type="button" class="buff-menu-item" role="menuitem" disabled={action.unavailable !== null}
+              title={action.unavailable ?? undefined} onclick={() => void pickAction(source.itemID, action)}>
+              {action.label}
+            </button>
+          {/each}
         </div>
       {/if}
     {/each}
