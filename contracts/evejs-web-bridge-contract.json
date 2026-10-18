@@ -1224,6 +1224,7 @@
       "dogmaIM.CancelAddTarget",
       "dogmaIM.CreateNewbieShip",
       "dogmaIM.Deactivate",
+      "dogmaIM.DestroyWeaponBank",
       "dogmaIM.InitiateModuleRepair",
       "dogmaIM.InjectSkillIntoBrain",
       "dogmaIM.LaunchProbes",

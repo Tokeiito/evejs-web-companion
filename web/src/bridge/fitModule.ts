@@ -165,6 +165,69 @@ export async function unfitModule(
 }
 
 /**
+ * A fitted module put into the ship's cargo, as the client's dogma location puts it there (UnloadModuleToContainer,
+ * 1077 to 1104), with the ship for the container and the cargo's flag: a module dragged off its slot and dropped on
+ * the fitting window's cargo readout (minihangar CargoCargoSlots.OnDropData, 288) or on the ship's cargo hold
+ * (invCtrl.ShipCargo, invControllers 514). A module in a weapon bank asks its pilot first (ClearGroupModule), and on
+ * Yes the bank is broken up (DestroyWeaponBank(shipID, the bank's master)); then, charge or none,
+ *
+ *   remoteDogmaLM.UnloadAmmo(shipID, the bank's master or the module, shipID)
+ *   shipInv.Add(moduleID, shipID, qty=None, flag=const.flagCargo)
+ *
+ * which is what Tranquility recorded (a module from a mid slot: UnloadAmmo(ship, module, ship), riding the dogma
+ * location's bind, then the Add on the ship's inventory). Answers whether the slots say it is gone, and nothing where
+ * the pilot answered No. Fails as a call fails.
+ */
+export async function unloadModuleToCargo(
+  act: Ask,
+  fitted: FittedNow,
+  place: AmmoSession,
+  itemID: number,
+  banks: WeaponBanks,
+  clearGroup: () => Promise<boolean>,
+): Promise<{ readonly applied: boolean } | undefined> {
+  let masterModuleID: number | null = null;
+  if (weaponBankOf(banks, itemID) !== null) {
+    if (!(await clearGroup())) return undefined;
+    masterModuleID = masterOf(banks, itemID) ?? itemID;
+    await act("dogmaIM", "DestroyWeaponBank", [place.shipID, masterModuleID]);
+  }
+  await act("dogmaIM", "UnloadAmmo", [place.shipID, masterModuleID ?? itemNumber(itemID), place.shipID]);
+  await act("invbroker", "Add", [itemNumber(itemID), place.shipID], { qty: null, flag: FLAG_CARGO }, place.shipID);
+  return { applied: !(await fitted()).has(itemID) };
+}
+
+/**
+ * The charge in a slot put into the ship's cargo, as the client's dogma location puts it there
+ * (UnloadAmmoToContainer, 1106 to 1134), with (the ship, the pilot, the cargo's flag) for where: a slot's charge
+ * dragged off it and dropped on the fitting window's cargo readout (minihangar 290) or on the ship's cargo hold
+ * (invControllers 517). The module is the one in the charge's slot (the ship's listing of that flag, the item that is
+ * not the charge), its bank's master where it is a slave in one, and no quantity is named (None: all of it):
+ *
+ *   remoteDogmaLM.UnloadAmmo(shipID, moduleID, (shipID, charID, const.flagCargo), None)
+ *
+ * The cargo too full for a bank's charges (NotEnoughCargoSpace, unloading through a master) is said by the client's
+ * own NotEnoughCargoSpaceToUnloadBank, which this answers as "bankWithoutRoom"; any other refusal fails as the call
+ * fails.
+ */
+export async function unloadChargeToCargo(
+  act: Ask,
+  place: AmmoSession,
+  moduleID: number,
+  banks: WeaponBanks,
+  isNoRoom: (error: unknown) => boolean,
+): Promise<"unloaded" | "bankWithoutRoom"> {
+  const masterID = masterOf(banks, itemNumber(moduleID));
+  try {
+    await act("dogmaIM", "UnloadAmmo", [place.shipID, masterID ?? moduleID, [place.shipID, place.characterID, FLAG_CARGO], null]);
+  } catch (error) {
+    if (masterID !== null && isNoRoom(error)) return "bankWithoutRoom";
+    throw error;
+  }
+  return "unloaded";
+}
+
+/**
  * A RIG DESTROYED (the plan's Phase 6b): until 2026-10-14 a route of the BFF's (POST /api/bridge/fitting/destroy-rig),
  * which read the slots for the rig, made the call on the ship's inventory and read the slots again. The client's
  * Unfit of a rig (fittingSlotController.Unfit, 245 to 266), where the ship cannot take one off whole

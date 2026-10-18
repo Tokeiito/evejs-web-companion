@@ -633,7 +633,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
+import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadModuleToCargo as unloadModuleToCargoCall, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
@@ -1509,6 +1509,10 @@ export interface AppFlow {
    * its charge unloaded, and the module to the hangar docked and to the ship's own hold in space.
    */
   unfitModule(itemID: number): Promise<void>;
+  /** A fitted module put into the ship's cargo, as the client's UnloadModuleToContainer puts it (a slot dragged to the cargo). */
+  unloadModuleToCargo(itemID: number): Promise<void>;
+  /** The charge in the slot of this flag put into the ship's cargo, as the client's UnloadAmmoToContainer puts it. */
+  unloadChargeToCargo(flagID: number): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
@@ -3726,6 +3730,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     return fitted;
   }
+  /** The active ship's weapon banks as the page's dogma location holds them (GetAllInfo's ship state, as the transport keeps it). */
+  function heldWeaponBanks(): WeaponBanks {
+    const allInfo = store.dogma.get().allInfo;
+    const shipID = store.fitting.get().activeShipID;
+    return allInfo && shipID !== null && Number(allInfo.activeShipID) === shipID ? decodeWeaponBanks(allInfo.shipState) : new Map();
+  }
+  /** ClearGroupModule (fittingSlotController.UnfitModule, clientDogmaLocation.UnloadModuleToContainer): Yes to break the bank up. */
+  const askClearGroup = (): Promise<boolean> =>
+    askDialog("ClearGroupModule", { type: "dict", entries: [] }, "This module is grouped with other weapons, and taking it off splits the group up. Carry on?");
   /** Charges put into modules from the ship's own hold or the hangar, by the client's own call (bridge/dogmaWrites.ts). */
   const loadAmmoFrom = async (moduleIDs: readonly number[], chargeItemIDs: readonly number[], source: AmmoPlace): Promise<void> =>
     loadAmmoCall(bridgeDo, ammoSession(), moduleIDs, chargeItemIDs, source);
@@ -4145,6 +4158,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         continue;
       }
       applyPushedNotification(method, Array.isArray(row.args) ? row.args : [], receivedAtMs);
+    }
+  }
+
+  /**
+   * One item's move, as each window of the client takes an OnItemChange (the server's own, or one of the items of an
+   * OnItemsChanged, which the client's inventory cache scatters one by one).
+   */
+  function oneItemChanged(args: readonly unknown[]): void {
+    // ONE item's move comes by this name, and several by OnItemsChanged: the
+    // server sends this one unless a batch is asked for. A drone landing in
+    // its bay is one item, and with only the batch's own refresh heard the window
+    // went on reading "Coming home" for a drone the server had in the bay.
+    //
+    // Which moves, the client's drones window says (dronesWindow.OnItemChange,
+    // 254 to 260; bridge/droneBayNotices.ts): the ones into or out of this
+    // ship's drone bay. A charge loaded or ore come aboard is not one.
+    //
+    // ⚠ THE DRONES ONLY. Their re-read is gated on the window having been
+    // read; the holds' is not, and what one item's move does to a hold has
+    // not been measured.
+    if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
+      scheduleDroneRefresh();
+    }
+    // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
+    // reckoned again where they are the page's, as the client's drone panel takes its drones again
+    // (clientDogmaLocation.GetActiveDrones).
+    const fittingNow = store.fitting.get();
+    if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
+    // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
+    // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
+    // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
+    else if (fittingNow.statsFrom === "page" && fittingNow.bayReadout?.kind === "fighter" && fittingNow.bayReadout.shipID === fittingNow.activeShipID) {
+      const places = itemChangeLocations(args);
+      if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
+    }
+    // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
+    // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
+    // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
+    // deploy came by this name, and the cargo went on listing it until a Refresh.
+    if (inventoryShowsItemChange(args)) {
+      scheduleInventoryRefresh();
     }
   }
 
@@ -4675,43 +4729,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // on the same character. Without it the Drones window's one read per
       // session was the whole of its knowledge.
       scheduleDroneRefresh();
+      // invCache.OnItemsChanged (219 to 226): each item scattered as an OnItemChange with the change they share, so
+      // every window's rule for one item's move is its rule for each of these. Measured 2026-10-17: a module put
+      // into the cargo off its slot came by this name, as on Tranquility, and the Inventory panel's cargo did not
+      // list it.
+      const [items, change, location] = args as readonly JsonValue[];
+      for (const item of isListValue(items) ? items.items : Array.isArray(items) ? items : []) oneItemChanged([item, change, location]);
       return;
     }
     if (method === "OnItemChange") {
-      // ONE item's move comes by this name, and several by the one above: the
-      // server sends this one unless a batch is asked for. A drone landing in
-      // its bay is one item, and with only the name above heard the window went
-      // on reading "Coming home" for a drone the server had in the bay.
-      //
-      // Which moves, the client's drones window says (dronesWindow.OnItemChange,
-      // 254 to 260; bridge/droneBayNotices.ts): the ones into or out of this
-      // ship's drone bay. A charge loaded or ore come aboard is not one.
-      //
-      // ⚠ THE DRONES ONLY. Their re-read is gated on the window having been
-      // read; the holds' is not, and what one item's move does to a hold has
-      // not been measured.
-      if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
-        scheduleDroneRefresh();
-      }
-      // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
-      // reckoned again where they are the page's, as the client's drone panel takes its drones again
-      // (clientDogmaLocation.GetActiveDrones).
-      const fittingNow = store.fitting.get();
-      if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
-      // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
-      // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
-      // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
-      else if (fittingNow.statsFrom === "page" && fittingNow.bayReadout?.kind === "fighter" && fittingNow.bayReadout.shipID === fittingNow.activeShipID) {
-        const places = itemChangeLocations(args);
-        if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
-      }
-      // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
-      // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
-      // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
-      // deploy came by this name, and the cargo went on listing it until a Refresh.
-      if (inventoryShowsItemChange(args)) {
-        scheduleInventoryRefresh();
-      }
+      oneItemChanged(args);
       return;
     }
     if (method === "OnDamageMessage") {
@@ -26025,15 +26052,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async unfitModule(itemID) {
-      // The slot's module with its charge (GetCharge), and the ship's banks as the page's dogma location holds them
-      // (GetAllInfo's ship state, as the transport keeps it).
-      const fitting = store.fitting.get();
-      const module = fitting.slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
-      const allInfo = store.dogma.get().allInfo;
-      const banks = allInfo && fitting.activeShipID !== null && Number(allInfo.activeShipID) === fitting.activeShipID
-        ? decodeWeaponBanks(allInfo.shipState) : new Map<number, readonly number[]>();
-      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), { itemID, charged: module?.charge != null }, banks,
-        () => askDialog("ClearGroupModule", { type: "dict", entries: [] }, "This module is grouped with other weapons, and taking it off splits the group up. Carry on?")));
+      // The slot's module with its charge (GetCharge), and the ship's banks.
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
+      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), { itemID, charged: module?.charge != null }, heldWeaponBanks(), askClearGroup));
+    },
+
+    async unloadModuleToCargo(itemID) {
+      await runFittingAction(() => unloadModuleToCargoCall(bridgeDo, fittedNow, ammoSession(), itemID, heldWeaponBanks(), askClearGroup));
+    },
+
+    async unloadChargeToCargo(flagID) {
+      // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
+      const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
+      if (moduleID === null) throw new Error("No module holds a charge in that slot.");
+      await runFittingAction(async () => {
+        const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
+        if (outcome === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+      });
     },
 
     simulateShip() {

@@ -1825,7 +1825,10 @@ function loading(args, kwargs, context) {
 function unloading(args, kwargs, context) {
   const [shipID, modules, destination, quantity] = args;
   const whose = namesAnotherShip(shipID, context) ? ANOTHER_SHIP : {};
-  if (quantity === undefined || quantity === null) return { args: [shipID, list(modules), destination], kwargs, ...whose };
+  // Three: UnloadAmmoFromModules (1136), the modules a list; UnloadModuleToContainer (1095, 1097), one module and the
+  // container, as Tranquility recorded it (UnloadAmmo(ship, module, ship)). Four: UnloadAmmoToContainer (1127), one
+  // module, where, and the quantity, None where none is named, which goes as None.
+  if (args.length < 4) return { args: [shipID, list(modules), destination], kwargs, ...whose };
   const several = Array.isArray(modules) ? modules : modules && Array.isArray(modules.items) ? modules.items : null;
   if (several === null) return { args: [shipID, modules, destination, quantity], kwargs, ...whose };
   if (several.length === 1) return { args: [shipID, several[0], destination, quantity], kwargs, ...whose };
@@ -2736,6 +2739,8 @@ const RETAIL_CALLS = Object.freeze({
     "GetDogmaLM().StopModuleRepair(itemID): godma's own doing when the repair's time is up (the damage over the character's repair rate, in minutes, and a second), at Cancel Repair, and at a session's change. The server mends the module at this call. No recording has one."),
   "dogmaIM.LinkAllWeapons": judged(`${CLIENT_DOGMA}:800`, ownShipAlone,
     "remoteDogmaLM.LinkAllWeapons(shipID), on the dogma location: the group-all button, with session.shipid (groupAllIcon.py 36), where some weapon could still be grouped. It answers the ship's banks. No recording has one; LinkWeapons(shipID, master, slave) is recorded, riding the dogma location's bind."),
+  "dogmaIM.DestroyWeaponBank": judged(`${CLIENT_DOGMA}:865`, ownShipAndModule,
+    "remoteDogmaLM.DestroyWeaponBank(shipID, masterID), on the dogma location: a grouped weapon put into a container off its slot once its pilot has said Yes to ClearGroupModule (UnloadModuleToContainer, 1086), with the bank's master. It answers nothing, and the client's own banks lose that bank (OnWeaponGroupDestroyed). No recording has one."),
   "dogmaIM.UnlinkModule": judged(`${CLIENT_DOGMA}:785`, ownShipAndModule,
     "remoteDogmaLM.UnlinkModule(shipID, moduleID), on the dogma location: UngroupModule (784), with the bank's master, as a grouped weapon is unfitted from its slot once its pilot has said Yes to ClearGroupModule (fittingSlotController.UnfitModule, 234). It answers the slave the server took out of the bank. No recording has one."),
   "dogmaIM.UnlinkAllModules": judged(`${CLIENT_DOGMA}:794`, ownShipAlone,

@@ -46,14 +46,26 @@ export interface InventoryDrag {
   readonly from: InventoryPlace;
 }
 
-/** A module being dragged off the active ship's fitting. */
+/** A module being dragged off the active ship's fitting (fittingSlotController.GetModuleDragData). */
 export interface FittedModuleDrag {
   readonly kind: "fittedModule";
   readonly itemID: number;
   readonly typeID: number;
 }
 
-export type DragPayload = InventoryDrag | FittedModuleDrag;
+/**
+ * The charge loaded in a slot of the active ship, dragged off it (fittingSlotController.GetChargeDragNodes: a slot
+ * with a charge drags the charge). By the module it is loaded in and the slot's flag, which is what the client's
+ * UnloadAmmoToContainer goes by.
+ */
+export interface FittedChargeDrag {
+  readonly kind: "fittedCharge";
+  readonly moduleID: number;
+  readonly flagID: number;
+  readonly typeID: number;
+}
+
+export type DragPayload = InventoryDrag | FittedModuleDrag | FittedChargeDrag;
 
 /** Serialise a payload for `dataTransfer.setData`. */
 export function encodeDrag(payload: DragPayload): string {
@@ -103,6 +115,11 @@ export function decodeDrag(raw: string | null | undefined): DragPayload | null {
     return null;
   }
   const record = parsed as Record<string, unknown>;
+  if (record.kind === "fittedCharge") {
+    return Number.isFinite(record.moduleID) && Number.isFinite(record.flagID) && Number.isFinite(record.typeID)
+      ? { kind: "fittedCharge", moduleID: Number(record.moduleID), flagID: Number(record.flagID), typeID: Number(record.typeID) }
+      : null;
+  }
   if (!Number.isFinite(record.itemID) || !Number.isFinite(record.typeID)) {
     return null;
   }
@@ -156,14 +173,18 @@ export function dropOnSocketVerdict(payload: DragPayload | null): DropVerdict {
     // cannot honestly take a module that is already fitted. Unfit it first.
     return "Take it off the ship first, then fit it to the new slot.";
   }
+  if (payload.kind === "fittedCharge") {
+    return "Unload it first, then load it into the other module.";
+  }
   return null;
 }
 
 /**
  * Can this payload be dropped into a container?
  *
- * `to` is the container under the pointer. A fitted module dropped into one is
- * an UNFIT, which the caller performs; an inventory item is a move.
+ * `to` is the container under the pointer. A fitted module or charge dropped
+ * into one is taken off the ship into it, which the caller performs; an
+ * inventory item is a move.
  */
 export function dropOnPlaceVerdict(
   payload: DragPayload | null,
@@ -172,11 +193,12 @@ export function dropOnPlaceVerdict(
   if (payload === null) {
     return "That is not something you can put there.";
   }
-  if (payload.kind === "fittedModule") {
-    // Unfitting always lands in the hangar in this client (the flow's own
-    // destination), so offering it on a cargo hold or a corp division would
-    // promise something different from what happens.
-    return to.kind === "hangar" ? null : "Modules come off the ship into your hangar.";
+  if (payload.kind === "fittedModule" || payload.kind === "fittedCharge") {
+    // The ship's cargo takes it as the client's does (ShipCargo and the fitting
+    // window's cargo readout: UnloadModuleToContainer, UnloadAmmoToContainer).
+    // Into any other place the client takes it too, but by calls no recording
+    // shows, so the page does not make them yet and says so.
+    return to.kind === "cargo" ? null : "Only the cargo hold takes an item off the fitting so far: drop it there.";
   }
   if (samePlace(payload.from, to)) {
     // Not an error — just nothing to do. Refusing WITH a reason keeps the

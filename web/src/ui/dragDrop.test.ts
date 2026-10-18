@@ -149,17 +149,17 @@ test("same-place is judged by the container's identity, not just its kind", () =
   assert.equal(dropOnPlaceVerdict(fromThree, { kind: "corp", division: 4 }), null);
 });
 
-test("a fitted module dropped on the hangar is an unfit, and is allowed", () => {
-  assert.equal(dropOnPlaceVerdict(FITTED, HANGAR), null);
+test("a fitted module dropped on the cargo is taken off into it, and is allowed", () => {
+  // minihangar CargoCargoSlots.OnDropData and invCtrl.ShipCargo: UnloadModuleToContainer to the ship's cargo.
+  assert.equal(dropOnPlaceVerdict(FITTED, CARGO), null);
 });
 
-test("a fitted module dropped anywhere ELSE says where modules actually go", () => {
-  // Unfitting always lands in the hangar in this client, so offering it on a
-  // cargo hold would promise something different from what happens.
-  for (const to of [CARGO, ORE_BAY, { kind: "corp", division: 1 } as InventoryPlace]) {
+test("a fitted module dropped anywhere ELSE says the cargo is where it can go so far", () => {
+  // The client takes it into these too, by calls no recording shows; the page does not make them yet.
+  for (const to of [HANGAR, ORE_BAY, { kind: "corp", division: 1 } as InventoryPlace]) {
     const verdict = dropOnPlaceVerdict(FITTED, to);
     assert.notEqual(verdict, null, `${to.kind} must refuse`);
-    assert.match(verdict!, /into your hangar/i);
+    assert.match(verdict!, /cargo hold/i);
   }
 });
 

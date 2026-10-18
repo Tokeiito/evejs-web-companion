@@ -485,14 +485,18 @@ test("targeting, onlining, scooping and boarding a ship are the client's calls a
   }
 });
 
-test("ammunition goes in and out with its modules as a list, and one module by itself when a quantity is named", () => {
+test("ammunition goes in and out with its modules as a list, and one module by itself when a quantity is named or a module goes into a container", () => {
   assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, [7, 8], [31, 32], 60003760]).args, [5000, list([7, 8]), list([31, 32]), 60003760]);
   assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, list([7]), list([31]), 5000]).args, [5000, list([7]), list([31]), 5000], "already lists: kept");
   assert.equal(form("dogmaIM.LoadAmmo", [5000, [7], [31], 5000]).status, "reshaped");
   const hangar = [60003760, 140000001, 4];
-  // No quantity: the modules as a list, the place as it came (a tuple, which is what an array is on the wire).
+  // No quantity (UnloadAmmoFromModules): the modules as a list, the place as it came (a tuple, which is what an
+  // array is on the wire).
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7, 8], hangar]).args, [5000, list([7, 8]), hangar]);
-  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, null]).args, [5000, list([7]), hangar]);
+  // UnloadModuleToContainer: one module by itself and the container, as Tranquility recorded it.
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, 7, 5000]).args, [5000, 7, 5000]);
+  // UnloadAmmoToContainer with no quantity named: the one module, and None for the quantity.
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, null]).args, [5000, 7, hangar, null]);
   // A quantity: the one module by itself.
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, 40]).args, [5000, 7, hangar, 40]);
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, list([7]), hangar, 40]).args, [5000, 7, hangar, 40]);

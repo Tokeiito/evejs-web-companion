@@ -1226,15 +1226,16 @@ test("a fleet applied to and a broadcast to the bubble are writes of the page's 
   }
 });
 
-test("a module overloaded and cooled, its repair begun and ended, the weapons linked and unlinked, and one module taken out of its bank are writes of the page's own, asked of the dogma service by its name: each goes as it was sent", async () => {
+test("a module overloaded and cooled, its repair begun and ended, the weapons linked and unlinked, one module taken out of its bank, and a bank broken up are writes of the page's own, asked of the dogma service by its name: each goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  for (const method of ["Overload", "StopOverload", "InitiateModuleRepair", "StopModuleRepair", "LinkAllWeapons", "UnlinkAllModules", "UnlinkModule"]) {
+  for (const method of ["Overload", "StopOverload", "InitiateModuleRepair", "StopModuleRepair", "LinkAllWeapons", "UnlinkAllModules", "UnlinkModule", "DestroyWeaponBank"]) {
     // A module and its overload effect; for a repair, begun and ended, the module alone; for the weapons linked
     // and unlinked, the ship; for one module taken out of its bank (fittingSlotController.UnfitModule's
-    // UngroupModule), the ship and the bank's master.
-    const args = method.endsWith("Repair") ? [9988400023312] : method === "UnlinkModule" ? [9988400023309, 9988400023312] : method.includes("link") || method.includes("Link") ? [9988400023309] : [9988400023312, 3001];
+    // UngroupModule) and for a bank broken up (UnloadModuleToContainer's DestroyWeaponBank), the ship and the
+    // bank's master.
+    const args = method.endsWith("Repair") ? [9988400023312] : method === "UnlinkModule" || method === "DestroyWeaponBank" ? [9988400023309, 9988400023312] : method.includes("link") || method.includes("Link") ? [9988400023309] : [9988400023312, 3001];
     const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args, kwargs: null, ...more } });
     const before = gateway.calls.call.length;
     // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
@@ -1250,7 +1251,7 @@ test("a module overloaded and cooled, its repair begun and ended, the weapons li
   }
   // The dogma service's other writes are their routes' alone, whatever is said.
   const before = gateway.calls.call.length;
-  for (const method of ["OverloadRack", "StopOverloadRack", "InitiateModuleRepairMany", "LinkWeapons", "MergeModuleGroups", "PeelAndLink", "DestroyWeaponBank", "SetModuleOnline", "TakeModuleOffline", "Activate"]) {
+  for (const method of ["OverloadRack", "StopOverloadRack", "InitiateModuleRepairMany", "LinkWeapons", "MergeModuleGroups", "PeelAndLink", "SetModuleOnline", "TakeModuleOffline", "Activate"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args: [], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }

@@ -1872,11 +1872,28 @@
    */
   function dropOnRealHold(event: DragEvent, to: InventoryPlace): void {
     const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
-    if (payload?.kind !== "inventoryItem") return;
+    if (payload === null) return;
     event.preventDefault();
     const verdict = dropOnPlaceVerdict(payload, to);
     if (verdict !== null) {
       error = verdict;
+      return;
+    }
+    // One node off a slot of the ship, onto the cargo (CargoCargoSlots.OnDropData, 282 to 290): a module is
+    // UnloadModuleToContainer to the cargo, a charge UnloadAmmoToContainer.
+    if (payload.kind === "fittedModule") {
+      void run(async () => {
+        await flow.unloadModuleToCargo(payload.itemID);
+        selected = null;
+        await flow.loadInventory();
+      });
+      return;
+    }
+    if (payload.kind === "fittedCharge") {
+      void run(async () => {
+        await flow.unloadChargeToCargo(payload.flagID);
+        await flow.loadInventory();
+      });
       return;
     }
     const from = payload.from;
@@ -1888,6 +1905,36 @@
       return;
     }
     void run(() => flow.transferItems(ticked, from, to, quantity.quantity));
+  }
+  /**
+   * dogmaConst.dgmGroupableGroupIDs: the weapons that group (turrets and launchers), read from the client's dogma
+   * const, the numbers inventorycommon's.
+   */
+  const GROUPABLE_GROUP_IDS: ReadonlySet<number> = new Set([53, 55, 74, 56, 511, 524, 1674, 1673, 506, 512, 510, 771, 507, 508, 509, 1245, 1328, 1562, 1327]);
+  /**
+   * A real slot dragged (fittingSlotController.GetDragData): the charge where one is loaded (its nodes, whatever is
+   * held), else the module; with Shift held a module that groups is dragged as ever (the client also starts linking
+   * slots then: OnStartSlotLinkingMode, which the page does not have) and one that does not is not dragged at all.
+   */
+  function startSlotDrag(event: DragEvent, slot: FittingSlot): void {
+    const module = slot.module;
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (simulation || module === null || flagID === null || !event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
+    let payload: DragPayload;
+    if (module.charge) {
+      payload = { kind: "fittedCharge", moduleID: module.itemID, flagID, typeID: module.charge.typeID };
+    } else if (event.shiftKey && !GROUPABLE_GROUP_IDS.has(module.groupID ?? -1)) {
+      event.preventDefault();
+      return;
+    } else {
+      payload = { kind: "fittedModule", itemID: module.itemID, typeID: module.typeID };
+    }
+    event.dataTransfer.setData(DRAG_MIME, encodeDrag(payload));
+    event.dataTransfer.setData("text/plain", moduleName(payload.typeID));
+    event.dataTransfer.effectAllowed = "move";
   }
   /** A simulated hold's readout taking an item dragged out of the inventory (its OnDropData). */
   function overSimulatedHold(event: DragEvent): void {
@@ -3163,6 +3210,8 @@
                   aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
+                  draggable={!simulation && slot.module !== null}
+                  ondragstart={(event) => startSlotDrag(event, slot)}
                   onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
                   oncontextmenu={(event) => unfitSimulated(slot, event)}
                   ondragover={(event) => overSocket(event, slot)}

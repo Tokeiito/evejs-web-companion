@@ -750,6 +750,17 @@
       error = verdict;
       return;
     }
+    // One item off a slot of the active ship, onto its cargo (invCtrl.ShipCargo.AddItems, invControllers 504 to
+    // 517): a module is UnloadModuleToContainer to the cargo, a charge UnloadAmmoToContainer. It carries no selection.
+    if (payload?.kind === "fittedModule" || payload?.kind === "fittedCharge") {
+      const taken = payload;
+      void run(async () => {
+        if (taken.kind === "fittedModule") await flow.unloadModuleToCargo(taken.itemID);
+        else await flow.unloadChargeToCargo(taken.flagID);
+        await flow.loadInventory();
+      });
+      return;
+    }
     // ⚠ A drag carries the SELECTION, not its own item list, so a drop that
     // arrives with nothing ticked has nothing to move. Without this it asked
     // "Move 0 stacks · 0 m³ to Ore hold?" and its Confirm did nothing at all.

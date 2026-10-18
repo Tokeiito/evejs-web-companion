@@ -4693,6 +4693,7 @@ function createGamePortPilots({
    *   LinkWeapons, MergeModuleGroups, PeelAndLink, LinkAllWeapons   the answer is the ship's banks, anew
    *   UnlinkModule(shipID, moduleID)                                the answer is the slave taken out of that bank
    *   UnlinkAllModules(shipID)                                      no banks
+   *   DestroyWeaponBank(shipID, masterID)                           that bank is gone (OnWeaponGroupDestroyed, 864 to 884)
    */
   function afterGroupingCall(entry, method, args, result) {
     if (["LinkWeapons", "MergeModuleGroups", "PeelAndLink", "LinkAllWeapons"].includes(method)) {
@@ -4701,6 +4702,8 @@ function createGamePortPilots({
       entry.dogma.unlinkModule(args[0], args[1], result);
     } else if (method === "UnlinkAllModules") {
       entry.dogma.setWeaponBanks(args[0], null);
+    } else if (method === "DestroyWeaponBank") {
+      entry.dogma.feed({ method: "OnWeaponGroupDestroyed", args: [args[0], args[1]] });
     }
   }
 
