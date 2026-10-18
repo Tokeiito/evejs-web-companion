@@ -2533,10 +2533,11 @@
     background: var(--color-panel-3);
     min-width: 0;
   }
-  /* The initials plate. Nothing in this client, the BFF or the gateway serves a
-   * character portrait, so this is the ONLY state rather than a fallback for a
-   * missing picture — and it is styled as a deliberate plate for that reason,
-   * the same call R27's item-icon tile makes. */
+  /* The pilot's plate: the portrait from the image server, or the initials until
+   * the image server's address is read (and in a rail mounted with no flow). */
+  .neocom-portrait-picture {
+    overflow: hidden;
+  }
   .neocom-portrait {
     flex: 0 0 auto;
     display: flex;

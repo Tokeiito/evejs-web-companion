@@ -23,7 +23,8 @@
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
-  import { allianceLogoUrl } from "./ownerImages.ts";
+  import { allianceLogoUrl, portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
+  import OwnerPicture from "./OwnerPicture.svelte";
   import { DATE_LABELS, formatTemplate, plainText, type FormatContext } from "../bridge/clientWords.ts";
   import { INTERVAL_WORD_LABELS, dateTimeIntervalWritten } from "../bridge/timeInterval.ts";
   import type { CharacterInfoHeader } from "../bridge/characterInfo.ts";
@@ -86,6 +87,13 @@
    * eveIcon.GetLogoIcon for an owner the client's own tables draw (LogoIcon): a faction's (GetFactionIconID) or an NPC
    * corporation's (CORP_ICONS), as its texture's address; null for any other.
    */
+  /** characterInfoWindow.update_window_icon: photo.GetPortrait(item_id, 256), the client's silhouette behind it. */
+  const characterPortraitUrls = $derived.by<readonly string[]>(() => {
+    const current = $subject;
+    if (current?.kind !== "character") return [];
+    const portrait = portraitUrl($imageServer, current.characterID, 256);
+    return portrait === null ? [] : [portrait, clientTexture(portraitDefaultPath(256))];
+  });
   function ownerLogoUrl(id: number | null): string | null {
     if (id === null) return null;
     // GetLogoIcon and GetOwnerLogo for an alliance: photo.GetAllianceLogo, the image server's picture.
@@ -1183,6 +1191,9 @@
       {#if playerCorpLogo !== null}
         <!-- GetLogoIcon for a player corporation: its own logo, eveIcon.CorpIcon's three layers. -->
         <span class="type-icon type-icon-lg"><CorpLogo library={playerCorpLogo.library} logo={playerCorpLogo.logo} name={title} /></span>
+      {:else if characterPortraitUrls.length > 0}
+        <!-- update_window_icon for a character: its portrait. -->
+        <span class="type-icon type-icon-lg"><OwnerPicture name={title} urls={characterPortraitUrls} size={72} /></span>
       {:else}
       <TypeIcon
         {typeID}

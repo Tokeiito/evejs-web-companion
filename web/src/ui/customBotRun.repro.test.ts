@@ -20,10 +20,12 @@ const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 
 function fakeFlow(): unknown {
-  // Its one store, the drone-recovery gate, reads ready: the flow default
-  // unless the pilot opts in to browser recovery.
+  // Its stores: the drone-recovery gate reads ready (the flow default unless the
+  // pilot opts in to browser recovery), and the image server (the Neocom's
+  // portrait) none.
   const droneRecovery = { subscribe: (run: (value: unknown) => void) => (run({ phase: "ready", reason: null }), () => {}) };
-  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : async () => {} });
+  const imageServer = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
+  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : key === "imageServer" ? imageServer : async () => {} });
 }
 
 const SHIP = {
