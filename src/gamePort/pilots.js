@@ -1012,6 +1012,13 @@ function defaultStationOwner(stationID) {
   return { ownerID, factionID: corporation ? positive(corporation.factionID) : null };
 }
 
+/** A type's group and category (evetypes.GetGroupID and GetCategoryID on the retail client), or null. */
+function defaultTypeFacts(typeID) {
+  // eslint-disable-next-line global-require
+  const type = require("../staticData").getType(typeID);
+  return type ? { groupID: Number.isInteger(type.groupID) ? type.groupID : null, categoryID: Number.isInteger(type.categoryID) ? type.categoryID : null } : null;
+}
+
 function defaultTypeGroup(typeID) {
   // eslint-disable-next-line global-require
   const type = require("../staticData").getType(typeID);
@@ -1120,6 +1127,8 @@ function createGamePortPilots({
   // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
   typeAttribute = defaultTypeAttribute,
   typeGroup = defaultTypeGroup,
+  // A type's group and category, for a charge in a module as godma makes its inventory row.
+  typeFacts = defaultTypeFacts,
   // A station's owner and that owner's faction, for the broker's fee: cfg.stations and get_corporation_faction_id on the retail client.
   stationOwner = defaultStationOwner,
   // A type's base price and portion size, for its average price where nothing has traded: evetypes on the retail client.
@@ -1719,6 +1728,13 @@ function createGamePortPilots({
         effectCategory,
         onSlotted: (item) => askAbout(entry, item),
         onFitted: (item) => onlineIfApplicable(entry, item),
+        // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
+        // inventory cache takes as it takes the server's.
+        onItemChange: (row, change) => {
+          entry.listings.forget();
+          entry.inventory.itemChanged(row, change);
+        },
+        typeFacts,
       }),
       dogmaLoaded: null,
       /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
