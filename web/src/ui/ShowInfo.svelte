@@ -30,6 +30,8 @@
   import type { AllianceInfoExtra } from "../bridge/allianceInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import { moduleEffectiveStats } from "../bridge/moduleAttributes.ts";
+  import { securityStatusColor, shownSecurity } from "../bridge/systemSecurity.ts";
+  import type { MapLocationInfo, MapPlaceRow } from "../app/api.ts";
   import { fmtDist, hostileLabel, isHostile, ratioPercent, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
@@ -110,6 +112,10 @@
       const own = resolvedName($names.resolved, characterNameKind(current.characterID), current.characterID, "");
       return own !== "" ? own : resolvedName($names.resolved, "owner", current.characterID, "Unknown pilot");
     }
+    // A map place's own name (cfg.evelocations), its type's while it is not read.
+    if (current.kind === "mapLocation") {
+      return mapLocationRead?.name || mapTypeName(current.typeID);
+    }
     // update_description_caption_and_sub_caption: the owner's name, "[Closed]" before it where it is no more.
     if (current.kind === "corporation" || current.kind === "alliance") {
       const name = current.kind === "corporation"
@@ -184,6 +190,8 @@
   // reads it on every opening). Nothing is shown of a record not had.
 
   let corporationRead = $state<CorporationShowInfo | null>(null);
+  /** A map place's read (infosvc.UpdateDataCelestial for a region, a constellation or a solar system). */
+  let mapLocationRead = $state<MapLocationInfo | null>(null);
   let allianceRead = $state<AllianceInfoExtra | null>(null);
   /** Whether the owner's read has answered, so a record not had is said rather than waited for. */
   let ownerReadDone = $state(false);
@@ -195,6 +203,7 @@
     const ticket = ++ownerReads;
     corporationRead = null;
     allianceRead = null;
+    mapLocationRead = null;
     ownerReadDone = false;
     if (current?.kind === "corporation") {
       void flow.corporationShowInfo(current.corporationID).then((read) => {
@@ -208,17 +217,54 @@
         allianceRead = read;
         ownerReadDone = true;
       });
+    } else if (current?.kind === "mapLocation") {
+      void flow.mapLocationShowInfo(current.itemID).then((read) => {
+        if (ticket !== ownerReads) return;
+        mapLocationRead = read;
+        ownerReadDone = true;
+      });
     }
   });
 
   onMount(() => {
-    flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS)]);
+    flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS)]);
+    // The map places' type names (evetypes.GetName of typeRegion, typeConstellation, typeSolarSystem).
+    flow.requestNames([3, 4, 5].map((id) => ({ kind: "type" as const, id })));
   });
+
+  /** The map places' labels the window uses, with the page's own words where the install's are not had. */
+  const MAP_INFO_WORDS: Readonly<Record<string, string>> = {
+    "UI/InfoWindow/AdjacentConstellations": "Constellations next to it",
+    "UI/InfoWindow/AdjacentRegions": "Regions next to it",
+    "UI/InfoWindow/AdjacentSolarSystem": "Systems next to it",
+    "UI/InfoWindow/RelatedConstellation": "Its constellations",
+    "UI/InfoWindow/RelatedSolarSystem": "Its systems",
+    "UI/Neocom/SecurityLevel": "Security",
+  };
+  /** infosvc's neighborGrouping and childGrouping: the two lists' names, by the place's type. */
+  const NEIGHBOUR_LABELS: Readonly<Record<number, string>> = {
+    3: "UI/InfoWindow/AdjacentRegions",
+    4: "UI/InfoWindow/AdjacentConstellations",
+    5: "UI/InfoWindow/AdjacentSolarSystem",
+  };
+  const CHILD_LABELS: Readonly<Record<number, string>> = {
+    3: "UI/InfoWindow/RelatedConstellation",
+    4: "UI/InfoWindow/RelatedSolarSystem",
+  };
+  const MAP_TYPE_NAMES: Readonly<Record<number, string>> = { 3: "Region", 4: "Constellation", 5: "Solar system" };
+  /** A map place's type name (evetypes.GetName), the page's own while it is not read. */
+  const mapTypeName = (typeID: number): string => resolvedName($names.resolved, "type", typeID, MAP_TYPE_NAMES[typeID] ?? "");
+  // localization.util.Sort on the names (SortListOfTuples): the collator on the names in lower case, then as they are
+  // the other way about.
+  const placeCollator = new Intl.Collator("en");
+  const byPlaceName = (a: MapPlaceRow, b: MapPlaceRow): number =>
+    placeCollator.compare(a.name.toLowerCase(), b.name.toLowerCase()) || placeCollator.compare(b.name, a.name);
+  const placeSubject = (place: MapPlaceRow): InfoSubject => ({ kind: "mapLocation", typeID: place.typeID, itemID: place.itemID });
 
   /** The client's words for a label, filled; the page's own (OWNER_INFO_WORDS) where the install's are not had. */
   function word(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
     const template = $words.templates[label];
-    return formatTemplate(typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? "", args, { nameOf: () => "" });
+    return formatTemplate(typeof template === "string" ? template : OWNER_INFO_WORDS[label] ?? LINK_WORDS[label] ?? MAP_INFO_WORDS[label] ?? "", args, { nameOf: () => "" });
   }
 
   /** FmtDate(ticks, fmt): the moment as its format's label words it (carbon format.py 71 to 114). */
@@ -430,6 +476,8 @@
         return "Alliance";
       case "type":
         return "Item";
+      case "mapLocation":
+        return mapTypeName(current.typeID);
     }
   }
 </script>
@@ -581,6 +629,44 @@
           No attribute reading for this module yet — the fitting window's dogma read is what
           supplies them.
         </p>
+      {/if}
+    {:else if $subject.kind === "mapLocation"}
+      {#if mapLocationRead !== null}
+        {@const read = mapLocationRead}
+        <!-- The sub caption's location trace (GetLocationTrace): the places it lies in, each a link, a system's security
+             level after them. -->
+        {#if read.parents.length > 0 || read.securityStatus != null}
+          <dl class="kv">
+            {#each read.parents as parent (parent.itemID)}
+              <dt>{mapTypeName(parent.typeID)}</dt>
+              <dd><button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo(placeSubject(parent))}>{parent.name}</button></dd>
+            {/each}
+            {#if read.securityStatus != null}
+              <dt>{word("UI/Neocom/SecurityLevel")}</dt>
+              <dd><span style:color={securityStatusColor(shownSecurity(read.securityStatus))}>{shownSecurity(read.securityStatus).toFixed(1)}</span></dd>
+            {/if}
+          </dl>
+        {/if}
+        <h3>{word("UI/InfoWindow/TabNames/Description")}</h3>
+        <div class="info-description">{@render markupLines(read.description ?? mapTypeName(read.typeID))}</div>
+        {#each [[CHILD_LABELS[read.typeID], read.children], [NEIGHBOUR_LABELS[read.typeID], read.neighbours]] as const as [label, list] (label ?? "none")}
+          {#if label && list.length > 0}
+            <h3>{word(label)}</h3>
+            <ul class="info-places">
+              {#each [...list].sort(byPlaceName) as place (place.itemID)}
+                <li>
+                  <span class="info-place-type">{mapTypeName(place.typeID)}</span>
+                  <span class="info-place-sec" style:color={place.securityStatus != null ? securityStatusColor(shownSecurity(place.securityStatus)) : undefined}>{place.securityStatus != null ? shownSecurity(place.securityStatus).toFixed(1) : ""}</span>
+                  <button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo(placeSubject(place))}>{place.name}</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {/each}
+      {:else if ownerReadDone}
+        <p class="note">The page has no record of this place.</p>
+      {:else}
+        <p class="note">Reading…</p>
       {/if}
     {:else if $subject.kind === "character"}
       {#if standing}

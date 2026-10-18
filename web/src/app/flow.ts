@@ -2729,6 +2729,8 @@ export interface AppFlow {
   readonly buffBar: ReadableSignal<BuffBarState>;
   /** The buff bar shown: the slots' icons read, once. */
   wantBuffBar(): void;
+  /** A region, constellation or solar system as the info window shows it, or null for none (api.getMapLocation). */
+  mapLocationShowInfo(itemID: number): Promise<api.MapLocationInfo | null>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
@@ -26280,6 +26282,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     buffBar: readonlySignal(buffBarSignal),
     wantBuffBar() {
       readBuffBarFacts([...buffBarSignal.get().incoming.keys()]);
+    },
+    mapLocationShowInfo(itemID) {
+      return api.getMapLocation(itemID, callOptions);
     },
     dismissDialog,
     answerDialog,

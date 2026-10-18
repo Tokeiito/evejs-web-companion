@@ -28,6 +28,7 @@ const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
+const { createMapLocationInfo } = require("./mapLocationInfo");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
@@ -12511,6 +12512,23 @@ app.post("/api/map/security", requireAuth, (req, res) => {
 // Resolve a picked destination (a courier destination is a station; the route
 // solver works on systems) to its solar system, from static reference data —
 // the same client-local resolution the select route does for station identity.
+// A region, constellation or solar system as the client's info window shows it (mapLocationInfo.js): its name, its own
+// description, a system's security, the places it lies in, its children and its neighbours by a stargate.
+let mapLocationInfoOf = null;
+app.get("/api/map/location/:id", requireAuth, (req, res, next) => {
+  try {
+    mapLocationInfoOf ??= createMapLocationInfo(staticData).mapLocationInfo;
+    const place = mapLocationInfoOf(Number(req.params.id) || 0);
+    if (place === null) {
+      res.status(404).json({ ok: false, error: "NOT_A_MAP_LOCATION", message: "That is no region, constellation or solar system." });
+      return;
+    }
+    res.json({ ok: true, place });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
   try {
     const id = Number(req.params.id) || 0;

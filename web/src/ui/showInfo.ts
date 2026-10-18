@@ -56,7 +56,9 @@ export type InfoSubject =
   | { readonly kind: "module"; readonly itemID: number; readonly typeID: number }
   | { readonly kind: "character"; readonly characterID: number }
   | { readonly kind: "corporation"; readonly corporationID: number }
-  | { readonly kind: "alliance"; readonly allianceID: number };
+  | { readonly kind: "alliance"; readonly allianceID: number }
+  /** A region, constellation or solar system (typeRegion 3, typeConstellation 4, typeSolarSystem 5) by its id. */
+  | { readonly kind: "mapLocation"; readonly typeID: number; readonly itemID: number };
 
 /** The window's subject, and the one way to change it. */
 export interface ShowInfoTarget {
@@ -101,12 +103,17 @@ export const showInfoTarget: ShowInfoTarget = createShowInfoTarget();
  * type (an item's own state the page does not read, so its type). None for a faction or a place on the map, which the
  * page's window does not show yet, nor for a link the client's own parse refuses.
  */
+/** typeRegion, typeConstellation, typeSolarSystem. */
+const MAP_LOCATION_TYPES: ReadonlySet<number> = new Set([3, 4, 5]);
+
 export function subjectOfShowInfoLink(url: string): InfoSubject | null {
   const parsed = parseShowInfoUrl(url);
   if (parsed === null) return null;
   if (CHARACTER_TYPES.has(parsed.typeID)) return parsed.itemID === null ? null : { kind: "character", characterID: parsed.itemID };
   if (parsed.typeID === TYPE_CORPORATION) return parsed.itemID === null ? null : { kind: "corporation", corporationID: parsed.itemID };
   if (parsed.typeID === TYPE_ALLIANCE) return parsed.itemID === null ? null : { kind: "alliance", allianceID: parsed.itemID };
+  // A region's, constellation's or solar system's link: its info window (infosvc.UpdateDataCelestial).
+  if (MAP_LOCATION_TYPES.has(parsed.typeID)) return parsed.itemID === null ? null : { kind: "mapLocation", typeID: parsed.typeID, itemID: parsed.itemID };
   if (OWNER_AND_PLACE_TYPES.has(parsed.typeID)) return null;
   return { kind: "type", typeID: parsed.typeID };
 }
@@ -142,6 +149,8 @@ export function sameSubject(a: InfoSubject | null, b: InfoSubject | null): boole
       return a.corporationID === (b as typeof a).corporationID;
     case "alliance":
       return a.allianceID === (b as typeof a).allianceID;
+    case "mapLocation":
+      return a.itemID === (b as typeof a).itemID;
   }
 }
 
@@ -166,5 +175,7 @@ export function subjectTypeID(subject: InfoSubject | null): number | null {
     case "corporation":
     case "alliance":
       return null;
+    case "mapLocation":
+      return subject.typeID;
   }
 }

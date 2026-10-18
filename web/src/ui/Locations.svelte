@@ -522,11 +522,14 @@
   const defaultWarp = $derived(Number($flyingDistances.warp));
   const say = $derived(distanceSay($words.templates));
 
-  /** Show Info (_BookmarkMenu, 1446 to 1450): the thing as the ballpark holds it, else the bookmark's type. */
+  /** Show Info (_BookmarkMenu, 1446 to 1450): the thing as the ballpark holds it, a map place as itself, else the bookmark's type. */
   function infoOf(bookmark: Bookmark): InfoSubject {
     const item = bookmark.itemID ?? bookmark.locationID;
     const ball = here?.balls.get(item);
-    return ball !== undefined ? { kind: "spaceObject", itemID: item, typeID: ball.typeID } : { kind: "type", typeID: bookmark.typeID };
+    if (ball !== undefined) return { kind: "spaceObject", itemID: item, typeID: ball.typeID };
+    // _BookmarkMenu's ShowInfo(typeID, itemID): a region's, constellation's or solar system's bookmark opens the place.
+    if (bookmark.typeID >= 3 && bookmark.typeID <= 5) return { kind: "mapLocation", typeID: bookmark.typeID, itemID: item };
+    return { kind: "type", typeID: bookmark.typeID };
   }
 
   /** The bookmark's place on the map (BookmarkChecker.GetMapIDs, 176 to 185): a station or a system itself, else the system it is in. */

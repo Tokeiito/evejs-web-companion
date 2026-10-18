@@ -4029,6 +4029,50 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
   return { available: data.available === true, types, metaGroupNameIDs };
 }
 
+/** A map place's row, as the BFF's map location answers one. */
+export interface MapPlaceRow {
+  readonly typeID: number;
+  readonly itemID: number;
+  readonly name: string;
+  /** A solar system's security status; absent for a region or a constellation. */
+  readonly securityStatus?: number | null;
+}
+
+/** A region, constellation or solar system as the client's info window shows it (GET /api/map/location/:id). */
+export interface MapLocationInfo extends MapPlaceRow {
+  readonly description: string | null;
+  readonly parents: readonly MapPlaceRow[];
+  readonly children: readonly MapPlaceRow[];
+  readonly neighbours: readonly MapPlaceRow[];
+}
+
+/** A map place, or null where the id is none. */
+export async function getMapLocation(itemID: number, options: ApiOptions = {}): Promise<MapLocationInfo | null> {
+  const data = await getJson(`/api/map/location/${itemID}`, options).catch(() => null);
+  const place = data && typeof data.place === "object" && data.place !== null && !Array.isArray(data.place) ? (data.place as Record<string, JsonValue>) : null;
+  if (place === null) return null;
+  const row = (value: JsonValue | undefined): MapPlaceRow | null => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const r = value as Record<string, JsonValue>;
+    const typeID = Number(r.typeID);
+    const id = Number(r.itemID);
+    if (!Number.isSafeInteger(typeID) || !Number.isSafeInteger(id) || id <= 0) return null;
+    const sec = typeof r.securityStatus === "number" ? r.securityStatus : null;
+    return { typeID, itemID: id, name: typeof r.name === "string" ? r.name : "", ...(typeID === 5 ? { securityStatus: sec } : {}) };
+  };
+  const rows = (value: JsonValue | undefined): MapPlaceRow[] =>
+    (Array.isArray(value) ? value : []).map(row).filter((each): each is MapPlaceRow => each !== null);
+  const self = row(place as JsonValue);
+  if (self === null) return null;
+  return {
+    ...self,
+    description: typeof place.description === "string" ? place.description : null,
+    parents: rows(place.parents),
+    children: rows(place.children),
+    neighbours: rows(place.neighbours),
+  };
+}
+
 /**
  * What the ship HUD's buff bar needs (GET /api/client-data/dbuff-collections): each dbuff collection asked as the
  * client's dbuff storage has it (null for none), the res: path of each icon asked (null for none), and the

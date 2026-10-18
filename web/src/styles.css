@@ -4901,6 +4901,10 @@
   .info-ceo-label { color: var(--color-muted); }
   .info-description { font-size: 12px; overflow-wrap: anywhere; }
   .show-info .info-line { margin: 0 0 0.25rem; min-height: 1em; }
+  /* A map place's lists (its children, its neighbours): a row a place, its type, a system's security, its name's link. */
+  .info-places { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .info-places li { display: grid; grid-template-columns: 7rem 2.2rem 1fr; gap: 0.4rem; align-items: baseline; padding: 1px 0; }
+  .info-places .info-place-type { color: var(--color-text-muted, #888); }
   .show-info dd .info-line { margin: 0; }
   .info-bold { font-weight: 700; }
   .info-italic { font-style: italic; }
