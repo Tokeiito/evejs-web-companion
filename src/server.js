@@ -27,6 +27,7 @@ const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
+const { createEwarTypes } = require("./gamePort/ewarTypes");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
@@ -201,6 +202,12 @@ const gamePortPilots = options.gamePortPilots !== undefined
         const table = await clientBuiltData.table("travelEffects");
         return table ? new Set(Object.keys(table)) : null;
       },
+      // tactical.OnEwarOnConnect's kind of electronic warfare, from the client's own dogma data (gamePort/ewarTypes.js).
+      ewarTypeOf: createEwarTypes({
+        typeDogma: async (typeID) => ((await clientBuiltData.rows("typeDogma", [typeID])) || {})[typeID] ?? null,
+        dogmaEffects: async (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
+        categoryOf: (typeID) => (staticData.getType(typeID) || {}).categoryID ?? null,
+      }).ewarTypeOf,
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;

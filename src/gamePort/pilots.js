@@ -1160,6 +1160,9 @@ function createGamePortPilots({
   // The client's travel effects (fsdBuiltData/client/travelEffects.py GetTravelEffectsGuids): a Promise of their
   // guids, or of null where the client's data cannot be read.
   travelEffects = async () => null,
+  // The kind of electronic warfare a module working on a ship is, as tactical.OnEwarOnConnect reads it (ewarTypes.js):
+  // a Promise of its buff bar slot, or of null.
+  ewarTypeOf = async () => null,
 } = {}) {
   const sessions = new Map();
   // Asked for once, as a pilot's space starts; a table that could not be read is asked for again at the next.
@@ -4558,6 +4561,19 @@ function createGamePortPilots({
       // with the pilot's notifications. Any other special effect is not.
       void travelGuids();
       entry.space.park.onEvent = (name, args) => {
+        // tactical.OnEwarOnConnect: a module the state says is working on the pilot's own ship, of a kind of electronic
+        // warfare, counted as tactical.OnEwarStart counts it; handed on so (the page's tactical takes OnEwarStart).
+        if (name === "OnEwarOnConnect") {
+          const own = positive(attribute(entry, "shipid"));
+          const [shipID, moduleID, moduleTypeID, targetID, guid] = Array.isArray(args) ? args : [];
+          if (own === null || positive(targetID) !== own) return;
+          void Promise.resolve(ewarTypeOf(positive(moduleTypeID), textOf(guid))).then((ewarType) => {
+            if (ewarType && sessions.has(entry.handle)) {
+              record(entry, notificationToBridgeJson({ method: "OnEwarStart", args: [shipID, moduleID, targetID, ewarType] }));
+            }
+          }, () => {});
+          return;
+        }
         // FxSequencer's activations of the buff bar's effects (buffBarConst.FX_GUIDS_THAT_UPDATE_BUFF_BAR) on the pilot's
         // own ship, as the effect's source or its target (AddActivationToBallRegister files one under both balls).
         if (name === "OnSpecialFX" && Array.isArray(args) && BUFF_BAR_FX_GUIDS.has(textOf(args[5]))) {
