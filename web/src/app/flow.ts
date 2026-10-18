@@ -262,7 +262,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
-import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
+import { readNpcNpcStandings, readStandings, standingComposition, standingHistory, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -2741,6 +2741,8 @@ export interface AppFlow {
   mapLocationShowInfo(itemID: number): Promise<api.MapLocationInfo | null>;
   /** A faction as the info window shows it, or null for none (api.getFaction). */
   factionShowInfo(factionID: number): Promise<api.FactionInfo | null>;
+  /** The NPCs' standings with each other (standingMgr.GetNPCNPCStandings), read once and kept, as the standing service keeps them. */
+  npcNpcStandings(): Promise<readonly NpcNpcStanding[]>;
   /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
   mapSystemObjects(solarSystemID: number): Promise<{ readonly available: boolean; readonly objects: readonly api.SystemObjectRow[] }>;
   /**
@@ -16318,6 +16320,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames(refs);
   }
 
+  /** The NPCs' standings with each other, once read (standingsvc's npcnpcstandingsfrom). */
+  let npcNpcStandingsRead: Promise<readonly NpcNpcStanding[]> | null = null;
+
   // R55 — the drill-down for one selected entity. A char row shows its standing
   // HISTORY (GetStandingTransactions); a corp row shows the per-member breakdown
   // (GetStandingCompositions). The one the row wants is asked for, of the pilot
@@ -26306,6 +26311,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     factionShowInfo(factionID) {
       return api.getFaction(factionID, callOptions);
+    },
+    npcNpcStandings() {
+      npcNpcStandingsRead ??= readNpcNpcStandings(bridgeAsk).catch((error: unknown) => {
+        npcNpcStandingsRead = null;
+        throw error;
+      });
+      return npcNpcStandingsRead;
     },
     mapSystemObjects(solarSystemID) {
       return api.getSystemObjects(solarSystemID, callOptions);

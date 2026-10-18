@@ -822,6 +822,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's expert systems and one of them taken out (expertSystems/client/service.py: GetMyExpertSystems,
   // RemoveMyExpertSystem, on expertSystemMgr by its name). The gateway's list has nothing of the expert systems'.
   "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
+  // The NPCs' standings with each other, which the standing service keeps (standingsvc.py 115) and an owner's Show Info
+  // reads in its Standings tab (panelStandings.GetStandingsFromManyToOneMutual). The gateway's list has it not.
+  "standingMgr.GetNPCNPCStandings",
 ]);
 
 /**
@@ -2204,6 +2207,7 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetAgents": judged(`${AGENTS}:92`, sentWithNothing,
     "agents = sm.RemoteSvc('agentMgr').GetAgents().Clone(), by name and with nothing: the whole table, kept for the life of the client's agents service. Recorded on Tranquility so, in two logins. The transport keeps the table as the client does, and answers the page's asking from it; the page keeps it too, and picks a station's agents from it as the client's docked view does."),
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
+  "standingMgr.GetNPCNPCStandings": same(`${STANDING_SVC}:115`, "RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments: the NPCs' standings with each other, kept by the standing service"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
   "standingMgr.GetStandingTransactions": ofAnEntity(`${STANDING_SVC}:178`, "RemoteSvc('standingMgr').GetStandingTransactions(fromID, toID): the entity, then the character. The panel asks it for a row that is the character's (standingsPanel.py 108), and the client keeps the answer for the two until the standing changes"),

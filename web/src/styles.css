@@ -4921,6 +4921,14 @@
   .info-orbits .info-orbit-kind { color: var(--color-muted); }
   .info-route li { grid-template-columns: 11rem 2.2rem 1fr; }
   .show-info .info-buttons { display: flex; gap: 0.4rem; margin-top: 0.8rem; }
+  /* An owner's Standings tab (PanelStandings): a section under a bare bar (StandingsSection.ConstructHeader), the
+   * owner the section shares, then each other owner with its standing, or its two standings. */
+  .info-standings-section { border-top: 2px solid var(--color-line-strong); margin-top: 0.5rem; padding-top: 0.3rem; font-size: 12px; }
+  .info-standings-owner { color: var(--color-muted); margin-bottom: 0.2rem; }
+  .info-standings { list-style: none; margin: 0; padding: 0; }
+  .info-standings li { display: grid; grid-template-columns: 3.5rem 1fr; gap: 0.4rem; padding: 1px 0; }
+  .info-standings.two-way li { grid-template-columns: 3.5rem 3.5rem 1fr; }
+  .info-standings .info-standing-value { text-align: right; font-variant-numeric: tabular-nums; }
   .show-info dd .info-line { margin: 0; }
   .info-bold { font-weight: 700; }
   .info-italic { font-style: italic; }

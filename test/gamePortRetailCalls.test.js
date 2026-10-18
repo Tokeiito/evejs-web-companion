@@ -1845,6 +1845,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
     // The pilot's expert systems and one taken out. The gateway's list has nothing of the expert systems'.
     "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
+    // The NPCs' standings with each other, an owner's Standings tab. The gateway's list has it not.
+    "standingMgr.GetNPCNPCStandings",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.

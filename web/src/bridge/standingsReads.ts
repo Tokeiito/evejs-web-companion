@@ -35,7 +35,7 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import { failsTheReading, failureCode, type Ask } from "./ask.ts";
-import type { JsonValue } from "./wire.ts";
+import { readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** The pilot and its corporation, as the session has them. */
 export interface Whose {
@@ -83,6 +83,28 @@ export async function readStandings(ask: Ask, whose: Whose): Promise<RawStanding
       corp: corp.status === "rejected" ? failureCode(corp.reason) : null,
     },
   };
+}
+
+/** One NPC's standing with another (standingMgr.GetNPCNPCStandings' row). */
+export interface NpcNpcStanding {
+  readonly fromID: number;
+  readonly toID: number;
+  readonly standing: number;
+}
+
+/**
+ * The NPCs' standings with each other, as the client's standing service keeps them (standingsvc.py 115:
+ * GetNPCNPCStandings, no arguments; npcnpcstandingsfrom). Fails as the call fails.
+ */
+export async function readNpcNpcStandings(ask: Ask): Promise<readonly NpcNpcStanding[]> {
+  const rows: NpcNpcStanding[] = [];
+  for (const row of readRowsetRows(await ask("standingMgr", "GetNPCNPCStandings", []))) {
+    const fromID = Number(unwrapLong(row.fromID ?? null) ?? 0);
+    const toID = Number(unwrapLong(row.toID ?? null) ?? 0);
+    const standing = typeof row.standing === "number" ? row.standing : Number((row.standing as { value?: unknown } | null)?.value);
+    if (fromID > 0 && toID > 0 && Number.isFinite(standing)) rows.push({ fromID, toID, standing });
+  }
+  return rows;
 }
 
 /** An entity's history with the character: what changed the standing, and when. Fails as the call fails. */

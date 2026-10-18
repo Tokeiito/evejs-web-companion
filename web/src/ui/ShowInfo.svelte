@@ -16,6 +16,8 @@
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import type { MapRouteStep } from "../app/flow.ts";
+  import type { NpcNpcStanding } from "../bridge/standingsReads.ts";
+  import { applyStandingBonus, standingBonusSkill } from "../bridge/effectiveStanding.ts";
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
@@ -56,6 +58,10 @@
   const standings = store.standings;
   // svelte-ignore state_referenced_locally
   const corporationFactions = flow.corporationFactions;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const skills = store.skills;
   const subject = showInfoTarget.subject;
 
   const typeID = $derived(subjectTypeID($subject));
@@ -215,6 +221,7 @@
     corporationRead = null;
     allianceRead = null;
     mapLocationRead = null;
+    npcNpcStandingsRead = null;
     systemObjectsRead = null;
     mapRouteRead = null;
     bookmarking = null;
@@ -259,6 +266,13 @@
         );
       }
     } else if (current?.kind === "faction") {
+      // The Standings tab (panelStandings): the faction's standings with the others, kept by the standing service.
+      void flow.npcNpcStandings().then(
+        (rows) => {
+          if (ticket === ownerReads) npcNpcStandingsRead = rows;
+        },
+        () => {},
+      );
       void flow.factionShowInfo(current.factionID).then((read) => {
         if (ticket !== ownerReads) return;
         factionRead = read;
@@ -319,6 +333,84 @@
   };
   const byPlaceName = (a: MapPlaceRow, b: MapPlaceRow): number => byCodePoints([a.name], [b.name]);
   const placeSubject = (place: MapPlaceRow): InfoSubject => ({ kind: "mapLocation", typeID: place.typeID, itemID: place.itemID });
+
+  /** The NPCs' standings with each other (the standing service's npcnpcstandingsfrom), once read. */
+  let npcNpcStandingsRead = $state<readonly NpcNpcStanding[] | null>(null);
+  // An NPC owner's Standings tab reads the pilot's standings and the three standing skills: each read where it is not.
+  $effect(() => {
+    const current = $subject;
+    const npcOwner = current?.kind === "faction" || (current?.kind === "corporation" && isNpcCorporation(current.corporationID));
+    if (!npcOwner) return;
+    if (store.standings.get().char === null && store.standings.get().charError === null) void flow.loadStandings().catch(() => {});
+    if (store.skills.get().skills === null) void flow.loadSkills().catch(() => {});
+  });
+
+  /** StandingData._GetStandingFormatted: 10 from 9.995, else rounded to two places, written as Python writes a float. */
+  function standingText(value: number): string {
+    const rounded = value >= 9.995 ? 10 : (Math.sign(value) * Math.round(Math.abs(value) * 100)) / 100;
+    return Number.isInteger(rounded) ? rounded.toFixed(1) : String(rounded);
+  }
+  /**
+   * standingsvc.GetStanding toward the pilot (npccharstandings, else contactNeutralStanding), with the skill's bonus
+   * StandingData._GetStandingWithBonus gives one toward the pilot (standingUtil.GetStandingBonus: the owner's faction's
+   * skill, 0.4 a level).
+   */
+  function standingTowardMe(fromID: number, factionOf: number | null): number {
+    const raw = ($standings.char ?? []).find((row) => row.fromID === fromID)?.standing ?? 0;
+    const skill = standingBonusSkill(factionOf, raw);
+    const level = skill === null ? 0 : ($skills.skills ?? []).find((each) => each.typeID === skill)?.level ?? 0;
+    return applyStandingBonus(level * 0.4, raw);
+  }
+  /** standingsvc.GetStanding between two NPCs (npcnpcstandingsfrom), else contactNeutralStanding. */
+  const npcStanding = (fromID: number, toID: number): number =>
+    (npcNpcStandingsRead ?? []).find((row) => row.fromID === fromID && row.toID === toID)?.standing ?? 0;
+  /**
+   * PanelStandings.GetStandingsDataSectionsNPC: the owner's (and, for a corporation, its faction's) standings toward
+   * the pilot; a faction's also with every other faction, both ways (Unknown left out). Each section's header is a
+   * bar with no words (StandingsSection.ConstructHeader); the owner they share is named where the client shows its
+   * picture.
+   */
+  const ownerStandingSections = $derived.by(() => {
+    const current = $subject;
+    const myID = $station.online?.characterID ?? null;
+    if (myID === null || $standings.char === null) return [];
+    const myName = resolvedName($names.resolved, "owner", myID, $station.online?.characterName ?? "");
+    if (current?.kind === "faction") {
+      const read = factionRead;
+      if (read === null) return [];
+      const sections: { key: string; owner: string; rows: { key: number; name: string; values: string[] }[] }[] = [
+        { key: "me", owner: myName, rows: [{ key: read.factionID, name: read.name, values: [standingText(standingTowardMe(read.factionID, read.factionID))] }] },
+      ];
+      if (npcNpcStandingsRead !== null) {
+        sections.push({
+          key: "factions",
+          owner: read.name,
+          rows: read.factions
+            .filter((other) => other.factionID !== 500021 && other.factionID !== read.factionID)
+            .map((other) => ({
+              key: other.factionID,
+              name: other.name,
+              values: [standingText(npcStanding(read.factionID, other.factionID)), standingText(npcStanding(other.factionID, read.factionID))],
+            })),
+        });
+      }
+      return sections;
+    }
+    if (current?.kind === "corporation" && isNpcCorporation(current.corporationID)) {
+      const factionID = corporationFactionID;
+      const fromIDs = factionID === null ? [current.corporationID] : [current.corporationID, factionID];
+      return [{
+        key: "me",
+        owner: myName,
+        rows: fromIDs.map((id) => ({
+          key: id,
+          name: id === factionID ? resolvedName($names.resolved, "faction", id, "") : resolvedName($names.resolved, "corporation", id, ""),
+          values: [standingText(standingTowardMe(id, factionID))],
+        })),
+      }];
+    }
+    return [];
+  });
 
   /** A solar system's celestials and NPC stations (mapSvc.GetSolarsystemItems), once read; null while not, or not had. */
   let systemObjectsRead = $state<readonly SystemObjectRow[] | null>(null);
@@ -443,6 +535,7 @@
     "UI/InfoWindow/ConstellationLocation": "{[location]constellation.name}, {[location]region.name}",
     "UI/InfoWindow/SolarsystemLocation": "{[location]solarsystem.name}, {[location]constellation.name}, {[location]region.name}",
     "UI/InfoWindow/TabNames/MemberCorps": "Its corporations",
+    "UI/InfoWindow/TabNames/Standings": "Standing",
   };
   const factionSubject = (factionID: number): InfoSubject => ({ kind: "faction", factionID });
   /** A place a faction holds, named with the places it lies in (ConstellationLocation, SolarsystemLocation). */
@@ -753,6 +846,24 @@
   {/each}
 {/snippet}
 
+<!-- The Standings tab (PanelStandings): each section's shared owner, then each other owner and the standings, one way
+     (toward the pilot) or both ways (a faction with another, its own first). -->
+{#snippet standingsTab()}
+  {#if ownerStandingSections.length > 0}
+    <h3>{word("UI/InfoWindow/TabNames/Standings")}</h3>
+    {#each ownerStandingSections as section (section.key)}
+      <div class="info-standings-section">
+        <div class="info-standings-owner">{section.owner}</div>
+        <ul class="info-standings" class:two-way={section.rows[0]?.values.length === 2}>
+          {#each section.rows as row (row.key)}
+            <li>{#each row.values as value, at (at)}<span class="info-standing-value">{value}</span>{/each}<span class="info-standing-name">{row.name}</span></li>
+          {/each}
+        </ul>
+      </div>
+    {/each}
+  {/if}
+{/snippet}
+
 <section class="show-info">
   {#if $subject === null}
     <p class="empty">
@@ -1018,6 +1129,7 @@
             </ul>
           {/each}
         {/if}
+        {@render standingsTab()}
         {#if read.corporations.length > 0}
           <h3>{word("UI/InfoWindow/TabNames/MemberCorps")}</h3>
           <ul class="info-territory">
@@ -1064,6 +1176,7 @@
             </dd>
           {/each}
         </dl>
+        {@render standingsTab()}
       {:else if ownerReadDone}
         <!-- Said, not blanked: the server had no record to give. -->
         <p class="note">The server gave no record of this {$subject.kind === "corporation" ? "corporation" : "alliance"}.</p>

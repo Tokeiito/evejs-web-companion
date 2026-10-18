@@ -360,11 +360,11 @@ const PRIME_OFFICE = "PrimeOfficeItem";
 const STANDING_MGR = "standingMgr";
 /**
  * What the client's standings service asks for when the character is chosen and keeps right from the server's
- * notices (standingsvc.py 111): the character's standings and its corporation's. Asked for again by name, as the
- * page asks when it shows them, they are answered from what is kept (refreshStandings): the client's panel reads
- * its service, and its service does not ask twice.
+ * notices (standingsvc.py 111): the NPCs' standings with each other, the character's and its corporation's. Asked
+ * for again by name, as the page asks when it shows them, they are answered from what is kept (refreshStandings):
+ * the client's panels read its service, and its service does not ask twice.
  */
-const STANDINGS_KEPT = Object.freeze({ GetCharStandings: "char", GetCorpStandings: "corp" });
+const STANDINGS_KEPT = Object.freeze({ GetNPCNPCStandings: "npcNpc", GetCharStandings: "char", GetCorpStandings: "corp" });
 const ACCOUNT = "account";
 /**
  * What the client's account service asks for once and keeps (svc.account GetStaticData, accountsvc.py 86: kept in
@@ -1226,7 +1226,7 @@ function createGamePortPilots({
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
-  /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
+  /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The page's asking is answered from what is kept. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
   /** facilitySvc: self.facilityManager.GetFacility(facilityID), one facility by itself (46, 71 and 103), which no route of the BFF's may ask by name. */
   const A_FACILITY_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/industry/facilitySvc.py:71", note: null });

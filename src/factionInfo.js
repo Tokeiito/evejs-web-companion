@@ -117,6 +117,11 @@ function createFactionInfo(staticData) {
       constellations,
       systems,
       illegalTypes,
+      // iter_faction_ids: every faction by its number, as the client's table holds them (its Standings tab's
+      // other factions).
+      factions: [...table("factions.jsonl")]
+        .map(([factionID, row]) => ({ factionID, name: englishOf(row && row.name) }))
+        .sort((left, right) => left.factionID - right.factionID),
     };
   }
 

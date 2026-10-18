@@ -8489,8 +8489,8 @@ test("where godma cannot be primed again, the snapshot is still given and the sh
 // The page shows the standings by asking for them itself (web/src/bridge/standingsReads.ts). The client's panel
 // reads its standings service, which asked when the character was chosen and does not ask again.
 
-test("the character's standings and its corporation's, asked for by name, are answered from what is kept: nothing is sent", async () => {
-  const pairs = { allowed: new Set(["standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
+test("the NPCs' standings, the character's and its corporation's, asked for by name, are answered from what is kept: nothing is sent", async () => {
+  const pairs = { allowed: new Set(["standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS, corpid: PLAYER_CORP }, pairs);
   const ask = (method, args = []) => pilots.callMethod("standingMgr", method, args, null, WHOSE, handle);
   assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
@@ -8500,6 +8500,10 @@ test("the character's standings and its corporation's, asked for by name, are an
   assert.deepEqual([char.result, corp.result], [kept.char, kept.corp]);
   assert.deepEqual([char.service, char.method, standingRows(char.result), standingRows(corp.result)], ["standingMgr", "GetCharStandings", CHAR_ROWS, CORP_ROWS]);
   await Promise.all([ask("GetCharStandings"), ask("GetCharStandings"), ask("GetCorpStandings")]);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  // The NPCs' standings with each other, as an owner's Standings tab asks for them (panelStandings), are of the same
+  // keeping: nothing more is sent.
+  assert.equal((await ask("GetNPCNPCStandings")).method, "GetNPCNPCStandings");
   assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
   assert.deepEqual(["GetCharStandings", "GetCorpStandings"].map((method) => ledgerOf(pilots, `standingMgr.${method}`)[0]), [{ same: 1 }, { same: 1 }]);
   // What the server has said since is in the answer, with nothing asked.

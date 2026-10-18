@@ -4082,6 +4082,8 @@ export interface FactionInfo {
   readonly systems: readonly FactionPlaceRow[];
   /** By the type's name. */
   readonly illegalTypes: readonly FactionIllegalType[];
+  /** Every faction by its number (iter_faction_ids). */
+  readonly factions: readonly { readonly factionID: number; readonly name: string }[];
 }
 
 /** A solar system's item as the client lists it (GET /api/client-data/system-objects/:id). */
@@ -4166,6 +4168,7 @@ export async function getFaction(factionID: number, options: ApiOptions = {}): P
         attackMinSec: number(row.attackMinSec),
       }))
       .filter((row) => row.typeID > 0),
+    factions: list(raw.factions).map((row) => ({ factionID: id(row.factionID), name: text(row.name) })).filter((row) => row.factionID > 0),
   };
 }
 
