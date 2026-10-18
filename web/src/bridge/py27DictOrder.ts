@@ -1,12 +1,13 @@
 // The order CPython 2.7 iterates a dict of whole-number keys in, for the page's own reckoning of a list the client
 // builds from a dict (the client is Python 2.7, 64-bit Windows: a C long is 32 bits). The BFF's src/gamePort/py27.js
-// has the whole of it, strings and longs too, checked against the client's own python27.dll; this is its int part.
+// has the whole of it, strings and longs too, checked against the client's own python27.dll; this is its int part,
+// and str keys of plain ASCII.
 
 const PERTURB_SHIFT = 5n;
 const MIN_TABLE_SIZE = 8;
 
-interface Slot {
-  readonly key: number;
+interface Slot<K = number> {
+  readonly key: K;
   readonly hash: number;
 }
 
@@ -14,7 +15,7 @@ interface Slot {
 const hashOf = (key: number): number => (key === -1 ? -2 : key);
 
 /** lookdict: the slot holding `key`, or the empty slot it would go in. No deletions. */
-function findSlot(table: (Slot | undefined)[], hash: number, key: number): number {
+function findSlot<K>(table: (Slot<K> | undefined)[], hash: number, key: K): number {
   const mask = BigInt(table.length - 1);
   let perturb = BigInt.asUintN(64, BigInt(hash));
   let index = perturb & mask;
@@ -27,10 +28,10 @@ function findSlot(table: (Slot | undefined)[], hash: number, key: number): numbe
 }
 
 /** dictresize: the smallest power of two above `minimumUsed`, refilled in slot order. */
-function resized(table: (Slot | undefined)[], minimumUsed: number): (Slot | undefined)[] {
+function resized<K>(table: (Slot<K> | undefined)[], minimumUsed: number): (Slot<K> | undefined)[] {
   let size = MIN_TABLE_SIZE;
   while (size <= minimumUsed) size *= 2;
-  const next: (Slot | undefined)[] = new Array(size);
+  const next: (Slot<K> | undefined)[] = new Array(size);
   for (const entry of table) {
     if (entry !== undefined) next[findSlot(next, entry.hash, entry.key)] = entry;
   }
@@ -98,6 +99,45 @@ export class IntDict {
   keys(): number[] {
     return this.table.filter((entry): entry is Slot => entry !== undefined).map((entry) => entry.key);
   }
+}
+
+/** string_hash of a str (a C long of 32 bits, no hash randomization), as py27.js hashString; -1 kept for an error. */
+function stringHashOf(text: string): number {
+  if (text.length === 0) return 0;
+  let x = BigInt(text.charCodeAt(0)) << 7n;
+  for (let index = 0; index < text.length; index += 1) {
+    x = BigInt.asIntN(32, (1000003n * x) ^ BigInt(text.charCodeAt(index)));
+  }
+  x = BigInt.asIntN(32, x ^ BigInt(text.length));
+  return x === -1n ? -2 : Number(x);
+}
+
+/**
+ * The order a dict keyed by `keys` (ASCII str) iterates in, set in that order into an empty dict (PyDict_SetItem)
+ * and then, `copies` times, put into another empty dict by update (PyDict_Merge, as IntDict.update), as a rowset's
+ * Index is built and then copied (crowset CIndexedRowset.Build, then godmarowset GodmaIndexedRowset's update of it).
+ * Checked against the client's python27.dll for four modules' effect names (2026-10-18): the copy reorders an
+ * afterburner's.
+ */
+export function strDictOrder(keys: readonly string[], copies = 0): string[] {
+  let table: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+  let used = 0;
+  for (const key of keys) {
+    const hash = stringHashOf(key);
+    const slot = findSlot(table, hash, key);
+    if (table[slot] !== undefined) continue;
+    table[slot] = { key, hash };
+    used += 1;
+    if (used * 3 >= table.length * 2) table = resized(table, (used > 50000 ? 2 : 4) * used);
+  }
+  for (let copy = 0; copy < copies; copy += 1) {
+    const entries = table.filter((entry): entry is Slot<string> => entry !== undefined);
+    let next: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+    if (entries.length * 3 >= next.length * 2) next = resized(next, entries.length * 4);
+    for (const entry of entries) next[findSlot(next, entry.hash, entry.key)] = entry;
+    table = next;
+  }
+  return table.filter((entry): entry is Slot<string> => entry !== undefined).map((entry) => entry.key);
 }
 
 /** A dict set with `keys` in that order (IntDict.set each). */

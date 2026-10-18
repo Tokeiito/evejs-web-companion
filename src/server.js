@@ -13558,9 +13558,10 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 // baseDogmaLocation), from the client's own tables, for at most 50 types at once:
 //   each type      its attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order,
 //                  then its mass, capacity, volume and radius), its effects (its typeDogma dogmaEffects, in their
-//                  order), its group and category, and the skills it requires (get_dogma_required_skills: the item's
-//                  reqSkills, which a location's required-skill modifiers go by)
-//   each effect    of those types: its category, the attribute a fitting's chance goes by
+//                  order) and those marked isDefault, its group and category, and the skills it requires
+//                  (get_dogma_required_skills: the item's reqSkills, which a location's required-skill modifiers go
+//                  by)
+//   each effect    of those types: its name, its category, the attribute a fitting's chance goes by
 //                  (fittingUsageChanceAttributeID), its modifierInfo (null where it has none: the compiler makes
 //                  it a neutral effect, baseEffectCompiler SetupDogmaEffects), and the attributes it goes by for its
 //                  cycle, drain, range, falloff and tracking; each type's default effect besides
@@ -13615,6 +13616,10 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
       // more are).
       let defaultEffectID = null;
       for (const row of effectRowsOfType) if (row && Number(row.isDefault || 0) && whole(row.effectID)) defaultEffectID = whole(row.effectID);
+      // Every row marked isDefault, as godma's RefreshItemEffects goes by each (godma.py 1657).
+      const defaultEffectIDs = effectRowsOfType
+        .filter((row) => row && Number(row.isDefault || 0) && whole(row.effectID))
+        .map((row) => whole(row.effectID));
       for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
       const groupID = whole(type.groupID);
       const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
@@ -13638,6 +13643,7 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         attributes: rows,
         effects,
         defaultEffectID,
+        defaultEffectIDs,
         fitsShipGroups,
         fitsShipTypes,
         chargeGroups,
@@ -13679,7 +13685,7 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         named[field] = whole(row[field]) || null;
         if (named[field]) attributeIDs.add(named[field]);
       }
-      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
+      effects[effectID] = { name: typeof row.effectName === "string" ? row.effectName : null, category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
     }
     const attributes = {};
     const keep = (attributeID) => {

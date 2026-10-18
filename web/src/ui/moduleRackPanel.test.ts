@@ -158,7 +158,7 @@ test("the button says what a click does, by NAME", () => {
   const body = renderRack();
   assert.match(body, /Small Shield Booster I — click to switch on\./);
   assert.match(body, /Miner I — active\. Click to switch off\./);
-  assert.match(body, /Armor EM Hardener I — offline \(bring it online from the Fitting window\)/);
+  assert.match(body, /Armor EM Hardener I — offline \(bring it online from its menu\)/);
 });
 
 test("the cycling module carries aria-pressed and the glow class", () => {

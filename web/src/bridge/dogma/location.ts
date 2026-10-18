@@ -82,6 +82,8 @@ export interface DogmaModifierInfo {
 
 /** An effect's record, as far as the location goes by it. */
 export interface DogmaEffectFacts {
+  /** effectName, which godma keys a module's effects by (RefreshItemEffects). */
+  readonly name?: string | null;
   readonly category: number | null;
   /** fittingUsageChanceAttributeID */
   readonly chanceAttributeID: number | null;
@@ -103,6 +105,8 @@ export interface DogmaTypeFacts {
   readonly effects: readonly number[];
   /** Its default effect (dogmaStaticMgr.GetDefaultEffect), where it has one. */
   readonly defaultEffectID?: number | null;
+  /** Every effect its typeDogma marks isDefault, in its order. */
+  readonly defaultEffectIDs?: readonly number[];
   readonly groupID: number | null;
   readonly categoryID: number | null;
   /** get_dogma_required_skills: the skills it requires (an item's reqSkills). */

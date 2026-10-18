@@ -301,8 +301,9 @@ export function rackSlotTitle(
     module.bankSize > 1
       ? ` Banked: fires with ${module.bankSize - 1} other${module.bankSize === 2 ? "" : "s"}.`
       : "";
+  // The button's menu has Put Online (shipmodulebutton.GetMenu 482 to 486), as the Fitting window's slot has.
   if (!module.online) {
-    return `${name} — offline (bring it online from the Fitting window)${loaded}${wear}`;
+    return `${name} — offline (bring it online from its menu)${loaded}${wear}`;
   }
   // Overloading is destructive, so the tile SAYS it is running hot rather than
   // relying on a colour, and names the gesture that toggles it.

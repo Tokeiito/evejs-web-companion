@@ -50,7 +50,8 @@
   import { resolvedName } from "../store/names.ts";
   import type { RackModule } from "./moduleRack.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  import type { AppFlow, RackMenuEntry } from "../app/flow.ts";
+  import { showInfo } from "./showInfo.ts";
 
   let { store, flow = null }: {
     store: ClientStore;
@@ -321,19 +322,51 @@
    * is read. Null while it is being read.
    */
   let slotMenu = $state<readonly (AmmoMenuEntry & { readonly text: string })[] | null>(null);
-  /** The button's own toggles after the ammunition (GetMenu: Set Auto-Reload, Set Auto-Repeat). */
-  let slotToggles = $state<Awaited<ReturnType<AppFlow["rackModuleToggles"]>>>(null);
+  /** The button's own entries after the ammunition, in GetMenu's order (flow.rackModuleMenu). */
+  let slotEntries = $state<readonly RackMenuEntry[] | null>(null);
   async function readSlotMenu(module: RackModule): Promise<void> {
     if (!flow) return;
-    const [entries, toggles] = await Promise.all([
+    const [entries, own] = await Promise.all([
       takesCharges(module)
         ? flow.rackAmmoMenu(module.itemID, { reloading: reloadingNow(module), bankCount: module.bankSize }).catch(() => null)
         : Promise.resolve([]),
-      flow.rackModuleToggles(module.itemID).catch(() => null),
+      flow.rackModuleMenu(module.itemID).catch(() => null),
     ]);
     if (menu?.target.kind === "slot" && menu.target.module.itemID === module.itemID) {
       slotMenu = entries ?? [];
-      slotToggles = toggles;
+      slotEntries = own;
+    }
+  }
+  /** One of the button's own entries chosen (GetMenu 462 to 523). */
+  async function chooseOwnEntry(module: RackModule, entry: RackMenuEntry): Promise<void> {
+    if (entry.kind === "autoRepeat") {
+      toggleAutoRepeat(module, !entry.on);
+      return;
+    }
+    if (entry.kind === "autoReload") {
+      await toggleAutoReload(module, !entry.on);
+      return;
+    }
+    closeMenu();
+    if (entry.kind === "showInfo") {
+      showInfo({ kind: "module", itemID: module.itemID, typeID: module.typeID });
+      return;
+    }
+    if (entry.kind === "overload") {
+      // The button's Overload(onoff, the overload effect) (688), as the hold's toggle makes it.
+      try {
+        await flow?.setModuleOverload(module.itemID, !entry.on);
+      } catch (cause) {
+        sayRackProblem(moduleName(module.typeID), String(cause));
+      }
+      return;
+    }
+    try {
+      if (entry.kind === "online") await flow?.setRackModuleOnline(module.itemID, !entry.on);
+      else if (entry.kind === "overloadRack" || entry.kind === "stopOverloadRack") await flow?.setRackOverload(module.itemID, entry.kind === "overloadRack");
+      else if (entry.kind === "clearGroup") await flow?.clearRackGroup(module.itemID);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
     }
   }
   async function toggleAutoReload(module: RackModule, on: boolean): Promise<void> {
@@ -404,7 +437,7 @@
     };
     menuOpener = opener;
     slotMenu = null;
-    slotToggles = null;
+    slotEntries = null;
     void readCargo().then(() => (target.kind === "slot" ? readSlotMenu(target.module) : undefined));
   }
 
@@ -477,10 +510,10 @@
     if (target.kind === "group") {
       return `Load into ${target.group.modules.length}x ${moduleName(target.group.moduleTypeID)}`;
     }
-    // The server fills a whole bank from one launcher, so the header says so.
-    return target.module.bankSize > 1
-      ? `Load from cargo - ${target.module.bankSize} linked weapons`
-      : "Load from cargo";
+    // A slot's menu is the module's own (GetMenu), so it is headed with the module; the server fills a whole bank
+    // from one launcher, so the header says so.
+    const name = moduleName(target.module.typeID);
+    return target.module.bankSize > 1 ? `${name} - ${target.module.bankSize} linked weapons` : name;
   }
   /** The charge type currently in every one of these modules, if they agree. */
   function loadedTypeOf(target: MenuTarget): number | null {
@@ -1211,18 +1244,15 @@
               <span class="rack-menu-name">{entry.text}</span>
             </button>
           {/each}
-          {#if slotToggles?.autoReload}
-            {@const reload = slotToggles.autoReload}
-            <button type="button" role="menuitem" onclick={() => toggleAutoReload(target.module, !reload.on)}>
-              <span class="rack-menu-name">{reload.text}</span>
-            </button>
-          {/if}
-          {#if slotToggles?.autoRepeat}
-            {@const repeat = slotToggles.autoRepeat}
-            <button type="button" role="menuitem" onclick={() => toggleAutoRepeat(target.module, !repeat.on)}>
-              <span class="rack-menu-name">{repeat.text}</span>
-            </button>
-          {/if}
+          {#each slotEntries ?? [] as entry, index (index)}
+            {#if entry.kind === "rule"}
+              <span class="rack-menu-rule" aria-hidden="true"></span>
+            {:else}
+              <button type="button" role="menuitem" onclick={() => chooseOwnEntry(target.module, entry)}>
+                <span class="rack-menu-name">{entry.text}</span>
+              </button>
+            {/if}
+          {/each}
         {/if}
       {:else}
       {#if choices.length === 0}

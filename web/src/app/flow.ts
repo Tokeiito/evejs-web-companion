@@ -739,7 +739,7 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
-import { IntDict, intDictOf } from "../bridge/py27DictOrder.ts";
+import { IntDict, intDictOf, strDictOrder } from "../bridge/py27DictOrder.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -1045,6 +1045,15 @@ export interface SupportTractorRequest {
  * it said no in its own words. The last two also land in `actionError`.
  */
 export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
+
+/**
+ * One of the rack button's own menu entries after the ammunition (shipmodulebutton.GetMenu 462 to 524): a toggle with
+ * the state it would change (`on`), a rule, or the rest by what each does.
+ */
+export type RackMenuEntry =
+  | { readonly kind: "autoReload" | "autoRepeat" | "online" | "overload"; readonly on: boolean; readonly text: string }
+  | { readonly kind: "overloadRack" | "stopOverloadRack" | "clearGroup" | "showInfo"; readonly text: string }
+  | { readonly kind: "rule" };
 
 /**
  * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
@@ -1523,10 +1532,20 @@ export interface AppFlow {
   /** The rack menu's Unload to Cargo: UnloadAmmoToContainer of the module's charge to the cargo. */
   unloadRackCharge(moduleID: number): Promise<void>;
   /**
-   * The rack button's own toggles (shipmodulebutton.GetMenu): Set Auto-Reload On or Off for a module that takes charges,
-   * and Set Auto-Repeat On or Off for one whose effect repeats; each with its words. Null where the module is not had.
+   * The rack button's own entries after the ammunition (shipmodulebutton.GetMenu 462 to 524), in its order: Set
+   * Auto-Reload for a module that takes charges; then, by the module's effects as godma's dict of them iterates, Set
+   * Auto-Repeat for a repeating one, a rule and Put Online or Offline (not for a bank's master) for the online one, and
+   * the overload toggle, Overload Rack and Stop Overloading Rack for the overload one where Thermodynamics is trained to
+   * the module's need; Clear Group for a bank's master; Show Info. Each with its words; null where the module is not
+   * had. (The repair entries are not the page's yet.)
    */
-  rackModuleToggles(moduleID: number): Promise<{ readonly autoReload: { readonly on: boolean; readonly text: string } | null; readonly autoRepeat: { readonly on: boolean; readonly text: string } | null } | null>;
+  rackModuleMenu(moduleID: number): Promise<readonly RackMenuEntry[] | null>;
+  /** The button's ChangeOnline (823 to 846): an offline asked first (PutOffline), then the online effect switched. */
+  setRackModuleOnline(moduleID: number, online: boolean): Promise<void>;
+  /** The button's OverloadRack and StopOverloadRack (695, 699): godma's of the module's rack. */
+  setRackOverload(moduleID: number, overloaded: boolean): Promise<void>;
+  /** The button's UnlinkModule (684): the bank the module is master of broken up (DestroyWeaponBank). */
+  clearRackGroup(moduleID: number): Promise<void>;
   /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
   setAutoReload(moduleID: number, on: boolean): Promise<void>;
   /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
@@ -3916,6 +3935,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (category === null || !ACTIVATION_CATEGORIES.has(category)) return;
     await autoReload(moduleID, false);
   }
+  /** godma's requiredEffects (godma.py 1093): online and the slot effects, kept for a module whatever their kind. */
+  const GODMA_REQUIRED_EFFECTS: ReadonlySet<number> = new Set([16, 12, 13, 11, 2663]);
+  /** dogma/const.py: effectSkillEffect; dgmEffActivation, dgmEffTarget, dgmEffArea, dgmEffOverload. */
+  const EFFECT_SKILL_EFFECT = 132;
+  const GODMA_KEPT_CATEGORIES: ReadonlySet<number> = new Set([1, 2, 3, 5]);
+  const EFFECT_CATEGORY_OVERLOAD = 5;
+  /** inventorycommon/const.py typeThermodynamics; dogma/const.py attributeRequiredThermoDynamicsSkill. */
+  const TYPE_THERMODYNAMICS = 28164;
+  const ATTRIBUTE_REQUIRED_THERMODYNAMICS = 1212;
+  /**
+   * A module's effects as godma keeps them (RefreshItemEffects, godma.py 1647 to 1679): of its type's, in their order,
+   * those marked default (save skillEffect), the required ones, those of the activation, target, area or overload kind,
+   * and any with a fitting chance; keyed by name into a rowset's Index, which godma's copies (godmarowset 72), and so
+   * iterated in that copy's order. Null where a name is not had.
+   */
+  function godmaEffectsOf(staticData: DogmaStatic, typeID: number): { readonly effectID: number; readonly name: string; readonly isDefault: boolean }[] | null {
+    const facts = staticData.types[typeID];
+    if (!facts) return null;
+    const defaults = new Set(facts.defaultEffectIDs ?? (facts.defaultEffectID ? [facts.defaultEffectID] : []));
+    const kept: { readonly effectID: number; readonly name: string; readonly isDefault: boolean }[] = [];
+    for (const effectID of facts.effects) {
+      const effect = staticData.effects[effectID];
+      if (!effect) continue;
+      const isDefault = defaults.has(effectID);
+      const keptByGodma = (isDefault && effectID !== EFFECT_SKILL_EFFECT) || GODMA_REQUIRED_EFFECTS.has(effectID)
+        || (effect.category !== null && GODMA_KEPT_CATEGORIES.has(effect.category)) || effect.chanceAttributeID !== null;
+      if (!keptByGodma) continue;
+      if (typeof effect.name !== "string") return null;
+      kept.push({ effectID, name: effect.name, isDefault });
+    }
+    const byName = new Map(kept.map((effect) => [effect.name, effect]));
+    return strDictOrder(kept.map((effect) => effect.name), 1).map((name) => byName.get(name)!);
+  }
+  /**
+   * IsEffectRepeatable (894 to 899): IsEffectActivatible (901: default, not online, of the activation or target kind),
+   * the module not disallowing repeats, and the effect timed.
+   */
+  function effectRepeats(staticData: DogmaStatic, typeID: number, effect: { readonly effectID: number; readonly name: string; readonly isDefault: boolean }): boolean {
+    const facts = staticData.effects[effect.effectID];
+    if (!facts || !effect.isDefault || effect.name === "online" || (facts.category !== 1 && facts.category !== 2)) return false;
+    if (staticData.types[typeID]?.attributes.find(([id]) => id === ATTRIBUTE_DISALLOW_REPEATING)?.[1]) return false;
+    return facts.durationAttributeID !== null && facts.durationAttributeID !== undefined;
+  }
+  /**
+   * dogmaLocation.GetAttributeValue(itemID, attributeID) of a fitted module, as far as the page has it: godma's priming
+   * of the module, else its type's value, else the attribute's default.
+   */
+  function fittedAttributeValue(staticData: DogmaStatic, moduleID: number, typeID: number, attributeID: number): number | null {
+    const primed = store.dogma.get().allInfo?.ships.find((item) => Number(item.itemID) === moduleID) ?? null;
+    return dogmaNumber(primed, attributeID)
+      ?? staticData.types[typeID]?.attributes.find(([id]) => id === attributeID)?.[1]
+      ?? staticData.attributes[attributeID]?.defaultValue
+      ?? null;
+  }
   /** The slot of the active ship with this flag, or null. */
   const slotWithFlag = (flagID: number): FittingSlot | null =>
     store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flagID) ?? null;
@@ -4897,6 +4970,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // scanHandler.OnSystemScanStopped: the scan's results registered, and the absent targets' cleared.
       if (method === "OnSystemScanStopped") probeScanStopped(args as readonly JsonValue[]);
       scheduleScannerRefresh();
+      return;
+    }
+    if (method === "OnWeaponBanksChanged") {
+      // clientDogmaLocation.OnWeaponBanksChanged (874 to 876): the location's banks set anew, and the rack drawn again
+      // (OnRefreshModuleBanks). The page's are godma's priming as the BFF keeps it, which has taken the notice.
+      void loadDogma().catch(() => {});
+      void loadSpaceSnapshot().catch(() => {});
       return;
     }
     if (method === "OnGodmaShipEffect") {
@@ -17715,7 +17795,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const asked = linked ? await weaponGrouping.linkAll(shipID) : await weaponGrouping.unlinkAll(shipID);
         if (!asked) throw new Error("That was done a moment ago. Try again in a moment.");
       },
-      () => loadSpaceSnapshot().catch(() => {}),
+      // The banks as the snapshot has them, and as godma keeps them (clientDogmaLocation.LinkAllWeapons and
+      // UnlinkAllModules set the location's from the answer).
+      async () => {
+        await Promise.all([loadSpaceSnapshot().catch(() => {}), loadDogma().catch(() => {})]);
+      },
       () => {
         const banks = store.space.get().snapshot?.ship?.weaponBanks ?? null;
         if (banks === null) {
@@ -26419,25 +26503,106 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await unloadChargeInSlot(flagID);
     },
 
-    async rackModuleToggles(moduleID) {
+    async rackModuleMenu(moduleID) {
       const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
       if (module === null) return null;
-      const labels = ["AutoReloadOn", "AutoReloadOff", "AutoRepeatOn", "AutoRepeatOff"].map((name) => `UI/Inflight/ModuleRacks/${name}`);
-      await wordsNow(labels).catch(() => {});
-      const said = (label: string, own: string): string => templateWords(`UI/Inflight/ModuleRacks/${label}`, {}, own);
+      const racks = (name: string): string => `UI/Inflight/ModuleRacks/${name}`;
+      const labels = [
+        ...["AutoReloadOn", "AutoReloadOff", "AutoRepeatOn", "AutoRepeatOff", "PutModuleOnline", "PutModuleOffline"].map(racks),
+        "UI/Inflight/Overload/TurnOnOverload", "UI/Inflight/Overload/TurnOffOverload", "UI/Inflight/OverloadRack",
+        "UI/Inflight/StopOverloadingRack", "UI/Fitting/ClearGroup", "UI/Commands/ShowInfo",
+      ];
+      const [staticData, skills] = await Promise.all([
+        dogmaStaticFor([module.typeID], [ATTRIBUTE_DISALLOW_REPEATING, ATTRIBUTE_REQUIRED_THERMODYNAMICS]),
+        bridgeAsk("skillHandler", "GetSkills", []).then(skillLevelsOf).catch(() => null),
+        wordsNow(labels).catch(() => {}),
+      ]);
+      const said = (label: string, own: string): string => templateWords(label, {}, own);
+      const entries: RackMenuEntry[] = [];
       // GetMenu (462 to 466): a module that takes charges, auto-reload's opposite of what it is.
-      const reloadOn = autoReloadOn(moduleID);
-      const autoReloadEntry = CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)
-        ? { on: reloadOn, text: reloadOn ? said("AutoReloadOff", "Stop reloading by itself") : said("AutoReloadOn", "Reload by itself") }
-        : null;
-      // GetMenu (473 to 478): a repeating effect not of a group that always repeats.
-      const staticData = await dogmaStaticFor([module.typeID], [ATTRIBUTE_DISALLOW_REPEATING]);
-      const repeats = staticData !== null && defaultEffectRepeats(staticData, module.typeID) && !ALWAYS_AUTO_REPEAT_GROUPS.has(module.groupID ?? -1);
-      const count = repeats ? await moduleRepeatCount(moduleID, module.typeID, module.groupID) : null;
-      const autoRepeatEntry = repeats && count !== null
-        ? { on: count !== 0, text: count === 0 ? said("AutoRepeatOn", "Repeat by itself") : said("AutoRepeatOff", "Stop repeating by itself") }
-        : null;
-      return { autoReload: autoReloadEntry, autoRepeat: autoRepeatEntry };
+      if (CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)) {
+        const on = autoReloadOn(moduleID);
+        entries.push({ kind: "autoReload", on, text: on ? said(racks("AutoReloadOff"), "Stop reloading by itself") : said(racks("AutoReloadOn"), "Reload by itself") });
+      }
+      // GetSlaveModules (469), and GetMyLevel (470): the trained level, None (below every number) where it is not had.
+      const slaves = heldWeaponBanks().get(moduleID) ?? [];
+      const thermodynamics = skills?.get(TYPE_THERMODYNAMICS)?.trainedSkillLevel ?? null;
+      // 471 to 494, by the module's effects as godma's dict of them iterates.
+      for (const effect of (staticData === null ? null : godmaEffectsOf(staticData, module.typeID)) ?? []) {
+        if (effectRepeats(staticData!, module.typeID, effect) && !ALWAYS_AUTO_REPEAT_GROUPS.has(module.groupID ?? -1)) {
+          const count = await moduleRepeatCount(moduleID, module.typeID, module.groupID);
+          if (count !== null) {
+            entries.push({ kind: "autoRepeat", on: count !== 0, text: count === 0 ? said(racks("AutoRepeatOn"), "Repeat by itself") : said(racks("AutoRepeatOff"), "Stop repeating by itself") });
+          }
+        }
+        if (effect.name === "online") {
+          entries.push({ kind: "rule" });
+          if (slaves.length === 0) {
+            entries.push({ kind: "online", on: module.online, text: module.online ? said(racks("PutModuleOffline"), "Take it offline") : said(racks("PutModuleOnline"), "Bring it online") });
+          }
+        }
+        // settings.user.ui lockOverload (467) is a HUD option the page has not: off, as the client's default.
+        if (staticData!.effects[effect.effectID]?.category === EFFECT_CATEGORY_OVERLOAD) {
+          const required = fittedAttributeValue(staticData!, moduleID, module.typeID, ATTRIBUTE_REQUIRED_THERMODYNAMICS);
+          if (thermodynamics !== null && required !== null && thermodynamics >= required) {
+            const active = store.space.get().snapshot?.ship?.overloadedModuleIDs?.includes(moduleID) ?? false;
+            entries.push(
+              { kind: "overload", on: active, text: active ? said("UI/Inflight/Overload/TurnOffOverload", "Stop overheating it") : said("UI/Inflight/Overload/TurnOnOverload", "Overheat it") },
+              { kind: "overloadRack", text: said("UI/Inflight/OverloadRack", "Overheat the whole rack") },
+              { kind: "stopOverloadRack", text: said("UI/Inflight/StopOverloadingRack", "Cool the whole rack") },
+            );
+          }
+        }
+      }
+      // 519 to 523: Clear Group for a bank's master, then Show Info.
+      if (slaves.length > 0) entries.push({ kind: "clearGroup", text: said("UI/Fitting/ClearGroup", "Break up the group") });
+      entries.push({ kind: "showInfo", text: said("UI/Commands/ShowInfo", "Details") });
+      return entries;
+    },
+
+    async setRackModuleOnline(moduleID, online) {
+      // _ChangeOnline (823 to 846): an offline asked first, a Yes kept (suppress=uiconst.ID_YES); then the module's
+      // online effect, Activate() (godma.Activate(itemID, "online", None, 0)) or Deactivate(). (A module in a bank asks
+      // another question, but the menu gives a bank's master no such entry, and a slave no button.)
+      if (!online && !(await askDialog("PutOffline", { type: "dict", entries: [] }, "Take this module offline?"))) return;
+      await runTargetingAction(
+        online ? "Put online" : "Put offline",
+        () => (online ? bridgeDo("dogmaIM", "Activate", [moduleID, "online", null, 0]) : bridgeDo("dogmaIM", "Deactivate", [moduleID, "online"])),
+        async () => {
+          await Promise.all([loadFitting().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
+        },
+        () => {
+          const now = moduleOnlineState(moduleID);
+          return now === null || now === online;
+        },
+        online
+          ? "The server accepted that and the module is still offline, and gave no reason."
+          : "The server accepted that and the module is still online, and gave no reason.",
+      );
+    },
+
+    async setRackOverload(moduleID, overloaded) {
+      // godma.OverloadRack and StopOverloadRack (2081, 2126): the module named, the rack's modules answered.
+      await runTargetingAction(
+        overloaded ? "Overload rack" : "Stop overloading rack",
+        () => bridgeDo("dogmaIM", overloaded ? "OverloadRack" : "StopOverloadRack", [moduleID]),
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async clearRackGroup(moduleID) {
+      // UnlinkModule (684): clientDogmaLocation.DestroyWeaponBank(session.shipid, the module), nothing asked.
+      await runTargetingAction(
+        "Clear group",
+        () => bridgeDo("dogmaIM", "DestroyWeaponBank", [ammoSession().shipID, moduleID]),
+        async () => {
+          await Promise.all([loadSpaceSnapshot().catch(() => {}), loadDogma().catch(() => {})]);
+        },
+        () => !heldWeaponBanks().has(moduleID),
+        "The server accepted that and the group is still there, and gave no reason.",
+      );
     },
 
     async setAutoReload(moduleID, on) {
