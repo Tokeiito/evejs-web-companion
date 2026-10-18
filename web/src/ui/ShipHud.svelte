@@ -21,6 +21,21 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import { hudSetting } from "../store/hudSettings.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { onMount, untrack } from "svelte";
+  import { healthNotificationSettings } from "../store/notifySettings.ts";
+  import {
+    ALERT_ANIMATION_MS,
+    ARMOR,
+    CAPACITOR,
+    HULL,
+    SHIELD,
+    activeAlertLevel,
+    capacitorAlerting,
+    capacitorChanged,
+    damageStateChanged,
+    initialShipAlertState,
+    isLevelActive,
+  } from "./shipAlert.ts";
 
   let { store }: { store: ClientStore } = $props();
 
@@ -78,6 +93,51 @@
   const capFilled = $derived(filledSegments(capRatio, SEGMENTS));
   const capPct = $derived(capRatio != null ? Math.round(capRatio * 100) : null);
   const gauges = $derived(resourceGauges(ship));
+
+  /**
+   * The ship's health alerts (shipAlert.ts, the client's ShipAlertContainer), by the damage alert settings
+   * (notifySettings.ts): raised as the ship's figures fall (OnDamageStateChange, OnCapacitorChange), shown while within
+   * their length, on a clock of their own that the store's writes do not reset.
+   */
+  const alertSettings = healthNotificationSettings;
+  let alertState = $state.raw(initialShipAlertState());
+  let alertNow = $state(Date.now());
+  onMount(() => {
+    const timer = setInterval(() => (alertNow = Date.now()), 200);
+    return () => clearInterval(timer);
+  });
+  const damageKey = $derived(JSON.stringify([ship?.shieldRatio ?? null, ship?.armorRatio ?? null, ship?.hullRatio ?? null]));
+  $effect(() => {
+    const [shield, armor, hull] = JSON.parse(damageKey) as (number | null)[];
+    if (shield === null || shield === undefined || armor === null || armor === undefined || hull === null || hull === undefined) return;
+    alertState = damageStateChanged(untrack(() => alertState), [shield, armor, hull], Date.now(), untrack(() => $alertSettings));
+  });
+  $effect(() => {
+    if (capRatio === null) return;
+    const level = capRatio;
+    alertState = capacitorChanged(untrack(() => alertState), level, Date.now(), untrack(() => $alertSettings));
+  });
+  // SetNotificationEnabled and AlertThresholdChanged (89 to 107): a level whose setting changed is raised where it is
+  // active now, else let go.
+  let settingsBefore = untrack(() => $alertSettings);
+  $effect(() => {
+    const now = $alertSettings;
+    const before = settingsBefore;
+    settingsBefore = now;
+    if (before === now) return;
+    const state = untrack(() => alertState);
+    const startTimes = [...state.startTimes];
+    for (const [level, name] of [[SHIELD, "shield"], [ARMOR, "armour"], [HULL, "hull"], [CAPACITOR, "capacitor"]] as const) {
+      if (before[name] === now[name]) continue;
+      startTimes[level] = isLevelActive(level, state.oldDamage[level]!, now) ? Date.now() : null;
+    }
+    alertState = { ...state, startTimes };
+  });
+  const alertLevel = $derived(activeAlertLevel(alertState, alertNow, $alertSettings));
+  const capacitorPulsing = $derived(capacitorAlerting(alertState, alertNow));
+  /** Which gauges glow at an alert's level: the hull's takes the armour's and the shield's with it. */
+  const glows = (key: string): boolean =>
+    alertLevel !== null && (key === "shield" ? alertLevel >= SHIELD : key === "armor" ? alertLevel >= ARMOR : alertLevel >= HULL);
   const segments = capacitorSegments(SEGMENTS, CX, CY, CAP_RADIUS);
 
   /**
@@ -117,7 +177,16 @@
 </script>
 
 <div class="ship-hud">
-  <div class="hud-wheel" role="img" aria-label={conditionText}>
+  {#if alertLevel !== null}
+    <!-- The red bars at the screen's top and bottom (AddSideElements), waving as the alert's animation does. -->
+    <div class="ship-alert-bars" aria-hidden="true"
+      style={`--alert-ms:${ALERT_ANIMATION_MS[alertLevel]}ms;--alert-peak:${alertLevel === HULL ? 1 : 0.7}`}>
+      <span class="ship-alert-bar top"></span>
+      <span class="ship-alert-bar bottom"></span>
+    </div>
+  {/if}
+  <div class="hud-wheel" class:cap-alert={capacitorPulsing} role="img" aria-label={conditionText}
+    style={alertLevel !== null ? `--alert-ms:${ALERT_ANIMATION_MS[alertLevel]}ms` : undefined}>
     <svg viewBox="0 0 150 150" aria-hidden="true">
       <!-- Tracks first, so a partly-eaten ring reads against the whole it is a
            part of. Without them a 20% shield is just a short arc floating in
@@ -128,7 +197,7 @@
       {#each gauges as gauge (gauge.key)}
         {@const d = gaugeArc(gauge.ratio, CX, CY, RADII[gauge.key])}
         {#if d}
-          <path class={`wheel-fill ${gauge.key}`} {d} />
+          <path class={`wheel-fill ${gauge.key}`} class:alert-glow={glows(gauge.key)} {d} />
         {/if}
       {/each}
 

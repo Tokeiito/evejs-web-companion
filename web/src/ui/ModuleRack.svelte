@@ -52,6 +52,8 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow, RackMenuEntry } from "../app/flow.ts";
   import { showInfo } from "./showInfo.ts";
+  import DamageAlertSettings from "./DamageAlertSettings.svelte";
+  import { HEALTH_NOTIFICATIONS } from "../store/notifySettings.ts";
   import { DEFAULT_SLOT_ORDER, hudSetting, setHudSetting, slotOrdersSignal, type HudSettingName } from "../store/hudSettings.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
@@ -234,9 +236,15 @@
       : `${hint} (locked)`;
   }
   let hudOptionsOpen = $state(false);
+  /** The HUD options' Damage Alert Settings window (ShowNotifySettingsWindow), open or not. */
+  let damageAlertsOpen = $state(false);
   $effect(() => {
     // And the readout's words in hit points (ShipHud, which has no flow to ask with).
-    flow?.requestWords([...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute", "UI/Inflight/Locked"]);
+    flow?.requestWords([
+      ...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute", "UI/Inflight/Locked",
+      "UI/Inflight/NotifySettingsWindow/DamageAlertSettings", "UI/Common/Formatting/Percentage",
+      ...HEALTH_NOTIFICATIONS.map((notification) => notification.label),
+    ]);
   });
   /**
    * The modules Display Passive Modules leaves out where it is off (flow.passiveRackModules), read again as the fitted
@@ -1065,7 +1073,15 @@
                   </label>
                 {/if}
               {/each}
+              <!-- After a divider (GetHUDOptionMenu 664 to 667): the damage alerts' settings window. -->
+              <span class="rack-menu-rule" aria-hidden="true"></span>
+              <button type="button" role="menuitem" class="rack-hud-entry" onclick={() => { hudOptionsOpen = false; damageAlertsOpen = true; }}>
+                {$words.templates["UI/Inflight/NotifySettingsWindow/DamageAlertSettings"] || "Ship health alerts"}
+              </button>
             </div>
+          {/if}
+          {#if damageAlertsOpen}
+            <DamageAlertSettings {store} onClose={() => (damageAlertsOpen = false)} />
           {/if}
         {/if}
       </span>
