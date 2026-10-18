@@ -61,6 +61,7 @@
     type FitWarningRow,
   } from "../bridge/dogma/fittingWarnings.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -1202,6 +1203,13 @@
     "UI/Fitting/FittingWindow/Warnings/InefficientPropModHint": "A freighter gains little from a propulsion module.",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledShort": "Bubble immunity lost",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledHint": "A fitted module takes away the hull's immunity to warp bubbles.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedShort": "Penalized several times over",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedHint": "More than three modules change the same thing, each a little less than the last.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyLowShort": "Penalized when stacked",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyLowHint": "Three modules change the same thing, the third a little less than the others.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyTargetedLowShort": "Penalized when stacked on one target",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyTargetedLowHint": "Several modules change the same thing on a target, each a little less than the last.",
+    "UI/Fitting/FittingWindow/Warnings/ForEquipmentRequiringSkill": "(on modules needing {skillName})",
     "UI/Fitting/FittingWindow/Warnings/MissingChargesForRequiredShort": "Modules without their charges",
     "UI/Fitting/FittingWindow/Warnings/MissingChargesForRequiredHint": "These modules do nothing without charges, and the holds have too few to fill them.",
     "UI/Fitting/FittingWindow/Warnings/MissingChargesForOptionalShort": "Modules short of charges",
@@ -1443,8 +1451,74 @@
   }
   /** The rows under a line: AddTurretOrLauncherGroups by the groups' names; the others as they come. */
   function warningRows(rows: readonly FitWarningRow[]): readonly FitWarningRow[] {
+    if (rows.some((row) => row.kind === "attribute")) return attributeRows(rows);
     const groupName = (row: FitWarningRow) => (row.kind === "group" ? resolvedName($names.resolved, "group", row.groupID) : "");
     return [...rows].sort((left, right) => (left.kind === "group" && right.kind === "group" ? (groupName(left) < groupName(right) ? -1 : groupName(left) > groupName(right) ? 1 : 0) : 0));
+  }
+  // The penalized attributes' names and pictures (dogma_data.get_attribute_display_name, get_attribute_icon_id), read once.
+  let warningAttributes = $state<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }>>(new Map());
+  $effect(() => {
+    const wanted = [...new Set(fitWarnings.flatMap((warning) => warning.rows.flatMap((row) => (row.kind === "attribute" ? [row.attributeID] : []))))]
+      .filter((attributeID) => !warningAttributes.has(attributeID))
+      .slice(0, 32);
+    if (wanted.length === 0) return;
+    void flow.attributeDisplay(wanted).then((shown) => {
+      const merged = new Map(warningAttributes);
+      for (const attributeID of wanted) merged.set(attributeID, shown?.get(attributeID) ?? { displayNameID: null, iconFile: null });
+      warningAttributes = merged;
+      flow.requestWords([...merged.values()].flatMap((each) => (each.displayNameID === null ? [] : [`#${each.displayNameID}`])));
+    });
+  });
+  /** An attribute's name as its message gives it. */
+  function attributeName(attributeID: number): string {
+    const messageID = warningAttributes.get(attributeID)?.displayNameID ?? null;
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) })) : "";
+  }
+  /**
+   * AddAttributes' row, in the label's markup: the attribute's name, and for a skill's change ForEquipmentRequiringSkill
+   * on the line under it.
+   */
+  function attributeRowText(row: Extract<FitWarningRow, { kind: "attribute" }>): string {
+    const name = attributeName(row.attributeID);
+    if (row.skillTypeID === null) return name;
+    const label = "UI/Fitting/FittingWindow/Warnings/ForEquipmentRequiringSkill";
+    const template = $words.templates[label];
+    const skillLine = formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { skillName: moduleName(row.skillTypeID) }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    });
+    return `${name}<br>${skillLine}`;
+  }
+  /**
+   * AddAttributes: the penalized attributes by the modules making the change (those groups in the order met; the
+   * client walks them in its dict's hash order), each
+   * group's by their names; one already shown for the same modules under the same words not again.
+   */
+  function attributeRows(rows: readonly FitWarningRow[]): readonly FitWarningRow[] {
+    const groups = new Map<string, Extract<FitWarningRow, { kind: "attribute" }>[]>();
+    for (const row of rows) {
+      if (row.kind !== "attribute") continue;
+      const group = groups.get(row.modulesKey) ?? [];
+      group.push(row);
+      groups.set(row.modulesKey, group);
+    }
+    const shown: FitWarningRow[] = [];
+    const added = new Map<string, Set<string>>();
+    for (const [modulesKey, group] of groups) {
+      const sorted = [...group].sort((left, right) => {
+        const [a, b] = [attributeName(left.attributeID), attributeName(right.attributeID)];
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      for (const row of sorted) {
+        const text = attributeRowText(row).toLowerCase();
+        const seen = added.get(text) ?? new Set<string>();
+        if (seen.has(modulesKey)) continue;
+        seen.add(modulesKey);
+        added.set(text, seen);
+        shown.push(row);
+      }
+    }
+    return shown;
   }
   const SIZE_LABELS: Readonly<Record<number, string>> = { 1: "UI/InfoWindow/SmallSize", 2: "UI/InfoWindow/MediumSize", 3: "UI/InfoWindow/LargeSize", 4: "UI/InfoWindow/XLargeSize" };
   $effect(() => {
@@ -1457,6 +1531,7 @@
       for (const row of warning.rows) {
         if (row.kind === "module") refs.push({ kind: "type", id: row.typeID });
         else if (row.kind === "group" || row.kind === "subsystem") refs.push({ kind: "group", id: row.groupID });
+        else if (row.kind === "attribute" && row.skillTypeID !== null) refs.push({ kind: "type", id: row.skillTypeID });
       }
     }
     if (fitWarnings.length > 0) flow.requestNames(refs);
@@ -2718,6 +2793,7 @@
                         </li>
                         {#each warningRows(warning.rows) as row, at (at)}
                           {@const flags = row.kind === "module" || row.kind === "subsystem" ? [row.flagID] : row.flags}
+                          {@const attributeIcon = row.kind === "attribute" ? warningAttributes.get(row.attributeID)?.iconFile ?? null : null}
                           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                           <li class="fit-warning-row" onmouseenter={() => (row.kind === "subsystem" ? undefined : showWarningSlots(flags, warning.level))}
                             onmouseleave={() => (row.kind === "subsystem" ? undefined : (warningSlots = new Map()))}>
@@ -2727,6 +2803,9 @@
                             {:else if row.kind === "size"}
                               {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
                               <span>{simulationWord(SIZE_LABELS[row.size] ?? "")}</span>
+                            {:else if row.kind === "attribute"}
+                              {#if attributeIcon}<img src={clientTexture(attributeIcon)} alt="" width="20" height="20" />{/if}
+                              <div class="fit-warning-attribute"><LabelText markup={attributeRowText(row)} /></div>
                             {:else}
                               {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
                               <span>{resolvedName($names.resolved, "group", row.groupID)}</span>

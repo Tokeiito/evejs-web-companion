@@ -15,7 +15,7 @@ import {
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
-import { evaluateFit, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
+import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -6110,12 +6110,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // What the warnings go by that the static data does not hold, read once a type: each fitted type's warning lists
   // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID) and each hull's info bubble elements (cfg.infoBubbleTypeElements).
   const warningListsKept = new Map<number, ReadonlySet<number>>();
+  let pythonEffectAttributesRead = false;
   const bubbleElementsKept = new Map<number, readonly number[] | null>();
   /** The warnings' facts of the types and the hull named that are not held yet, read; true where any were. */
   async function ensureWarningFacts(typeIDs: readonly number[], shipTypeID: number): Promise<boolean> {
     const types = [...new Set(typeIDs)].filter((typeID) => !warningListsKept.has(typeID));
     const hull = !bubbleElementsKept.has(shipTypeID);
-    if (types.length === 0 && !hull) return false;
+    if (types.length === 0 && !hull && pythonEffectAttributesRead) return false;
     const reads: Promise<unknown>[] = [];
     for (let at = 0; at < types.length; at += 32) {
       const chunk = types.slice(at, at + 32);
@@ -6124,6 +6125,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }));
     }
     if (hull) reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((read) => bubbleElementsKept.set(shipTypeID, read.types[shipTypeID] ?? null)));
+    // The records of the attributes the python effects change, for the stacking warnings (dogma_data.get_attribute).
+    if (!pythonEffectAttributesRead) {
+      pythonEffectAttributesRead = true;
+      reads.push(dogmaStaticFor([], PYTHON_EFFECT_ATTRIBUTES).then((read) => {
+        if (!read) pythonEffectAttributesRead = false;
+      }));
+    }
     const settled = await Promise.allSettled(reads);
     return settled.some((each) => each.status === "fulfilled");
   }

@@ -6,8 +6,8 @@
 // Reckoned so far: the missing subsystems, modules in slots the hull has not, the CPU, powergrid and calibration
 // overloaded, the cargo hold overloaded, the tanking warnings (dual tanked, a shield hull armour tanked and the other
 // way round), mixed turret groups, launcher groups and turret sizes, polarized weapons, offline modules, undersized and
-// inefficient propulsion modules, bubble immunity disabled, and the modules missing their charges. Not yet: the
-// modules giving no bonus and the stacking penalties.
+// inefficient propulsion modules, bubble immunity disabled, the modules missing their charges, and the stacking
+// penalties. Not yet: the modules giving no bonus.
 
 import type { DogmaStatic } from "./location.ts";
 import { intDictOrder } from "../py27DictOrder.ts";
@@ -196,7 +196,9 @@ export type FitWarningRow =
   | { readonly kind: "subsystem"; readonly flagID: number; readonly groupID: number; readonly icon: string }
   | { readonly kind: "module"; readonly typeID: number; readonly flagID: number }
   | { readonly kind: "group"; readonly groupID: number; readonly icon: string | null; readonly flags: readonly number[] }
-  | { readonly kind: "size"; readonly size: number; readonly icon: string | null; readonly flags: readonly number[] };
+  | { readonly kind: "size"; readonly size: number; readonly icon: string | null; readonly flags: readonly number[] }
+  /** AddAttributes: an attribute penalized, the skill its change is for, the modules making it (modulesKey: which, sorted). */
+  | { readonly kind: "attribute"; readonly attributeID: number; readonly skillTypeID: number | null; readonly flags: readonly number[]; readonly modulesKey: string };
 
 /** A warning the fitting has: its level, the slots it is shown on, the rows under its line. */
 export interface FitWarning {
@@ -468,6 +470,31 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
     if (missing.required.length > 0) found.set(WARNING.MISSING_REQ_CHARGES, { flags: [...new Set(missing.required.map(([, flagID]) => flagID))], rows: [] });
     if (missing.optional.length > 0) found.set(WARNING.MISSING_OPTIONAL_CHARGES, { flags: [...new Set(missing.optional.map(([, flagID]) => flagID))], rows: [] });
   }
+  // FindFittedModulesWithStackingPenalty: of the items in the fitting's slots; each penalized attribute a row under its
+  // line (AddAttributes), the modules making the change.
+  const stacking = fittedModulesWithStackingPenalty(staticData, fit.filter(([, flagID]) => FITTING_FLAGS.has(flagID)).map(([typeID, flagID]) => [typeID, flagID] as const));
+  const stackingWarnings = [
+    [WARNING.STACKING_PENALTY_MED, stacking.medium],
+    [WARNING.STACKING_PENALTY_LOW, stacking.low],
+    [WARNING.STACKING_PENALTY_TARGETED_LOW, stacking.targetedLow],
+  ] as const;
+  for (const [warningID, penalized] of stackingWarnings) {
+    if (penalized.length === 0) continue;
+    const flags = new Set<number>();
+    const rows: FitWarningRow[] = [];
+    for (const { change, modules } of penalized) {
+      const pairs = [...modules.values()];
+      for (const [, flagID] of pairs) flags.add(flagID);
+      rows.push({
+        kind: "attribute",
+        attributeID: change.modifiedAttributeID,
+        skillTypeID: change.skillTypeID,
+        flags: pairs.map(([, flagID]) => flagID),
+        modulesKey: pairs.map(([typeID, flagID]) => `${typeID}:${flagID}`).sort().join(","),
+      });
+    }
+    found.set(warningID, { flags: [...flags], rows });
+  }
   // FindOfflineModules (AddModuleRows: by their slots' order).
   const offline = [...inputs.offlineModules]
     .filter(([typeID, flagID]) => MODULE_SLOT_FLAGS.includes(flagID) && [CATEGORY_MODULE, CATEGORY_STRUCTURE_MODULE].includes(staticData.types[typeID]?.categoryID ?? -1))
@@ -508,6 +535,242 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
     return warning ? [{ warningID, level: WARNINGS_BY_ID[warningID]!.level, ...warning }] : [];
   });
 }
+
+/**
+ * The Fitting window's effect compiler's python effects (GhostFittingEffectCompiler.GetPythonEffects, with
+ * baseEffectCompiler's before them, a later one of an effect in its place): every effect one of them is, and of those
+ * with any, its MODIFIER_CHANGES (operation, modified attribute, modifying attribute) and its
+ * SKILL_MODIFIER_CHANGES_FOR_LOCATION (operation, skill, modified, modifying). Taken from the compiled classes through the
+ * python27 oracle (nf338-py-oracle.py).
+ */
+export const PYTHON_EFFECT_IDS: ReadonlySet<number> = new Set([
+  10, 16, 17, 34, 38, 40, 42, 46, 47, 48, 54, 55, 67, 81, 607, 660,
+  661, 662, 668, 848, 876, 878, 980, 1086, 1199, 1730, 1851, 2192, 2193, 2194, 2195, 2196,
+  2197, 2663, 2726, 3380, 3772, 3773, 3774, 4921, 4928, 5788, 5945, 6063, 6208, 6421, 6422, 6423,
+  6424, 6425, 6426, 6427, 6428, 6443, 6484, 6682, 6683, 6684, 6686, 6719, 6730, 6731, 6753, 6995,
+  12126,
+]);
+interface PythonEffectModifiers {
+  readonly modifiers: readonly (readonly [number, number, number])[];
+  readonly skillModifiers: readonly (readonly [number, number, number, number])[];
+}
+export const PYTHON_EFFECT_MODIFIERS: Readonly<Record<number, PythonEffectModifiers>> = {
+  3380: {
+    modifiers: [[6, 4, 1131], [6, 37, 1076], [6, 552, 554]],
+    skillModifiers: [],
+  },
+  4928: {
+    modifiers: [[0, 267, 267], [0, 268, 268], [0, 269, 269], [0, 270, 270]],
+    skillModifiers: [],
+  },
+  5788: {
+    modifiers: [
+      [7, 192, 192], [0, 564, 565], [6, 37, 20], [2, 104, 852], [4, 4, 1471], [7, 872, 872],
+      [0, 267, 267], [0, 268, 268], [0, 269, 269], [0, 270, 270], [0, 113, 974], [0, 111, 975],
+      [0, 109, 976], [0, 110, 977], [0, 271, 271], [0, 272, 272], [0, 273, 273], [0, 274, 274],
+    ],
+    skillModifiers: [
+      [6, 21803, 84, 895], [6, 21803, 73, 896], [6, 21802, 68, 548], [6, 21802, 73, 897], [6, 21666, 64, 292],
+      [6, 21666, 160, 767], [6, 20327, 64, 292], [6, 20327, 160, 767], [6, 21667, 64, 292], [6, 21667, 160, 767],
+      [6, 3309, 54, 351], [6, 3307, 54, 351], [6, 3308, 54, 351], [6, 3309, 158, 349], [6, 3307, 158, 349],
+      [6, 3308, 158, 349], [6, 3393, 84, 895], [6, 3416, 68, 548], [2, 4385, 1349, 1350],
+    ],
+  },
+  6063: {
+    modifiers: [[6, 208, 1030], [6, 210, 1029], [6, 211, 1027], [6, 209, 1028]],
+    skillModifiers: [],
+  },
+  6422: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6423: {
+    modifiers: [],
+    skillModifiers: [[6, 3319, 37, 547], [6, 3319, 281, 596], [6, 3319, 653, 847], [6, 3319, 654, 848]],
+  },
+  6424: {
+    modifiers: [],
+    skillModifiers: [[6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767]],
+  },
+  6425: {
+    modifiers: [[6, 552, 2147]],
+    skillModifiers: [],
+  },
+  6426: {
+    modifiers: [[6, 37, 2148]],
+    skillModifiers: [],
+  },
+  6427: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6428: {
+    modifiers: [],
+    skillModifiers: [[6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767]],
+  },
+  6484: {
+    modifiers: [[4, 113, 974], [4, 110, 977], [4, 109, 976], [4, 111, 975]],
+    skillModifiers: [],
+  },
+  6682: {
+    modifiers: [[6, 37, 2148]],
+    skillModifiers: [],
+  },
+  6683: {
+    modifiers: [[6, 552, 2147]],
+    skillModifiers: [],
+  },
+  6684: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6686: {
+    modifiers: [],
+    skillModifiers: [
+      [6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767], [6, 3319, 37, 547], [6, 3319, 281, 596],
+      [6, 3319, 653, 847], [6, 3319, 654, 848],
+    ],
+  },
+  6730: {
+    modifiers: [[2, 4, 796], [6, 552, 554]],
+    skillModifiers: [],
+  },
+  6731: {
+    modifiers: [[2, 4, 796]],
+    skillModifiers: [],
+  },
+};
+
+/** dogma const: the effect categories and the operations the stacking warnings go by. */
+const EFFECT_CATEGORY_TARGET = 2;
+const EFFECT_CATEGORY_OVERLOAD = 5;
+const OPERATION = Object.freeze({ PRE_MUL: 0, PRE_DIV: 1, MOD_ADD: 2, MOD_SUB: 3, POST_MUL: 4, POST_DIV: 5, POST_PERCENT: 6 });
+/** fittingWarningsStackingPenalty ITEM_MODIFIER and NOT_ITEM_MOTIFIER: a modifier's domain told apart by its kind. */
+const ITEM_MODIFIER = 1;
+const NOT_ITEM_MODIFIER = 2;
+
+/** IsItGoodChange: whether a modifier's value makes its attribute better, by its operation and the attribute's highIsGood. */
+function isItGoodChange(value: number | null, operation: number, wantHigh: boolean): boolean {
+  if (value === null) return false;
+  if (operation === OPERATION.MOD_ADD || operation === OPERATION.MOD_SUB) return false;
+  const multiplies = operation === OPERATION.PRE_MUL || operation === OPERATION.POST_MUL;
+  const divides = operation === OPERATION.PRE_DIV || operation === OPERATION.POST_DIV;
+  if (wantHigh) {
+    if (multiplies) return value > 1.0;
+    if (operation === OPERATION.POST_PERCENT) return value > 0;
+    if (divides) return value < 1.0;
+    return false;
+  }
+  if (multiplies) return value < 1.0 && value !== 0;
+  if (operation === OPERATION.POST_PERCENT) return value < 0;
+  if (divides) return value > 1.0;
+  return false;
+}
+
+/** One unstackable change a module makes: the attribute, the operation, the skill it is for, the domain and its kind. */
+interface UnstackableChange {
+  readonly modifiedAttributeID: number;
+  readonly operation: number;
+  readonly skillTypeID: number | null;
+  readonly domain: string;
+}
+const changeKey = (change: UnstackableChange, skillTypeID = change.skillTypeID): string =>
+  `${change.modifiedAttributeID}|${change.operation}|${skillTypeID ?? "None"}|${change.domain}`;
+
+/**
+ * _FindModulesWithStackingPenalty: of each published module (IsModuleOfInterestForStacking), each effect but an
+ * overload's, its modifiers (a python effect's MODIFIER_CHANGES and SKILL_MODIFIER_CHANGES_FOR_LOCATION, on the target
+ * for a target effect, else on the ship; any other's modifierInfo) on an unstackable attribute; a target effect's all of
+ * them, any other's those its value makes better (IsItGoodChange).
+ */
+function unstackableChanges(staticData: DogmaStatic, typeID: number): { readonly own: UnstackableChange[]; readonly targeted: UnstackableChange[] } {
+  const own: UnstackableChange[] = [];
+  const targeted: UnstackableChange[] = [];
+  const type = staticData.types[typeID];
+  if (!type || type.published === false || ![CATEGORY_MODULE, CATEGORY_STRUCTURE_MODULE].includes(type.categoryID ?? -1)) return { own, targeted };
+  for (const effectID of type.effects) {
+    const effect = staticData.effects[effectID];
+    if (!effect || effect.category === EFFECT_CATEGORY_OVERLOAD) continue;
+    type Modifier = { readonly modifiedAttributeID: number | null; readonly modifyingAttributeID: number | null; readonly operation: number | null; readonly skillTypeID: number | null; readonly domain: string | null; readonly func: string | null };
+    let modifiers: Modifier[];
+    if (PYTHON_EFFECT_IDS.has(effectID)) {
+      const domain = effect.category === EFFECT_CATEGORY_TARGET ? "target" : "shipID";
+      const python = PYTHON_EFFECT_MODIFIERS[effectID];
+      modifiers = [
+        ...(python?.modifiers ?? []).map(([operation, to, from]): Modifier => ({ operation, modifiedAttributeID: to, modifyingAttributeID: from, domain, skillTypeID: null, func: "ItemModifier" })),
+        ...(python?.skillModifiers ?? []).map(([operation, skillTypeID, to, from]): Modifier => ({ operation, modifiedAttributeID: to, modifyingAttributeID: from, domain, skillTypeID, func: "LocationRequiredSkillModifier" })),
+      ];
+    } else {
+      modifiers = [...(effect.modifiers ?? [])];
+    }
+    for (const modifier of modifiers) {
+      if (modifier.modifiedAttributeID === null || modifier.operation === null) continue;
+      const modified = staticData.attributes[modifier.modifiedAttributeID];
+      if (!modified || modified.stackable) continue;
+      const change = {
+        modifiedAttributeID: modifier.modifiedAttributeID,
+        operation: modifier.operation,
+        skillTypeID: modifier.skillTypeID ?? null,
+        domain: `${modifier.domain}|${modifier.func === "ItemModifier" ? ITEM_MODIFIER : NOT_ITEM_MODIFIER}`,
+      };
+      if (effect.category === EFFECT_CATEGORY_TARGET) targeted.push(change);
+      else if (isItGoodChange(modifier.modifyingAttributeID === null ? null : typeAttribute(staticData, typeID, modifier.modifyingAttributeID), modifier.operation, modified.highIsGood)) own.push(change);
+    }
+  }
+  return { own, targeted };
+}
+
+/** A change and the fitted modules making it, each (typeID, flagID). */
+interface PenalizedChange {
+  readonly change: UnstackableChange;
+  readonly modules: Map<string, readonly [number, number]>;
+}
+
+/**
+ * FindFittedModulesWithStackingPenalty (FindModulesWithStackingPenalty, _GetStackingWarnings): of the items in the
+ * fitting's slots, each unstackable change and the modules making it (a skill's with those making it for every skill);
+ * more than three a medium warning, more than two a low one. The targeted ones low either way.
+ */
+function fittedModulesWithStackingPenalty(staticData: DogmaStatic, fittedModules: readonly (readonly [number, number])[]): { readonly medium: PenalizedChange[]; readonly low: PenalizedChange[]; readonly targetedLow: PenalizedChange[] } {
+  const own = new Map<string, PenalizedChange>();
+  const targeted = new Map<string, PenalizedChange>();
+  const changesOf = new Map<number, ReturnType<typeof unstackableChanges>>();
+  for (const [typeID, flagID] of fittedModules) {
+    let changes = changesOf.get(typeID);
+    if (!changes) {
+      changes = unstackableChanges(staticData, typeID);
+      changesOf.set(typeID, changes);
+    }
+    for (const [list, into] of [[changes.own, own], [changes.targeted, targeted]] as const) {
+      for (const change of list) {
+        const key = changeKey(change);
+        const held = into.get(key) ?? { change, modules: new Map<string, readonly [number, number]>() };
+        held.modules.set(`${typeID}|${flagID}`, [typeID, flagID]);
+        into.set(key, held);
+      }
+    }
+  }
+  const warnings = (changes: ReadonlyMap<string, PenalizedChange>) => {
+    const medium: PenalizedChange[] = [];
+    const low: PenalizedChange[] = [];
+    for (const held of changes.values()) {
+      const modules = new Map(held.modules);
+      if (held.change.skillTypeID) {
+        for (const [key, pair] of changes.get(changeKey(held.change, null))?.modules ?? []) modules.set(key, pair);
+      }
+      if (modules.size > 3) medium.push({ change: held.change, modules });
+      else if (modules.size > 2) low.push({ change: held.change, modules });
+    }
+    return { medium, low };
+  };
+  const ofOwn = warnings(own);
+  const ofTargeted = warnings(targeted);
+  return { medium: ofOwn.medium, low: ofOwn.low, targetedLow: [...ofTargeted.low, ...ofTargeted.medium] };
+}
+
+/** The attributes the python effects' changes name, for the static data to hold their records. */
+export const PYTHON_EFFECT_ATTRIBUTES: readonly number[] = [...new Set(Object.values(PYTHON_EFFECT_MODIFIERS)
+  .flatMap(({ modifiers, skillModifiers }) => [...modifiers.flatMap(([, to, from]) => [to, from]), ...skillModifiers.flatMap(([, , to, from]) => [to, from])]))];
 
 /** GetActiveWarningsByLevelFromResults: how many warnings at each level. */
 export function warningsByLevel(warnings: readonly FitWarning[]): ReadonlyMap<number, number> {

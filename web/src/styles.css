@@ -2156,6 +2156,7 @@
   .fit-warning-line-icon { flex: none; width: 20px; height: 20px; background: var(--warning-color); mask: var(--warning-icon) center / contain no-repeat; -webkit-mask: var(--warning-icon) center / contain no-repeat; }
   .fit-warning-question { margin-left: auto; color: var(--warning-color); font-weight: 700; }
   .fit-warning-row { display: flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0 0.1rem 1.6rem; }
+  .fit-warning-attribute { min-width: 0; }
   .fit-socket.warning { outline: 2px solid var(--slot-warning); outline-offset: 1px; }
   .hud-gauge.warning, .fit-readout-warning { outline: 1px solid var(--slot-warning); outline-offset: 2px; }
   /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */
