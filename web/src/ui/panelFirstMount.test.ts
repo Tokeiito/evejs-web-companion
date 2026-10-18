@@ -104,12 +104,12 @@ const PANELS = [
 function fakeFlow(): unknown {
   // Its stores: the drone-recovery gate, which reads ready (the flow default
   // unless the pilot opts in to browser recovery), and the pilot's waypoints,
-  // none on a cold start (nav/waypoints.ts); and the image server and the owners' logos (the Neocom's portrait, the
-  // Standings rows' pictures), none.
+  // none on a cold start (nav/waypoints.ts); and the image server, the owners' logos and the NPC corporations'
+  // factions (the Neocom's portrait, the Standings rows' pictures and skill bonus), none.
   const droneRecovery = { subscribe: (run: (value: unknown) => void) => (run({ phase: "ready", reason: null }), () => {}) };
   const waypoints = { subscribe: (run: (value: unknown) => void) => (run([]), () => {}) };
   const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
-  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : key === "waypoints" ? waypoints : key === "imageServer" || key === "ownerLogos" ? none : async () => {} });
+  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : key === "waypoints" ? waypoints : key === "imageServer" || key === "ownerLogos" || key === "corporationFactions" ? none : async () => {} });
 }
 
 async function loadPanel(name: string): Promise<unknown> {

@@ -7,10 +7,11 @@
 //   1. ⚠ R7d — a standing's `fromID` is an entity id and MUST render as a NAME,
 //      never a number. The real ids from Farmer's standings are swept for.
 //   2. Names are grouped the way the retail panel groups them (Factions /
-//      Corporations / Agents), by the SAME id-range classification the flow
-//      resolved them under.
-//   3. empty ≠ failed — an empty standings list reads as "none yet"; a failed
-//      read shows its reason and never the empty message.
+//      Corporations / Agents: standingsUIUtil.CategoriseStandingsByOwnerType),
+//      an agent being one the agents service knows; each entry "<standing>
+//      <name>" (StandingEntry.Load), the standing as %s writes it.
+//   3. empty ≠ failed — an empty list shows the scroll's no-content words; a
+//      failed read shows its reason and never those words.
 //
 // The rows are Farmer's REAL standings, captured live 2026-07-21.
 
@@ -27,9 +28,10 @@ const Standings = (await import("./Standings.svelte")).default;
 type CharStanding = import("../store/types.ts").CharStanding;
 
 function fakeFlow(): unknown {
-  // The owners' logos and the image server (the rows' pictures) read none; every other member does nothing.
+  // The owners' logos, the image server (the rows' pictures) and the NPC corporations' factions (the skill bonus)
+  // read none; every other member does nothing.
   const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
-  return new Proxy({}, { get: (_target, key) => (key === "ownerLogos" || key === "imageServer" ? none : async () => {}) });
+  return new Proxy({}, { get: (_target, key) => (key === "ownerLogos" || key === "imageServer" || key === "corporationFactions" ? none : async () => {}) });
 }
 
 function visibleText(body: string): string {
@@ -74,6 +76,12 @@ function loadedStandings(
     ...over,
   });
   store.apply({ type: "names/resolved", entries: names });
+  // The agent is one the agents service knows (GetAgentByID), a level 1 agent of the Caldari State.
+  store.apply({
+    type: "agents/record",
+    agentID: 3008416,
+    record: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: null },
+  });
   return store;
 }
 
@@ -90,9 +98,12 @@ test("Standings renders each entity by NAME, grouped as the retail panel does", 
   assert.match(text, /Factions/);
   assert.match(text, /Corporations/);
   assert.match(text, /Agents/);
-  // The standing value on the −10..+10 scale, signed.
-  assert.match(text, /\+2\.14/);
-  assert.match(text, /−1\.30/);
+  // "<standing> <name>": rounded to two places and written as Python's %s writes a float (no skills read: no bonus).
+  assert.match(text, /2\.14 Caldari State/);
+  assert.match(text, /-1\.3 Chief Executive Panel/);
+  assert.match(text, /-0\.0 Guristas Pirates/);
+  // An agent's name with its level (the page's own words while the install's are not read).
+  assert.match(text, /0\.13 Antaken Kamola, level 1/);
 });
 
 // R7d SWEEP: not one of the real entity ids may appear in the rendered text.
@@ -127,11 +138,12 @@ test("the Standings id-sweep matcher actually inspects rendered text", () => {
   assert.equal(`entity 500001 here`.includes("500001"), true);
 });
 
-test("Standings shows an honest empty message for a real 'no standings'", () => {
+test("Standings shows the list's no-content words for a real 'no standings'", () => {
   const store = loadedStandings({ char: [], corp: [] });
   const output = render(Standings as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
-  assert.match(text, /no standings with anyone yet/i);
+  // The scroll's noContentHint (UI/Standings/NoResultsFound), the page's own words while the install's are not read.
+  assert.match(text, /Nothing to list\./);
 });
 
 test("Standings shows the error, NOT the empty message, when the read failed", () => {
@@ -140,5 +152,5 @@ test("Standings shows the error, NOT the empty message, when the read failed", (
   const text = visibleText(output.body);
   assert.match(text, /READ_FAILED/);
   // ⚠ A failed read must never claim the character stands with no one.
-  assert.equal(/you have no standings with anyone yet/i.test(text), false);
+  assert.equal(/Nothing to list/.test(text), false);
 });

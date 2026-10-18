@@ -1,22 +1,17 @@
 <script lang="ts">
-  // Standings page (goal R55): who the character — and their corporation —
-  // stands with among NPC factions, corporations and agents, and by how much on
-  // the classic −10..+10 scale. A pure reader of the store; the read lives in
-  // app/flow.ts (loadStandings) and the BFF holds the session.
+  // The standings: the pilot's (the Character Sheet's Standings panel, charsheet/standingsPanel/standingsPanel.py,
+  // toID the pilot) and its corporation's (the Corporation window's NPC Standings panel, the same panel toID the
+  // corporation). Each lists the owners that stand toward it as the client's list does (ui/standingsList.ts): its
+  // groups, each entry's picture and "<standing> <name>", its quick filter, and the sort the panels share
+  // (standingsConst STANDING_SORT_SETTING, kept in this browser as the client keeps it among its settings).
   //
-  // ⚠ R7d is the whole point of this page. A standing's `fromID` is an ENTITY id
-  // (an NPC faction / NPC corporation / agent). It is NEVER rendered as a number:
-  // classifyStandingKind maps the id to its /api/names kind by its EVE id range,
-  // and resolvedName turns it into a name — degrading to a plain "Unknown entity"
-  // fallback, never leaking the id. The rows are GROUPED by that same
-  // classification (Factions / Corporations / Agents), exactly as the retail
-  // panel groups them.
+  // Not as the client's yet: the panel's right side (the selected owner's header, history, graph and the standings
+  // bar) stands under the entry clicked; and the two panels are one window, not the Character Sheet's and the
+  // Corporation window's.
   //
-  // ⚠ empty vs failed. `char`/`corp` are null while unread OR when the read
-  // FAILED (reason in the matching *Error); an empty list is the real "no
-  // standings with anyone yet" answer (worldHasNoContracts precedent).
+  // ⚠ empty vs failed. `char`/`corp` are null while unread OR when the read FAILED (reason in the matching *Error);
+  // an empty list is the real answer.
   import { onMount } from "svelte";
-  import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { classifyStandingKind } from "../bridge/standings.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
@@ -24,10 +19,20 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { CharStanding } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import type { JsonValue } from "../bridge/wire.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
+  import {
+    DEFAULT_STANDINGS_SORT,
+    STANDINGS_GROUP_LABELS,
+    STANDINGS_SORTS,
+    standingsListGroups,
+    type StandingsListEntry,
+    type StandingsSort,
+  } from "./standingsList.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -36,9 +41,19 @@
   // svelte-ignore state_referenced_locally
   const names = store.names;
   // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const skills = store.skills;
+  // svelte-ignore state_referenced_locally
+  const agents = store.agents;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  // svelte-ignore state_referenced_locally
   const ownerLogos = flow.ownerLogos;
   // svelte-ignore state_referenced_locally
   const imageServer = flow.imageServer;
+  // svelte-ignore state_referenced_locally
+  const corporationFactions = flow.corporationFactions;
 
   let busy = $state(false);
   let error = $state("");
@@ -63,36 +78,119 @@
     void run(() => flow.loadStandings());
   }
 
+  /** The list's labels, with the page's own words where the install's are not had. */
+  const STANDINGS_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/Factions": "Factions",
+    "UI/Common/Corporations": "Corporations",
+    "UI/Common/Agents": "Agents",
+    "UI/Agents/AgentEntryNameAndLevel": "{[character]ownerID.name}, level {level}",
+    "UI/Standings/SortingHeader": "Order",
+    "UI/Standings/DefaultFilter": "As kept",
+    "UI/Standings/AscendingFilter": "Lowest first",
+    "UI/Standings/DescendingFilter": "Highest first",
+    "UI/Standings/NameFilter": "By name",
+    "UI/Standings/RecentChangeFilter": "Latest changes",
+    "UI/Common/SortBy": "Order",
+    "UI/Standings/NoResultsFound": "Nothing to list.",
+    "UI/Common/Search": "Find",
+  };
+
+  /** STANDING_SORT_SETTING: the sort both panels share, kept in this browser. */
+  const SORT_SETTING_KEY = "standingsSortedBy";
+  let sort = $state<StandingsSort>(DEFAULT_STANDINGS_SORT);
+  let sortMenuOpen = $state(false);
+  function chooseSort(value: StandingsSort): void {
+    sort = value;
+    sortMenuOpen = false;
+    try {
+      localStorage.setItem(SORT_SETTING_KEY, value);
+    } catch {
+      // Not kept: the setting stands for this window only.
+    }
+  }
+
   onMount(() => {
     refresh();
+    try {
+      const kept = localStorage.getItem(SORT_SETTING_KEY);
+      const known = STANDINGS_SORTS.find((each) => each.value === kept);
+      if (known) sort = known.value;
+    } catch {
+      // The default stands.
+    }
+    flow.requestWords(Object.keys(STANDINGS_WORDS));
     // The rows' owners' pictures: the client's own logo tables, and the image server's portraits.
     flow.loadOwnerLogos();
     flow.loadImageServer();
+    // The skill bonus goes by each owner's faction and the pilot's skills.
+    flow.loadCorporationFactions();
+    if (store.skills.get().skills === null) void flow.loadSkills().catch(() => {});
   });
 
-  /**
-   * standingEntry.UpdateIcon: a faction's or a corporation's logo (eveIcon.GetLogoIcon: LogoIcon, the client's own
-   * tables), a character's portrait (photo.GetPortrait(ownerID, 64), the client's silhouette where the image server
-   * has none). The pictures to try, in turn.
-   */
-  function pictureOf(fromID: number): readonly string[] {
-    const kind = classifyStandingKind(fromID);
-    if (kind === "agent") {
-      const portrait = portraitUrl($imageServer, fromID, 64);
-      return [...(portrait === null ? [] : [portrait]), clientTexture(portraitDefaultPath(64))];
+  // The agents among the standings' owners, each asked once (agents.GetAgentByID: whether it is an agent, its level
+  // and its faction); and the race's faction's name, which the pilot's list shows at nought where it has no standing.
+  $effect(() => {
+    for (const rows of [$standings.char, $standings.corp]) {
+      for (const row of rows ?? []) {
+        if (classifyStandingKind(row.fromID) === "agent") flow.requestAgentRecord(row.fromID);
+      }
     }
-    const resPath = kind === "faction" ? $ownerLogos?.factions[String(fromID)] : kind === "corporation" ? $ownerLogos?.corporations[String(fromID)] : undefined;
-    return resPath ? [clientTexture(resPath)] : [];
-  }
+  });
+  $effect(() => {
+    const raceID = $station.online?.raceID ?? null;
+    const factionID = raceID === null ? null : ({ 1: 500001, 2: 500002, 4: 500003, 8: 500004 } as Record<number, number>)[raceID];
+    if (factionID !== undefined && factionID !== null) flow.requestNames([{ kind: "faction", id: factionID }]);
+  });
 
   // The name for a standing's entity, ALWAYS a name and never the id (R7d).
-  // The kind is the same one the flow resolved the id under.
   function entityName(fromID: number): string {
     const kind = classifyStandingKind(fromID);
     if (kind === null) {
       return "Unknown entity";
     }
     return resolvedName($names.resolved, kind, fromID, "Unknown entity");
+  }
+  /** A tag's name: an owner by the kind its number is kept under. */
+  const nameOf = (kind: NameKind, id: number): string => (kind === "owner" ? entityName(id) : resolvedName($names.resolved, kind, id, ""));
+  function word(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
+    const template = $words.templates[label];
+    return formatTemplate(typeof template === "string" ? template : STANDINGS_WORDS[label] ?? "", args, { nameOf });
+  }
+
+  /** Each panel's groups (ui/standingsList.ts): the pilot's with its skill bonus and its race's faction. */
+  function listGroups(scope: "char" | "corp", rows: readonly CharStanding[]) {
+    return standingsListGroups(
+      {
+        rows,
+        forPilot: scope === "char",
+        raceID: $station.online?.raceID ?? null,
+        agentOf: (ownerID) => {
+          const records = $agents.agentRecords;
+          if (!(ownerID in records)) return undefined;
+          const record = records[ownerID];
+          return record ? { level: record.level, factionID: record.factionID } : null;
+        },
+        factionOfCorporation: (corporationID) => $corporationFactions?.[String(corporationID)] ?? null,
+        skillLevel: (typeID) => ($skills.skills ?? []).find((skill) => skill.typeID === typeID)?.level ?? 0,
+        ownerName: entityName,
+        agentName: (agentID, level) => word("UI/Agents/AgentEntryNameAndLevel", { ownerID: agentID, level: level ?? 0 }),
+      },
+      sort,
+      searchText[scope],
+    );
+  }
+
+  /** What each panel's quick filter holds, and the text it filters by: taken 0.4 s after the first key (SetQuickFilterInput). */
+  let searchInput = $state<Record<"char" | "corp", string>>({ char: "", corp: "" });
+  let searchText = $state<Record<"char" | "corp", string>>({ char: "", corp: "" });
+  const searchTimers: Record<"char" | "corp", ReturnType<typeof setTimeout> | null> = { char: null, corp: null };
+  function typed(scope: "char" | "corp", value: string): void {
+    searchInput[scope] = value;
+    if (searchTimers[scope] !== null) return;
+    searchTimers[scope] = setTimeout(() => {
+      searchTimers[scope] = null;
+      searchText[scope] = searchInput[scope];
+    }, 400);
   }
 
   // standingEntry.ShowInfo (OnDblClick): Show Info on the owner, a faction, an NPC corporation or an agent.
@@ -109,43 +207,25 @@
     }
   }
 
+  /**
+   * standingEntry.UpdateIcon: a faction's or a corporation's logo (eveIcon.GetLogoIcon: LogoIcon, the client's own
+   * tables), a character's portrait (photo.GetPortrait(ownerID, 64), the client's silhouette where the image server
+   * has none). The pictures to try, in turn.
+   */
+  function pictureOf(fromID: number): readonly string[] {
+    const kind = classifyStandingKind(fromID);
+    if (kind === "agent") {
+      const portrait = portraitUrl($imageServer, fromID, 64);
+      return [...(portrait === null ? [] : [portrait]), clientTexture(portraitDefaultPath(64))];
+    }
+    const resPath = kind === "faction" ? $ownerLogos?.factions[String(fromID)] : kind === "corporation" ? $ownerLogos?.corporations[String(fromID)] : undefined;
+    return resPath ? [clientTexture(resPath)] : [];
+  }
+
   // A composition owner is a corporation member (a player character); it may not
   // resolve from static data, so it degrades honestly rather than leaking the id.
   function memberName(ownerID: number): string {
     return resolvedName($names.resolved, "character", ownerID, "Unknown entity");
-  }
-
-  const GROUPS: readonly { readonly kind: NameKind; readonly label: string }[] = [
-    { kind: "faction", label: "Factions" },
-    { kind: "corporation", label: "Corporations" },
-    { kind: "agent", label: "Agents" },
-  ];
-
-  // Split one standings list into the retail groups (Factions / Corporations /
-  // Agents), each sorted strongest-standing first. A row whose id falls outside
-  // every known range lands in "Other" so it is still shown (by name), never
-  // dropped silently.
-  function grouped(
-    rows: readonly CharStanding[],
-  ): readonly { readonly label: string; readonly rows: readonly CharStanding[] }[] {
-    const out: { label: string; rows: CharStanding[] }[] = [];
-    for (const { kind, label } of GROUPS) {
-      const inGroup = rows
-        .filter((row) => classifyStandingKind(row.fromID) === kind)
-        .slice()
-        .sort((left, right) => right.standing - left.standing);
-      if (inGroup.length > 0) {
-        out.push({ label, rows: inGroup });
-      }
-    }
-    const other = rows
-      .filter((row) => classifyStandingKind(row.fromID) === null)
-      .slice()
-      .sort((left, right) => right.standing - left.standing);
-    if (other.length > 0) {
-      out.push({ label: "Other", rows: other });
-    }
-    return out;
   }
 
   // The signed standing to two decimals, e.g. "+2.14" / "−1.30" / "0.00".
@@ -169,13 +249,6 @@
       return "bad";
     }
     return "neutral";
-  }
-
-  // The meter fill as a percentage of half the −10..+10 track (0..100), so the
-  // bar grows out from the centre line toward the sign's end.
-  function meterFraction(standing: number): number {
-    const clamped = Math.max(-10, Math.min(10, standing));
-    return Math.min(100, (Math.abs(clamped) / 10) * 100);
   }
 
   function toggleDetail(fromID: number, scope: "char" | "corp"): void {
@@ -227,55 +300,48 @@
 </script>
 
 <section class="panel">
-  <!-- ⚠ REFRESH LIVES IN THE STRIP, NOT AT THE BOTTOM OF THE PAGE. It used
-       to be a bare <p><button> after the last section, so this window put its
-       one action somewhere no other window puts one — below content of
-       unpredictable length, which on a full read meant scrolling past
-       everything to reach it. Nothing was added or taken away; the control
-       moved to the band every other window keeps its controls in. -->
   <header class="panel-head">
     <h2 class="panel-title">Standings</h2>
     <span class="controls">
+      <!-- The sort menu (MenuButtonIcon: standingsFilterSettings.get_menu): its heading, then each sort to choose. -->
+      <span class="standings-sort">
+        <button type="button" title={word("UI/Common/SortBy")} aria-haspopup="menu" aria-expanded={sortMenuOpen} onclick={() => (sortMenuOpen = !sortMenuOpen)}>⇅</button>
+        {#if sortMenuOpen}
+          <span class="standings-sort-menu" role="menu">
+            <span class="standings-sort-heading">{word("UI/Standings/SortingHeader")}</span>
+            {#each STANDINGS_SORTS as option (option.value)}
+              <button type="button" role="menuitemradio" aria-checked={sort === option.value} class:chosen={sort === option.value} onclick={() => chooseSort(option.value)}>{word(option.label)}</button>
+            {/each}
+          </span>
+        {/if}
+      </span>
       <button type="button" disabled={busy} onclick={refresh}>Refresh</button>
     </span>
   </header>
-  <!-- ⚠ WHAT SURVIVED IS THE LEGEND, NOT THE DESCRIPTION. "Who you and your
-       corporation stand with" is the window's name again; the scale is the key
-       to every number in the tables below, and without it a "−4.1" means
-       nothing in particular. -->
   <p class="note">Standings run from −10 to +10.</p>
 
   {#if error}
     <p class="error">Could not read your standings: {error}</p>
   {/if}
 
-  {#snippet standingRow(row: CharStanding, scope: "char" | "corp")}
+  {#snippet standingRow(entry: StandingsListEntry, scope: "char" | "corp")}
     <li class="standing">
       <button
         type="button"
         class="row"
-        class:open={isOpen(row.fromID, scope)}
-        onclick={() => toggleDetail(row.fromID, scope)}
+        class:open={isOpen(entry.ownerID, scope)}
+        onclick={() => toggleDetail(entry.ownerID, scope)}
         ondblclick={() => {
-          const subject = infoOf(row.fromID);
+          const subject = infoOf(entry.ownerID);
           if (subject !== null) showInfo(subject);
         }}
       >
-        <OwnerPicture name={entityName(row.fromID)} urls={pictureOf(row.fromID)} />
-        <span class="name">{entityName(row.fromID)}</span>
-        <span class="meter" aria-hidden="true">
-          <span class="track">
-            <span
-              class="fill {standingTone(row.standing)}"
-              class:left={row.standing < 0}
-              style="width: {meterFraction(row.standing) / 2}%"
-            ></span>
-          </span>
-        </span>
-        <span class="value {standingTone(row.standing)}">{standingText(row.standing)}</span>
+        <!-- StandingEntry.Load: the picture, then "<standing> <name>", the name dimmer. -->
+        <OwnerPicture name={plainText(entry.ownerName)} urls={pictureOf(entry.ownerID)} />
+        <span class="name"><span class="standing-entry-value">{entry.standingText + " "}</span><span class="standing-entry-owner">{plainText(entry.ownerName)}</span></span>
       </button>
 
-      {#if isOpen(row.fromID, scope)}
+      {#if isOpen(entry.ownerID, scope)}
         <div class="detail">
           {#if $standings.detailError}
             <p class="error">The details could not be read: {$standings.detailError}</p>
@@ -324,35 +390,38 @@
     </li>
   {/snippet}
 
-  {#snippet standingList(
-    rows: readonly CharStanding[] | null,
-    err: string | null,
-    scope: "char" | "corp",
-    emptyMsg: string,
-  )}
+  {#snippet standingList(rows: readonly CharStanding[] | null, err: string | null, scope: "char" | "corp")}
+    <!-- The panel's quick filter (QuickFilterEdit). -->
+    <p class="standings-filter">
+      <input type="search" placeholder={word("UI/Common/Search")} aria-label={word("UI/Common/Search")} value={searchInput[scope]} oninput={(event) => typed(scope, (event.currentTarget as HTMLInputElement).value)} />
+    </p>
     {#if err}
       <p class="error">{err}</p>
     {:else if rows === null}
       <p class="empty">Reading standings…</p>
-    {:else if rows.length === 0}
-      <p class="empty">{emptyMsg}</p>
     {:else}
-      {#each grouped(rows) as group (group.label)}
-        <h4>{group.label}</h4>
-        <ul class="standings">
-          {#each group.rows as row (row.fromID)}
-            {@render standingRow(row, scope)}
-          {/each}
-        </ul>
-      {/each}
+      {@const groups = listGroups(scope, rows)}
+      {#if groups.length === 0}
+        <!-- The scroll's noContentHint. -->
+        <p class="empty">{word("UI/Standings/NoResultsFound")}</p>
+      {:else}
+        {#each groups as group (group.kind)}
+          <h4>{word(STANDINGS_GROUP_LABELS[group.kind])}</h4>
+          <ul class="standings">
+            {#each group.entries as entry (entry.ownerID)}
+              {@render standingRow(entry, scope)}
+            {/each}
+          </ul>
+        {/each}
+      {/if}
     {/if}
   {/snippet}
 
   <h3>Your standings</h3>
-  {@render standingList($standings.char, $standings.charError, "char", "You have no standings with anyone yet.")}
+  {@render standingList($standings.char, $standings.charError, "char")}
 
   <h3>Your corporation's standings</h3>
-  {@render standingList($standings.corp, $standings.corpError, "corp", "Your corporation has no standings with anyone yet.")}
+  {@render standingList($standings.corp, $standings.corpError, "corp")}
 
 </section>
 
@@ -367,7 +436,7 @@
   }
   button.row {
     display: grid;
-    grid-template-columns: 32px minmax(8rem, 1fr) minmax(4rem, 12rem) 4.5rem;
+    grid-template-columns: 32px minmax(8rem, 1fr);
     align-items: center;
     gap: 0.5rem;
     width: 100%;
@@ -389,6 +458,41 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .standing-entry-owner {
+    color: var(--color-muted);
+  }
+  .standings-filter {
+    margin: 0 0 0.4rem;
+  }
+  .standings-filter input {
+    width: 100%;
+    max-width: 18rem;
+  }
+  .standings-sort {
+    position: relative;
+  }
+  .standings-sort-menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    min-width: 10rem;
+    padding: 0.25rem;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line-strong);
+  }
+  .standings-sort-menu button {
+    text-align: left;
+  }
+  .standings-sort-menu button.chosen::before {
+    content: "● ";
+  }
+  .standings-sort-heading {
+    padding: 0.2rem 0.4rem;
+    color: var(--color-muted);
   }
   .value {
     text-align: right;
