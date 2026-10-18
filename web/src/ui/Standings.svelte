@@ -22,9 +22,10 @@
   // missions) on the left, what its standing brings (GetStandingBenefitIDs) on the right, each with its tooltip; the
   // bonus's tooltip by the standing (StandingBonusTooltip, the pilot's own toward an NPC); an agent's conversation.
   //
-  // Not as the client's yet: an unavailable agent's conversation reason and colour; one selected owner for the two
-  // lists (the client's two panels have one each); and the two panels are one window, not the Character Sheet's and
-  // the Corporation window's.
+  // Each list has its own selected owner and its own detail, as the client's two panels do.
+  //
+  // Not as the client's yet: an unavailable agent's conversation reason and colour; and the two panels are one
+  // window, not the Character Sheet's and the Corporation window's.
   //
   // ⚠ empty vs failed. `char`/`corp` are null while unread OR when the read FAILED (reason in the matching *Error);
   // an empty list is the real answer.
@@ -412,8 +413,8 @@
   }
 
   function barOf(scope: "char" | "corp"): { standing: number; derived: number; hint: string; derivedHint: string; icons: readonly ThresholdIcon[]; hideZeroLabel: boolean; ownerID: number } | null {
-    if ($standings.detailScope !== scope || $standings.detailFromID === null) return null;
-    const ownerID = $standings.detailFromID;
+    const ownerID = selected[scope];
+    if (ownerID === null) return null;
     const entry = entryOf(scope, ownerID);
     if (entry === null) return null;
     const used = standingUsed(inputsOf("char", $standings.char ?? []), ownerID, entry.standing);
@@ -495,10 +496,11 @@
       return null;
     }
   }
-  /** An entry clicked (its OnClick keeps it for the pilot's list), and its details read where it is not the selected one. */
+  /** An entry clicked (its OnClick keeps it, whichever list), and its details read where it is not the selected one. */
   function selectEntry(ownerID: number, scope: "char" | "corp"): void {
     const characterID = store.station.get().online?.characterID ?? null;
-    if (scope === "char" && characterID !== null) {
+    // GetStandingEntry's OnClick keeps it from either panel (the one setting both read).
+    if (characterID !== null) {
       try {
         localStorage.setItem(`${OWNER_SETTING_KEY}:${characterID}`, String(ownerID));
       } catch {
@@ -506,39 +508,47 @@
       }
     }
     if (isOpen(ownerID, scope)) return;
+    selected[scope] = ownerID;
     void run(() => flow.loadStandingDetail(ownerID, scope));
   }
 
+  /** Each list's selected owner (the client's two panels have one each), or none yet. */
+  let selected = $state<Record<"char" | "corp", number | null>>({ char: null, corp: null });
   function isOpen(fromID: number, scope: "char" | "corp"): boolean {
-    return $standings.detailFromID === fromID && $standings.detailScope === scope;
+    return selected[scope] === fromID;
+  }
+  /** The selected owner's detail as read, where it is the selected owner's. */
+  function detailOf(scope: "char" | "corp"): import("../store/types.ts").StandingDetail | null {
+    const detail = $standings.details[scope];
+    return detail !== null && detail.fromID === selected[scope] ? detail : null;
   }
 
-  // The selected NPC corporation's agents, asked once (the bar's agent icons).
+  // The selected NPC corporations' agents, asked once each (the bar's agent icons).
   $effect(() => {
-    const ownerID = $standings.detailFromID;
-    if (ownerID === null || !(ownerID >= 1_000_000 && ownerID < 2_000_000) || ownerID in corporationsWithAgents) return;
-    void flow.npcCorporationHasAgents(ownerID).then(
-      (has) => (corporationsWithAgents = { ...corporationsWithAgents, [ownerID]: has }),
-      () => {},
-    );
+    for (const ownerID of [selected.char, selected.corp]) {
+      if (ownerID === null || !(ownerID >= 1_000_000 && ownerID < 2_000_000) || ownerID in corporationsWithAgents) continue;
+      void flow.npcCorporationHasAgents(ownerID).then(
+        (has) => (corporationsWithAgents = { ...corporationsWithAgents, [ownerID]: has }),
+        () => {},
+      );
+    }
   });
 
-  // LoadPanel: when the pilot's list is first had, the owner kept is selected, else its first.
-  let firstSelected = false;
+  // LoadPanel, for each list: when it is first had, the owner kept is selected (charactersheetStandingsPanelOwner,
+  // the one setting both panels read), else its first.
   $effect(() => {
-    const rows = $standings.char;
     const characterID = $station.online?.characterID ?? null;
-    if (firstSelected || rows === null || characterID === null) return;
-    if (store.standings.get().detailFromID !== null) {
-      firstSelected = true;
-      return;
+    if (characterID === null) return;
+    for (const scope of ["char", "corp"] as const) {
+      const rows = scope === "char" ? $standings.char : $standings.corp;
+      if (selected[scope] !== null || rows === null) continue;
+      const entries = listGroups(scope, rows, "").flatMap((group) => group.entries);
+      if (entries.length === 0) continue;
+      const kept = keptOwner(characterID);
+      const chosen = entries.find((entry) => entry.ownerID === kept) ?? entries[0]!;
+      selected[scope] = chosen.ownerID;
+      void run(() => flow.loadStandingDetail(chosen.ownerID, scope));
     }
-    const entries = listGroups("char", rows, "").flatMap((group) => group.entries);
-    if (entries.length === 0) return;
-    firstSelected = true;
-    const kept = keptOwner(characterID);
-    const chosen = entries.find((entry) => entry.ownerID === kept) ?? entries[0]!;
-    void run(() => flow.loadStandingDetail(chosen.ownerID, "char"));
   });
 
   /** The kind an owner's name is kept under (cfg.eveowners): null for a number that is no owner. */
@@ -588,7 +598,7 @@
   $effect(() => {
     const refs: { kind: NameKind; id: number }[] = [];
     const messages: string[] = [];
-    for (const tx of $standings.transactions ?? []) {
+    for (const tx of detailOf("char")?.transactions ?? []) {
       for (const id of [tx.fromID, tx.int1, tx.int2, tx.int3]) {
         if (id === null || !(id > 0)) continue;
         const kind = ownerKindOf(id) ?? locationKindOf(id);
@@ -617,7 +627,7 @@
    * point's hint (GetPointHint).
    */
   function historyOf(ownerID: number): { readonly rows: readonly import("../store/types.ts").StandingTransaction[]; readonly values: readonly number[]; readonly hints: readonly string[] } {
-    const rows = [...($standings.transactions ?? [])].reverse();
+    const rows = [...(detailOf("char")?.transactions ?? [])].reverse();
     let standing = ($standings.char ?? []).find((row) => row.fromID === ownerID)?.standing ?? 0.0;
     const back = [standing];
     for (const tx of [...rows].reverse()) {
@@ -695,8 +705,9 @@
 
   <!-- The panel's right side for its selected owner. -->
   {#snippet standingDetail(scope: "char" | "corp")}
-    {#if $standings.detailScope === scope && $standings.detailFromID !== null}
-      {@const ownerID = $standings.detailFromID}
+    {#if selected[scope] !== null}
+      {@const ownerID = selected[scope]!}
+      {@const detail = detailOf(scope)}
       {@const entry = entryOf(scope, ownerID)}
       {@const buttons = headerButtons(scope, ownerID)}
       <div class="standings-detail">
@@ -729,12 +740,12 @@
             </span>
           </div>
         {/if}
-        {#if $standings.detailError}
-          <p class="error">The details could not be read: {$standings.detailError}</p>
+        {#if detail?.error}
+          <p class="error">The details could not be read: {detail.error}</p>
         {:else if scope === "char"}
-          {#if $standings.transactions === null}
+          {#if !detail?.transactions}
             <p class="empty">Reading the history…</p>
-          {:else if $standings.transactions.length === 0}
+          {:else if detail.transactions.length === 0}
             <!-- The scroll's noContentHint. -->
             <p class="empty">{word("UI/Standings/NoStandingsTransactions", { ownerName: entityName(ownerID) })}</p>
           {:else}
@@ -761,10 +772,10 @@
           {/if}
         {:else}
           <p class="note">{word("UI/Standings/CompositionWindow/NPCToPlayerCorp")}</p>
-          {#if $standings.compositions === null}
+          {#if !detail?.compositions}
             <p class="empty">Reading the breakdown…</p>
           {:else}
-            {@const members = $standings.compositions.filter((comp) => !isNpc(comp.ownerID))}
+            {@const members = detail.compositions.filter((comp) => !isNpc(comp.ownerID))}
             {#if members.length === 0}
               <p class="empty">{word("UI/Standings/NoStandingsTransactions", { ownerName: entityName(ownerID) })}</p>
             {:else}

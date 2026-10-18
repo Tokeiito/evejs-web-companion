@@ -525,11 +525,7 @@ const INITIAL_STANDINGS: StandingsState = Object.freeze({
   corp: null,
   corpError: null,
   loaded: false,
-  detailFromID: null,
-  detailScope: null,
-  transactions: null,
-  compositions: null,
-  detailError: null,
+  details: Object.freeze({ char: null, corp: null }),
 });
 
 // R56 character sheet. Every read starts null/unloaded: an unread sheet must not
@@ -1997,42 +1993,27 @@ export function createClientStore(): ClientStore {
           corp: event.corp,
           corpError: event.corpError,
           loaded: true,
-          detailFromID: null,
-          detailScope: null,
-          transactions: null,
-          compositions: null,
-          detailError: null,
+          details: { char: null, corp: null },
         });
         break;
-      case "standings/detail":
+      case "standings/detail": {
+        const current = standings.get();
         standings.set({
-          ...standings.get(),
-          detailFromID: event.fromID,
-          detailScope: event.scope,
-          transactions: event.transactions,
-          compositions: event.compositions,
-          detailError: null,
+          ...current,
+          details: { ...current.details, [event.scope]: { fromID: event.fromID, transactions: event.transactions, compositions: event.compositions, error: null } },
         });
         break;
-      case "standings/detail-error":
+      }
+      case "standings/detail-error": {
+        const current = standings.get();
         standings.set({
-          ...standings.get(),
-          detailFromID: event.fromID,
-          detailScope: event.scope,
-          transactions: null,
-          compositions: null,
-          detailError: event.message,
+          ...current,
+          details: { ...current.details, [event.scope]: { fromID: event.fromID, transactions: null, compositions: null, error: event.message } },
         });
         break;
+      }
       case "standings/detail-cleared":
-        standings.set({
-          ...standings.get(),
-          detailFromID: null,
-          detailScope: null,
-          transactions: null,
-          compositions: null,
-          detailError: null,
-        });
+        standings.set({ ...standings.get(), details: { char: null, corp: null } });
         break;
       case "standings/cleared":
         standings.set(INITIAL_STANDINGS);

@@ -1690,22 +1690,24 @@ export interface StandingTransaction {
  * rides in the matching *Error); a SUCCESSFUL read with no rows decodes to [] —
  * a real "no standings with anyone yet" (worldHasNoContracts precedent).
  *
- * The drill-down is loaded on demand for one selected entity: a character-row's
- * standing HISTORY (`transactions`) or a corp-row's per-member COMPOSITION
- * (`compositions`). `detailFromID`/`detailScope` say which row (and section) the
- * loaded detail belongs to, so a late read never repaints the wrong row.
+ * Each list's selected owner's drill-down is loaded on demand, each list its own (the
+ * client's two standings panels hold one each): the pilot's standing HISTORY with it
+ * (`transactions`) or the corporation's per-member COMPOSITION (`compositions`).
+ * `fromID` says whose it is, so a late read never repaints another owner.
  */
+export interface StandingDetail {
+  readonly fromID: number;
+  readonly transactions: readonly StandingTransaction[] | null;
+  readonly compositions: readonly StandingComposition[] | null;
+  readonly error: string | null;
+}
 export interface StandingsState {
   readonly char: readonly CharStanding[] | null;
   readonly charError: string | null;
   readonly corp: readonly CharStanding[] | null;
   readonly corpError: string | null;
   readonly loaded: boolean;
-  readonly detailFromID: number | null;
-  readonly detailScope: "char" | "corp" | null;
-  readonly transactions: readonly StandingTransaction[] | null;
-  readonly compositions: readonly StandingComposition[] | null;
-  readonly detailError: string | null;
+  readonly details: { readonly char: StandingDetail | null; readonly corp: StandingDetail | null };
 }
 
 // --- R56 Character Sheet ----------------------------------------------------

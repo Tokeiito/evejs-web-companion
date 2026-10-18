@@ -271,7 +271,7 @@ test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", asy
   });
   // Before a pilot is chosen there is nobody whose history it would be: said, and nothing asked.
   await flow.loadStandingDetail(1000030, "char");
-  assert.deepEqual([store.standings.get().detailError, asked], ["No pilot is chosen.", []]);
+  assert.deepEqual([store.standings.get().details.char?.error, asked], ["No pilot is chosen.", []]);
   await flow.selectCharacter(PILOT.characterID);
 
   await flow.loadStandingDetail(1000030, "char");
@@ -280,14 +280,15 @@ test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", asy
   assert.deepEqual(asked, ["GetStandingTransactions(1000030,140000005)"]);
 
   const standings = store.standings.get();
-  assert.equal(standings.detailFromID, 1000030);
-  assert.equal(standings.detailScope, "char");
-  assert.equal(standings.transactions?.length, 1);
-  assert.equal(standings.transactions?.[0]?.eventTypeID, 82);
+  // Each list keeps its own selected owner's detail: the pilot's here.
+  assert.equal(standings.details.char?.fromID, 1000030);
+  assert.equal(standings.details.corp, null);
+  assert.equal(standings.details.char?.transactions?.length, 1);
+  assert.equal(standings.details.char?.transactions?.[0]?.eventTypeID, 82);
   // As the client's standing service keeps it: the server's times ten (standingsvc.py 179 to 181).
-  assert.equal(standings.transactions?.[0]?.modification, 0.023 * 10.0);
+  assert.equal(standings.details.char?.transactions?.[0]?.modification, 0.023 * 10.0);
   // A char drill-down carries no composition.
-  assert.equal(standings.compositions, null);
+  assert.equal(standings.details.char?.compositions, null);
 });
 
 test("an entity's detail that cannot be read says why by its call's code; a corporation's row asks nothing where no corporation is known", async () => {
@@ -301,9 +302,9 @@ test("an entity's detail that cannot be read says why by its call's code; a corp
 
   await flow.loadStandingDetail(1000030, "char");
   // As the route said of a read that failed: the code, and not the words that came with it.
-  assert.deepEqual([store.standings.get().detailError, asked], ["CALL_REFUSED", ["GetStandingTransactions(1000030,140000002)"]]);
+  assert.deepEqual([store.standings.get().details.char?.error, asked], ["CALL_REFUSED", ["GetStandingTransactions(1000030,140000002)"]]);
   await flow.loadStandingDetail(1000030, "corp");
-  assert.deepEqual([store.standings.get().detailError, asked.length], ["The pilot's corporation is not known.", 1]);
+  assert.deepEqual([store.standings.get().details.corp?.error, asked.length], ["The pilot's corporation is not known.", 1]);
 });
 
 test("loadStandingDetail(corp) decodes the per-member COMPOSITION", async () => {
@@ -320,7 +321,7 @@ test("loadStandingDetail(corp) decodes the per-member COMPOSITION", async () => 
   assert.deepEqual(asked, ["GetStandingCompositions(1000030,98000001)"]);
 
   const standings = store.standings.get();
-  assert.equal(standings.detailScope, "corp");
-  assert.deepEqual(standings.compositions, [{ ownerID: 140000005, standing: 1.304 }]);
-  assert.equal(standings.transactions, null);
+  assert.equal(standings.details.corp?.fromID, 1000030);
+  assert.deepEqual(standings.details.corp?.compositions, [{ ownerID: 140000005, standing: 1.304 }]);
+  assert.equal(standings.details.corp?.transactions, null);
 });
