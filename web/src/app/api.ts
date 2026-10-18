@@ -4134,6 +4134,25 @@ export async function getNpcCorporationHeadquarters(corporationID: number, optio
   return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
 }
 
+/** The owners' logos the client draws from its own tables, each a texture's res: path by the owner (GET /api/client-data/owner-logos). */
+export interface OwnerLogos {
+  readonly factions: Readonly<Record<string, string>>;
+  readonly factionsSmall: Readonly<Record<string, string>>;
+  readonly corporations: Readonly<Record<string, string>>;
+}
+
+export async function loadOwnerLogos(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly logos: OwnerLogos }> {
+  const data = await getJson("/api/client-data/owner-logos", options);
+  const paths = (value: JsonValue | undefined): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      for (const [id, resPath] of Object.entries(value)) if (typeof resPath === "string") out[id] = resPath;
+    }
+    return out;
+  };
+  return { available: data.available === true, logos: { factions: paths(data.factions), factionsSmall: paths(data.factionsSmall), corporations: paths(data.corporations) } };
+}
+
 /** A faction, or null where the id is none. */
 export async function getFaction(factionID: number, options: ApiOptions = {}): Promise<FactionInfo | null> {
   const data = await getJson(`/api/factions/${factionID}`, options).catch(() => null);

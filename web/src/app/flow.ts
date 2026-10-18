@@ -2090,6 +2090,10 @@ export interface AppFlow {
   readonly corporationFactions: ReadableSignal<Readonly<Record<string, number>> | null>;
   /** The table of NPC corporations' factions read, once. */
   loadCorporationFactions(): void;
+  /** The owners' logos the client draws from its own tables (eveIcon.LogoIcon); null until read. */
+  readonly ownerLogos: ReadableSignal<api.OwnerLogos | null>;
+  /** The owners' logos read, once. */
+  loadOwnerLogos(): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -14852,6 +14856,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     api.loadCorporationFactions(callOptions)
       .then((read) => corporationFactionsSignal.set(read.available ? read.factions : {}))
       .catch(() => setTimeout(() => (corporationFactionsAsked = false), ASK_AGAIN_MS));
+  }
+
+  // eveIcon.LogoIcon's tables: a faction's and an NPC corporation's logo, read once.
+  const ownerLogosSignal = createSignal<api.OwnerLogos | null>(null);
+  let ownerLogosAsked = false;
+  function loadOwnerLogos(): void {
+    if (ownerLogosAsked) return;
+    ownerLogosAsked = true;
+    api.loadOwnerLogos(callOptions)
+      .then((read) => ownerLogosSignal.set(read.available ? read.logos : { factions: {}, factionsSmall: {}, corporations: {} }))
+      .catch(() => setTimeout(() => (ownerLogosAsked = false), ASK_AGAIN_MS));
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -27808,6 +27823,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestOwnerTickers,
     corporationFactions: readonlySignal(corporationFactionsSignal),
     loadCorporationFactions,
+    ownerLogos: readonlySignal(ownerLogosSignal),
+    loadOwnerLogos,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,

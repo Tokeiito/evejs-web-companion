@@ -21,6 +21,7 @@
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
   import { DATE_LABELS, formatTemplate, plainText, type FormatContext } from "../bridge/clientWords.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import {
@@ -58,6 +59,17 @@
   const standings = store.standings;
   // svelte-ignore state_referenced_locally
   const corporationFactions = flow.corporationFactions;
+  // svelte-ignore state_referenced_locally
+  const ownerLogos = flow.ownerLogos;
+  /**
+   * eveIcon.GetLogoIcon for an owner the client's own tables draw (LogoIcon): a faction's (GetFactionIconID) or an NPC
+   * corporation's (CORP_ICONS), as its texture's address; null for any other.
+   */
+  function ownerLogoUrl(id: number | null): string | null {
+    if (id === null) return null;
+    const resPath = $ownerLogos?.factions[String(id)] ?? $ownerLogos?.corporations[String(id)];
+    return resPath ? clientTexture(resPath) : null;
+  }
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // svelte-ignore state_referenced_locally
@@ -274,6 +286,8 @@
   });
 
   onMount(() => {
+    // eveIcon.LogoIcon's tables, for the owners' logos.
+    flow.loadOwnerLogos();
     flow.requestWords([...Object.keys(OWNER_INFO_WORDS), DATE_LABELS.ls!, DATE_LABELS.ns!, DATE_LABELS.xn!, ...Object.keys(LINK_WORDS), ...Object.keys(MAP_INFO_WORDS), ...Object.keys(FACTION_INFO_WORDS)]);
     // The map places' type names (evetypes.GetName of typeRegion, typeConstellation, typeSolarSystem).
     flow.requestNames([3, 4, 5].map((id) => ({ kind: "type" as const, id })));
@@ -978,7 +992,7 @@
         <div class="info-standings-owner">{section.owner}</div>
         <ul class="info-standings" class:two-way={section.rows[0]?.values.length === 2}>
           {#each section.rows as row (row.key)}
-            <li>{#each row.values as value, at (at)}<span class="info-standing-value">{value}</span>{/each}<span class="info-standing-name">{row.name}</span></li>
+            <li>{#each row.values as value, at (at)}<span class="info-standing-value">{value}</span>{/each}<span class="info-standing-name">{#if ownerLogoUrl(row.key) !== null}<img class="info-owner-logo" src={ownerLogoUrl(row.key)} alt="" width="20" height="20" />{/if}{row.name}</span></li>
           {/each}
         </ul>
       </div>
@@ -998,6 +1012,7 @@
         {typeID}
         name={title}
         size="lg"
+        imageUrl={$subject.kind === "faction" ? ownerLogoUrl($subject.factionID) : $subject.kind === "corporation" ? ownerLogoUrl($subject.corporationID) : null}
         fallbackText={corporationRead?.info.tickerName || allianceRead?.shortName || ($subject.kind === "faction" || $subject.kind === "character" ? null : abbreviate(title))} />
       <div class="info-identity">
         <h2>{title}</h2>
@@ -1035,6 +1050,7 @@
                  faction where the corporation is in no alliance. -->
             <p class="info-class">
               <button type="button" class="evelink showInfo" title={word("UI/InfoWindow/ClickForFactionInfo")} onclick={() => showInfo(factionSubject(factionID))}>
+                {#if ownerLogoUrl(factionID) !== null}<img class="info-owner-logo" src={ownerLogoUrl(factionID)} alt="" width="32" height="32" />{/if}
                 {word("UI/InfoWindow/MemberOfAlliance", { allianceName: resolvedName($names.resolved, "faction", factionID, "Unknown faction") })}
               </button>
             </p>

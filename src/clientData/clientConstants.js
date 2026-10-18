@@ -45,6 +45,14 @@ const CONSTANTS = Object.freeze({
       "inventorycommon.const.flagCargo", "inventorycommon.const.flagDroneBay", "inventorycommon.const.flagShipHangar", "inventorycommon.const.flagFleetHangar",
     ]),
   }),
+  // The owners' logos the client draws from its own tables (eveIconConst.py, eveIcon.LogoIcon): a faction's large
+  // (IN_ICONS, else IN_CORP_ICONS) and small (IN_SMALL_ICONS), and an NPC corporation's (CORP_ICONS), each an icon
+  // number. The module's RACE_ICONS is keyed by appConst's races, which is stood in for: it is not read.
+  ownerLogos: Object.freeze({
+    module: "eve/client/script/ui/const/eveIconConst.pyj",
+    stubs: Object.freeze(["eve.common.lib.appConst"]),
+    names: Object.freeze(["IN_ICONS", "IN_CORP_ICONS", "IN_SMALL_ICONS", "CORP_ICONS"]),
+  }),
 });
 
 /** What scripts/client-constants.py is told, after the Python and the script itself. */
@@ -166,6 +174,24 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
         droneBayFlag: id("inventorycommon.const.flagDroneBay"),
         shipHangarFlag: id("inventorycommon.const.flagShipHangar"),
         fleetHangarFlag: id("inventorycommon.const.flagFleetHangar"),
+      });
+    }),
+    ownerLogos: () => read("ownerLogos", (values) => {
+      const iconsByID = (name) => {
+        const table = tableOf(values[name], name);
+        const out = new Map();
+        for (const [key, value] of Object.entries(table)) {
+          const id = Number(key);
+          if (!Number.isSafeInteger(id) || id <= 0 || typeof value !== "string") throw new Error(`The client's ${name} has an entry that is not an icon by an ID.`);
+          out.set(id, value);
+        }
+        return out;
+      };
+      return Object.freeze({
+        factions: iconsByID("IN_ICONS"),
+        factionCorporations: iconsByID("IN_CORP_ICONS"),
+        factionsSmall: iconsByID("IN_SMALL_ICONS"),
+        corporations: iconsByID("CORP_ICONS"),
       });
     }),
     status() {

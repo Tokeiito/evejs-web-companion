@@ -52,9 +52,14 @@
      * tile IS the label there, so it needs more than two characters.
      */
     fallbackText?: string | null;
+    /**
+     * A picture of its own in place of the type's icon: an owner's logo (eveIcon.LogoIcon's texture). It is shown in
+     * the same box, and the tile stands where it cannot be had.
+     */
+    imageUrl?: string | null;
   }
 
-  let { typeID, name, size = "sm", fallbackText = null }: Props = $props();
+  let { typeID, name, size = "sm", fallbackText = null, imageUrl = null }: Props = $props();
 
   /**
    * The type whose icon we have already watched fail. Keyed by typeID rather
@@ -62,9 +67,11 @@
    * reusing a DOM node across a keyed list update) tries that item's icon
    * instead of inheriting the previous one's failure.
    */
-  let failedFor = $state<number | null>(null);
+  let failedFor = $state<number | string | null>(null);
 
-  const src = $derived(failedFor !== null && failedFor === typeID ? null : typeIconUrl(typeID));
+  /** What the box shows: its own picture where it is given one, else the type's icon. */
+  const shown = $derived<number | string | null>(imageUrl ?? typeID);
+  const src = $derived(failedFor !== null && failedFor === shown ? null : (imageUrl ?? typeIconUrl(typeID)));
   const tileText = $derived(fallbackText ?? iconInitials(name));
 </script>
 
@@ -76,7 +83,7 @@
       loading="lazy"
       decoding="async"
       onerror={() => {
-        failedFor = typeID;
+        failedFor = shown;
       }}
     />
   {:else}

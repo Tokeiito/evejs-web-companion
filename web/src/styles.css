@@ -4929,6 +4929,8 @@
   .info-standings li { display: grid; grid-template-columns: 3.5rem 1fr; gap: 0.4rem; padding: 1px 0; }
   .info-standings.two-way li { grid-template-columns: 3.5rem 3.5rem 1fr; }
   .info-standings .info-standing-value { text-align: right; font-variant-numeric: tabular-nums; }
+  /* An owner's logo beside its name (eveIcon.LogoIcon: a faction's or an NPC corporation's). */
+  .show-info .info-owner-logo { vertical-align: middle; margin-right: 0.3rem; }
   .show-info dd .info-line { margin: 0; }
   .info-bold { font-weight: 700; }
   .info-italic { font-style: italic; }

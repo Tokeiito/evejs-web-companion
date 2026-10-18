@@ -13191,6 +13191,49 @@ app.get("/api/client-data/npc-corporation-headquarters/:id", requireAuth, async 
   }
 });
 
+/**
+ * Icon.ConvertIconNoToResPath (eveIcon.py 111 to 142): an icon number's texture. A res: path is itself; "ui_s_z_n"
+ * is the icons sheet's; "corps_..." and "alliance_..." the corporations' and alliances' folders; "c_s_n" and "a_s_n"
+ * their 128s. (The two-part "s_n", sized by the sheet, is in none of the owners' tables, and is null here.)
+ */
+function iconNumberResPath(iconNo) {
+  if (typeof iconNo !== "string") return null;
+  if (iconNo.startsWith("res:")) return iconNo;
+  const parts = iconNo.split("_");
+  const whole = (value) => String(Number.parseInt(value, 10));
+  if (iconNo.startsWith("ui_") && parts.length === 4) return `res:/ui/texture/icons/${whole(parts[1])}_${whole(parts[2])}_${whole(parts[3])}.png`;
+  if (iconNo.startsWith("corps_")) return `res:/ui/texture/corps/${iconNo.slice(6)}.png`;
+  if (iconNo.startsWith("alliance_")) return `res:/ui/texture/alliance/${iconNo.slice(9)}.png`;
+  if (iconNo.startsWith("c_") && parts.length === 3) return `res:/ui/texture/corps/${whole(parts[1])}_128_${whole(parts[2])}.png`;
+  if (iconNo.startsWith("a_") && parts.length === 3) return `res:/ui/texture/alliance/${whole(parts[1])}_128_${whole(parts[2])}.png`;
+  return null;
+}
+
+// The owners' logos as the client draws them from its own tables (eveIcon.LogoIcon): a faction's
+// (GetFactionIconID: IN_ICONS, else IN_CORP_ICONS; small, IN_SMALL_ICONS first) and an NPC corporation's (CORP_ICONS),
+// each its texture's res: path. `available` is false when the client's tables could not be read.
+app.get("/api/client-data/owner-logos", requireAuth, async (req, res, next) => {
+  try {
+    const logos = await clientConstants.ownerLogos();
+    if (!logos) {
+      res.json({ ok: true, available: false, factions: {}, factionsSmall: {}, corporations: {} });
+      return;
+    }
+    const pathsOf = (entries) => Object.fromEntries([...entries].map(([id, iconNo]) => [id, iconNumberResPath(iconNo)]).filter(([, resPath]) => resPath !== null));
+    const factionIDs = new Set([...logos.factions.keys(), ...logos.factionCorporations.keys(), ...logos.factionsSmall.keys()]);
+    const large = (id) => logos.factions.get(id) ?? logos.factionCorporations.get(id);
+    res.json({
+      ok: true,
+      available: true,
+      factions: pathsOf([...factionIDs].map((id) => [id, large(id)])),
+      factionsSmall: pathsOf([...factionIDs].map((id) => [id, logos.factionsSmall.get(id) ?? large(id)])),
+      corporations: pathsOf(logos.corporations),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
   try {
     const table = await clientBuiltData.table("npcCorporations");
