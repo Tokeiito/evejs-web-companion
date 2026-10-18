@@ -2207,6 +2207,8 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetAgents": judged(`${AGENTS}:92`, sentWithNothing,
     "agents = sm.RemoteSvc('agentMgr').GetAgents().Clone(), by name and with nothing: the whole table, kept for the life of the client's agents service. Recorded on Tranquility so, in two logins. The transport keeps the table as the client does, and answers the page's asking from it; the page keeps it too, and picks a station's agents from it as the client's docked view does."),
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
+  "charMgr.GetPublicInfo": same("eve/client/script/ui/shared/info/panels/panelStandings.py:120", "RemoteSvc('charMgr').GetPublicInfo(ownerID): a character's public row, its corporation for its Show Info's Standings tab"),
+  "corpmgr.GetCorporations": same(`${CORP_SVC}/bco_corporations.py:51`, "RemoteSvc('corpmgr').GetCorporations(corpid): another corporation's row, which the corporation service keeps (GetCorporation)"),
   "standingMgr.GetNPCNPCStandings": same(`${STANDING_SVC}:115`, "RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments: the NPCs' standings with each other, kept by the standing service"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),

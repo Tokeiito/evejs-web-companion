@@ -262,7 +262,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
-import { readNpcNpcStandings, readStandings, standingComposition, standingHistory, type NpcNpcStanding } from "../bridge/standingsReads.ts";
+import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -510,7 +510,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import type { AgentFinderRow, AgentRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
   ABYSS_LOOTABLE_OBJECTIVE,
@@ -2743,6 +2743,20 @@ export interface AppFlow {
   factionShowInfo(factionID: number): Promise<api.FactionInfo | null>;
   /** The NPCs' standings with each other (standingMgr.GetNPCNPCStandings), read once and kept, as the standing service keeps them. */
   npcNpcStandings(): Promise<readonly NpcNpcStanding[]>;
+  /**
+   * The address book's standings (addressbook.GetContacts): the pilot's contacts' (charMgr.GetContactList), its
+   * corporation's where it is a player's (corp.GetContactList) and its alliance's (alliance.GetContactList). A list
+   * not read is empty.
+   */
+  contactStandings(): Promise<ContactStandings>;
+  /** An NPC corporation's headquarters, its station or its system (api.getNpcCorporationHeadquarters), or null. */
+  npcCorporationHeadquarters(corporationID: number): Promise<{ readonly itemID: number; readonly typeID: number } | null>;
+  /** A character's corporation (charMgr.GetPublicInfo), or null. */
+  characterCorporation(characterID: number): Promise<number | null>;
+  /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
+  corporationAlliance(corporationID: number): Promise<number | null>;
+  /** An agent's row in the table of agents (agents.GetAgentByID), or null where it is none. */
+  agentRecord(agentID: number): Promise<AgentRow | null>;
   /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
   mapSystemObjects(solarSystemID: number): Promise<{ readonly available: boolean; readonly objects: readonly api.SystemObjectRow[] }>;
   /**
@@ -26311,6 +26325,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     factionShowInfo(factionID) {
       return api.getFaction(factionID, callOptions);
+    },
+    async contactStandings() {
+      const online = store.station.get().online;
+      const corporationID = online?.corporationID ?? null;
+      const allianceID = online?.allianceID ?? null;
+      const none = (): Map<number, number> => new Map();
+      const [personal, corporate, alliance] = await Promise.all([
+        bridgeAsk("charMgr", "GetContactList", []).then((answer) => new Map(addressBookOf(answer).contacts.map((contact) => [contact.contactID, contact.relationshipID] as const)), none),
+        corporationID === null || isNpcOwnerCorporation(corporationID) ? none() : bridgeAsk("corpRegistry", "GetCorporateContacts", []).then(relationshipsOf, none),
+        allianceID === null ? none() : bridgeAsk("allianceRegistry", "GetAllianceContacts", []).then(relationshipsOf, none),
+      ]);
+      return { personal, corporate, alliance };
+    },
+    npcCorporationHeadquarters(corporationID) {
+      return api.getNpcCorporationHeadquarters(corporationID, callOptions);
+    },
+    characterCorporation(characterID) {
+      return characterCorporationOf(bridgeAsk, characterID);
+    },
+    corporationAlliance(corporationID) {
+      return corporationAllianceOf(bridgeAsk, corporationID);
+    },
+    async agentRecord(agentID) {
+      return (await agentsKnown()).find((agent) => agent.agentID === agentID) ?? null;
     },
     npcNpcStandings() {
       npcNpcStandingsRead ??= readNpcNpcStandings(bridgeAsk).catch((error: unknown) => {

@@ -3754,7 +3754,7 @@ test("a character chosen has its contacts, its corporation's and who of them is 
   assert.equal(ledgerOf(npc.pilots, "corpRegistry.GetCorporateContacts"), null);
 });
 
-test("the pilot's own contacts and the watched contacts' online state are kept as the client keeps them, the corporation's is not: a read of it through the BFF asks the server, and the client's own name for its priming is no call of the client's", async () => {
+test("the pilot's own contacts, the corporation's and the watched contacts' online state are kept as the client keeps them, and the client's own name for its priming is no call of the client's", async () => {
   let asked = 0;
   const { pilots, session, handle } = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { asked += 1; return { type: "list", items: [asked] }; } } }, ADDRESS_BOOK_PAIRS);
   const read = async (service, method, args = []) => (await pilots.callMethod(service, method, args, null, FIELDS, handle)).result;
@@ -3762,8 +3762,11 @@ test("the pilot's own contacts and the watched contacts' online state are kept a
   assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [1] }, { type: "list", items: [1] }, { same: 1 }]);
   // The watched contacts' online state is kept too (onlineStatus.py Prime, 74 to 82): the read asks nothing more.
   await read("onlineStatus", "GetInitialState");
+  // The corporation's contacts are kept too (the address book's corporateContacts, let go at the server's
+  // OnOrganizationContactsUpdated): the read asks nothing more than the choosing asked.
   await read("corpRegistry", "GetCorporateContacts");
-  assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], session.boundCalls.at(-1)], [{ same: 1 }, { same: 1, reshaped: 1 }, { objectID: "N=2:1", method: "GetCorporateContacts", args: [], kwargs: null }]);
+  const corporateAsked = session.boundCalls.filter((call) => call.method === "GetCorporateContacts");
+  assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], corporateAsked.length], [{ same: 1 }, { same: 1 }, 1]);
   // onlineStatus.GetOnlineStatus(charID) is the client's, for a character its kept state does not have.
   await read("onlineStatus", "GetOnlineStatus", [PILOT + 1]);
   assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "onlineStatus.GetOnlineStatus")], [{ service: "onlineStatus", method: "GetOnlineStatus", args: [PILOT + 1], kwargs: null }, [{ same: 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:56"]]);

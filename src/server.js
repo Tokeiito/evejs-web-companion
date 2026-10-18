@@ -13166,6 +13166,31 @@ app.get("/api/client-data/system-objects/:id", requireAuth, (req, res, next) => 
   }
 });
 
+// An NPC corporation's headquarters, as its Show Info names it (corporationInfoWindow.get_corporation_headquarters:
+// the client's own NPC corporation's stationID, the station's type; else its solarSystemID). `available` is false
+// when the table could not be read; `headquarters` is null for a corporation it has not, or one with neither.
+app.get("/api/client-data/npc-corporation-headquarters/:id", requireAuth, async (req, res, next) => {
+  const corporationID = Number(req.params.id);
+  if (!Number.isSafeInteger(corporationID) || corporationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CORPORATION", message: "A corporation's number is required." });
+    return;
+  }
+  try {
+    const { available, row } = await clientBuiltData.lookup("npcCorporations", corporationID);
+    const stationID = Number(row && row.stationID) || 0;
+    const solarSystemID = Number(row && row.solarSystemID) || 0;
+    const stationTypeID = stationID > 0 ? Number(staticData.getStation(stationID)?.stationTypeID) || 0 : 0;
+    const headquarters = stationID > 0 && stationTypeID > 0
+      ? { itemID: stationID, typeID: stationTypeID }
+      : solarSystemID > 0
+        ? { itemID: solarSystemID, typeID: 5 }
+        : null;
+    res.json({ ok: true, available, headquarters });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
   try {
     const table = await clientBuiltData.table("npcCorporations");

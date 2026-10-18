@@ -158,13 +158,12 @@ test("a module with no dogma read draws no attribute table", () => {
   assert.equal(body.includes("Attributes"), false);
 });
 
-test("a pilot with no recorded standing says so instead of showing 0.00", () => {
-  // 0.00 is a REAL standing — neutral. It must never stand in for "we do not
-  // know", which is a different fact a player would act on differently.
+test("a pilot's window shows no standing before its Standings tab's reads have answered", () => {
+  // The tab is the client's (PanelStandings): the address book's standings toward the pilot, its corporation and
+  // its alliance, each the client's neutral 0.0 where there is no contact. Nothing is shown before they are read.
   showInfoTarget.show({ kind: "character", characterID: 140000005 });
   const body = renderInfo(createClientStore());
-  assert.match(body, /no recorded standing/);
-  assert.equal(body.includes("0.00"), false);
+  assert.equal(body.includes("info-standings"), false);
 });
 
 /**

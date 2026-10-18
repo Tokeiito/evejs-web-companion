@@ -157,6 +157,9 @@ const CORP_REGISTRY = "corpRegistry";
  * allianceid). Kept through a move, and made again when the alliance changes.
  */
 const ALLIANCE_REGISTRY = "allianceRegistry";
+/** The address book's two organization reads (addressbook.GetContacts: corp.GetContactList, alliance.GetContactList). */
+const CORPORATE_CONTACTS = "GetCorporateContacts";
+const ALLIANCE_CONTACTS = "GetAllianceContacts";
 /**
  * The service whose moniker is for the pilot's alliance, or for its corporation where it is in none
  * (eveMoniker.GetWar, 184 to 192: Moniker('warRegistry', (session.allianceid or session.corpid, 1)), its session
@@ -1916,6 +1919,9 @@ function createGamePortPilots({
       aggression: null,
       /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
       corporationRow: null,
+      /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
+      corporateContacts: null,
+      allianceContacts: null,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -2128,6 +2134,8 @@ function createGamePortPilots({
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);
+        // addressbook: another alliance's contacts are another's to ask for.
+        entry.allianceContacts = null;
         if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
       }
       // war_cso.OnSessionChanged (69 to 80): in another alliance or corporation, what is kept of the wars of the
@@ -2148,8 +2156,9 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
-        // bco_corporations.Reset: another corporation's row is another's to ask for.
+        // bco_corporations.Reset: another corporation's row is another's to ask for; and its contacts (addressbook).
         entry.corporationRow = null;
+        entry.corporateContacts = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
@@ -2640,6 +2649,9 @@ function createGamePortPilots({
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
       (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
+      // The address book's organization contacts, noted where they are asked for (addressBookRead, monikerCall).
+      (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
+      (service === ALLIANCE_REGISTRY && method === ALLIANCE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -5065,6 +5077,18 @@ function createGamePortPilots({
     // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
     // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
     if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
+    // addressbook.GetContacts (193 to 250): the corporation's contacts and the alliance's as the address book keeps
+    // them from the choosing of the character, asked where none are kept (the server's word of a change lets them go).
+    if (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && args.length === 0 && kwargs === null) {
+      return corporationDoes(entry, async () => (entry.corporateContacts ??= { answer: await corporationAsk(entry, CORPORATE_CONTACTS) }).answer);
+    }
+    if (service === ALLIANCE_REGISTRY && method === ALLIANCE_CONTACTS && args.length === 0 && kwargs === null) {
+      if (entry.allianceContacts === null) {
+        ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
+        entry.allianceContacts = { answer: await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs) };
+      }
+      return entry.allianceContacts.answer;
+    }
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -5746,8 +5770,10 @@ function createGamePortPilots({
    *
    * The pilot's own contacts and blocked owners, and the watched contacts' online state, are kept as the client
    * keeps them (KEPT_UNTIL_CHANGED), for the page's reading of them by charMgr.GetContactList and
-   * onlineStatus.GetInitialState. Nothing is kept of the corporation's and the alliance's, though the client keeps
-   * them and works them over at the server's notices: no window of the page reads them yet.
+   * onlineStatus.GetInitialState. The corporation's and the alliance's are kept too (corporateContacts,
+   * allianceContacts), for the page's reading of them by name (an owner's Standings tab); the client works the
+   * server's word of a change into them (OnOrganizationContactsUpdated, 157 to 191), and here what is kept is let go
+   * at it and asked for when next wanted.
    */
   async function addressBookRead(entry) {
     const ofTheAlliance = (method) => {
@@ -5756,14 +5782,20 @@ function createGamePortPilots({
     };
     await Promise.all([
       keptRead(entry, CHAR_MGR, CONTACT_LIST, shape(CHAR_MGR, CONTACT_LIST, [], null, contextFor(entry))),
-      ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
-      ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
+      ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, CORPORATE_CONTACTS).then((answer) => { entry.corporateContacts = { answer }; })]),
+      ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance(ALLIANCE_CONTACTS).then((answer) => { entry.allianceContacts = { answer }; })]),
       keptRead(entry, ONLINE_STATUS, "GetInitialState", shape(ONLINE_STATUS, "GetInitialState", [], null, contextFor(entry))),
     ].map((asked) => asked.catch(() => {})));
   }
 
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
+    // addressbook.OnOrganizationContactsUpdated(ownerID, updates): the corporation's or the alliance's contacts changed.
+    if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
+      const ownerID = Number(notification.args[0]);
+      if (ownerID === Number(attribute(entry, "corpid"))) entry.corporateContacts = null;
+      if (ownerID === Number(attribute(entry, "allianceid"))) entry.allianceContacts = null;
+    }
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
     // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
     // keeps; here the row of the pilot's own corporation is let go, and asked for when it is next wanted.

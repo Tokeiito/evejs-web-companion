@@ -35,7 +35,7 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import { failsTheReading, failureCode, type Ask } from "./ask.ts";
-import { readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
+import { readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** The pilot and its corporation, as the session has them. */
 export interface Whose {
@@ -105,6 +105,49 @@ export async function readNpcNpcStandings(ask: Ask): Promise<readonly NpcNpcStan
     if (fromID > 0 && toID > 0 && Number.isFinite(standing)) rows.push({ fromID, toID, standing });
   }
   return rows;
+}
+
+/** The address book's standings (addressbook.GetContacts): the pilot's contacts', its corporation's and its alliance's, by the contact. */
+export interface ContactStandings {
+  readonly personal: ReadonlyMap<number, number>;
+  readonly corporate: ReadonlyMap<number, number>;
+  readonly alliance: ReadonlyMap<number, number>;
+}
+
+/** A dict of contacts, each a KeyVal (contactID, relationshipID, labelMask) by its number: each one's standing. */
+export function relationshipsOf(answer: JsonValue): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const [key, row] of readDictPairs(answer)) {
+    const contactID = Number(key);
+    const relationship = Number(readKeyVal(row, "relationshipID") ?? Number.NaN);
+    if (contactID > 0 && Number.isFinite(relationship)) out.set(contactID, relationship);
+  }
+  return out;
+}
+
+/** A util.Row's field by its column (its header and its line). */
+function rowField(row: JsonValue, name: string): JsonValue | undefined {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) return undefined;
+  const args = (row as { args?: { entries?: unknown } }).args;
+  const entries = Array.isArray(args?.entries) ? (args.entries as readonly unknown[]) : [];
+  const listed = (key: string): readonly JsonValue[] => {
+    const entry = entries.find((each) => Array.isArray(each) && each[0] === key) as readonly [string, { items?: JsonValue[] }] | undefined;
+    return Array.isArray(entry?.[1]?.items) ? entry[1].items : [];
+  };
+  const at = listed("header").indexOf(name);
+  return at < 0 ? undefined : listed("line")[at];
+}
+
+/** A character's corporation, by its public row (charMgr.GetPublicInfo, panelStandings 120). Fails as the call fails. */
+export async function characterCorporationOf(ask: Ask, characterID: number): Promise<number | null> {
+  const corporationID = Number(unwrapLong(readKeyVal(await ask("charMgr", "GetPublicInfo", [characterID]), "corporationID") ?? null) ?? 0);
+  return corporationID > 0 ? corporationID : null;
+}
+
+/** A corporation's alliance, by its row (corp.GetCorporation: corpmgr.GetCorporations(corpid)). Fails as the call fails. */
+export async function corporationAllianceOf(ask: Ask, corporationID: number): Promise<number | null> {
+  const allianceID = Number(unwrapLong(rowField(await ask("corpmgr", "GetCorporations", [corporationID]), "allianceID") ?? null) ?? 0);
+  return allianceID > 0 ? allianceID : null;
 }
 
 /** An entity's history with the character: what changed the standing, and when. Fails as the call fails. */

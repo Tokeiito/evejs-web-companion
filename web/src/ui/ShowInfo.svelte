@@ -16,7 +16,7 @@
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import type { MapRouteStep } from "../app/flow.ts";
-  import type { NpcNpcStanding } from "../bridge/standingsReads.ts";
+  import type { ContactStandings, NpcNpcStanding } from "../bridge/standingsReads.ts";
   import { applyStandingBonus, standingBonusSkill } from "../bridge/effectiveStanding.ts";
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
@@ -40,11 +40,11 @@
   import { fmtDist, hostileLabel, isHostile, ratioPercent, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
-  import { resolvedName, type NameRef } from "../store/names.ts";
+  import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
   import { abbreviate } from "./fittingIcons.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { SpaceEntity } from "../store/types.ts";
+  import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -190,14 +190,6 @@
       : [],
   );
 
-  /** The standing we hold toward a pilot, when the standings slice has one. */
-  const standing = $derived.by(() => {
-    const current = $subject;
-    if (current === null || current.kind !== "character") {
-      return null;
-    }
-    return ($standings.char ?? []).find((row) => row.fromID === current.characterID) ?? null;
-  });
 
   // ---- A corporation and an alliance (bridge/ownerInfo.ts) ---------------------------------------------------------
   //
@@ -336,13 +328,103 @@
 
   /** The NPCs' standings with each other (the standing service's npcnpcstandingsfrom), once read. */
   let npcNpcStandingsRead = $state<readonly NpcNpcStanding[] | null>(null);
-  // An NPC owner's Standings tab reads the pilot's standings and the three standing skills: each read where it is not.
+  /** The owner kinds by number (idCheckers): a faction, a corporation (an NPC's or a player's), an alliance, an agent, else a character. */
+  function ownerKindOf(id: number): NameKind {
+    if (id >= 500_000 && id < 600_000) return "faction";
+    if ((id >= 1_000_000 && id < 2_000_000) || (id >= 98_000_000 && id < 99_000_000)) return "corporation";
+    if (id >= 99_000_000 && id < 100_000_000) return "alliance";
+    if (id >= 3_000_000 && id < 4_000_000) return "agent";
+    return "owner";
+  }
+  /** idCheckers.IsNPC: an owner of the game's own (above the system's items, below the players'). */
+  const isNpcOwner = (id: number): boolean => id > 10_000 && id < 90_000_000;
+  /** An owner's name as the Standings tab names it (cfg.eveowners; the pilot by the name it came online with). */
+  function ownerName(id: number): string {
+    const online = $station.online;
+    return resolvedName($names.resolved, ownerKindOf(id), id, online?.characterID === id ? online.characterName : "");
+  }
+
+  /** An NPC corporation's headquarters (get_corporation_headquarters), once read. */
+  let npcHeadquartersRead = $state<{ readonly itemID: number; readonly typeID: number } | null>(null);
+  /** The latest headquarters reading asked; an older one's answer is dropped. Not reactive. */
+  let headquartersReads = 0;
   $effect(() => {
     const current = $subject;
-    const npcOwner = current?.kind === "faction" || (current?.kind === "corporation" && isNpcCorporation(current.corporationID));
-    if (!npcOwner) return;
-    if (store.standings.get().char === null && store.standings.get().charError === null) void flow.loadStandings().catch(() => {});
-    if (store.skills.get().skills === null) void flow.loadSkills().catch(() => {});
+    const ticket = ++headquartersReads;
+    npcHeadquartersRead = null;
+    if (current?.kind !== "corporation" || !isNpcCorporation(current.corporationID)) return;
+    void flow.npcCorporationHeadquarters(current.corporationID).then((hq) => {
+      if (ticket === headquartersReads) npcHeadquartersRead = hq;
+    });
+  });
+  /** The headquarters' name: a station's, else a system's. */
+  const npcHeadquartersName = $derived(
+    npcHeadquartersRead === null
+      ? ""
+      : resolvedName($names.resolved, npcHeadquartersRead.typeID === 5 ? "system" : "station", npcHeadquartersRead.itemID, ""),
+  );
+  $effect(() => {
+    const hq = npcHeadquartersRead;
+    if (hq !== null) flow.requestNames([{ kind: hq.typeID === 5 ? "system" : "station", id: hq.itemID }]);
+  });
+
+  /** A player owner's Standings tab: the address book's standings, and the owners the tab's sections are toward. */
+  let contactStandingsRead = $state<ContactStandings | null>(null);
+  let standingTargetsRead = $state<readonly number[] | null>(null);
+  /** An NPC character's row in the table of agents ({ agent: null } for one that is no agent), once read. */
+  let agentRead = $state<{ readonly agent: AgentRow | null } | null>(null);
+  /** The latest Standings tab reading asked; an older one's answers are dropped. Not reactive. */
+  let standingReads = 0;
+  // The Standings tab's reads (PanelStandings.GetStandingsDataSections), each where the tab is the owner's: an NPC
+  // owner's the pilot's standings and the three standing skills (and an NPC character's agent row); a player
+  // owner's the address book's contacts and the owners its sections are toward (GetToIDsForPlayerOwner).
+  $effect(() => {
+    const current = $subject;
+    const ticket = ++standingReads;
+    contactStandingsRead = null;
+    standingTargetsRead = null;
+    agentRead = null;
+    if (current === null || current.kind === "type" || current.kind === "module" || current.kind === "spaceObject" || current.kind === "mapLocation") return;
+    const npcOwner = current.kind === "faction" || (current.kind === "corporation" && isNpcCorporation(current.corporationID)) || (current.kind === "character" && isNpcOwner(current.characterID));
+    if (npcOwner) {
+      if (store.standings.get().char === null && store.standings.get().charError === null) void flow.loadStandings().catch(() => {});
+      if (store.skills.get().skills === null) void flow.loadSkills().catch(() => {});
+      if (current.kind === "character") {
+        void flow.agentRecord(current.characterID).then(
+          (agent) => {
+            if (ticket === standingReads) agentRead = { agent };
+          },
+          () => {
+            if (ticket === standingReads) agentRead = { agent: null };
+          },
+        );
+      }
+      return;
+    }
+    // The pilot's own window has no Standings tab (infosvc 1143).
+    if (current.kind === "character" && current.characterID === store.station.get().online?.characterID) return;
+    void flow.contactStandings().then(
+      (read) => {
+        if (ticket === standingReads) contactStandingsRead = read;
+      },
+      () => {},
+    );
+    const allianceOf = (corporationID: number): Promise<number | null> => flow.corporationAlliance(corporationID).catch(() => null);
+    void (async (): Promise<readonly number[]> => {
+      if (current.kind === "alliance") return [current.allianceID];
+      if (current.kind === "corporation") {
+        const allianceID = await allianceOf(current.corporationID);
+        return allianceID === null ? [current.corporationID] : [current.corporationID, allianceID];
+      }
+      // A character: it, its corporation where that is a player's, and that corporation's alliance.
+      const characterID = current.kind === "character" ? current.characterID : 0;
+      const corporationID = await flow.characterCorporation(characterID).catch(() => null);
+      if (corporationID === null || isNpcOwner(corporationID)) return [characterID];
+      const allianceID = await allianceOf(corporationID);
+      return allianceID === null ? [characterID, corporationID] : [characterID, corporationID, allianceID];
+    })().then((targets) => {
+      if (ticket === standingReads) standingTargetsRead = targets;
+    });
   });
 
   /** StandingData._GetStandingFormatted: 10 from 9.995, else rounded to two places, written as Python writes a float. */
@@ -364,23 +446,33 @@
   /** standingsvc.GetStanding between two NPCs (npcnpcstandingsfrom), else contactNeutralStanding. */
   const npcStanding = (fromID: number, toID: number): number =>
     (npcNpcStandingsRead ?? []).find((row) => row.fromID === fromID && row.toID === toID)?.standing ?? 0;
+  interface StandingSection {
+    readonly key: string;
+    readonly owner: string;
+    readonly rows: readonly { readonly key: number; readonly name: string; readonly values: readonly string[] }[];
+  }
   /**
-   * PanelStandings.GetStandingsDataSectionsNPC: the owner's (and, for a corporation, its faction's) standings toward
-   * the pilot; a faction's also with every other faction, both ways (Unknown left out). Each section's header is a
-   * bar with no words (StandingsSection.ConstructHeader); the owner they share is named where the client shows its
-   * picture.
+   * PanelStandings.GetStandingsDataSections. An NPC owner's (GetStandingsDataSectionsNPC): the owner's standings
+   * toward the pilot, with its corporation's and faction's for a corporation or an agent; a faction's also with every
+   * other faction, both ways (Unknown left out). A player owner's (GetStandingsDataSectionsPlayerOwner): the pilot's,
+   * its player corporation's and its alliance's standings (their contacts') toward the owner, and toward a
+   * character's corporation and alliance. Each section's header is a bar with no words (StandingsSection.
+   * ConstructHeader); the owner the section shares is named where the client shows its picture.
    */
-  const ownerStandingSections = $derived.by(() => {
+  const ownerStandingSections = $derived.by<readonly StandingSection[]>(() => {
     const current = $subject;
-    const myID = $station.online?.characterID ?? null;
-    if (myID === null || $standings.char === null) return [];
-    const myName = resolvedName($names.resolved, "owner", myID, $station.online?.characterName ?? "");
-    if (current?.kind === "faction") {
+    const online = $station.online;
+    const myID = online?.characterID ?? null;
+    if (current === null || myID === null) return [];
+    const towardMe = (fromIDs: readonly number[], factionID: number | null): StandingSection => ({
+      key: "me",
+      owner: ownerName(myID),
+      rows: fromIDs.map((id) => ({ key: id, name: ownerName(id), values: [standingText(standingTowardMe(id, factionID))] })),
+    });
+    if (current.kind === "faction") {
       const read = factionRead;
-      if (read === null) return [];
-      const sections: { key: string; owner: string; rows: { key: number; name: string; values: string[] }[] }[] = [
-        { key: "me", owner: myName, rows: [{ key: read.factionID, name: read.name, values: [standingText(standingTowardMe(read.factionID, read.factionID))] }] },
-      ];
+      if (read === null || $standings.char === null) return [];
+      const sections: StandingSection[] = [towardMe([read.factionID], read.factionID)];
       if (npcNpcStandingsRead !== null) {
         sections.push({
           key: "factions",
@@ -396,20 +488,50 @@
       }
       return sections;
     }
-    if (current?.kind === "corporation" && isNpcCorporation(current.corporationID)) {
+    if (current.kind === "corporation" && isNpcCorporation(current.corporationID)) {
+      if ($standings.char === null) return [];
       const factionID = corporationFactionID;
-      const fromIDs = factionID === null ? [current.corporationID] : [current.corporationID, factionID];
-      return [{
-        key: "me",
-        owner: myName,
-        rows: fromIDs.map((id) => ({
-          key: id,
-          name: id === factionID ? resolvedName($names.resolved, "faction", id, "") : resolvedName($names.resolved, "corporation", id, ""),
-          values: [standingText(standingTowardMe(id, factionID))],
-        })),
-      }];
+      return [towardMe(factionID === null ? [current.corporationID] : [current.corporationID, factionID], factionID)];
     }
-    return [];
+    if (current.kind === "character" && isNpcOwner(current.characterID)) {
+      // GetFromIDsForNPCOwner: an agent, its corporation and its faction (agent.factionID, its corporation's); any
+      // other NPC character alone.
+      const read = agentRead;
+      if (read === null || $standings.char === null) return [];
+      if (read.agent === null) return [towardMe([current.characterID], null)];
+      const corporationID = read.agent.corporationID;
+      const factionID = corporationID === null ? null : ($corporationFactions?.[String(corporationID)] ?? null);
+      return [towardMe([current.characterID, corporationID, factionID].filter((id): id is number => id !== null), factionID)];
+    }
+    const contacts = contactStandingsRead;
+    const targets = standingTargetsRead;
+    if (contacts === null || targets === null) return [];
+    const myCorporationID = online?.corporationID ?? null;
+    const myAllianceID = online?.allianceID ?? null;
+    const fromIDs = [
+      myID,
+      ...(myCorporationID !== null && !isNpcOwner(myCorporationID) ? [myCorporationID] : []),
+      ...(myAllianceID !== null && myAllianceID !== undefined && myAllianceID > 0 ? [myAllianceID] : []),
+    ];
+    // standingsvc.GetStanding from the pilot, its corporation or its alliance: that one's contact's relationship.
+    const contactStanding = (fromID: number, toID: number): number =>
+      (fromID === myID ? contacts.personal : fromID === myCorporationID ? contacts.corporate : contacts.alliance).get(toID) ?? 0;
+    return targets.map((toID) => ({
+      key: `to${toID}`,
+      owner: ownerName(toID),
+      rows: fromIDs.map((fromID) => ({ key: fromID, name: ownerName(fromID), values: [standingText(contactStanding(fromID, toID))] })),
+    }));
+  });
+  /** The names the Standings tab shows: each section's owner and each row's. */
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const section of ownerStandingSections) {
+      for (const row of section.rows) refs.push({ kind: ownerKindOf(row.key), id: row.key });
+    }
+    for (const id of standingTargetsRead ?? []) refs.push({ kind: ownerKindOf(id), id });
+    const online = store.station.get().online;
+    for (const id of [online?.corporationID ?? null, online?.allianceID ?? null]) if (id !== null && id !== undefined && id > 0) refs.push({ kind: ownerKindOf(id), id });
+    if (refs.length > 0) flow.requestNames(refs);
   });
 
   /** A solar system's celestials and NPC stations (mapSvc.GetSolarsystemItems), once read; null while not, or not had. */
@@ -890,6 +1012,10 @@
         {/if}
         {#if corporationRead !== null}
           {@const info = corporationRead.info}
+          {#if isNpcCorporation(info.corporationID) && npcHeadquartersRead !== null && npcHeadquartersName !== ""}
+            <!-- construct_header: an NPC corporation's headquarters, its link (HeadquartersLocation). -->
+            <div class="info-class">{@render markupLines(word("UI/InfoWindow/HeadquartersLocation", { hqLink: `<url=showinfo:${npcHeadquartersRead.typeID}//${npcHeadquartersRead.itemID}>${npcHeadquartersName}</url>` }))}</div>
+          {/if}
           {#if !isNpcCorporation(info.corporationID) && info.stationID !== null && info.stationID > 0}
             <!-- construct_header: a player's corporation's headquarters, its station, by the house icon. -->
             <p class="info-class">⌂ {resolvedName($names.resolved, "station", info.stationID, "")}</p>
@@ -1144,15 +1270,7 @@
         <p class="note">Reading…</p>
       {/if}
     {:else if $subject.kind === "character"}
-      {#if standing}
-        <h3>Standing</h3>
-        <dl class="kv">
-          <dt>Yours toward them</dt>
-          <dd>{standing.standing.toFixed(2)}</dd>
-        </dl>
-      {:else}
-        <p class="note">You hold no recorded standing toward this pilot.</p>
-      {/if}
+      {@render standingsTab()}
     {:else if $subject.kind === "corporation" || $subject.kind === "alliance"}
       {@const rows = $subject.kind === "corporation" ? corporationRows : allianceRows}
       {#if rows.length > 0}

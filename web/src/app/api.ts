@@ -4125,6 +4125,15 @@ export async function getSystemObjects(solarSystemID: number, options: ApiOption
   return { available: data.available === true, objects };
 }
 
+/** An NPC corporation's headquarters (get_corporation_headquarters): its station by the station's type, else its system; or null. */
+export async function getNpcCorporationHeadquarters(corporationID: number, options: ApiOptions = {}): Promise<{ readonly itemID: number; readonly typeID: number } | null> {
+  const data = await getJson(`/api/client-data/npc-corporation-headquarters/${corporationID}`, options).catch(() => null);
+  const hq = data && typeof data.headquarters === "object" && data.headquarters !== null && !Array.isArray(data.headquarters) ? (data.headquarters as Record<string, JsonValue>) : null;
+  const itemID = hq === null ? 0 : Number(hq.itemID);
+  const typeID = hq === null ? 0 : Number(hq.typeID);
+  return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
+}
+
 /** A faction, or null where the id is none. */
 export async function getFaction(factionID: number, options: ApiOptions = {}): Promise<FactionInfo | null> {
   const data = await getJson(`/api/factions/${factionID}`, options).catch(() => null);
