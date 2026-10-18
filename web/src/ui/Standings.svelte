@@ -17,7 +17,12 @@
   // (StandingsGraph.Update: self.transactions.reverse()), and the history is shown from that same list, so the rows
   // stand in the order opposite to the server's; a point and a row hovered light each other.
   //
-  // Not as the client's yet: the header's buttons; one selected owner for the two
+  // The header's buttons (StandingsHeader UpdateActionsCont and UpdateBenefitsCont): what moves the owner's standing
+  // (GetStandingActionIDs: the skill to train where one raises it, aggression, derived standings, Factional Warfare,
+  // missions) on the left, what its standing brings (GetStandingBenefitIDs) on the right, each with its tooltip; the
+  // bonus's tooltip by the standing (StandingBonusTooltip, the pilot's own toward an NPC); an agent's conversation.
+  //
+  // Not as the client's yet: an unavailable agent's conversation reason and colour; one selected owner for the two
   // lists (the client's two panels have one each); and the two panels are one window, not the Character Sheet's and
   // the Corporation window's.
   //
@@ -44,6 +49,7 @@
   import type { JsonValue } from "../bridge/wire.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
+  import { standingBonusSkill } from "../bridge/effectiveStanding.ts";
   import StandingsBar from "./StandingsBar.svelte";
   import StandingsGraph from "./StandingsGraph.svelte";
   import {
@@ -163,6 +169,31 @@
     "UI/StructureSettings/ServiceDocking": "Docking",
     "UI/StructureSettings/ServiceCorpOffices": "Offices",
     "UI/Medical/JumpClone": "Jump clones",
+    "UI/Standings/Actions/AggressionHeader": "Attacking it",
+    "UI/Standings/Actions/DerivedHeader": "Through others",
+    "UI/Standings/Actions/FactionalWarfareHeader": "Its militia",
+    "UI/Standings/Actions/FailMissionHeader": "Missions failed",
+    "UI/Standings/Actions/SpecialMissionHeader": "Special missions",
+    "UI/Standings/Actions/CompleteMissionHeader": "Missions done",
+    "UI/Standings/Actions/Aggression": "Attacking {ownerName}'s ships lowers its standing toward you.",
+    "UI/Standings/Actions/DerivedOtherFactions": "As your standing with another faction moves, {ownerName}'s moves with it, up for a faction it likes and down for one it does not.",
+    "UI/Standings/Actions/DerivedAgentInFaction": "What {ownerName}'s corporations and agents think of you moves {ownerName}'s standing too.",
+    "UI/Standings/Actions/DerivedAgentInCorp": "What {ownerName}'s agents think of you moves {ownerName}'s standing too.",
+    "UI/Standings/Actions/FactionalWarfare": "Fighting in {ownerName}'s militia raises its standing toward you.",
+    "UI/Standings/Actions/FailRejectMission": "Failing, turning down or quitting {ownerName}'s missions lowers the standing of the agent, its corporation and its faction.",
+    "UI/Standings/Actions/SpecialMissionFaction": "Storyline, career and epic arc missions for {ownerName} or its corporations raise its standing toward you.",
+    "UI/Standings/Actions/SpecialMissionCorp": "Storyline and epic arc missions for {ownerName} raise its standing toward you.",
+    "UI/Standings/Actions/CompleteMission": "Finishing {ownerName}'s missions raises the standing of the agent, its corporation and its faction.",
+    "UI/Standings/Actions/SocialSkills": "Skills",
+    "UI/Standings/Benefits/BrokersFeeHeader": "Lower broker's fees",
+    "UI/Standings/Benefits/ReprocessingTaxHeader": "Lower reprocessing tax",
+    "UI/Standings/Benefits/BrokersFee": "The higher its standing toward you, the less {ownerName} takes of your sell orders in its stations.",
+    "UI/Standings/Benefits/ReprocessingTax": "The higher its standing toward you, the less {ownerName} takes of your reprocessing in its stations.",
+    "Tooltips/CharacterSheet/StandingSkillTooltip": "{skillName} raises your standing with {[character]ownerID.name}.",
+    "UI/Standings/StandingsTooltipBase": "Before skills:",
+    "UI/Standings/StandingTooltipSkillBonus": "From skills:",
+    "Tooltips/CharacterSheet/Standings": "Standing",
+    "UI/Chat/StartConversationAgent": "Talk to the agent",
     "UI/Standings/StandingsBarHint": "{[character]owner.name} toward you: <b>{standing}</b>",
     "UI/Standings/StandingsBarHintToCorp": "{[character]owner.name} toward {corpName}: <b>{standing}</b>",
     "UI/Standings/CompositionWindow/NPCToPlayerCorp": "An NPC's standing toward a player corporation is its members' standings averaged, of those a week or more in it.",
@@ -194,6 +225,8 @@
     void flow.stationStandingsRestrictions().then((read) => (restrictionsRead = read), () => {});
     // The epic arcs' starter agents (_GetEpicArcThresholdIDs), whose faction and corporation the bar asks.
     for (const agentID of EPIC_ARC_STARTER_AGENTS) flow.requestAgentRecord(agentID);
+    // The skills a standing's train button names (Diplomacy, Connections, Criminal Connections).
+    flow.requestNames([3357, 3359, 3361].map((id) => ({ kind: "type" as const, id })));
     try {
       const kept = localStorage.getItem(SORT_SETTING_KEY);
       const known = STANDINGS_SORTS.find((each) => each.value === kept);
@@ -268,6 +301,101 @@
    * owner, the standing it deals with the pilot by (GetStandingUsed, from the pilot's own standings whichever the
    * panel), and their hints.
    */
+  /** standingUIConst's actions and benefits: each one's icon, heading and words. */
+  const STANDING_ACTIONS: Readonly<Record<number, { readonly icon: string; readonly label: string; readonly hint: string }>> = {
+    1: { icon: "aggression", label: "AggressionHeader", hint: "Aggression" },
+    2: { icon: "derivedOtherFactions", label: "DerivedHeader", hint: "DerivedOtherFactions" },
+    3: { icon: "derivedAgentInFaction", label: "DerivedHeader", hint: "DerivedAgentInFaction" },
+    4: { icon: "derivedAgentInCorp", label: "DerivedHeader", hint: "DerivedAgentInCorp" },
+    5: { icon: "factionalWarfare", label: "FactionalWarfareHeader", hint: "FactionalWarfare" },
+    6: { icon: "failRejectMission", label: "FailMissionHeader", hint: "FailRejectMission" },
+    7: { icon: "specialMissionFaction", label: "SpecialMissionHeader", hint: "SpecialMissionFaction" },
+    8: { icon: "specialMissionCorp", label: "SpecialMissionHeader", hint: "SpecialMissionCorp" },
+    10: { icon: "completeMission", label: "CompleteMissionHeader", hint: "CompleteMission" },
+    12: { icon: "skill", label: "SocialSkills", hint: "" },
+  };
+  const STANDING_BENEFITS: Readonly<Record<number, { readonly icon: string; readonly label: string; readonly hint: string }>> = {
+    1: { icon: "reprocessingTax", label: "ReprocessingTaxHeader", hint: "ReprocessingTax" },
+    2: { icon: "brokerFee", label: "BrokersFeeHeader", hint: "BrokersFee" },
+  };
+  interface HeaderButton {
+    readonly key: string;
+    readonly icon: string;
+    readonly hint: string;
+    readonly open: (() => void) | null;
+  }
+  /**
+   * The header's buttons for the selected owner: GetStandingActionIDs (an empire's faction Factional Warfare as well;
+   * the skill to train only on the pilot's own and where a skill raises the standing, IsActionEnabled), and
+   * GetStandingBenefitIDs, laid right to left.
+   */
+  function headerButtons(scope: "char" | "corp", ownerID: number): { readonly actions: readonly HeaderButton[]; readonly benefits: readonly HeaderButton[] } {
+    if (!isNpc(ownerID)) return { actions: [], benefits: [] };
+    const isFactionOwner = ownerID >= 500_000 && ownerID < 600_000;
+    const isCorporationOwner = ownerID >= 1_000_000 && ownerID < 2_000_000;
+    const isAgentOwner = ownerID >= 3_000_000 && ownerID < 4_000_000;
+    const actionIDs = isFactionOwner
+      ? [12, 1, 2, 3, 7, ...([500003, 500001, 500004, 500002].includes(ownerID) ? [5] : [])]
+      : isCorporationOwner ? [12, 4, 8] : isAgentOwner ? [12, 10, 6] : [];
+    const ownerName = entityName(ownerID);
+    const subject = infoOf(ownerID);
+    const showOwner = subject !== null ? () => showInfo(subject) : null;
+    // GetSkillTypeID2To1: the skill by the owner's faction and its standing as kept (RoundStandingTo10).
+    const raw = ($standings.char ?? []).find((row) => row.fromID === ownerID)?.standing ?? 0;
+    const pilotInputs = inputsOf("char", $standings.char ?? []);
+    const factionID = isFactionOwner ? ownerID : isCorporationOwner ? pilotInputs.factionOfCorporation(ownerID) : (pilotInputs.agentOf(ownerID)?.factionID ?? null);
+    const skill = standingBonusSkill(factionID, raw >= 9.995 ? 10.0 : raw);
+    const actions: HeaderButton[] = [];
+    for (const actionID of actionIDs) {
+      const action = STANDING_ACTIONS[actionID]!;
+      if (actionID === 12) {
+        if (scope !== "char" || skill === null) continue;
+        const skillName = resolvedName($names.resolved, "type", skill, "");
+        actions.push({
+          key: "12",
+          icon: `res:/UI/Texture/Classes/Standings/Actions/${action.icon}.png`,
+          hint: [word("UI/Standings/Actions/SocialSkills"), plainText(word("Tooltips/CharacterSheet/StandingSkillTooltip", { skillName, ownerID }))].join("\n"),
+          open: () => showInfo({ kind: "type", typeID: skill }),
+        });
+        continue;
+      }
+      const open = actionID === 10 || actionID === 6 ? () => void flow.openConversation(ownerID) : actionID === 5 ? null : showOwner;
+      actions.push({
+        key: String(actionID),
+        icon: `res:/UI/Texture/Classes/Standings/Actions/${action.icon}.png`,
+        hint: [word(`UI/Standings/Actions/${action.label}`), plainText(word(`UI/Standings/Actions/${action.hint}`, { ownerName }))].join("\n"),
+        open,
+      });
+    }
+    const benefits = isFactionOwner || isCorporationOwner
+      ? [2, 1].map((benefitID): HeaderButton => {
+          const benefit = STANDING_BENEFITS[benefitID]!;
+          return {
+            key: String(benefitID),
+            icon: `res:/UI/Texture/Classes/Standings/Benefits/${benefit.icon}.png`,
+            hint: [word(`UI/Standings/Benefits/${benefit.label}`), plainText(word(`UI/Standings/Benefits/${benefit.hint}`, { ownerName }))].join("\n"),
+            open: showOwner,
+          };
+        })
+      : [];
+    return { actions, benefits };
+  }
+  /** StandingBonusTooltip: the standing before skills, the skill's bonus where one applies, and with it. */
+  function bonusHint(ownerID: number, standing: number): string {
+    const raw = ($standings.char ?? []).find((row) => row.fromID === ownerID)?.standing ?? 0;
+    const kept = raw >= 9.995 ? 10.0 : raw;
+    const pilotInputs = inputsOf("char", $standings.char ?? []);
+    const factionID = ownerID >= 500_000 && ownerID < 600_000 ? ownerID : ownerID >= 1_000_000 && ownerID < 2_000_000 ? pilotInputs.factionOfCorporation(ownerID) : (pilotInputs.agentOf(ownerID)?.factionID ?? null);
+    const lines = [`${word("UI/Standings/StandingsTooltipBase")} ${pyStandingText(kept)}`];
+    if (standingBonusSkill(factionID, kept) !== null) {
+      // GetStandingBonus2To1: round(with the bonus less without, 2), nought where it is not above it.
+      const bonus = Number((standing - kept).toFixed(2));
+      lines.push(`${word("UI/Standings/StandingTooltipSkillBonus")} ${standingChangeText(bonus > 0.0 ? bonus : 0.0).text}`);
+    }
+    lines.push(`${word("Tooltips/CharacterSheet/Standings")}: ${pyStandingText(standing)}`);
+    return lines.join("\n");
+  }
+
   /** A threshold icon's tooltip (ThresholdTooltip, ThresholdTooltipStationService), written out. */
   function thresholdHint(icon: ThresholdIcon, ownerID: number): string {
     const heading = word(THRESHOLD_LABELS[icon.typeID] ?? "");
@@ -570,13 +698,37 @@
     {#if $standings.detailScope === scope && $standings.detailFromID !== null}
       {@const ownerID = $standings.detailFromID}
       {@const entry = entryOf(scope, ownerID)}
+      {@const buttons = headerButtons(scope, ownerID)}
       <div class="standings-detail">
         <!-- StandingsHeader: the owner's picture, its name, its standing toward the panel's owner. -->
         <header class="standings-detail-head">
           <OwnerPicture name={entry ? plainText(entry.ownerName) : entityName(ownerID)} urls={pictureOf(ownerID)} size={64} />
           <span class="standings-detail-name">{entry ? plainText(entry.ownerName) : entityName(ownerID)}</span>
+          {#if ownerID >= 3_000_000 && ownerID < 4_000_000}
+            <!-- AgentConversationIcon. -->
+            <button type="button" class="standings-talk" title={word("UI/Chat/StartConversationAgent")} onclick={() => void flow.openConversation(ownerID)}>💬</button>
+          {/if}
           {#if entry}<span class="standings-detail-standing">{entry.standingText}</span>{/if}
+          {#if entry && scope === "char" && isNpc(ownerID)}
+            <!-- The help icon: StandingBonusTooltip. -->
+            <img class="standings-bonus-help" src={clientTexture("res:/UI/Texture/Icons/generic/more_info_16.png")} alt="" width="16" height="16" title={bonusHint(ownerID, entry.standing)} />
+          {/if}
         </header>
+        {#if buttons.actions.length > 0 || buttons.benefits.length > 0}
+          <!-- The header's actions (left) and benefits (right). -->
+          <div class="standings-detail-buttons">
+            <span class="standings-actions">
+              {#each buttons.actions as button (button.key)}
+                <button type="button" title={button.hint} onclick={() => button.open?.()}><img src={clientTexture(button.icon)} alt="" width="26" height="26" /></button>
+              {/each}
+            </span>
+            <span class="standings-benefits">
+              {#each buttons.benefits as button (button.key)}
+                <button type="button" title={button.hint} onclick={() => button.open?.()}><img src={clientTexture(button.icon)} alt="" width="26" height="26" /></button>
+              {/each}
+            </span>
+          </div>
+        {/if}
         {#if $standings.detailError}
           <p class="error">The details could not be read: {$standings.detailError}</p>
         {:else if scope === "char"}
@@ -790,6 +942,34 @@
   }
   .standings-history img {
     display: block;
+  }
+  .standings-detail-buttons {
+    display: flex;
+    justify-content: space-between;
+    margin: -0.25rem 0 0.5rem 72px;
+  }
+  .standings-actions,
+  .standings-benefits {
+    display: flex;
+    gap: 4px;
+  }
+  .standings-benefits {
+    flex-direction: row-reverse;
+  }
+  .standings-detail-buttons button,
+  .standings-talk {
+    padding: 0;
+    border: 1px solid var(--color-line);
+    background: transparent;
+    cursor: pointer;
+    line-height: 0;
+  }
+  .standings-detail-buttons img {
+    opacity: 0.7;
+  }
+  .standings-talk {
+    line-height: 1;
+    padding: 2px 4px;
   }
   .standings-history tr.lit {
     background: rgba(128, 128, 128, 0.18);
