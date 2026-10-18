@@ -1659,17 +1659,23 @@ export interface StandingComposition {
 
 /**
  * One row of a standing's HISTORY (standingMgr.GetStandingTransactions): a dated
- * event that changed the standing. `eventTypeID` is mapped to a plain label
- * (R9a); `modification` is the recorded raw change (a small server-owned float,
- * shown as-is — the client does not recompute standing math). `id` is a stable
- * list key only and is never rendered; the row's own fromID/toID/int_* fields
- * are entity ids and are NOT decoded, so no raw id can reach the panel (R7d).
+ * event that changed the standing, as the client's standing service keeps it
+ * (standingsvc.GetStandingTransactions: the modification times ten). Its fromID,
+ * int_1 to int_3 and msg are what the client words its reason by
+ * (eveFormat.FmtStandingTransaction, bridge/standingTransactions.ts): an owner or a
+ * place they name is shown by its name, never its number (R7d). `id` is a stable
+ * list key only and is never rendered.
  */
 export interface StandingTransaction {
   readonly id: string;
   readonly date: bigint | null;
   readonly eventTypeID: number;
   readonly modification: number;
+  readonly fromID: number | null;
+  readonly msg: string | null;
+  readonly int1: number | null;
+  readonly int2: number | null;
+  readonly int3: number | null;
 }
 
 /**

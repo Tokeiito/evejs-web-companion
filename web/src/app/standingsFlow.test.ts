@@ -284,7 +284,8 @@ test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", asy
   assert.equal(standings.detailScope, "char");
   assert.equal(standings.transactions?.length, 1);
   assert.equal(standings.transactions?.[0]?.eventTypeID, 82);
-  assert.equal(standings.transactions?.[0]?.modification, 0.023);
+  // As the client's standing service keeps it: the server's times ten (standingsvc.py 179 to 181).
+  assert.equal(standings.transactions?.[0]?.modification, 0.023 * 10.0);
   // A char drill-down carries no composition.
   assert.equal(standings.compositions, null);
 });

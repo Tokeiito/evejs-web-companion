@@ -128,43 +128,26 @@ const REAL_TRANSACTION: JsonValue = {
   },
 };
 
-test("decodeStandingTransactions decodes the real list<KeyVal> (date, eventTypeID, modification)", () => {
+test("decodeStandingTransactions decodes the real list<KeyVal> as the client's standing service keeps it", () => {
   const rows = decodeStandingTransactions({ type: "list", items: [REAL_TRANSACTION] });
   assert.equal(rows.length, 1);
   const [row] = rows;
   assert.equal(row!.eventTypeID, 82);
-  assert.equal(row!.modification, 0.023);
+  // standingsvc.GetStandingTransactions: each.modification = float(each.modification * 10.0).
+  assert.equal(row!.modification, 0.023 * 10.0);
   // The FILETIME survives as a bigint (it exceeds 2^53).
   assert.equal(row!.date, 134288084070510000n);
+  // What FmtStandingTransaction words the reason by.
+  assert.deepEqual([row!.fromID, row!.msg, row!.int1, row!.int2, row!.int3], [1000030, "Derived standings", 1000033, null, null]);
 });
 
 test("decodeStandingTransactions on an empty list is [] (a real 'no history')", () => {
   assert.deepEqual(decodeStandingTransactions({ type: "list", items: [] }), []);
 });
 
-// R7d id-sweep: the decoded transaction must carry NO raw entity id — not the
-// fromID (1000030), the toID (140000005), nor int_1 (1000033).
-function transactionSweepText(rows: readonly { readonly id: string; readonly date: bigint | null; readonly eventTypeID: number; readonly modification: number }[]): string {
-  return rows
-    .map((row) => `${row.id}|${row.date === null ? "" : row.date.toString()}|${row.eventTypeID}|${row.modification}`)
-    .join("\n");
-}
-
-test("R7d: a decoded transaction carries no fromID/toID/int_1", () => {
-  const rows = decodeStandingTransactions({ type: "list", items: [REAL_TRANSACTION] });
-  const text = transactionSweepText(rows);
-  for (const id of ["1000030", "140000005", "1000033"]) {
-    assert.equal(text.includes(id), false, `raw id ${id} leaked into a decoded transaction`);
-  }
-});
-
-test("the transaction id-sweep matcher actually inspects the decoded content", () => {
-  // Companion: a row that DID carry an id must be caught by the same sweep, so the
-  // assertion above is not vacuously passing over content it never reads.
-  const leaky = [{ id: "0:0", date: null, eventTypeID: 1000030, modification: 0 }];
-  const text = transactionSweepText(leaky);
-  assert.equal(text.includes("1000030"), true);
-});
+// (Until 2026-10-18 a decoded transaction kept none of its owners' ids. The client words a reason by them
+// (eveFormat.FmtStandingTransaction), so they are kept; R7d holds where they are shown: by their names,
+// bridge/standingTransactions.ts.)
 
 // The captured GetStandingCompositions — CachedMethodCallResult over an objectex2
 // CRowset, verbatim. One packedrow: standing 1.304, ownerID 140000005 (Farmer).

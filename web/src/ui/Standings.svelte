@@ -5,9 +5,15 @@
   // groups, each entry's picture and "<standing> <name>", its quick filter, and the sort the panels share
   // (standingsConst STANDING_SORT_SETTING, kept in this browser as the client keeps it among its settings).
   //
-  // Not as the client's yet: the panel's right side (the selected owner's header, history, graph and the standings
-  // bar) stands under the entry clicked; and the two panels are one window, not the Character Sheet's and the
-  // Corporation window's.
+  // THE SELECTED OWNER (OnScrollSelectionChange, UpdateSelectedEntry): the one clicked, and when the pilot's list loads
+  // the one last chosen there (settings.char.ui charactersheetStandingsPanelOwner, kept in this browser for the pilot)
+  // or its first. Beside the list its header (StandingsHeader: its picture, name and standing toward the panel's owner),
+  // then the pilot's history with it (StandingsHistoryScroll) or what the corporation's members make of the
+  // corporation's (StandingCompositionScroll).
+  //
+  // Not as the client's yet: the standings bar, the graph and the header's buttons; one selected owner for the two
+  // lists (the client's two panels have one each); and the two panels are one window, not the Character Sheet's and
+  // the Corporation window's.
   //
   // ⚠ empty vs failed. `char`/`corp` are null while unread OR when the read FAILED (reason in the matching *Error);
   // an empty list is the real answer.
@@ -19,7 +25,16 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { CharStanding } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import {
+    STANDING_CHANGE_WORDS,
+    compositionStandingText,
+    roundStandingChange,
+    standingChangeText,
+    standingChangeWords,
+    standingEventIcon,
+    type StandingChangeWording,
+  } from "../bridge/standingTransactions.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
@@ -93,6 +108,15 @@
     "UI/Common/SortBy": "Order",
     "UI/Standings/NoResultsFound": "Nothing to list.",
     "UI/Common/Search": "Find",
+    "UI/Common/Date": "When",
+    "UI/Common/Change": "By",
+    "UI/Common/Reason": "Why",
+    "UI/Common/Name": "Member",
+    "UI/Common/Standing": "Standing",
+    "UI/Standings/NoStandingsTransactions": "{ownerName} has not changed its standing toward you.",
+    "UI/Standings/CompositionWindow/NPCToPlayerCorp": "An NPC's standing toward a player corporation is its members' standings averaged, of those a week or more in it.",
+    [DATE_LABELS.sn!]: "{[datetime]datetime}",
+    ...STANDING_CHANGE_WORDS,
   };
 
   /** STANDING_SORT_SETTING: the sort both panels share, kept in this browser. */
@@ -158,7 +182,7 @@
   }
 
   /** Each panel's groups (ui/standingsList.ts): the pilot's with its skill bonus and its race's faction. */
-  function listGroups(scope: "char" | "corp", rows: readonly CharStanding[]) {
+  function listGroups(scope: "char" | "corp", rows: readonly CharStanding[], search: string = searchText[scope]) {
     return standingsListGroups(
       {
         rows,
@@ -176,7 +200,7 @@
         agentName: (agentID, level) => word("UI/Agents/AgentEntryNameAndLevel", { ownerID: agentID, level: level ?? 0 }),
       },
       sort,
-      searchText[scope],
+      search,
     );
   }
 
@@ -228,75 +252,125 @@
     return resolvedName($names.resolved, "character", ownerID, "Unknown entity");
   }
 
-  // The signed standing to two decimals, e.g. "+2.14" / "−1.30" / "0.00".
-  function standingText(standing: number): string {
-    const rounded = Math.round(standing * 100) / 100;
-    if (rounded > 0) {
-      return `+${rounded.toFixed(2)}`;
+  /** settings.char.ui charactersheetStandingsPanelOwner: the owner last chosen in the pilot's list, kept per pilot. */
+  const OWNER_SETTING_KEY = "charactersheetStandingsPanelOwner";
+  function keptOwner(characterID: number): number | null {
+    try {
+      const kept = Number(localStorage.getItem(`${OWNER_SETTING_KEY}:${characterID}`));
+      return Number.isSafeInteger(kept) && kept > 0 ? kept : null;
+    } catch {
+      return null;
     }
-    if (rounded < 0) {
-      // A real minus sign, not a hyphen.
-      return `−${Math.abs(rounded).toFixed(2)}`;
-    }
-    return "0.00";
   }
-
-  function standingTone(standing: number): "good" | "bad" | "neutral" {
-    if (standing > 0) {
-      return "good";
+  /** An entry clicked (its OnClick keeps it for the pilot's list), and its details read where it is not the selected one. */
+  function selectEntry(ownerID: number, scope: "char" | "corp"): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (scope === "char" && characterID !== null) {
+      try {
+        localStorage.setItem(`${OWNER_SETTING_KEY}:${characterID}`, String(ownerID));
+      } catch {
+        // Not kept: the first is chosen next time.
+      }
     }
-    if (standing < 0) {
-      return "bad";
-    }
-    return "neutral";
-  }
-
-  function toggleDetail(fromID: number, scope: "char" | "corp"): void {
-    if ($standings.detailFromID === fromID && $standings.detailScope === scope) {
-      flow.closeStandingDetail();
-      return;
-    }
-    void run(() => flow.loadStandingDetail(fromID, scope));
+    if (isOpen(ownerID, scope)) return;
+    void run(() => flow.loadStandingDetail(ownerID, scope));
   }
 
   function isOpen(fromID: number, scope: "char" | "corp"): boolean {
     return $standings.detailFromID === fromID && $standings.detailScope === scope;
   }
 
-  // A standing-history event's plain-language label (R9a), from its eventTypeID.
-  const EVENT_LABELS: Readonly<Record<number, string>> = {
-    25: "Standing reset",
-    65: "Standing set",
-    68: "Corp standing set",
-    73: "Mission completed",
-    74: "Mission failed",
-    75: "Mission declined",
-    76: "Combat aggression",
-    80: "Mission bonus",
-    82: "Derived (rise)",
-    83: "Derived (fall)",
-    84: "Standing set",
-    90: "Offer expired",
-    126: "Contraband trafficking",
-    485: "Group reward (corporation)",
-    486: "Group reward (faction)",
+  // LoadPanel: when the pilot's list is first had, the owner kept is selected, else its first.
+  let firstSelected = false;
+  $effect(() => {
+    const rows = $standings.char;
+    const characterID = $station.online?.characterID ?? null;
+    if (firstSelected || rows === null || characterID === null) return;
+    if (store.standings.get().detailFromID !== null) {
+      firstSelected = true;
+      return;
+    }
+    const entries = listGroups("char", rows, "").flatMap((group) => group.entries);
+    if (entries.length === 0) return;
+    firstSelected = true;
+    const kept = keptOwner(characterID);
+    const chosen = entries.find((entry) => entry.ownerID === kept) ?? entries[0]!;
+    void run(() => flow.loadStandingDetail(chosen.ownerID, "char"));
+  });
+
+  /** The kind an owner's name is kept under (cfg.eveowners): null for a number that is no owner. */
+  function ownerKindOf(id: number): NameKind | null {
+    if (id >= 500_000 && id < 600_000) return "faction";
+    if ((id >= 1_000_000 && id < 2_000_000) || (id >= 98_000_000 && id < 99_000_000)) return "corporation";
+    if (id >= 99_000_000 && id < 100_000_000) return "alliance";
+    if (id >= 3_000_000 && id < 4_000_000) return "agent";
+    if (id >= 90_000_000) return "character";
+    return null;
+  }
+  /** The kind a place's name is kept under (cfg.evelocations): null for a number that is no place. */
+  function locationKindOf(id: number): NameKind | null {
+    if (id >= 10_000_000 && id < 20_000_000) return "region";
+    if (id >= 20_000_000 && id < 30_000_000) return "constellation";
+    if (id >= 30_000_000 && id < 40_000_000) return "system";
+    if (id >= 60_000_000 && id < 64_000_000) return "station";
+    return null;
+  }
+  /** idCheckers.IsNPC. */
+  const isNpc = (id: number): boolean => id > 10_000 && id < 90_000_000;
+
+  /** What FmtStandingTransaction asks of the client: its words, the owners' and places' names, a mission's name. */
+  const wording: StandingChangeWording = {
+    template: (label) => {
+      const template = $words.templates[label];
+      return typeof template === "string" ? template : STANDINGS_WORDS[label] ?? "";
+    },
+    fill: (template, args) => formatTemplate(template, args, { nameOf }),
+    ownerName: (id) => {
+      const kind = ownerKindOf(id);
+      return kind === null ? null : kind === "agent" ? entityName(id) : resolvedName($names.resolved, kind, id, "");
+    },
+    locationName: (id) => {
+      const kind = locationKindOf(id);
+      return kind === null ? null : resolvedName($names.resolved, kind, id, "");
+    },
+    messageText: (id) => {
+      if (!(id > 0)) return null;
+      const text = $words.templates[`#${id}`];
+      return text === undefined ? undefined : text;
+    },
+    corporationFaction: (id) => $corporationFactions?.[String(id)] ?? null,
   };
 
-  function eventLabel(eventTypeID: number): string {
-    return EVENT_LABELS[eventTypeID] ?? "Standing change";
+  // The names and messages the history's reasons name: its owners, its places, its missions' names.
+  $effect(() => {
+    const refs: { kind: NameKind; id: number }[] = [];
+    const messages: string[] = [];
+    for (const tx of $standings.transactions ?? []) {
+      for (const id of [tx.fromID, tx.int1, tx.int2, tx.int3]) {
+        if (id === null || !(id > 0)) continue;
+        const kind = ownerKindOf(id) ?? locationKindOf(id);
+        if (kind !== null && kind !== "agent") refs.push({ kind, id });
+      }
+      if (tx.int3 !== null && tx.int3 > 0) refs.push({ kind: "type", id: tx.int3 });
+      if (tx.int1 !== null && tx.int1 > 0 && [73, 74, 75, 90].includes(tx.eventTypeID)) messages.push(`#${tx.int1}`);
+    }
+    if (refs.length > 0) flow.requestNames(refs);
+    if (messages.length > 0) flow.requestWords(messages);
+  });
+
+  /** FmtDate(eventDateTime, 'sn'). */
+  function dateText(filetime: bigint | null): string {
+    if (filetime === null) return "";
+    return formatTemplate(wording.template(DATE_LABELS.sn!), { datetime: { type: "long", value: filetime.toString() } } as Record<string, JsonValue>, { nameOf });
   }
 
-  // A retail FILETIME (100 ns ticks since 1601) as a plain date. Never a number.
-  function whenText(filetime: bigint | null): string {
-    if (filetime === null) {
-      return "—";
-    }
-    const unixMs = Number(filetime / 10000n - 11644473600000n);
-    if (!Number.isFinite(unixMs)) {
-      return "—";
-    }
-    return new Date(unixMs).toLocaleDateString();
+  /** The selected owner's entry in its list (whatever the quick filter holds). */
+  function entryOf(scope: "char" | "corp", ownerID: number): StandingsListEntry | null {
+    const rows = scope === "char" ? $standings.char : $standings.corp;
+    if (rows === null) return null;
+    return listGroups(scope, rows, "").flatMap((group) => group.entries).find((entry) => entry.ownerID === ownerID) ?? null;
   }
+
 </script>
 
 <section class="panel">
@@ -330,7 +404,7 @@
         type="button"
         class="row"
         class:open={isOpen(entry.ownerID, scope)}
-        onclick={() => toggleDetail(entry.ownerID, scope)}
+        onclick={() => selectEntry(entry.ownerID, scope)}
         ondblclick={() => {
           const subject = infoOf(entry.ownerID);
           if (subject !== null) showInfo(subject);
@@ -340,57 +414,85 @@
         <OwnerPicture name={plainText(entry.ownerName)} urls={pictureOf(entry.ownerID)} />
         <span class="name"><span class="standing-entry-value">{entry.standingText + " "}</span><span class="standing-entry-owner">{plainText(entry.ownerName)}</span></span>
       </button>
+    </li>
+  {/snippet}
 
-      {#if isOpen(entry.ownerID, scope)}
-        <div class="detail">
-          {#if $standings.detailError}
-            <p class="error">The details could not be read: {$standings.detailError}</p>
-          {:else if scope === "char"}
-            {#if $standings.transactions === null}
-              <p class="empty">Reading the history…</p>
-            {:else if $standings.transactions.length === 0}
-              <p class="empty">No recorded changes for this standing.</p>
-            {:else}
-              <table class="drill">
-                <thead>
-                  <tr><th scope="col">When</th><th scope="col">Event</th><th scope="col" class="num">Change</th></tr>
-                </thead>
-                <tbody>
-                  {#each $standings.transactions as tx (tx.id)}
-                    <tr>
-                      <td>{whenText(tx.date)}</td>
-                      <td>{eventLabel(tx.eventTypeID)}</td>
-                      <td class="num">{standingText(tx.modification)}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            {/if}
-          {:else if $standings.compositions === null}
-            <p class="empty">Reading the breakdown…</p>
-          {:else if $standings.compositions.length === 0}
-            <p class="empty">No members contribute to this corporation standing.</p>
+  <!-- The panel's right side for its selected owner. -->
+  {#snippet standingDetail(scope: "char" | "corp")}
+    {#if $standings.detailScope === scope && $standings.detailFromID !== null}
+      {@const ownerID = $standings.detailFromID}
+      {@const entry = entryOf(scope, ownerID)}
+      <div class="standings-detail">
+        <!-- StandingsHeader: the owner's picture, its name, its standing toward the panel's owner. -->
+        <header class="standings-detail-head">
+          <OwnerPicture name={entry ? plainText(entry.ownerName) : entityName(ownerID)} urls={pictureOf(ownerID)} size={64} />
+          <span class="standings-detail-name">{entry ? plainText(entry.ownerName) : entityName(ownerID)}</span>
+          {#if entry}<span class="standings-detail-standing">{entry.standingText}</span>{/if}
+        </header>
+        {#if $standings.detailError}
+          <p class="error">The details could not be read: {$standings.detailError}</p>
+        {:else if scope === "char"}
+          {#if $standings.transactions === null}
+            <p class="empty">Reading the history…</p>
+          {:else if $standings.transactions.length === 0}
+            <!-- The scroll's noContentHint. -->
+            <p class="empty">{word("UI/Standings/NoStandingsTransactions", { ownerName: entityName(ownerID) })}</p>
           {:else}
-            <table class="drill">
+            <!-- StandingsHistoryEntry: the event's icon, its date, its change, and the reason, its body the hint. -->
+            <table class="drill standings-history">
               <thead>
-                <tr><th scope="col">Member</th><th scope="col" class="num">Standing</th></tr>
+                <tr><th scope="col"></th><th scope="col">{word("UI/Common/Date")}</th><th scope="col" class="num">{word("UI/Common/Change")}</th><th scope="col">{word("UI/Common/Reason")}</th></tr>
               </thead>
               <tbody>
-                {#each $standings.compositions as comp (comp.ownerID)}
-                  <tr>
-                    <td>{memberName(comp.ownerID)}</td>
-                    <td class="num {standingTone(comp.standing)}">{standingText(comp.standing)}</td>
+                {#each $standings.transactions as tx (tx.id)}
+                  {@const reason = standingChangeWords(tx, wording)}
+                  {@const change = standingChangeText(roundStandingChange(tx.modification))}
+                  <tr title={plainText(reason.body) || undefined}>
+                    <td><img src={clientTexture(standingEventIcon(tx.eventTypeID))} alt="" width="26" height="26" /></td>
+                    <td>{dateText(tx.date)}</td>
+                    <td class="num {change.tone}">{change.text}</td>
+                    <td>{plainText(reason.subject)}</td>
                   </tr>
                 {/each}
               </tbody>
             </table>
           {/if}
-        </div>
-      {/if}
-    </li>
+        {:else}
+          <p class="note">{word("UI/Standings/CompositionWindow/NPCToPlayerCorp")}</p>
+          {#if $standings.compositions === null}
+            <p class="empty">Reading the breakdown…</p>
+          {:else}
+            {@const members = $standings.compositions.filter((comp) => !isNpc(comp.ownerID))}
+            {#if members.length === 0}
+              <p class="empty">{word("UI/Standings/NoStandingsTransactions", { ownerName: entityName(ownerID) })}</p>
+            {:else}
+              <!-- StandingCompositionEntry: the member's portrait, its name, its standing. -->
+              <table class="drill">
+                <thead>
+                  <tr><th scope="col"></th><th scope="col">{word("UI/Common/Name")}</th><th scope="col" class="num">{word("UI/Common/Standing")}</th></tr>
+                </thead>
+                <tbody>
+                  {#each members as comp (comp.ownerID)}
+                    {@const standing = compositionStandingText(comp.standing)}
+                    {@const portrait = portraitUrl($imageServer, comp.ownerID, 32)}
+                    <tr>
+                      <td><OwnerPicture name={memberName(comp.ownerID)} urls={[...(portrait === null ? [] : [portrait]), clientTexture(portraitDefaultPath(32))]} size={32} /></td>
+                      <td>{memberName(comp.ownerID)}</td>
+                      <td class="num {standing.tone}">{standing.text}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          {/if}
+        {/if}
+      </div>
+    {/if}
   {/snippet}
 
   {#snippet standingList(rows: readonly CharStanding[] | null, err: string | null, scope: "char" | "corp")}
+    <div class="standings-panel">
+    <div class="standings-left">
     <!-- The panel's quick filter (QuickFilterEdit). -->
     <p class="standings-filter">
       <input type="search" placeholder={word("UI/Common/Search")} aria-label={word("UI/Common/Search")} value={searchInput[scope]} oninput={(event) => typed(scope, (event.currentTarget as HTMLInputElement).value)} />
@@ -415,6 +517,9 @@
         {/each}
       {/if}
     {/if}
+    </div>
+    {@render standingDetail(scope)}
+    </div>
   {/snippet}
 
   <h3>Your standings</h3>
@@ -489,6 +594,39 @@
   }
   .standings-sort-menu button.chosen::before {
     content: "● ";
+  }
+  /* The panel: its list on the left, its selected owner on the right (one above the other where narrow). */
+  .standings-panel {
+    display: grid;
+    grid-template-columns: minmax(14rem, 2fr) minmax(0, 3fr);
+    gap: 0.75rem;
+    align-items: start;
+  }
+  @media (max-width: 720px) {
+    .standings-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .standings-detail {
+    min-width: 0;
+  }
+  .standings-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .standings-detail-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 1.1em;
+  }
+  .standings-detail-standing {
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  .standings-history img {
+    display: block;
   }
   .standings-sort-heading {
     padding: 0.2rem 0.4rem;
