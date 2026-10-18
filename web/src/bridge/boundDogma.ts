@@ -408,6 +408,23 @@ export function decodeInstanceRows(shipState: JsonValue | undefined): ReadonlyMa
   return rows;
 }
 
+/**
+ * The weapon banks of a ship's state (shipState[2], the third part of it, which the client makes its banks:
+ * baseDogmaLocation.SetWeaponBanks, {masterID: [slaveID, ...]}), each master with its slaves. A master or a slave whose
+ * number cannot be read is left out.
+ */
+export function decodeWeaponBanks(shipState: JsonValue | undefined): ReadonlyMap<number, readonly number[]> {
+  const banks = new Map<number, readonly number[]>();
+  const held = Array.isArray(shipState) ? (shipState as readonly JsonValue[])[2] : undefined;
+  for (const [key, slaves] of readDictPairs(held)) {
+    const masterID = idData(key as JsonValue);
+    if (typeof masterID !== "number") continue;
+    const listed: readonly JsonValue[] = isListValue(slaves) ? slaves.items : Array.isArray(slaves) ? slaves : [];
+    banks.set(masterID, listed.map((slave) => idData(slave)).filter((slaveID): slaveID is number => typeof slaveID === "number"));
+  }
+  return banks;
+}
+
 // --- GetTargeters -----------------------------------------------------------
 
 /** The itemIDs of entities currently locking YOU (empty when nobody is). */

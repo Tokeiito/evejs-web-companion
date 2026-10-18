@@ -457,7 +457,7 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
-import { decodeInstanceRows, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
+import { decodeInstanceRows, decodeWeaponBanks, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
@@ -1504,7 +1504,10 @@ export interface AppFlow {
     source: "hangar" | "cargo",
     slot: { readonly family: SlotFamily; readonly index: number } | "auto",
   ): Promise<void>;
-  /** Unfit a module, as the client's Unfit does: to the hangar docked, and to the ship's own hold in space. */
+  /**
+   * Unfit a module, as the client's UnfitModule does: a grouped weapon asked of the pilot and taken out of its bank,
+   * its charge unloaded, and the module to the hangar docked and to the ship's own hold in space.
+   */
   unfitModule(itemID: number): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
@@ -26022,7 +26025,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async unfitModule(itemID) {
-      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID));
+      // The slot's module with its charge (GetCharge), and the ship's banks as the page's dogma location holds them
+      // (GetAllInfo's ship state, as the transport keeps it).
+      const fitting = store.fitting.get();
+      const module = fitting.slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
+      const allInfo = store.dogma.get().allInfo;
+      const banks = allInfo && fitting.activeShipID !== null && Number(allInfo.activeShipID) === fitting.activeShipID
+        ? decodeWeaponBanks(allInfo.shipState) : new Map<number, readonly number[]>();
+      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), { itemID, charged: module?.charge != null }, banks,
+        () => askDialog("ClearGroupModule", { type: "dict", entries: [] }, "This module is grouped with other weapons, and taking it off splits the group up. Carry on?")));
     },
 
     simulateShip() {

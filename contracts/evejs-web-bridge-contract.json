@@ -1236,6 +1236,7 @@
       "dogmaIM.StopOverload",
       "dogmaIM.TakeModuleOffline",
       "dogmaIM.UnlinkAllModules",
+      "dogmaIM.UnlinkModule",
       "dogmaIM.UnloadAmmo",
       "entity.CmdEngage",
       "entity.CmdMineRepeatedly",

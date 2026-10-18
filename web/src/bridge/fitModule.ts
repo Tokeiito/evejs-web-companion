@@ -22,7 +22,15 @@
 //                       on the ship's own inventory and past invCache's own Add:
 //                         shipInv.moniker.MultiAdd(itemIDs, sourceID, flag=const.flagAutoFit)
 //                       a list of the items, the place they lie in, and the server to pick each a slot.
-//   a module unfitted   fittingSlotController.UnfitModule (217 to 243). Docked, the hangar's inventory:
+//   a module unfitted   fittingSlotController.UnfitModule (217 to 243). A module in a weapon bank asks its pilot
+//                       first (ClearGroupModule, Yes and No, Yes kept where the pilot says not to be asked again),
+//                       and on Yes takes one module out of the bank (UngroupModule, clientDogmaLocation 784:
+//                         remoteDogmaLM.UnlinkModule(shipID, masterID)
+//                       which answers the slave the server took out; the client's own banks lose it, and the bank
+//                       where none is left); a module with a charge has it unloaded (UnfitCharge, 169 to 188:
+//                         remoteDogmaLM.UnloadAmmo(shipID, [moduleID], destination)
+//                       the bank's master where the module is still in a bank, to the hangar docked and the ship's
+//                       hold in space). Then, docked, the hangar's inventory:
 //                         invCache.GetInventory(const.containerHangar).Add(moduleID, shipID, flag=const.flagHangar)
 //                       and in space, the ship's own:
 //                         shipInv.Add(moduleID, shipID, qty=None, flag=const.flagCargo)
@@ -43,7 +51,9 @@
 
 import type { SlotFamily } from "../store/types.ts";
 import type { Ask } from "./ask.ts";
+import { unloadAmmo, type AmmoSession } from "./dogmaWrites.ts";
 import { slotFlagOf } from "./fitting.ts";
+import { unwrapLong } from "./wire.ts";
 
 /** invConst.flagAutoFit, flagHangar and flagCargo. */
 const FLAG_AUTO_FIT = 0;
@@ -96,17 +106,56 @@ export async function fitModule(
   return { applied: fitLanded(before, await fitted(), itemID) };
 }
 
+/** A ship's weapon banks as the page's dogma location holds them: each master with its slaves. */
+export type WeaponBanks = ReadonlyMap<number, readonly number[]>;
+
+/** baseDogmaLocation.GetMasterModuleID: the master of the bank a module is a slave in, or null. */
+function masterOf(banks: WeaponBanks, moduleID: number): number | null {
+  for (const [masterID, slaves] of banks) if (slaves.includes(moduleID)) return masterID;
+  return null;
+}
+
+/** clientDogmaLocation.IsInWeaponBank: the module where it is a bank's master, its master where it is a slave, else null. */
+export function weaponBankOf(banks: WeaponBanks, moduleID: number): number | null {
+  return banks.has(moduleID) ? moduleID : masterOf(banks, moduleID);
+}
+
+/** The module a slot unfits: its number, and whether a charge is loaded in it (the slot's GetCharge). */
+export interface SlotModule {
+  readonly itemID: number;
+  readonly charged: boolean;
+}
+
 /**
- * Unfits a module where the client's Unfit puts it: the hangar of where the pilot is docked, and the ship's own
- * hold in space (fittingSlotController.UnfitModule, 237 to 241: `if session.stationid or session.structureid`).
- * Answers whether the slots say it is gone. Fails as the call fails.
+ * Unfits a module as the client's UnfitModule does: a module in a weapon bank asked of the pilot first and taken out
+ * of its bank on Yes, its charge unloaded, and the module put where the client puts it, the hangar of where the pilot
+ * is docked and the ship's own hold in space (fittingSlotController.UnfitModule, 217 to 243: `if session.stationid
+ * or session.structureid`). Answers whether the slots say it is gone, and nothing where the pilot answered No. Fails
+ * as a call fails.
  */
 export async function unfitModule(
   act: Ask,
   fitted: FittedNow,
-  place: FittingPlace,
-  itemID: number,
-): Promise<{ readonly applied: boolean }> {
+  place: AmmoSession,
+  module: SlotModule,
+  banks: WeaponBanks,
+  clearGroup: () => Promise<boolean>,
+): Promise<{ readonly applied: boolean } | undefined> {
+  const itemID = module.itemID;
+  const masterID = weaponBankOf(banks, itemID);
+  let held = banks;
+  if (masterID !== null) {
+    if (!(await clearGroup())) return undefined;
+    const answered = await act("dogmaIM", "UnlinkModule", [place.shipID, masterID]);
+    const slaveID = typeof answered === "number" ? answered : Number(unwrapLong(answered));
+    held = new Map([...banks].flatMap(([id, slaves]): [number, readonly number[]][] => {
+      if (id !== masterID) return [[id, slaves]];
+      const left = slaves.filter((slave) => slave !== slaveID);
+      return left.length > 0 ? [[id, left]] : [];
+    }));
+  }
+  // UnfitCharge: GetMasterModuleForFlag where the module is still in a bank, the module itself where it is not.
+  if (module.charged) await unloadAmmo(act, place, [masterOf(held, itemID) ?? itemID], place.dockedAt !== null ? "hangar" : "cargo");
   if (place.dockedAt !== null) {
     await act("invbroker", "Add", [itemNumber(itemID), place.shipID], { flag: FLAG_HANGAR }, THE_HANGAR);
   } else {

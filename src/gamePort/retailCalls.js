@@ -1783,6 +1783,16 @@ const ownShipAlone = (args, kwargs, context) => {
     : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
 };
 
+/** remoteDogmaLM.UnlinkModule(shipID, moduleID): the ship the session is flying, and the bank's master by its number. */
+const ownShipAndModule = (args, kwargs, context) => {
+  if (!(args.length === 2 && args.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client names the ship its session is flying and the bank's master, and nothing else." };
+  }
+  return context.shipID === null || context.shipID === undefined || Number(context.shipID) === args[0]
+    ? {}
+    : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
+};
+
 /** godma's Deactivate(itemID, effectName): the effect is the one the client holds as running, by name. */
 function deactivation(args, kwargs, context) {
   const [itemID, effectName] = args;
@@ -2726,6 +2736,8 @@ const RETAIL_CALLS = Object.freeze({
     "GetDogmaLM().StopModuleRepair(itemID): godma's own doing when the repair's time is up (the damage over the character's repair rate, in minutes, and a second), at Cancel Repair, and at a session's change. The server mends the module at this call. No recording has one."),
   "dogmaIM.LinkAllWeapons": judged(`${CLIENT_DOGMA}:800`, ownShipAlone,
     "remoteDogmaLM.LinkAllWeapons(shipID), on the dogma location: the group-all button, with session.shipid (groupAllIcon.py 36), where some weapon could still be grouped. It answers the ship's banks. No recording has one; LinkWeapons(shipID, master, slave) is recorded, riding the dogma location's bind."),
+  "dogmaIM.UnlinkModule": judged(`${CLIENT_DOGMA}:785`, ownShipAndModule,
+    "remoteDogmaLM.UnlinkModule(shipID, moduleID), on the dogma location: UngroupModule (784), with the bank's master, as a grouped weapon is unfitted from its slot once its pilot has said Yes to ClearGroupModule (fittingSlotController.UnfitModule, 234). It answers the slave the server took out of the bank. No recording has one."),
   "dogmaIM.UnlinkAllModules": judged(`${CLIENT_DOGMA}:794`, ownShipAlone,
     "remoteDogmaLM.UnlinkAllModules(shipID): the same button where every weapon that can be is grouped (groupAllIcon.py 38). No recording has one."),
   "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
