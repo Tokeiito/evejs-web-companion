@@ -33,6 +33,8 @@ export interface FittingSkillWarning {
   readonly listed: readonly (readonly [number, number])[];
   /** GetMissingSkillBooksFromList of them: those the pilot has not (GetSkill). */
   readonly missingBooks: readonly number[];
+  /** The types of the ship and what it holds that miss a skill (missingSkillsForTypeID's), which the pickers mark. */
+  readonly typesMissing: readonly number[];
 }
 
 /** What the warning goes by: the types, the items in their slots and holds, the skills needed and the pilot's. */
@@ -154,5 +156,6 @@ export function fittingSkillWarning(inputs: FittingSkillInputs): FittingSkillWar
     shipAndFitHeading: fitMissing.keys().length > 0 && cargoMissing.keys().length > 0,
     listed,
     missingBooks: listed.map(([skill]) => skill).filter((skill) => !inputs.mine.has(skill)),
+    typesMissing: [...byType.keys()],
   };
 }

@@ -1485,6 +1485,28 @@
     skillTooltipOpen = false;
     warningSlots = new Map();
   }
+  /** The pickers' entries' and the tubes' warning mark (slotWarningIcon.png, tinted the level's colour). */
+  const PICKER_WARNING_ICON = clientTexture("res:/UI/Texture/classes/Fitting/slotWarningIcon.png");
+  /**
+   * HiliteProblematicEntries and UpdateProblematicEntries: a picker's entry marked at the level its picker's flag is
+   * shown with (the cargo hold's, the drone bay's, the fighter bay's): every entry at another level, at the skill
+   * level only those whose types miss skills (GetMissingSkills_HighestLevelByTypeID).
+   */
+  function pickerWarningColor(flagID: number, typeID: number): string | null {
+    const level = warningSlots.get(flagID);
+    if (level === undefined) return null;
+    if (level === WARNING_LEVEL_SKILL && !(fitSkillWarning?.typesMissing ?? []).includes(typeID)) return null;
+    return COLOR_BY_LEVEL[level] ?? null;
+  }
+  /**
+   * UpdateProblematicFigtersInTubes: a tube's squadron marked in the colour its tube's flag is shown with, only where
+   * its fighters' type misses skills.
+   */
+  function tubeWarningColor(tubeFlagID: number, typeID: number): string | null {
+    if (!(fitSkillWarning?.typesMissing ?? []).includes(typeID)) return null;
+    const level = warningSlots.get(tubeFlagID);
+    return level === undefined ? null : COLOR_BY_LEVEL[level] ?? null;
+  }
   /** AddMissingSkillRequirements' rows: by the skills' names (SortListOfTuples). */
   function bySkillName(skills: readonly (readonly [number, number])[]): readonly (readonly [number, number])[] {
     return [...skills].sort(([left], [right]) => {
@@ -2492,7 +2514,9 @@
           {:else}
             <ul class="fit-sim-drones">
               {#each simulation.drones as entry (entry.typeID)}
+                {@const mark = pickerWarningColor(87, entry.typeID)}
                 <li>
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                   <span class="fit-sim-drone-count">{entry.active} of {entry.total} active</span>
                   <span class="row-actions">
@@ -2620,7 +2644,9 @@
         {:else}
           <ul class="fit-sim-drones">
             {#each cargoByName(simulation.cargo) as entry (entry.typeID)}
+              {@const mark = pickerWarningColor(5, entry.typeID)}
               <li>
+                {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                 <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                 <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
                   title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
@@ -2667,6 +2693,8 @@
                 onclick={() => clickSimulatedTube(tube)}>
                 <span class="fit-sim-tube-number">{tube.number}</span>
                 {#if tube.squadron}
+                  {@const mark = tubeWarningColor(tube.flagID, tube.squadron.typeID)}
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <TypeIcon typeID={tube.squadron.typeID} name={moduleName(tube.squadron.typeID)} size="md" />
                   {#if FIGHTER_ROLES[tube.squadron.role]?.icon}
                     <img class="fit-sim-tube-role" src={FIGHTER_ROLES[tube.squadron.role]?.icon} width="16" height="16"
@@ -2705,7 +2733,9 @@
           {:else}
             <ul class="fit-sim-drones">
               {#each cargoByName(simulation.fighterBayTypes) as entry (entry.typeID)}
+                {@const mark = pickerWarningColor(158, entry.typeID)}
                 <li>
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <button type="button" class="fit-sim-drone-name fit-sim-fighter-name" draggable="true" disabled={busy}
                     ondragstart={(event) => startFighterDrag(event, { from: "bay", typeID: entry.typeID })}
                     ondragend={() => (fighterDrag = null)}

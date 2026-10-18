@@ -2165,6 +2165,8 @@
   .fit-skill-section.cargo-alone { margin-top: 1rem; }
   .fit-skill-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.25rem; }
   .fit-skill-training { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.6rem; }
+  /* ItemPickerBase.ConstructFittingWarning: 16 square, the level's colour. */
+  .fit-picker-warning { flex: none; width: 16px; height: 16px; background: var(--warning-color); mask: var(--warning-icon) center / contain no-repeat; -webkit-mask: var(--warning-icon) center / contain no-repeat; }
   .fit-socket.warning { outline: 2px solid var(--slot-warning); outline-offset: 1px; }
   .hud-gauge.warning, .fit-readout-warning { outline: 1px solid var(--slot-warning); outline-offset: 2px; }
   /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */
