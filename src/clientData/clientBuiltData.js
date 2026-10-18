@@ -132,6 +132,10 @@ const TABLES = Object.freeze({
 // a row of JSON for each of its tables; it is read where it is, as it is.
 const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
 
+// The client's own map of each solar system's celestials and NPC stations (eveCfg.LoadSqliteDB('mapObjects'): a
+// packaged client's bin:/staticdata/mapObjects.db), which GetLocationsLocalBySystem reads a system's items from.
+const MAP_OBJECTS = ["tq", "bin64", "staticdata", "mapObjects.db"];
+
 // An alpha clone's skills and their highest levels, by race (clonegrade/storage.py CloneGradeStorage:
 // fsdlite.EveStorage(data='clonegrades', cache='clonegrades.static')): the same kind of cache, a record by race.
 const CLONE_GRADES = "res:/staticdata/clonegrades.static";
@@ -471,10 +475,38 @@ function createClientBuiltData({
     return fighterAbilitiesRead;
   }
 
+  /**
+   * A solar system's items as eveCfg.GetLocationsLocalBySystem reads them (778 to 860): each celestial's row (its
+   * celestialID, celestialNameID, typeID, groupID, orbitID, celestialIndex, orbitIndex) and each NPC station's (its
+   * stationID, typeID, orbitID, celestialIndex, orbitIndex), from the client's own map database. Null where the
+   * client cannot be read.
+   */
+  function systemObjects(solarSystemID) {
+    if (!available()) return null;
+    const { DatabaseSync } = require("node:sqlite");
+    const database = new DatabaseSync(path.join(clientRoot, ...MAP_OBJECTS), { readOnly: true });
+    try {
+      const plain = (row) => ({ ...row });
+      return {
+        celestials: database
+          .prepare("SELECT celestialID, celestialNameID, typeID, groupID, orbitID, orbitIndex, celestialIndex FROM celestials WHERE solarSystemID = ?")
+          .all(solarSystemID)
+          .map(plain),
+        stations: database
+          .prepare("SELECT stationID, typeID, orbitID, orbitIndex, celestialIndex FROM npcStations WHERE solarSystemID = ?")
+          .all(solarSystemID)
+          .map(plain),
+      };
+    } finally {
+      database.close();
+    }
+  }
+
   return {
     available,
     table,
     rows,
+    systemObjects,
     infoBubbleGroups,
     infoBubbleTypeBonuses,
     infoBubbleTypeElements,

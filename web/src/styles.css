@@ -4912,6 +4912,15 @@
   .info-legality li { display: flex; flex-direction: column; padding: 2px 0; }
   .info-legality .info-legality-line { padding-left: 1.2rem; color: var(--color-muted); }
   .info-territory li { padding: 1px 0; }
+  /* A solar system's Orbital Bodies (GetOrbitalBodies): each thing under what it orbits, a moon's name and a belt's
+   * dimmer (the client's grey colour tags); its Route, each jump's words in the first column; the window's buttons. */
+  .info-orbits { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .info-orbits li { padding: 1px 0; }
+  .info-orbits .info-orbit-moon .evelink { opacity: 0.55; }
+  .info-orbits .info-orbit-belt .evelink { opacity: 0.85; }
+  .info-orbits .info-orbit-kind { color: var(--color-muted); }
+  .info-route li { grid-template-columns: 11rem 2.2rem 1fr; }
+  .show-info .info-buttons { display: flex; gap: 0.4rem; margin-top: 0.8rem; }
   .show-info dd .info-line { margin: 0; }
   .info-bold { font-weight: 700; }
   .info-italic { font-style: italic; }

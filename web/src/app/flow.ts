@@ -827,6 +827,14 @@ export interface RouteWindowWaypoints {
   readonly waypoints: readonly RouteWindowWaypoint[];
 }
 
+/** A system on the info window's route (TAB_ROUTE): it, the constellation and region it lies in, its security. */
+export interface MapRouteStep {
+  readonly systemID: number;
+  readonly constellationID: number | null;
+  readonly regionID: number | null;
+  readonly security: number | null;
+}
+
 /**
  * What the player asked the mission bot to do (goal R36).
  *
@@ -2733,6 +2741,14 @@ export interface AppFlow {
   mapLocationShowInfo(itemID: number): Promise<api.MapLocationInfo | null>;
   /** A faction as the info window shows it, or null for none (api.getFaction). */
   factionShowInfo(factionID: number): Promise<api.FactionInfo | null>;
+  /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
+  mapSystemObjects(solarSystemID: number): Promise<{ readonly available: boolean; readonly objects: readonly api.SystemObjectRow[] }>;
+  /**
+   * The info window's route to a constellation or a solar system (starMapSvc.ShortestGeneralPath): the autopilot's path
+   * from the pilot's system to each of its systems, the shortest, less the system the pilot is in; each system with
+   * its constellation, region and security. Empty where the pilot is there, or no path reaches it.
+   */
+  mapLocationRoute(itemID: number): Promise<readonly MapRouteStep[]>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
@@ -26290,6 +26306,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     factionShowInfo(factionID) {
       return api.getFaction(factionID, callOptions);
+    },
+    mapSystemObjects(solarSystemID) {
+      return api.getSystemObjects(solarSystemID, callOptions);
+    },
+    async mapLocationRoute(itemID) {
+      const sourceID = pilotPlace().solarSystemID;
+      if (sourceID === null) return [];
+      const graph = await loadRouteGraph();
+      const map = await pathfinderMap(graph);
+      const settings = await pathfinderSettings(graph);
+      // min(paths, key=len): the first of the shortest, the place's systems taken in the map's order.
+      let best: readonly number[] | null = null;
+      for (const target of graph.systemsIn?.(itemID) ?? [itemID]) {
+        const way = autopilotPath(map, sourceID, target, settings);
+        if (way !== null && way.length > 0 && (best === null || way.length < best.length)) best = way;
+      }
+      return (best ?? []).slice(1).map((systemID) => {
+        const constellationID = graph.parentOf?.(systemID) ?? null;
+        return { systemID, constellationID, regionID: constellationID === null ? null : (graph.parentOf?.(constellationID) ?? null), security: graph.security(systemID) };
+      });
     },
     dismissDialog,
     answerDialog,

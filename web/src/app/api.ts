@@ -4084,6 +4084,45 @@ export interface FactionInfo {
   readonly illegalTypes: readonly FactionIllegalType[];
 }
 
+/** A solar system's item as the client lists it (GET /api/client-data/system-objects/:id). */
+export interface SystemObjectRow {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly groupID: number | null;
+  readonly orbitID: number | null;
+  readonly celestialIndex: number | null;
+  readonly orbitIndex: number | null;
+  /** A stargate's: the system it leads to (its celestialNameID). */
+  readonly destinationID?: number | null;
+  /** A celestial's name of its own (its celestialNameID's message), where it has one. */
+  readonly name?: string | null;
+}
+
+/** A solar system's celestials and NPC stations from the client's own map; `available` is false where it cannot be read. */
+export async function getSystemObjects(solarSystemID: number, options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly objects: readonly SystemObjectRow[] }> {
+  const data = await getJson(`/api/client-data/system-objects/${solarSystemID}`, options);
+  const whole = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  const objects: SystemObjectRow[] = [];
+  for (const raw of Array.isArray(data.objects) ? data.objects : []) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as Record<string, JsonValue>;
+    const itemID = whole(row.itemID);
+    const typeID = whole(row.typeID);
+    if (itemID === null || typeID === null) continue;
+    objects.push({
+      itemID,
+      typeID,
+      groupID: whole(row.groupID),
+      orbitID: whole(row.orbitID),
+      celestialIndex: whole(row.celestialIndex),
+      orbitIndex: whole(row.orbitIndex),
+      ...("destinationID" in row ? { destinationID: whole(row.destinationID) } : {}),
+      ...("name" in row ? { name: typeof row.name === "string" ? row.name : null } : {}),
+    });
+  }
+  return { available: data.available === true, objects };
+}
+
 /** A faction, or null where the id is none. */
 export async function getFaction(factionID: number, options: ApiOptions = {}): Promise<FactionInfo | null> {
   const data = await getJson(`/api/factions/${factionID}`, options).catch(() => null);

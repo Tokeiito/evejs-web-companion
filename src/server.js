@@ -13119,6 +13119,53 @@ app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res,
 // the corporation's factionID), what its overview's Faction column names for a thing an NPC owns (overviewWindow.py
 // 967 to 975). `available` is false when the table could not be read (no client install, or no Python to host the
 // client's loader); `factions` is then empty.
+// A solar system's items as the client lists them (mapSvc.GetSolarsystemItems: eveCfg.GetLocationsLocalBySystem, from
+// the client's own map database): each celestial and NPC station by its number, type, group, the item it orbits and
+// its celestial and orbit index; a stargate with the system it leads to, and a celestial with a name of its own (its
+// celestialNameID, GenericText) with that name. The page names the rest as the client's formatters do. `available`
+// is false when the client cannot be read.
+app.get("/api/client-data/system-objects/:id", requireAuth, (req, res, next) => {
+  const solarSystemID = Number(req.params.id);
+  if (!Number.isSafeInteger(solarSystemID) || solarSystemID < 30_000_000 || solarSystemID >= 40_000_000) {
+    res.status(400).json({ ok: false, error: "INVALID_SOLAR_SYSTEM", message: "A solar system's number is required." });
+    return;
+  }
+  try {
+    const read = clientBuiltData.systemObjects ? clientBuiltData.systemObjects(solarSystemID) : null;
+    if (read === null) {
+      res.json({ ok: true, available: false, objects: [] });
+      return;
+    }
+    const GROUP_STARGATE = 10;
+    const named = read.celestials.filter((row) => row.celestialNameID !== null && row.groupID !== GROUP_STARGATE);
+    const names = named.length > 0 ? clientWords.messages(named.map((row) => Number(row.celestialNameID))) : {};
+    const objects = [
+      ...read.celestials.map((row) => ({
+        itemID: row.celestialID,
+        typeID: row.typeID,
+        groupID: row.groupID,
+        orbitID: row.orbitID,
+        celestialIndex: row.celestialIndex,
+        orbitIndex: row.orbitIndex,
+        ...(row.groupID === GROUP_STARGATE ? { destinationID: row.celestialNameID } : {}),
+        ...(row.celestialNameID !== null && row.groupID !== GROUP_STARGATE ? { name: names[String(row.celestialNameID)] ?? null } : {}),
+      })),
+      // An NPC station's group is its type's (evetypes.GetGroupID).
+      ...read.stations.map((row) => ({
+        itemID: row.stationID,
+        typeID: row.typeID,
+        groupID: Number(staticData.getType(row.typeID)?.groupID) || null,
+        orbitID: row.orbitID,
+        celestialIndex: row.celestialIndex,
+        orbitIndex: row.orbitIndex,
+      })),
+    ];
+    res.json({ ok: true, available: true, objects });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
   try {
     const table = await clientBuiltData.table("npcCorporations");

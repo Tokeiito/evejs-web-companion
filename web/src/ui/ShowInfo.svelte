@@ -13,6 +13,9 @@
   // would make a player check every other number by hand.
   import { onMount } from "svelte";
   import TypeIcon from "./TypeIcon.svelte";
+  import BookmarkWindow from "./BookmarkWindow.svelte";
+  import type { BookmarkPlace } from "../bridge/locationsList.ts";
+  import type { MapRouteStep } from "../app/flow.ts";
   import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
@@ -31,7 +34,7 @@
   import type { JsonValue } from "../bridge/wire.ts";
   import { moduleEffectiveStats } from "../bridge/moduleAttributes.ts";
   import { securityStatusColor, shownSecurity } from "../bridge/systemSecurity.ts";
-  import type { FactionInfo, FactionPlaceRow, MapLocationInfo, MapPlaceRow } from "../app/api.ts";
+  import type { FactionInfo, FactionPlaceRow, MapLocationInfo, MapPlaceRow, SystemObjectRow } from "../app/api.ts";
   import { fmtDist, hostileLabel, isHostile, ratioPercent, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
@@ -212,6 +215,9 @@
     corporationRead = null;
     allianceRead = null;
     mapLocationRead = null;
+    systemObjectsRead = null;
+    mapRouteRead = null;
+    bookmarking = null;
     factionRead = null;
     ownerReadDone = false;
     if (current?.kind === "corporation") {
@@ -234,6 +240,24 @@
         mapLocationRead = read;
         ownerReadDone = true;
       });
+      // A solar system's Orbital Bodies and Stations (GetOrbitalBodies, GetStationTab), from the client's own map.
+      if (current.typeID === 5) {
+        void flow.mapSystemObjects(current.itemID).then(
+          (read) => {
+            if (ticket === ownerReads) systemObjectsRead = read.available ? read.objects : null;
+          },
+          () => {},
+        );
+      }
+      // A constellation's or a solar system's Route (ShortestGeneralPath from where the pilot is).
+      if (current.typeID === 4 || current.typeID === 5) {
+        void flow.mapLocationRoute(current.itemID).then(
+          (route) => {
+            if (ticket === ownerReads) mapRouteRead = route;
+          },
+          () => {},
+        );
+      }
     } else if (current?.kind === "faction") {
       void flow.factionShowInfo(current.factionID).then((read) => {
         if (ticket !== ownerReads) return;
@@ -257,6 +281,20 @@
     "UI/InfoWindow/RelatedConstellation": "Its constellations",
     "UI/InfoWindow/RelatedSolarSystem": "Its systems",
     "UI/Neocom/SecurityLevel": "Security",
+    "UI/InfoWindow/TabNames/OrbitalBodies": "What orbits here",
+    "UI/Common/LocationTypes/Stations": "Stations",
+    "UI/InfoWindow/TabNames/Route": "The way there",
+    "UI/Market/MarketQuote/NumberOfJumps": "{[numeric]num} {[numeric]num -> \"jump\", \"jumps\"}",
+    "UI/InfoWindow/RegularJump": "{[numeric]numJumps, decimalPlaces=0}.",
+    "UI/InfoWindow/RegionJump": "{[numeric]numJumps, decimalPlaces=0}. into a new region",
+    "UI/InfoWindow/ConstellationJump": "{[numeric]numJumps, decimalPlaces=0}. into a new constellation",
+    "UI/Inflight/BookmarkLocation": "Save this place",
+    "UI/PeopleAndPlaces/NewBookmarkLocationLabel": "{[location] loc.name} ( {group} )",
+    "UI/Locations/LocationAsteroidBeltFormatter": "{[location]solarSystemID.rawName} {romanCelestialIndex}, {[item]typeID.rawName} {orbitIndex}",
+    "UI/Locations/LocationMoonFormatter": "{[location]solarSystemID.rawName} {romanCelestialIndex}, moon {orbitIndex}",
+    "UI/Locations/LocationPlanetFormatter": "{[location]solarSystemID.rawName} {romanCelestialIndex}",
+    "UI/Locations/LocationStargateFormatter": "Gate to {[location]destinationSystemID.rawName}",
+    "UI/Locations/LocationStarFormatter": "{[location]solarSystemID.rawName}'s star",
   };
   /** infosvc's neighborGrouping and childGrouping: the two lists' names, by the place's type. */
   const NEIGHBOUR_LABELS: Readonly<Record<number, string>> = {
@@ -281,6 +319,107 @@
   };
   const byPlaceName = (a: MapPlaceRow, b: MapPlaceRow): number => byCodePoints([a.name], [b.name]);
   const placeSubject = (place: MapPlaceRow): InfoSubject => ({ kind: "mapLocation", typeID: place.typeID, itemID: place.itemID });
+
+  /** A solar system's celestials and NPC stations (mapSvc.GetSolarsystemItems), once read; null while not, or not had. */
+  let systemObjectsRead = $state<readonly SystemObjectRow[] | null>(null);
+  /** The route to a constellation or a solar system (TAB_ROUTE), once found. */
+  let mapRouteRead = $state<readonly MapRouteStep[] | null>(null);
+  /** The bookmark window, open for the place (the Save Location button: infosvc.Bookmark), or none. */
+  let bookmarking = $state<BookmarkPlace | null>(null);
+
+  /** The page's names, by the formatters' kinds. */
+  const namedAs: FormatContext["nameOf"] = (kind, id) => resolvedName($names.resolved, kind, id, "");
+  /** format.IntToRoman (1 to 39): the client's numerals for a celestial's index. */
+  function intToRoman(value: number | null): string {
+    let left = value ?? 0;
+    if (!(left > 0 && left < 40)) return "";
+    let out = "";
+    for (const [numeral, amount] of [["X", 10], ["IX", 9], ["V", 5], ["IV", 4], ["I", 1]] as const) {
+      while (left >= amount) {
+        out += numeral;
+        left -= amount;
+      }
+    }
+    return out;
+  }
+  /** eveCfg._GetCelestialNameDataFromLocalRow: a celestial's own name where it has one, else its formatter's. */
+  function celestialName(row: SystemObjectRow, solarSystemID: number): string {
+    if (row.name != null && row.groupID !== 10) return row.name;
+    const roman = intToRoman(row.celestialIndex);
+    switch (row.groupID) {
+      case 9:
+        return word("UI/Locations/LocationAsteroidBeltFormatter", { solarSystemID, romanCelestialIndex: roman, typeID: row.typeID, orbitIndex: row.orbitIndex ?? 0 }, namedAs);
+      case 8:
+        return word("UI/Locations/LocationMoonFormatter", { solarSystemID, romanCelestialIndex: roman, orbitIndex: row.orbitIndex ?? 0 }, namedAs);
+      case 7:
+        return word("UI/Locations/LocationPlanetFormatter", { solarSystemID, romanCelestialIndex: roman }, namedAs);
+      case 10:
+        return word("UI/Locations/LocationStargateFormatter", { destinationSystemID: row.destinationID ?? 0 }, namedAs);
+      case 6:
+        return word("UI/Locations/LocationStarFormatter", { solarSystemID }, namedAs);
+      default:
+        return "";
+    }
+  }
+  /**
+   * GetOrbitalBodies' DrawOrbitItems: from the star down, what orbits each thing, a stargate first, then the rest, a
+   * belt, a moon, a planet, each by its celestial and orbit index (none before any); a station left out, with what
+   * orbits it.
+   */
+  const orbitalBodies = $derived.by(() => {
+    const objects = systemObjectsRead;
+    if (objects === null) return [];
+    const sun = objects.find((row) => row.groupID === 6);
+    if (sun === undefined) return [];
+    const GROUP_SORT: Readonly<Record<number, number>> = { 10: -1, 9: 1, 8: 2, 7: 3 };
+    const byIndex = (a: number | null, b: number | null): number => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a - b);
+    const out: { readonly row: SystemObjectRow; readonly indent: number }[] = [];
+    const draw = (rootID: number, indent: number): void => {
+      const orbiting = objects
+        .filter((row) => row.orbitID === rootID)
+        .sort((a, b) => (GROUP_SORT[a.groupID ?? 0] ?? 0) - (GROUP_SORT[b.groupID ?? 0] ?? 0) || byIndex(a.celestialIndex, b.celestialIndex) || byIndex(a.orbitIndex, b.orbitIndex));
+      for (const row of orbiting) {
+        if (row.itemID >= 60_000_000 && row.itemID < 64_000_000) continue;
+        out.push({ row, indent });
+        draw(row.itemID, indent + 1);
+      }
+    };
+    draw(sun.itemID, 0);
+    return out;
+  });
+  /** GetStationTab: the system's stations by their celestial and orbit index. */
+  const systemStations = $derived.by(() => {
+    const objects = systemObjectsRead;
+    if (objects === null) return [];
+    const byIndex = (a: number | null, b: number | null): number => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a - b);
+    return objects.filter((row) => row.groupID === 15).sort((a, b) => byIndex(a.celestialIndex, b.celestialIndex) || byIndex(a.orbitIndex, b.orbitIndex));
+  });
+  /** The route's lines: each jump's words (a region's or a constellation's jump where it crosses into one), the system. */
+  const mapRouteLines = $derived.by(() => {
+    const route = mapRouteRead ?? [];
+    let wasRegion: number | null = null;
+    let wasConstellation: number | null = null;
+    return route.map((step, at) => {
+      let label = "UI/InfoWindow/RegularJump";
+      if (at > 0) {
+        if (wasRegion !== step.regionID) label = "UI/InfoWindow/RegionJump";
+        else if (wasConstellation !== step.constellationID) label = "UI/InfoWindow/ConstellationJump";
+      }
+      wasRegion = step.regionID;
+      wasConstellation = step.constellationID;
+      return { step, jump: word(label, { numJumps: at + 1 }) };
+    });
+  });
+  /** Save Location (infosvc.Bookmark, BookmarkLocationPopup): the place, by its default name (NewBookmarkLocationLabel). */
+  function savePlace(typeID: number, itemID: number): void {
+    const inThisSystem = $space.snapshot?.inSpace === true && $space.snapshot.solarSystemID === itemID;
+    bookmarking = {
+      itemID,
+      askIfKnown: !inThisSystem,
+      typeName: () => mapTypeName(typeID),
+      name: () => word("UI/PeopleAndPlaces/NewBookmarkLocationLabel", { loc: itemID, group: mapTypeName(typeID) }, namedAs),
+    };
+  }
 
   /** A faction's labels the window uses, with the page's own words where the install's are not had. */
   const FACTION_INFO_WORDS: Readonly<Record<string, string>> = {
@@ -530,6 +669,19 @@
     if (current?.kind === "faction") {
       refs.push({ kind: "faction", id: current.factionID });
     }
+    if (current?.kind === "mapLocation") {
+      refs.push({ kind: current.typeID === 3 ? "region" : current.typeID === 4 ? "constellation" : "system", id: current.itemID });
+    }
+    for (const row of systemObjectsRead ?? []) {
+      refs.push({ kind: "type", id: row.typeID });
+      if (row.destinationID != null && row.destinationID > 0) refs.push({ kind: "system", id: row.destinationID });
+      if (row.groupID === 15) refs.push({ kind: "station", id: row.itemID });
+    }
+    for (const step of mapRouteRead ?? []) {
+      refs.push({ kind: "system", id: step.systemID });
+      if (step.constellationID !== null) refs.push({ kind: "constellation", id: step.constellationID });
+      if (step.regionID !== null) refs.push({ kind: "region", id: step.regionID });
+    }
     if (corporationFactionID !== null) {
       refs.push({ kind: "faction", id: corporationFactionID });
     }
@@ -765,7 +917,8 @@
         {/if}
         <h3>{word("UI/InfoWindow/TabNames/Description")}</h3>
         <div class="info-description">{@render markupLines(read.description ?? mapTypeName(read.typeID))}</div>
-        {#each [[CHILD_LABELS[read.typeID], read.children], [NEIGHBOUR_LABELS[read.typeID], read.neighbours]] as const as [label, list] (label ?? "none")}
+        <!-- INFO_TABS' order: the Neighbors tab before the Children tab. -->
+        {#each [[NEIGHBOUR_LABELS[read.typeID], read.neighbours], [CHILD_LABELS[read.typeID], read.children]] as const as [label, list] (label ?? "none")}
           {#if label && list.length > 0}
             <h3>{word(label)}</h3>
             <ul class="info-places">
@@ -779,6 +932,45 @@
             </ul>
           {/if}
         {/each}
+        {#if orbitalBodies.length > 0}
+          <h3>{word("UI/InfoWindow/TabNames/OrbitalBodies")}</h3>
+          <!-- A planet with its type's name after it; a moon's name and a belt's in the client's dimmer colours. -->
+          <ul class="info-orbits">
+            {#each orbitalBodies as { row, indent } (row.itemID)}
+              <li style:padding-left={`${indent * 1.2}rem`} class:info-orbit-moon={row.groupID === 8} class:info-orbit-belt={row.groupID === 9}>
+                <button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "type", typeID: row.typeID })}>{celestialName(row, read.itemID)}</button>{#if row.groupID === 7}<span class="info-orbit-kind">{" " + resolvedName($names.resolved, "type", row.typeID, "")}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if systemStations.length > 0}
+          <h3>{word("UI/Common/LocationTypes/Stations")}</h3>
+          <ul class="info-territory">
+            {#each systemStations as row (row.itemID)}
+              <li><button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "type", typeID: row.typeID })}>{resolvedName($names.resolved, "station", row.itemID, "")}</button></li>
+            {/each}
+          </ul>
+        {/if}
+        {#if mapRouteLines.length > 0}
+          <h3>{word("UI/InfoWindow/TabNames/Route")}</h3>
+          <h4 class="info-subhead">{word("UI/Market/MarketQuote/NumberOfJumps", { num: mapRouteLines.length })}</h4>
+          <ul class="info-places info-route">
+            {#each mapRouteLines as { step, jump } (step.systemID)}
+              <li>
+                <span class="info-place-type">{jump}</span>
+                <span class="info-place-sec" style:color={step.security != null ? securityStatusColor(shownSecurity(step.security)) : undefined}>{step.security != null ? shownSecurity(step.security).toFixed(1) : ""}</span>
+                <button type="button" class="evelink showInfo" title={word("UI/Commands/ShowInfo")} onclick={() => showInfo({ kind: "mapLocation", typeID: 5, itemID: step.systemID })}>{word("UI/InfoWindow/SolarsystemLocation", { solarsystem: step.systemID, constellation: step.constellationID ?? 0, region: step.regionID ?? 0 }, namedAs)}</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <!-- The window's buttons (DATA_BUTTONS): Save Location. Show Location on Map waits on a map. -->
+        <div class="info-buttons">
+          <button type="button" onclick={() => savePlace(read.typeID, read.itemID)}>{word("UI/Inflight/BookmarkLocation")}</button>
+        </div>
+        {#if bookmarking !== null}
+          <BookmarkWindow {store} {flow} place={bookmarking} onDone={() => (bookmarking = null)} />
+        {/if}
       {:else if ownerReadDone}
         <p class="note">The page has no record of this place.</p>
       {:else}
