@@ -13,7 +13,11 @@
   //
   // Above both, the standings bar for the selected owner (ui/StandingsBar.svelte), its threshold icons with it.
   //
-  // Not as the client's yet: the graph and the header's buttons; one selected owner for the two
+  // Over the pilot's history its graph (ui/StandingsGraph.svelte). The graph turns the history about as it is drawn
+  // (StandingsGraph.Update: self.transactions.reverse()), and the history is shown from that same list, so the rows
+  // stand in the order opposite to the server's; a point and a row hovered light each other.
+  //
+  // Not as the client's yet: the header's buttons; one selected owner for the two
   // lists (the client's two panels have one each); and the two panels are one window, not the Character Sheet's and
   // the Corporation window's.
   //
@@ -41,6 +45,7 @@
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
   import StandingsBar from "./StandingsBar.svelte";
+  import StandingsGraph from "./StandingsGraph.svelte";
   import {
     EPIC_ARC_STARTER_AGENTS,
     STATION_SERVICE_LABELS,
@@ -474,6 +479,39 @@
     return formatTemplate(wording.template(DATE_LABELS.sn!), { datetime: { type: "long", value: filetime.toString() } } as Record<string, JsonValue>, { nameOf });
   }
 
+  /** The point of the graph lit (a history row hovered), and the row lit (a point hovered). */
+  let litPoint = $state<number | null>(null);
+  let litRow = $state<number | null>(null);
+  /**
+   * The pilot's history with the selected owner as the panel holds it, and its graph (StandingsGraph.GetGraphData): the
+   * rows the other way about from the server's; the standing before each change and after the last, from the
+   * standing kept (GetStanding, without a bonus), each change taken off in turn, nought where it rounds to it; each
+   * point's hint (GetPointHint).
+   */
+  function historyOf(ownerID: number): { readonly rows: readonly import("../store/types.ts").StandingTransaction[]; readonly values: readonly number[]; readonly hints: readonly string[] } {
+    const rows = [...($standings.transactions ?? [])].reverse();
+    let standing = ($standings.char ?? []).find((row) => row.fromID === ownerID)?.standing ?? 0.0;
+    const back = [standing];
+    for (const tx of [...rows].reverse()) {
+      standing -= tx.modification;
+      if (Number(Math.abs(standing).toFixed(1)) === 0.0) standing = 0.0;
+      back.push(standing);
+    }
+    const values = back.reverse();
+    const hints = values.map((value, index) => {
+      // '%.2f' % round(value, 2): the sign kept even where it rounds to nought ("-0.00").
+      const valueText = `${value < 0 || Object.is(value, -0) ? "-" : ""}${Number(Math.abs(value).toFixed(2)).toFixed(2)}`;
+      if (index === 0) return valueText;
+      const tx = rows[index - 1]!;
+      const reason = standingChangeWords(tx, wording);
+      const when = tx.date === null ? "" : formatTemplate('{[formattedtime]datetime, format="%Y.%m.%d %H:%M"}', { datetime: { type: "long", value: tx.date.toString() } } as Record<string, JsonValue>, { nameOf });
+      // (FmtStandingTransaction gives the subject and the body; GetPointHint takes them as body, subject: the subject
+      // first, in bold.)
+      return [valueText, standingChangeText(roundStandingChange(tx.modification)).text, when, plainText(reason.subject), plainText(reason.body)].join("\n");
+    });
+    return { rows, values, hints };
+  }
+
   /** The selected owner's entry in its list (whatever the quick filter holds). */
   function entryOf(scope: "char" | "corp", ownerID: number): StandingsListEntry | null {
     const rows = scope === "char" ? $standings.char : $standings.corp;
@@ -548,16 +586,18 @@
             <!-- The scroll's noContentHint. -->
             <p class="empty">{word("UI/Standings/NoStandingsTransactions", { ownerName: entityName(ownerID) })}</p>
           {:else}
+            {@const history = historyOf(ownerID)}
+            <StandingsGraph values={history.values} hints={history.hints} lit={litPoint} onHover={(index) => (litRow = index === null || index === 0 ? null : index - 1)} />
             <!-- StandingsHistoryEntry: the event's icon, its date, its change, and the reason, its body the hint. -->
             <table class="drill standings-history">
               <thead>
                 <tr><th scope="col"></th><th scope="col">{word("UI/Common/Date")}</th><th scope="col" class="num">{word("UI/Common/Change")}</th><th scope="col">{word("UI/Common/Reason")}</th></tr>
               </thead>
               <tbody>
-                {#each $standings.transactions as tx (tx.id)}
+                {#each history.rows as tx, at (tx.id)}
                   {@const reason = standingChangeWords(tx, wording)}
                   {@const change = standingChangeText(roundStandingChange(tx.modification))}
-                  <tr title={plainText(reason.body) || undefined}>
+                  <tr title={plainText(reason.body) || undefined} class:lit={litRow === at} onmouseenter={() => (litPoint = at + 1)} onmouseleave={() => (litPoint = null)}>
                     <td><img src={clientTexture(standingEventIcon(tx.eventTypeID))} alt="" width="26" height="26" /></td>
                     <td>{dateText(tx.date)}</td>
                     <td class="num {change.tone}">{change.text}</td>
@@ -750,6 +790,9 @@
   }
   .standings-history img {
     display: block;
+  }
+  .standings-history tr.lit {
+    background: rgba(128, 128, 128, 0.18);
   }
   .standings-sort-heading {
     padding: 0.2rem 0.4rem;
