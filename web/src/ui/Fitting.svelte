@@ -64,6 +64,7 @@
   import RequiredSkillRow from "./RequiredSkillRow.svelte";
   import SkillTrainingAction from "./SkillTrainingAction.svelte";
   import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
+  import { createSkillPlanButton } from "./skillPlanTemplate.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -1197,6 +1198,11 @@
     "UI/Skills/ErrorRareRequirements": "A book this needs is not sold directly",
     "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
     "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
+    // Its Create Skill Plan button (CreateSkillPlanButton), its plan named for the fit (GetSkillTooltip's skillPlanName).
+    "Tooltips/SkillPlanner/SkillPlanButtonTooltip": "Begin a skill plan of these",
+    "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as may be had.",
+    "Tooltips/SkillPlanner/SkillPlanNameStringWithType": "A plan for {typeName}",
+    "UI/SkillPlan/DefaultCreateFitSkillPlanName": "A plan for this fit",
     "UI/Fitting/FittingWindow/Warnings/SubsystemShort": "Subsystem slots empty",
     "UI/Fitting/FittingWindow/Warnings/SubsystemHint": "A strategic cruiser needs a subsystem in each of its subsystem slots.",
     "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsShort": "Modules in slots the hull lacks",
@@ -1463,6 +1469,8 @@
   /** The tooltip's rows as read when it opened, by skill and level; and its training time and action. */
   let skillRows = $state<ReadonlyMap<string, SkillsRequiredRow>>(new Map());
   let skillTraining = $state<SkillTrainingRecord | null>(null);
+  /** The personal plans' count as the tooltip opened, for its Create Skill Plan button's limit. */
+  let skillPlanCount = $state<number | null>(null);
   /**
    * LoadSkillTooltip: the tooltip open (GetSkillTooltip), its rows read as the pilot's skills and queue stand now, and
    * the slots and holds whose items miss skills shown at the skill level (GetSlotsMissingSkills).
@@ -1474,6 +1482,7 @@
     skillTooltipOpen = true;
     warningSlots = new Map(warning.flags.map((flagID) => [flagID, WARNING_LEVEL_SKILL]));
     skillTraining = null;
+    void flow.personalSkillPlanCount().then((count) => (skillPlanCount = count)).catch(() => {});
     void flow.fittingSkillTooltip(warning)
       .then(({ rows, training }) => {
         skillRows = new Map(rows.map((row) => [`${row.skill}:${row.level}`, row]));
@@ -2923,7 +2932,12 @@
                           timeText={(ticks) => trainingTimeText(ticks, $words.templates, simulationWord("Tooltips/SkillPlanner/TrainingComplete"))}
                           apply={applyPointsButton(training, simulationWord, () => void flow.applySkillPointsFor(training).catch(() => {}), closeSkillTooltip)}
                           onTrain={() => void flow.trainSkillsFor(training).catch(() => {})}
-                          onBuy={() => void flow.buySkillsFor(training).catch(() => {})} />
+                          onBuy={() => void flow.buySkillsFor(training).catch(() => {})}
+                          plan={createSkillPlanButton({
+                            kind: "list",
+                            requirements: skills.listed,
+                            name: fitName ? simulationWord("Tooltips/SkillPlanner/SkillPlanNameStringWithType", { typeName: fitName }) : simulationWord("UI/SkillPlan/DefaultCreateFitSkillPlanName"),
+                          }, skillPlanCount, simulationWord)} />
                       </div>
                     {/if}
                   </div>

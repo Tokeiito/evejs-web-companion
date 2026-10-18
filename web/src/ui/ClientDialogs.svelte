@@ -48,6 +48,7 @@
   import RequiredSkillRow from "./RequiredSkillRow.svelte";
   import SkillTrainingAction from "./SkillTrainingAction.svelte";
   import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
+  import { createSkillPlanButton } from "./skillPlanTemplate.ts";
   import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
   import { CONTENTS_LABELS, RACK_EFFECTS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
   import type { ViewFittingTypeMark } from "../app/flow.ts";
@@ -832,7 +833,15 @@
     "Tooltips/SkillPlanner/MissingSkillBooks": "({numMissingBooks} not owned)",
     "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
     "Achievements/AuraText/laterButton": "Not now",
+    "Tooltips/SkillPlanner/SkillPlanButtonTooltip": "Begin a skill plan of these",
+    "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as may be had.",
   };
+  // The personal plans' count as the window opened, for its Create Skill Plan button's limit.
+  let windowPlanCount = $state<number | null>(null);
+  $effect(() => {
+    if ($skillsRequired === null) return;
+    void flow.personalSkillPlanCount().then((count) => (windowPlanCount = count)).catch(() => {});
+  });
   $effect(() => {
     const open = $skillsRequired;
     if (open === null) return;
@@ -1588,7 +1597,8 @@
       <SkillTrainingAction record={open} activity="Tooltips/SkillPlanner/ActivityFlyShip"
         word={skillWord} timeText={trainingTime}
         apply={applyPointsButton(open, applyWord, () => void flow.applySkillPointsRequired().catch(() => {}), () => flow.dismissSkillsRequired())}
-        onTrain={() => void flow.trainSkillsRequired().catch(() => {})} onBuy={() => void flow.buySkillsRequired().catch(() => {})} />
+        onTrain={() => void flow.trainSkillsRequired().catch(() => {})} onBuy={() => void flow.buySkillsRequired().catch(() => {})}
+        plan={((button) => ({ hint: button.hint, use: () => { flow.dismissSkillsRequired(); button.use(); } }))(createSkillPlanButton({ kind: "type", typeID: open.typeID }, windowPlanCount, skillWord))} />
       <span class="answers">
         <button type="button" onclick={() => flow.dismissSkillsRequired()}>{skillWord("Achievements/AuraText/laterButton")}</button>
       </span>

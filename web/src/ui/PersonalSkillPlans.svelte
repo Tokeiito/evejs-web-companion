@@ -84,7 +84,8 @@
   // window (the store), the faction and career icons, a skill row's selection,
   // menu, tooltip and drag (its selection is done), the tooltip and drag of an entry, and a notice kept
   // while the session does not match it yet (the client's notice routing cache).
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { skillPlanTemplateTarget, type SkillPlanTemplate } from "./skillPlanTemplate.ts";
   import { portal } from "./portal.ts";
   import SkillPlanEditor from "./SkillPlanEditor.svelte";
   import { MAX_PERSONAL_PLANS, uuidFromBytes } from "../bridge/skillPlans.ts";
@@ -708,8 +709,26 @@
 
   // --- A plan opened ---------------------------------------------------------------------------------------------
 
-  // The editor, open on a plan (a copy) or a new one (plan null).
-  let editing = $state<{ readonly plan: OpenedPlan | null; readonly corp: boolean } | null>(null);
+  // The editor, open on a plan (a copy) or a new one (plan null), a new one with a template where a skill window asked.
+  let editing = $state<{ readonly plan: OpenedPlan | null; readonly corp: boolean; readonly template?: SkillPlanTemplate | null } | null>(null);
+
+  // A new plan asked for by a skill window's Create Skill Plan (skillPlanTemplate.ts; SkillPlanPanel with its
+  // skillPlanTemplate: OnCreateNewPersonalSkillPlanWithTemplate): the personal plans shown, and the editor begun afresh
+  // on a new plan with the template; where no more plans may be had, the personal plans alone.
+  const templateRequests = skillPlanTemplateTarget.requests;
+  $effect(() => {
+    void $templateRequests;
+    const taken = untrack(() => skillPlanTemplateTarget.take());
+    if (taken === null) return;
+    untrack(() => {
+      menuUp = false;
+      selectedID = null;
+      linked = null;
+      choosePanel("personal");
+      editing = null;
+    });
+    if (taken.template !== null) void tick().then(() => (editing = { plan: null, corp: false, template: taken.template }));
+  });
 
   /** The editor on a plan, or on a new one (plan null; corp: the corporation's, OnCreateNewCorpSkillPlanButton). */
   function edit(plan: OpenedPlan | null, corp = plan?.corp === true): void {
@@ -1143,7 +1162,7 @@
     <p class="error">{error}</p>
   {/if}
   {#if editing !== null}
-    <SkillPlanEditor {store} {flow} plan={editing.plan} planCount={editing.corp ? corp?.plans.length ?? 0 : plans.length} onClose={editorClosed}
+    <SkillPlanEditor {store} {flow} plan={editing.plan} template={editing.template ?? null} planCount={editing.corp ? corp?.plans.length ?? 0 : plans.length} onClose={editorClosed}
       corp={editing.corp ? { categoryID: editing.plan?.categoryID ?? null, categories: corpCategories } : null} />
   {:else if selected !== null}
     {@const plan = selected}

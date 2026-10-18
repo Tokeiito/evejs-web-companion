@@ -26,6 +26,7 @@
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
+  import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
   import { assetsSearchTarget } from "./assetsSearch.ts";
   import { contractsSearchTarget } from "./contractsSearch.ts";
   import { typeCompareTarget } from "./typeCompare.ts";
@@ -343,6 +344,16 @@
     if (count === servedFittingWindowRequests) return;
     servedFittingWindowRequests = count;
     open("fitting");
+  });
+
+  // A new skill plan asked for (skillPlanTemplate.ts: CreateSkillPlanButton, cmd.OpenSkillsWindow): the Skills window.
+  let servedSkillPlanRequests = skillPlanTemplateTarget.requests.get();
+  const skillPlanRequests = skillPlanTemplateTarget.requests;
+  $effect(() => {
+    const count = $skillPlanRequests;
+    if (count === servedSkillPlanRequests) return;
+    servedSkillPlanRequests = count;
+    open("skills");
   });
 
   let servedMarketRequests = marketDetailsTarget.requests.get();

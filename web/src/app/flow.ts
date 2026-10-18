@@ -2811,6 +2811,8 @@ export interface AppFlow {
    * had (the client's SkillPlanConnectionError).
    */
   personalSkillPlans(): Promise<PersonalSkillPlansRead | null>;
+  /** How many personal plans the pilot has (GetAll), for CreateSkillPlanButton's limit; null where not read. */
+  personalSkillPlanCount(): Promise<number | null>;
   /**
    * The certified skill plans (bridge/certifiedSkillPlans.ts), from the client's own table, as their entries show them;
    * the career paths in the table's order; whether the AIR plan is done (HasFinishedAIRSkillPlan) and the faction of
@@ -9506,6 +9508,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw Object.assign(new Error(`${request} was answered ${answer.statusCode}${answer.statusMessage ? `: ${answer.statusMessage}` : ""}.`), { statusCode: answer.statusCode });
     }
     return answer.payload;
+  }
+
+  async function personalSkillPlanCount(): Promise<number | null> {
+    try {
+      return planIDsFromGetAll(await gatewayAsk("eve_public.character.skill.plan.GetAllRequest")).length;
+    } catch {
+      return null;
+    }
   }
 
   async function personalSkillPlans(): Promise<PersonalSkillPlansRead | null> {
@@ -25548,6 +25558,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     shipTraits: readonlySignal(shipTraitsSignal),
     requestShipTraits,
     personalSkillPlans,
+    personalSkillPlanCount,
     certifiedSkillPlans,
     certifiedPlanMilestones,
     buyMissingSkillBooks,

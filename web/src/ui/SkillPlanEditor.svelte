@@ -59,6 +59,7 @@
   // Not done: the end line while an item is dragged over (its type is not readable before the drop), fittings dragged
   // as text links, a milestone's level changed in its tooltip, the ring.
   import { onMount, untrack } from "svelte";
+  import type { SkillPlanTemplate } from "./skillPlanTemplate.ts";
   import SkillGroupTip from "./SkillGroupTip.svelte";
   import { serverNow, trainingReadout } from "../bridge/skills.ts";
   import { shortWrittenInterval } from "../bridge/timeInterval.ts";
@@ -94,7 +95,7 @@
     withNeedsOfTypesAppended,
   } from "../bridge/skillPlanEditor.ts";
 
-  let { store, flow, plan, planCount, onClose, corp = null }: {
+  let { store, flow, plan, planCount, onClose, corp = null, template = null }: {
     store: ClientStore;
     flow: AppFlow;
     /** The plan edited, or null for a new one. */
@@ -105,6 +106,8 @@
     onClose: (saved: boolean) => void;
     /** A corporation plan's: its category (null for a new plan, None chosen) and the career paths to choose from. */
     corp?: { readonly categoryID: number | null; readonly categories: readonly { readonly id: number; readonly name: string }[] } | null;
+    /** A new plan's template (skillPlanTemplate.ts), applied as the editor opens. */
+    template?: SkillPlanTemplate | null;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -153,6 +156,7 @@
     "UI/SkillPlan/MilestoneSkill": "Skill",
     "UI/SkillPlan/MilestoneModule": "Module",
     "UI/SkillPlan/MilestoneOther": "Other",
+    "Tooltips/SkillPlanner/SkillPlanNameStringWithType": "A plan for {typeName}",
   };
 
   function word(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -756,6 +760,44 @@
       working = false;
     }
   }
+
+  /**
+   * The template's Apply, as the editor opens on the new plan: a list's levels appended (AppendSkillRequirements, none
+   * without a skill or a level) and its name set (RequirementListSkillPlanTemplate); a type's needs, a milestone made of
+   * it where one is free (_AddRequirementsForType's way: a skill's needs to level I and its level I, else the type),
+   * else its needs alone, and where the plan has no name, SkillPlanNameStringWithType with the type's name
+   * (TypeRequirementSkillPlanTemplate).
+   */
+  async function applyTemplate(given: SkillPlanTemplate): Promise<void> {
+    working = true;
+    note = "";
+    try {
+      if (given.kind === "list") {
+        const levels = given.requirements.filter(([skill, level]) => skill !== null && level !== null).map(([skill, level]) => [skill, level] as const);
+        if (levels.length > 0) {
+          const facts = await factsWith(levels.map(([skill]) => skill));
+          if (facts === null) {
+            note = "The client's skill data could not be read: the plan was not changed.";
+            return;
+          }
+          requirements = withLevelsAppended(requirements, levels, facts);
+        }
+        if (given.name) name = given.name;
+      } else {
+        await addTypeRequirements(given.typeID);
+        if (name === "") name = word("Tooltips/SkillPlanner/SkillPlanNameStringWithType", { typeName: resolvedName($names.resolved, "type", given.typeID, String(given.typeID)) });
+      }
+      await readRequiring();
+    } finally {
+      working = false;
+    }
+  }
+  onMount(() => {
+    if (template) {
+      flow.requestNames(template.kind === "type" ? [{ kind: "type", id: template.typeID }] : []);
+      void applyTemplate(template);
+    }
+  });
 
   async function readRequiring(): Promise<void> {
     const skills = [...new Set(requirements.map(([skill]) => skill))];
