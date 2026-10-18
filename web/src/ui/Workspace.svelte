@@ -61,6 +61,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { Session } from "../app/sessions.ts";
+  import { requestSheetPanel } from "./characterSheetPanels.ts";
 
   let {
     store,
@@ -210,6 +211,12 @@
   // opens/focuses a window as always.
   let dockInventoryPing = $state(0);
   const openFromNeocom = (id: TabID): void => {
+    // The Neocom's Standings is OpenStandings: the Character Sheet, on its Standings (characterSheetWindow 395).
+    if (id === "standings") {
+      requestSheetPanel("standings");
+      open("characterSheet");
+      return;
+    }
     if (id === "inventory" && isDocked) {
       dockCollapsed = false;
       dockInventoryPing += 1;

@@ -38,14 +38,14 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import ExpertSystems from "./ExpertSystems.svelte";
   import Standings from "./Standings.svelte";
+  import { sheetPanelRequest, type SheetPanel } from "./characterSheetPanels.ts";
 
   // The client's Character Sheet's tabs (characterSheetWindow.GetMainTabData; charsheet GetPanelName): Character,
   // Interactions, PLEX, Personalization and History, of which the page has Character (characterPanel: Home Station,
   // Implants & Boosters, Bio, Expert Systems of its tabs), Interactions (interactionsPanel: Standings, the pilot's
   // standings panel, of its tabs) and History (historyPanel: Employment History and Skill History).
   type SheetTab = "character" | "interactions" | "history";
-  /** A panel to open the window on (CharacterSheetWindow.Open(panelID): _StartLoadingPanel), by the page's names. */
-  type SheetPanel = "home" | "implants" | "bio" | "expert" | "employment" | "skills" | "standings";
+
   /** The tabs' names, with the page's own words where the install's are not had. */
   const TAB_WORDS: Readonly<Record<string, string>> = {
     "Tooltips/CharacterSheet/Character": "Character",
@@ -70,6 +70,24 @@
   let sheetTab = $state<SheetTab>(opening === "standings" ? "interactions" : opening === "employment" || opening === "skills" ? "history" : "character");
   let characterTab = $state<"home" | "implants" | "bio" | "expert">(opening === "implants" || opening === "bio" || opening === "expert" ? opening : "home");
   let historyTab = $state<"employment" | "skills">(opening === "skills" ? "skills" : "employment");
+  /** _StartLoadingPanel: a panel asked for while the window is open, or as it opens (characterSheetPanels.ts). */
+  function loadPanel(panel: SheetPanel): void {
+    if (panel === "standings") {
+      sheetTab = "interactions";
+    } else if (panel === "employment" || panel === "skills") {
+      sheetTab = "history";
+      historyTab = panel;
+    } else {
+      sheetTab = "character";
+      characterTab = panel;
+    }
+  }
+  $effect(() => {
+    const asked = $sheetPanelRequest;
+    if (asked === null) return;
+    loadPanel(asked);
+    sheetPanelRequest.set(null);
+  });
 
   // svelte-ignore state_referenced_locally
   const sheet = store.characterSheet;
