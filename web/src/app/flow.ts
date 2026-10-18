@@ -425,7 +425,7 @@ const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import { BUFF_SLOTS } from "../bridge/dbuffs.ts";
-import { decodeDbuffUpdate, type BuffBarState } from "../bridge/buffBar.ts";
+import { decodeDbuffUpdate, decodeEwarNotice, ewarNoticed, jamNoticed, jammersReset, jammersWithout, NO_BUFFS, type BuffBarState } from "../bridge/buffBar.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { FittingResources, MarketEscrow } from "../store/types.ts";
@@ -759,6 +759,7 @@ import {
 } from "../bridge/fleetBroadcasts.ts";
 import {
   decodeJamNotification,
+  JAM_ASSUMED_DURATION_MS,
   isJamLive,
   scrammedByWarpScrambler,
   tacklersHolding,
@@ -4964,6 +4965,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "targeting/targeter-event", event: targeterEvent });
       return;
     }
+    // tactical.OnEwarStart and OnEwarEnd: another ship's module working on the pilot's, counted for the buff bar.
+    const ewar = method === null ? null : decodeEwarNotice(method, args as readonly JsonValue[]);
+    if (ewar !== null) {
+      buffBarSignal.set(ewarNoticed(buffBarSignal.get(), ewar, store.flight.get().status?.shipID ?? null));
+      return;
+    }
     // Fleet-companion phase 7 — `OnJamStart` / `OnJamEnd`, the ONLY read
     // anywhere that says who is holding this ship down. Like the two fleet
     // pushes above and unlike the invalidation sets below, these ARE the
@@ -4972,6 +4979,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const jam = decodeJamNotification(method, args, receivedAtMs);
     if (jam !== null) {
       store.apply({ type: "space/jam", event: jam });
+      // godma.OnJamStart and OnJamEnd, and shipUI's timer on the buff bar's button (bridge/buffBar.ts).
+      buffBarSignal.set(jamNoticed(buffBarSignal.get(), {
+        active: jam.active,
+        sourceID: jam.sourceBallID,
+        moduleID: jam.moduleID,
+        targetID: jam.targetBallID,
+        jammingType: jam.jammingType,
+        receivedAtMs: jam.receivedAtMs,
+        durationMs: jam.durationMs ?? JAM_ASSUMED_DURATION_MS,
+      }, store.flight.get().status?.shipID ?? null));
       // A jam STARTING is rung 4's whole trigger: something has this pilot held
       // down and the fleet has not been told. An END has nothing to issue.
       if (jam.active) {
@@ -5145,6 +5162,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // known are let go until the server says them again.
     if (sessionNames?.some((name) => name === "shipid" || name === "locationid" || name === "structureid" || name === "stationid" || name === "solarsystemid") && buffBarSignal.get().incoming.size > 0) {
       buffBarSignal.set({ ...buffBarSignal.get(), incoming: new Map() });
+    }
+    // tactical.ProcessSessionChange: another station, system or ship, and its jammers are reset (ResetJammers).
+    if (sessionNames?.some((name) => name === "stationid" || name === "solarsystemid" || name === "shipid")) {
+      buffBarSignal.set(jammersReset(buffBarSignal.get()));
     }
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
@@ -9128,7 +9149,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The ship HUD's buff bar (bridge/buffBar.ts): the buffs the server said are on the pilot's ship, and the collections
   // and icons the bar shows them with, each read of the BFF once.
-  const buffBarSignal = createSignal<BuffBarState>({ incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "" });
+  const buffBarSignal = createSignal<BuffBarState>(NO_BUFFS);
+  // tactical.RemoveBallFromJammers (DoBallRemove): a ball that leaves space takes what it was doing to the ship with it.
+  // Removed, not absent: a ball the page has not seen yet (one that came into space with its first cycle) keeps its
+  // jammers, as tactical keeps them until the ball goes.
+  let ballsLastSeen: ReadonlySet<number> | null = null;
+  store.space.subscribe(() => {
+    const entities = store.space.get().snapshot?.entities ?? null;
+    const seen = entities === null ? null : new Set(entities.map((entity) => entity.itemID));
+    const before = ballsLastSeen;
+    ballsLastSeen = seen;
+    const state = buffBarSignal.get();
+    if (before === null || seen === null || state.jammers.size === 0) return;
+    const next = jammersWithout(state, (ballID) => !before.has(ballID) || seen.has(ballID));
+    if (next !== state) buffBarSignal.set(next);
+  });
   let buffBarIconsAsked = false;
   function readBuffBarFacts(collectionIDs: readonly number[]): void {
     const known = buffBarSignal.get();

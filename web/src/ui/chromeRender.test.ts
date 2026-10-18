@@ -69,7 +69,7 @@ function fakeFlow(): unknown {
   // The HUD's autopilot button (HudButtons) follows whether the autopilot is on: off.
   const autopilotOn = { get: () => false, subscribe: (listener: (value: boolean) => void) => (listener(false), () => {}) };
   // And the HUD's buff bar (BuffBar) the buffs on the ship: none.
-  const noBuffs = { incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "" };
+  const noBuffs = { incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "", jammers: new Map(), activeJams: [], jamTimers: new Map() };
   const buffBar = { get: () => noBuffs, subscribe: (listener: (value: typeof noBuffs) => void) => (listener(noBuffs), () => {}) };
   return new Proxy({ walletJournal, walletOverview, marketTransactions, autopilotOn, buffBar } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }

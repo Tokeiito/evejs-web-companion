@@ -2871,6 +2871,9 @@
   .buff-tip.below { transform: translate(-50%, 0); }
   .buff-tip-caption { grid-column: 1 / -1; font-size: 0.9rem; }
   .buff-tip-value { text-align: right; }
+  /* A row with no third column fills the row (FillRow); a text across the three, grey (the failed attempts' line). */
+  .buff-tip-name.wide { grid-column: span 2; }
+  .buff-tip-full { grid-column: 1 / -1; color: var(--color-text-muted, #888); }
 
   /* The Neocom inside the workspace: full-height, its own scroll, no sticky. */
   .workspace .neocom {

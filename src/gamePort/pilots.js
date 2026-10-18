@@ -933,6 +933,8 @@ function defaultClientCallAnswer({ service, method, args, kwargs }, characterID,
 
 /** The items of a decoded list or tuple, or none. */
 const itemsOf = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+/** The events in a destiny update's OnMultiEvent the page is told of as godma scatters them (godma.OnMultiEvent_). */
+const SCATTERED_FROM_MULTI_EVENT = new Set(["OnEwarStart", "OnEwarEnd", "OnJamStart", "OnJamEnd"]);
 
 /** A keyword by name from a decoded dict, or undefined. */
 function dictValue(dict, name) {
@@ -4524,7 +4526,18 @@ function createGamePortPilots({
         },
       });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
-      entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
+      // godma.OnMultiEvent_ scatters the events it does not fold itself, each as if it had come alone: the electronic
+      // warfare's and the jams' (OnEwarStart and OnEwarEnd for tactical, OnJamStart and OnJamEnd for godma and shipUI,
+      // which Tranquility sends this way) are handed on to the page so.
+      entry.space.park.onMultiEvent = (messages) => {
+        entry.dogma.multiEvent(messages);
+        if (!sessions.has(entry.handle)) return;
+        for (const pair of itemsOf(messages)) {
+          const event = itemsOf(Array.isArray(pair) ? pair[0] : null);
+          const method = textOf(event[0]);
+          if (method !== null && SCATTERED_FROM_MULTI_EVENT.has(method)) record(entry, notificationToBridgeJson({ method, args: event.slice(1) }));
+        }
+      };
       // targetMgr.DoBallsRemove: a ball that goes is no target any more; invCache.DoBallRemove: nor a container held.
       entry.space.park.onBallsRemoved = (gone) => {
         entry.targets.ballsRemoved(gone.map((each) => each.id));
