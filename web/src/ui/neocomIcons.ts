@@ -88,6 +88,8 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   piManager: ["M12 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10", "M4 20h.01M12 20h.01M20 20h.01", "M4 17h16"],
   // Industry Manager: one box over three, a build tree.
   industryManager: ["M9 3h6v5H9z", "M12 8v4M5 12h14M5 12v3M12 12v3M19 12v3", "M3 15h4v5H3zM10 15h4v5h-4zM17 15h4v5h-4z"],
+  // A building: the corporation.
+  corporation: ["M4 21V9l8-5 8 5v12z", "M9 21v-6h6v6", "M8 11h2M14 11h2"],
   characterSheet: ["M5 3h14v18H5z", "M12 8a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M8 18a4 4 0 0 1 8 0"],
   standings: ["M4 9h10M4 9l3-3M4 9l3 3", "M20 15H10M20 15l-3-3M20 15l-3 3"],
 

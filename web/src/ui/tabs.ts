@@ -49,6 +49,7 @@ export type TabID =
   | "corpWallet"
   | "standings"
   | "characterSheet"
+  | "corporation"
   | "showInfo"
   | "routeWindow"
   | "missionTracker"
@@ -199,6 +200,7 @@ export const TABS: readonly TabDef[] = [
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
   { id: "standings", label: "Standings", where: "both" },
   { id: "characterSheet", label: "Character Sheet", where: "both" },
+  { id: "corporation", label: "Corporation", where: "both" },
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.

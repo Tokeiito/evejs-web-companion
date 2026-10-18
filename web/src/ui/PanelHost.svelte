@@ -42,6 +42,7 @@
   import CorpWallet from "./CorpWallet.svelte";
   import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
+  import CorporationWindow from "./CorporationWindow.svelte";
   import Settings from "./Settings.svelte";
   import ShowInfo from "./ShowInfo.svelte";
   import NoticeLog from "./NoticeLog.svelte";
@@ -185,6 +186,8 @@
   <Standings {store} {flow} />
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
+{:else if tab === "corporation"}
+  <CorporationWindow {store} {flow} />
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}
