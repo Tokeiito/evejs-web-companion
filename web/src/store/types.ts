@@ -4,6 +4,7 @@
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
+import type { FittingSkillWarning } from "../bridge/fittingSkills.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { SkillNotification } from "../bridge/skillNotifications.ts";
@@ -441,6 +442,8 @@ export interface FittingState {
   readonly bayReadout?: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
   /** The active ship's fitting warnings as the page reckoned them (bridge/dogma/fittingWarnings.ts evaluateFit). */
   readonly warnings?: readonly FitWarning[];
+  /** Its skill warning (bridge/fittingSkills.ts); null where a fact it goes by is not held. */
+  readonly skillWarning?: FittingSkillWarning | null;
   /**
    * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
    * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
@@ -476,6 +479,8 @@ export interface FittingState {
     readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
     /** The simulated ship's fitting warnings (evaluateFit). */
     readonly warnings: readonly FitWarning[];
+    /** The simulated ship's skill warning; null where a fact it goes by is not held. */
+    readonly skillWarning: FittingSkillWarning | null;
     /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
     readonly fighterSquadrons: { readonly full: number; readonly partial: number };
     /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */

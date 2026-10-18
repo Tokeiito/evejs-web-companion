@@ -2157,6 +2157,13 @@
   .fit-warning-question { margin-left: auto; color: var(--warning-color); font-weight: 700; }
   .fit-warning-row { display: flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0 0.1rem 1.6rem; }
   .fit-warning-attribute { min-width: 0; }
+  .fit-warnings { flex-wrap: wrap; }
+  .fit-warning-break { flex-basis: 100%; height: 0; }
+  /* GetSkillTooltip: its header (TextHeader), the sections in COLOR_SKILL_1 (eveColor.CRYO_BLUE). */
+  .fit-skill-header { margin: 0.2rem 0 0.2rem; font-size: 15px; }
+  .fit-skill-section { margin: 0.4rem 0 0.2rem; font-size: 13px; color: #58a7bf; }
+  .fit-skill-section.cargo-alone { margin-top: 1rem; }
+  .fit-skill-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.25rem; }
   .fit-socket.warning { outline: 2px solid var(--slot-warning); outline-offset: 1px; }
   .hud-gauge.warning, .fit-readout-warning { outline: 1px solid var(--slot-warning); outline-offset: 2px; }
   /* The simulated fighter bay's picker: the kinds' squadrons, the five tubes in a row, the bay's list. */

@@ -1,5 +1,6 @@
 import type { ChargeFitment } from "../bridge/fitting.ts";
 import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
+import type { FittingSkillWarning } from "../bridge/fittingSkills.ts";
 // Feed adapter seam (goal R1b, roadmap section 5).
 //
 // The client-state store is fed by whatever event transport exists at the
@@ -278,6 +279,7 @@ export type FeedEvent =
       readonly stats: ShipStats;
       readonly bayReadout: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
       readonly warnings: readonly FitWarning[];
+      readonly skillWarning: FittingSkillWarning | null;
     }
   // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
   | {
@@ -297,6 +299,7 @@ export type FeedEvent =
       readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
       readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
       readonly warnings: readonly FitWarning[];
+      readonly skillWarning: FittingSkillWarning | null;
       readonly fighterSquadrons: { readonly full: number; readonly partial: number };
       readonly fighterDps: number;
       readonly structure: boolean;

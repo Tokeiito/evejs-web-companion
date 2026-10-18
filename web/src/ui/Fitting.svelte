@@ -57,15 +57,17 @@
     WARNING_LEVEL_HIGH,
     WARNING_LEVEL_LOW,
     WARNING_LEVEL_MEDIUM,
+    WARNING_LEVEL_SKILL,
     WARNINGS_BY_ID,
     type FitWarningRow,
   } from "../bridge/dogma/fittingWarnings.ts";
+  import RequiredSkillRow from "./RequiredSkillRow.svelte";
   import TypeIcon from "./TypeIcon.svelte";
   import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  import type { AppFlow, SkillsRequiredRow } from "../app/flow.ts";
   import type {
     FittingResource,
     FittingSlot,
@@ -1169,6 +1171,15 @@
     "UI/Fitting/FittingWindow/Warnings/HeaderHigh": "Fitting problems",
     "UI/Fitting/FittingWindow/Warnings/HeaderMedium": "Fitting cautions",
     "UI/Fitting/FittingWindow/Warnings/HeaderLow": "Fitting notes",
+    // The skill warning's tooltip (GetSkillTooltip, AddMissingSkillRequirements, RequiredSkillRow).
+    "UI/Fitting/FittingWindow/Warnings/HeaderSkills": "Skills short",
+    "UI/Skills/RequiredSkills": "Skills needed",
+    "UI/Fitting/FittingWindow/Warnings/ShipAndFit": "The ship and its modules",
+    "UI/Fitting/FittingWindow/Warnings/CargoHold": "In the cargo",
+    "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
+    "UI/SkillQueue/SkillBookMissing": "The book is not injected",
+    "UI/SkillQueue/RareSkillBookMissing": "The book is not injected, and is not sold",
+    "UI/InfoWindow/SkillNotTrainedToRequiredLevel": "Short of the level needed",
     "UI/Fitting/FittingWindow/Warnings/SubsystemShort": "Subsystem slots empty",
     "UI/Fitting/FittingWindow/Warnings/SubsystemHint": "A strategic cruiser needs a subsystem in each of its subsystem slots.",
     "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsShort": "Modules in slots the hull lacks",
@@ -1417,13 +1428,49 @@
     return slots;
   }
   function openWarningTooltip(level: number): void {
+    skillTooltipOpen = false;
     warningTooltipLevel = level;
     warningSlots = levelSlots(level);
   }
   /** TooltipPanelBeingDestroyed: the tooltip closed, no slot shown with a warning. */
   function closeWarningTooltip(): void {
     warningTooltipLevel = null;
+    skillTooltipOpen = false;
     warningSlots = new Map();
+  }
+  // The skill warning (SkillWarningIcon: warningSkills.png in the skill level's colour, with how many skills the ship
+  // and what it holds miss), on the icons' row where fewer than three levels have warnings, else under them.
+  const fitSkillWarning = $derived.by(() => (simulation ? simulation.skillWarning : $fitting.skillWarning ?? null));
+  const SKILL_WARNING_ICON = clientTexture("res:/ui/Texture/classes/Fitting/warningSkills.png");
+  let skillTooltipOpen = $state(false);
+  /** The tooltip's rows as read when it opened, by skill and level. */
+  let skillRows = $state<ReadonlyMap<string, SkillsRequiredRow>>(new Map());
+  /**
+   * LoadSkillTooltip: the tooltip open (GetSkillTooltip), its rows read as the pilot's skills and queue stand now, and
+   * the slots and holds whose items miss skills shown at the skill level (GetSlotsMissingSkills).
+   */
+  function openSkillTooltip(): void {
+    const warning = fitSkillWarning;
+    if (!warning) return;
+    warningTooltipLevel = null;
+    skillTooltipOpen = true;
+    warningSlots = new Map(warning.flags.map((flagID) => [flagID, WARNING_LEVEL_SKILL]));
+    void flow.fittingSkillRows([...warning.fit, ...warning.cargo])
+      .then((rows) => {
+        skillRows = new Map(rows.map((row) => [`${row.skill}:${row.level}`, row]));
+      })
+      .catch(() => {});
+  }
+  function closeSkillTooltip(): void {
+    skillTooltipOpen = false;
+    warningSlots = new Map();
+  }
+  /** AddMissingSkillRequirements' rows: by the skills' names (SortListOfTuples). */
+  function bySkillName(skills: readonly (readonly [number, number])[]): readonly (readonly [number, number])[] {
+    return [...skills].sort(([left], [right]) => {
+      const [a, b] = [moduleName(left), moduleName(right)];
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
   }
   /** OnMouseEnterContainer: a line's or a row's slots shown with its warning; OnMouseExitContainer: none. */
   function showWarningSlots(flags: readonly number[], level: number): void {
@@ -1536,7 +1583,9 @@
         else if (row.kind === "attribute" && row.skillTypeID !== null) refs.push({ kind: "type", id: row.skillTypeID });
       }
     }
-    if (fitWarnings.length > 0) flow.requestNames(refs);
+    // The skills the skill tooltip lists.
+    for (const [skill] of [...(fitSkillWarning?.fit ?? []), ...(fitSkillWarning?.cargo ?? [])]) refs.push({ kind: "type", id: skill });
+    if (fitWarnings.length > 0 || (fitSkillWarning?.count ?? 0) > 0) flow.requestNames(refs);
   });
   /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
   const HYPERLINK_ICON = clientTexture("res:/UI/Texture/classes/HyperNet/hyperlink_icon.png");
@@ -2762,7 +2811,7 @@
               title={`${fitName}\n${simulationWord("Tooltips/FittingWindow/ShipName_description")}`}
               ondragstart={(event) => startFittingSourceDrag(event, "fittingWindow")}
               onclick={() => void flow.saveFitAs().catch(() => {})}><img src={HYPERLINK_ICON} alt="" width="16" height="16" />{fitName}</button>
-            {#if warningIcons.length > 0}
+            {#if warningIcons.length > 0 || (fitSkillWarning?.count ?? 0) > 0}
               <!-- WarningIconCont: the red, yellow and white icons, each with how many warnings it has; its tooltip
                    (LoadWarningTooltipPanel: EvaluateFitAndPopulateTooltip) the level's header and each warning's line
                    (its icon, its line, its hint behind "?") with its rows under it; a line or row pointed at shows its
@@ -2778,6 +2827,44 @@
                     <span class="fit-warning-glyph" aria-hidden="true"></span><span class="fit-warning-count">{icon.count}</span>
                   </button>
                 {/each}
+                {#if fitSkillWarning && fitSkillWarning.count > 0}
+                  <!-- SkillWarningIcon: its tooltip (LoadSkillTooltip, GetSkillTooltip) the skills the ship and fit
+                       miss under Skills Required (Ship and Fit where the cargo's miss some too), the cargo's under
+                       Cargo Hold, each at the highest level needed with its mark and skill bar (RequiredSkillRow). -->
+                  {#if warningIcons.length >= 3}<span class="fit-warning-break" aria-hidden="true"></span>{/if}
+                  <button type="button" class="fit-warning-icon" style={`--warning-color: ${COLOR_BY_LEVEL[WARNING_LEVEL_SKILL]}; --warning-icon: url("${SKILL_WARNING_ICON}")`}
+                    aria-expanded={skillTooltipOpen}
+                    aria-label={`${simulationWord(HEADER_BY_LEVEL[WARNING_LEVEL_SKILL] ?? "")}: ${fitSkillWarning.count}`}
+                    onmouseenter={openSkillTooltip}
+                    onfocus={openSkillTooltip}
+                    onclick={() => (skillTooltipOpen ? closeSkillTooltip() : openSkillTooltip())}>
+                    <span class="fit-warning-glyph" aria-hidden="true"></span><span class="fit-warning-count">{fitSkillWarning.count}</span>
+                  </button>
+                {/if}
+                {#if skillTooltipOpen && fitSkillWarning && (fitSkillWarning.fit.length > 0 || fitSkillWarning.cargo.length > 0)}
+                  {@const skills = fitSkillWarning}
+                  <div class="fit-warning-tooltip fit-skill-tooltip" role="tooltip">
+                    {#if skills.fit.length > 0}
+                      <h3 class="fit-skill-header">{simulationWord("UI/Skills/RequiredSkills")}</h3>
+                      {#if skills.shipAndFitHeading}<h4 class="fit-skill-section">{simulationWord("UI/Fitting/FittingWindow/Warnings/ShipAndFit")}</h4>{/if}
+                      <ul class="fit-skill-rows">
+                        {#each bySkillName(skills.fit) as [skill, level] (skill)}
+                          {@const row = skillRows.get(`${skill}:${level}`) ?? null}
+                          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={simulationWord} />
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if skills.cargo.length > 0}
+                      <h4 class="fit-skill-section" class:cargo-alone={skills.fit.length === 0}>{simulationWord("UI/Fitting/FittingWindow/Warnings/CargoHold")}</h4>
+                      <ul class="fit-skill-rows">
+                        {#each bySkillName(skills.cargo) as [skill, level] (skill)}
+                          {@const row = skillRows.get(`${skill}:${level}`) ?? null}
+                          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={simulationWord} />
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/if}
                 {#if warningTooltipLevel !== null && tooltipWarnings.length > 0}
                   {@const level = warningTooltipLevel}
                   <div class="fit-warning-tooltip" role="tooltip" style={`--warning-color: ${COLOR_BY_LEVEL[level]}`}>

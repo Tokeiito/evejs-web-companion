@@ -44,8 +44,8 @@
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
   import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
-  import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import RequiredSkillRow from "./RequiredSkillRow.svelte";
   import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
   import { CONTENTS_LABELS, RACK_EFFECTS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
   import type { ViewFittingTypeMark } from "../app/flow.ts";
@@ -837,12 +837,6 @@
     flow.requestWords([...Object.keys(SKILL_WINDOW_WORDS), ...SHORT_INTERVAL_WORD_LABELS]);
     flow.requestNames([{ kind: "type", id: open.typeID }, ...open.skills.map(([skill]) => ({ kind: "type" as const, id: skill }))]);
   });
-  /** RequiredSkillRow's hint for each mark. */
-  const SKILL_MARK_LABELS: Readonly<Record<Exclude<SkillRowMark, null>, string>> = {
-    "book-missing": "UI/SkillQueue/SkillBookMissing",
-    "rare-book-missing": "UI/SkillQueue/RareSkillBookMissing",
-    "level-short": "UI/InfoWindow/SkillNotTrainedToRequiredLevel",
-  };
   /**
    * A training time as the window writes it (FormatTimeIntervalShortWritten(time, showTo=TIME_CATEGORY_MINUTE)), in
    * the install's words; the page's own where they are not to hand. None is the window's Training Complete.
@@ -1614,19 +1608,7 @@
       <ul class="skill-rows">
         {#each open.skills as [skill, level] (skill)}
           {@const row = open.rows.find((one) => one.skill === skill) ?? null}
-          <li class="skill-row">
-            <span class="skill-name">{skillWord("UI/InfoWindow/RequiredSkillNameAndLevel", { skill, level: romanLevel(level), levelColor: "#ffffff" })}</span>
-            {#if row !== null && row.mark !== null}
-              <span class="skill-mark" class:book={row.mark !== "level-short"} title={skillWord(SKILL_MARK_LABELS[row.mark])}></span>
-            {/if}
-            {#if row !== null && row.boxes.length > 0}
-              <span class="skill-bar" aria-hidden="true">
-                {#each row.boxes as one, at (at)}
-                  <span class="skill-box {one.box}" class:partial={one.partial}></span>
-                {/each}
-              </span>
-            {/if}
-          </li>
+          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={skillWord} />
         {/each}
       </ul>
       <!-- AddTrainingTimeForType: an omega's time, or an alpha's row (its time and an omega's), which an alpha whose
@@ -1727,23 +1709,9 @@
   .ship-name-count { align-self: flex-end; font-size: 0.8rem; opacity: 0.7; }
   .skill-rows { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.35rem; }
   .skill-head { display: flex; align-items: center; gap: 0.75rem; }
-  .skill-row { display: flex; align-items: center; gap: 0.5rem; }
-  .skill-name { flex: 1; }
   .skill-mark { width: 12px; height: 14px; flex: none; }
   .skill-mark.book { background: #e0a43c; border-radius: 1px 3px 3px 1px; }
-  .skill-bar { display: inline-flex; gap: 2px; margin-left: 0.75rem; }
-  .skill-box { width: 8px; height: 8px; box-sizing: border-box; }
-  .skill-box.none { visibility: hidden; }
-  .skill-box.trained { background: rgba(204, 204, 204, 1); }
-  .skill-box.training { background: rgba(204, 204, 204, 0.6); outline: 1px solid rgba(204, 204, 204, 1); }
-  .skill-box.queued { background: #3ea8d9; }
-  .skill-box.untrained { background: rgba(255, 255, 255, 0.3); }
-  .skill-box.small { width: 4px; height: 4px; margin: 2px; background: rgba(255, 255, 255, 0.3); }
-  /* skillLevel.py COLOR_TRAINED_OMEGA and COLOR_REQUIRES_OMEGA: clonegrade.COLOR_OMEGA_ORANGE at 0.8 and 0.6. */
-  .skill-box.trained-omega { background: rgba(252, 194, 7, 0.8); }
-  .skill-box.small-omega { width: 4px; height: 4px; margin: 2px; background: rgba(252, 194, 7, 0.6); }
   .skill-time .omega-upgrade { align-self: flex-start; margin-top: 0.4rem; }
-  .skill-box.partial { outline: 1px solid rgba(204, 204, 204, 1); }
   .skill-time, .skill-points { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0.6rem; background: rgba(25, 25, 25, 0.7); }
   .skill-points { flex-direction: row; justify-content: space-between; }
   .skill-time .omega { color: #ff9e1b; }
