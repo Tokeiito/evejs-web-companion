@@ -38,14 +38,18 @@
   import type { JsonValue } from "../bridge/wire.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
+  import StandingsBar from "./StandingsBar.svelte";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
   import {
     DEFAULT_STANDINGS_SORT,
     STANDINGS_GROUP_LABELS,
     STANDINGS_SORTS,
+    pyStandingText,
+    standingUsed,
     standingsListGroups,
     type StandingsListEntry,
+    type StandingsListInputs,
     type StandingsSort,
   } from "./standingsList.ts";
 
@@ -114,6 +118,8 @@
     "UI/Common/Name": "Member",
     "UI/Common/Standing": "Standing",
     "UI/Standings/NoStandingsTransactions": "{ownerName} has not changed its standing toward you.",
+    "UI/Standings/StandingsBarHint": "{[character]owner.name} toward you: <b>{standing}</b>",
+    "UI/Standings/StandingsBarHintToCorp": "{[character]owner.name} toward {corpName}: <b>{standing}</b>",
     "UI/Standings/CompositionWindow/NPCToPlayerCorp": "An NPC's standing toward a player corporation is its members' standings averaged, of those a week or more in it.",
     [DATE_LABELS.sn!]: "{[datetime]datetime}",
     ...STANDING_CHANGE_WORDS,
@@ -182,26 +188,45 @@
   }
 
   /** Each panel's groups (ui/standingsList.ts): the pilot's with its skill bonus and its race's faction. */
-  function listGroups(scope: "char" | "corp", rows: readonly CharStanding[], search: string = searchText[scope]) {
-    return standingsListGroups(
-      {
-        rows,
-        forPilot: scope === "char",
-        raceID: $station.online?.raceID ?? null,
-        agentOf: (ownerID) => {
-          const records = $agents.agentRecords;
-          if (!(ownerID in records)) return undefined;
-          const record = records[ownerID];
-          return record ? { level: record.level, factionID: record.factionID } : null;
-        },
-        factionOfCorporation: (corporationID) => $corporationFactions?.[String(corporationID)] ?? null,
-        skillLevel: (typeID) => ($skills.skills ?? []).find((skill) => skill.typeID === typeID)?.level ?? 0,
-        ownerName: entityName,
-        agentName: (agentID, level) => word("UI/Agents/AgentEntryNameAndLevel", { ownerID: agentID, level: level ?? 0 }),
+  /** What a panel's list is made of (ui/standingsList.ts): its standings, and what the client knows to word them. */
+  function inputsOf(scope: "char" | "corp", rows: readonly CharStanding[]): StandingsListInputs {
+    return {
+      rows,
+      forPilot: scope === "char",
+      raceID: $station.online?.raceID ?? null,
+      agentOf: (ownerID) => {
+        const records = $agents.agentRecords;
+        if (!(ownerID in records)) return undefined;
+        const record = records[ownerID];
+        return record ? { level: record.level, corporationID: record.corporationID, factionID: record.factionID } : null;
       },
-      sort,
-      search,
-    );
+      factionOfCorporation: (corporationID) => $corporationFactions?.[String(corporationID)] ?? null,
+      skillLevel: (typeID) => ($skills.skills ?? []).find((skill) => skill.typeID === typeID)?.level ?? 0,
+      ownerName: entityName,
+      agentName: (agentID, level) => word("UI/Agents/AgentEntryNameAndLevel", { ownerID: agentID, level: level ?? 0 }),
+    };
+  }
+  function listGroups(scope: "char" | "corp", rows: readonly CharStanding[], search: string = searchText[scope]) {
+    return standingsListGroups(inputsOf(scope, rows), sort, search);
+  }
+
+  /**
+   * The standings bar for a panel's selected owner (StandingsBar.Update(fromID, toID)): its standing toward the panel's
+   * owner, the standing it deals with the pilot by (GetStandingUsed, from the pilot's own standings whichever the
+   * panel), and their hints.
+   */
+  function barOf(scope: "char" | "corp"): { standing: number; derived: number; hint: string; derivedHint: string } | null {
+    if ($standings.detailScope !== scope || $standings.detailFromID === null) return null;
+    const ownerID = $standings.detailFromID;
+    const entry = entryOf(scope, ownerID);
+    if (entry === null) return null;
+    const used = standingUsed(inputsOf("char", $standings.char ?? []), ownerID, entry.standing);
+    const corpName = resolvedName($names.resolved, "corporation", $station.online?.corporationID ?? 0, "");
+    const hintOf = (owner: number | null, standing: number): string =>
+      plainText(scope === "corp"
+        ? word("UI/Standings/StandingsBarHintToCorp", { owner: owner ?? 0, corpName, standing: pyStandingText(standing) })
+        : word("UI/Standings/StandingsBarHint", { owner: owner ?? 0, standing: pyStandingText(standing) }));
+    return { standing: entry.standing, derived: used.standing, hint: hintOf(ownerID, entry.standing), derivedHint: hintOf(used.ownerID, used.standing) };
   }
 
   /** What each panel's quick filter holds, and the text it filters by: taken 0.4 s after the first key (SetQuickFilterInput). */
@@ -491,6 +516,11 @@
   {/snippet}
 
   {#snippet standingList(rows: readonly CharStanding[] | null, err: string | null, scope: "char" | "corp")}
+    <!-- The panel's standings bar, for its selected owner, across its top. -->
+    {@const bar = barOf(scope)}
+    {#if bar !== null}
+      <StandingsBar standing={bar.standing} usedStanding={bar.derived} hint={bar.hint} derivedHint={bar.derivedHint} />
+    {/if}
     <div class="standings-panel">
     <div class="standings-left">
     <!-- The panel's quick filter (QuickFilterEdit). -->

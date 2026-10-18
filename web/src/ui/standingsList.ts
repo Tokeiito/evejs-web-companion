@@ -61,9 +61,10 @@ export interface StandingsListGroup {
   readonly entries: readonly StandingsListEntry[];
 }
 
-/** An agent as the client's agents service has it (GetAgentByID): its level and its faction. */
+/** An agent as the client's agents service has it (GetAgentByID): its level, its corporation and its faction. */
 export interface StandingsAgent {
   readonly level: number | null;
+  readonly corporationID?: number | null;
   readonly factionID: number | null;
 }
 
@@ -96,6 +97,9 @@ function pyRound2(value: number): number {
   const magnitude = Number(Math.abs(value).toFixed(2));
   return value < 0 || Object.is(value, -0) ? -magnitude : magnitude;
 }
+/** round(standing, 2) as %s writes it (the standings bar's hint). */
+export const pyStandingText = (standing: number): string => pyFloatText(pyRound2(standing));
+
 /** str(float) for such a number: an integral one with ".0", and -0.0 as Python writes it. */
 function pyFloatText(value: number): string {
   if (Object.is(value, -0)) return "-0.0";
@@ -110,6 +114,53 @@ function factionOfOwner(inputs: StandingsListInputs, ownerID: number): number | 
   if (isCorporation(ownerID)) return inputs.factionOfCorporation(ownerID);
   if (isFaction(ownerID)) return ownerID;
   return inputs.agentOf(ownerID)?.factionID ?? null;
+}
+
+/** standingsvc.GetStandingWithSkillBonus(fromID, the pilot): its standing toward the pilot (nought where none), with the skill's bonus. */
+export function pilotStandingWithBonus(inputs: StandingsListInputs, ownerID: number | null): number {
+  if (ownerID === null) return 0.0;
+  const raw = inputs.rows.find((row) => row.fromID === ownerID)?.standing ?? 0.0;
+  // GetStandingSkillBonus: for an NPC's standing toward the pilot only.
+  if (!isNpc(ownerID)) return raw;
+  const skill = standingBonusSkill(factionOfOwner(inputs, ownerID), raw);
+  return applyStandingBonus(skill === null ? 0 : inputs.skillLevel(skill) * 0.4, raw);
+}
+
+/** Python's order of (standing, ownerID) tuples: by the standing, then the owner, None before any number. */
+function byStandingThenOwner(a: readonly [number, number | null], b: readonly [number, number | null]): number {
+  if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+  if (a[1] === b[1]) return 0;
+  if (a[1] === null) return -1;
+  if (b[1] === null) return 1;
+  return a[1] < b[1] ? -1 : 1;
+}
+
+/** rwservice.is_rw_corporation: resourcewars FACTION_TO_RW_LP_CORP's corporations. */
+const RW_CORPORATIONS: readonly number[] = [1000283, 1000284, 1000285, 1000286];
+
+/**
+ * StandingsBar.GetStandingUsed: the standing the owner deals with the pilot by, and whose it is. An agent's
+ * (agentUtil.GetAgentDerivedStanding): of its faction's, its corporation's and its own toward the pilot, each with the
+ * skill's bonus, the least where it is -2.0 or worse, else the greatest. An NPC corporation's
+ * (GetNPCCorpDerivedStanding): the greater of its faction's and its own (a Resource Wars corporation's own alone).
+ * Anyone else's: the standing the panel shows. `pilotInputs` are the pilot's own standings, whichever the panel.
+ */
+export function standingUsed(pilotInputs: StandingsListInputs, ownerID: number, standing2to1: number): { readonly standing: number; readonly ownerID: number | null } {
+  const sb = (id: number | null): readonly [number, number | null] => [pilotStandingWithBonus(pilotInputs, id), id];
+  if (ownerID >= 3_000_000 && ownerID < 4_000_000) {
+    const agent = pilotInputs.agentOf(ownerID);
+    if (!agent) return { standing: standing2to1, ownerID };
+    const standings = [sb(agent.factionID), sb(agent.corporationID ?? null), sb(ownerID)].sort((a, b) => byStandingThenOwner(b, a));
+    const used = standings[standings.length - 1]![0] <= -2.0 ? standings[standings.length - 1]! : standings[0]!;
+    return { standing: used[0], ownerID: used[1] };
+  }
+  if (ownerID >= 1_000_000 && ownerID < 2_000_000) {
+    if (RW_CORPORATIONS.includes(ownerID)) return { standing: pilotStandingWithBonus(pilotInputs, ownerID), ownerID };
+    const standings = [sb(pilotInputs.factionOfCorporation(ownerID)), sb(ownerID)].sort(byStandingThenOwner);
+    const used = standings[standings.length - 1]!;
+    return { standing: used[0], ownerID: used[1] };
+  }
+  return { standing: standing2to1, ownerID };
 }
 
 /** The groups and their entries, as GetStandingScrollGroups makes them and get_nodes_sorted orders them. */
