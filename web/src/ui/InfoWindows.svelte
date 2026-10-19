@@ -74,7 +74,7 @@
 
 {#snippet contents(w: InfoWindowState)}
   {#key w.reconstruction}
-    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} corporationResult={w.visibleCorporationResult} /></ErrorBoundary></div>
+    <div use:reconstructed>{#if !w.waitingForReconstruction}<ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} corporationResult={w.visibleCorporationResult} /></ErrorBoundary>{/if}</div>
   {/key}
 {/snippet}
 

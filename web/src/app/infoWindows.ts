@@ -23,6 +23,9 @@ export interface InfoWindowState {
   readonly reconstruction: number;
   readonly reads: InfoReadScope;
   readonly loading: boolean;
+  /** BaseInfoWindow saves the latest busy request without starting it. */
+  readonly pendingLoadData: Entry | null;
+  readonly waitingForReconstruction: boolean;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
 }
@@ -40,16 +43,17 @@ export function createInfoWindows(deps: {
   const subjects = new Map<number, ReturnType<typeof createSignal<InfoSubject | null>>>();
   const assignedEntries = new WeakMap<InfoReadScope, Entry | null>();
   const corporationResults = new WeakMap<InfoReadScope, ReturnType<typeof createSignal<CorporationResult>>>();
+  const activeLoads = new Map<number, InfoReadScope>();
   let serial = 0, raisedSerial = 0, generation = 0;
   let queue: Promise<unknown> = Promise.resolve();
   const update = (id: number, change: (w: InfoWindowState) => InfoWindowState): void => {
     state.update(windows => windows.map(w => w.id === id ? change(w) : w));
   };
   const requestRaise = (id: number): void => { raised.set({ n: ++raisedSerial, id }); };
-  const snapshot = (w: InfoWindowState): Entry | null => w.entry.identity.content === "corporation" ? assignedEntries.get(w.reads) ?? null : w.entry;
-  function makeReads(id: number, entry: Entry, branch: boolean, directHistory = false, previous?: InfoReadScope): InfoReadScope {
+  const snapshot = (w: InfoWindowState): Entry | null => assignedEntries.get(w.reads) ?? null;
+  function makeReads(id: number, entry: Entry, branch: boolean, directHistory = false, previous?: InfoReadScope, waiting = false): InfoReadScope {
     const epoch = generation;
-    const initial = entry.identity.content === "corporation" ? directHistory && previous ? assignedEntries.get(previous) ?? null : null : entry;
+    const initial = waiting ? null : entry.identity.content === "corporation" ? directHistory && previous ? assignedEntries.get(previous) ?? null : null : entry;
     const current = (): InfoWindowState | undefined => state.get().find(w => w.id === id && w.reads === reads);
     const reads = createInfoReadScope(() => epoch === generation, {
       requested: entry.identity, registered: !directHistory, initialIdentity: initial?.identity ?? null,
@@ -63,6 +67,13 @@ export function createInfoWindows(deps: {
         }
       },
       onComplete: () => {
+        const window = state.get().find(w => w.id === id);
+        // The running direct history coroutine uses self.info_content again
+        // for its caption. ShowInfo may have replaced that object with a new,
+        // unassigned content while BaseInfoWindow queued its reconstruction.
+        if (activeLoads.get(id) === reads && window?.waitingForReconstruction) {
+          throw Object.assign(new Error("Trying to open a show info with no type_id. Possibly bad history data."), { code: "INFO_CAPTION_UNASSIGNED" });
+        }
         const w = current(); if (!w) return;
         update(id, w => ({ ...w, captionEntry: entry,
           history: branch && w.history.length ? w.history.map((old, i) => i === w.index ? snapshot(w) : old) : w.history }));
@@ -75,7 +86,12 @@ export function createInfoWindows(deps: {
     assignedEntries.set(reads, initial);
     if (entry.identity.content === "corporation") corporationResults.set(reads, createSignal<CorporationResult>(undefined));
     reads.loading.subscribe(loading => {
-      const w = current(); if (w && w.loading !== loading) update(id, w => ({ ...w, loading }));
+      if (epoch !== generation) return;
+      if (loading) activeLoads.set(id, reads);
+      else if (activeLoads.get(id) !== reads) return;
+      else activeLoads.delete(id);
+      const w = state.get().find(w => w.id === id);
+      if (w && w.loading !== loading) update(id, w => ({ ...w, loading }));
     });
     return reads;
   }
@@ -87,13 +103,31 @@ export function createInfoWindows(deps: {
     if (!signal || entry.identity.itemID === null) return;
     // One controller-owned coroutine feeds the view. A remount/focus must not
     // issue another copy, and an unregistered history read can outlive its view.
-    void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), () => signal.set(null));
+    void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), error => {
+      signal.set(null);
+      // Native eve_exception_handler logs ordinary exceptions by default.
+      if (error?.code === "INFO_CAPTION_UNASSIGNED") console.error(error);
+    });
   }
   function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {
     // Ordinary ShowInfo stops the old tasklet before replacing its content.
     // That stop records an unfinished history slot before the new one is appended.
     w.reads.retireRegistered();
     w = state.get().find(current => current.id === w.id)!;
+    if (!directHistory && w.loading && entry.identity.content !== "ship") {
+      // change_info_content/ConstructLayout happen before the busy base call.
+      // There is no registered tasklet to stop during direct history. Replace
+      // the layout, retain its window-level loading flag, and save only the
+      // latest pending tuple. No history append, RPC or automatic drain follows.
+      const reads = makeReads(w.id, entry, branch, false, undefined, true);
+      const result = corporationResult(reads);
+      subjects.get(w.id)?.set({ ...entry.subject });
+      update(w.id, current => ({ ...current, entry, reads, corporationResult: result,
+        visibleCorporationResult: result, pendingLoadData: entry, waitingForReconstruction: true,
+        reconstruction: current.reconstruction + 1, minimized: false }));
+      requestRaise(w.id);
+      return;
+    }
     let history = w.history;
     let index = w.index;
     if (branch) { history = [...history.slice(0, index + 1), entry.identity.content === "corporation" ? pendingHistory : entry]; index = history.length - 1; }
@@ -101,7 +135,7 @@ export function createInfoWindows(deps: {
     const defer = directHistory && entry.identity.content === "corporation";
     const result = corporationResult(reads);
     if (!defer) subjects.get(w.id)?.set({ ...entry.subject });
-    update(w.id, current => ({ ...current, entry, history, index, reads, loading: false, corporationResult: result,
+    update(w.id, current => ({ ...current, entry, history, index, reads, loading: false, corporationResult: result, waitingForReconstruction: false,
       captionEntry: entry.identity.content === "corporation" ? current.captionEntry : entry,
       visibleCorporationResult: defer ? current.visibleCorporationResult : result,
       reconstruction: current.reconstruction + (defer || entry.identity.content === "ship" ? 0 : 1), minimized: false }));
@@ -136,7 +170,7 @@ export function createInfoWindows(deps: {
         const offset = (windows.length % 8) * 24;
         const reads = makeReads(id, entry, true), result = corporationResult(reads);
         const w: InfoWindowState = { id, entry, captionEntry: entry, subject: readonlySignal(signal), history: [identity.content === "corporation" ? pendingHistory : entry], index: 0, reconstruction: 1,
-          reads, loading: false, corporationResult: result, visibleCorporationResult: result,
+          reads, loading: false, pendingLoadData: null, waitingForReconstruction: false, corporationResult: result, visibleCorporationResult: result,
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
@@ -174,7 +208,7 @@ export function createInfoWindows(deps: {
       const w = state.get().find(w => w.id === id); if (!w) return;
       // InfoWindow.OnBack/OnForward ignore input during ordinary reconstruction.
       // Ship history has no such guard. Only content-owned reads mark this flag.
-      if (w.entry.identity.content !== "ship" && w.reads.loading.get()) return;
+      if (w.entry.identity.content !== "ship" && w.loading) return;
       const history = w.history.map((e, i) => i === w.index ? snapshot(w) : e);
       const index = w.index + direction; if (index < 0 || index >= history.length) return;
       const entry = history[index]!;
@@ -188,7 +222,7 @@ export function createInfoWindows(deps: {
       if (w.entry.identity.content === entry.identity.content) reconstruct(current, entry, false, entry.identity.content !== "ship");
       else await show(entry.request, { traversingHistory: true, shift });
     },
-    reset(): void { generation++; subjects.clear(); state.set([]); raised.set(null); queue = Promise.resolve(); },
+    reset(): void { generation++; subjects.clear(); activeLoads.clear(); state.set([]); raised.set(null); queue = Promise.resolve(); },
   };
 }
 export type InfoWindows = ReturnType<typeof createInfoWindows>;

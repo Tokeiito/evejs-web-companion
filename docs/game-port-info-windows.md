@@ -188,17 +188,24 @@ and ordinary window method confirm old controls/caption at GetPublicInfo, flush
 and fresh scroll after the reply, then caption assignment after content work;
 UI/service shells record these boundaries, not Blue scheduling or all RPCs.
 
-Required c6b2b2b2b2 work remains: complete window-level loading/pending behavior,
-other ordinary headers' loading/completion and content-owned continuations. The
-native window-level pending request when unregistered history is still busy and
-ShowInfo replaces its content requires the whole original transition, including
-caption evaluation of the newly replaced content. RPC/error completion, widget
-lifetime after close and retained dead tasklet pointers need their own content/
-error reading. The current corporation coroutine retains its per-field fallback
-handling. Complete native content tabs, ancillary header/relationship read order,
-service caches and native caption formatting remain content-port work; current
-browser title text and initial title behavior are unchanged. This unit covers
-the existing corporation data chain and normal/replaced visible history.
+c6b2b2b2b2 keeps loading at the window while its direct corporation history
+coroutine continues. ShowInfo still replaces the content/layout, but the busy
+base saves only the latest pending tuple: no history append or new content read.
+The new layout stays empty and unassigned. If the old ported coroutine reaches
+caption completion, the original window method evaluates the new content's
+missing type and throws the native caption exception. It logs by default;
+finally clears loading without changing the old caption or draining pending.
+A later ShowInfo starts normally; its completion encounters loading and retains
+the pending tuple again. The compiled window/base/history/corporation/monolith
+methods confirm this transition at service/UI recorder boundaries. Those shells
+do not establish every destroyed native widget's continuation or RPC sequence.
+
+Required work remains: other ordinary headers' loading/completion and content-
+owned continuations, complete RPC/error handling, widget lifetime after close
+and retained dead tasklet pointers. The current corporation coroutine retains
+its per-field fallback handling. Complete native content tabs, ancillary header/
+relationship read order, service caches and native caption formatting remain
+content-port work; browser title text and initial title behavior are unchanged.
 Read each native content class's order and spawned/shared work first. Do not impose
 ordinary loading on ships or an automatic pending drain unsupported by the
 compiled methods. Existing tickets alone drop displayed stale results; actual
