@@ -241,6 +241,17 @@ construction rather than completing a null result. The visible-construction
 scope event is separate from identity assignment. These boundaries cover the
 ported coroutine; full native partial widgets and ancillary calls remain below.
 
+The corporation public-info server correction (EveJS 3858f28f6) removes its
+integer friendlyFire field. The original compiled UpdateDataCorp checks integer
+values before its friendly-fire branch: the captured old reply rendered `1`
+and skipped the aggression lookup. The captured corrected reply uses the native
+missing-field default `0.0` and takes GetAggressionSettings/GetCorpFriendlyFireStatus.
+Tranquility's decoded public replies in Applying and accepting a corp invite.txt
+(323/650) also omit that field. The stored corporation setting and corporation
+row remain unchanged. The browser continues reading the aggression settings and
+shows the resulting status; this correction does not complete later-read error
+handling or the rest of the native public-info payload audit.
+
 c3a routes propagated native UserError refusals through the existing per-pilot
 dialog handler, preserving the message key and dict. Ordinary propagated errors
 keep the existing log, and expected scope/pilot retirement stays
