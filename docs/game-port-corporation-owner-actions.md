@@ -448,10 +448,21 @@ self, including when evaluating a merged selection.
      Explicit captured1001 still debited after active changed to1000, including
      a self transfer. Success remained None, corporation cash2 then personal
      cash notices before the reply, matching the applicable recorded order.
-   - **c4g2: complete corporation wealth cache/event foundation.** Port fresh
-     reads separately from the one-minute cache, native notice authority and
-     read-before-update/event order. Fence pilot/corporation replacement while
-     preserving explicit division identity. Do not expose a partial cash action.
+   - **c4g2: complete corporation wealth cache/event foundation, implemented.**
+     Fresh GetCashBalance(1, accountKey=None/explicit) never fills the one-minute
+     notice cache. Only native UserError becomes0; session/transport failures
+     propagate. The compiled methods confirm strict >MIN expiry and timestamp
+     after the read. Own corporation cash/cash2..cash7 notices pass wallet access
+     and the division's take bit, read the old cached wealth, update, then emit
+     local OnCorpAccountChangedClient balance/key/difference. Accountant/Junior
+     read authority alone does not pass this notice gate. Pending reads/events
+     keep the captured pilot/corporation; per-key cache survives ordinary corpid
+     changes as native WalletSvc does, and clears on character reset/logoff.
+     Actual AppFlow/native wire verified separate fresh/cached calls, cached
+     delta1.25 with no RPC, cold notice explicit read followed by delta0,
+     foreign-division omission, real elapsed-minute expiry, delayed old-read
+     retirement, reset on same-pilot replacement, native refusal-to0 and genuine
+     missing-session error propagation. No cash action is exposed yet.
    - **c4g3: complete shared TransferMoney window and character menu action.**
      Reuse the same complete window for Contacts/search and Member List, with
      captured source, names/logos, native amount/reason bounds, correct typed

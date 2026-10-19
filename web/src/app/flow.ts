@@ -268,6 +268,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
+import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
 import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
@@ -2407,6 +2408,12 @@ export interface AppFlow {
   loadWallet(how?: { readonly fresh?: boolean }): Promise<void>;
   /** The pilot's own ISK as the client keeps it (walletSvc.py wealth); null where it could not be read. */
   pilotWealth(): Promise<number | null>;
+  /** walletSvc.GetCorpWealth: fresh, None for active division; native UserError becomes0. */
+  corporationWealth(accountKey?: number | null): Promise<number>;
+  /** walletSvc.GetCorpWealthCached1Min, keyed separately from fresh window reads. */
+  cachedCorporationWealth(accountKey: number): Promise<number>;
+  /** Native OnCorpAccountChangedClient, after the division's old-value read/cache update. */
+  readonly corporationWealthChanged: ReadableSignal<CorporationWealthChange | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
   /**
@@ -4695,6 +4702,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
+  const corporationWealthSignal = createSignal<CorporationWealthChange | null>(null);
+  const corporationWealthReads = createCorporationWealth({
+    capture: () => {
+      const scope = captureMemberOperation();
+      return { corporationID: scope.online.corporationID, ask: scope.ask, current: scope.current };
+    },
+    changed: change => corporationWealthSignal.set(change),
+  });
   // Whether every training slot of the account is used, as the client's queue service reckons and keeps it
   // (bridge/trainingSlots.ts): what says whether a change of the queue may start it.
   const trainingSlots = createTrainingSlots(bridgeAsk);
@@ -5260,6 +5275,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         characterID: online?.characterID ?? null,
         corporationID: online?.corporationID ?? null,
       });
+      void corporationWealthReads.accountChanged(args[0], args[1], (args[2] ?? null) as JsonValue, {
+        corporationID: online?.corporationID ?? null,
+        corpRole: online?.corpRole,
+      }).catch(() => {});
       if (store.wallet.get().loaded) {
         void loadWallet().catch(() => {});
       }
@@ -5376,7 +5395,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); }
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -27732,6 +27751,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const result = await api.selectCharacter(characterID, callOptions);
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      corporationWealthReads.forget();
+      corporationWealthSignal.set(null);
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
@@ -29121,6 +29142,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadWallet,
     pilotWealth,
+    corporationWealth: accountKey => corporationWealthReads.fresh(accountKey),
+    cachedCorporationWealth: accountKey => corporationWealthReads.cached(accountKey),
+    corporationWealthChanged: readonlySignal(corporationWealthSignal),
     giveMoney,
     giveIskFromWallet,
 
@@ -29685,6 +29709,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29712,6 +29738,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
