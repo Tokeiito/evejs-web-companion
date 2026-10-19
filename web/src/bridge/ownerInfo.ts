@@ -149,6 +149,14 @@ export function warPermitLabel(allowWar: boolean | null): string {
 
 /** fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions: the factions' numbers; null for anything else. */
 export function enlistmentFactionsOf(result: JsonValue | null | undefined): readonly number[] | null {
+  // UpdateDataCorp iterates the answer directly. Numeric/bool scalars cannot
+  // become an omitted row; native iteration raises TypeError before owner reads.
+  // The bridge collapses some int/long/integral-float types, so do not invent
+  // a Python type name in this diagnostic. None has its own flow consumer.
+  if (typeof result === "number" || typeof result === "boolean"
+    || (isRecord(result) && (result.type === "long" || result.type === "real" || result.type === "float"))) {
+    throw Object.assign(new TypeError("The corporation enlistment answer is not iterable."), { code: "INFO_CORPORATION_ENLISTMENT_NOT_ITERABLE" });
+  }
   const items = Array.isArray(result)
     ? result
     : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)

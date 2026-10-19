@@ -358,6 +358,19 @@ cache reset completes PublicInfo, Aggression, Enlistment and all existing rows.
 Tranquility's recorded canonical states have both keys. These missing-field
 checks do not establish other classes, non-dict states, or malformed time values.
 
+Numeric and boolean enlistment answers now raise TypeError before construction
+can complete. The original compiled UpdateDataCorp directly iterates them and
+raises for int, long, float and bool, including zero and False; the helper does
+not cache the answer. Actual-success response replacements with those scalars
+reproduce the stopped header/old-caption state and ordinary error logging.
+Browser retries issue enlistment again, retain cached aggression, and recover
+immediately with the unmodified iterable reply. TCP confirms three public and
+enlistment reads with one aggression read across two failures and recovery.
+The diagnostic intentionally omits a Python type name: the current bridge loses
+some int/long/integral-float distinctions. Native exception type and completion
+order are preserved; numeric diagnostic identity needs transport type retention.
+Other iterable answers and their owner lookups remain separate port work.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/
