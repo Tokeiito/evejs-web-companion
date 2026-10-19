@@ -175,6 +175,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly addressBook: AddressBookState;
   readonly wallet: WalletState;
+  readonly serverMessages: ServerMessagesState;
   readonly standings: StandingsState;
   readonly characterSheet: CharacterSheetState;
   readonly flight: FlightState;
@@ -494,6 +495,17 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
 // like a corporation with no divisions or a wallet with no history. An empty
 // `corpDivisions`/`journal`/`transactions` list becomes a real answer only from a
 // SUCCESSFUL read that carried no rows.
+/**
+ * The last thing the server told the player unasked (gameui.py OnRemoteMessage), as words: a notice, or an error. The
+ * notice board raises each new one (ui/noticeSources.ts); nothing else reads them.
+ */
+export interface ServerMessagesState {
+  readonly notice: string | null;
+  readonly error: string | null;
+}
+
+const INITIAL_SERVER_MESSAGES: ServerMessagesState = Object.freeze({ notice: null, error: null });
+
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
   cashError: null,
@@ -848,6 +860,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly addressBook: ReadableSignal<AddressBookState>;
   readonly wallet: ReadableSignal<WalletState>;
+  readonly serverMessages: ReadableSignal<ServerMessagesState>;
   readonly standings: ReadableSignal<StandingsState>;
   readonly characterSheet: ReadableSignal<CharacterSheetState>;
   readonly flight: ReadableSignal<FlightState>;
@@ -910,6 +923,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const addressBook = createSignal<AddressBookState>(INITIAL_ADDRESS_BOOK);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
+  const serverMessages = createSignal<ServerMessagesState>(INITIAL_SERVER_MESSAGES);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
@@ -959,6 +973,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     addressBook: addressBook.get(),
     wallet: wallet.get(),
+    serverMessages: serverMessages.get(),
     standings: standings.get(),
     characterSheet: characterSheet.get(),
     flight: flight.get(),
@@ -1016,6 +1031,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1080,6 +1096,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1123,6 +1140,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1897,6 +1915,9 @@ export function createClientStore(): ClientStore {
           journalError: event.journalError,
           loaded: true,
         });
+        break;
+      case "server-messages/said":
+        serverMessages.set({ ...serverMessages.get(), [event.kind]: event.text });
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
@@ -2835,6 +2856,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     addressBook: readonlySignal(addressBook),
     wallet: readonlySignal(wallet),
+    serverMessages: readonlySignal(serverMessages),
     standings: readonlySignal(standings),
     characterSheet: readonlySignal(characterSheet),
     flight: readonlySignal(flight),
