@@ -18,10 +18,10 @@ been offered. This file is only the merge order the rebuild replays. Every branc
 | 7 | `pr/companion-site-salvager` | [#132](https://github.com/rrfarmer/evejs-web-companion/pull/132) |
 | 8 | `pr/redeem-items` | [#134](https://github.com/rrfarmer/evejs-web-companion/pull/134) |
 | 9 | `fix/companion-persist-bridge-sessions` | [#135](https://github.com/rrfarmer/evejs-web-companion/pull/135) (draft: verify live) |
-| 10 | `fix/companion-pi-haul-from-space` | [#136](https://github.com/rrfarmer/evejs-web-companion/pull/136) (draft: verify live) |
-| 11 | `fix/companion-pi-haul-tax-funds` | [#137](https://github.com/rrfarmer/evejs-web-companion/pull/137) (draft: verify live) |
+| 10 | `fix/companion-pi-haul-from-space` | [#136](https://github.com/rrfarmer/evejs-web-companion/pull/136) (seen live 2026-10-19) |
+| 11 | `fix/companion-pi-haul-tax-funds` | [#137](https://github.com/rrfarmer/evejs-web-companion/pull/137) (seen live 2026-10-19) |
 | 12 | `feat/login-rewards` | [#138](https://github.com/rrfarmer/evejs-web-companion/pull/138) |
-| 13 | `feat/server-messages` | [#139](https://github.com/rrfarmer/evejs-web-companion/pull/139) (draft: verify live) |
+| 13 | `feat/server-messages` | [#139](https://github.com/rrfarmer/evejs-web-companion/pull/139) (seen live 2026-10-19) |
 
 ## Synced 2026-10-19 (nineteenth sync): `main` rebuilt from the PR branches
 
