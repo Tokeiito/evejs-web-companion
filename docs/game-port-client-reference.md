@@ -1518,6 +1518,33 @@ flagged 1, each one's domain (`carbonui/control/browser/sites.py` 348 to 354, 41
 being the list on disk unless its MD5 is not `browserLockdownSvc.GetFlaggedSitesHash()`, when
 `GetFlaggedSitesList()` is asked (380 to 406). Tranquility and EveJS both answer the MD5 of `[]`. A pilot on the
 game port checks so since `5f0b9627`.
+Private conversations and optional invitations (read 2026-10-19). Start Conversation calls
+`xmppchatsvc.Invite(charID, None)`: create through the proxy's
+`XmppChatMgr.CreatePrivateChannel(charID)`, keep the target as not yet invited, and join the returned room
+(1197 to 1208, 1239 to 1263). Opening the conversation sends no ordinary player invitation. The first
+`SendGroupChat` marks the target invited and sends the mediated MUC invite with reason `Private chat` before
+its groupchat line (328 to 342). Later lines do not repeat it. Invite To Chat in an existing private/player
+room sends the mediated invite immediately with empty reason; `xmppchatwindow.CanInvite` (598 to 604) permits
+any target outside that room. The character menu rejects self, NPC and multiple selections. Elevated chat roles
+use `XmppChatMgr.AddCharacterToChannel` instead of that ordinary invitation path (1257 to 1261).
+
+`xmppConnection.Invite` and `RejectInvite` (297 to 306) address the room from the bare character JID and
+put `invite to=` or `decline to=` inside the MUC user namespace. Acceptance joins; blocked senders reject with
+`blocked`, auto rejection and an ordinary rejection with `rejected`, and the dialog's block choice with
+`rejected_and_blocked` (`xmppchatsvc` 561 to 601). A personal contact is accepted automatically before the
+already-joined check. `_HandleDecline` (604 to 624) reads the rejecting sender, clears that pending invitation,
+closes a pending private room and reports `ChtRejected`, `ChtCharNotReachable` or `ChtBlockedNow`.
+The original compiled build-3396210 functions confirmed create/join/first-send order and both stanza templates.
+An all-folder Tranquility recording search found chat setup but no exact private conversation capture; these
+private contracts come from the client, not a claimed Tranquility observation.
+
+Three actual game-port/XMPP sessions reproduced EveJS dropping declines and refusing an explicitly invited
+third player. EveJS `4dce363ec` relays each decline from the room with the authenticated rejecting character;
+`f35c0cfe9` admits an explicitly invited additional participant without adding moderation rights. After a cold
+start, all three reasons arrived, an uninvited third player was refused, then its invitation, join, reply and
+three-member rosters succeeded. Creation alone still sent zero invitations. Browser private-room orchestration
+and invitation UI remain the next work; the page still exposes Local/Corp only.
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config
