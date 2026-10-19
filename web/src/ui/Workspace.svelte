@@ -317,7 +317,7 @@
     servedInfoRequests = count;
     // Skip the initial reading: a restored session must not pop an info window
     // nobody asked for.
-    if (count > 0) open("showInfo");
+    if (count > 0) openFromPopup("showInfo");
   });
 
   // A type's market details asked for from outside the market window (marketDetails.ts: marketutils.ShowMarketDetails,
