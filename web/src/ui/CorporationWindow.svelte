@@ -2,7 +2,8 @@
   // The client's Corporation window (neocom/corporation/corporationWindow.py): its tabs (Corporation, Alliances and,
   // for a director, Administration) and under Corporation its navigation tree (ConstructNavigationTree: Wars, Voting,
   // Standings, Members and the rest, each its panels). The page has Member List under Members and the Standings node's
-  // Contacts form (TAB_CORPCONTACTS) and NPC Standings panel (toID the corporation, corpMode).
+  // Contacts form (TAB_CORPCONTACTS) and NPC Standings panel (toID the corporation, corpMode). Alliances holds
+  // Relationships / Alliance Contacts for a member, as ConstructNavigationTreeAlliances (373-399) places it.
   //
   // Not here yet: the window's other tabs and nodes (the corporation's home, other member panels, wars, voting and
   // the rest).
@@ -14,16 +15,21 @@
 
   let { store, flow, openMail }: { store: ClientStore; flow: AppFlow; openMail?: () => void } = $props();
 
-  let panel = $state<"contacts" | "npc" | "members">("contacts");
+  let panel = $state<"contacts" | "npc" | "members" | "allianceContacts">("contacts");
   let membersOpened = $state(false);
   // svelte-ignore state_referenced_locally
   const station = store.station;
   const playerCorporation = $derived(($station.online?.corporationID ?? 0) >= 98_000_000);
+  const allianceID = $derived($station.online?.allianceID ?? null);
+  $effect(() => { if (panel === "allianceContacts" && allianceID === null) panel = "contacts"; });
   // svelte-ignore state_referenced_locally
   const words = store.words;
   /** The window's names, with the page's own words where the install's are not had (corpPanelConst NAME_BY_PANEL_ID). */
   const WORDS: Readonly<Record<string, string>> = {
     "UI/Corporations/BaseCorporationUI/Corporation": "Corporation",
+    "UI/Corporations/BaseCorporationUI/Alliances": "Alliances",
+    "UI/Corporations/CorporationWindow/Alliances/Relationships": "Relationships",
+    "UI/Corporations/CorporationWindow/Alliances/AllianceContacts": "Alliance Contacts",
     "UI/InfoWindow/TabNames/Standings": "Standing",
     "UI/Corporations/BaseCorporationUI/Members": "Members",
     "UI/Corporations/BaseCorporationUI/MemberList": "Member List",
@@ -52,6 +58,11 @@
       <span class="corp-tree-group">{word("UI/InfoWindow/TabNames/Standings")}</span>
       <button type="button" class="corp-tree-node" class:active={panel === "contacts"} aria-current={panel === "contacts" ? "page" : undefined} onclick={() => (panel = "contacts")}>{word("UI/Corporations/CorporationWindow/Standings/CorpContacts")}</button>
       <button type="button" class="corp-tree-node" class:active={panel === "npc"} aria-current={panel === "npc" ? "page" : undefined} onclick={() => (panel = "npc")}>{word("UI/Corporations/CorporationWindow/Standings/NPCStandings")}</button>
+      {#if $station.online?.allianceID}
+        <span class="corp-tree-group">{word("UI/Corporations/BaseCorporationUI/Alliances")}</span>
+        <span class="corp-tree-group">{word("UI/Corporations/CorporationWindow/Alliances/Relationships")}</span>
+        <button type="button" class="corp-tree-node" class:active={panel === "allianceContacts"} aria-current={panel === "allianceContacts" ? "page" : undefined} onclick={() => (panel = "allianceContacts")}>{word("UI/Corporations/CorporationWindow/Alliances/AllianceContacts")}</button>
+      {/if}
     </nav>
     <div class="corp-panel">
       {#key $station.online?.corporationID}
@@ -60,6 +71,8 @@
         <Contacts {store} {flow} contactType="corpcontact" />
       {:else if panel === "npc"}
         <Standings {store} {flow} scopes={["corp"]} />
+      {:else if panel === "allianceContacts" && $station.online?.allianceID}
+        {#key $station.online.allianceID}<Contacts {store} {flow} contactType="alliancecontact" />{/key}
       {/if}
       {/key}
     </div>

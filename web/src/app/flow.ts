@@ -5266,6 +5266,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
     if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey" || name === "role")) {
+      for (const [name, scope] of [["corpid", "corpcontact"], ["allianceid", "alliancecontact"]] as const) {
+        if (sessionNames.includes(name)) { organizationLabelEpoch[scope]++; organizationLabelReads.delete(scope); }
+      }
       const ownerOf = (value: unknown): number | null => {
         const id = Number(wholeDigits(value) ?? Number.NaN);
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -14498,7 +14501,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const characterID = store.station.get().online?.characterID ?? null;
     let kept: unknown = null;
     try {
-      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : ""}.${characterID}`) ?? "null");
+      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : contactType === "alliancecontact" ? ".alliance" : ""}.${characterID}`) ?? "null");
     } catch {
       kept = null;
     }
@@ -14511,7 +14514,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     try {
-      settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : ""}.${characterID}`, JSON.stringify(groupID));
+      settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : contactType === "alliancecontact" ? ".alliance" : ""}.${characterID}`, JSON.stringify(groupID));
     } catch {
       // Storage full or refused: the group lasts as long as the page.
     }
@@ -14809,26 +14812,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]);
     return { members, factionID };
   }
-  let corporateLabelRead: { ownerID: number | null; promise: Promise<readonly ContactLabel[] | null> } | null = null;
+  // addressbook keeps a separate label table per scope. A reply for a departed
+  // owner or retired pilot must not fill the replacement owner's table.
+  const organizationLabelReads = new Map<ContactScope, { context: string; promise: Promise<readonly ContactLabel[] | null> }>();
+  const organizationLabelEpoch = { corpcontact: 0, alliancecontact: 0 };
+  const contactService = (scope: ContactScope): string => scope === "corpcontact" ? "corpRegistry" : scope === "alliancecontact" ? "allianceRegistry" : "charMgr";
+  function labelContext(scope: ContactScope): string {
+    const online = store.station.get().online;
+    return JSON.stringify([requestGeneration, callOptions.token, online?.characterID, scope === "corpcontact" ? online?.corporationID : online?.allianceID,
+      scope === "contact" ? 0 : organizationLabelEpoch[scope]]);
+  }
   function readContactLabels(contactType: ContactScope): Promise<readonly ContactLabel[] | null> {
     if (contactType === "contact") return bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
-    const ownerID = store.station.get().online?.corporationID ?? null;
-    if (corporateLabelRead?.ownerID === ownerID) return corporateLabelRead.promise;
-    const promise = bridgeAsk("corpRegistry", "GetLabels", []).then(contactLabelsOf, () => null);
-    corporateLabelRead = { ownerID, promise };
-    void promise.then(labels => { if (labels === null && corporateLabelRead?.promise === promise) corporateLabelRead = null; });
+    const context = labelContext(contactType);
+    const held = organizationLabelReads.get(contactType);
+    if (held?.context === context) return held.promise;
+    const promise = bridgeAsk(contactService(contactType), "GetLabels", []).then(contactLabelsOf, () => null);
+    organizationLabelReads.set(contactType, { context, promise });
+    void promise.then(labels => { if (labels === null && organizationLabelReads.get(contactType)?.promise === promise) organizationLabelReads.delete(contactType); });
     return promise;
   }
-  async function updateCorporateLabels(change: (labels: readonly ContactLabel[]) => readonly ContactLabel[]): Promise<void> {
-    const labels = await readContactLabels("corpcontact");
-    if (labels !== null) corporateLabelRead = { ownerID: store.station.get().online?.corporationID ?? null, promise: Promise.resolve(change(labels)) };
+  async function updateOrganizationLabels(scope: ContactScope, context: string, change: (labels: readonly ContactLabel[]) => readonly ContactLabel[]): Promise<void> {
+    if (context !== labelContext(scope)) return;
+    const promise = readContactLabels(scope);
+    const labels = await promise;
+    if (labels !== null && context === labelContext(scope) && organizationLabelReads.get(scope)?.promise === promise)
+      organizationLabelReads.set(scope, { context, promise: Promise.resolve(change(labels)) });
   }
   // addressbook.GetContacts (addressbookService.py 193 to 250) for the Contacts window: charMgr.GetContactList() by
   // the generic call, every contact and blocked owner named as the client primes them (cfg.eveowners, 240 to 244).
   async function addressBook(contactType: ContactScope = "contact"): Promise<NamedAddressBook> {
     let answer: JsonValue;
     try {
-      answer = await bridgeAsk(contactType === "corpcontact" ? "corpRegistry" : "charMgr", contactType === "corpcontact" ? "GetCorporateContacts" : "GetContactList", []);
+      answer = await bridgeAsk(contactService(contactType), contactType === "corpcontact" ? "GetCorporateContacts" : contactType === "alliancecontact" ? "GetAllianceContacts" : "GetContactList", []);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -14836,7 +14852,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
-    const book = contactType === "corpcontact" ? corporateAddressBookOf(answer) : addressBookOf(answer);
+    const book = contactType !== "contact" ? corporateAddressBookOf(answer) : addressBookOf(answer);
     // GetContactLabels('contact') (1022 to 1044): the labels, asked as the form first shows them, and kept (on the
     // game port by the transport). A label not read leaves the form without its labels.
     const labels = await readContactLabels(contactType);
@@ -14847,7 +14863,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const resolved = store.names.get().resolved;
     const nameOf = (id: number, kind: "owner" | "agent" = "owner"): string => {
       const name = resolved[nameKey(kind, id)];
-      return typeof name === "string" && name !== "" ? name : contactType === "corpcontact" ? "Unknown contact" : String(id);
+      return typeof name === "string" && name !== "" ? name : contactType !== "contact" ? "Unknown contact" : String(id);
     };
     return {
       contacts: book.contacts.map((contact) => ({ ...contact, name: nameOf(contact.contactID) })),
@@ -14880,7 +14896,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // told in the server's words, as the mail's are.
   async function contactWrite(method: string, args: readonly JsonValue[], contactType: ContactScope = "contact"): Promise<JsonValue> {
     try {
-      return await bridgeDo(contactType === "corpcontact" ? "corpRegistry" : "charMgr", method, [...args]);
+      return await bridgeDo(contactService(contactType), method, [...args]);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -14897,9 +14913,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // put on the buddy list has its online state asked where the service keeps none (GetOnlineStatus, fetch: 806 to
   // 811; onlineStatus.py 42 to 51).
   async function addOrEditContact(contact: ContactWrite, edit: boolean, contactType: ContactScope = "contact"): Promise<void> {
-    // base_corporation.py 995-1000 forwards both arguments positionally on the corp moniker.
-    if (contactType === "corpcontact") {
-      await contactWrite(edit ? "EditCorporateContact" : "AddCorporateContact", [contact.contactID, contact.relationshipID], contactType);
+    // base_corporation.py 995-1000 and all_cso.py 246-252 forward both arguments on their own moniker.
+    if (contactType !== "contact") {
+      const method = contactType === "corpcontact" ? edit ? "EditCorporateContact" : "AddCorporateContact" : edit ? "EditAllianceContact" : "AddAllianceContact";
+      await contactWrite(method, [contact.contactID, contact.relationshipID], contactType);
       return;
     }
     await contactWrite(edit ? "EditContact" : "AddContact", [
@@ -14924,7 +14941,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The native service is primed on character selection. Hydrate that held
     // initial state before clearing it when no Contacts window has opened.
     if (contactType === "contact") await primeContactsOnline();
-    await contactWrite(contactType === "corpcontact" ? "RemoveCorporateContacts" : "DeleteContacts", [[...contactIDs]], contactType);
+    await contactWrite(contactType === "corpcontact" ? "RemoveCorporateContacts" : contactType === "alliancecontact" ? "RemoveAllianceContacts" : "DeleteContacts", [[...contactIDs]], contactType);
     // RemoveFromAddressBook calls onlineStatus.ClearOnlineStatus for removed
     // character contacts; a later buddy addition must fetch its status again.
     if (contactType === "contact") store.apply({ type: "address-book/online-forgotten", contactIDs });
@@ -15251,19 +15268,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // name, None), a rename; DeleteLabel(labelID), after which the client lets its labels go and asks them again
   // (1074 to 1084); AssignLabels and RemoveLabels(contactIDs, labelID), the contacts a list.
   async function createContactLabel(name: string, contactType: ContactScope = "contact"): Promise<bigint | null> {
+    const context = labelContext(contactType);
     const labelID = createdLabelOf(await contactWrite("CreateLabel", [name, null], contactType));
-    if (contactType === "corpcontact" && labelID !== null) await updateCorporateLabels(labels => [...labels.filter(label => label.labelID !== labelID), { labelID, name, color: null }]);
+    if (contactType !== "contact" && labelID !== null) await updateOrganizationLabels(contactType, context, labels => [...labels.filter(label => label.labelID !== labelID), { labelID, name, color: null }]);
     return labelID;
   }
 
   async function renameContactLabel(labelID: bigint, name: string, contactType: ContactScope = "contact"): Promise<void> {
+    const context = labelContext(contactType);
     await contactWrite("EditLabel", [labelBitsSent(labelID), name, null], contactType);
-    if (contactType === "corpcontact") await updateCorporateLabels(labels => labels.map(label => label.labelID === labelID ? { ...label, name } : label));
+    if (contactType !== "contact") await updateOrganizationLabels(contactType, context, labels => labels.map(label => label.labelID === labelID ? { ...label, name } : label));
   }
 
   async function deleteContactLabel(labelID: bigint, contactType: ContactScope = "contact"): Promise<readonly ContactLabel[] | null> {
+    const context = labelContext(contactType);
     await contactWrite("DeleteLabel", [labelBitsSent(labelID)], contactType);
-    if (contactType === "corpcontact") corporateLabelRead = null;
+    if (context !== labelContext(contactType)) return null;
+    if (contactType !== "contact") organizationLabelReads.delete(contactType);
     return readContactLabels(contactType);
   }
 

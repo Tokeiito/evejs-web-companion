@@ -38,6 +38,7 @@
     addContact: "UI/PeopleAndPlaces/AddContact", editContact: "UI/PeopleAndPlaces/EditContact", removeContact: "UI/PeopleAndPlaces/RemoveContact",
     block: "UI/PeopleAndPlaces/BlockContact", unblock: "UI/PeopleAndPlaces/UnblockContact",
     addCorpContact: "UI/PeopleAndPlaces/AddCorpContact", editCorpContact: "UI/PeopleAndPlaces/EditCorpContact", removeCorpContact: "UI/PeopleAndPlaces/RemoveCorpContact",
+    addAllianceContact: "UI/PeopleAndPlaces/AddAllianceContact", editAllianceContact: "UI/PeopleAndPlaces/EditAllianceContact", removeAllianceContact: "UI/PeopleAndPlaces/RemoveAllianceContact",
   };
   const ONLINE = "UI/Corporations/CorpMemberTracking/";
   const lastLabels = ["MoreThanAMonth", "Online", "LessThanAnHour", "Hours", "LastWeek", "LastMonth"];
@@ -69,10 +70,24 @@
   let contactBook = $state<NamedAddressBook | null>(null);
   let contactError = $state("");
   let corporateContactBook = $state<NamedAddressBook | null>(null);
+  let allianceContactBook = $state<NamedAddressBook | null>(null);
+  const contactAuthority = $derived(`${$station.online?.characterID}:${$station.online?.corporationID}:${$station.online?.allianceID}:${$station.online?.corpRole}`);
   type ScopedAction = ContactAction & { readonly scope: ContactScope };
   let contactActions = $state<readonly ScopedAction[]>([]);
   let contactMenuSerial = 0;
   let contactBusy = $state(false);
+  $effect(() => {
+    const authority = contactAuthority;
+    untrack(() => {
+      void authority;
+      contactMenuSerial++;
+      menuFor = null;
+      contactBook = null;
+      corporateContactBook = null;
+      allianceContactBook = null;
+      contactActions = [];
+    });
+  });
   const onlineKey = () => `evejs.corpMembersOnline.${store.station.get().online?.characterID}`;
   async function load(): Promise<void> {
     const request = ++serial;
@@ -141,6 +156,9 @@
   const corporateExisting = $derived(new Set(corporateContactBook?.contacts.map(each => each.contactID) ?? []));
   const corporateAddTargets = $derived(corporateTargets.filter(row => !corporateExisting.has(row.member.characterID)));
   const corporateEditTargets = $derived(corporateTargets.filter(row => corporateExisting.has(row.member.characterID)));
+  const allianceExisting = $derived(new Set(allianceContactBook?.contacts.map(each => each.contactID) ?? []));
+  const allianceAddTargets = $derived(corporateTargets.filter(row => !allianceExisting.has(row.member.characterID)));
+  const allianceEditTargets = $derived(corporateTargets.filter(row => allianceExisting.has(row.member.characterID)));
   // User.OnClick -> Scroll.SelectNode 550-600: plain replaces, Ctrl toggles, Shift ranges from the last anchor.
   function select(event: MouseEvent | KeyboardEvent, id: number): void {
     menuFor = null;
@@ -162,6 +180,7 @@
     menuFor = id;
     contactBook = null;
     corporateContactBook = null;
+    allianceContactBook = null;
     contactError = "";
     const request = ++contactMenuSerial;
     // CharacterChecker's personal contact actions exclude self and multi-selection.
@@ -174,6 +193,13 @@
       void flow.addressBook("corpcontact").then(book => { if (!disposed && request === contactMenuSerial && menuFor === id) corporateContactBook = book; }, cause => {
         if (!disposed && request === contactMenuSerial) contactError = cause instanceof Error ? cause.message : String(cause);
       });
+      // CharacterChecker 44-53, 301-312: an alliance member, diplomat/director,
+      // in its executor corporation; self and mixed selections are eligible.
+      if ($station.online?.allianceID) void (async () => {
+        if (!await flow.saveForAllianceOffered() || disposed || request !== contactMenuSerial || menuFor !== id) return;
+        const book = await flow.addressBook("alliancecontact");
+        if (!disposed && request === contactMenuSerial && menuFor === id) allianceContactBook = book;
+      })().catch(cause => { if (!disposed && request === contactMenuSerial) contactError = cause instanceof Error ? cause.message : String(cause); });
     }
   }
   function contactManage(kind: ContactAction["kind"]): void {
@@ -182,14 +208,14 @@
     contactActions = [{ kind, ownerID: target.member.characterID, name: target.text.name!, book: contactBook, scope: "contact" }];
     menuFor = null;
   }
-  function corporateManage(kind: "add" | "edit" | "remove"): void {
-    const book = corporateContactBook;
+  function corporateManage(kind: "add" | "edit" | "remove", scope: ContactScope = "corpcontact"): void {
+    const book = scope === "alliancecontact" ? allianceContactBook : corporateContactBook;
     if (!diplomat || !book) return;
     // menusvc 604-609 + compiled menuMerge: separate callbacks for the
     // eligible owners, including mixed selections; no bulk standing editor.
-    const targets = kind === "add" ? corporateAddTargets : corporateEditTargets;
+    const targets = scope === "alliancecontact" ? kind === "add" ? allianceAddTargets : allianceEditTargets : kind === "add" ? corporateAddTargets : corporateEditTargets;
     contactActions = targets.map(row => ({ kind: kind === "remove" ? "remove" : "manage", ownerID: row.member.characterID,
-      name: row.text.name!, book, scope: "corpcontact" }));
+      name: row.text.name!, book, scope }));
     menuFor = null;
   }
   function contactDone(action: ScopedAction, book: NamedAddressBook | null): void {
@@ -197,6 +223,7 @@
     // Each native dialog owns one target's draft. A future menu reads the
     // service's current held book, which includes all independently completed writes.
     if (action.scope === "corpcontact") corporateContactBook = null;
+    if (action.scope === "alliancecontact") allianceContactBook = null;
     contactActions = contactActions.filter(each => each !== action);
   }
   async function contactBlock(blocked: boolean): Promise<void> {
@@ -273,6 +300,13 @@
           {#if corporateEditTargets.length > 0}
             <button type="button" class="minor" onclick={() => corporateManage("remove")}>{word(LABELS.removeCorpContact, "Remove Corporation Contact")}</button>
             <button type="button" class="minor" onclick={() => corporateManage("edit")}>{word(LABELS.editCorpContact, "Edit Corporation Contact")}</button>
+          {/if}
+        {/if}
+        {#if diplomat && allianceContactBook}
+          {#if allianceAddTargets.length > 0}<button type="button" class="minor" onclick={() => corporateManage("add", "alliancecontact")}>{word(LABELS.addAllianceContact, "Add Alliance Contact")}</button>{/if}
+          {#if allianceEditTargets.length > 0}
+            <button type="button" class="minor" onclick={() => corporateManage("remove", "alliancecontact")}>{word(LABELS.removeAllianceContact, "Remove Alliance Contact")}</button>
+            <button type="button" class="minor" onclick={() => corporateManage("edit", "alliancecontact")}>{word(LABELS.editAllianceContact, "Edit Alliance Contact")}</button>
           {/if}
         {/if}
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}

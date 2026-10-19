@@ -12,7 +12,7 @@ import { pyIntDictOrder } from "./pyDict.ts";
 import { readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapBool, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
 
 /** The two ContactsForm owners currently drawn by the page. */
-export type ContactScope = "contact" | "corpcontact";
+export type ContactScope = "contact" | "corpcontact" | "alliancecontact";
 
 /** One of the pilot's contacts. */
 export interface Contact {
