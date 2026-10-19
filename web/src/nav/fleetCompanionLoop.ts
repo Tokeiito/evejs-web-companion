@@ -797,6 +797,13 @@ export interface CompanionFlee {
  */
 export interface FleetCompanionObservation extends ScriptObservation {
   /**
+   * What the last `rearmShip` came to: the order it answered (`orderedAtMs`,
+   * the latch's own) and the lines the pilot says about it. Null or absent
+   * until one has run. The rung matches the order, so an answer to an older
+   * `rearm` never ends a newer one.
+   */
+  readonly rearmOutcome?: { readonly orderedAtMs: number; readonly lines: readonly string[] } | null;
+  /**
    * Each hostile TYPE's signature radius in metres (dogma 552), for the free-
    * fire kill order's "up the size chain".
    *
@@ -1233,6 +1240,18 @@ export type FleetCompanionAction =
    * (flow.ts's `startRoute`) rather than warping or approaching itself.
    */
   | { readonly kind: "travelTo"; readonly systemID: number }
+  /**
+   * The `rearm` trip's way there: the shared autopilot's route to a STATION,
+   * which undocks from wherever the ship is, jumps as far as it takes and docks
+   * on arrival (flow.ts's `startRoute`, the DSL's `startRoute` too).
+   */
+  | { readonly kind: "routeToStation"; readonly stationID: number }
+  /**
+   * The `rearm` trip's work, docked at its station: top the hold and the drone
+   * bay up to the ship's saved fitting from the hangar and the corporation's
+   * (companionRearm.ts). Answered in `rearmOutcome` under the same `orderedAtMs`.
+   */
+  | { readonly kind: "rearmShip"; readonly stationID: number; readonly orderedAtMs: number }
   /**
    * Obeying the fleet: jump through the gate this ship is sitting on.
    *
@@ -2325,6 +2344,28 @@ export interface CompanionLadderMemory {
   readonly repairOrderedAtMs: number | null;
   /** Ammo loads seen, drones carried, the two warnings and a pending `status` (companionSupply.ts). */
   readonly supply: CompanionSupplyMemory;
+  /** A `rearm` trip under way, or null. See `CompanionRearm`. */
+  readonly rearm: CompanionRearm | null;
+}
+
+/**
+ * A `rearm` addressed to this pilot: fly to the station, top up there, come
+ * back. A latch like `destinationSystemID`, for the same reason: a trip of many
+ * jumps outlives the chat window. It ends when the rearm has answered, when the
+ * trip cannot be made, or on `stop`.
+ */
+export interface CompanionRearm {
+  /** The order's own time: the key the docked rearm's answer comes back under. */
+  readonly orderedAtMs: number;
+  /** The station named, or null for "where I am docked". */
+  readonly stationID: number | null;
+  /** The system the order was heard in, which the pilot flies back to afterwards. */
+  readonly fromSolarSystemID: number | null;
+  /** When the last route to the station went out, and how many have. */
+  readonly routedAtMs: number | null;
+  readonly routes: number;
+  /** When the docked rearm went out; null until it has. */
+  readonly rearmIssuedAtMs: number | null;
 }
 
 /** See `CompanionLadderMemory.rejoin`. */
@@ -2461,6 +2502,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     ammo: FRESH_COMPANION_AMMO,
     repairOrderedAtMs: null,
     supply: FRESH_COMPANION_SUPPLY,
+    rearm: null,
   };
 }
 
@@ -2915,8 +2957,8 @@ function withoutStaleApproaches(memory: CompanionLadderMemory, action: FleetComp
 
 function changesShipMovement(action: FleetCompanionAction): boolean {
   return action.kind === "approach" || action.kind === "align" || action.kind === "warp" ||
-    action.kind === "warpToFleetMember" || action.kind === "travelTo" || action.kind === "jumpGate" ||
-    action.kind === "dock" || action.kind === "undock" || action.kind === "stopShip" || action.kind === "keepAtRange" ||
+    action.kind === "warpToFleetMember" || action.kind === "travelTo" || action.kind === "routeToStation" ||
+    action.kind === "jumpGate" || action.kind === "dock" || action.kind === "undock" || action.kind === "stopShip" || action.kind === "keepAtRange" ||
     action.kind === "orbit";
 }
 
@@ -3133,6 +3175,7 @@ function decideCompanionStep(
     // Carried: an order heard and what the ship has left are not about who is here.
     repairOrderedAtMs: memory.repairOrderedAtMs,
     supply: memory.supply,
+    rearm: memory.rearm,
   };
 
   // Rung 3: tank up. Threaded even when it has nothing to do this tick —
@@ -3211,7 +3254,15 @@ function decideCompanionStep(
   // protocol above all of them, each hold the tick before it reaches here. What
   // is left when it does reach here is a docked ship with nothing keeping it
   // docked and a fleet somewhere else.
-  const leaving = decideLeaveTheStation(obs, fleeing.memory);
+  // The `rearm` trip -- ABOVE 5b, because docked at its station the rearm is the
+  // reason to stay docked. See `decideRearmTrip`. Threaded like rung 3 because
+  // ending the trip issues nothing, and 5b then undocks on the same tick.
+  const rearming = decideRearmTrip(request, obs, fleeing.memory, nowMs);
+  if (rearming.decision !== null) {
+    return rearming.decision;
+  }
+
+  const leaving = decideLeaveTheStation(obs, rearming.memory);
   if (leaving !== null) {
     return leaving;
   }
@@ -3225,9 +3276,9 @@ function decideCompanionStep(
   // ⚠ STOOD DOWN WHILE A FLEET ORDER TO LEAVE IS CALLING THE DRONES HOME. This
   // rung runs before rung 7, so without this it would relaunch or re-engage the
   // very drones rung 7 is waiting to scoop. See `recallBeforeLeavingOnOrder`.
-  const drones = droneRungStoodDown(fleeing.memory, nowMs)
-    ? { decision: null, memory: fleeing.memory }
-    : decideDrones(request, obs, fleeing.memory, nowMs);
+  const drones = droneRungStoodDown(rearming.memory, nowMs)
+    ? { decision: null, memory: rearming.memory }
+    : decideDrones(request, obs, rearming.memory, nowMs);
   if (drones.decision !== null) {
     return drones.decision;
   }
@@ -3715,6 +3766,7 @@ const LEAVING_ACTIONS: ReadonlySet<FleetCompanionAction["kind"]> = new Set([
   "warp",
   "warpToFleetMember",
   "travelTo",
+  "routeToStation",
   "jumpGate",
 ]);
 
@@ -5415,7 +5467,7 @@ interface NamedOrder {
  */
 type NamedChatCommandKind = Exclude<
   ChatCommand["kind"],
-  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets" | "flight" | "status" | "repair"
+  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets" | "flight" | "status" | "repair" | "rearm"
 >;
 
 const CHAT_ORDER_NAMES: Readonly<Record<NamedChatCommandKind, NamedOrderName>> = Object.freeze({
@@ -5671,7 +5723,8 @@ function withStandingChatOrders(
       command.kind === "salvage" ||
       command.kind === "loot" ||
       command.kind === "status" ||
-      command.kind === "repair"
+      command.kind === "repair" ||
+      command.kind === "rearm"
     ) {
       heard.push({ command, at: message.createdAtMs, key: standingChatMessageKey(message) });
     }
@@ -5698,6 +5751,24 @@ function withStandingChatOrders(
         next = command.kind === "status"
           ? { ...next, supply: { ...next.supply, statusAsked: true } }
           : { ...next, repairOrderedAtMs: at };
+      }
+      continue;
+    }
+    // A newer `rearm` replaces a trip under way: the commander named another
+    // station, and the last thing said wins.
+    if (command.kind === "rearm") {
+      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null)) {
+        next = {
+          ...next,
+          rearm: {
+            orderedAtMs: at,
+            stationID: command.stationID,
+            fromSolarSystemID: obs.flightStatus?.solarSystemID ?? null,
+            routedAtMs: null,
+            routes: 0,
+            rearmIssuedAtMs: null,
+          },
+        };
       }
       continue;
     }
@@ -5747,6 +5818,8 @@ function withStandingChatOrders(
       // on the grid.
       repairOrderedAtMs: null,
       flee: next.flee?.ordered === true ? null : next.flee,
+      // A rearm trip is an order too, and ends where it stands.
+      rearm: null,
     };
   }
   return next;
@@ -8143,6 +8216,154 @@ function decideDestinationTrip(
     },
     memory,
   };
+}
+
+// ─── The `rearm` trip ────────────────────────────────────────────────────────
+
+/** How long the docked rearm is waited on before the pilot goes back without its answer. */
+const REARM_ANSWER_WAIT_MS = 90_000;
+/** How long a route to the station is given to show as running before it is sent again. */
+const REARM_ROUTE_SETTLE_MS = 10_000;
+/** Routes sent before the trip is given up: a dock refused every time is not refused by chance. */
+const MAX_REARM_ROUTES = 3;
+
+/**
+ * The `rearm` order: fly to the station, top up there, come back.
+ *
+ * ⚠ ABOVE RUNG 5b (GET OUT OF THE STATION), BELOW THE FLEE. Docked at the
+ * station the rearm is the reason to stay docked, and 5b would otherwise undock
+ * the pilot before it had loaded anything; once the rearm has answered this
+ * rung lets go and 5b undocks it on the same tick. A ship that is dying still
+ * flees first, and the trip picks up again once the flee is over.
+ *
+ * ⚠ THE WAY THERE IS THE SHARED AUTOPILOT'S ROUTE TO A STATION, which undocks,
+ * jumps and docks by itself, so one rung covers a station in this system and
+ * one ten jumps out. The drones come home first, as for every order that leaves
+ * the grid (`recallBeforeLeavingOnOrder`).
+ *
+ * ⚠ THE WAY BACK IS THE ORDINARY ONE. A station in another system leaves a
+ * `destination` home to the system the order was heard in; on the commander's
+ * own system the rejoin rung warps the pilot back to them.
+ *
+ * Threaded like rung 3 because ending the trip issues nothing.
+ */
+function decideRearmTrip(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+  const trip = memory.rearm;
+  if (trip === null) {
+    return { decision: null, memory };
+  }
+  const status = obs.flightStatus ?? null;
+  const ended = (line: string | null): { readonly decision: null; readonly memory: CompanionLadderMemory } => {
+    if (line !== null) noteSay(line);
+    return { decision: null, memory: { ...memory, rearm: null } };
+  };
+  let stationID = trip.stationID;
+  if (stationID === null) {
+    if (obs.docked === true && status?.stationID != null) {
+      stationID = status.stationID;
+    } else if (obs.docked === true && status?.structureID != null) {
+      return ended("Cannot rearm here: only at a station.");
+    } else if (obs.docked === true) {
+      return { decision: waiting("Rearming", "Reading which station this is, to rearm in it.", memory), memory };
+    } else {
+      return ended("Rearm where? Link a station: rearm at <station>.");
+    }
+  }
+
+  if (obs.docked === true && status?.stationID === stationID) {
+    const answer = obs.rearmOutcome ?? null;
+    if (answer !== null && answer.orderedAtMs === trip.orderedAtMs) {
+      for (const line of answer.lines) noteSay(line);
+      return { decision: null, memory: rearmFinished(memory, trip, status) };
+    }
+    if (trip.rearmIssuedAtMs !== null) {
+      if (nowMs - trip.rearmIssuedAtMs < REARM_ANSWER_WAIT_MS) {
+        return { decision: waiting("Rearming", "Topping up the hold and the drone bay to the saved fitting.", memory), memory };
+      }
+      noteSay("The rearm never answered. Coming back as I am.");
+      return { decision: null, memory: rearmFinished(memory, trip, status) };
+    }
+    if (trip.routes === 0) noteSay("Rearming here, then coming back.");
+    const issued: CompanionLadderMemory = { ...memory, rearm: { ...trip, stationID, rearmIssuedAtMs: nowMs } };
+    return {
+      decision: {
+        action: { kind: "rearmShip", stationID, orderedAtMs: trip.orderedAtMs },
+        phase: "Rearming",
+        why: "A commander ordered a rearm: topping the hold and the drone bay up to the saved fitting.",
+        memory: issued,
+        followingOrderFrom: "chat",
+        lastOrderHeard: "a chat order to rearm",
+      },
+      memory: issued,
+    };
+  }
+
+  const travel = obs.travel ?? null;
+  const toThis = travel !== null && travel.destinationStationID === stationID;
+  if (trip.routedAtMs !== null && toThis && travel.failureReason !== null && travel.failureReason !== undefined) {
+    return ended(`Cannot get to that station to rearm: ${travel.failureReason}`);
+  }
+  if (toThis && travel.status === "running") {
+    return {
+      decision: {
+        action: WAIT,
+        phase: "Travelling",
+        why: "On the way to the station a commander named, to rearm there.",
+        memory,
+        followingOrderFrom: "chat",
+        lastOrderHeard: "a chat order to rearm",
+      },
+      memory,
+    };
+  }
+  if (trip.routedAtMs !== null && nowMs - trip.routedAtMs < REARM_ROUTE_SETTLE_MS) {
+    return { decision: waiting("Travelling", "Starting the route to the station, to rearm there.", memory), memory };
+  }
+  if (trip.routes >= MAX_REARM_ROUTES) {
+    return ended("Could not get docked at that station, so no rearm.");
+  }
+  const routed: CompanionLadderMemory = {
+    ...memory,
+    rearm: { ...trip, stationID, routedAtMs: nowMs, routes: trip.routes + 1 },
+  };
+  const going = recallBeforeLeavingOnOrder(
+    {
+      action: { kind: "routeToStation", stationID },
+      phase: "Travelling",
+      why: "A commander ordered a rearm. Flying to the station.",
+      memory: routed,
+      followingOrderFrom: "chat",
+      lastOrderHeard: "a chat order to rearm",
+    },
+    request,
+    obs,
+    memory,
+    nowMs,
+  );
+  // Said with the route itself, not with the ticks spent calling the drones home.
+  if (going?.action.kind === "routeToStation" && trip.routes === 0) {
+    noteSay("Going to rearm, then coming back.");
+  }
+  return { decision: going, memory: going?.memory ?? memory };
+}
+
+/** The trip over: the latch dropped, and a way home set when the station was in another system. */
+function rearmFinished(
+  memory: CompanionLadderMemory,
+  trip: CompanionRearm,
+  status: FleetCompanionObservation["flightStatus"] | null,
+): CompanionLadderMemory {
+  const here = status?.solarSystemID ?? null;
+  const home = trip.fromSolarSystemID;
+  if (home !== null && here !== null && home !== here) {
+    return { ...memory, rearm: null, destinationSystemID: home, destinationRoutedFor: null };
+  }
+  return { ...memory, rearm: null };
 }
 
 // ─── The reload rung: put rounds back in the guns ────────────────────────────
@@ -11650,6 +11871,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           ammo: FRESH_COMPANION_AMMO,
           repairOrderedAtMs: null,
           supply: FRESH_COMPANION_SUPPLY,
+          // The shared autopilot and the docked rearm died with the process,
+          // like the destination trip above, and the order cannot be re-heard.
+          rearm: null,
         };
       }
       runToken += 1;

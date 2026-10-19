@@ -492,6 +492,7 @@ test("CHAT_COMMAND_VERBS lists exactly the recognised verbs, target/primary incl
       "loot",
       "primary",
       "props",
+      "rearm",
       "repair",
       "salvage",
       "status",
@@ -639,6 +640,7 @@ const ALL_KINDS: Record<ChatCommandKind, true> = {
   flight: true,
   status: true,
   repair: true,
+  rearm: true,
 };
 
 test("every ChatCommandKind has a help row whose usage starts with its verb", () => {
@@ -759,4 +761,36 @@ test("a pilot whose own name is unread answers only to everyone or to its link",
   assert.equal(selectsPilot(who("status"), PILOT_ID, null), true);
   assert.equal(selectsPilot(who("status Pilot Alpha"), PILOT_ID, null), false);
   assert.equal(selectsPilot(who(`status <a href="showinfo:1377//${PILOT_ID}">x</a>`), PILOT_ID, null), true);
+});
+
+// --- rearm: a station, then who -----------------------------------------------
+
+const REARM_STATION = 60000001;
+const REARM_STATION_LINK = `<url=showinfo:1529//${REARM_STATION}>Some Station</url>`;
+
+test("'rearm at <station>' and 'rearm <station>' name the station and every pilot", () => {
+  for (const line of [`rearm at ${REARM_STATION_LINK}`, `rearm ${REARM_STATION_LINK}`, `Rearm at ${REARM_STATION_LINK}`]) {
+    assert.deepEqual(parseChatCommand(chatMessage(line)), {
+      kind: "rearm", stationID: REARM_STATION, who: { everyone: true, characterIDs: [], text: "" },
+    }, line);
+  }
+});
+
+test("the station is the link after 'at'; the names and pilot links before it are who", () => {
+  const typed = parseChatCommand(chatMessage(`rearm Pilot Alpha at ${REARM_STATION_LINK}`));
+  assert.ok(typed !== null && typed.kind === "rearm");
+  assert.equal(typed.stationID, REARM_STATION);
+  assert.equal(selectsPilot(typed.who, PILOT_ID, PILOT_NAME), true);
+  assert.equal(selectsPilot(typed.who, 90000004, "Pilot Beta"), false);
+  const linked = parseChatCommand(chatMessage(`rearm <url=showinfo:1377//${PILOT_ID}>Someone</url> at ${REARM_STATION_LINK}`));
+  assert.deepEqual(linked, { kind: "rearm", stationID: REARM_STATION, who: { everyone: false, characterIDs: [PILOT_ID], text: "" } });
+});
+
+test("a bare 'rearm' is the order with no station; 'rearmed' and 'rearming' are not the verb", () => {
+  assert.deepEqual(parseChatCommand(chatMessage("rearm")), {
+    kind: "rearm", stationID: null, who: { everyone: true, characterIDs: [], text: "" },
+  });
+  for (const line of ["rearmed", "rearming now", "need to rearm"]) {
+    assert.equal(parseChatCommand(chatMessage(line)), null, line);
+  }
 });
