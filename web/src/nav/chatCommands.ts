@@ -177,6 +177,37 @@
 //   • `destination` returns `null` without a system, exactly like the four link
 //     verbs: "go somewhere" with no somewhere named is not a trip.
 //
+// ─── `targets called|all`: A MODE, NOT AN ORDER ─────────────────────────────
+//
+// ⚠ `targets` IS THE SECOND TOGGLE IN THE VOCABULARY, after `props on|off`, and
+// it is parsed the same way: a value verb whose word is MANDATORY. It sets a
+// companion's TARGET MODE:
+//
+//   • `called` (the default) -- shoot only what the fleet calls: a fleet tag, a
+//     `Target` broadcast, a `target`/`primary` chat line.
+//   • `all` -- free fire: kill every hostile by the kill order. Fleet tags still
+//     shoot first; the mode only widens what is allowed AFTER them.
+//
+// It is a standing toggle rather than an order because nothing about it is done
+// once or finishes: it is a preference about how the companion chooses targets,
+// in force until somebody flips it back. That is also why both halves are
+// required -- a commander who can only say "all" has no way back to "called"
+// short of restarting the companion -- and why a bare `targets`, or one followed
+// by any other word, is NOT a command: there is no obvious half of a toggle, and
+// reading a bare mention as either half would flip the mode on a casual remark.
+//
+// ⚠ `stop` DOES NOT RESET IT, for the reason it does not reset `props`: `stop`
+// cancels standing ORDERS (the follow, the trip, the area job) and halts the
+// hull, and a mode is not an order. An FC who types `stop` to halt a trip has not
+// said "and stop shooting the rats I told you were free", and a companion that
+// quietly went back to `called` on every `stop` would make free fire impossible
+// to keep while also steering the ship. Reset it the way it was set: `targets
+// called`.
+//
+// ⚠ `targets` IS NOT `target`. The link verb's `^target\b` already refuses
+// "targets" (no word boundary inside the word), so the two cannot collide; this
+// verb's own pattern is `^targets\b`, and "target" with no `s` is not this verb.
+//
 // ⚠ `destination` ACCEPTS A BARE NUMBER AND `travel` DOES NOT. That is an
 // ADDITION, not a mirror of the `travel` verb it otherwise matches: both carry
 // a solar SYSTEM id rather than an on-grid object, but a system id is a number
@@ -205,7 +236,10 @@ export type ChatCommandKind =
   | "loot"
   | "stop"
   | "follow"
-  | "destination";
+  | "destination"
+  | "warp"
+  | "props"
+  | "targets";
 
 /**
  * One parsed chat command. The four link verbs carry exactly the resolved
@@ -258,7 +292,13 @@ export type ChatCommand =
    * commander could not halt a trip without also stripping the speed off a ship
    * that may need it to get out.
    */
-  | { readonly kind: "props"; readonly on: boolean };
+  | { readonly kind: "props"; readonly on: boolean }
+  /**
+   * `targets called` / `targets all` -- the companion's target mode. A standing
+   * toggle like `props`, not an order, and `stop` does not reset it. See the
+   * header's "a mode, not an order".
+   */
+  | { readonly kind: "targets"; readonly mode: "called" | "all" };
 
 /**
  * Verb -> command kind, each with its own anchored, case-insensitive
@@ -509,7 +549,55 @@ const VALUE_COMMAND_VERBS: ReadonlyArray<{
       return word === undefined ? null : { kind: "props", on: word.toLowerCase() === "on" };
     },
   },
+  {
+    // ⚠ `targets`, PLURAL ONLY. `\b` after the `s` keeps "targeting" and
+    // "targetsss" out, and the link verb's `^target\b` already refuses
+    // "targets", so the two never both match one line.
+    verb: "targets",
+    pattern: /^targets\b/i,
+    // ⚠ BOTH WORDS ARE MANDATORY AND NOTHING MAY FOLLOW THEM, exactly as for
+    // `props`: no default half of a toggle, and trailing chatter ("targets all
+    // please") is a sentence, not a mode switch. See the header.
+    read: (remainder) => {
+      const said = /^\s*(called|all)\s*$/i.exec(remainder);
+      const word = said?.[1];
+      return word === undefined
+        ? null
+        : { kind: "targets", mode: word.toLowerCase() === "all" ? "all" : "called" };
+    },
+  },
 ];
+
+/**
+ * One row of the human-facing command help: what to type, and what it does.
+ *
+ * ⚠ HAND-WRITTEN, NOT DERIVED FROM THE VERB TABLES, because a verb table knows
+ * a pattern and not the syntax a human types after it (a link, a range, a
+ * word). The test beside this file ties the two together instead: every
+ * `ChatCommandKind` must show up in some row, so a new kind without help fails
+ * there. `does` is one short plain-ASCII line.
+ */
+export const CHAT_COMMAND_HELP: readonly { readonly usage: string; readonly does: string }[] =
+  Object.freeze([
+    // Orders on an object.
+    { usage: "target|primary <link>", does: "Shoot this ship first" },
+    { usage: "align <link>", does: "Align toward this object" },
+    { usage: "warp <link>", does: "Warp to this object or fleet member" },
+    // Trips.
+    { usage: "travel <link>", does: "Fly to this solar system" },
+    { usage: "destination <link|id>", does: "Set the route to this system" },
+    { usage: "jump <link>", does: "Go to this gate and hold" },
+    // Standing behaviours with a value.
+    { usage: "follow [range]", does: "Escort the FC; range in km, default 2 km" },
+    // Area jobs.
+    { usage: "salvage", does: "Salvage the wrecks in vicinity" },
+    { usage: "loot", does: "Loot your wrecks and containers in vicinity" },
+    // Toggles.
+    { usage: "props on|off", does: "Run the afterburner or MWD, or stand it down" },
+    { usage: "targets called|all", does: "Shoot only called targets, or free fire" },
+    // Cancel.
+    { usage: "stop", does: "Cancel orders and halt the ship" },
+  ]);
 
 /**
  * The chat verbs this parser recognises (`target`/`primary` alias to the

@@ -61,6 +61,22 @@ import {
 } from "./propulsion.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import type { ChatMessage } from "../store/types.ts";
+import { isHostile } from "../space/overview.ts";
+import {
+  sizedLaunch,
+  sizeSwitchVerdict,
+  type BayStack,
+  type DroneFacts,
+  type ShipLimits,
+  type TargetFacts,
+} from "./droneSizing.ts";
+
+/** A hostile type's full layers, for pricing what is left of a target. */
+export interface CompanionHitPoints {
+  readonly shield: number | null;
+  readonly armor: number | null;
+  readonly hull: number | null;
+}
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -252,6 +268,20 @@ export interface FleetCompanionRequest {
    * activated on it.
    */
   readonly salvagerModuleIDs: readonly number[];
+  /**
+   * Fitted modules that make the DRONES better while they fight -- the game's
+   * "Drone Tracking Modules" (the Omnidirectional Tracking Link) and "Drone
+   * Navigation Computer" groups -- by item id, classified off the group name
+   * at start like every list here.
+   *
+   * ⚠ THEY DO NOTHING UNLESS SWITCHED ON, AND NOTHING SWITCHED THEM ON. A
+   * companion fought with its tracking link dark until 2026-10-12 (seen live:
+   * the operator noticed none of them lit it). The server builds each drone's
+   * tracking and speed from the controller's ACTIVE module effects
+   * (`buildActiveModuleContexts`, droneDogma.js), so a dark link is a drone
+   * fighting on its base numbers.
+   */
+  readonly droneAssistModuleIDs: readonly number[];
   /**
    * Fitted PROPULSION modules — afterburners and microwarpdrives — classified
    * off SDE group 46 "Propulsion Module".
@@ -507,6 +537,7 @@ export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.fre
   remoteCapacitorModuleIDs: Object.freeze([]),
   weaponModuleIDs: Object.freeze([]),
   salvagerModuleIDs: Object.freeze([]),
+  droneAssistModuleIDs: Object.freeze([]),
   propulsionModules: Object.freeze([]),
   // Nothing fitted is nothing to vote with, which is exactly what `null` says.
   tankLayer: null,
@@ -623,6 +654,34 @@ export interface CompanionFlee {
  * They stay EMPTY in phase 0; each is filled by the phase that needs it.
  */
 export interface FleetCompanionObservation extends ScriptObservation {
+  /**
+   * Each hostile TYPE's signature radius in metres (dogma 552), for the free-
+   * fire kill order's "up the size chain".
+   *
+   * ⚠ SIGNATURE, NOT A SIZE WORD IN THE GROUP NAME. Officers, haulers, rogue
+   * drones and sentry guns carry no "Frigate" or "Cruiser" in their group, but
+   * every type has a signature radius, and it is the number the server's own
+   * turret and drone hit formula reads. A type whose read has not landed is
+   * absent, which `pickPrimary` sorts after every known size.
+   */
+  readonly signatureByTypeID?: Readonly<Record<number, number>> | null;
+  /**
+   * Each hostile TYPE's full shield, armour and hull (dogma 263, 265, 9), so
+   * the drone rung can price a size switch against what is left of the target:
+   * a ship nearly dead is never worth recalling drones for. A null layer is one
+   * the read did not give.
+   */
+  readonly hitPointsByTypeID?: Readonly<Record<number, CompanionHitPoints>> | null;
+  /**
+   * The COMBAT stacks in the bay with their types and sizes, for drone sizing.
+   * `combatDroneBayItemIDs` is the same stacks as bare ids; sizing needs to
+   * know what each one is and how many it holds.
+   */
+  readonly combatDroneStacks?: readonly BayStack[] | null;
+  /** Each combat drone TYPE aboard or out, as the sizing rule reads it. */
+  readonly droneFactsByTypeID?: ReadonlyMap<number, DroneFacts> | null;
+  /** The hull's drone bandwidth and the pilot's active-drone cap, or null unread. */
+  readonly droneLimits?: ShipLimits | null;
   /**
    * Whether THIS pilot's tag write can land, from the fleet roster's role/job.
    *
@@ -1000,7 +1059,16 @@ export type FleetCompanionAction =
    * ids - a stack and a drone in space live in different id spaces, and the
    * launch route takes the former.
    */
-  | { readonly kind: "launchDrones"; readonly droneItemIDs: readonly number[] }
+  | {
+      readonly kind: "launchDrones";
+      readonly droneItemIDs: readonly number[];
+      /**
+       * How many of each stack, by stack id, when a sized launch chose them.
+       * Absent means the whole of every stack (`wholeStackLaunch`), which is
+       * what every launch meant before drone sizing.
+       */
+      readonly quantities?: Readonly<Record<number, number>>;
+    }
   /**
    * Rung 6: bring drones home. `droneIDs` are the ENTITY ids of drones in
    * space, the other half of the pair above.
@@ -1124,6 +1192,8 @@ export interface FleetCompanionProgress {
   /** Which authority the last decision came from, for the readout. */
   readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
+  /** `targets called|all`: what this pilot shoots when nobody calls a target. */
+  readonly targetMode: "called" | "all";
   /**
    * Whether this pilot's tag write would land. Three states, and the third is
    * the point: a pilot silently unable to tag looks exactly like one with
@@ -1434,6 +1504,27 @@ export interface CompanionLadderMemory {
    */
   readonly lockGaveUpOn: readonly number[];
   /**
+   * The called target rung 7 asked to lock and has not yet seen land, and when.
+   *
+   * ⚠ WITHOUT THIS THE RUNG ASKED AGAIN ON EVERY TICK OF THE LOCK TIMER. A lock
+   * is not instant: the server holds it pending for the retail scan-resolution
+   * time (about 6.5 s for a Vexor on a 35 m frigate) and the lock list shows it
+   * only once it lands. Every tick in between read "not locked" and issued
+   * `lock` again, and a tick that issues something sleeps only
+   * `FLEET_COMPANION_BURST_MS` -- so 2026-10-12's fights carried ten to twenty
+   * AddTarget calls per pilot per kill, each with a full set of reads, and the
+   * server answered every repeat with "pending". Asked again only after
+   * `LOCK_LANDING_WAIT_MS`, so a lock the server dropped is not waited on for
+   * ever; a refusal clears it at once (`noteRefusedLock`).
+   */
+  readonly lockPending: { readonly targetID: number; readonly sinceMs: number } | null;
+  /**
+   * The hostiles the lock-ahead has asked to lock, each asked at most once, and
+   * when. See `decideLockAhead`. Capped at `MAX_PRELOCK_MEMORY`, emptied by a
+   * warp like `lockGaveUpOn`.
+   */
+  readonly preLocked: readonly { readonly targetID: number; readonly atMs: number }[];
+  /**
    * Rung 6's recall-and-relaunch cycle, or null when none is running.
    *
    * ⚠ A RECORD, BECAUSE THE TRIGGER EXTINGUISHES ITSELF. The instant the recall
@@ -1451,6 +1542,25 @@ export interface CompanionLadderMemory {
    * than of any one drone.
    */
   readonly droneCyclesSpent: number;
+  /**
+   * When this pilot last recalled its combat drones to swap them for a better
+   * size, or null. `shouldSwitch`'s minimum interval reads it, so a commander
+   * flicking between two targets does not keep the drones commuting.
+   */
+  readonly droneSizeSwitchAtMs: number | null;
+  /**
+   * The drones that swap called home, held until they are aboard. ⚠ WITHOUT
+   * THIS THE SWAP UNDOES ITSELF: the engage below the switch would see its
+   * flight still out and still on the target, and order the recalled drones
+   * straight back onto it.
+   */
+  readonly droneSizeRecalledIDs: readonly number[];
+  /**
+   * The drone assist modules this rung has switched on (or tried to) for the
+   * fight now on. Tried ONCE each: a module the server will not run is not
+   * asked again every tick. Cleared as the rung switches them back off.
+   */
+  readonly droneAssistLit: readonly number[];
   /**
    * The ship this pilot's repair drones were last sent to.
    *
@@ -1732,6 +1842,21 @@ export interface CompanionLadderMemory {
    */
   readonly propsStoppingID: number | null;
   /**
+   * `targets called|all`: whether this pilot shoots only what the fleet calls,
+   * or picks its own targets off the grid by the kill order when nobody is
+   * calling one.
+   *
+   * ⚠ "called" IS THE DEFAULT, AND IT IS THE SAFE ONE. A commander who forgot
+   * to say anything gets pilots that hold fire until a call, which is visible
+   * and harmless. A free-fire default would shoot a site's wave trigger the
+   * first time a fleet warped in, which cannot be taken back.
+   *
+   * ⚠ IT LATCHES LIKE `propsHeld`, AND A `stop` DOES NOT CLEAR IT, for the same
+   * reason: `stop` cancels orders and halts the hull, and a mode is not an
+   * order. See `withStandingChatOrders`.
+   */
+  readonly targetMode: "called" | "all";
+  /**
    * How many `loadAmmo` calls the reload rung has spent on each gun, keyed by
    * the module's own item id.
    *
@@ -1809,8 +1934,13 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockRefusedFor: null,
     lockRefusals: 0,
     lockGaveUpOn: [],
+    lockPending: null,
+    preLocked: [],
     droneCycle: null,
     droneCyclesSpent: 0,
+    droneSizeSwitchAtMs: null,
+    droneSizeRecalledIDs: [],
+    droneAssistLit: [],
     lastDroneRepairTargetID: null,
     lastDroneRepairIDs: [],
     lastDroneEngageTargetID: null,
@@ -1850,6 +1980,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     // a standing order never to use its prop mod.
     propsHeld: null,
     propsStoppingID: null,
+    targetMode: "called",
     reloadAttempts: {},
   };
 }
@@ -1913,6 +2044,17 @@ export interface CompanionDecision {
   readonly standing?: true;
   /** Lower work may continue, but must not replace this standing movement order. */
   readonly holdsNavigation?: true;
+  /**
+   * The hostile a standing target decision is fighting, so the lock-ahead knows
+   * which ship NOT to pre-lock and that there is a fight to lock ahead in.
+   */
+  readonly engagedTargetID?: number;
+  /**
+   * Set on the lock-ahead's own `lock`. A refusal of it is not booked against
+   * the ship (`noteRefusedLock`): the pre-lock is an optimisation asked once,
+   * and the ship gets its full budget the moment it becomes the target.
+   */
+  readonly preLock?: true;
 }
 
 /**
@@ -2151,8 +2293,11 @@ function decideCompanionStep(
     // else -- so every give-up is dropped here rather than carried onto a grid
     // where it was never measured. See `lockGaveUpOn`. Nothing else in this
     // memory is distance-shaped, which is why nothing else is cleared.
-    if (next.lockGaveUpOn.length > 0 || next.lockRefusedFor !== null) {
-      next = { ...next, lockGaveUpOn: [], lockRefusedFor: null, lockRefusals: 0 };
+    // The lock-ahead's record goes with it: those ships were ranked on the old
+    // grid, and a pending lock is on a ship this one has left behind.
+    if (next.lockGaveUpOn.length > 0 || next.lockRefusedFor !== null ||
+      next.lockPending !== null || next.preLocked.length > 0) {
+      next = { ...next, lockGaveUpOn: [], lockRefusedFor: null, lockRefusals: 0, lockPending: null, preLocked: [] };
     }
     return waiting(
       "In warp",
@@ -2213,6 +2358,8 @@ function decideCompanionStep(
     lockRefusedFor: memory.lockRefusedFor,
     lockRefusals: memory.lockRefusals,
     lockGaveUpOn: memory.lockGaveUpOn,
+    lockPending: memory.lockPending,
+    preLocked: memory.preLocked,
     lastDroneRepairTargetID: memory.lastDroneRepairTargetID,
     lastDroneRepairIDs: memory.lastDroneRepairIDs,
     lastDroneEngageTargetID: memory.lastDroneEngageTargetID,
@@ -2233,6 +2380,9 @@ function decideCompanionStep(
     orderedLeaveRecall: memory.orderedLeaveRecall,
     droneCycle: memory.droneCycle,
     droneCyclesSpent: memory.droneCyclesSpent,
+    droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
+    droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
+    droneAssistLit: memory.droneAssistLit,
     // ⚠ CARRIED, NOT CLEARED, and the difference from `abandonment` above is
     // the whole point. That one is cleared because a human coming back is
     // exactly the thing it was waiting for. A flee is about the ship's health
@@ -2257,6 +2407,7 @@ function decideCompanionStep(
     stopShipIssued: memory.stopShipIssued,
     propsHeld: memory.propsHeld,
     propsStoppingID: memory.propsStoppingID,
+    targetMode: memory.targetMode,
     // Carried for the same reason as the orders above: a supervisor logging
     // back in says nothing about which of this ship's guns are empty or how
     // many loads have already been spent on them.
@@ -2402,7 +2553,7 @@ function decideCompanionStep(
   // ordinary wait and ended the tick, so a standing target call starved every
   // rung beneath it for as long as it stood. See `CompanionDecision.standing`.
   const obeying = recallBeforeLeavingOnOrder(
-    decideFleetOrders(request, obs, reloading.memory),
+    decideFleetOrders(request, obs, reloading.memory, nowMs),
     request,
     obs,
     reloading.memory,
@@ -2410,6 +2561,24 @@ function decideCompanionStep(
   );
   if (obeying !== null && obeying.standing !== true) {
     return obeying;
+  }
+
+  // Rung 7b: the lock-ahead. Only while the pilot stands on a target -- its
+  // lock pending or its guns running -- and before the loot and salvage rungs,
+  // because the next kill outranks a wreck. See `decideLockAhead`.
+  if (obeying !== null && obeying.engagedTargetID !== undefined) {
+    const ahead = decideLockAhead(obs, obeying.memory, obeying.engagedTargetID, nowMs);
+    if (ahead !== null) {
+      return {
+        action: { kind: "lock", targetID: ahead.targetID },
+        phase: obeying.phase,
+        why: "Locking the next one up while this one dies.",
+        memory: ahead.memory,
+        ...(obeying.followingOrderFrom === undefined ? {} : { followingOrderFrom: obeying.followingOrderFrom }),
+        ...(obeying.lastOrderHeard === undefined ? {} : { lastOrderHeard: obeying.lastOrderHeard }),
+        preLock: true,
+      };
+    }
   }
 
   // Rung 8: the `loot` order.
@@ -3339,6 +3508,118 @@ function bestTaggedEntity(
  */
 const MAX_REFUSED_LOCK_ATTEMPTS = 3;
 
+/**
+ * How long an asked-for lock is waited on before it is asked for again.
+ *
+ * ⚠ A BOUND ON THE REPEATS, NOT A GUESS AT THE LOCK TIME. The server answers a
+ * repeated AddTarget on a pending lock with "pending" and changes nothing, so
+ * asking early costs only the call; asking late after a lock the server dropped
+ * costs the wait. Ten seconds covers a cruiser on a frigate (about 6.5 s at
+ * 340 mm scan resolution) and re-asks a lock that is slower than that once
+ * every ten seconds rather than every 400 ms.
+ */
+const LOCK_LANDING_WAIT_MS = 10_000;
+
+/**
+ * How many hostiles beyond the one being shot this pilot keeps locked.
+ *
+ * ⚠ THIS IS WHAT A KILL COSTS WITHOUT IT. Measured 2026-10-12: after a rat
+ * died the next AddTarget went out in 0.5-2.6 s and then waited 3.5-7 s on the
+ * lock timer before a drone or gun could move -- the lock was most of the
+ * dead time between kills, and it was paid only because nothing asked for it
+ * until the last ship was dead. A player locks the next ones while shooting
+ * this one; two is the next kill and the one after, without spending the
+ * slots a heal call or a salvager needs.
+ */
+const COMPANION_LOCK_AHEAD = 2;
+
+/**
+ * How many pre-locks the lock-ahead remembers having asked for. The cap is the
+ * whole bound on that record (the drone boat's `MAX_PRELOCK_MEMORY`, same
+ * number for the same reason): comfortably more than any hull locks.
+ */
+const MAX_PRELOCK_MEMORY = 16;
+
+/**
+ * The lock-ahead: while this pilot is fighting `engagedID`, lock the hostiles it
+ * will fight next, so the next kill starts with the lock already on.
+ *
+ * Ranked as the next call is most likely to come: the fleet's other tagged
+ * ships first by tag rank, then the free-fire kill order (`rankByKillOrder`).
+ * Locking is not shooting -- nothing here activates anything, and a `targets
+ * called` pilot still fires only on what it is called on.
+ *
+ * ⚠ UNREADABLE MEANS DO NOT. No lock count, no lock list, no grid: nothing is
+ * asked, the drone boat's rule. A guessed count would spend a slot the hull
+ * may not have, every kill.
+ *
+ * ⚠ EACH SHIP IS ASKED FOR ONCE. A pre-lock that does not land is not
+ * retried; the ship gets a proper, budgeted lock the moment it becomes the
+ * target. That is the whole stop condition, and why a refusal of one is not
+ * booked against the ship (`CompanionDecision.preLock`).
+ *
+ * ⚠ ONE SLOT IS ALWAYS LEFT FREE. A heal call locks a fleet-mate and the
+ * salvage order locks wrecks; a pilot whose slots were all spent on rats it
+ * is not yet shooting would be refused the lock that mattered.
+ */
+function decideLockAhead(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  engagedID: number,
+  nowMs: number,
+): { readonly targetID: number; readonly memory: CompanionLadderMemory } | null {
+  const maxLocks = obs.maxLockedTargets ?? null;
+  const locked = obs.lockedTargetIDs ?? null;
+  const snapshot = obs.snapshot ?? null;
+  if (maxLocks === null || !Number.isFinite(maxLocks) || maxLocks < 1 || locked === null || snapshot === null) {
+    return null;
+  }
+  const entities = snapshot.entities;
+  const onGrid = new Set(entities.map((entity) => entity.itemID));
+  const hostileIDs = new Set(entities.filter(isHostile).map((entity) => entity.itemID));
+  // Asked for, still on grid, not landed, and asked recently enough to still be
+  // pending on the server: each holds a slot and counts as locked ahead.
+  const inFlight = memory.preLocked.filter((asked) =>
+    asked.targetID !== engagedID && onGrid.has(asked.targetID) && !locked.includes(asked.targetID) &&
+    nowMs - asked.atMs < LOCK_LANDING_WAIT_MS).length;
+  const lockedAhead = locked.filter((id) => id !== engagedID && hostileIDs.has(id)).length;
+  if (lockedAhead + inFlight >= COMPANION_LOCK_AHEAD) {
+    return null;
+  }
+  const engagedPending = locked.includes(engagedID) ? 0 : 1;
+  if (locked.length + inFlight + engagedPending + 1 >= maxLocks) {
+    return null;
+  }
+  const measurement = measureSpace(snapshot);
+  const reach = obs.maxTargetRangeM ?? null;
+  const asked = new Set(memory.preLocked.map((entry) => entry.targetID));
+  const candidates = entities.filter((entity) => {
+    if (entity.itemID === engagedID || !isHostile(entity) || locked.includes(entity.itemID) ||
+      asked.has(entity.itemID) || gaveUpOnLocking(memory, entity.itemID)) {
+      return false;
+    }
+    const distance = measurement?.distances.get(entity.itemID) ?? null;
+    return reach === null || distance === null || distance <= reach;
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const tags = obs.fleetTargetTags ?? null;
+  const next =
+    (tags === null ? null : bestTaggedEntity(tags, candidates, measurement)) ??
+    rankByKillOrder(obs, candidates, measurement);
+  if (next === null) {
+    return null;
+  }
+  return {
+    targetID: next.itemID,
+    memory: {
+      ...memory,
+      preLocked: [...memory.preLocked, { targetID: next.itemID, atMs: nowMs }].slice(-MAX_PRELOCK_MEMORY),
+    },
+  };
+}
+
 /** Record one refused lock, and give up on that ship once the budget is spent. */
 function noteRefusedLock(
   memory: CompanionLadderMemory,
@@ -3348,11 +3629,14 @@ function noteRefusedLock(
   // ship", not "three refusals ever" -- a fleet calling three ships in a row has
   // exhausted nothing.
   const attempts = memory.lockRefusedFor === targetID ? memory.lockRefusals + 1 : 1;
+  // A refused lock is not pending, so the next tick may ask again at once.
+  const lockPending = memory.lockPending?.targetID === targetID ? null : memory.lockPending;
   if (attempts < MAX_REFUSED_LOCK_ATTEMPTS) {
-    return { ...memory, lockRefusedFor: targetID, lockRefusals: attempts };
+    return { ...memory, lockRefusedFor: targetID, lockRefusals: attempts, lockPending };
   }
   return {
     ...memory,
+    lockPending,
     lockRefusedFor: null,
     lockRefusals: 0,
     lockGaveUpOn: rememberGiveUp(memory.lockGaveUpOn, targetID),
@@ -3484,31 +3768,54 @@ function decideOpenFire(
  */
 function lockThenEngage(
   targetID: number,
-  source: "tag" | "broadcast" | "chat",
+  source: "tag" | "broadcast" | "chat" | "free-fire",
   heard: string,
   why: string,
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision {
+  // Free fire obeys nobody, so it says so: its own phase, and no
+  // `followingOrderFrom`, which the controller reads as "own-ladder".
+  const authority =
+    source === "free-fire"
+      ? { phase: "Free fire" }
+      : { phase: "Obeying fleet", followingOrderFrom: source };
   if (!isAlreadyLocked(targetID, obs.lockedTargetIDs, memory)) {
+    // ⚠ A LOCK ALREADY ASKED FOR IS WAITED ON, NOT ASKED FOR AGAIN. See
+    // `lockPending`. The wait is STANDING, so the rungs beneath -- the
+    // lock-ahead first -- get the tick while the lock timer runs.
+    const pending = memory.lockPending;
+    if (pending !== null && pending.targetID === targetID && nowMs - pending.sinceMs < LOCK_LANDING_WAIT_MS) {
+      return {
+        action: WAIT,
+        standing: true,
+        ...authority,
+        why: why + " Waiting for the lock to land.",
+        memory,
+        lastOrderHeard: heard,
+        engagedTargetID: targetID,
+      };
+    }
     return {
       action: { kind: "lock", targetID },
-      phase: "Obeying fleet",
+      ...authority,
       why: why + " Locking it.",
-      memory: { ...memory, lastLockIssuedFor: targetID },
-      followingOrderFrom: source,
+      memory: { ...memory, lastLockIssuedFor: targetID, lockPending: { targetID, sinceMs: nowMs } },
       lastOrderHeard: heard,
     };
+  }
+  if (memory.lockPending?.targetID === targetID) {
+    memory = { ...memory, lockPending: null };
   }
   const fire = decideOpenFire(targetID, request, obs, memory);
   if (fire !== null) {
     return {
       action: { kind: "activate", moduleID: fire.moduleID, targetID },
-      phase: "Obeying fleet",
+      ...authority,
       why: why + " Opening fire on it.",
       memory: fire.memory,
-      followingOrderFrom: source,
       lastOrderHeard: heard,
     };
   }
@@ -3518,7 +3825,7 @@ function lockThenEngage(
   return {
     action: WAIT,
     standing: true,
-    phase: "Obeying fleet",
+    ...authority,
     // ⚠ THE NO-WEAPON CASE SAYS SO, and that is the whole of its job. An empty
     // weapon list is a setting, not a fault, so it must not read as one -- but
     // a pilot that locks a called target and never shoots it is EXACTLY what
@@ -3531,8 +3838,8 @@ function lockThenEngage(
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
         : " Locked, and firing on it."),
     memory,
-    followingOrderFrom: source,
     lastOrderHeard: heard,
+    engagedTargetID: targetID,
   };
 }
 
@@ -3840,7 +4147,7 @@ interface NamedOrder {
  */
 type NamedChatCommandKind = Exclude<
   ChatCommand["kind"],
-  "salvage" | "loot" | "stop" | "follow" | "destination" | "props"
+  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets"
 >;
 
 const CHAT_ORDER_NAMES: Readonly<Record<NamedChatCommandKind, NamedOrderName>> = Object.freeze({
@@ -4091,6 +4398,7 @@ function withStandingChatOrders(
       command.kind === "destination" ||
       command.kind === "stop" ||
       command.kind === "props" ||
+      command.kind === "targets" ||
       command.kind === "salvage" ||
       command.kind === "loot"
     ) {
@@ -4129,6 +4437,10 @@ function withStandingChatOrders(
       // find the rung still holding a stale "I am switching this off". The
       // override is the newer statement and wins outright.
       next = { ...next, propsHeld: command.on, propsStoppingID: null };
+      continue;
+    }
+    if (command.kind === "targets") {
+      next = { ...next, targetMode: command.mode };
       continue;
     }
     // This is a new stop identity, so it gets one ship stop even when another
@@ -6663,16 +6975,30 @@ type CompanionDroneRole = "combat" | "logistic" | "salvage";
  */
 interface CalledTarget {
   readonly itemID: number;
-  readonly source: "tag" | "broadcast" | "chat";
+  /** "free-fire" = nobody called it; this pilot picked it by the kill order. */
+  readonly source: "tag" | "broadcast" | "chat" | "free-fire";
   readonly heard: string;
   readonly why: string;
 }
 
+/**
+ * ⚠ FREE FIRE LIVES HERE, BEHIND EVERY CALL, so `targets all` is the answer to
+ * "nobody is calling anything" and never a second opinion against a call. A
+ * tag or a `Target` still wins outright (the kill order is this client's guess;
+ * a call is the commander looking at the fight), and so does any other named
+ * order: a pilot told to align, travel, jump or warp is doing that, and a rat
+ * it could shoot on the way is not a reason to stop.
+ *
+ * Because rung 6 reads this same function, the drones follow the guns onto the
+ * free-fire pick too, and every companion ranks the same grid the same way, so
+ * a fleet in free fire focuses one ship rather than spreading over five.
+ */
 function calledTarget(
   obs: FleetCompanionObservation,
   entities: readonly SpaceEntity[],
   measurement: SpaceMeasurement | null,
   order: NamedOrder | null,
+  memory: CompanionLadderMemory,
 ): CalledTarget | null {
   const tags = obs.fleetTargetTags ?? null;
   if (tags !== null) {
@@ -6694,13 +7020,108 @@ function calledTarget(
       why: order.why,
     };
   }
+  if (memory.targetMode === "all" && order === null) {
+    return freeFireTarget(obs, entities, measurement, memory);
+  }
   return null;
+}
+
+/**
+ * `targets all`: the hostile this pilot shoots when nobody is calling one.
+ *
+ * The kill order is `pickPrimary`'s, the same ladder the scripted bots fight
+ * by: tacklers (scramblers, then webbers), then ECM, then other ewar, then the
+ * rest smallest signature first, nearest breaking ties. Removing a small ship
+ * removes its damage fastest, and the tacklers and jammers are what stop this
+ * pilot leaving or fighting at all.
+ *
+ * ⚠ NPC HOSTILES ONLY, through `isHostile`. Free fire is for clearing a site,
+ * and a neutral player on the grid is not part of one: shooting them is a
+ * decision a human makes by calling them.
+ *
+ * ⚠ ONLY WHAT THIS HULL CAN LOCK, and never a ship it already gave up locking.
+ * A call names one ship and the pilot answers "I cannot" when it is out of
+ * reach; free fire has the whole grid to choose from, so picking a ship out of
+ * range would waste the lock budget on it while a reachable one shoots back.
+ * An unreadable lock range is no gate, the same reading the rest of this loop
+ * gives it.
+ */
+function freeFireTarget(
+  obs: FleetCompanionObservation,
+  entities: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+  memory: CompanionLadderMemory,
+): CalledTarget | null {
+  const reach = obs.maxTargetRangeM ?? null;
+  const distanceOf = (entity: SpaceEntity): number | null =>
+    measurement?.distances.get(entity.itemID) ?? null;
+  const candidates = entities.filter((entity) => {
+    if (!isHostile(entity) || gaveUpOnLocking(memory, entity.itemID)) {
+      return false;
+    }
+    const distance = distanceOf(entity);
+    return reach === null || distance === null || distance <= reach;
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const threats = obs.threatByTypeID ?? null;
+  const target = rankByKillOrder(obs, candidates, measurement);
+  if (target === null) {
+    return null;
+  }
+  const threat = target.typeID === null ? null : (threats?.[target.typeID] ?? null);
+  const what = threat?.scram
+    ? "the warp scrambler"
+    : threat?.web
+      ? "the webber"
+      : threat?.ecm
+        ? "the jammer"
+        : threat?.ewar
+          ? "the ewar ship"
+          : "the next ship in the kill order";
+  return {
+    itemID: target.itemID,
+    source: "free-fire",
+    heard: "free fire",
+    why: `Free fire: shooting ${what}.`,
+  };
+}
+
+/**
+ * The first of `candidates` by the free-fire kill order (`pickPrimary`).
+ *
+ * ⚠ ONE RANKING FOR THE PICK AND THE PRE-LOCK. The lock-ahead ranks the same
+ * grid the same way minus the ship being shot, so its first pre-lock is the
+ * ship free fire turns to next and that ship's lock is already on.
+ */
+function rankByKillOrder(
+  obs: FleetCompanionObservation,
+  candidates: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+): SpaceEntity | null {
+  const groups = obs.targetGroupNames ?? null;
+  const threats = obs.threatByTypeID ?? null;
+  const signatures = obs.signatureByTypeID ?? null;
+  return pickPrimary(
+    candidates,
+    (entity) => entity.typeID,
+    (entity) => measurement?.distances.get(entity.itemID) ?? null,
+    (typeID) => (groups === null ? null : (groups[typeID] ?? null)),
+    undefined,
+    undefined,
+    (typeID) => threats?.[typeID] ?? null,
+    undefined,
+    undefined,
+    (entity) => (entity.typeID === null || signatures === null ? null : (signatures[entity.typeID] ?? null)),
+  );
 }
 
 /** The called target's id alone, for the drone rung. */
 function calledCombatTargetID(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
 ): number | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
@@ -6712,6 +7133,7 @@ function calledCombatTargetID(
     entities,
     measureSpace(snapshot),
     resolveNamedOrder(request, obs, entities),
+    memory,
   );
   return called === null ? null : called.itemID;
 }
@@ -6739,13 +7161,223 @@ function withObservedDroneFlights(
   return memory;
 }
 
+// ── drone sizing (rung 6) ────────────────────────────────────────────────────
+//
+// ⚠ AN IMPROVEMENT ON THE OLD LAUNCH, NEVER A NEW WAY TO SIT ON A FULL BAY.
+// Every input below can be unread -- the bay, the hull's bandwidth, a drone
+// type's dogma, a target's signature -- and each helper answers "cannot judge"
+// for that, on which the rung launches the whole role bay exactly as it did
+// before sizing existed. See nav/droneSizing.ts for the rule itself.
+
+// ── drone assist modules (rung 6) ────────────────────────────────────────────
+
+/**
+ * Switch on one fitted drone assist module that is not running, once the
+ * combat drones are out and engaged. One per tick, each tried once per fight.
+ *
+ * ⚠ AFTER THE ENGAGE, NEVER BEFORE IT. A module cycle is worth something only
+ * to drones that are shooting; the engage is what makes them shoot, so it gets
+ * the tick first and this takes the next quiet one.
+ */
+function droneAssistOn(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): CompanionDecision | null {
+  const lit = memory.droneAssistLit ?? [];
+  const running = new Set(obs.snapshot?.ship?.activeModuleIDs ?? lit);
+  const next = request.droneAssistModuleIDs.find((id) => !running.has(id) && !lit.includes(id));
+  if (next === undefined) {
+    return null;
+  }
+  return {
+    action: { kind: "activate", moduleID: next, targetID: 0 },
+    phase: "Drones",
+    why: "The drones are fighting, so the drone tracking module is switching on.",
+    memory: { ...memory, droneAssistLit: [...lit, next] },
+  };
+}
+
+/**
+ * Switch off, one per tick, every drone assist module this rung lit, once the
+ * combat drones have no job. A module the read shows already stopped is just
+ * forgotten.
+ */
+function droneAssistOff(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+  const lit = memory.droneAssistLit ?? [];
+  if (lit.length === 0) {
+    return { decision: null, memory };
+  }
+  const active = obs.snapshot?.ship?.activeModuleIDs ?? null;
+  const running = active === null ? lit : lit.filter((id) => active.includes(id));
+  if (running.length === 0) {
+    // All already stopped: forget them, and let the rest of the rung have the tick.
+    return { decision: null, memory: { ...memory, droneAssistLit: [] } };
+  }
+  const off = running[0]!;
+  return {
+    decision: {
+      action: { kind: "deactivate", moduleID: off },
+      phase: "Drones",
+      why: "The drones have no fight, so the drone tracking module is switching off.",
+      memory: { ...memory, droneAssistLit: lit.filter((id) => id !== off) },
+    },
+    memory,
+  };
+}
+
+/** What the sizing rule needs to know about one ship on the grid. */
+function sizingTargetFacts(
+  entity: SpaceEntity,
+  obs: FleetCompanionObservation,
+  measurement: SpaceMeasurement | null,
+): TargetFacts {
+  const v = entity.velocity;
+  const speed =
+    v !== null && v !== undefined && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+      ? Math.hypot(v.x, v.y, v.z)
+      : null;
+  return {
+    signatureRadius: entity.typeID === null ? null : (obs.signatureByTypeID?.[entity.typeID] ?? null),
+    speed,
+    distanceFromShipM: measurement?.distances.get(entity.itemID) ?? null,
+  };
+}
+
+/**
+ * What the drones are sized FOR: the called (or free-fire) target when there
+ * is one on grid, otherwise every hostile NPC on it -- the launch that happens
+ * before anybody calls anything is still a choice of which drones go out.
+ */
+function sizingTargets(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): readonly TargetFacts[] {
+  const snapshot = obs.snapshot ?? null;
+  if (snapshot === null) {
+    return [];
+  }
+  const measurement = measureSpace(snapshot);
+  const called = calledCombatTargetID(request, obs, memory);
+  const target = called === null ? null : entityOnGrid(called, snapshot.entities);
+  if (target !== null) {
+    return [sizingTargetFacts(target, obs, measurement)];
+  }
+  return snapshot.entities.filter(isHostile).map((entity) => sizingTargetFacts(entity, obs, measurement));
+}
+
+/**
+ * The launch for this role: sized for combat when it can be judged, the whole
+ * role bay otherwise (and always for logistic and salvage drones, which have
+ * one job each and no size to choose).
+ */
+function roleLaunch(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  role: CompanionDroneRole,
+  bay: readonly number[],
+  why: string,
+): { readonly action: FleetCompanionAction; readonly why: string } {
+  const whole = { action: { kind: "launchDrones", droneItemIDs: bay } as const, why };
+  if (role !== "combat") {
+    return whole;
+  }
+  const plan = sizedLaunch(
+    obs.combatDroneStacks ?? null,
+    obs.droneFactsByTypeID ?? new Map(),
+    obs.droneLimits ?? null,
+    sizingTargets(request, obs, memory),
+  );
+  if (plan === null) {
+    return whole;
+  }
+  const quantities: Record<number, number> = {};
+  for (const stack of plan.stacks) {
+    quantities[stack.itemID] = stack.quantity;
+  }
+  return {
+    action: { kind: "launchDrones", droneItemIDs: plan.stacks.map((stack) => stack.itemID), quantities },
+    why:
+      calledCombatTargetID(request, obs, memory) === null
+        ? "Hostiles on grid. Putting out the drones that suit them best."
+        : "Putting out the drones that hit this target hardest.",
+  };
+}
+
+/** What is left of a ship, in hit points across its three layers, or null. */
+function remainingHitPoints(entity: SpaceEntity, obs: FleetCompanionObservation): number | null {
+  const full = entity.typeID === null ? null : (obs.hitPointsByTypeID?.[entity.typeID] ?? null);
+  if (full === null) {
+    return null;
+  }
+  const layers: [number | null, number | null][] = [
+    [full.shield, entity.shieldRatio],
+    [full.armor, entity.armorRatio],
+    [full.hull, entity.hullRatio],
+  ];
+  let total = 0;
+  for (const [capacity, ratio] of layers) {
+    if (capacity === null || ratio === null) {
+      return null;
+    }
+    total += capacity * Math.max(0, Math.min(1, ratio));
+  }
+  return total;
+}
+
+/**
+ * Bring the combat drones home to swap them for a better size, or null.
+ *
+ * ⚠ THE RECALL IS THE WHOLE OF THE SWITCH. Once they are in, the role's drones
+ * are not out, and the launch branch above sizes the next flight against this
+ * same target on a fresh bay read -- one atomic call per tick, and no second
+ * copy of the launch rule here.
+ */
+function decideDroneSizeSwitch(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  targetID: number,
+  flightIDs: readonly number[],
+  nowMs: number,
+): CompanionDecision | null {
+  const snapshot = obs.snapshot ?? null;
+  const target = snapshot === null ? null : entityOnGrid(targetID, snapshot.entities);
+  if (snapshot === null || target === null) {
+    return null;
+  }
+  const verdict = sizeSwitchVerdict({
+    flightTypeIDs: flightIDs.map((id) => entityOnGrid(id, snapshot.entities)?.typeID ?? null),
+    bay: obs.combatDroneStacks ?? null,
+    facts: obs.droneFactsByTypeID ?? new Map(),
+    limits: obs.droneLimits ?? null,
+    target: sizingTargetFacts(target, obs, measureSpace(snapshot)),
+    remainingEhp: remainingHitPoints(target, obs),
+    lastSwitchAtMs: memory.droneSizeSwitchAtMs,
+    nowMs,
+  });
+  if (verdict === null || !verdict.switch) {
+    return null;
+  }
+  return {
+    action: { kind: "recallDrones", droneIDs: flightIDs },
+    phase: "Drones",
+    why: verdict.why,
+    memory: { ...memory, droneSizeSwitchAtMs: nowMs, droneSizeRecalledIDs: [...flightIDs] },
+  };
+}
+
 function decideDrones(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
   nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
-  const nothing = { decision: null, memory } as const;
+  let nothing: { readonly decision: null; readonly memory: CompanionLadderMemory } = { decision: null, memory };
   // ⚠ NO `useDrones` FLAG. A pilot uses the drones it is carrying. What it does
   // with them is decided by WHAT THEY ARE, not by a checkbox -- see
   // `wantedDroneRole`.
@@ -6810,11 +7442,12 @@ function decideDrones(
     if (role === null || bay === null || bay.length === 0) {
       return { decision: null, memory: { ...memory, droneCycle: null } };
     }
+    const relaunch = roleLaunch(request, obs, memory, role, bay, `Sending the ${DRONE_ROLE_WORDS[role]} back out.`);
     return {
       decision: {
-        action: { kind: "launchDrones", droneItemIDs: bay },
+        action: relaunch.action,
         phase: "Drones",
-        why: `Sending the ${DRONE_ROLE_WORDS[role]} back out.`,
+        why: relaunch.why,
         memory: { ...memory, droneCycle: null },
       },
       memory,
@@ -6886,6 +7519,14 @@ function decideDrones(
   // ⚠ ONLY ON A GRID WE CAN SEE. `hostileOnGrid` is three-state and `null` means
   // the read failed -- recalling on that would pull drones in every time a
   // snapshot stumbled, mid-fight. Only a confident `false` ends the job.
+  if (role !== "combat") {
+    const off = droneAssistOff(obs, memory);
+    if (off.decision !== null) {
+      return off;
+    }
+    memory = off.memory;
+    nothing = { decision: null, memory };
+  }
   if (role === null) {
     if (out.length > 0 && obs.hostileOnGrid === false) {
       return {
@@ -6911,13 +7552,9 @@ function decideDrones(
       // for this job simply does the job without them, or not at all.
       return nothing;
     }
+    const launch = roleLaunch(request, obs, memory, role, bay, DRONE_LAUNCH_WHY[role]);
     return {
-      decision: {
-        action: { kind: "launchDrones", droneItemIDs: bay },
-        phase: "Drones",
-        why: DRONE_LAUNCH_WHY[role],
-        memory,
-      },
+      decision: { action: launch.action, phase: "Drones", why: launch.why, memory },
       memory,
     };
   }
@@ -6945,15 +7582,31 @@ function decideDrones(
   // them onto yet, and the order belongs on the tick after it, when the lock is
   // a fact.
   if (role === "combat") {
-    const called = calledCombatTargetID(request, obs);
+    const called = calledCombatTargetID(request, obs, memory);
     if (called === null) {
       return nothing;
     }
     if (!isAlreadyLocked(called, obs.lockedTargetIDs, memory)) {
       return nothing;
     }
-    return { decision: decideDroneEngagement(memory, "combat", roleOut, called,
-      "Putting the combat drones on the target the fleet called."), memory };
+    // A swap's recall still landing: nothing to order until they are aboard,
+    // and the launch branch sizes the next flight once they are. Bounded by
+    // the same give-up as the hurt-drone recall, so a drone that never comes
+    // home (a full bay) cannot hold the engage for ever.
+    const homeward = (memory.droneSizeRecalledIDs ?? []).filter((id) => roleOut.includes(id));
+    if (homeward.length > 0 && nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS) {
+      return nothing;
+    }
+    const swap = decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs);
+    if (swap !== null) {
+      return { decision: swap, memory };
+    }
+    const engage = decideDroneEngagement(memory, "combat", roleOut, called,
+      "Putting the combat drones on the target the fleet called.");
+    if (engage !== null) {
+      return { decision: engage, memory };
+    }
+    return { decision: droneAssistOn(request, obs, memory), memory };
   }
   if (role === "salvage") {
     // Launched, nothing more: the salvage rung locks a wreck and sends these
@@ -7213,6 +7866,7 @@ function decideFleetOrders(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
@@ -7245,7 +7899,7 @@ function decideFleetOrders(
   //        heard, and answered with "I cannot", instead of being re-issued for
   //        ever -- and crucially the rung falls THROUGH, so the orders below and
   //        the rungs beneath this one get their ticks back. See `lockGaveUpOn`.
-  const called = calledTarget(obs, entities, measurement, order);
+  const called = calledTarget(obs, entities, measurement, order, memory);
   const unreachable = called !== null && gaveUpOnLocking(memory, called.itemID);
   if (called !== null && !unreachable) {
     return lockThenEngage(
@@ -7256,6 +7910,7 @@ function decideFleetOrders(
       request,
       obs,
       memory,
+      nowMs,
     );
   }
 
@@ -7471,7 +8126,9 @@ function decideFleetOrders(
   // spending on a lock that never landed, and the panel still says what the
   // fleet asked for and why this pilot is not doing it. Parking here would swap
   // one kind of stuck pilot for another.
-  if (unreachable && called !== null) {
+  // A free-fire pick never lands here: `freeFireTarget` skips every ship this
+  // pilot gave up locking, so it moves on instead of announcing "I cannot".
+  if (unreachable && called !== null && called.source !== "free-fire") {
     return {
       action: WAIT,
       standing: true,
@@ -7582,6 +8239,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       inFleet: mem.inFleet,
       followingOrderFrom: mem.followingOrderFrom,
       lastOrderHeard: mem.lastOrderHeard,
+      targetMode: mem.ladder.targetMode,
       canTag: mem.canTag,
       abandonment: abandonmentRecord(mem.ladder),
       failureReason: mem.failureReason,
@@ -7771,7 +8429,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         // one place that knows. Lock refusals have their own bound because the
         // authoritative lock list is consulted rather than believed, so a
         // refused lock never reads as done.
-        if (decision.action.kind === "lock") {
+        // A pre-lock was asked once and is already recorded as asked; its
+        // refusal is not the ship's (`CompanionDecision.preLock`).
+        if (decision.action.kind === "lock" && decision.preLock !== true) {
           mem.ladder = noteRefusedLock(mem.ladder, decision.action.targetID);
         }
         if (decision.action.kind === "warp" &&
@@ -7874,6 +8534,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           lockRefusedFor: null,
           lockRefusals: 0,
           lockGaveUpOn: [],
+          lockPending: null,
+          preLocked: [],
           // A resumed run has launched and recalled nothing either, and a cycle
           // it was mid-way through is gone with the process that held it. Its
           // drones, if any, are already abandoned in space - that is the
@@ -7881,6 +8543,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // undo - so the honest state is "no cycle", not a half-remembered one.
           droneCycle: null,
           droneCyclesSpent: 0,
+          droneSizeSwitchAtMs: null,
+          droneSizeRecalledIDs: [],
+          droneAssistLit: [],
       // Run-local, both of them. See `CompanionFlee`'s header for why a flee is
       // not persisted the way an abandonment is: a companion coming back up
       // reads its own health on the first tick and leaves again within one tick
@@ -7916,6 +8581,10 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // live tick answers from the autopilot itself.
           propsHeld: null,
           propsStoppingID: null,
+          // Back to "called" for the same reason: a `targets all` nobody can
+          // re-hear is free fire nobody can see, and the safe mode is the one
+          // a pilot may hold without anybody having asked for it.
+          targetMode: "called",
           // A resumed run has loaded nothing either. Starting the budget empty
           // is the generous answer and the right one: the dead process's loads
           // may well have landed, and if they did, the first live tick sees

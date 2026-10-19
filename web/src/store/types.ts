@@ -2895,6 +2895,8 @@ export interface FleetCompanionState {
   /** Which authority the last decision came from, for the readout. */
   readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
+  /** `targets called|all`. Null until the loop has reported. */
+  readonly targetMode: "called" | "all" | null;
   readonly canTag: boolean | null;
   /**
    * What was missing or unusable about this pilot's fit when it started: no
