@@ -1562,10 +1562,10 @@
           {/each}
         </dl>
         {@render standingsTab()}
-      {:else if ownerReadDone}
+      {:else if ownerReadDone && $subject.kind === "alliance"}
         <!-- Said, not blanked: the server had no record to give. -->
-        <p class="note">The server gave no record of this {$subject.kind === "corporation" ? "corporation" : "alliance"}.</p>
-      {:else}
+        <p class="note">The server gave no record of this alliance.</p>
+      {:else if !ownerReadDone}
         <p class="note">Reading…</p>
       {/if}
     {:else}

@@ -263,18 +263,35 @@ compiled UserError constructor, window method and exception handler distinguish
 the dialog from ordinary logging. A propagated refusal leaves the failed
 registered scope/history uncompleted; loading still clears in finally.
 
-Native BadArgs is a separate caught path: compiled framework execution calls
-ShowError, skips base/history completion, clears loading and then clears the
-tasklet pointer/focuses. Its inline panel and the corporation module's BadArgs
-name binding need further reading; do not treat every public RPC refusal as
-that class or infer a visible panel from the decompiled show_error alone.
+Native BadArgs is a separate framework path: compiled execution calls ShowError,
+skips base/history completion, clears loading and then clears the tasklet pointer/
+focuses. Executing the whole original corporation module with its original
+infoConst star import supplies no BadArgs global; the normal builtin mangler
+does not install one either. A missing owner at update_window_icon raises
+NameError in that execution. Imported services/UI bases are boundary shells;
+this does not rule out an unobserved runtime injection in a full client session.
+The original show_error, primitive Hide/state and IsVisible methods also confirm
+that errorPar is parented under the topParent it just hid, so its logical
+visibility is false. hide_error restores the parent and closes that panel.
+These measurements do not justify inventing a visible corporation error panel
+or treating a remote UserError as BadArgs.
 Native missing-message and destroyed-window exception suppression also remain
 with that error/widget work; this is not the complete native exception handler.
 
+Corporation aggression/enlistment RPC failures now propagate to the same window
+error handler. An aggression failure prevents enlistment; either failure skips
+normal caption/history completion and clears loading in finally, retaining the
+failed registered scope. Original compiled window/monolith/UpdateDataCorp
+execution confirms the header precedes those reads and the main tabs are not
+constructed after either failure. The browser no longer reports a missing
+corporation record for that unfinished body. Retaining the complete native header
+across those failures, and exposing it during held attribute reads, is the next
+content boundary to port. None/malformed attribute answers need their own native
+consumer checks; propagating RPC exceptions does not establish those cases.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
-and retained dead tasklet pointers. The current corporation coroutine retains
-its per-field fallback handling. Complete native content tabs, ancillary header/
+and retained dead tasklet pointers. Complete native content tabs, ancillary header/
 relationship read order, service caches and native caption formatting remain
 content-port work; browser title text and initial title behavior are unchanged.
 Read each native content class's order and spawned/shared work first. Do not impose

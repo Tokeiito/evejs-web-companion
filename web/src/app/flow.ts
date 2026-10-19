@@ -12403,11 +12403,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (info === null) throw Object.assign(new Error("The corporation public record has no corporationID."), { code: "INFO_CORPORATION_PUBLIC_INVALID" });
       if (retried) info = { ...info, shares: typeof shares === "string" ? shares : corporationShareNumber(shares) };
       reads?.construct();
-      // infosvc.UpdateDataCorp1226-1233 reads friendly fire before enlistments.
-      const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null);
+      // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
+      // Neither read catches RPC exceptions: construction and caption/history
+      // completion stop, and the window's exception handler receives the error.
+      const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf);
       reads?.assertCurrent();
       const enlistmentFactions = isNpcCorporation(corporationID) ? null
-        : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null);
+        : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf);
       reads?.complete();
       return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
     } finally {
