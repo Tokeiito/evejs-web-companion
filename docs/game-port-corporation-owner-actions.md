@@ -398,6 +398,109 @@ self, including when evaluating a merged selection.
 7. **D2p18c4g — corporation cash from the shared menu.** Reuse the existing wallet
    transfer machinery only after comparing its corporate-source, recipient,
    division and authority behavior with this exact native entry point.
+   Read/split complete: compiled CharacterChecker292-300 allows a single non-NPC
+   character, including self, only with Accountant256 (not Junior or a take bit).
+   menusvc652-653 opens TransferMoney(session.corpid, None, charID, None).
+   walletSvc142-151 closes the previous transfer window and opens the new one;
+   it adds no active-division chooser, authority read or confirmation here.
+   TransferMoneyWnd108-123 reads fresh GetCorpWealth(None) before capturing
+   session.corpAccountKey. The source division is a label, not a selector. This
+   character-recipient entry has no destination-division combo. Amount starts
+   at0.1, has two decimal places and a wealth maximum; reason has40 characters.
+   Confirm138-155 sends GiveCashFromCorpAccount(toID, float(amount), capturedKey,
+   toAccountKey=None, reason=originalEditValue). None is successful; an exception
+   leaves the window open. No second confirmation is present.
+
+   The original compiled methods executed in the installed Python27 runtime
+   confirm those gates/call arguments, the None-before-active-key read, and the
+   native quirk: OnCorpAccountChangedClient updates a corporate transfer's
+   maximum for any corporation division, without filtering its captured key.
+   The captured source key must not be silently rebound when the active division
+   changes. walletSvc80-119 first checks corporation wallet access and the
+   event division's take bit, obtains the previous one-minute cached wealth,
+   updates that cache, then emits the client event. That cache/event consumer
+   is missing from the current personal-only transfer machinery.
+
+   Recursive TQ search found the Archive/Open Wallet - Plex - Corp Wallet -
+   Corp Transfers capture. Its companion was read to the end before the raw
+   packets. Decoding1804-1824 shows (2124510715,100.0,1000), keyword None/empty
+   reason, corporation then personal OnAccountChange before a None reply.
+   GetCashBalance(1, accountKey=None) is also recorded, with active key1000.
+   No alternate-active-key default is established by that recording; the other
+   corpus accountKey1002 matches are membership notices, not wallet reads.
+   Historical companion claims of lighter role validation are not evidence
+   against the current source-division validator.
+
+   - **c4g1: native corporation cash contract audit/fix, implemented.** Actual
+     native sessions exposed two retail-client defects. With active1001 and
+     balance50.25 there, None read the empty master division; walletSvc156-164,
+     TransferMoneyWnd108-123 and CorpISKTab34/50 consume this as active-division
+     wealth. EveJS118c86baf resolves missing/None corporate keys from the session,
+     preserving explicit keys, personal reads and authority. A raced amount50
+     against source49 returned None without a debit, which compiled Confirm
+     falsely calls successful. EveJS780fa9f82 raises wrapped NotEnoughMoney with
+     amount50/balance49; the native re-check saw unchanged balances/no notices.
+     Both fixes are pushed. These default-key and exact error payloads are
+     inferred from native consumers/existing wallet error convention; they are
+     not captured from TQ for an alternate active division or a shortfall.
+     Live ordinary reads were denied, Junior/Accountant reads permitted,
+     Accountant without Take denied a debit, and Take2 permitted its own read.
+     Explicit captured1001 still debited after active changed to1000, including
+     a self transfer. Success remained None, corporation cash2 then personal
+     cash notices before the reply, matching the applicable recorded order.
+   - **c4g2: complete corporation wealth cache/event foundation, implemented.**
+     Fresh GetCashBalance(1, accountKey=None/explicit) never fills the one-minute
+     notice cache. Only native UserError becomes0; session/transport failures
+     propagate. The compiled methods confirm strict >MIN expiry and timestamp
+     after the read. Own corporation cash/cash2..cash7 notices pass wallet access
+     and the division's take bit, read the old cached wealth, update, then emit
+     local OnCorpAccountChangedClient balance/key/difference. Accountant/Junior
+     read authority alone does not pass this notice gate. Pending reads/events
+     keep the captured pilot/corporation; per-key cache survives ordinary corpid
+     changes as native WalletSvc does, and clears on character reset/logoff.
+     Actual AppFlow/native wire verified separate fresh/cached calls, cached
+     delta1.25 with no RPC, cold notice explicit read followed by delta0,
+     foreign-division omission, real elapsed-minute expiry, delayed old-read
+     retirement, reset on same-pilot replacement, native refusal-to0 and genuine
+     missing-session error propagation. No cash action is exposed yet.
+   - **c4g3: complete shared TransferMoney window and character menu action,
+     implemented.** Contacts/search and Member List offer native single-character
+     Accountant cash, including self. One window per pilot replaces the previous
+     transfer, displays the source corporation/division or personal owner and
+     recipient with64px pictures, and uses original labels/amount/reason/OK/Cancel.
+     The corporate fresh None read precedes active-key capture. The key remains
+     captured; any eligible division's client event updates its maximum. Personal
+     OnAccountChange updates only a personal transfer. Background pilots retain
+     hidden window edits; pilot replacement/logoff retires them, corporation
+     replacement retires a corporate source while leaving personal cash intact.
+
+     Native numeric-field compiled methods prove that SetMaxValue leaves old text
+     untouched and GetValue reads it without reclamping. Typing cuts decimal text
+     (2.559 ->2.55, preserving2.55); its upper bound is applied during input,
+     focus loss repairs only the lower bound. Confirm reads that field value,
+     so a raced/other-division maximum can still produce a genuine shortfall.
+     Reason is40 characters and < > entities, nonempty typed Unicode on the wire.
+     The corporate RPC has the native three arguments, float amount and None/
+     reason keywords. Private originating-corporation metadata is checked against
+     the native version through final BFF dispatch and is not a native argument.
+     None success says TransferSuccessful and closes; UserError retains the
+     window under the native refusal dialog. Cancel sends nothing; no extra
+     confirmation or division selector is inserted. Existing personal Give Money
+     now uses this same window and its original GiveCash three-argument call.
+
+     Actual AppFlow verified ordinary/Junior/take-only omission, Accountant offer
+     without take then native debit refusal, target/self/multiple gates, Cancel,
+     replacement, wrong origin, Unicode/2.55 and both success/refusal paths.
+     Browser Corporation Contacts, search and Member List opened the window;
+     Member List self was allowed and multiple omitted. Desktop other-division
+     notice allowed100 while captured1001 held47.45, which raised the real native
+     NotEnoughMoney and retained the window. Its subsequent2.55 succeeded. Phone
+     fields/buttons fit and2.559 became2.55; Cancel left wire count unchanged.
+     Personal browser Give Money succeeded. Final build retained5/reason edits
+     while switching to a second account's pilot, hid the background window, and
+     restored those edits on switching back. All pilots/settings/store restored
+     as recorded in the journal. Generic wallet deposit/destination-corporation
+     selection remains its own entry point.
 
 Configured double-click-to-chat and simultaneous information windows remain after
 these administration units. The rest of the Corporation window and Phases 5/6 are
