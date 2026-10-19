@@ -208,8 +208,7 @@ its old body/caption on that exception, with no reconstruction or later reads.
 The failed registered scope remains available for the next stop to snapshot its
 unassigned identity, matching the native retained tasklet pointer. Compiled
 window/base/corporation methods confirm both exception paths. Native UserError
-dialogs and BadArgs, None public replies (including the second public read and
-corporation shares lookup), and failures after identification remain separate.
+dialogs and BadArgs, and failures later in construction remain separate.
 
 c6b2b2b2c2a first ports the corporation-record prerequisite. The page's
 corp.GetCorporation facade keeps completed rows per pilot, reads its own
@@ -230,7 +229,17 @@ Two None replies still perform the shares lookup before AttributeError on the
 None record; loading clears, caption/history do not complete, tasklet remains.
 A valid second record continues after replacing its shares with the row value.
 These UI/service recorder boundaries do not establish all ancillary reads.
-The page's existing first-None return is still to be replaced in c2b.
+c2b now follows that None continuation. Identity assignment replaces history's
+old scroll/body before the second public reply, but the visible content stays
+empty until description work succeeds. The shares lookup uses the shared
+corporation record cache, with its existing scope/pilot guard. A second None
+still evaluates that lookup before throwing AttributeError; no attributes,
+caption or normal history completion follows. A valid retry copies the row's
+shares into the public record and continues the existing attribute chain.
+Successful malformed records without corporationID also fail before visible
+construction rather than completing a null result. The visible-construction
+scope event is separate from identity assignment. These boundaries cover the
+ported coroutine; full native partial widgets and ancillary calls remain below.
 
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close

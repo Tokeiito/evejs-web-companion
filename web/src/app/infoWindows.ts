@@ -26,7 +26,7 @@ export interface InfoWindowState {
   /** BaseInfoWindow saves the latest busy request without starting it. */
   readonly pendingLoadData: Entry | null;
   readonly waitingForReconstruction: boolean;
-  /** Corporation monolith controls are constructed only after GetPublicInfo. */
+  /** Visible corporation content follows its description/public-info work. */
   readonly contentConstructed: boolean;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
@@ -65,10 +65,11 @@ export function createInfoWindows(deps: {
         // GetPublicInfo returns and the monolith parent starts reconstruction.
         if (entry.identity.content === "corporation" && current()) {
           if (directHistory) subjects.get(id)?.set({ ...entry.subject });
-          update(id, w => ({ ...w, contentConstructed: true,
+          update(id, w => ({ ...w, contentConstructed: false,
             visibleCorporationResult: w.corporationResult, reconstruction: w.reconstruction + (directHistory ? 1 : 0) }));
         }
       },
+      onConstruct: () => { if (current()) update(id, w => ({ ...w, contentConstructed: true })); },
       onComplete: () => {
         const window = state.get().find(w => w.id === id);
         // The running direct history coroutine uses self.info_content again

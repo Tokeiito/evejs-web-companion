@@ -7,6 +7,7 @@ export interface InfoReadScope {
   readonly loading: ReadableSignal<boolean>;
   readonly identity: ReadableSignal<InfoIdentity | null>;
   identify(): void;
+  construct(): void;
   complete(): void;
   begin(): () => void;
   assertCurrent(): void;
@@ -18,6 +19,7 @@ export function createInfoReadScope(pilotCurrent: () => boolean, options: {
   registered?: boolean;
   initialIdentity?: InfoIdentity | null;
   onIdentify?(): void;
+  onConstruct?(): void;
   onComplete?(): void;
   onRetire?(withHistory: boolean): void;
 }): InfoReadScope {
@@ -35,6 +37,7 @@ export function createInfoReadScope(pilotCurrent: () => boolean, options: {
   return {
     loading: readonlySignal(loading), identity: readonlySignal(identity), assertCurrent,
     identify(): void { assertCurrent(); identity.set(requested); options.onIdentify?.(); },
+    construct(): void { assertCurrent(); options.onConstruct?.(); },
     complete(): void { assertCurrent(); if (!completed) { completed = true; options.onComplete?.(); } },
     begin(): () => void {
       assertCurrent(); pending++; loading.set(true);

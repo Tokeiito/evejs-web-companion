@@ -692,6 +692,7 @@ import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigF
 import { fittingEftString } from "../bridge/fittingExport.ts";
 import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
 import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { toNumOrNull as corporationShareNumber } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -12380,12 +12381,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); }) : bridgeAsk;
     try {
       reads?.assertCurrent();
-      const answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+      let answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
       // CorporationInfoWindow49-51 calls its parent only after a successful
       // public-info reply; that parent assigns even if the returned record is None.
       reads?.identify();
-      const info = corporationPublicInfoOf(answer);
-      if (info === null) return null;
+      let shares: JsonValue | undefined;
+      let retried = false;
+      if (answer === null) {
+        // Corporation.update_description185-204 retries a None public record.
+        // The assignment evaluates its shares RHS even if that retry is None.
+        answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+        const row = await corporationRecords.get(ask, corporationID, () => reads?.assertCurrent());
+        shares = row.fields.shares;
+        if (answer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'shares'"), { name: "AttributeError", code: "INFO_CORPORATION_SHARES_UNASSIGNED" });
+        retried = true;
+      }
+      let info = corporationPublicInfoOf(answer);
+      if (info === null) throw Object.assign(new Error("The corporation public record has no corporationID."), { code: "INFO_CORPORATION_PUBLIC_INVALID" });
+      if (retried) info = { ...info, shares: typeof shares === "string" ? shares : corporationShareNumber(shares) };
+      reads?.construct();
       // infosvc.UpdateDataCorp1226-1233 reads friendly fire before enlistments.
       const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null);
       reads?.assertCurrent();
