@@ -76,7 +76,7 @@ self, including when evaluating a merged selection.
    reusing the complete member dialog on desktop and phone.
    `memberDetails.OpenMemberDetails:9-16` maximizes an existing window for the same
    character; for another character it closes that window and opens the new one.
-   The installed compiled function confirmed all three cases. Preserve its
+   The installed compiled function confirmed all three cases. Its
    General/Roles/Titles/Summary/Give Shares behavior and save permissions remain.
    `TabGroup._FindAutoSelectTabIDx:649-673` remembers the enabled panel between
    windows; its original compiled function confirmed named/index selection and
@@ -100,7 +100,7 @@ self, including when evaluating a merged selection.
    failed-member wording (`461-477`). Read compiled branches and wire recordings
    before implementing; retain exact session-change behavior for leaving.
    Implement this in three reviewable units, in order:
-   - **c4c1: Allow Corporation Roles.** Its single self-target submenu has one
+   - **c4c1: Allow Corporation Roles, implemented.** Its single self-target submenu has one
      Confirm action (`menusvc:648-652`), which calls the fifteen-position
      `UpdateMember` with all optional values `None` except final `blockRoles=0`.
      `BaseChecker.GetBlockedRoles:61-62` uses `corp.UserBlocksRoles`, then
@@ -108,6 +108,17 @@ self, including when evaluating a merged selection.
      Preserve the existing six-second cache and native absence/None-to-zero rule;
      do not infer blocking from a role mask. There is no separate modal or NPC
      corporation exclusion in this action's native gate.
+     The original compiled menu, gate, blocked-role reader and forwarding method
+     confirmed the submenu and tuple. Corporation Contacts, Contacts search and
+     Member List use the shared action. Live desktop/phone verification confirmed
+     peer/multiple exclusion, expansion without a write, phone confirmation,
+     actual unblock and disappearance after cache expiry. Production AppFlow
+     probes confirmed one native member read across repeated menus, no eager
+     cache clear, unchanged profile fields and six-second expiry. Old callbacks
+     cannot write after pilot/corporation replacement; held actual member and
+     successful Allow replies retire without continuing under another pilot.
+     No exact Allow callback was found in the recursive Tranquility corpus;
+     its compiled tuple and actual native wire establish the implementation.
    - **c4c2: Quit Corporation.** Complete both submenu entries together:
      Remove All Roles, including its native confirmation and exact eight-zero
      mask/title/block tuple; and Confirm Quit, including `CanBeKickedOut`, the

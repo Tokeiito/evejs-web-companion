@@ -2079,6 +2079,7 @@ export interface AppFlow {
   readonly memberDetailsShown: ReadableSignal<{ readonly characterID: number; readonly n: number } | null>;
   showMemberDetails(characterID: number): void;
   corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null>;
+  corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -14912,6 +14913,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const scope = captureMemberOperation();
     const offered = await corporationMemberMenu(characterID); scope.current();
     if (offered !== null) showMemberDetails(characterID);
+  }
+  async function corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null> {
+    // CharacterChecker.OfferAllowCorpRoles: only single, non-NPC, same-corp self.
+    // The shared owner menu supplies the single-selection gate. NPC corporations are allowed.
+    if (isNpcOwner(characterID) || store.station.get().online?.characterID !== characterID) return null;
+    const scope = captureMemberOperation();
+    const member = await readCorporationMember(characterID, scope); scope.current();
+    // bco_members.MemberBlocksRoles: absent member/None means zero; use the memoized member row.
+    const raw = memberField(member, "blockRoles");
+    const blocked = typeof raw === "boolean" ? raw : (memberInteger(member, "blockRoles") ?? 0n) !== 0n;
+    if (!blocked) return null;
+    return { confirm: async () => {
+      scope.current();
+      try {
+        // menusvc._CharacterMenu648-652: Confirm is the submenu action; no extra modal or cache clear.
+        await scope.write("corpRegistry", "UpdateMember", [characterID, null, null, null, null, null, null, null, null, null, null, null, null, null, 0]);
+        scope.current();
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
   }
   // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
   const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
@@ -28520,6 +28540,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     memberDetailsShown: readonlySignal(memberDetailsSignal),
     showMemberDetails,
     corporationMemberMenu,
+    corporationRoleAllowance,
     openCorporationMemberDetails,
     memberDetailsPanel,
     corporationMemberDetails,
