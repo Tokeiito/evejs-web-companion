@@ -26,6 +26,8 @@ export interface InfoWindowState {
   /** BaseInfoWindow saves the latest busy request without starting it. */
   readonly pendingLoadData: Entry | null;
   readonly waitingForReconstruction: boolean;
+  /** Corporation monolith controls are constructed only after GetPublicInfo. */
+  readonly contentConstructed: boolean;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
 }
@@ -61,9 +63,10 @@ export function createInfoWindows(deps: {
         assignedEntries.set(reads, entry);
         // Same-class corporation history does not flush its old controls until
         // GetPublicInfo returns and the monolith parent starts reconstruction.
-        if (directHistory && entry.identity.content === "corporation" && current()) {
-          subjects.get(id)?.set({ ...entry.subject });
-          update(id, w => ({ ...w, visibleCorporationResult: w.corporationResult, reconstruction: w.reconstruction + 1 }));
+        if (entry.identity.content === "corporation" && current()) {
+          if (directHistory) subjects.get(id)?.set({ ...entry.subject });
+          update(id, w => ({ ...w, contentConstructed: true,
+            visibleCorporationResult: w.corporationResult, reconstruction: w.reconstruction + (directHistory ? 1 : 0) }));
         }
       },
       onComplete: () => {
@@ -106,7 +109,7 @@ export function createInfoWindows(deps: {
     void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), error => {
       signal.set(null);
       // Native eve_exception_handler logs ordinary exceptions by default.
-      if (error?.code === "INFO_CAPTION_UNASSIGNED") console.error(error);
+      if (error?.code !== "INFO_RECONSTRUCTION_RETIRED" && error?.code !== "SESSION_REQUEST_RETIRED") console.error(error);
     });
   }
   function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {
@@ -123,7 +126,7 @@ export function createInfoWindows(deps: {
       const result = corporationResult(reads);
       subjects.get(w.id)?.set({ ...entry.subject });
       update(w.id, current => ({ ...current, entry, reads, corporationResult: result,
-        visibleCorporationResult: result, pendingLoadData: entry, waitingForReconstruction: true,
+        visibleCorporationResult: result, pendingLoadData: entry, waitingForReconstruction: true, contentConstructed: false,
         reconstruction: current.reconstruction + 1, minimized: false }));
       requestRaise(w.id);
       return;
@@ -136,6 +139,7 @@ export function createInfoWindows(deps: {
     const result = corporationResult(reads);
     if (!defer) subjects.get(w.id)?.set({ ...entry.subject });
     update(w.id, current => ({ ...current, entry, history, index, reads, loading: false, corporationResult: result, waitingForReconstruction: false,
+      contentConstructed: defer ? current.contentConstructed : entry.identity.content !== "corporation",
       captionEntry: entry.identity.content === "corporation" ? current.captionEntry : entry,
       visibleCorporationResult: defer ? current.visibleCorporationResult : result,
       reconstruction: current.reconstruction + (defer || entry.identity.content === "ship" ? 0 : 1), minimized: false }));
@@ -170,7 +174,7 @@ export function createInfoWindows(deps: {
         const offset = (windows.length % 8) * 24;
         const reads = makeReads(id, entry, true), result = corporationResult(reads);
         const w: InfoWindowState = { id, entry, captionEntry: entry, subject: readonlySignal(signal), history: [identity.content === "corporation" ? pendingHistory : entry], index: 0, reconstruction: 1,
-          reads, loading: false, pendingLoadData: null, waitingForReconstruction: false, corporationResult: result, visibleCorporationResult: result,
+          reads, loading: false, pendingLoadData: null, waitingForReconstruction: false, contentConstructed: identity.content !== "corporation", corporationResult: result, visibleCorporationResult: result,
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };

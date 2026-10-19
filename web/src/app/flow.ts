@@ -12370,9 +12370,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); }) : bridgeAsk;
     try {
       reads?.assertCurrent();
-      let answer: JsonValue;
-      try { answer = await ask("corpmgr", "GetPublicInfo", [corporationID]); }
-      catch { reads?.assertCurrent(); return null; }
+      const answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
       // CorporationInfoWindow49-51 calls its parent only after a successful
       // public-info reply; that parent assigns even if the returned record is None.
       reads?.identify();

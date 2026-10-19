@@ -200,6 +200,17 @@ the pending tuple again. The compiled window/base/history/corporation/monolith
 methods confirm this transition at service/UI recorder boundaries. Those shells
 do not establish every destroyed native widget's continuation or RPC sequence.
 
+c6b2b2b2c1 constructs fresh corporation content only after the successful public
+reply starts the monolith. Before that boundary its layout is empty; a normal
+public RPC exception propagates to the coroutine's default log rather than
+becoming a successful null result. Finally clears loading. Direct history keeps
+its old body/caption on that exception, with no reconstruction or later reads.
+The failed registered scope remains available for the next stop to snapshot its
+unassigned identity, matching the native retained tasklet pointer. Compiled
+window/base/corporation methods confirm both exception paths. Native UserError
+dialogs and BadArgs, None public replies (including the second public read and
+corporation shares lookup), and failures after identification remain separate.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. The current corporation coroutine retains
