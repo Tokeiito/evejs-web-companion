@@ -47,6 +47,7 @@ export type TabID =
   | "chat"
   | "wallet"
   | "corpWallet"
+  | "redeem"
   | "characterSheet"
   | "corporation"
   | "showInfo"
@@ -198,6 +199,8 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
+  // The client's Redeem Items (redeemsvc.py, the neocom's redeem button): what the account may redeem.
+  { id: "redeem", label: "Redeem Items", where: "both" },
   // The client's Neocom offers Character Sheet and Corporation, with standings inside each
   // (btnDataRaw.py BTNDATARAW_BY_ID); there is no separate Standings window.
   { id: "characterSheet", label: "Character Sheet", where: "both" },
