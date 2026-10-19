@@ -330,6 +330,8 @@ class GamePortSession {
     this.callsOut = new Map();
     /** The service each bound object was bound for, by its "N=node:id": what a call on it is counted under (onSent). */
     this.objectServices = new Map();
+    /** moniker.py Bind: persistent identity (service, bindParams), independent of the current N=node:id. */
+    this.objectCacheIdentities = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
     /** objectCaching.methodCallCachingDetails: what the server said of a method's answers, by "service.method": {versionCheck, sessionInfo}. */
@@ -541,13 +543,19 @@ class GamePortSession {
    * answer, which is kept in its place, or with CacheOK, and then the copy held is the answer and is good from
    * now (UpdateVersionCheckPeriod). With nothing held the version is 1.
    */
-  async _serviceCall(destination, service, method, args, kwargs) {
-    const said = this.methodCallDetails.get(`${service}.${method}`);
-    const kept = said ? this.cachedMethodCalls.get(this._methodCallKey(service, method, args, said)) : undefined;
+  _serviceCall(destination, service, method, args, kwargs) {
+    return this._cachedCall({ destination, boundObject: null, service, method, args, kwargs }, service);
+  }
+
+  /** ServiceCallGPCS and ObjectCallGPCS both consult objectCaching, keyed by the persistent object or service. */
+  async _cachedCall(spec, identity) {
+    const { method, args } = spec;
+    const said = this.methodCallDetails.get(`${identity}.${method}`);
+    const kept = said ? this.cachedMethodCalls.get(this._methodCallKey(identity, method, args, said)) : undefined;
     if (kept && !this._shouldVersionCheck(said, kept)) return kept.result;
     const machoVersion = kept ? { type: "list", items: [kept.stamp, kept.checksum] } : 1;
     try {
-      return await this._call({ destination, boundObject: null, service, method, args, kwargs, machoVersion });
+      return await this._call({ ...spec, machoVersion });
     } catch (error) {
       const className = error && error.refusal ? error.refusal.className : null;
       if (!kept || typeof className !== "string" || !className.endsWith("objectCaching.CacheOK")) throw error;
@@ -593,6 +601,7 @@ class GamePortSession {
       throw new GamePortError("BIND_FAILED", `${service} did not return a bound object.`, reply);
     }
     this.objectServices.set(objectID, service);
+    this.objectCacheIdentities.set(objectID, this._cacheIdentity([service, bindParams]));
     return { objectID, nodeID, result: Array.isArray(reply) ? reply[1] : null };
   }
 
@@ -610,7 +619,7 @@ class GamePortSession {
   callBound(objectID, method, args = [], kwargs = null) {
     // ObjectCallGPCS: MachoAddress(nodeID=long(nid)), read out of the object's ID.
     const nodeID = Number(String(objectID).slice(2).split(":")[0]);
-    return this._call({ destination: nodeAddress(long(nodeID)), boundObject: objectID, service: null, method, args, kwargs });
+    return this._cachedCall({ destination: nodeAddress(long(nodeID)), boundObject: objectID, service: null, method, args, kwargs }, this.objectCacheIdentities.get(objectID) ?? objectID);
   }
 
   /**
@@ -693,11 +702,11 @@ class GamePortSession {
     }
   }
 
-  /** What a call answers its caller: the answer, with a cached one opened, and kept if it is a service's own. */
+  /** What a call answers its caller: the result opened and cached under its service or persistent object identity. */
   async _answered({ boundObject, service, method, args }, value) {
     const state = stateOfClass(value, "objectCaching.CachedMethodCallResult");
     const result = await this._unwrapCachedResult(value);
-    if (state && boundObject === null) this._cacheMethodCall(service, method, args, state, result);
+    if (state) this._cacheMethodCall(boundObject === null ? service : this.objectCacheIdentities.get(boundObject) ?? boundObject, method, args, state, result);
     return result;
   }
 
@@ -734,6 +743,11 @@ class GamePortSession {
   /** The client's clock now, as it reckons time: 100 ns since 1601. */
   _filetimeNow() {
     return BigInt(Math.trunc(this.serverNow())) * 10000n + FILETIME_EPOCH_OFFSET;
+  }
+
+  /** A moniker's persistent tuple, or an ordinary service/object name, as a stable cache identity. */
+  _cacheIdentity(value) {
+    return Array.isArray(value) ? `moniker:${text(value[0])}:${addressKey(value[1])}` : text(value);
   }
 
   /** What an answer of a service's method is kept as: the service, the method, the session's value the server said to keep it by, and the arguments. */
@@ -816,8 +830,9 @@ class GamePortSession {
    */
   invalidateCachedMethodCalls(calls) {
     for (const [service, method, args] of calls) {
-      const said = this.methodCallDetails.get(`${text(service)}.${text(method)}`);
-      if (said) this.cachedMethodCalls.delete(this._methodCallKey(text(service), text(method), itemsOfSequence(args), said));
+      const identity = this._cacheIdentity(service);
+      const said = this.methodCallDetails.get(`${identity}.${text(method)}`);
+      if (said) this.cachedMethodCalls.delete(this._methodCallKey(identity, text(method), itemsOfSequence(args), said));
     }
   }
 
