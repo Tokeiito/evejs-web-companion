@@ -10,12 +10,14 @@ import assert from "node:assert/strict";
 import {
   COMPANION_RESEND_WAIT_TICKS,
   COMPANION_RETRY_BACKOFF_TICKS,
+  decideCompanionAction,
   freshLadderMemory,
   type CompanionDecision,
   type CompanionLadderMemory,
   type FleetCompanionObservation,
 } from "./fleetCompanionLoop.ts";
 import {
+  MAX_BETWEEN_TARGET_TICKS,
   MAX_COMPANION_POSITION_REFUSALS,
   closingOnTheHold,
   decideCombatPosition,
@@ -48,6 +50,8 @@ import {
   fightObs,
   flyingAuto,
   gun,
+  inFormation,
+  isMove,
   ratAt,
 } from "./fightFixtures.test-util.ts";
 import type { SpaceEntity } from "../store/types.ts";
@@ -392,9 +396,162 @@ test("a `stop` holds the rung: nothing is positioned and no formation is owed", 
 test("the fight ending drops everything rung 8 remembers", () => {
   const orbiting = position(fightObs(SHORT_GUNS), flyingAuto());
   const owed = { ...orbiting.memory, combatPosition: { ...orbiting.memory.combatPosition, reform: true } };
-  const ended = position(fightObs(SHORT_GUNS), owed, stubLadder(), null);
+  // The grid is confirmed clear: with rats still on it, our hold would stand (below).
+  const clear = fightObs(SHORT_GUNS, fightGrid({ rats: [] }), RAT, { hostileOnGrid: false });
+  const ended = position(clear, owed, stubLadder(), null);
   assert.equal(ended.decision, null);
   assert.deepEqual(ended.memory.combatPosition, { hold: null, target: null, reform: false });
+});
+
+// ─── Between targets ─────────────────────────────────────────────────────────
+
+/** The grid after the first rat died: one other rat, nothing tagged or locked. */
+const SECOND_RAT_GRID = fightGrid({ rats: [{ itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 31_000 }] });
+
+/** An observation with no engaged target and rats still on grid. */
+function betweenObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return fightObs(SHORT_GUNS, SECOND_RAT_GRID, RAT_2, { fleetTargetTags: new Map(), lockedTargetIDs: [], ...overrides });
+}
+
+/** Orbiting RAT with the order sent and standing; the next calls build on this. */
+function orbitingStanding(ladder: CombatPositionLadder = stubLadder()): CompanionLadderMemory {
+  const first = position(fightObs(SHORT_GUNS), flyingAuto(), ladder);
+  assert.deepEqual(sent(first), { kind: "orbit", targetID: RAT, range: 8_000 });
+  return settleCombatHold(first.decision!, first.memory, "issued");
+}
+
+test("between targets: our orbit stands, the rat is dead, rats remain -> hold, send nothing, do not re-form", () => {
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const memory = orbitingStanding(ladder);
+  const held = position(betweenObs(), memory, ladder, null);
+  assert.equal(held.decision?.action.kind, "wait");
+  assert.equal(held.decision?.standing, true, "a readout: rung 9 must not run beneath it");
+  assert.equal(held.decision?.holdsNavigation, true, "loot and salvage must not move the ship");
+  assert.equal(held.decision?.why, "Between targets: holding here until the next call.");
+  assert.match(held.decision!.why, /^[\x20-\x7e]*$/, "plain ASCII");
+  assert.equal(held.trace.outcome, "between-targets");
+  assert.equal(held.trace.standingRangeM, 8_000);
+  assert.equal(ladder.calls(), 0, "the commander is not asked");
+  assert.equal(held.memory.combatPosition.hold, memory.combatPosition.hold, "the record of our order stands");
+  assert.equal(held.memory.combatPosition.reform, false);
+  assert.equal(held.memory.combatPosition.betweenTicks, 1);
+  assert.equal(held.memory.combatPosition.target, null, "and the burner's closing reason goes");
+});
+
+test("between targets: the next call is orbited at once, without re-forming first", () => {
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const held = position(betweenObs(), orbitingStanding(ladder), ladder, null);
+  const next = position(fightObs(SHORT_GUNS, SECOND_RAT_GRID, RAT_2), held.memory, ladder, engagedOn(RAT_2));
+  assert.deepEqual(sent(next), { kind: "orbit", targetID: RAT_2, range: 8_000 });
+  assert.equal(ladder.calls(), 0);
+  assert.equal(next.memory.combatPosition.betweenTicks, undefined, "a new engagement starts the count again");
+});
+
+test("between targets: grid confirmed clear re-forms at once, as the fight ending always did", () => {
+  const memory = orbitingStanding();
+  const clear = position(betweenObs({ hostileOnGrid: false }), memory, stubLadder(), null);
+  assert.equal(clear.decision, null, "a fall-through: rung 9 brings the ship home");
+  assert.equal(clear.trace.outcome, "no-target");
+  assert.deepEqual(clear.memory.combatPosition, { hold: null, target: null, reform: false });
+  // A readable snapshot with no hostile in it says the same when the flag could not.
+  const empty = betweenObs({ hostileOnGrid: null, snapshot: fightGrid({ rats: [] }) });
+  assert.equal(position(empty, memory, stubLadder(), null).decision, null);
+});
+
+test("between targets: hostileOnGrid null (cannot say) holds", () => {
+  const held = position(betweenObs({ hostileOnGrid: null }), orbitingStanding(), stubLadder(), null);
+  assert.equal(held.trace.outcome, "between-targets");
+  assert.equal(held.decision?.standing, true);
+});
+
+test("between targets: it holds MAX_BETWEEN_TARGET_TICKS ticks, then drops the hold and re-forms", () => {
+  assert.equal(MAX_BETWEEN_TARGET_TICKS, 30);
+  let memory = orbitingStanding();
+  for (let tick = 1; tick <= MAX_BETWEEN_TARGET_TICKS; tick += 1) {
+    const held = position(betweenObs(), memory, stubLadder(), null);
+    assert.equal(held.trace.outcome, "between-targets", `tick ${tick}`);
+    assert.equal(held.memory.combatPosition.betweenTicks, tick);
+    memory = held.memory;
+  }
+  const over = position(betweenObs(), memory, stubLadder(), null);
+  assert.equal(over.decision, null);
+  assert.equal(over.trace.outcome, "no-target");
+  assert.deepEqual(over.memory.combatPosition, { hold: null, target: null, reform: false });
+});
+
+test("between targets: a new engagement resets the count", () => {
+  const ladder = stubLadder();
+  let memory = orbitingStanding(ladder);
+  for (let tick = 0; tick < MAX_BETWEEN_TARGET_TICKS - 1; tick += 1) {
+    memory = position(betweenObs(), memory, ladder, null).memory;
+  }
+  assert.equal(memory.combatPosition.betweenTicks, MAX_BETWEEN_TARGET_TICKS - 1);
+  const engaged = position(fightObs(SHORT_GUNS, SECOND_RAT_GRID, RAT_2), memory, ladder, engagedOn(RAT_2));
+  memory = settleCombatHold(engaged.decision!, engaged.memory, "issued");
+  // The full budget is available again.
+  for (let tick = 1; tick <= MAX_BETWEEN_TARGET_TICKS; tick += 1) {
+    const held = position(betweenObs(), memory, ladder, null);
+    assert.equal(held.trace.outcome, "between-targets", `tick ${tick}`);
+    memory = held.memory;
+  }
+  assert.equal(position(betweenObs(), memory, ladder, null).decision, null);
+});
+
+test("between targets: only OUR hold counts, and only in `flight auto` with nothing owning the ship", () => {
+  const ladder = stubLadder();
+  const memory = orbitingStanding(ladder);
+  // No hold of ours (nothing was positioned): the old fall-through.
+  assert.equal(position(betweenObs(), flyingAuto(), ladder, null).trace.outcome, "no-target");
+  // `flight follow`: rung 8 is inert and drops the record.
+  const follow = position(betweenObs(), { ...memory, flightMode: "follow" }, ladder, null);
+  assert.equal(follow.decision, null);
+  assert.equal(follow.trace.outcome, "no-target");
+  assert.equal(follow.memory.combatPosition.hold, null);
+  // `stop` (followHeld).
+  const stopped = position(betweenObs(), { ...memory, followHeld: true }, ladder, null);
+  assert.equal(stopped.decision, null);
+  assert.equal(stopped.memory.combatPosition.hold, null);
+  // A fleet order that holds navigation.
+  const owner: CompanionDecision = { ...engagedOn(), holdsNavigation: true };
+  delete (owner as { engagedTargetID?: number }).engagedTargetID;
+  const ordered = position(betweenObs(), memory, ladder, owner);
+  assert.equal(ordered.decision, null);
+  assert.equal(ordered.memory.combatPosition.hold, null);
+  // In warp, or not in space.
+  assert.equal(position(betweenObs({ inWarp: true }), memory, ladder, null).decision, null);
+  assert.equal(position(betweenObs({ inSpace: false }), memory, ladder, null).decision, null);
+  // A leashed target is still sent to formation, exactly as before.
+  const leashed = position(fightObs(SHORT_GUNS, ratAt(70_000, TYPE_LONG_RAT)), memory, stubLadder((_obs, mem) => formationOrder(mem)));
+  assert.equal(leashed.trace.outcome, "reform");
+});
+
+test("between targets, end to end: the rat dies, nothing is sent, the next call is orbited, not re-formed", () => {
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), inFormation(flyingAuto()).memory);
+  assert.deepEqual(orbiting.action, { kind: "orbit", targetID: RAT, range: 8_000 });
+  let memory = orbiting.memory;
+  // The orbit is standing; a couple of ordinary fight ticks.
+  for (let tick = 0; tick < 2; tick += 1) {
+    memory = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), memory).memory;
+  }
+  // Dead: another rat on grid, nothing broadcast yet.
+  for (let tick = 0; tick < 5; tick += 1) {
+    const between = decideCompanionAction(TWO_GUNS, betweenObs(), memory);
+    assert.ok(!isMove(between.action), `tick ${tick}: ${JSON.stringify(between.action)}`);
+    assert.equal(between.action.kind, "wait");
+    assert.equal(between.why, "Between targets: holding here until the next call.");
+    assert.equal(between.memory.followAnchorID, null, "the formation latch is not re-set");
+    memory = between.memory;
+  }
+  const next = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, SECOND_RAT_GRID, RAT_2), memory);
+  assert.deepEqual(next.action, { kind: "orbit", targetID: RAT_2, range: 8_000 });
+});
+
+test("between targets, end to end: the grid clearing sends the pilot back to the commander", () => {
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), inFormation(flyingAuto()).memory);
+  const home = decideCompanionAction(
+    TWO_GUNS, betweenObs({ hostileOnGrid: false, snapshot: fightGrid({ rats: [] }) }), orbiting.memory,
+  );
+  assert.deepEqual(home.action, { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M });
 });
 
 // ─── Rung 7's range gate ─────────────────────────────────────────────────────

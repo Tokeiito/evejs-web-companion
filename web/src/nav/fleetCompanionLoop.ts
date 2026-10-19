@@ -2524,6 +2524,17 @@ function decideAndClear(
  *
  * ⚠ AND THE MIRROR IMAGE FOR RUNG 8'S OWN LATCH: every movement it did not send
  * ends its orbit, so its "in position" record goes with it.
+ *
+ * ⚠ AND THE SAME FOR THE LOOT AND SALVAGE APPROACH LATCHES, WHICH OUTLIVED
+ * THEIR JOBS AND LIT THE BURNER FOR A WHOLE FORMATION. Each was cleared only by
+ * its own rung (on arrival, or on picking the next wreck), so an approach whose
+ * wreck left the grid ended the job (`withAreaJobCleared`) with the latch still
+ * set. `holdsFormation` reads either latch as "the FOLLOW is an approach, not
+ * the formation", so the formation order rung 9 sent next was read as travel
+ * with hostiles on grid, and the afterburner burned for as long as it held. Any
+ * movement other than the approach itself replaces it, exactly as `closingOn`
+ * is retired by `withoutStaleCloseIn`; the rung re-sends its approach if its
+ * job resumes.
  */
 function clearMovementLatches(
   memory: CompanionLadderMemory,
@@ -2531,11 +2542,12 @@ function clearMovementLatches(
   by: string = action?.kind ?? "in-warp",
 ): CompanionLadderMemory {
   const formation = action?.kind === "keepAtRange" && action.targetID === memory.followAnchorID;
-  const kept = formation ? memory : withoutIssuedFollow(memory);
+  const unfollowed = formation ? memory : withoutIssuedFollow(memory);
+  const kept = withoutStaleApproaches(unfollowed, action);
   const next = action !== null && isCombatHoldOrder(action, kept) ? kept : withoutCombatHold(kept);
   // The trace's `cleared`: only a latch that was SET and is now gone, and only
   // when something was. A farTicks reset on an idle record is not a dropped hold.
-  const follow = kept !== memory;
+  const follow = unfollowed !== memory;
   const hold = memory.combatPosition.hold !== null && next.combatPosition.hold === null;
   if (follow || hold) {
     noteTrace("cleared", { by, follow, hold });
@@ -2551,6 +2563,24 @@ function withoutStaleCloseIn(action: FleetCompanionAction, memory: CompanionLadd
   return memory.closingOn === null || (action.kind === "approach" && action.targetID === memory.closingOn)
     ? memory
     : { ...memory, closingOn: null };
+}
+
+/**
+ * The loot and salvage approach latches, unless `action` is that approach
+ * itself (see `clearMovementLatches`). `null` is a warp or a dock, which ends both.
+ */
+function withoutStaleApproaches(memory: CompanionLadderMemory, action: FleetCompanionAction | null): CompanionLadderMemory {
+  const approaching = (id: number | null): boolean =>
+    id !== null && action?.kind === "approach" && action.targetID === id;
+  const loot = memory.lootApproaching !== null && !approaching(memory.lootApproaching);
+  const salvage = memory.salvageApproachIssued && !approaching(memory.salvageWreckID);
+  return !loot && !salvage
+    ? memory
+    : {
+        ...memory,
+        ...(loot ? { lootApproaching: null } : {}),
+        ...(salvage ? { salvageApproachIssued: false } : {}),
+      };
 }
 
 function changesShipMovement(action: FleetCompanionAction): boolean {
@@ -6667,21 +6697,45 @@ const CLOSING_SHIP_MODES: readonly string[] = ["GOTO", "FOLLOW"];
  * approaches are all FOLLOW too, and a pilot fleeing a fight needs its burner
  * most of all. The stand-down is therefore: hostiles on the grid (`true` only;
  * false and null keep the FOLLOW test exactly as it was) AND `holdsFormation`.
- * GOTO is a heading of the pilot's own and the autopilot is its own route, so
- * neither is affected, and `props on` still beats all of it (see
- * `decidePropulsion`).
+ * The autopilot is its own route, so it is not affected, and `props on` still
+ * beats all of it (see `decidePropulsion`).
+ *
+ * ⚠ AND GOTO UNDER THE FORMATION RECORD IS THE FORMATION TOO: THE FOLLOW-ONLY
+ * VETO LIT THE BURNER FOR ONE TICK EVERY TIME A FIGHT'S ORBIT ENDED. When the
+ * rat rung 8 orbits dies, the pilot's own ballpark puts the interactive orbiter
+ * on GOTO along its velocity ("flies on the way it was going": Ballpark::
+ * StopAllFollowers, src/gamePort/destiny/ballpark.js), and through the gateway
+ * the BFF opens the throttle before a follow, which is GOTO too. Rung 9 then
+ * sends the formation keep-at-range, and the next snapshot can still show that
+ * GOTO, a tick before FOLLOW lands. The veto asked for FOLLOW, so that tick read
+ * "travelling" and lit the afterburner, and the tick after read formation and
+ * stood it down again (seen live, 2026-10-13). GOTO with `followAnchorID` set
+ * is never a heading of the ladder's own: every movement it sends other than
+ * the formation order clears the anchor (`clearMovementLatches`), the fleet
+ * rung's align and a warp landing included. So the formation is
+ * `holdsFormation` with hostiles on grid in EITHER closing mode; a GOTO with no
+ * anchor (an align, a heading of the pilot's own) is still a trip.
  */
 function isUnderWay(obs: FleetCompanionObservation, memory: CompanionLadderMemory): boolean {
   const mode = obs.snapshot?.ship?.mode ?? null;
-  if (mode !== null && CLOSING_SHIP_MODES.includes(mode.toUpperCase())
-    && !(mode.toUpperCase() === "FOLLOW" && obs.hostileOnGrid === true && holdsFormation(memory))) {
+  if (mode !== null && CLOSING_SHIP_MODES.includes(mode.toUpperCase()) && !keepingFormation(obs, memory)) {
     return true;
   }
   return obs.travel?.status === "running";
 }
 
 /**
- * Whether the FOLLOW the ship is in is the formation station on the commander.
+ * The formation rule's whole condition: hostiles on grid (`true` only) and the
+ * ladder's own record says its last move was the formation order. Asked only of
+ * a closing mode (`isUnderWay`, and the stop sentence in `decidePropulsion`).
+ */
+function keepingFormation(obs: FleetCompanionObservation, memory: CompanionLadderMemory): boolean {
+  return obs.hostileOnGrid === true && holdsFormation(memory);
+}
+
+/**
+ * Whether the FOLLOW (or the GOTO that precedes it; see `isUnderWay`) the ship
+ * is in is the formation station on the commander.
  *
  * ⚠ THE FOLLOWED BALL CANNOT BE READ, SO THIS IS READ OFF THE LADDER'S OWN
  * RECORD. The snapshot's `ship` has the mode and no target, and
@@ -6799,8 +6853,12 @@ function decidePropulsion(
     travel: isUnderWay(obs, memory),
   });
   const wantBurn = propsWanted(because);
+  // The inputs the formation rule turns on, as this tick read them, so a burner
+  // that flickers can be explained from the log alone (companionTrace.ts).
+  const shipMode = obs.snapshot?.ship?.mode ?? null;
+  const read = { hostiles: obs.hostileOnGrid ?? null, formation: holdsFormation(memory), mode: shipMode };
   const done = (decision: CompanionDecision | null, next: CompanionLadderMemory, withheld: PropsWithheld | null) =>
-    ({ decision, memory: next, trace: { want: wantBurn, because, withheld } });
+    ({ decision, memory: next, trace: { want: wantBurn, because, withheld, ...read } });
 
   const fitted = request.propulsionModules;
   if (fitted.length === 0 || obs.inSpace !== true) {
@@ -6851,10 +6909,11 @@ function decidePropulsion(
       return done(null, memory, "stop-latched");
     }
     // The sentence names the cause: "not travelling" was once said for all four.
-    const mode = obs.snapshot?.ship?.mode?.toUpperCase() ?? null;
+    // Formation in either closing mode, the same test `isUnderWay` makes.
+    const mode = shipMode?.toUpperCase() ?? null;
     const stopCause = because === "held-off" ? "held-off"
       : ownHold ? "on-station"
-        : mode === "FOLLOW" && obs.hostileOnGrid === true && holdsFormation(memory) ? "formation"
+        : mode !== null && CLOSING_SHIP_MODES.includes(mode) && keepingFormation(obs, memory) ? "formation"
           : "not-travelling";
     return done({
         // ⚠ THE typeID IS WHAT MAKES THIS WORK AT ALL. Deactivate stops a prop

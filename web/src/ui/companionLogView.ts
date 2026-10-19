@@ -85,7 +85,9 @@ export function traceSummary(trace: CompanionTrace | null | undefined): string {
 
   const p = trace.props;
   if (p !== undefined) {
-    parts.push(`props: ${p.because}${p.withheld ? ` (withheld: ${p.withheld})` : ""}`);
+    const seen = [p.mode ? `mode ${p.mode}` : null, p.hostiles === true ? "hostiles" : p.hostiles === false ? "no hostiles" : null,
+      p.formation ? "formation" : null].filter((x) => x !== null).join(", ");
+    parts.push(`props: ${p.because}${p.withheld ? ` (withheld: ${p.withheld})` : ""}${seen ? ` [${seen}]` : ""}`);
   }
 
   const a = trace.ammo;

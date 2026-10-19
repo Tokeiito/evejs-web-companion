@@ -43,6 +43,7 @@ import {
   LONG_GUNS,
   LONG_RAT,
   RAT,
+  RAT_2,
   SHORT_GUNS,
   SHORT_RAT,
   TWO_GUNS,
@@ -8954,9 +8955,27 @@ test("GOTO still lights it with hostiles on grid — a heading of its own is a t
   const decision = decideCompanionAction(
     withProps([AFTERBURNER]),
     obs({ snapshot: gridInMode("GOTO"), hostileOnGrid: true }),
-    holdingFormation,
+    freshLadderMemory(),
   );
   assert.deepEqual(decision.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 });
+});
+
+// ⚠ BUT NOT UNDER THE FORMATION RECORD. Every other movement the ladder sends
+// clears `followAnchorID`, so a GOTO under it is the formation order seen a tick
+// early (the orbiter's ballpark GOTO, or the gateway's throttle), never a trip.
+test("GOTO with hostiles on grid, holding formation, is the formation order landing — no burn", () => {
+  const decision = decideCompanionAction(
+    withProps([AFTERBURNER]),
+    obs({ snapshot: gridInMode("GOTO"), hostileOnGrid: true }),
+    holdingFormation,
+  );
+  assert.notEqual(decision.phase, "Propulsion");
+  // No hostiles (or unreadable): the travel rule as ever, formation or not.
+  for (const hostileOnGrid of [false, null]) {
+    const calm = decideCompanionAction(
+      withProps([AFTERBURNER]), obs({ snapshot: gridInMode("GOTO"), hostileOnGrid }), holdingFormation);
+    assert.deepEqual(calm.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 }, String(hostileOnGrid));
+  }
 });
 
 test("`props on` beats the hostile-FOLLOW stand-down", () => {
@@ -10609,6 +10628,132 @@ test("no hostiles on grid: today's rule, a microwarpdrive may light while travel
   assert.notEqual(running.phase, "Propulsion");
 });
 
+// --- The formation keep-at-range is station-keeping from its first FOLLOW tick ---
+//
+// Live, `flight auto`, an afterburner: rung 8's orbit stood on a rat, the rat
+// died with another still on grid, rung 9 sent the formation keep-at-range, and
+// on the very next tick the prop rung read "travelling" and lit the afterburner
+// -- only to stand it down one tick later as formation. The orbiter whose rat
+// dies is put on GOTO by its own ballpark (and the gateway opens the throttle
+// before a follow, GOTO too), so the snapshot after the formation order can
+// show GOTO for a tick before FOLLOW; the formation veto asked for FOLLOW only.
+
+/** The ship's server movement mode spread into a built grid (`fightGrid` has no option for it). */
+function inMode(grid: SpaceSnapshot, mode: string | null, active: readonly number[] = []): SpaceSnapshot {
+  return { ...grid, ship: { ...grid.ship!, mode, activeModuleIDs: [FIGHT_GUN_1, FIGHT_GUN_2, ...active] } } as SpaceSnapshot;
+}
+
+/** The rat died: another hostile is still on grid and pre-locked, and nothing is called. */
+function ratGoneObs(mode: string | null, overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return fightObs(SHORT_GUNS, inMode(fightGrid({ rats: [{ itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 40_000 }] }), mode),
+    RAT_2, { fleetTargetTags: null, lockedTargetIDs: [RAT_2], ratCombatByTypeID: FIGHT_RAT_FACTS, ...overrides });
+}
+
+test("the formation keep-at-range after a fight is not travel: the afterburner stays dark on the next tick", () => {
+  const request = propFightRequest([FIGHT_AB]);
+  const onStation = orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT);
+  // #63: the rat is gone, rung 9 sends the formation order (after rung 8's
+  // bounded between-targets wait, when there is one: it sends nothing).
+  let formed = decideCompanionAction(request, ratGoneObs("ORBIT"), onStation);
+  for (let tick = 0; tick < 60 && formed.action.kind === "wait"; tick += 1) {
+    formed = decideCompanionAction(request, ratGoneObs("ORBIT"), formed.memory);
+  }
+  assert.deepEqual(formed.action, { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M },
+    JSON.stringify([formed.phase, formed.why]));
+  assert.equal(formed.memory.followAnchorID, FIGHT_FC_SHIP);
+  // #64: the order is taken; the snapshot shows the orbiter's GOTO, then FOLLOW.
+  // Hostiles still on grid, so neither is a trip.
+  for (const mode of ["GOTO", "FOLLOW"]) {
+    const next = decideCompanionAction(request, ratGoneObs(mode), formed.memory);
+    assert.notEqual(next.phase, "Propulsion", `${mode}: ${JSON.stringify([next.action, next.why, next.trace?.props])}`);
+    assert.deepEqual(next.trace?.props,
+      { want: false, because: "none", withheld: null, hostiles: true, formation: true, mode }, mode);
+  }
+  // A lit afterburner under either is stood down as formation, not "not travelling".
+  for (const mode of ["GOTO", "FOLLOW"]) {
+    const lit = decideCompanionAction(request, ratGoneObs(mode, {
+      snapshot: inMode(fightGrid({ rats: [{ itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 40_000 }] }), mode, [FIGHT_AB.itemID]),
+    }), formed.memory);
+    assert.deepEqual(lit.action, stands(FIGHT_AB), mode);
+    assert.equal(lit.why, "Holding formation with hostiles on grid. Standing the prop mod down.");
+  }
+});
+
+/** The tick after a formation order: in GOTO and in FOLLOW, hostiles on grid, the afterburner stays dark. */
+function staysDarkInFormation(
+  request: FleetCompanionRequest,
+  memory: CompanionLadderMemory,
+  obsIn: (mode: string) => FleetCompanionObservation,
+  label: string,
+): void {
+  assert.equal(memory.followAnchorID, FIGHT_FC_SHIP, label);
+  for (const mode of ["GOTO", "FOLLOW"]) {
+    const next = decideCompanionAction(request, obsIn(mode), memory);
+    assert.notEqual(next.phase, "Propulsion", `${label} ${mode}: ${JSON.stringify([next.action, next.why, next.trace?.props])}`);
+    assert.equal(next.trace?.props?.formation, true, `${label} ${mode}`);
+  }
+}
+
+test("rung 8's re-form (`flight follow` mid-orbit) enters formation without a burn", () => {
+  const request = propFightRequest([FIGHT_AB]);
+  const onStation = orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT);
+  const told = { chatMessages: [commanderSays("flight follow", 2_000)] };
+  const reform = decideCompanionAction(request, propFightObs({ x: 8_000, mode: "ORBIT", overrides: told }), onStation);
+  assert.deepEqual(reform.action, { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M },
+    JSON.stringify([reform.phase, reform.why]));
+  staysDarkInFormation(request, reform.memory, (mode) => propFightObs({ x: 8_000, mode, overrides: told }), "re-form");
+});
+
+test("a fleet warp landing re-enters formation without a burn", () => {
+  const request = propFightRequest([FIGHT_AB]);
+  const formed = inFormation(flyingAuto());
+  const warping = decideCompanionAction(request, ratGoneObs(null, { inWarp: true }), formed.memory);
+  assert.equal(warping.memory.followAnchorID, null, "the warp ends the formation record");
+  // A warp lands in STOP (server and ballpark alike), then rung 9 re-forms.
+  const landed = decideCompanionAction(request, ratGoneObs("STOP"), warping.memory);
+  assert.deepEqual(landed.action, { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M },
+    JSON.stringify([landed.phase, landed.why]));
+  staysDarkInFormation(request, landed.memory, (mode) => ratGoneObs(mode), "warp");
+});
+
+// ⚠ THE APPROACH LATCHES OUTLIVED THEIR JOBS. `lootApproaching` and
+// `salvageApproachIssued` veto the formation (`holdsFormation`), and neither was
+// cleared when the job ended with the approach still set (the wreck left the
+// grid, so the job cleared itself) -- so the formation order that followed was
+// read as an approach, and the burner lit for as long as the formation held.
+const FIGHT_WRECK = 300020;
+const FIGHT_SALVAGER = 11400020;
+
+function wreckAt(x: number): Record<string, unknown> {
+  return {
+    itemID: FIGHT_WRECK, kind: "wreck", isSelf: false, ownerID: COMPANION,
+    position: { x, y: 0, z: 0 }, radius: 0, mode: null,
+  };
+}
+
+/** A rat on grid and nothing called; a wreck at 20 km or none. */
+function jobObs(verb: string, mode: string | null, wreck: boolean): FleetCompanionObservation {
+  const grid = fightGrid({ rats: [{ itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 40_000 }], extra: wreck ? [wreckAt(20_000)] : [] });
+  return ratGoneObs(mode, { snapshot: inMode(grid, mode), chatMessages: [commanderSays(verb)] });
+}
+
+for (const job of [
+  { verb: "loot", request: propFightRequest([FIGHT_AB]) },
+  { verb: "salvage", request: { ...propFightRequest([FIGHT_AB]), salvagerModuleIDs: [FIGHT_SALVAGER] } },
+]) {
+  test(`after a ${job.verb} approach ends with its wreck gone, the formation is not read as an approach`, () => {
+    const approaching = decideCompanionAction(job.request, jobObs(job.verb, null, true), flyingAuto());
+    assert.equal(approaching.action.kind, "approach", JSON.stringify([approaching.phase, approaching.why]));
+    // The wreck leaves the grid mid-approach; the ship's follow on it ends (STOP).
+    const formed = decideCompanionAction(job.request, jobObs(job.verb, "STOP", false), approaching.memory);
+    assert.deepEqual(formed.action, { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M },
+      JSON.stringify([formed.phase, formed.why]));
+    assert.equal(formed.memory.lootApproaching, null);
+    assert.equal(formed.memory.salvageApproachIssued, false);
+    staysDarkInFormation(job.request, formed.memory, (mode) => jobObs(job.verb, mode, false), job.verb);
+  });
+}
+
 // --- rung 8a: combat utilities -------------------------------------------------
 //
 // End to end through the ladder: the rule itself is companionUtilities.test.ts.
@@ -10741,7 +10886,10 @@ test("the trace: a standing tick in a fight carries every rung beneath the fleet
   assert.equal(trace.guns?.targetID, RAT);
   // The ship never moves in this fixture, so rung 8 is still closing on its hold;
   // no prop mod is fitted, so nothing lights, and nothing is "withheld" either.
-  assert.deepEqual(trace.props, { want: true, because: "closing", withheld: null });
+  // The formation rule's inputs ride along: hostiles seen, the rat's keep-at-range
+  // is not the formation, and the fixture's ship has no mode.
+  assert.deepEqual(trace.props,
+    { want: true, because: "closing", withheld: null, hostiles: true, formation: false, mode: null });
   assert.equal(trace.ammo?.targetID, RAT);
   // The fixture reads no utility facts, and rung 8a says so rather than staying silent.
   assert.deepEqual(trace.util, { skipped: [{ moduleID: 0, family: "all", code: "no-facts" }], gaveUp: [] });
@@ -10781,8 +10929,14 @@ test("the trace: a movement that drops rung 8's hold says so", () => {
   assert.deepEqual(stopped.trace?.cleared, { by: "stopShip", follow: false, hold: true });
 });
 
+/** The props trace's cause fields; the inputs the formation rule read are asserted on their own. */
+function propsCause(decision: CompanionDecision) {
+  const p = decision.trace?.props;
+  return p === undefined ? undefined : { want: p.want, because: p.because, withheld: p.withheld };
+}
+
 test("the props trace: one code per cause, and the withheld reason when a wanted burn lit nothing", () => {
-  const props = (decision: CompanionDecision) => decision.trace?.props;
+  const props = propsCause;
   const travel = decideCompanionAction(withProps(), obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling() }));
   assert.deepEqual(props(travel), { want: true, because: "travel", withheld: null });
   assert.equal(travel.why, "Travelling. Lighting the prop mod.");
@@ -10811,6 +10965,8 @@ test("the props trace: one code per cause, and the withheld reason when a wanted
   );
   assert.equal(formation.action.kind, "deactivate");
   assert.equal(formation.why, "Holding formation with hostiles on grid. Standing the prop mod down.");
+  assert.deepEqual(formation.trace?.props,
+    { want: false, because: "none", withheld: null, hostiles: true, formation: true, mode: "FOLLOW" });
 
   const goto = gridInMode("GOTO");
   const unreadable = decideCompanionAction(withProps(), obs({
@@ -10828,6 +10984,8 @@ test("the props trace: one code per cause, and the withheld reason when a wanted
 
   const banned = decideCompanionAction(propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO" }), freshLadderMemory());
   assert.deepEqual(props(banned), { want: true, because: "travel", withheld: "mwd-banned" });
+  assert.deepEqual(banned.trace?.props,
+    { want: true, because: "travel", withheld: "mwd-banned", hostiles: true, formation: false, mode: "GOTO" });
   const standDown = decideCompanionAction(
     propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO", active: [FIGHT_MWD.itemID] }), freshLadderMemory());
   assert.equal(standDown.why, MWD_STAYS_OFF_WHY);
@@ -10839,7 +10997,7 @@ test("the props trace: one code per cause, and the withheld reason when a wanted
 });
 
 test("the props trace: closing, the missile orbit, both at once, and in position on the target", () => {
-  const props = (decision: CompanionDecision) => decision.trace?.props;
+  const props = propsCause;
   const far = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), flyingAuto());
   const closing = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), far.memory);
   assert.deepEqual(props(closing), { want: true, because: "closing", withheld: null });
