@@ -3600,7 +3600,10 @@ const REGISTRY_READS = ["GetAggressionSettings", "GetEveOwners", "GetMyApplicati
 const REGISTRY_KEPT_PAIRS = { allowed: new Set([...REGISTRY_PAIRS.allowed, ...REGISTRY_READS.map((method) => `corpRegistry.${method}`), "corpRegistry.RegisterNewAggressionSettings", "someService.GetAggressionSettings"]) };
 /** A corporation's aggression settings and a pilot's applications in the server's form, with a made-up number to tell one answer from another. */
 const aggressionOf = (enableAfter) => ({ type: "object", name: "crimewatch.corp_aggression.settings.AggressionSettings", args: { type: "dict", entries: [["_enableAfter", enableAfter], ["_disableAfter", null]] } });
-const applicationsOf = (applicationID) => ({ type: "dict", entries: [[applicationID, { type: "list", items: [applicationID, 98000001, PILOT] }]] });
+// bco_applications70-95: corporationID -> list of application DBRows, not a
+// list of scalars. These are the DBRow fields exposed by the native decoder;
+// applicationText is Unicode (recorded acceptance, DBTYPE_WSTR130).
+const applicationsOf = (applicationID) => ({ type: "dict", entries: [[98000001, { type: "list", items: [{ type: "packedrow", fields: { applicationID, corporationID: 98000001, characterID: PILOT, applicationText: { type: "wstring", value: "" }, status: 0 } }] }]] });
 /** A registry that answers the settings and the applications with the count of times each was asked. */
 function registryAnswers(more = {}) {
   const times = {};
@@ -3629,7 +3632,7 @@ test("a character chosen has its corporation's registry bound, and asked what th
   ]);
 });
 
-test("the corporation's aggression settings are answered from what is kept, and its members' names and the pilot's applications are asked for each time", async () => {
+test("the corporation's aggression settings and personal applications are retained; explicit member owner reads still ask", async () => {
   const { pilots, session, handle } = await selected({ answers: registryAnswers() }, REGISTRY_KEPT_PAIRS);
   // Read at the choosing: answered as the server answered then, with nothing asked and nothing more in the ledger.
   assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(1), aggressionOf(1)]);
@@ -3640,9 +3643,10 @@ test("the corporation's aggression settings are answered from what is kept, and 
   await registryRead(pilots, handle, "GetEveOwners");
   assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetEveOwners")[0]], [["GetEveOwners", "GetEveOwners"], [], { same: 1, reshaped: 2 }]);
   assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=2:1", "N=2:1"]);
-  // The pilot's applications are the client's to keep, and are not kept here: each read is the server's answer then.
-  assert.deepEqual([await registryRead(pilots, handle, "GetMyApplications"), await registryRead(pilots, handle, "GetMyApplications")], [applicationsOf(2), applicationsOf(3)]);
-  assert.deepEqual([registryCalls(session).slice(2), ledgerOf(pilots, "corpRegistry.GetMyApplications")[0]], [["GetMyApplications", "GetMyApplications"], { same: 1, reshaped: 2 }]);
+  // bco_applications.py22-95 retains the personal dictionary until charid changes;
+  // OnCorporationApplicationChanged replaces its native rows, even across corpid.
+  assert.deepEqual([await registryRead(pilots, handle, "GetMyApplications"), await registryRead(pilots, handle, "GetMyApplications")], [applicationsOf(1), applicationsOf(1)]);
+  assert.deepEqual([registryCalls(session).slice(2), ledgerOf(pilots, "corpRegistry.GetMyApplications")[0]], [[], { same: 1 }]);
   // A read of the same name on another service is that service's own, asked and noted as any call is.
   await pilots.callMethod("someService", "GetAggressionSettings", [], null, FIELDS, handle);
   assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetAggressionSettings")[0]], ["someService", { unchecked: 1 }]);
