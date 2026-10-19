@@ -1899,6 +1899,10 @@ has no client role gate; Cancel makes no call, and the action neither applies no
 draft. Server UserErrors go through the ordinary client dialog handler. No transfer recording was found in the
 recursive Tranquility corpus search; this contract comes from the compiled native methods (2026-10-19).
 
+The wallet's `GiveSharesDialog.TransferShares` passes the holding's issuer as the first argument. Its corporate
+owner is `session.corpid` (`CorpSharesPanel.GetOwnerID`), and `GetCorpRegistry` remains bound to that session
+corporation. Corporate transfer authority and the debited allocation belong to that owner.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
