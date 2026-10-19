@@ -1957,6 +1957,10 @@ Buddy additions prime the held online state before a missing status lookup; remo
 their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
 in the recursive Tranquility corpus search. Alliance row contact actions are separate work.
 
+The remaining corporation owner-menu administration flows and their native membership prerequisite are
+sized in [Corporation owner actions](game-port-corporation-owner-actions.md). Membership is retained from
+`GetEveOwners` and changed by notices; it is not a target's public corporation read.
+
 Corporation member-row contacts follow compiled `CharacterChecker` 55-60/314-321 and
 `SessionChecker.IsDiplomat`: director or diplomat, non-NPC targets, including self and multiple selections.
 `menusvc` 604-609 and compiled `menuMerge.MergeMenus`/`_ExecMulti` keep a separate callback for each
