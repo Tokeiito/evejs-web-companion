@@ -161,7 +161,7 @@
     <ol class="track">
       {#each campaign.days as day (day.day)}
         {@const state = loginDayState(campaign, day.day, nowMs)}
-        <li class="day {state}" class:top-tier={day.tier >= 4} title={`Day ${day.day}: ${rewardText(day)}`} aria-label={`Day ${day.day}, ${state}: ${rewardText(day)}`}>
+        <li class="day is-{state}" class:top-tier={day.tier >= 4} title={`Day ${day.day}: ${rewardText(day)}`} aria-label={`Day ${day.day}, ${state}: ${rewardText(day)}`}>
           <span class="num">{day.day}</span>
           <TypeIcon typeID={day.typeID} name={typeName(day.typeID)} size="sm" />
           {#if state === "claimed"}
@@ -172,7 +172,7 @@
     </ol>
 
     {#if nextReward}
-      <div class="next">
+      <div class="next-reward">
         <TypeIcon typeID={nextReward.typeID} name={typeName(nextReward.typeID)} size="md" />
         <span class="what">
           <span class="name">{rewardText(nextReward)}</span>
@@ -188,7 +188,7 @@
     {#if view === null}
       <!-- A campaign this client build's data has not: what it gives cannot be shown, but it can be claimed. -->
       <p class="sub">The server has campaign {seasonal.active.campaignID} on, which this companion's copy of the client's data does not describe. Claimed {seasonal.history.length} so far.</p>
-      <div class="next">
+      <div class="next-reward">
         <span class="what"><span class="when">{seasonalCanClaim ? "Today's reward is ready." : "Today's reward has been claimed."}</span></span>
         <button type="button" class="primary" disabled={busy || !seasonalCanClaim} onclick={claimSeasonal}>Claim</button>
       </div>
@@ -209,11 +209,11 @@
         {#each view.days as day (day.day)}
           <li class="day" class:current={day.day === view.claimedCount + 1} title={`Day ${day.day}: alpha ${seasonalText(day.alpha)} (${STATE_WORDS[day.alphaState]}); omega ${seasonalText(day.omega)} (${STATE_WORDS[day.omegaState]})`}>
             <span class="num">{day.day}</span>
-            <span class="entry {day.alphaState}" class:top-tier={(day.alpha?.[3] ?? 0) >= 4}>
+            <span class="entry is-{day.alphaState}" class:top-tier={(day.alpha?.[3] ?? 0) >= 4}>
               {#if day.alpha}<TypeIcon typeID={day.alpha[1]} name={typeName(day.alpha[1])} size="sm" />{/if}
               {#if day.alphaState === "claimed"}<svg class="tick" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" /></svg>{/if}
             </span>
-            <span class="entry {day.omegaState}" class:top-tier={(day.omega?.[3] ?? 0) >= 4}>
+            <span class="entry is-{day.omegaState}" class:top-tier={(day.omega?.[3] ?? 0) >= 4}>
               {#if day.omega}<TypeIcon typeID={day.omega[1]} name={typeName(day.omega[1])} size="sm" />{/if}
               {#if day.omegaState === "claimed"}<svg class="tick" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" /></svg>{/if}
               {#if day.omegaState === "locked"}<svg class="lock" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7h8v7H4zM6 7V5a2 2 0 0 1 4 0v2" /></svg>{/if}
@@ -222,7 +222,7 @@
         {/each}
       </ol>
       {#if today && view.status !== "completed"}
-        <div class="next">
+        <div class="next-reward">
           <span class="what">
             <span class="name">Day {today.day}: {seasonalText(today.alpha)}</span>
             <span class="when">Omega: {seasonalText(today.omega)}{isOmega ? "" : " (omega clones only)"}</span>
@@ -285,11 +285,11 @@
     border: 1px solid var(--color-line);
     color: var(--color-muted);
   }
-  .day.claimed {
+  .day.is-claimed {
     opacity: 0.6;
   }
-  .day.claimable,
-  .day.next,
+  .day.is-claimable,
+  .day.is-next,
   .seasonal .day.current {
     border: 2px solid var(--color-accent);
     color: var(--color-text-bright);
@@ -302,15 +302,17 @@
     display: inline-flex;
     border: 1px solid transparent;
   }
-  .entry.claimed,
-  .entry.locked {
+  /* A day's state goes by "is-" so that it is never one of this window's own classes: a day that was "next" took
+     the next reward's box as its own. */
+  .entry.is-claimed,
+  .entry.is-locked {
     opacity: 0.55;
   }
-  .entry.missed {
+  .entry.is-missed {
     opacity: 0.3;
     filter: grayscale(1);
   }
-  .entry.retro {
+  .entry.is-retro {
     border-color: var(--color-good);
   }
   .entry.top-tier {
@@ -339,7 +341,7 @@
     right: 2px;
     bottom: 2px;
   }
-  .next {
+  .next-reward {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
@@ -347,7 +349,7 @@
     padding: 0.5rem;
     border: 1px solid var(--color-line-strong);
   }
-  .next > .what:first-child {
+  .next-reward > .what:first-child {
     grid-column: 1 / 3;
   }
   .what {
