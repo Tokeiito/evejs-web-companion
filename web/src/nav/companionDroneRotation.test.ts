@@ -82,6 +82,32 @@ test("a drone flying home is not recalled again, and a newly shot one still is",
   assert.deepEqual(second.action, { kind: "recall", droneIDs: [B] });
 });
 
+// ⚠ SEEN LIVE 2026-10-19: the bay read shows the scooped drone a second before
+// the space snapshot stops showing it, shield still short. It must land once,
+// be booked once, and be replaced once.
+test("a scooped drone still in the snapshot is not a new hit, and lands aboard once", () => {
+  const bay = [{ itemID: STACK, typeID: HAMMERHEAD, quantity: 3 }];
+  const recall = step([drone(A, 0.85, [RAT]), drone(B)], [], emptyCompanionDroneRotation(), T0);
+  assert.deepEqual(recall.action, { kind: "recall", droneIDs: [A] });
+  // Both reads at once: aboard by the bay, still out by the snapshot.
+  let memory = recall.memory;
+  const launches: unknown[] = [];
+  for (let n = 1; n <= 3; n += 1) {
+    const out = step([drone(A, 0.85, [RAT]), drone(B)], [...bay, singleton(A)], memory, T0 + n * 400,
+      [{ itemID: RAT, targetEntityID: A }]);
+    assert.notEqual(out.action.kind, "recall", `tick ${n} must not recall it again`);
+    if (out.action.kind === "launch") launches.push(out.action);
+    memory = out.memory;
+  }
+  assert.equal(memory.rotations[String(A)], 1, "one hit, one rotation booked");
+  assert.deepEqual(launches, [{ kind: "launch", droneItemIDs: [STACK], quantities: { [STACK]: 1 }, spares: 1, relaunched: 0 }]);
+});
+
+test("a drone in the bay is never recalled, whatever the snapshot says of it", () => {
+  const out = step([drone(A, 0.5)], [singleton(A)], emptyCompanionDroneRotation(), T0);
+  assert.deepEqual(out.action, { kind: "none" });
+});
+
 test("a whole, an unreadable and an armour-only drone are all left alone", () => {
   const out = step([drone(A, 1), drone(B, null)], [], emptyCompanionDroneRotation(), T0);
   assert.deepEqual(out.action, { kind: "none" });
