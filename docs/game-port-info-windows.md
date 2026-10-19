@@ -252,6 +252,18 @@ row remain unchanged. The browser continues reading the aggression settings and
 shows the resulting status; this correction does not complete later-read error
 handling or the rest of the native public-info payload audit.
 
+EveJS c5dbe704e also sends public shares as the byte string recorded in those
+two Tranquility replies. Executing the original compiled UpdateDataCorp and
+numericFormatters.FormatNumeric wrapper with the captured old integer entered
+the C++ numeric formatter with grouping enabled and zero decimal places. The
+captured corrected reply contains Python str '1000': the same native code keeps
+literal row text '1000' and does not call the numeric formatter for shares.
+The C++ formatter remains a boundary; its glyph output was not measured here.
+Live browser information shows 1000 and no console errors. The controlled
+first-public-None continuation still replaces public shares with numeric 1000
+from the existing own-corporation row cache. Stored and corporation-row shares
+remain numeric; the browser's existing number/string distinction is unchanged.
+
 c3a routes propagated native UserError refusals through the existing per-pilot
 dialog handler, preserving the message key and dict. Ordinary propagated errors
 keep the existing log, and expected scope/pilot retirement stays
