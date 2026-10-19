@@ -797,6 +797,8 @@ const PROVISIONAL_WAIT_LIMIT_MS = 120_000;
 const QUESTION_WAIT_MS = 110_000;
 /** An account's own connection, with no character chosen, is closed this long after the last call on it. */
 const ACCOUNT_IDLE_MS = 5_000;
+/** A pilot ended here is still this BFF's own for this long, while the server lets go of its character. */
+const ENDED_HERE_MS = 60_000;
 
 /** A localisation label as the server sends one, (labelID, {parameters}), or plain text. */
 function words(value) {
@@ -1081,7 +1083,10 @@ function selectionRow(selection, characterID) {
  *   passwordFor(name)   -> the password to log in with (a development server takes any)
  *   isOnline(accountID, characterID) -> whether the server still has the character
  *                          in game; asked after a release so "released" means it
- *   allowed             -> the "service.method" pairs a pilot may call
+ *   onlineOnAccount(accountID) -> the account's characters the server has in game,
+ *                          on whatever client; asked before a login, which closes
+ *                          the account's other clients
+ *   allowed            -> the "service.method" pairs a pilot may call
  *   shape(service, method, args, kwargs) -> the call as the retail client sends it (retailCalls.js)
  */
 function createGamePortPilots({
@@ -1090,6 +1095,7 @@ function createGamePortPilots({
   createSession = (transport) => new GamePortSession({ transport, provisionalWaitLimitMs: PROVISIONAL_WAIT_LIMIT_MS }),
   passwordFor = () => "",
   isOnline = null,
+  onlineOnAccount = null,
   allowed = new Set([...contract.gatewayAllowlist.pairs, ...GAME_PORT_ONLY_CALLS]),
   shape = retailForm,
   selectSettleMs = 5000,
@@ -1130,6 +1136,10 @@ function createGamePortPilots({
   const sessions = new Map();
   /** The accounts' own connections, by account, each with no character chosen on it. */
   const accountLines = new Map();
+  /** The choosings under way, by account: each settles, either way, when its choosing is over. */
+  const selecting = new Map();
+  /** The characters whose pilots were ended here, and when: the server lets each go a moment after its connection. */
+  const endedHere = new Map();
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
@@ -1445,6 +1455,7 @@ function createGamePortPilots({
     averagePricesThreadEnded(entry);
     warsThreadEnded(entry);
     sessions.delete(entry.handle);
+    endedHere.set(entry.characterID, now());
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
       entry.subscribers.delete(subscriber);
@@ -1473,13 +1484,60 @@ function createGamePortPilots({
 
   // ── the nine ──────────────────────────────────────────────────────────────
 
+  /**
+   * Whether the account is free to log in on. A login closes every other client of its account (the server's
+   * accountLoginClose.js, as CCP's sessionMgr.CloseUserSessions does), so none is made where a client this BFF
+   * does not hold is on. The server is asked which of the account's characters are in game: one that is no pilot
+   * held here, nor one let go here a moment ago, is another client's. A client still on its character selection
+   * screen has no character in game, and is not seen.
+   */
+  async function assertAccountFree(accountID) {
+    if (typeof onlineOnAccount !== "function") return;
+    let online;
+    try {
+      online = await onlineOnAccount(accountID);
+    } catch {
+      throw fail("CALL_FAILED", "Could not tell whether another client is logged in to this account, so it was not logged in.");
+    }
+    const ours = new Set([...sessions.values()].filter((entry) => !entry.ended && entry.accountID === accountID).map((entry) => entry.characterID));
+    for (const [characterID, at] of endedHere) {
+      if (now() - at < ENDED_HERE_MS) ours.add(characterID);
+      else endedHere.delete(characterID);
+    }
+    if ((Array.isArray(online) ? online : []).some((characterID) => !ours.has(positive(characterID)))) {
+      throw fail("CALL_REFUSED", "Another client is logged in to this account, and logging in here would close it. Log that client out first.");
+    }
+  }
+
+  /** The pilot held here on the account, if there is one. */
+  function heldOn(accountID) {
+    for (const entry of sessions.values()) if (!entry.ended && entry.accountID === accountID) return entry;
+    return null;
+  }
+
   async function selectCharacter(args = [], kwargs = null, sessionFields = {}) {
+    const accountID = positive(sessionFields && sessionFields.userid);
+    const choosing = choose(args, kwargs, sessionFields);
+    if (accountID === null) return choosing;
+    const over = choosing.then(() => {}, () => {});
+    selecting.set(accountID, over);
+    over.then(() => {
+      if (selecting.get(accountID) === over) selecting.delete(accountID);
+    });
+    return choosing;
+  }
+
+  async function choose(args, kwargs, sessionFields) {
     const accountID = positive(sessionFields && sessionFields.userid);
     const userName = String((sessionFields && sessionFields.userName) || "").trim();
     const characterID = positive(Array.isArray(args) ? args[0] : null);
     if (accountID === null) throw fail("CALL_INVALID", "Call session requires a positive integer userid.");
     if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
     if (characterID === null) throw fail("CALL_INVALID", "SelectCharacterID needs a character.");
+    await assertAccountFree(accountID);
+    // The account's own connection, if one is open here, is closed by this login: it is let go first.
+    const line = accountLines.get(accountID);
+    if (line) line.hangUp();
 
     let transport;
     try {
@@ -3689,6 +3747,7 @@ function createGamePortPilots({
       if (line.session) line.session.close();
     };
     line.opening = (async () => {
+      await assertAccountFree(accountID);
       let transport;
       try {
         transport = await connect();
@@ -3719,10 +3778,11 @@ function createGamePortPilots({
    * as the client logs in, and the connection is closed when nothing has been
    * asked on it for a little while.
    *
-   * The server lets an account log in beside its own pilot: only taking over a
-   * character that is online puts the earlier session off
-   * (charService.js, "Login takeover"). So this does not disturb a pilot of
-   * the same account that something else is flying.
+   * A login closes every other client of its account (accountLoginClose.js),
+   * so the account has one connection here, as the retail client has one. Where
+   * a pilot of the account is held here the call is asked on that pilot's
+   * connection. Where another client is on the account, no connection is opened
+   * (assertAccountFree).
    */
   async function accountCall(service, method, args = [], kwargs = null, sessionFields = {}) {
     const accountID = positive(sessionFields && sessionFields.userid);
@@ -3732,6 +3792,16 @@ function createGamePortPilots({
     assertAllowed(service, method);
     // Choosing a character brings it online on the connection it is chosen on, and this one is not kept.
     if (method === "SelectCharacterID") throw fail("CALL_NOT_ALLOWED", "A character is chosen by selecting it, not by a call of the account's.");
+    // A character being chosen for the account: the call waits for the choosing, whose pilot it may then be asked on.
+    while (selecting.has(accountID)) await selecting.get(accountID);
+    const pilot = heldOn(accountID);
+    if (pilot) {
+      // The pilot's notifications are its own, and stay in its backlog for its own reader.
+      const form = shape(service, method, args, kwargs, contextFor(pilot));
+      ledger.note(service, method, form);
+      const result = await run(pilot, service, method, () => byName(pilot.session, service, method, form));
+      return { service, method, result: wireToBridgeJson(result), notifications: [] };
+    }
     const line = accountLine(accountID, userName);
     timers.clearTimeout(line.timer);
     line.timer = null;

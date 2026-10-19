@@ -3385,18 +3385,96 @@ test("each account has its own connection", async () => {
   assert.deepEqual(made.map((session) => session.closed).sort(), [false, true]);
 });
 
-test("an account's own call does not disturb a pilot of the same account", async () => {
-  const { pilots, made, timers } = accountBuild();
+test("an account's own call is asked on the connection of a pilot of the account held here", async () => {
+  const { pilots, made, timers } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": "info" } });
   const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
-  await creationInfo(pilots);
-  assert.equal(made.length, 2, "its own connection, not the pilot's");
-  assert.equal(made[0].calls.some((call) => call.method === "GetCharCreationInfo"), false);
-  timers.fire(timers.live.find((timer) => timer.delay === 5000));
-  assert.equal(made[1].closed, true);
-  assert.equal(made[0].closed, false);
+  const live = timers.live.length;
+  // A login would close the pilot's connection (the server's accountLoginClose.js): none is made.
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 1, "the pilot's connection, and no other");
+  assert.deepEqual(made[0].logins, [["test", ""]]);
+  assert.equal(made[0].calls.at(-1).method, "GetCharCreationInfo");
+  assert.equal(timers.live.length, live, "nothing to hang up on");
   assert.equal(pilots.size, 1);
   // The pilot's session still answers.
   await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+});
+
+test("an account's own call asked while a character of the account is being chosen waits, and is asked on its pilot", async () => {
+  let release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const { pilots, made } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": "info" } }, {
+    onlineOnAccount: async () => { await waiting; return []; },
+  });
+  const choosing = pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const asked = creationInfo(pilots);
+  release();
+  await choosing;
+  assert.equal((await asked).result, "info");
+  assert.equal(made.length, 1, "one login for the account");
+});
+
+test("no login is made on an account another client has a character in game on", async () => {
+  let connects = 0;
+  const asked = [];
+  const { pilots, made } = accountBuild({}, {
+    connect: async () => { connects += 1; return {}; },
+    onlineOnAccount: async (accountID) => { asked.push(accountID); return [PILOT + 1]; },
+  });
+  await rejects(creationInfo(pilots), "CALL_REFUSED", /Another client is logged in to this account/);
+  await rejects(pilots.selectCharacter([PILOT, null, true], null, FIELDS), "CALL_REFUSED", /Another client is logged in to this account/);
+  assert.deepEqual(asked, [ACCOUNT, ACCOUNT]);
+  assert.equal(connects, 0);
+  assert.equal(made.length, 0);
+  assert.equal(pilots.size, 0);
+});
+
+test("an account whose characters are all offline, or are pilots held here, is logged in on", async () => {
+  const online = [];
+  const { pilots, made } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": "info" } }, { onlineOnAccount: async () => online });
+  assert.equal((await creationInfo(pilots)).result, "info");
+  await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  online.push(PILOT);
+  // The same character chosen again, as a page that came back chooses it: the pilot it had is this BFF's own.
+  await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.equal(made.length, 3, "the account's connection, then one login for each choosing");
+});
+
+test("a pilot let go here is still this BFF's own while the server lets go of its character", async () => {
+  let clock = 1_000_000;
+  const online = [];
+  const { pilots } = accountBuild({}, { onlineOnAccount: async () => online, now: () => clock });
+  const first = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  online.push(PILOT);
+  await pilots.releaseBridgeSession(first.bridgeSessionID, FIELDS);
+  // Released, and the server has the character a little longer: choosing it again is no other client's business.
+  const second = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await pilots.releaseBridgeSession(second.bridgeSessionID, FIELDS);
+  // A minute on, a character still in game that is no pilot here is another client's.
+  clock += 60_000;
+  await rejects(pilots.selectCharacter([PILOT, null, true], null, FIELDS), "CALL_REFUSED", /Another client/);
+});
+
+test("an account the server cannot say is free is not logged in on", async () => {
+  let connects = 0;
+  const { pilots, made } = accountBuild({}, {
+    connect: async () => { connects += 1; return {}; },
+    onlineOnAccount: async () => { throw new Error("gateway down"); },
+  });
+  await rejects(creationInfo(pilots), "CALL_FAILED", /Could not tell whether another client/);
+  await rejects(pilots.selectCharacter([PILOT, null, true], null, FIELDS), "CALL_FAILED", /Could not tell whether another client/);
+  assert.equal(connects, 0);
+  assert.equal(made.length, 0);
+});
+
+test("choosing a character lets go of the account's own connection first, since the login would close it", async () => {
+  const { pilots, made, timers } = accountBuild();
+  await creationInfo(pilots);
+  assert.equal(made[0].closed, false);
+  await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.equal(made[0].closed, true);
+  assert.equal(made[1].closed, false);
+  assert.equal(timers.live.some((timer) => timer.delay === 5000), false, "nothing left counting down to close it");
 });
 
 test("an account's own call needs to know whose it is, before anything is connected", async () => {
