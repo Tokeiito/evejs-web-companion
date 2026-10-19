@@ -225,10 +225,16 @@
     color: var(--color-muted);
     font-size: 0.85em;
   }
+  /* The two ways to redeem stay in sight at the window's foot however long the list is: the window's body is what
+     scrolls, and the list scrolls under them. */
   .destinations {
+    position: sticky;
+    bottom: 0;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
     gap: 0.5rem;
+    padding: 0.4rem 0;
+    background: var(--color-panel);
   }
   .destinations button {
     display: flex;
