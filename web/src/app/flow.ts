@@ -177,7 +177,7 @@ import { locationKind } from "../bridge/clientWords.ts";
 import { resolvedName } from "../store/names.ts";
 import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
 import { corporationMemberOf, memberInteger, memberTitleOf, MEMBER_ROLE_FIELDS, type CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
-import { memberRoleGroups, myGrantableRoles, memberTitleMasksOf, changeMemberTitleMasks, type RoleMasks } from "../bridge/corporationRoles.ts";
+import { memberRoleGroups, myGrantableRoles, memberTitlesOf, changeMemberTitles, type RoleMasks, type CorporationTitle } from "../bridge/corporationRoles.ts";
 import { addressBookOf, corporateAddressBookOf, type ContactScope, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
@@ -2056,7 +2056,8 @@ export interface AppFlow {
   showMemberDetails(characterID: number): void;
   corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(): Promise<number | null>;
-  saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks): Promise<CorporationMemberDetails>;
+  corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
+  saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -5139,7 +5140,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // bco_titles.OnTitleChanged amends the held title authority; an open dialog retains its LoadChar snapshot.
     if (method === "OnTitleChanged") {
       const held = memberTitleReads.get(Number(unwrapLong(args[0] as JsonValue) ?? 0n));
-      if (held) changeMemberTitleMasks(held, Number(unwrapLong(args[1] as JsonValue) ?? 0n), args[2] as JsonValue);
+      if (held) changeMemberTitles(held, Number(unwrapLong(args[1] as JsonValue) ?? 0n), args[2] as JsonValue);
       return;
     }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
@@ -14600,19 +14601,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
   // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
   const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
-  const memberTitleReads = new Map<number, Map<number, RoleMasks>>();
+  const memberTitleReads = new Map<number, Map<number, CorporationTitle>>();
   let memberDataCorpID: number | null = null;
   function memberReadKey(characterID: number): string {
     const corporationID = store.station.get().online?.corporationID ?? null;
     if (corporationID !== memberDataCorpID) { memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID; }
     return `${corporationID}:${characterID}`;
   }
-  async function readMemberTitles(corporationID: number): Promise<ReadonlyMap<number, RoleMasks>> {
+  async function readMemberTitles(corporationID: number): Promise<ReadonlyMap<number, CorporationTitle>> {
     const held = memberTitleReads.get(corporationID);
     if (held) return held;
-    const rows = memberTitleMasksOf(await bridgeAsk("corpRegistry", "GetTitles", []));
+    const answer = await bridgeAsk("corpRegistry", "GetTitles", []);
+    const label = "UI/Corporations/Common/TitleUntitled";
+    await wordsNow([label]);
+    const template = store.words.get().templates[label] ?? "Untitled {index}";
+    const rows = memberTitlesOf(answer, index => plainText(formatTemplate(template, { index }, { nameOf: () => "" })));
     memberTitleReads.set(corporationID, rows);
     return rows;
+  }
+  async function corporationMemberTitles(): Promise<readonly CorporationTitle[]> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    memberReadKey(online.characterID);
+    return [...(await readMemberTitles(online.corporationID)).values()].sort((a, b) => a.titleID - b.titleID);
   }
   async function readCorporationMember(characterID: number): Promise<JsonValue> {
     const key = memberReadKey(characterID), kept = memberReads.get(key);
@@ -14666,19 +14677,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
       bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
   }
-  async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks): Promise<CorporationMemberDetails> {
+  async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks, titleDraft: number): Promise<CorporationMemberDetails> {
     const member = details.member;
     if (details.targetIsCEO && !details.viewerIsCEO) return details;
     const nextTitle = details.canEditTitle ? memberTitleOf(title) : member.title;
     const nextBase = details.canEditBase ? baseID : member.baseID;
     // A member who remains Director retains the original direct role state before change detection (466-480).
-    const nextMasks = (member.masks.roles & roleDraft.roles & 1n) !== 0n ? member.masks : roleDraft;
-    if (nextTitle === member.title && nextBase === member.baseID && MEMBER_ROLE_FIELDS.every(key => nextMasks[key] === member.masks[key])) return details;
+    const continuesDirector = (member.masks.roles & roleDraft.roles & 1n) !== 0n;
+    const nextMasks = continuesDirector ? member.masks : roleDraft;
+    const nextTitleMask = continuesDirector ? member.titleMask : titleDraft;
+    if (nextTitle === member.title && nextBase === member.baseID && nextTitleMask === member.titleMask && MEMBER_ROLE_FIELDS.every(key => nextMasks[key] === member.masks[key])) return details;
     const masks = MEMBER_ROLE_FIELDS.map(key => ({ type: "long", value: nextMasks[key].toString() } as const));
     // EditMemberDialog.UpdateMember 466-520 and bco_members.UpdateMember 243: all 15 positional arguments.
     if ((nextMasks.roles & 1n) !== 0n) for (let i = 1; i < masks.length; i++) masks[i] = { type: "long", value: "0" };
     const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
-    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, null, null]);
+    const sentTitleMask = nextTitleMask === member.titleMask ? null : (nextMasks.roles & 1n) !== 0n ? 0 : nextTitleMask;
+    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]);
     // base_corporation.ClearMemberCache clears this target's memoized GetMember before LoadChar.
     memberReads.delete(memberReadKey(member.characterID));
     return corporationMemberDetails(member.characterID);
@@ -28075,6 +28089,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showMemberDetails,
     corporationMemberDetails,
     corporationMemberRoleBase,
+    corporationMemberTitles,
     saveCorporationMember,
     primeContactsOnline,
     addOrEditContact,

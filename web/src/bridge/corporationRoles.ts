@@ -1,5 +1,5 @@
 // corp_util.CanEditRole, bco_members.GetMyGrantableRoles and EditMemberDialog's role views.
-import { MEMBER_ROLE_FIELDS, memberInteger, type CorporationMember } from "./corporationMemberDetails.ts";
+import { MEMBER_ROLE_FIELDS, memberField, memberInteger, type CorporationMember } from "./corporationMemberDetails.ts";
 import { readDictPairs, type JsonValue } from "./wire.ts";
 import { intDictOrder } from "./py27DictOrder.ts";
 
@@ -22,6 +22,7 @@ export interface CorporationRoleData {
 export interface CorporationRole extends CorporationRoleSpec { readonly roleID: bigint }
 export interface CorporationRoleGroup extends CorporationRoleGroupSpec { readonly groupID: number; readonly roles: readonly CorporationRole[] }
 export type GrantMasks = Readonly<Record<RoleField, bigint>>;
+export type CorporationTitle = RoleMasks & { readonly titleID: number; readonly titleName: string };
 
 export function memberRoleGroups(data: CorporationRoleData, name: (id: number) => string, query: string, take: string): readonly CorporationRoleGroup[] {
   const roles = Object.entries(data.roles).map(([bit, role]) => ({ ...role, roleID: 1n << BigInt(bit) }));
@@ -38,22 +39,33 @@ export function memberRoleGroups(data: CorporationRoleData, name: (id: number) =
   });
 }
 
-export function memberTitleMasksOf(answer: JsonValue): Map<number, RoleMasks> {
+function titleText(value: JsonValue | undefined): string {
+  return typeof value === "string" ? value : value && typeof value === "object" && "value" in value && typeof value.value === "string" ? value.value : "";
+}
+
+export function memberTitlesOf(answer: JsonValue, untitled: (index: number) => string): Map<number, CorporationTitle> {
   const indexed = answer && typeof answer === "object" && !Array.isArray(answer) && "dict" in answer && Array.isArray(answer.dict) ? answer.dict as readonly (readonly [JsonValue, JsonValue])[] : readDictPairs(answer);
-  return new Map(indexed.map(([key, title]) => [Number(memberInteger(title, "titleID") ?? key), Object.fromEntries(MEMBER_ROLE_FIELDS.map(field => [field, memberInteger(title, field) ?? 0n])) as RoleMasks]));
+  return new Map(indexed.map(([key, title]) => {
+    const titleID = Number(memberInteger(title, "titleID") ?? key);
+    if (!Number.isSafeInteger(titleID) || titleID <= 0) throw new Error("A corporation title could not be read.");
+    // bco_titles.GetTitles: blank names are localized once, when the service first reads the rows.
+    const titleName = titleText(memberField(title, "titleName")) || untitled(Math.trunc(Math.log2(titleID) + 1));
+    return [titleID, { ...Object.fromEntries(MEMBER_ROLE_FIELDS.map(field => [field, memberInteger(title, field) ?? 0n])), titleID, titleName } as CorporationTitle];
+  }));
 }
 
 /** bco_titles.OnTitleChanged / bco_base.GetAddRemoveFromChange: amend held rows without another read. */
-export function changeMemberTitleMasks(titles: Map<number, RoleMasks>, titleID: number, change: JsonValue): void {
+export function changeMemberTitles(titles: Map<number, CorporationTitle>, titleID: number, change: JsonValue): void {
   const entries = readDictPairs(change).flatMap(([key, value]) => {
     const pair = Array.isArray(value) ? value : value && typeof value === "object" && "items" in value && Array.isArray(value.items) ? value.items : [];
     return typeof key === "string" && pair.length === 2 ? [{ key, old: pair[0], value: pair[1] }] : [];
   });
   if (!entries.length) return;
   if (entries.every(entry => entry.value === null)) { titles.delete(titleID); return; }
-  if (entries.every(entry => entry.old === null)) titles.set(titleID, Object.fromEntries(MEMBER_ROLE_FIELDS.map(field => [field, 0n])) as RoleMasks);
+  if (entries.every(entry => entry.old === null)) titles.set(titleID, { ...Object.fromEntries(MEMBER_ROLE_FIELDS.map(field => [field, 0n])), titleID, titleName: "" } as CorporationTitle);
   const held = titles.get(titleID);
-  if (held) titles.set(titleID, { ...held, ...Object.fromEntries(entries.filter(entry => MEMBER_ROLE_FIELDS.some(field => field === entry.key)).map(entry => [entry.key, memberInteger({ [entry.key]: entry.value }, entry.key) ?? 0n])) });
+  const nameChange = entries.find(entry => entry.key === "titleName");
+  if (held) titles.set(titleID, { ...held, ...(nameChange ? { titleName: titleText(nameChange.value) } : {}), ...Object.fromEntries(entries.filter(entry => MEMBER_ROLE_FIELDS.some(field => field === entry.key)).map(entry => [entry.key, memberInteger({ [entry.key]: entry.value }, entry.key) ?? 0n])) });
 }
 
 export function myGrantableRoles(member: CorporationMember, viewerIsCEO: boolean, viewerIsDirector: boolean, data: CorporationRoleData, titles: ReadonlyMap<number, RoleMasks>): GrantMasks {
