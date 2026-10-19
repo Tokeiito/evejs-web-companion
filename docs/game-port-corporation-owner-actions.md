@@ -398,6 +398,57 @@ self, including when evaluating a merged selection.
 7. **D2p18c4g — corporation cash from the shared menu.** Reuse the existing wallet
    transfer machinery only after comparing its corporate-source, recipient,
    division and authority behavior with this exact native entry point.
+   Read/split complete: compiled CharacterChecker292-300 allows a single non-NPC
+   character, including self, only with Accountant256 (not Junior or a take bit).
+   menusvc652-653 opens TransferMoney(session.corpid, None, charID, None).
+   walletSvc142-151 closes the previous transfer window and opens the new one;
+   it adds no active-division chooser, authority read or confirmation here.
+   TransferMoneyWnd108-123 reads fresh GetCorpWealth(None) before capturing
+   session.corpAccountKey. The source division is a label, not a selector. This
+   character-recipient entry has no destination-division combo. Amount starts
+   at0.1, has two decimal places and a wealth maximum; reason has40 characters.
+   Confirm138-155 sends GiveCashFromCorpAccount(toID, float(amount), capturedKey,
+   toAccountKey=None, reason=originalEditValue). None is successful; an exception
+   leaves the window open. No second confirmation is present.
+
+   The original compiled methods executed in the installed Python27 runtime
+   confirm those gates/call arguments, the None-before-active-key read, and the
+   native quirk: OnCorpAccountChangedClient updates a corporate transfer's
+   maximum for any corporation division, without filtering its captured key.
+   The captured source key must not be silently rebound when the active division
+   changes. walletSvc80-119 first checks corporation wallet access and the
+   event division's take bit, obtains the previous one-minute cached wealth,
+   updates that cache, then emits the client event. That cache/event consumer
+   is missing from the current personal-only transfer machinery.
+
+   Recursive TQ search found the Archive/Open Wallet - Plex - Corp Wallet -
+   Corp Transfers capture. Its companion was read to the end before the raw
+   packets. Decoding1804-1824 shows (2124510715,100.0,1000), keyword None/empty
+   reason, corporation then personal OnAccountChange before a None reply.
+   GetCashBalance(1, accountKey=None) is also recorded, with active key1000.
+   No alternate-active-key default is established by that recording; the other
+   corpus accountKey1002 matches are membership notices, not wallet reads.
+   Historical companion claims of lighter role validation are not evidence
+   against the current source-division validator.
+
+   - **c4g1: native corporation cash contract audit/fix.** Before UI, verify fresh
+     and explicit division reads, native authority failures, real success and
+     notice/reply order against the compiled consumer and recorded packets.
+     Investigate missing-key selection and refused-transfer None without calling
+     an unrecorded behavior a proven defect. Stop and back up the whole store
+     before fixtures; fix proven retail-client defects in this or the next unit.
+   - **c4g2: complete corporation wealth cache/event foundation.** Port fresh
+     reads separately from the one-minute cache, native notice authority and
+     read-before-update/event order. Fence pilot/corporation replacement while
+     preserving explicit division identity. Do not expose a partial cash action.
+   - **c4g3: complete shared TransferMoney window and character menu action.**
+     Reuse the same complete window for Contacts/search and Member List, with
+     captured source, names/logos, native amount/reason bounds, correct typed
+     RPC, failure/success behavior, original lifetime and live wealth events.
+     Keep existing personal transfers correct. Verify actual browser/phone and
+     native wire, including self, authority and replacement cases. Generic
+     wallet deposit/destination-corporation selection is a separate entry point;
+     it is not needed to complete this shared character-recipient action.
 
 Configured double-click-to-chat and simultaneous information windows remain after
 these administration units. The rest of the Corporation window and Phases 5/6 are
