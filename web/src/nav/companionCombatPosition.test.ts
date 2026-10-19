@@ -36,6 +36,7 @@ import {
   FIGHT_GUN_2,
   FIGHT_NO_THREAT,
   LONG_GUNS,
+  LONG_RAT,
   RAT,
   RAT_2,
   SHORT_GUNS,
@@ -342,7 +343,8 @@ test("`flight follow` with our orbit standing: rung 9 is asked every tick until 
 
   const first = tick();
   assert.deepEqual(sent(first), { kind: "keepAtRange", targetID: FIGHT_FC_SHIP, range: FIGHT_FOLLOW_M });
-  assert.match(first.decision!.why, /not chasing the target/i);
+  assert.match(first.decision!.why, /flight follow: holding station on the commander/i);
+  assert.equal(first.trace.outcome, "reform");
   assert.equal(memory.combatPosition.hold, null);
   assert.equal(memory.combatPosition.reform, true);
   // Refused: rung 9's own retry sends it again, and it is asked again.
@@ -415,4 +417,306 @@ test("the gate's words say how much of the rack reaches", () => {
   assert.equal(gunsInReachWords(0, 2), " Locked, but none of my guns reach it from here.");
   assert.equal(gunsInReachWords(1, 2), " Locked, and firing on it: 1 of 2 guns in reach.");
   assert.equal(gunsInReachWords(2, 2), " Locked, and firing on it.");
+});
+
+// ─── The decision trace: one outcome code per return path ────────────────────
+
+/** The step's memory, with the order it sent (if any) settled as issued. */
+function settle(step: CombatPositionStep): CompanionLadderMemory {
+  return step.decision !== null && step.decision.standing !== true
+    ? settleCombatHold(step.decision, step.memory, "issued")
+    : step.memory;
+}
+
+test("trace: no target engaged is `no-target`, with nothing read", () => {
+  const step = position(fightObs(SHORT_GUNS), flyingAuto(), stubLadder(), null);
+  assert.equal(step.trace.outcome, "no-target");
+  assert.equal(step.trace.mode, "auto");
+  assert.equal(step.trace.targetID, null);
+  assert.equal(step.trace.distanceM, null);
+  assert.equal(step.trace.latch, null);
+});
+
+test("trace: a chat `stop` is `stopped`, and a fleet order that holds navigation is `holds-navigation`", () => {
+  const stopped = position(fightObs(SHORT_GUNS), flyingAuto({ followHeld: true }));
+  assert.equal(stopped.trace.outcome, "stopped");
+  assert.equal(stopped.trace.targetID, RAT);
+  const held = position(fightObs(SHORT_GUNS), flyingAuto(), stubLadder(), { ...engagedOn(), holdsNavigation: true });
+  assert.equal(held.trace.outcome, "holds-navigation");
+  assert.equal(held.decision, null);
+});
+
+test("trace: `flight follow` with nothing owed is `mode-follow`; owing our orbit's undoing is `reform`", () => {
+  const idle = position(fightObs(SHORT_GUNS), freshLadderMemory());
+  assert.equal(idle.decision, null);
+  assert.equal(idle.trace.outcome, "mode-follow");
+  assert.equal(idle.trace.mode, "follow");
+
+  const orbiting = position(fightObs(SHORT_GUNS), flyingAuto());
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const undone = position(fightObs(SHORT_GUNS), { ...orbiting.memory, flightMode: "follow" }, ladder);
+  assert.equal(undone.trace.outcome, "reform");
+  assert.equal(undone.trace.mode, "follow");
+  assert.equal(undone.trace.standingRangeM, 8_000, "the order being undone: a pending one counts as standing");
+  assert.equal(undone.trace.latch?.status, "pending");
+});
+
+test("trace: docked, in warp or with no snapshot is `not-in-space`; a target not on grid is `target-off-grid`", () => {
+  assert.equal(position(fightObs(SHORT_GUNS, fightGrid(), RAT, { inSpace: false }), flyingAuto()).trace.outcome, "not-in-space");
+  assert.equal(position(fightObs(SHORT_GUNS, fightGrid(), RAT, { inWarp: true }), flyingAuto()).trace.outcome, "not-in-space");
+  assert.equal(position(fightObs(SHORT_GUNS, fightGrid(), RAT, { snapshot: null }), flyingAuto()).trace.outcome, "not-in-space");
+  const away = fightGrid({ rats: [{ itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 30_000 }] });
+  const off = position(fightObs(SHORT_GUNS, away), flyingAuto());
+  assert.equal(off.trace.outcome, "target-off-grid");
+  assert.equal(off.trace.targetID, RAT);
+});
+
+test("trace: past the leash is `leashed` with the commander-to-target distance; an order to the commander is `reform`", () => {
+  const ladder = stubLadder();
+  const leashed = position(fightObs(LONG_GUNS, ratAt(56_000)), flyingAuto(), ladder);
+  assert.equal(leashed.trace.outcome, "leashed");
+  assert.equal(leashed.trace.leashed, true);
+  assert.equal(leashed.trace.leashApartM, 61_000, "the FC is 5 km behind this ship");
+  assert.equal(leashed.trace.holdOrder, null, "no hold was wanted");
+
+  const sending = stubLadder((_obs, memory) => formationOrder(memory));
+  const sent9 = position(fightObs(LONG_GUNS, ratAt(56_000)), flyingAuto(), sending);
+  assert.equal(sent9.trace.outcome, "reform");
+  assert.equal(sent9.trace.leashed, true);
+  assert.match(sent9.decision!.why, /past my leash from the commander: holding station/i);
+});
+
+test("trace: a gun boat that cannot read its reach is `no-reach`; with our orbit to undo it is `reform`, and with no commander `reform-stop`", () => {
+  const blind = [gun(FIGHT_GUN_1, null, null), gun(FIGHT_GUN_2, null, null)];
+  const fresh = position(fightObs(blind), flyingAuto());
+  assert.equal(fresh.trace.outcome, "no-reach");
+  assert.equal(fresh.trace.distanceM, 30_000, "the rung had measured the target");
+  assert.equal(fresh.trace.holdOrder, null);
+
+  const orbiting = position(fightObs(SHORT_GUNS), flyingAuto());
+  const sending = stubLadder((_obs, memory) => formationOrder(memory));
+  const undone = position(fightObs(blind), orbiting.memory, sending);
+  assert.equal(undone.trace.outcome, "reform");
+  assert.match(undone.decision!.why, /cannot read my guns' reach: holding station on the commander/i);
+
+  const noCommander = position(fightObs(blind, fightGrid({ fcAt: null })), orbiting.memory, stubLadder());
+  assert.equal(noCommander.trace.outcome, "reform-stop");
+  assert.deepEqual(sent(noCommander), { kind: "stopShip" });
+  assert.equal(noCommander.trace.leashApartM, null, "no commander on grid");
+});
+
+test("trace: `flight follow` with no commander on grid is `reform-stop`", () => {
+  const orbiting = position(fightObs(SHORT_GUNS), flyingAuto());
+  const stopped = position(
+    fightObs(SHORT_GUNS, fightGrid({ fcAt: null })), { ...orbiting.memory, flightMode: "follow" }, stubLadder(),
+  );
+  assert.equal(stopped.trace.outcome, "reform-stop");
+  assert.equal(stopped.trace.mode, "follow");
+});
+
+test("trace: orbit-optimal carries the numbers it was decided on", () => {
+  const step = position(fightObs(SHORT_GUNS), flyingAuto());
+  const t = step.trace;
+  assert.equal(t.outcome, "orbit-optimal");
+  assert.equal(t.mode, "auto");
+  assert.equal(t.targetID, RAT);
+  assert.equal(t.distanceM, 30_000);
+  assert.equal(t.holdOrder, "orbit");
+  assert.equal(t.holdRangeM, 8_000);
+  assert.equal(t.standingRangeM, null, "nothing stood yet");
+  assert.equal(t.floorM, 0);
+  assert.equal(t.ceilingM, 17_000, "the longest gun's 20 km, less the 3 km leash buffer");
+  assert.equal(t.far, true);
+  assert.equal(t.farTicks, 1);
+  assert.equal(t.spentAtM, null);
+  assert.equal(t.leashed, false);
+  assert.equal(t.leashApartM, 35_000);
+  assert.equal(t.ratFactsMissing, false);
+  assert.equal(t.reissueSuppressed, false);
+  assert.deepEqual(t.latch, { status: "pending", refusals: 0, deferrals: 0, cooldown: null, wait: null });
+});
+
+test("trace: kite is `kite`, a drone boat's band is `drone-band`", () => {
+  const kite = position(fightObs(LONG_GUNS, ratAt(50_000, TYPE_SHORT_RAT)), flyingAuto());
+  assert.equal(kite.trace.outcome, "kite");
+  assert.equal(kite.trace.holdOrder, "keepAtRange");
+  assert.equal(kite.trace.holdRangeM, 15_000);
+
+  const drones = decideCombatPosition(
+    { ...TWO_GUNS, weaponModuleIDs: [] }, fightObs(null, fightGrid(), RAT, { droneControlRangeM: 40_000 }),
+    engagedOn(), flyingAuto(), stubLadder(undefined, true),
+  );
+  assert.equal(drones.trace.outcome, "drone-band");
+  assert.equal(drones.trace.holdRangeM, 37_000);
+  assert.equal(drones.trace.ceilingM, 37_000);
+});
+
+test("trace: a band with no room is `empty-band`", () => {
+  const observation = fightObs(
+    [gun(FIGHT_GUN_1, 12_000, 10_000), gun(FIGHT_GUN_2, 12_000, 10_000)], fightGrid(), RAT,
+    { threatByTypeID: { [TYPE_LONG_RAT]: { ...FIGHT_NO_THREAT, scram: true, scramRangeM: 10_000 } } },
+  );
+  const step = position(observation, flyingAuto());
+  assert.equal(step.trace.outcome, "empty-band");
+  assert.equal(step.trace.floorM, 15_000);
+  assert.equal(step.trace.ceilingM, 9_000);
+  assert.match(step.decision!.why, /no room to kite here/i);
+});
+
+test("trace: a target faster than the ship is `unreachable`", () => {
+  const fast = { ...LONG_RAT, maxVelocity: 500, orbitRangeM: 2_000 };
+  const step = position(fightObs(SHORT_GUNS, fightGrid(), RAT, {
+    ratCombatByTypeID: { [TYPE_LONG_RAT]: fast, [TYPE_SHORT_RAT]: fast },
+  }), flyingAuto());
+  assert.equal(step.trace.outcome, "unreachable");
+  assert.equal(step.trace.holdRangeM, 2_000);
+});
+
+test("trace: the closing budget spent is `closing-spent`, with the frozen distance", () => {
+  let memory = flyingAuto();
+  let last: CombatPositionStep | null = null;
+  for (let tick = 0; tick <= MAX_CLOSE_TICKS; tick += 1) {
+    last = position(fightObs(SHORT_GUNS), memory);
+    memory = last.memory;
+  }
+  assert.equal(last!.trace.outcome, "closing-spent");
+  assert.equal(last!.trace.spentAtM, 30_000);
+  assert.equal(last!.trace.holdRangeM, 30_000);
+  assert.equal(last!.trace.farTicks, 0, "the budget starts again from the frozen hold");
+});
+
+test("trace: a refused order's latch, its wait and its cooldown are in the trace", () => {
+  let memory = flyingAuto();
+  for (let tick = 0; tick < 3; tick += 1) {
+    const step = position(fightObs(SHORT_GUNS), memory);
+    memory = settleCombatHold(step.decision!, step.memory, "refused");
+  }
+  const waiting = position(fightObs(SHORT_GUNS), memory);
+  assert.equal(sent(waiting), null);
+  assert.equal(waiting.trace.outcome, "orbit-optimal", "the hold is still wanted");
+  assert.deepEqual(waiting.trace.latch, {
+    status: "refused", refusals: 3, deferrals: 0, cooldown: COMPANION_RETRY_BACKOFF_TICKS, wait: "refused",
+  });
+  assert.equal(waiting.trace.standingRangeM, null, "a refused order is not standing");
+});
+
+test("trace: a suppressed re-issue is flagged, and the standing order's range is the one named", () => {
+  const first = position(fightObs(SHORT_GUNS), flyingAuto());
+  const standing = settle(first);
+  // The shortest gun's optimal moves 1.5 km: inside the 2 km margin, so no re-aim.
+  const wobble = position(fightObs([SHORT_GUNS[0]!, gun(FIGHT_GUN_2, 10_000, 9_500)]), standing);
+  assert.equal(sent(wobble), null);
+  assert.equal(wobble.trace.reissueSuppressed, true);
+  assert.equal(wobble.trace.holdRangeM, 9_500);
+  assert.equal(wobble.trace.standingRangeM, 8_000);
+  assert.equal(wobble.trace.latch?.status, "issued");
+  assert.match(wobble.decision!.why, /orbiting the target at 8 km/i, "the order on the server, not the wobble");
+  assert.doesNotMatch(wobble.decision!.why, /9\.5 km/);
+  assert.match(wobble.decision!.why, /closing in/i);
+  // A re-issue that is sent is not a suppressed one.
+  assert.equal(position(fightObs(SHORT_GUNS), flyingAuto()).trace.reissueSuppressed, false);
+});
+
+test("trace: an unread hostile on grid is flagged, and the readout says so instead of implying a read grid", () => {
+  const grid = fightGrid({ rats: [
+    { itemID: RAT, typeID: TYPE_SHORT_RAT, x: 50_000 }, { itemID: RAT_2, typeID: TYPE_UNREAD_RAT, x: 60_000 },
+  ] });
+  const unread = position(fightObs(LONG_GUNS, grid), flyingAuto());
+  assert.equal(unread.trace.ratFactsMissing, true);
+  assert.equal(unread.trace.outcome, "orbit-optimal");
+  assert.match(unread.decision!.why, /some rats here are not identified yet: orbiting at 30 km rather than kiting/i);
+  assert.doesNotMatch(unread.decision!.why, /my shortest guns reach there/i);
+  // The grid read: no flag, the old sentence.
+  const read = position(fightObs(SHORT_GUNS), flyingAuto());
+  assert.equal(read.trace.ratFactsMissing, false);
+  assert.match(read.decision!.why, /my shortest guns reach there/i);
+});
+
+test("an orbit held to the floor or the ceiling says what held it, not that the guns reach there", () => {
+  const scram = fightObs(SHORT_GUNS, fightGrid(), RAT, {
+    threatByTypeID: { [TYPE_LONG_RAT]: { ...FIGHT_NO_THREAT, scram: true, scramRangeM: 10_000 } },
+  });
+  const floor = position(scram, flyingAuto());
+  assert.equal(floor.trace.outcome, "orbit-optimal");
+  assert.equal(floor.trace.holdRangeM, 15_000);
+  assert.equal(floor.trace.floorM, 15_000);
+  assert.match(floor.decision!.why, /orbiting the target at 15 km: as close as i dare with the rats' tackle/i);
+  assert.doesNotMatch(floor.decision!.why, /shortest guns reach there/i);
+
+  const far = [gun(FIGHT_GUN_1, 20_000, 19_500), gun(FIGHT_GUN_2, 20_000, 19_500)];
+  const ceiling = position(fightObs(far), flyingAuto());
+  assert.equal(ceiling.trace.holdRangeM, 17_000);
+  assert.equal(ceiling.trace.ceilingM, 17_000);
+  assert.match(ceiling.decision!.why, /orbiting the target at 17 km: as far out as my lock range and gun reach allow/i);
+
+  // Unread rats AND a clamp: both are said.
+  const grid = fightGrid({ rats: [
+    { itemID: RAT, typeID: TYPE_SHORT_RAT, x: 50_000 }, { itemID: RAT_2, typeID: TYPE_UNREAD_RAT, x: 60_000 },
+  ] });
+  const both = position(fightObs(far, grid), flyingAuto());
+  assert.match(both.decision!.why, /not identified yet: orbiting at 17 km rather than kiting\. Held at my lock range and gun reach\./i);
+});
+
+test("each way back to formation has its own sentence", () => {
+  const orbiting = position(fightObs(SHORT_GUNS), flyingAuto());
+  const sending = stubLadder((_obs, memory) => formationOrder(memory));
+  const follow = position(fightObs(SHORT_GUNS), { ...orbiting.memory, flightMode: "follow" }, sending);
+  const leash = position(fightObs(LONG_GUNS, ratAt(56_000)), flyingAuto(), sending);
+  const blind = [gun(FIGHT_GUN_1, null, null), gun(FIGHT_GUN_2, null, null)];
+  const noReach = position(fightObs(blind), orbiting.memory, sending);
+  const sentences = [follow, leash, noReach].map((step) => step.decision!.why);
+  assert.equal(sentences[0], "Flight follow: holding station on the commander.");
+  assert.equal(sentences[1], "Target is past my leash from the commander: holding station.");
+  assert.equal(sentences[2], "Cannot read my guns' reach: holding station on the commander.");
+  assert.equal(new Set(sentences).size, 3);
+});
+
+// ─── The range gate's trace ──────────────────────────────────────────────────
+
+test("gate trace: measured in reach, assumed and out of reach are three disjoint lists", () => {
+  // The rat at 15 km: gun 1 (20 km reach) reaches, gun 2 (10 km) does not.
+  const observation = fightObs(SHORT_GUNS, ratAt(15_000));
+  const measured = measureSpace(observation.snapshot ?? null);
+  const gate = gunsInReach(RAT, TWO_GUNS, observation, freshLadderMemory(), measured);
+  assert.deepEqual(gate.trace, {
+    targetID: RAT, distanceM: 15_000, inReach: [FIGHT_GUN_1], assumed: [], outOfReach: [FIGHT_GUN_2],
+  });
+  assert.deepEqual(gate.inReach, [FIGHT_GUN_1], "the gate itself is unchanged");
+  assert.deepEqual(gate.assumed, []);
+
+  // Gun 2's reach is unreadable: let through, and said to be assumed.
+  const blind = fightObs([SHORT_GUNS[0]!, gun(FIGHT_GUN_2, null, null)], ratAt(15_000));
+  const mixed = gunsInReach(RAT, TWO_GUNS, blind, freshLadderMemory(), measured);
+  assert.deepEqual(mixed.trace.inReach, [FIGHT_GUN_1]);
+  assert.deepEqual(mixed.trace.assumed, [FIGHT_GUN_2]);
+  assert.deepEqual(mixed.trace.outOfReach, []);
+  assert.deepEqual(mixed.inReach, [FIGHT_GUN_1, FIGHT_GUN_2]);
+
+  // No measurement at all: every gun is assumed, none measured.
+  const unmeasured = gunsInReach(RAT, TWO_GUNS, observation, freshLadderMemory(), null);
+  assert.deepEqual(unmeasured.trace, {
+    targetID: RAT, distanceM: null, inReach: [], assumed: [FIGHT_GUN_1, FIGHT_GUN_2], outOfReach: [],
+  });
+
+  // No facts for the rack (throttled or unread): assumed too.
+  const unread = gunsInReach(RAT, TWO_GUNS, fightObs(null, ratAt(15_000)), freshLadderMemory(), measured);
+  assert.deepEqual(unread.trace.assumed, [FIGHT_GUN_1, FIGHT_GUN_2]);
+
+  // A gun judged out of reach stays held when the distance goes unknown: not assumed.
+  const held = gunsInReach(RAT, TWO_GUNS, observation, gate.memory, null);
+  assert.deepEqual(held.trace.inReach, []);
+  assert.deepEqual(held.trace.assumed, [FIGHT_GUN_1]);
+  assert.deepEqual(held.trace.outOfReach, [FIGHT_GUN_2]);
+
+  // No guns picked: empty lists.
+  const none = gunsInReach(RAT, { ...TWO_GUNS, weaponModuleIDs: [] }, observation, freshLadderMemory(), measured);
+  assert.deepEqual(none.trace, { targetID: RAT, distanceM: 15_000, inReach: [], assumed: [], outOfReach: [] });
+});
+
+test("the gate's words count measured guns and say how many more were assumed", () => {
+  assert.equal(gunsInReachWords(1, 2, 1), " Locked, and firing on it: 1 of 2 guns in reach (1 assumed).");
+  assert.equal(gunsInReachWords(0, 2, 2), " Locked, and firing on it: 0 of 2 guns in reach (2 assumed).");
+  assert.equal(gunsInReachWords(1, 3, 1), " Locked, and firing on it: 1 of 3 guns in reach (1 assumed).");
+  assert.equal(gunsInReachWords(0, 2, 0), " Locked, but none of my guns reach it from here.");
+  assert.equal(gunsInReachWords(2, 2, 0), " Locked, and firing on it.");
 });

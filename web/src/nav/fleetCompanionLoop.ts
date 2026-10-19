@@ -93,11 +93,15 @@ export interface CompanionHitPoints {
 // this ladder keeps only the call sites, the memory and the wrapper.
 import type { RatCombatFacts } from "./combatPosition.ts";
 import {
-  MISSILE_ORBIT_WHY,
   MWD_STAYS_OFF_WHY,
   orbitingAgainstMissiles,
+  propsBecause,
+  propsLightWhy,
   propsOnThisGrid,
+  propsStopWhy,
+  propsWanted,
 } from "./companionPropulsion.ts";
+import type { CompanionTrace, PropsTrace, PropsWithheld } from "./companionTrace.ts";
 import {
   closingOnTheHold,
   decideCombatPosition,
@@ -123,6 +127,7 @@ import {
 // Ammo by target (plan §5.2): the reload rung's ranking and the swap step live
 // in their own file; this ladder keeps the two call sites and the memory.
 import {
+  ammoSkipTrace,
   decideAmmoSwap,
   emptyGunAmmo,
   FRESH_COMPANION_AMMO,
@@ -1293,6 +1298,12 @@ export interface FleetCompanionProgress {
    * Fleet companions window restarts the first kind and never the second.
    */
   readonly selfPaused: boolean;
+  /**
+   * The last decision's trace (companionTrace.ts), for the flight recorder's
+   * `decide` line. Absent until a tick has decided, and on a tick whose read
+   * failed: no rung ran, so there is nothing to say.
+   */
+  readonly trace?: CompanionTrace;
 }
 
 export interface FleetCompanionController {
@@ -2230,6 +2241,13 @@ export interface CompanionDecision {
   /** Lower work may continue, but must not replace this standing movement order. */
   readonly holdsNavigation?: true;
   /**
+   * What the rungs that RAN this tick decided, in codes (companionTrace.ts).
+   * Attached once, by `decideCompanionAction`; see `noteTrace`. A fragment is
+   * absent when its rung never ran, which is how a reader sees where the tick
+   * stopped.
+   */
+  readonly trace?: CompanionTrace;
+  /**
    * The hostile a standing target decision is fighting, so the lock-ahead knows
    * which ship NOT to pre-lock and that there is a fight to lock ahead in.
    */
@@ -2412,10 +2430,68 @@ export function decideCompanionAction(
   memory: CompanionLadderMemory = freshLadderMemory(),
   nowMs: number = Date.now(),
 ): CompanionDecision {
+  const outer = collecting;
+  const collector: TraceCollector = { slots: {}, notice: null };
+  collecting = collector;
+  let decision: CompanionDecision;
+  try {
+    decision = decideAndClear(request, obs, memory, nowMs);
+  } finally {
+    collecting = outer;
+  }
+  // A notice is said once, after whatever the rest of the ladder decided, so it
+  // never takes a tick from a rung that had something to issue.
+  return {
+    ...decision,
+    ...(collector.notice === null ? {} : { why: `${decision.why} ${collector.notice}` }),
+    trace: collector.slots,
+  };
+}
+
+// ─── The decision trace (companionTrace.ts) ──────────────────────────────────
+//
+// ⚠ ONE COLLECTOR PER `decideCompanionAction` CALL, WRITTEN BY THE RUNGS AS THEY
+// RUN. The step has dozens of early returns, and threading the fragments
+// gathered so far through each would touch every one of them. Instead each rung's
+// call site notes its fragment here, and `decideCompanionAction` attaches the
+// lot once the step returns: a rung that never ran never wrote, so the absent
+// fragments say where the tick stopped. It is synchronous and saved/restored
+// around the call, so the ladder is still pure from outside and a nested call
+// cannot write into its caller's trace. Outside a call, noting is a no-op.
+
+type TraceSlots = { -readonly [K in keyof CompanionTrace]: CompanionTrace[K] };
+
+interface TraceCollector {
+  readonly slots: TraceSlots;
+  /** A one-tick sentence appended to the tick's readout (the utility give-up). */
+  notice: string | null;
+}
+
+let collecting: TraceCollector | null = null;
+
+function noteTrace<K extends keyof CompanionTrace>(slot: K, fragment: TraceSlots[K]): void {
+  if (collecting !== null) {
+    collecting.slots[slot] = fragment;
+  }
+}
+
+function noteNotice(sentence: string): void {
+  if (collecting !== null && sentence !== "") {
+    collecting.notice = collecting.notice === null ? sentence : `${collecting.notice} ${sentence}`;
+  }
+}
+
+/** `decideCompanionAction` without the trace: the step, then the latches the chosen move ends. */
+function decideAndClear(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): CompanionDecision {
   const decision = decideCompanionStep(request, obs,
     obs.inWarp === true || obs.docked === true
       ? {
-          ...clearMovementLatches(memory, null),
+          ...clearMovementLatches(memory, null, obs.docked === true ? "docked" : "in-warp"),
           alignmentOrder: null,
           // Docked, every module stopped; a warp took the targets (rung 8a).
           utilities: obs.docked === true ? FRESH_COMPANION_UTILITIES : utilitiesAfterWarp(memory.utilities),
@@ -2452,10 +2528,19 @@ export function decideCompanionAction(
 function clearMovementLatches(
   memory: CompanionLadderMemory,
   action: FleetCompanionAction | null,
+  by: string = action?.kind ?? "in-warp",
 ): CompanionLadderMemory {
   const formation = action?.kind === "keepAtRange" && action.targetID === memory.followAnchorID;
   const kept = formation ? memory : withoutIssuedFollow(memory);
-  return action !== null && isCombatHoldOrder(action, kept) ? kept : withoutCombatHold(kept);
+  const next = action !== null && isCombatHoldOrder(action, kept) ? kept : withoutCombatHold(kept);
+  // The trace's `cleared`: only a latch that was SET and is now gone, and only
+  // when something was. A farTicks reset on an idle record is not a dropped hold.
+  const follow = kept !== memory;
+  const hold = memory.combatPosition.hold !== null && next.combatPosition.hold === null;
+  if (follow || hold) {
+    noteTrace("cleared", { by, follow, hold });
+  }
+  return next;
 }
 
 // `closingOn` stands for the approach that set it and nothing else. `decideCloseIn`
@@ -2680,6 +2765,7 @@ function decideCompanionStep(
   // issues no action, and a call site taking only the decision would drop it and
   // re-issue the same deactivate for ever.
   const burning = decidePropulsion(request, obs, tankedUp.memory);
+  noteTrace("props", burning.trace);
   if (burning.decision !== null) {
     return burning.decision;
   }
@@ -2821,6 +2907,7 @@ function decideCompanionStep(
     // target is rung 7's answer and the reload rung sits above it. See
     // companionAmmo.ts.
     const ammo = decideAmmoSwap(request, obs, obeying.memory, obeying.engagedTargetID, nowMs, AMMO_LADDER);
+    noteTrace("ammo", ammo.trace);
     if (ammo.swap !== null) {
       return {
         action: { kind: "loadAmmo", moduleIDs: ammo.swap.moduleIDs, chargeItemID: ammo.swap.chargeItemID },
@@ -2832,6 +2919,9 @@ function decideCompanionStep(
       };
     }
     obeying = { ...obeying, memory: ammo.memory };
+  } else {
+    // Rung 7 stands on no target, so the ammo step is not asked; the trace says so.
+    noteTrace("ammo", ammoSkipTrace("not-engaged"));
   }
 
   // Rung 8b: the `loot` order.
@@ -2860,6 +2950,7 @@ function decideCompanionStep(
   let lowerMemory = obeying?.memory ?? reloading.memory;
   const engagedID = obeying?.engagedTargetID ?? null;
   const positioned = decideCombatPosition(request, obs, obeying, lowerMemory, COMBAT_POSITION_LADDER);
+  noteTrace("combat", positioned.trace);
   lowerMemory = positioned.memory;
   if (positioned.decision !== null && positioned.decision.standing !== true) {
     return positioned.decision;
@@ -2873,7 +2964,13 @@ function decideCompanionStep(
   // wreck work. Threaded: settling a stopped module issues nothing. The flee and
   // the abandonment protocol return above, so a pilot leaving never gets here.
   const utility = decideUtilityRung(request, obs, engagedID, lowerMemory, nowMs);
+  noteTrace("util", utility.trace);
   lowerMemory = utility.memory;
+  // A `why` with no call is the give-up notice ("Could not switch ... off"): said
+  // once, appended to whatever the rungs below decide, so it starves none of them.
+  if (utility.call === null) {
+    noteNotice(utility.why);
+  }
   if (utility.call !== null) {
     return {
       action: utility.call,
@@ -4238,6 +4335,7 @@ function lockThenEngage(
   }
   // The range gate (companionCombatPosition.ts): only the guns that reach it start.
   const gated = gunsInReach(targetID, request, obs, memory, measurement);
+  noteTrace("guns", gated.trace);
   memory = gated.memory;
   const fire = decideOpenFire(targetID, { ...request, weaponModuleIDs: gated.inReach }, obs, memory);
   if (fire !== null) {
@@ -4266,7 +4364,7 @@ function lockThenEngage(
       why +
       (request.weaponModuleIDs.length === 0
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
-        : gunsInReachWords(gated.inReach.length, request.weaponModuleIDs.length)),
+        : gunsInReachWords(gated.inReach.length - gated.assumed.length, request.weaponModuleIDs.length, gated.assumed.length)),
     memory,
     lastOrderHeard: heard,
     engagedTargetID: targetID,
@@ -6680,10 +6778,33 @@ function decidePropulsion(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
-): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory; readonly trace: PropsTrace } {
+  // ⚠ `wantBurn` IS THE WHOLE OF WHAT THIS LOOP STILL DECIDES ABOUT PROPULSION.
+  // The standing chat order beats the travel test and `null` is not "off"; see
+  // this rung's header. Everything downstream of the question -- the scram, the
+  // unknown kind, the floor, which module -- is `decidePropulsionModule`.
+  //
+  // ⚠ WHILE RUNG 8'S OWN ORDER STANDS, THE BURNER IS RUNG 8'S: lit only while
+  // closing on its hold. A drone boat's keep-at-range on a RAT is FOLLOW mode
+  // and is not formation, so `isUnderWay` alone would read it as travelling
+  // and burn the whole fight -- the bug the formation rule exists to remove.
+  // `propsBecause` is that precedence, as one code for the trace.
+  const ownHold = memory.flightMode === "auto" && memory.combatPosition.hold !== null;
+  const missileOrbit = orbitingAgainstMissiles(obs, memory);
+  const because = propsBecause({
+    held: memory.propsHeld,
+    ownHold,
+    closing: closingOnTheHold(memory),
+    missileOrbit,
+    travel: isUnderWay(obs, memory),
+  });
+  const wantBurn = propsWanted(because);
+  const done = (decision: CompanionDecision | null, next: CompanionLadderMemory, withheld: PropsWithheld | null) =>
+    ({ decision, memory: next, trace: { want: wantBurn, because, withheld } });
+
   const fitted = request.propulsionModules;
   if (fitted.length === 0 || obs.inSpace !== true) {
-    return { decision: null, memory };
+    return done(null, memory, null);
   }
   // ⚠ `activeModuleIDs` IS THE AUTHORITY AND `null` MEANS "CANNOT SAY". An
   // unreadable snapshot must not be read as "nothing is running" -- that would
@@ -6693,13 +6814,9 @@ function decidePropulsion(
   // cannot see its own rack has nothing to ask.
   const active = obs.snapshot?.ship?.activeModuleIDs ?? null;
   if (active === null) {
-    return { decision: null, memory };
+    return done(null, memory, "unreadable-rack");
   }
 
-  // ⚠ `wantBurn` IS THE WHOLE OF WHAT THIS LOOP STILL DECIDES ABOUT PROPULSION.
-  // The standing chat order beats the travel test and `null` is not "off"; see
-  // this rung's header. Everything downstream of the question -- the scram, the
-  // unknown kind, the floor, which module -- is `decidePropulsionModule`.
   const activeSet = new Set(active);
   // ⚠ A RUNNING MWD (OR UNKNOWN KIND) WITH HOSTILES ON GRID IS STOOD DOWN HERE:
   // the narrowed list below hides it from the shared policy, which cannot stop
@@ -6707,30 +6824,21 @@ function decidePropulsion(
   const gridProps = propsOnThisGrid(fitted, activeSet, obs, memory);
   if (gridProps.standDown !== null) {
     if (memory.propsStoppingID === gridProps.standDown.itemID) {
-      return { decision: null, memory };
+      return done(null, memory, "stop-latched");
     }
-    return {
-      decision: {
-        action: { kind: "deactivate", moduleID: gridProps.standDown.itemID, typeID: gridProps.standDown.typeID },
-        phase: "Propulsion",
-        why: MWD_STAYS_OFF_WHY,
-        memory: { ...memory, propsStoppingID: gridProps.standDown.itemID },
-      },
-      memory,
-    };
+    return done({
+      action: { kind: "deactivate", moduleID: gridProps.standDown.itemID, typeID: gridProps.standDown.typeID },
+      phase: "Propulsion",
+      why: MWD_STAYS_OFF_WHY,
+      memory: { ...memory, propsStoppingID: gridProps.standDown.itemID },
+    }, memory, wantBurn ? "mwd-banned" : null);
   }
   const inputs: PropulsionInputs = {
     modules: gridProps.modules,
     activeModuleIDs: activeSet,
     capacitorRatio: obs.capacitorRatio ?? null,
     scrammed: obs.scrammed ?? null,
-    // ⚠ WHILE RUNG 8'S OWN ORDER STANDS, THE BURNER IS RUNG 8'S: lit only while
-    // closing on its hold. A drone boat's keep-at-range on a RAT is FOLLOW mode
-    // and is not formation, so `isUnderWay` alone would read it as travelling
-    // and burn the whole fight -- the bug the formation rule exists to remove.
-    wantBurn: memory.propsHeld ?? (memory.flightMode === "auto" && memory.combatPosition.hold !== null
-      ? closingOnTheHold(memory) || orbitingAgainstMissiles(obs, memory)
-      : closingOnTheHold(memory) || isUnderWay(obs, memory)),
+    wantBurn,
     capFloor: request.capacitorFloor,
   };
   const call = decidePropulsionModule(inputs);
@@ -6740,20 +6848,22 @@ function decidePropulsion(
     // stopped -- the latch is this loop's, because it is about calls already
     // spent and not about what the rack should look like.
     if (memory.propsStoppingID === call.module.itemID) {
-      return { decision: null, memory };
+      return done(null, memory, "stop-latched");
     }
-    return {
-      decision: {
+    // The sentence names the cause: "not travelling" was once said for all four.
+    const mode = obs.snapshot?.ship?.mode?.toUpperCase() ?? null;
+    const stopCause = because === "held-off" ? "held-off"
+      : ownHold ? "on-station"
+        : mode === "FOLLOW" && obs.hostileOnGrid === true && holdsFormation(memory) ? "formation"
+          : "not-travelling";
+    return done({
         // ⚠ THE typeID IS WHAT MAKES THIS WORK AT ALL. Deactivate stops a prop
         // mod only when it names the propulsion effect, and the BFF resolves
         // that name from the typeID -- without it the call returns success and
         // the burner keeps cycling. See the action's own header.
         action: { kind: "deactivate", moduleID: call.module.itemID, typeID: call.module.typeID },
         phase: "Propulsion",
-        why:
-          memory.propsHeld === false
-            ? "A commander said props off in chat. Standing the prop mod down."
-            : "Not travelling any more. Standing the prop mod down.",
+        why: propsStopWhy(stopCause),
         memory: { ...memory, propsStoppingID: call.module.itemID },
         ...(memory.propsHeld === false
           ? {
@@ -6761,24 +6871,16 @@ function decidePropulsion(
               lastOrderHeard: "a chat order to stop the prop mod",
             }
           : {}),
-      },
-      memory,
-    };
+    }, memory, null);
   }
 
   if (call.kind === "light") {
-    return {
-      decision: {
+    return done({
         // ⚠ SELF-TARGETED, so no `targetID` -- `0` is this codebase's sentinel for
         // "run it on the caster", the same form the hardeners use.
         action: { kind: "activate", moduleID: call.module.itemID, targetID: 0 },
         phase: "Propulsion",
-        why:
-          memory.propsHeld === true
-            ? "A commander said props on in chat. Lighting the prop mod."
-            : closingOnTheHold(memory) ? "Closing in on the target. Lighting the prop mod."
-            : orbitingAgainstMissiles(obs, memory) ? MISSILE_ORBIT_WHY
-            : "Travelling. Lighting the prop mod.",
+        why: propsLightWhy(because, missileOrbit),
         memory: { ...memory, propsStoppingID: null },
         ...(memory.propsHeld === true
           ? {
@@ -6786,9 +6888,7 @@ function decidePropulsion(
               lastOrderHeard: "a chat order to run the prop mod",
             }
           : {}),
-      },
-      memory,
-    };
+    }, memory, null);
   }
 
   // Nothing to do: the rack already agrees with what is wanted. Clearing the
@@ -6808,12 +6908,19 @@ function decidePropulsion(
     inputs.capacitorRatio < inputs.capFloor &&
     decidePropulsionModule({ ...inputs, capacitorRatio: null }).kind === "light";
   if (heldBackByTheFloor) {
-    return { decision: null, memory };
+    return done(null, memory, "cap-floor");
   }
-  return {
-    decision: null,
-    memory: memory.propsStoppingID === null ? memory : { ...memory, propsStoppingID: null },
-  };
+  // The trace's other reasons a wanted burn lit nothing. Only when NOTHING the
+  // policy was shown is running: a lit afterburner beside an idle, banned
+  // microwarpdrive is the burn that was wanted, not one withheld.
+  const lit = gridProps.modules.some((module) => activeSet.has(module.itemID));
+  const failOpen = { capacitorRatio: null, scrammed: null } as const;
+  const withheld: PropsWithheld | null = !wantBurn || lit ? null
+    : gridProps.modules.length < fitted.length &&
+        decidePropulsionModule({ ...inputs, ...failOpen, modules: fitted }).kind === "light" ? "mwd-banned"
+    : inputs.scrammed === true && decidePropulsionModule({ ...inputs, ...failOpen }).kind === "light" ? "scrammed"
+    : null;
+  return done(null, memory.propsStoppingID === null ? memory : { ...memory, propsStoppingID: null }, withheld);
 }
 
 /**
@@ -7143,9 +7250,13 @@ function decideReload(
   }
 
   const groups = obs.weaponChargeGroups ?? null;
-  // The ranked stack when there is one, else the largest-stack rule below.
-  const pick = (moduleID: number): CompanionCargoCharge | null =>
-    ammo.pick(moduleID, charges) ?? pickChargeFor(moduleID, charges, groups);
+  // The ranked stack when there is one, else the largest-stack rule below; the
+  // rule rides along so the readout can say which one chose.
+  const pickWithRule = (moduleID: number): { charge: CompanionCargoCharge | null; rule: "ranked" | "largest" } => {
+    const ranked = ammo.pickWithRule(moduleID, charges);
+    return ranked.charge !== null ? ranked : { charge: pickChargeFor(moduleID, charges, groups), rule: "largest" };
+  };
+  const pick = (moduleID: number): CompanionCargoCharge | null => pickWithRule(moduleID).charge;
   const spent = (moduleID: number): boolean =>
     (mem.reloadAttempts[moduleID] ?? 0) >= MAX_COMPANION_RELOAD_ATTEMPTS;
 
@@ -7154,16 +7265,18 @@ function decideReload(
   // aboard will fit must not stop the rest of the rack being loaded.
   let first: number | null = null;
   let chosen: CompanionCargoCharge | null = null;
+  let rule: "ranked" | "largest" = "largest";
   for (const moduleID of empty) {
     if (spent(moduleID)) {
       continue;
     }
-    const charge = pick(moduleID);
-    if (charge === null) {
+    const picked = pickWithRule(moduleID);
+    if (picked.charge === null) {
       continue;
     }
     first = moduleID;
-    chosen = charge;
+    chosen = picked.charge;
+    rule = picked.rule;
     break;
   }
   if (first === null || chosen === null) {
@@ -7187,6 +7300,8 @@ function decideReload(
     attempts[moduleID] = (attempts[moduleID] ?? 0) + 1;
   }
   const retrying = (mem.reloadAttempts[first] ?? 0) > 0;
+  // Which rule picked the stack: ranked for the target, or the largest stack.
+  const ruleWords = rule === "ranked" ? " Best ammo for the target." : " Largest stack.";
   return {
     decision: {
       action: { kind: "loadAmmo", moduleIDs: bank, chargeItemID: chosen.itemID },
@@ -7194,13 +7309,13 @@ function decideReload(
       // ⚠ NO CHARGE NAME, EVER. This ladder holds ids and never a type name, and
       // inventing one ("loading Antimatter") would be the readout claiming
       // something nothing here resolved.
-      why: retrying
+      why: (retrying
         ? bank.length === 1
           ? "That gun is still empty. Loading it again from the cargo bay."
           : `Those ${bank.length} guns are still empty. Loading them again from the cargo bay.`
         : bank.length === 1
           ? "A gun is empty. Loading it from the cargo bay."
-          : `${bank.length} guns are empty. Loading them from the cargo bay.`,
+          : `${bank.length} guns are empty. Loading them from the cargo bay.`) + ruleWords,
       memory: { ...mem, reloadAttempts: attempts },
     },
     memory: mem,
@@ -8957,6 +9072,8 @@ interface CompanionMemory {
   request: FleetCompanionRequest | null;
   /** The ladder's own threaded memory — see `CompanionLadderMemory`. */
   ladder: CompanionLadderMemory;
+  /** The last decision's trace; null until one, and after a failed read. */
+  trace: CompanionTrace | null;
 }
 
 function freshMemory(): CompanionMemory {
@@ -8974,7 +9091,16 @@ function freshMemory(): CompanionMemory {
     selfPaused: false,
     request: null,
     ladder: freshLadderMemory(),
+    trace: null,
   };
+}
+
+/**
+ * How a failed call is classed -- the same three answers the settle functions
+ * act on -- for the recorder's `result` line.
+ */
+function companionVerdict(error: unknown): "deferred" | "refused" | "uncertain" {
+  return isSessionChangeDeferral(error) ? "deferred" : isDefiniteCompanionRefusal(error) ? "refused" : "uncertain";
 }
 
 /** The persisted half of the ladder's abandonment, or null when there is none. */
@@ -9028,10 +9154,16 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
   let activeTick: Promise<FleetCompanionAction> | null = null;
   let activeDriver: { token: number; promise: Promise<void> } | null = null;
   const recorder = createCompanionRecorder(deps.log, () => deps.now?.() ?? Date.now());
+  /**
+   * The run's tick counter, for the recorder: every tick takes the next number,
+   * and the `decide`, `issue` and `result` lines it writes carry it, so a reader
+   * can put a call back beside the decision that sent it. Reset by `start()`.
+   */
+  let seq = 0;
 
-  function report(): void {
+  function report(tickSeq?: number): void {
     const progress = snapshot();
-    recorder.progress(progress);
+    recorder.progress(progress, tickSeq === undefined ? undefined : { seq: tickSeq });
     deps.onProgress?.(progress);
   }
 
@@ -9049,6 +9181,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       abandonment: abandonmentRecord(mem.ladder),
       failureReason: mem.failureReason,
       selfPaused: mem.status === "paused" && mem.selfPaused,
+      ...(mem.trace === null ? {} : { trace: mem.trace }),
     };
   }
 
@@ -9136,6 +9269,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       return { kind: "wait" };
     }
     const token = runToken;
+    seq += 1;
+    const tickSeq = seq;
     let obs: FleetCompanionObservation;
     const observeStartedMs = deps.now?.() ?? Date.now();
     try {
@@ -9155,11 +9290,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         mem.readFailing = { sinceMs: nowMs, token };
       }
       const transient = isTransportTransient(error) || isTransitionTimeout(error);
+      // No rung ran on this tick, so no trace stands for it.
+      mem.trace = null;
       if (transient && nowMs - mem.readFailing.sinceMs < FLEET_COMPANION_READ_GRACE_MS) {
         mem.phase = "Reconnecting";
         mem.action = null;
         mem.why = "The game server is not answering. Reading the ship again.";
-        report();
+        report(tickSeq);
         return { kind: "wait" };
       }
       // ⚠ THE SENTENCE IS THE ONE THE PANEL SHOWS, so it is player language
@@ -9171,7 +9308,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       mem.why = "Could not read the ship.";
       mem.action = null;
       mem.readFailing = null;
-      report();
+      report(tickSeq);
       return { kind: "wait" };
     }
     if (token !== runToken || mem.status !== "running") {
@@ -9201,15 +9338,18 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     // "Standing by" are all the companion's own ladder, not a fleet order.
     mem.followingOrderFrom = decision.followingOrderFrom ?? "own-ladder";
     mem.lastOrderHeard = decision.lastOrderHeard ?? null;
+    mem.trace = decision.trace ?? null;
     // The decision is logged before anything it sends, so the log reads in order.
-    recorder.progress(snapshot());
+    // ⚠ A TICK THAT ISSUES ALWAYS WRITES ITS `decide` LINE, changed or not, so
+    // every `issue` and `result` has the decision of the same `seq` beside it.
+    recorder.progress(snapshot(), { seq: tickSeq, force: decision.action.kind !== "wait" });
     if (decision.pause !== undefined) {
       runToken += 1;
       mem.status = "paused";
       mem.selfPaused = true;
       mem.action = null;
       mem.failureReason = decision.pause;
-      report();
+      report(tickSeq);
       return { kind: "wait" };
     }
     if (decision.stop !== undefined) {
@@ -9221,20 +9361,20 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       mem.status = "stopped";
       mem.action = null;
       mem.failureReason = decision.stop;
-      report();
+      report(tickSeq);
       return { kind: "wait" };
     }
     if (decision.action.kind !== "wait") {
-      recorder.issue(decision.action, decision.phase, decision.why);
+      recorder.issue(decision.action, decision.phase, decision.why, tickSeq);
       try {
         await deps.issue(decision.action);
-        recorder.result(true);
+        recorder.result(true, undefined, { seq: tickSeq });
         settleAlignment(decision, "issued");
         settleFollow(decision, true);
         settleCombatPosition(decision, true);
         settleDroneEngagement(decision, true);
       } catch (error) {
-        recorder.result(false, error);
+        recorder.result(false, error, { seq: tickSeq, verdict: companionVerdict(error) });
         // ⚠ A REFUSED CALL IS AN ANSWER, NOT THE END OF THE RUN. This used to
         // propagate: the rejection came out of `tick`, out of `run`, and landed
         // on a `void run()` in flow.ts as an UNHANDLED PROMISE REJECTION. The
@@ -9292,12 +9432,12 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         ).includes(decision.action.moduleID)) || decision.action.kind === "lock") {
           mem.ladder = noteHealFailure(mem.ladder, decision.action, error);
         }
-        report();
+        report(tickSeq);
         return { kind: "wait" };
       }
     }
     if (token !== runToken || mem.status !== "running") return { kind: "wait" };
-    report();
+    report(tickSeq);
     return decision.action;
   }
 
@@ -9314,6 +9454,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
   return {
     start(next: FleetCompanionRequest, resuming: CompanionAbandonmentRecord | null = null): void {
       recorder.start();
+      seq = 0;
       mem = freshMemory();
       mem.status = "running";
       mem.request = next;
@@ -9487,6 +9628,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       mem.phase = null;
       mem.action = null;
       mem.why = null;
+      mem.trace = null;
       report();
     },
     beginGracefulStop(): Promise<void> {

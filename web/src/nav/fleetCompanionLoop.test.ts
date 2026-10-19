@@ -34,6 +34,7 @@ import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { DroneFacts } from "./droneSizing.ts";
 import { MAX_DRONE_ROTATIONS } from "./droneRotation.ts";
 import { MISSILE_ORBIT_WHY, MWD_STAYS_OFF_WHY } from "./companionPropulsion.ts";
+import { UTILITY_STOP_RETRY_MS } from "./companionUtilities.ts";
 import {
   FIGHT_FC_SHIP,
   FIGHT_FOLLOW_M,
@@ -10672,7 +10673,8 @@ test("the web goes off when the target dies, and a web that stopped by itself co
   });
   const stopping = decideCompanionAction(TWO_GUNS, dead([UTILITY_WEB]), webbing.memory, UTILITY_T0 + 2_000);
   assert.deepEqual(stopping.action, { kind: "deactivate", moduleID: UTILITY_WEB, typeID: 5065 });
-  assert.equal(stopping.why, "The target is gone: switching the stasis webifier off.");
+  // The call is gone and the rat with it, so rung 7 stands on nothing.
+  assert.equal(stopping.why, "No target engaged: switching the stasis webifier off.");
 
   // Not running once its activation grace is over: the cycle ran out on the
   // dead rat, so there is nothing to stop and nothing left to own.
@@ -10714,4 +10716,235 @@ test("a fleeing pilot is not kept busy with its utilities", () => {
     );
     memory = next.memory;
   }
+});
+
+// --- the decision trace (companionTrace.ts) -----------------------------------
+//
+// Each rung that RAN writes its fragment; `decideCompanionAction` attaches them.
+// A fragment that is absent says the tick stopped above that rung.
+
+test("the trace: a standing tick in a fight carries every rung beneath the fleet order", () => {
+  const formed = inFormation(flyingAuto());
+  const grid = ratAt(50_000, TYPE_SHORT_RAT);
+  const kiting = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), formed.memory);
+  assert.deepEqual(kiting.action, { kind: "keepAtRange", targetID: RAT, range: 15_000 });
+  let memory = kiting.memory;
+  for (let tick = 0; tick < 2; tick += 1) {
+    memory = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), memory).memory;
+  }
+  const holding = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), memory);
+  assert.equal(holding.action.kind, "wait");
+  const trace = holding.trace!;
+  assert.equal(trace.combat?.mode, "auto");
+  assert.equal(trace.combat?.targetID, RAT);
+  assert.equal(trace.combat?.outcome, "kite");
+  assert.equal(trace.guns?.targetID, RAT);
+  // The ship never moves in this fixture, so rung 8 is still closing on its hold;
+  // no prop mod is fitted, so nothing lights, and nothing is "withheld" either.
+  assert.deepEqual(trace.props, { want: true, because: "closing", withheld: null });
+  assert.equal(trace.ammo?.targetID, RAT);
+  // The fixture reads no utility facts, and rung 8a says so rather than staying silent.
+  assert.deepEqual(trace.util, { skipped: [{ moduleID: 0, family: "all", code: "no-facts" }], gaveUp: [] });
+  assert.equal(trace.cleared, undefined, "nothing was dropped on a holding tick");
+});
+
+test("the trace: a rung that returns early leaves the fragments beneath it absent", () => {
+  const formed = inFormation(flyingAuto());
+  const kiting = decideCompanionAction(
+    TWO_GUNS, fightObs(LONG_GUNS, ratAt(50_000, TYPE_SHORT_RAT)), formed.memory);
+  assert.equal(kiting.action.kind, "keepAtRange");
+  assert.ok(kiting.trace?.props && kiting.trace.guns && kiting.trace.ammo && kiting.trace.combat);
+  assert.equal(kiting.trace?.util, undefined, "rung 8 issued, so rung 8a never ran");
+  // The keep-at-range on the rat drops the formation latch, and says which action did.
+  assert.deepEqual(kiting.trace?.cleared, { by: "keepAtRange", follow: true, hold: false });
+
+  // The prop rung issues: nothing beneath it ran.
+  const lighting = decideCompanionAction(
+    withProps(), obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling() }));
+  assert.equal(lighting.phase, "Propulsion");
+  assert.deepEqual(Object.keys(lighting.trace ?? {}), ["props"]);
+
+  // Mid-warp: no rung ran, and only the latches the warp dropped are recorded.
+  assert.deepEqual(decideCompanionAction(REQUEST, obs({ inWarp: true })).trace, {});
+  const warping = decideCompanionAction(REQUEST, obs({ inWarp: true }), formed.memory);
+  assert.deepEqual(warping.trace, { cleared: { by: "in-warp", follow: true, hold: false } });
+});
+
+test("the trace: a movement that drops rung 8's hold says so", () => {
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), flyingAuto());
+  assert.notEqual(orbiting.memory.combatPosition.hold, null);
+  const stopped = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, fightGrid(), RAT, { chatMessages: [commanderSays("stop", 2_000)] }),
+    orbiting.memory,
+  );
+  assert.equal(stopped.action.kind, "stopShip");
+  assert.deepEqual(stopped.trace?.cleared, { by: "stopShip", follow: false, hold: true });
+});
+
+test("the props trace: one code per cause, and the withheld reason when a wanted burn lit nothing", () => {
+  const props = (decision: CompanionDecision) => decision.trace?.props;
+  const travel = decideCompanionAction(withProps(), obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling() }));
+  assert.deepEqual(props(travel), { want: true, because: "travel", withheld: null });
+  assert.equal(travel.why, "Travelling. Lighting the prop mod.");
+
+  const arrived = obs({ snapshot: gridWithShipsAndActive([], [MWD.itemID]), travel: travelling("arrived") });
+  const stopping = decideCompanionAction(withProps(), arrived);
+  assert.deepEqual(props(stopping), { want: false, because: "none", withheld: null });
+  assert.equal(stopping.why, "Not travelling any more. Standing the prop mod down.");
+  const latched = decideCompanionAction(withProps(), arrived, stopping.memory);
+  assert.deepEqual(props(latched), { want: false, because: "none", withheld: "stop-latched" });
+
+  const on = decideCompanionAction(withProps(), obs({
+    snapshot: gridWithShipsAndActive([], []), travel: travelling("idle"), chatMessages: [chatLine("props on", HUMAN)],
+  }));
+  assert.deepEqual(props(on), { want: true, because: "held-on", withheld: null });
+  const off = decideCompanionAction(withProps(), obs({
+    snapshot: gridWithShipsAndActive([], [MWD.itemID]), travel: travelling(), chatMessages: [chatLine("props off", HUMAN)],
+  }));
+  assert.deepEqual(props(off), { want: false, because: "held-off", withheld: null });
+  assert.equal(off.why, "A commander said props off in chat. Standing the prop mod down.");
+
+  const formation = decideCompanionAction(
+    withProps([AFTERBURNER]),
+    obs({ snapshot: gridInMode("FOLLOW", [AFTERBURNER.itemID]), hostileOnGrid: true }),
+    holdingFormation,
+  );
+  assert.equal(formation.action.kind, "deactivate");
+  assert.equal(formation.why, "Holding formation with hostiles on grid. Standing the prop mod down.");
+
+  const goto = gridInMode("GOTO");
+  const unreadable = decideCompanionAction(withProps(), obs({
+    snapshot: { ...goto, ship: { ...goto.ship!, activeModuleIDs: null } } as unknown as SpaceSnapshot,
+  }));
+  assert.deepEqual(props(unreadable), { want: true, because: "travel", withheld: "unreadable-rack" });
+
+  const floor = decideCompanionAction({ ...withProps(), capacitorFloor: 0.5 },
+    obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling(), capacitorRatio: 0.2 }));
+  assert.deepEqual(props(floor), { want: true, because: "travel", withheld: "cap-floor" });
+
+  const scram = decideCompanionAction(withProps([MWD]),
+    obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling(), scrammed: true }));
+  assert.deepEqual(props(scram), { want: true, because: "travel", withheld: "scrammed" });
+
+  const banned = decideCompanionAction(propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO" }), freshLadderMemory());
+  assert.deepEqual(props(banned), { want: true, because: "travel", withheld: "mwd-banned" });
+  const standDown = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO", active: [FIGHT_MWD.itemID] }), freshLadderMemory());
+  assert.equal(standDown.why, MWD_STAYS_OFF_WHY);
+  assert.deepEqual(props(standDown), { want: true, because: "travel", withheld: "mwd-banned" });
+  // An afterburner beside the banned microwarpdrive is the burn that was wanted.
+  const both = decideCompanionAction(propFightRequest([FIGHT_MWD, FIGHT_AB]),
+    propFightObs({ mode: "GOTO", active: [FIGHT_AB.itemID] }), freshLadderMemory());
+  assert.deepEqual(props(both), { want: true, because: "travel", withheld: null });
+});
+
+test("the props trace: closing, the missile orbit, both at once, and in position on the target", () => {
+  const props = (decision: CompanionDecision) => decision.trace?.props;
+  const far = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), flyingAuto());
+  const closing = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), far.memory);
+  assert.deepEqual(props(closing), { want: true, because: "closing", withheld: null });
+  assert.equal(closing.why, "Closing in on the target. Lighting the prop mod.");
+
+  const missileFar = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000, typeID: TYPE_MISSILE_RAT }), flyingAuto());
+  const both = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000, typeID: TYPE_MISSILE_RAT }), missileFar.memory);
+  assert.deepEqual(props(both), { want: true, because: "closing", withheld: null }, "closing wins the code");
+  assert.equal(both.why, "Closing in on the target, and missile rats are here. Lighting the prop mod.");
+
+  const orbit = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT }),
+    orderStanding([FIGHT_AB], 8_000, TYPE_MISSILE_RAT));
+  assert.deepEqual(props(orbit), { want: true, because: "missile-orbit", withheld: null });
+
+  const onStation = decideCompanionAction(propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, active: [FIGHT_AB.itemID] }), orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT));
+  assert.equal(onStation.action.kind, "deactivate");
+  assert.equal(onStation.why, "In position on the target. Standing the prop mod down.");
+  assert.deepEqual(props(onStation), { want: false, because: "none", withheld: null });
+  for (const why of [closing.why, both.why, onStation.why]) assert.match(why, /^[\x20-\x7e]+$/);
+});
+
+test("the utility give-up is said once, beside the readout, and starves nothing beneath it", () => {
+  const grid = utilityGrid(ratAt(8_000), [FIGHT_GUN_1, FIGHT_GUN_2]);
+  const webbing = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, { combatUtilities: UTILITY_FACTS }), GUNS_ON_RAT, UTILITY_T0);
+  assert.deepEqual(webbing.action, { kind: "activate", moduleID: UTILITY_WEB, targetID: RAT });
+  // The rat is dead and the web will not stop: every try is refused by the rack.
+  const dead = fightObs(SHORT_GUNS, utilityGrid(fightGrid({ rats: [] }), [UTILITY_WEB]), RAT, {
+    fleetTargetTags: null, lockedTargetIDs: [], hostileOnGrid: false, combatUtilities: UTILITY_FACTS,
+  });
+  const notice = "Could not switch the webifier off after 3 tries; leaving it.";
+  let memory = webbing.memory;
+  let now = UTILITY_T0 + 2_000;
+  const said: string[] = [];
+  for (let tick = 0; tick < 8; tick += 1) {
+    const decision = decideCompanionAction(TWO_GUNS, dead, memory, now);
+    if (decision.why.includes(notice)) {
+      said.push(decision.why);
+      assert.equal(decision.trace?.util?.gaveUp.length, 1);
+      assert.ok(decision.why.endsWith(` ${notice}`) && decision.why !== ` ${notice}`, "after the tick's own readout");
+      assert.notEqual(decision.phase, "Combat utilities", "the tick went to the rungs beneath");
+    }
+    memory = decision.memory;
+    now += UTILITY_STOP_RETRY_MS;
+  }
+  assert.equal(said.length, 1, JSON.stringify(said));
+});
+
+// --- the decision trace on the flight recorder -------------------------------
+
+test("seq ties a tick's decide, issue and result lines together, one number per tick", async () => {
+  const { deps, lines } = recordingDeps();
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  await controller.tick();
+  await controller.tick();
+  const issues = lines.filter((line) => line.kind === "issue");
+  assert.ok(issues.length >= 1);
+  for (const issue of issues) {
+    assert.equal(typeof issue.seq, "number");
+    assert.ok(lines.some((line) => line.kind === "decide" && line.seq === issue.seq), `decide for seq ${issue.seq}`);
+    assert.ok(lines.some((line) => line.kind === "result" && line.seq === issue.seq), `result for seq ${issue.seq}`);
+  }
+  const seqs = lines.filter((line) => line.seq !== undefined).map((line) => line.seq);
+  assert.deepEqual([...new Set(seqs)], [1, 2], "a fresh counter, one number per tick");
+  const decide = lines.find((line) => line.kind === "decide" && line.seq === 1)!;
+  assert.ok(decide.trace !== undefined, "the decide line carries the tick's trace");
+});
+
+test("a tick that issues writes its decide line even when nothing changed", async () => {
+  const { deps, lines } = recordingDeps({
+    observe: async () => obs({ snapshot: gridWithShipsAndActive([], []), travel: travelling() }),
+  });
+  const controller = createFleetCompanion(deps);
+  controller.start(withProps());
+  await controller.tick();
+  await controller.tick();
+  const decides = lines.filter((line) => line.kind === "decide" && line.seq !== undefined);
+  assert.deepEqual(decides.map((line) => line.seq), [1, 2]);
+  assert.equal(decides[0]!.why, decides[1]!.why, "the same readout, written twice: once per issuing tick");
+  assert.deepEqual(lines.filter((line) => line.kind === "issue").map((line) => line.seq), [1, 2]);
+});
+
+test("a failed call's result line carries the ladder's verdict", async () => {
+  const cases: [unknown, string][] = [
+    [Object.assign(new Error("TargetNotWithinRangeGeneric"), { code: "CALL_REFUSED" }), "refused"],
+    [Object.assign(new Error("session change"), { code: "SESSION_CHANGE_IN_PROGRESS" }), "deferred"],
+    [new Error("socket hang up"), "uncertain"],
+  ];
+  for (const [error, verdict] of cases) {
+    const { deps, lines } = recordingDeps({ issue: async () => { throw error; } });
+    const controller = createFleetCompanion(deps);
+    controller.start(REQUEST);
+    await controller.tick();
+    const result = lines.find((line) => line.kind === "result")!;
+    assert.equal(result.ok, false);
+    assert.equal(result.verdict, verdict);
+    assert.equal(result.seq, 1);
+  }
+  const { deps, lines } = recordingDeps();
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  await controller.tick();
+  assert.equal(lines.find((line) => line.kind === "result")!.verdict, undefined, "a call that landed has none");
 });

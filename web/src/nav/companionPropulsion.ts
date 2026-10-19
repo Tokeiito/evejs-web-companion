@@ -7,11 +7,85 @@
 
 import type { CompanionLadderMemory, FleetCompanionObservation } from "./fleetCompanionLoop.ts";
 import type { PropulsionModule } from "./propulsion.ts";
+import type { PropsBecause } from "./companionTrace.ts";
 import { isHostile } from "../space/overview.ts";
 
 /** The readout words, plain ASCII. */
 export const MWD_STAYS_OFF_WHY = "Hostiles on grid: the microwarpdrive stays off (it blooms the signature).";
 export const MISSILE_ORBIT_WHY = "Missile rats here: keeping the afterburner on while orbiting.";
+
+/** What `decidePropulsion` read to answer "burn?", before any module is picked. */
+export interface PropsWanting {
+  /** The chat override: `props on` / `props off`, null when nobody said either. */
+  readonly held: boolean | null;
+  /** `flight auto` with rung 8's own order standing: the burner is rung 8's. */
+  readonly ownHold: boolean;
+  /** `closingOnTheHold`. */
+  readonly closing: boolean;
+  /** `orbitingAgainstMissiles`. */
+  readonly missileOrbit: boolean;
+  /** `isUnderWay`. */
+  readonly travel: boolean;
+}
+
+/**
+ * The ONE cause of the burn decision (companionTrace.ts `PropsBecause`).
+ *
+ * ⚠ THE SAME PRECEDENCE AS `wantBurn`, SO THE CODE CANNOT DISAGREE WITH THE
+ * DECISION: the chat override first; then, while rung 8's order stands, closing
+ * or the missile orbit and NOTHING else (travel is not asked); otherwise closing
+ * or travel. Closing and the missile orbit both true records "closing" -- it is
+ * the one that would light the burner on its own -- and the readout says both.
+ */
+export function propsBecause(wanting: PropsWanting): PropsBecause {
+  if (wanting.held === true) return "held-on";
+  if (wanting.held === false) return "held-off";
+  if (wanting.closing) return "closing";
+  if (wanting.ownHold) return wanting.missileOrbit ? "missile-orbit" : "none";
+  return wanting.travel ? "travel" : "none";
+}
+
+/** Whether `because` wants the burner lit. */
+export function propsWanted(because: PropsBecause): boolean {
+  return because !== "none" && because !== "held-off";
+}
+
+/** The readout for lighting the prop mod. Plain ASCII. */
+export function propsLightWhy(because: PropsBecause, missileOrbit: boolean): string {
+  switch (because) {
+    case "held-on":
+      return "A commander said props on in chat. Lighting the prop mod.";
+    case "closing":
+      return missileOrbit
+        ? "Closing in on the target, and missile rats are here. Lighting the prop mod."
+        : "Closing in on the target. Lighting the prop mod.";
+    case "missile-orbit":
+      return MISSILE_ORBIT_WHY;
+    default:
+      return "Travelling. Lighting the prop mod.";
+  }
+}
+
+/**
+ * Why nothing wants the burner, for the stop sentence. "Not travelling" was the
+ * sentence for all four once; a pilot in position on a rat is not "not
+ * travelling any more", it has arrived.
+ */
+export type PropsStopCause = "held-off" | "on-station" | "formation" | "not-travelling";
+
+/** The readout for standing the prop mod down. Plain ASCII. */
+export function propsStopWhy(cause: PropsStopCause): string {
+  switch (cause) {
+    case "held-off":
+      return "A commander said props off in chat. Standing the prop mod down.";
+    case "on-station":
+      return "In position on the target. Standing the prop mod down.";
+    case "formation":
+      return "Holding formation with hostiles on grid. Standing the prop mod down.";
+    case "not-travelling":
+      return "Not travelling any more. Standing the prop mod down.";
+  }
+}
 
 /**
  * Whether any hostile on this grid is KNOWN to shoot missiles.

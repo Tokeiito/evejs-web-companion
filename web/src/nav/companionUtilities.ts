@@ -30,9 +30,29 @@
 //
 // ⚠ THE CAPACITOR FLOOR GATES STARTING, NEVER STOPPING -- the repairers' rule.
 //
+// ⚠ THE TRACE (`trace`, the UtilityTrace of companionTrace.ts) NAMES EVERY GATE
+// THAT STOPPED A MODULE SOMETHING WANTED. "Wanted" is the rung's own: a web or
+// painter is wanted on while a target is engaged, a self-buff while a fight is
+// on, and any owned module while its stop reason holds. A module that is
+// correctly off with nothing to do (a web with no engagement, a sensor booster
+// on a quiet grid, a module already running that is not ours) is NOT listed, or
+// every quiet tick would name every fitted module. One code per module per tick;
+// the first gate in the order the rung tests them. `skipped` lists the gates met
+// by the decision made; a tick that returns a STOP does not go on to test the
+// starts, and a tick that returns an activation still tests every later module.
+//   - `gaveUp` is the MOMENT a budget runs out, never the ticks after it: a stop
+//     whose third try is not seen through (ownership drops), or a start whose
+//     last allowed activation was dropped by the grace rule. Afterwards a start
+//     reads `attempts-spent` and a stop reads nothing (the module is not ours).
+//   - `no-facts` and `no-rack` with no fit read name no module: they list one
+//     entry with moduleID 0 and family "all", only while a fight is on.
+//   - A stop give-up leaves the module possibly still cycling: the readout says
+//     so on that tick (`why` with a null call), unless another call took the tick.
+//
 // Pure: one call or none per tick, and the memory it hands back.
 
 import type { CombatUtilities, CombatUtility, UtilityFamily } from "./combatUtilities.ts";
+import type { UtilitySkip, UtilityTrace } from "./companionTrace.ts";
 import { automaticCombatUtility } from "./combatUtilityPolicy.ts";
 import { inReach, REACH_HYSTERESIS_M } from "./combatPosition.ts";
 import { measureSpace } from "./autopilotLoop.ts";
@@ -63,6 +83,12 @@ export interface OwnedUtility {
   readonly family: CompanionUtilityFamily;
   readonly targetID: number;
   readonly sinceMs: number;
+  /**
+   * The snapshot has shown it running. A module dropped before this was an
+   * activation that never took (`grace-dropped`); after it, one that ran its
+   * cycle out, which is not worth a trace line.
+   */
+  readonly seen?: boolean;
 }
 
 /** A `deactivate` this rung has in flight. */
@@ -121,6 +147,13 @@ export interface CompanionUtilityInputs {
   readonly engagedTargetID: number | null;
   /** The engaged target is an NPC on this grid and is locked. */
   readonly targetLocked: boolean;
+  /**
+   * Why `targetLocked` is false, for the readout only: the engaged target is not
+   * on this grid, or is not hostile. Absent counts as true, so a caller that
+   * cannot say gets the plain "not locked".
+   */
+  readonly targetOnGrid?: boolean;
+  readonly targetHostile?: boolean;
   /** Surface distance to the engaged target; null when unmeasured. */
   readonly targetDistanceM: number | null;
   /** An engaged target, or hostiles on grid. */
@@ -142,7 +175,11 @@ export interface CompanionUtilityStep {
   readonly call: CompanionUtilityCall | null;
   readonly why: string;
   readonly memory: CompanionUtilityMemory;
+  readonly trace: UtilityTrace;
 }
+
+/** Nothing considered: the paths that end the record or decide nothing. */
+export const EMPTY_UTILITY_TRACE: UtilityTrace = Object.freeze({ skipped: [], gaveUp: [] });
 
 const isTargeted = (family: CompanionUtilityFamily): boolean => family === "web" || family === "painter";
 
@@ -170,7 +207,13 @@ function capacitorNow(facts: CombatUtilities, ratio: number | null): number | nu
   return (facts.capacitor / facts.capacitorRatio) * ratio;
 }
 
-const none = (memory: CompanionUtilityMemory): CompanionUtilityStep => ({ call: null, why: "", memory });
+type UtilitySkipEntry = UtilityTrace["skipped"][number];
+type UtilityGaveUpEntry = UtilityTrace["gaveUp"][number];
+
+/** Something wants this module ON: a target for a web or painter, a fight for a self-buff. */
+function wantsOn(family: CompanionUtilityFamily, inputs: CompanionUtilityInputs): boolean {
+  return isTargeted(family) ? inputs.engagedTargetID !== null : inputs.fightOn;
+}
 
 /** The pure decision: at most one call, and the memory either way. */
 export function decideCompanionUtilities(
@@ -182,9 +225,41 @@ export function decideCompanionUtilities(
   if (inputs.shipID !== null && mem.shipID !== null && mem.shipID !== inputs.shipID) {
     mem = FRESH_COMPANION_UTILITIES;
   }
+
+  // The trace: one entry per module at most, the first gate met wins.
+  const skipped = new Map<number, UtilitySkipEntry>();
+  const gaveUp: UtilityGaveUpEntry[] = [];
+  let leaving = "";
+  const skip = (moduleID: number, family: string, code: UtilitySkip): void => {
+    if (!skipped.has(moduleID)) skipped.set(moduleID, { moduleID, family, code });
+  };
+  // The readout of a tick that made no call is the give-up notice, when there was
+  // one; a tick that made a call says both, so a give-up is never lost to it.
+  const finish = (call: CompanionUtilityCall | null, why: string, after: CompanionUtilityMemory): CompanionUtilityStep => ({
+    call,
+    why: call === null ? leaving : leaving === "" ? why : `${why} ${leaving}`,
+    memory: after,
+    trace: { skipped: [...skipped.values()], gaveUp },
+  });
+
+  const facts = inputs.facts !== null && inputs.shipID !== null && inputs.facts.shipID === inputs.shipID
+    ? inputs.facts : null;
+  const modules = (facts?.modules ?? []).filter((module) =>
+    companionFamily(module) !== null && automaticCombatUtility(module));
+  // A gate met before any module is known names none: one entry, only in a fight.
+  const unknownModules = (code: UtilitySkip): void => {
+    if (inputs.fightOn) skip(0, "all", code);
+  };
+
   const active = inputs.activeModuleIDs;
   if (active === null) {
-    return none(mem);
+    for (const own of mem.owned) skip(own.itemID, own.family, "no-rack");
+    for (const module of modules) {
+      const family = companionFamily(module)!;
+      if (wantsOn(family, inputs)) skip(module.itemID, family, "no-rack");
+    }
+    if (facts === null) unknownModules("no-rack");
+    return finish(null, "", mem);
   }
   const running = new Set(active);
   const now = inputs.nowMs;
@@ -192,13 +267,18 @@ export function decideCompanionUtilities(
   // Settle: a stop seen through is done; an owned module not running past its
   // grace is not ours any more (the cycle ran out, or it was refused).
   const stopping = mem.stopping.filter((stop) => running.has(stop.itemID));
-  let owned = mem.owned.filter((own) => running.has(own.itemID) || now - own.sinceMs < UTILITY_ACTIVATION_GRACE_MS);
+  const seenOwned = mem.owned.map((own) => running.has(own.itemID) && own.seen !== true ? { ...own, seen: true } : own);
+  let owned = seenOwned.filter((own) => running.has(own.itemID) || now - own.sinceMs < UTILITY_ACTIVATION_GRACE_MS);
+  const dropped = new Map<number, OwnedUtility>();
+  for (const own of seenOwned) {
+    if (owned.includes(own)) continue;
+    // Never seen running: refused. One that ran and ended is simply done.
+    if (own.seen !== true) {
+      dropped.set(own.itemID, own);
+      skip(own.itemID, own.family, "grace-dropped");
+    }
+  }
   const attempts = inputs.fightOn ? mem.attempts : {};
-
-  const facts = inputs.facts !== null && inputs.shipID !== null && inputs.facts.shipID === inputs.shipID
-    ? inputs.facts : null;
-  const modules = (facts?.modules ?? []).filter((module) =>
-    companionFamily(module) !== null && automaticCombatUtility(module));
 
   // The sticky reach verdict for each targeted module on the engaged target.
   const engaged = inputs.engagedTargetID;
@@ -233,70 +313,111 @@ export function decideCompanionUtilities(
     const why = stopWhy(own, inputs, verdicts);
     if (why === null) continue;
     const pending = stopping.find((stop) => stop.itemID === own.itemID);
-    if (pending !== undefined && now - pending.sinceMs < UTILITY_STOP_RETRY_MS) continue;
-    if (pending !== undefined && pending.attempts >= MAX_UTILITY_STOP_ATTEMPTS) {
-      // Given up: no longer ours, so no longer asked.
-      owned = owned.filter((entry) => entry.itemID !== own.itemID);
-      mem = { ...mem, owned, stopping: mem.stopping.filter((stop) => stop.itemID !== own.itemID) };
+    if (pending !== undefined && now - pending.sinceMs < UTILITY_STOP_RETRY_MS) {
+      skip(own.itemID, own.family, "stop-retry-wait");
       continue;
     }
-    return {
+    if (pending !== undefined && pending.attempts >= MAX_UTILITY_STOP_ATTEMPTS) {
+      // Given up: no longer ours, so no longer asked. The module may keep
+      // cycling, and the readout says so this once.
+      owned = owned.filter((entry) => entry.itemID !== own.itemID);
+      mem = { ...mem, owned, stopping: mem.stopping.filter((stop) => stop.itemID !== own.itemID) };
+      gaveUp.push({ moduleID: own.itemID, family: own.family, what: "stop" });
+      leaving = `Could not switch the ${giveUpName(own.family)} off after ${MAX_UTILITY_STOP_ATTEMPTS} tries; leaving it.`;
+      continue;
+    }
+    return finish(
       // ⚠ THE typeID RIDES ALONG AS THE PROP MOD'S DOES. For these families the BFF
       // resolves no effect name from it (`getPropulsionEffectName` answers only
       // for prop mods) and the server's generic Deactivate path stops them; it is
       // sent so the call is the same shape whatever the module.
-      call: { kind: "deactivate", moduleID: own.itemID, typeID: own.typeID },
+      { kind: "deactivate", moduleID: own.itemID, typeID: own.typeID },
       why,
-      memory: {
+      {
         ...mem,
         stopping: [
           ...mem.stopping.filter((stop) => stop.itemID !== own.itemID),
           { itemID: own.itemID, sinceMs: now, attempts: (pending?.attempts ?? 0) + 1 },
         ],
       },
-    };
+    );
   }
 
   // Starts: never below the capacitor floor, never without facts for this ship.
   if (facts === null) {
-    return none(mem);
+    unknownModules("no-facts");
+    return finish(null, "", mem);
   }
-  if (inputs.capacitorRatio !== null && inputs.capacitorRatio < inputs.capacitorFloor) {
-    return none(mem);
-  }
+  const belowFloor = inputs.capacitorRatio !== null && inputs.capacitorRatio < inputs.capacitorFloor;
   const capacitor = capacitorNow(facts, inputs.capacitorRatio);
+
+  // The first gate a wanted, startable module meets; null when it may start.
+  // The order is the rung's: floor, script, its own cost, target, optimal, job, budget.
+  const gate = (module: CombatUtility, family: CompanionUtilityFamily, targetID: number, spent: number): UtilitySkip | null => {
+    if (belowFloor) return "cap-floor";
+    if (!module.modeKnown) return "mode-unknown";
+    if (capacitor !== null && module.capNeed !== null && capacitor < module.capNeed) return "cap-need";
+    if (isTargeted(family)) {
+      if (!inputs.targetLocked) return "not-locked";
+      if (verdicts.get(module.itemID) !== true) {
+        // No optimal read, or no measurement to hold it against, is unknown;
+        // a measured distance past it is out.
+        return module.rangeM === null || !(module.rangeM > 0) || inputs.targetDistanceM === null
+          ? "optimal-unknown" : "out-of-optimal";
+      }
+      if (family === "painter" && !inputs.hasDamage) return "no-damage";
+    } else if (family === "tracking" && !inputs.hasTurrets) {
+      return "no-turrets";
+    }
+    return spent >= MAX_UTILITY_START_ATTEMPTS ? "attempts-spent" : null;
+  };
+
+  let start: { readonly module: CombatUtility; readonly family: CompanionUtilityFamily; readonly targetID: number; readonly key: string; readonly spent: number } | null = null;
   for (const family of START_ORDER) {
     for (const module of modules) {
       if (companionFamily(module) !== family) continue;
       if (running.has(module.itemID) || owned.some((own) => own.itemID === module.itemID) ||
         mem.stopping.some((stop) => stop.itemID === module.itemID)) continue;
-      if (!module.modeKnown) continue;
-      if (capacitor !== null && module.capNeed !== null && capacitor < module.capNeed) continue;
-      let targetID = 0;
-      if (isTargeted(family)) {
-        if (engaged === null || !inputs.targetLocked || verdicts.get(module.itemID) !== true) continue;
-        if (family === "painter" && !inputs.hasDamage) continue;
-        targetID = engaged;
-      } else {
-        if (!inputs.fightOn) continue;
-        if (family === "tracking" && !inputs.hasTurrets) continue;
-      }
+      if (!wantsOn(family, inputs)) continue; // correctly off: nothing to report
+      const targetID = isTargeted(family) ? engaged! : 0;
       const key = `${module.itemID}:${targetID}`;
       const spent = mem.attempts[key] ?? 0;
-      if (spent >= MAX_UTILITY_START_ATTEMPTS) continue;
-      return {
-        call: { kind: "activate", moduleID: module.itemID, targetID },
-        why: startWhy(family),
-        memory: {
-          ...mem,
-          shipID: facts.shipID,
-          owned: [...owned, { itemID: module.itemID, typeID: module.typeID, family, targetID, sinceMs: now }],
-          attempts: { ...mem.attempts, [key]: spent + 1 },
-        },
-      };
+      const blocked = gate(module, family, targetID, spent);
+      if (blocked === null) {
+        start ??= { module, family, targetID, key, spent };
+        continue;
+      }
+      // The last allowed activation was refused (dropped by the grace rule) this
+      // tick: the moment the budget is spent, said once.
+      const was = dropped.get(module.itemID);
+      if (blocked === "attempts-spent" && was !== undefined && was.targetID === targetID) {
+        gaveUp.push({ moduleID: module.itemID, family, what: "start" });
+      }
+      skip(module.itemID, family, blocked);
     }
   }
-  return none(mem);
+  if (start === null) {
+    return finish(null, "", mem);
+  }
+  skipped.delete(start.module.itemID); // acting on it now, not skipping it
+  return finish(
+    { kind: "activate", moduleID: start.module.itemID, targetID: start.targetID },
+    startWhy(start.family),
+    {
+      ...mem,
+      shipID: facts.shipID,
+      owned: [...owned, {
+        itemID: start.module.itemID, typeID: start.module.typeID, family: start.family,
+        targetID: start.targetID, sinceMs: now,
+      }],
+      attempts: { ...mem.attempts, [start.key]: start.spent + 1 },
+    },
+  );
+}
+
+/** The name a player knows the module by, for the give-up notice. */
+function giveUpName(family: CompanionUtilityFamily): string {
+  return family === "web" ? "webifier" : NAMES[family];
 }
 
 function startWhy(family: CompanionUtilityFamily): string {
@@ -320,8 +441,18 @@ function stopWhy(
   if (inputs.engagedTargetID !== null && own.targetID !== inputs.engagedTargetID) {
     return `The target changed: switching the ${name} off.`;
   }
-  if (inputs.engagedTargetID === null || !inputs.targetLocked) {
-    return `The target is gone: switching the ${name} off.`;
+  // ⚠ FOUR CAUSES, FOUR SENTENCES: "gone" once covered them all.
+  if (inputs.engagedTargetID === null) {
+    return `No target engaged: switching the ${name} off.`;
+  }
+  if (inputs.targetOnGrid === false) {
+    return `The target left the grid: switching the ${name} off.`;
+  }
+  if (inputs.targetHostile === false) {
+    return `The target is no longer hostile: switching the ${name} off.`;
+  }
+  if (!inputs.targetLocked) {
+    return `The target is not locked: switching the ${name} off.`;
   }
   if (own.family === "painter" && !inputs.hasDamage) {
     return "Nothing is shooting: switching the target painter off.";
@@ -364,6 +495,8 @@ export function companionUtilityInputs(
     engagedTargetID,
     targetLocked: target !== null && isHostile(target) && locked !== null && engagedTargetID !== null &&
       locked.includes(engagedTargetID),
+    targetOnGrid: target !== null,
+    targetHostile: target !== null && isHostile(target),
     targetDistanceM: engagedTargetID === null ? null : measurement?.distances.get(engagedTargetID) ?? null,
     fightOn: engagedTargetID !== null || entities.some(isHostile),
     hasTurrets: obs.combatWeapons?.weapons.some((weapon) => weapon.tracking !== null && weapon.tracking > 0) === true,
@@ -387,14 +520,24 @@ export function decideUtilityRung(
   engagedTargetID: number | null,
   memory: CompanionLadderMemory,
   nowMs: number,
-): { readonly call: CompanionUtilityCall | null; readonly why: string; readonly memory: CompanionLadderMemory } {
+): {
+  readonly call: CompanionUtilityCall | null;
+  readonly why: string;
+  readonly memory: CompanionLadderMemory;
+  readonly trace: UtilityTrace;
+} {
   const current = memory.utilities ?? FRESH_COMPANION_UTILITIES;
   if (memory.flee !== null || memory.abandonment !== null || obs.inSpace !== true || obs.docked === true) {
-    return { call: null, why: "", memory: current === FRESH_COMPANION_UTILITIES ? memory : { ...memory, utilities: FRESH_COMPANION_UTILITIES } };
+    return {
+      call: null,
+      why: "",
+      memory: current === FRESH_COMPANION_UTILITIES ? memory : { ...memory, utilities: FRESH_COMPANION_UTILITIES },
+      trace: EMPTY_UTILITY_TRACE,
+    };
   }
   if (obs.inWarp === true) {
-    return { call: null, why: "", memory: { ...memory, utilities: utilitiesAfterWarp(current) } };
+    return { call: null, why: "", memory: { ...memory, utilities: utilitiesAfterWarp(current) }, trace: EMPTY_UTILITY_TRACE };
   }
   const step = decideCompanionUtilities(companionUtilityInputs(request, obs, engagedTargetID, nowMs), current);
-  return { call: step.call, why: step.why, memory: { ...memory, utilities: step.memory } };
+  return { call: step.call, why: step.why, memory: { ...memory, utilities: step.memory }, trace: step.trace };
 }

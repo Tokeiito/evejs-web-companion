@@ -786,3 +786,71 @@ test("memory survives a JSON round trip", () => {
   assert.equal(memory.wantedTicks, 3);
   assert.equal(tick([a, b], a, memory).memory.wantedTicks, 4);
 });
+
+// ── decideSwap: one code per return path ─────────────────────────────────────
+
+test("code: every return path of decideSwap names exactly one cause", () => {
+  const a = charge(1, { reachM: 10_000, total: 10 });
+  const b = charge(2, { reachM: 30_000, total: 100 });
+  const settled: SwapMemory = { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 9 };
+  const cases: readonly (readonly [string, SwapDecision])[] = [
+    ["load", tick([a], null, FRESH_SWAP_MEMORY)],
+    ["nothing-compatible", tick([], null, FRESH_SWAP_MEMORY)],
+    ["nothing-to-change-to", tick([], a, FRESH_SWAP_MEMORY)],
+    ["already-best", tick([a, b], b, FRESH_SWAP_MEMORY, { distance: 5_000 })],
+    ["already-best", tick([a], a, FRESH_SWAP_MEMORY)],
+    ["reload-pending", tick([a, b], a, { ...FRESH_SWAP_MEMORY, pendingTypeID: 2, pendingSinceMs: 999_999 })],
+    ["closing-instead", tick([a, b], a, FRESH_SWAP_MEMORY, { distance: 20_000, canClose: true })],
+    ["none-reaches", tick([a, charge(3, { reachM: 12_000, total: 100 })], a, FRESH_SWAP_MEMORY, { distance: 30_000 })],
+    ["damage-unknown", tick([a, b], charge(1, { reachM: 10_000, damage: null }), FRESH_SWAP_MEMORY, { distance: 5_000 })],
+    ["gain-too-small", tick([charge(1, { total: 100 }), charge(2, { total: 120 })], charge(1, { total: 100 }), FRESH_SWAP_MEMORY)],
+    ["target-dies-first", tick([a, b], a, settled, { distance: 5_000, targetRemainingHp: 1, damageLostToReload: 9 })],
+    ["persisting", tick([a, b], a, FRESH_SWAP_MEMORY, { distance: 5_000 })],
+    ["cooldown", tick([a, b], a, { ...settled, lastSwapAtMs: 999_999 }, { distance: 5_000 })],
+    ["swapped-this-target", tick([a, b], a, { ...settled, swappedForTargetID: 1 }, { distance: 5_000 })],
+    ["next-target-interval", tick([a, b], a, { ...FRESH_SWAP_MEMORY, lastSwapAtMs: 999_999 }, { distance: 5_000, nextTargetMoment: true })],
+    ["swap", tick([a, b], a, settled, { distance: 5_000 })],
+    ["swap", tick([a, b], a, FRESH_SWAP_MEMORY, { distance: 5_000, nextTargetMoment: true })],
+  ];
+  for (const [code, decision] of cases) {
+    assert.equal(decision.code, code, `expected ${code}, got ${decision.code} (${decision.why})`);
+  }
+  // A load and a swap are the only kinds that carry a charge, and their code is their kind.
+  for (const [, decision] of cases) {
+    if (decision.kind !== "keep") assert.equal(decision.code, decision.kind);
+  }
+});
+
+test("code: better-out-of-reach, when the ranking puts a stack the gate cannot reach first", () => {
+  // rankCharges never ranks an unreachable stack above a reachable loaded one,
+  // so this is the gate's own check against a ranking handed in by a caller.
+  const loaded = charge(1, { reachM: 10_000, total: 10 });
+  const better = charge(2, { reachM: 10_000, total: 100 });
+  const d = decideSwap({
+    ranked: [better, loaded],
+    loaded,
+    targetDistanceM: 10_000 - H + 100,
+    resonances: NO_RESIST,
+    targetID: 1,
+    targetRemainingHp: null,
+    damageLostToReload: null,
+    canClose: false,
+    nextTargetMoment: false,
+    nowMs: 1_000_000,
+    memory: FRESH_SWAP_MEMORY,
+  });
+  assert.equal(d.kind, "keep");
+  assert.equal(d.code, "better-out-of-reach");
+});
+
+test("code: the wobble that must not swap reports a keep code on every tick", () => {
+  const a = charge(1, { reachM: 10_000, total: 50 });
+  const b = charge(2, { reachM: 30_000, total: 10 });
+  let memory = FRESH_SWAP_MEMORY;
+  for (let i = 0; i < 20; i += 1) {
+    const d = tick([a, b], a, memory, { distance: 10_000 + (i % 2 === 0 ? 0 : 1), nowMs: 1_000_000 + i * 2000 });
+    assert.equal(d.kind, "keep");
+    assert.equal(d.code, "already-best");
+    memory = d.memory;
+  }
+});

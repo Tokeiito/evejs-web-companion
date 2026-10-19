@@ -32,6 +32,7 @@ import {
   type HoldReason,
   type WeaponReach,
 } from "./combatPosition.ts";
+import type { CombatOutcome, CombatTrace, GunsTrace, LatchTrace } from "./companionTrace.ts";
 import { RANGE_HYSTERESIS_M, type BandThreat } from "./kiteBand.ts";
 import {
   isStanding,
@@ -146,6 +147,8 @@ export interface CombatPositionLadder {
 export interface CombatPositionStep {
   readonly decision: CompanionDecision | null;
   readonly memory: CompanionLadderMemory;
+  /** What this tick decided, in codes and numbers: one outcome per return path. See companionTrace.ts. */
+  readonly trace: CombatTrace;
 }
 
 // ─── Memory helpers the ladder's wrapper uses ────────────────────────────────
@@ -238,17 +241,25 @@ export function gunsInReach(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
   measurement: SpaceMeasurement | null,
-): { readonly inReach: readonly number[]; readonly memory: CompanionLadderMemory } {
+): GunsGate {
   const weapons = request.weaponModuleIDs;
-  if (weapons.length === 0) {
-    return { inReach: [], memory };
-  }
   const facts = obs.combatWeapons?.weapons ?? null;
   const distance = measurement?.distances.get(targetID) ?? null;
+  if (weapons.length === 0) {
+    return {
+      inReach: [], assumed: [], memory,
+      trace: { targetID, distanceM: distance, inReach: [], assumed: [], outOfReach: [] },
+    };
+  }
   const previous = memory.weaponReach?.targetID === targetID ? memory.weaponReach : null;
   const nowIn: number[] = [];
   const nowOut: number[] = [];
   const reaching: number[] = [];
+  // The trace's three disjoint lists: judged in reach by a measurement, let through
+  // WITHOUT one (reach or distance unknown), and held back.
+  const measuredIn: number[] = [];
+  const assumed: number[] = [];
+  const held: number[] = [];
   for (const moduleID of weapons) {
     const fact = facts?.find((weapon) => weapon.itemID === moduleID) ?? null;
     const was = previous === null ? null
@@ -264,17 +275,35 @@ export function gunsInReach(
     const state = measured ? ok : was;
     if (state === true) nowIn.push(moduleID);
     if (state === false) nowOut.push(moduleID);
+    if (!ok) held.push(moduleID);
+    else if (measured) measuredIn.push(moduleID);
+    else assumed.push(moduleID);
   }
+  const trace: GunsTrace = { targetID, distanceM: distance, inReach: measuredIn, assumed, outOfReach: held };
   const same = (a: readonly number[], b: readonly number[]): boolean =>
     a.length === b.length && a.every((id, index) => b[index] === id);
   if (previous === null ? nowIn.length === 0 && nowOut.length === 0
     : same(previous.inReach, nowIn) && same(previous.outOfReach, nowOut)) {
-    return { inReach: reaching, memory };
+    return { inReach: reaching, assumed, memory, trace };
   }
   return {
     inReach: reaching,
+    assumed,
     memory: { ...memory, weaponReach: { targetID, inReach: nowIn, outOfReach: nowOut } },
+    trace,
   };
+}
+
+/**
+ * What the range gate hands back. `inReach` is every gun that MAY START (the
+ * measured ones and the assumed ones); `assumed` is the subset let through on an
+ * unknown reach or distance; `trace` separates the three groups for the recorder.
+ */
+export interface GunsGate {
+  readonly inReach: readonly number[];
+  readonly assumed: readonly number[];
+  readonly memory: CompanionLadderMemory;
+  readonly trace: GunsTrace;
 }
 
 /**
@@ -284,12 +313,17 @@ export function gunsInReach(
  * called target is still engaged -- rung 8 is what fixes that, and the drones
  * fight meanwhile -- but "firing on it" would be false for the guns that are
  * holding. Plain ASCII: player-facing.
+ *
+ * ⚠ `inReach` COUNTS MEASURED GUNS. `assumed` is how many more were let through on
+ * an unknown reach or distance, said aloud so "2 of 2 in reach" is never read as a
+ * measurement that was not made.
  */
-export function gunsInReachWords(inReach: number, picked: number): string {
-  return inReach === 0
+export function gunsInReachWords(inReach: number, picked: number, assumed: number = 0): string {
+  const note = assumed > 0 ? ` (${assumed} assumed)` : "";
+  return inReach + assumed === 0
     ? " Locked, but none of my guns reach it from here."
-    : inReach < picked
-      ? ` Locked, and firing on it: ${inReach} of ${picked} guns in reach.`
+    : inReach + assumed < picked || assumed > 0
+      ? ` Locked, and firing on it: ${inReach} of ${picked} guns in reach${note}.`
       : " Locked, and firing on it.";
 }
 
@@ -300,15 +334,65 @@ function kmWords(metres: number): string {
   return `${Math.round(metres / 100) / 10} km`;
 }
 
+/** What a hold sentence needs beside the hold itself. */
+interface HoldWords {
+  /** The range to SAY: the standing order's when a re-issue was suppressed, else the hold's. */
+  readonly rangeM: number;
+  /** An orbit that wanted the guns' optimal but was held to the floor or the ceiling. */
+  readonly clamp: "floor" | "ceiling" | null;
+  /** The grid had a hostile whose type facts are unread, so nothing was kited. */
+  readonly ratFactsMissing: boolean;
+}
+
+function knownMetres(value: number | null): number | null {
+  return value !== null && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Why an orbit-optimal hold is NOT at the guns' optimal: it was held to the floor
+ * (the rats' tackle) or the ceiling (lock range and gun reach). Mirrors
+ * `wantedHold`'s pick of the shortest gun -- it is a clamp test, not a re-derivation
+ * of where to be -- and is null for every other reason.
+ */
+function clampedBy(hold: Hold, weapons: readonly WeaponReach[]): "floor" | "ceiling" | null {
+  if (hold.reason !== "orbit-optimal") {
+    return null;
+  }
+  const reachable = weapons.filter((weapon) => knownMetres(weapon.reachM) !== null);
+  const shortest = [...reachable].sort(
+    (a, b) => (a.reachM as number) - (b.reachM as number) || a.moduleID - b.moduleID,
+  )[0];
+  if (shortest === undefined) {
+    return null;
+  }
+  const wantM = knownMetres(shortest.optimalM) ?? (shortest.reachM as number);
+  if (wantM < hold.floorM) return "floor";
+  if (hold.ceilingM !== null && wantM > hold.ceilingM) return "ceiling";
+  return null;
+}
+
 /** The sentence that says why the pilot holds where it holds. Plain ASCII. */
-function holdSentence(hold: Hold): string {
-  const at = kmWords(hold.rangeM);
+function holdSentence(hold: Hold, words: HoldWords): string {
+  const at = kmWords(words.rangeM);
   const reason: HoldReason = hold.reason;
   switch (reason) {
     case "kite":
       return `Holding ${at} off the target: my guns out-range everything here.`;
-    case "orbit-optimal":
-      return `Orbiting the target at ${at}: my shortest guns reach there.`;
+    case "orbit-optimal": {
+      // ⚠ "MY SHORTEST GUNS REACH THERE" IS ONLY TRUE UNCLAMPED, and an unread rat
+      // is a different story from a read one: both are said, not implied.
+      const clamp = words.clamp === "floor" ? "Held off the rats' tackle."
+        : words.clamp === "ceiling" ? "Held at my lock range and gun reach." : null;
+      if (words.ratFactsMissing) {
+        const lead = `Some rats here are not identified yet: orbiting at ${at} rather than kiting.`;
+        return clamp === null ? lead : `${lead} ${clamp}`;
+      }
+      return words.clamp === "floor"
+        ? `Orbiting the target at ${at}: as close as I dare with the rats' tackle here.`
+        : words.clamp === "ceiling"
+          ? `Orbiting the target at ${at}: as far out as my lock range and gun reach allow.`
+          : `Orbiting the target at ${at}: my shortest guns reach there.`;
+    }
     case "drone-band":
       return `Keeping ${at} off the target while my drones fight it.`;
     case "empty-band":
@@ -426,6 +510,22 @@ function farFrom(distanceM: number | null, hold: Hold): boolean {
   return distanceM !== null && Math.abs(distanceM - Math.round(hold.rangeM)) > REACH_HYSTERESIS_M;
 }
 
+/** Why rung 8 is handing the pilot back to formation. One readout sentence each. */
+type FormationCause = "follow" | "leash" | "no-reach";
+
+const FORMATION_WORDS: Readonly<Record<FormationCause, string>> = Object.freeze({
+  leash: "Target is past my leash from the commander: holding station.",
+  follow: "Flight follow: holding station on the commander.",
+  "no-reach": "Cannot read my guns' reach: holding station on the commander.",
+});
+
+/** `backToFormation`'s answer: a step without a trace, and whether it acted. */
+interface FormationStep {
+  readonly decision: CompanionDecision | null;
+  readonly memory: CompanionLadderMemory;
+  readonly outcome: "reform" | "reform-stop" | null;
+}
+
 /**
  * Back to formation: rung 9, asked from here because the fight stands, so the
  * standing readout would end the ladder before rung 9 ran.
@@ -443,21 +543,27 @@ function farFrom(distanceM: number | null, hold: Hold): boolean {
  * `askAnyway` is the leash: a target past it is never chased, so rung 9 is asked
  * whether or not an order of ours was standing -- a pilot already in formation
  * gets rung 9's "already holding" wait, which is ignored.
+ *
+ * `because` picks the sentence: three causes used to share one, and a log line
+ * could not say which. `outcome` is the trace's code when this rung ACTED
+ * (`reform`, or `reform-stop` for the lone stopShip) and null when it did not --
+ * the caller then keeps its own cause as the code.
  */
 function backToFormation(
   engaged: CompanionDecision,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
   askAnyway: boolean,
+  because: FormationCause,
   ladder: CombatPositionLadder,
-): CombatPositionStep {
+): FormationStep {
   const pending = memory.combatPosition.reform;
   if (!pending && !askAnyway) {
-    return { decision: null, memory };
+    return { decision: null, memory, outcome: null };
   }
   if (ladder.commanderShip(obs) === null) {
     if (!pending) {
-      return { decision: null, memory };
+      return { decision: null, memory, outcome: null };
     }
     const next = withPosition(memory, { reform: false });
     return {
@@ -469,24 +575,26 @@ function backToFormation(
         ...authorityOf(engaged),
       },
       memory: next,
+      outcome: "reform-stop",
     };
   }
   const reforming = ladder.follow(obs, memory);
   if (reforming === null) {
-    return { decision: null, memory };
+    return { decision: null, memory, outcome: null };
   }
   if (reforming.action.kind !== "wait") {
     return {
       decision: {
         ...reforming,
-        why: "Not chasing the target: holding station on the fleet commander and fighting from there.",
+        why: FORMATION_WORDS[because],
         ...authorityOf(engaged),
       },
       memory: reforming.memory,
+      outcome: "reform",
     };
   }
   const after = reforming.memory;
-  return { decision: null, memory: withPosition(after, { reform: pending && !formationHolding(after) }) };
+  return { decision: null, memory: withPosition(after, { reform: pending && !formationHolding(after) }), outcome: null };
 }
 
 /**
@@ -538,16 +646,35 @@ export function decideCombatPosition(
   memory: CompanionLadderMemory,
   ladder: CombatPositionLadder,
 ): CombatPositionStep {
+  const mode = memory.flightMode;
   const targetID = engaged?.engagedTargetID;
   if (engaged === null || targetID === undefined) {
     // ⚠ THE FIGHT HAS ENDED (or never began): nothing of it is kept, so nothing
     // believes the ship is still "in position", still closing (the burner), or
     // still owed a formation order on a later fight. Rung 9 brings it home.
-    return { decision: null, memory: withPosition(memory, FRESH_COMBAT_POSITION) };
+    return {
+      decision: null,
+      memory: withPosition(memory, FRESH_COMBAT_POSITION),
+      trace: combatTrace(mode, "no-target", null, {}),
+    };
   }
   const position = memory.combatPosition;
   const ours = position.hold !== null;
   const state = position.target?.targetID === targetID ? position.target : null;
+  // The order on this target as the tick began, for every trace that stops early.
+  const standing = position.hold !== null && position.hold.targetID === targetID ? position.hold : null;
+  // The trace of a path that returns before a hold is computed. What is remembered
+  // of the closing budget is reported as it stands; a path that drops it says so.
+  const early = (outcome: CombatOutcome, fields: Partial<CombatTrace> = {}): CombatTrace =>
+    combatTrace(mode, outcome, targetID, {
+      standingRangeM: standingRangeM(standing),
+      latch: latchTrace(standing, null),
+      farTicks: state?.farTicks ?? 0,
+      spentAtM: state?.spentAtM ?? null,
+      leashed: state?.leashed === true,
+      ...fields,
+    });
+  const dropped: Partial<CombatTrace> = { farTicks: 0, spentAtM: null, leashed: false };
   // Not positioning this tick: whatever is remembered of the target stays, but
   // the burner's question is answered "not closing".
   const idle = (next: CombatTargetState | null): CompanionLadderMemory =>
@@ -555,38 +682,58 @@ export function decideCombatPosition(
   // Our order goes, and formation is owed if it was ours.
   const standDown = (next: CombatTargetState | null): CompanionLadderMemory =>
     withPosition(memory, { hold: null, target: next, reform: position.reform || ours });
+  // The way back to formation, with the code of whatever sent it there unless it acted.
+  const toFormation = (
+    next: CompanionLadderMemory,
+    askAnyway: boolean,
+    cause: CombatOutcome,
+    because: FormationCause,
+    fields: Partial<CombatTrace>,
+  ): CombatPositionStep => {
+    const back = backToFormation(engaged, obs, next, askAnyway, because, ladder);
+    return { decision: back.decision, memory: back.memory, trace: early(back.outcome ?? cause, fields) };
+  };
 
   if (memory.followHeld) {
-    return { decision: null, memory: withPosition(idle(state), { reform: false }) };
+    return { decision: null, memory: withPosition(idle(state), { reform: false }), trace: early("stopped") };
   }
   if (memory.flightMode !== "auto") {
     // The FC leads. Only an order of OUR making needs undoing.
-    return backToFormation(engaged, obs, standDown(null), false, ladder);
+    return toFormation(standDown(null), false, "mode-follow", "follow", dropped);
   }
   const snapshot = obs.snapshot ?? null;
-  if (engaged.holdsNavigation === true || obs.inSpace !== true || obs.inWarp === true || snapshot === null) {
-    return { decision: null, memory: idle(state) };
+  if (engaged.holdsNavigation === true) {
+    return { decision: null, memory: idle(state), trace: early("holds-navigation") };
+  }
+  if (obs.inSpace !== true || obs.inWarp === true || snapshot === null) {
+    return { decision: null, memory: idle(state), trace: early("not-in-space") };
   }
   const target = snapshot.entities.find((entity) => entity.itemID === targetID) ?? null;
   if (target === null) {
-    return { decision: null, memory: idle(state) };
+    return { decision: null, memory: idle(state), trace: early("target-off-grid") };
   }
   const lockRangeM = obs.maxTargetRangeM ?? null;
-  if (pastTheLeash(ladder.commanderShip(obs), target, lockRangeM, state?.leashed === true, ladder)) {
+  const commander = ladder.commanderShip(obs);
+  const leashApartM = commander === null ? null : ladder.metresBetween(commander, target);
+  if (pastTheLeash(commander, target, lockRangeM, state?.leashed === true, ladder)) {
     const leashed: CombatTargetState = { targetID, farTicks: 0, spentAtM: null, closing: false, leashed: true };
-    return backToFormation(engaged, obs, standDown(leashed), true, ladder);
+    return toFormation(standDown(leashed), true, "leashed", "leash", { ...dropped, leashed: true, leashApartM });
   }
 
   // ─── Where to be ──────────────────────────────────────────────────────────
   // ⚠ THE ONE MEASUREMENT THIS RUNG MAKES. Everything below reads it.
   const measurement = measureSpace(snapshot);
   const inputs = holdInputs(request, obs, snapshot, target, measurement, lockRangeM, ladder);
+  const distanceM = inputs.targetDistanceM;
+  // ⚠ NULL ONLY FOR AN UNREAD HOSTILE: an empty grid reads 0. See `holdInputs`.
+  const ratFactsMissing = inputs.gridRatReachM === null;
   const natural = wantedHold({ ...inputs, closingSpentAtM: null });
   if (natural === null) {
     // Nothing this fit can position for: formation, if we had broken it.
-    return backToFormation(engaged, obs, standDown(null), false, ladder);
+    return toFormation(standDown(null), false, "no-reach", "no-reach", {
+      ...dropped, distanceM, leashApartM, ratFactsMissing,
+    });
   }
-  const distanceM = inputs.targetDistanceM;
   const holdAt = (spentAtM: number | null): Hold =>
     spentAtM === null ? natural : (wantedHold({ ...inputs, closingSpentAtM: spentAtM }) ?? natural);
   // Back in position for the hold it was originally after: the frozen one goes.
@@ -612,32 +759,107 @@ export function decideCombatPosition(
 
   const rangeM = Math.round(hold.rangeM);
   const wanted: HeldOrder = { order: hold.order, targetID, rangeM };
-  const sentence = holdSentence(hold);
-  const readout = (why: string, next: CompanionLadderMemory): CombatPositionStep => ({
+  const clamp = clampedBy(hold, inputs.weapons);
+  // The numbers this tick's hold was decided on; each return adds its latch's.
+  const decided = (fields: Partial<CombatTrace>): CombatTrace =>
+    combatTrace(mode, hold.reason, targetID, {
+      distanceM,
+      holdOrder: hold.order,
+      holdRangeM: rangeM,
+      floorM: hold.floorM,
+      ceilingM: hold.ceilingM,
+      far,
+      farTicks,
+      spentAtM,
+      leashed: false,
+      leashApartM,
+      ratFactsMissing,
+      ...fields,
+    });
+  const readout = (why: string, next: CompanionLadderMemory, trace: CombatTrace): CombatPositionStep => ({
     decision: { ...engaged, action: { kind: "wait" }, standing: true, holdsNavigation: true, why, memory: next },
     memory: next,
+    trace,
   });
 
   // ─── Whether it is worth a call ───────────────────────────────────────────
   const current = memory.combatPosition.hold;
   const step = stepLatch(current?.targetID === targetID ? current : null, ladder.limits);
   if (step.kind === "wait") {
-    return readout(`${engaged.why} ${LATCH_WORDS[step.reason]}`, withPosition(memory, { hold: step.latch }));
+    return readout(
+      `${engaged.why} ${LATCH_WORDS[step.reason]}`,
+      withPosition(memory, { hold: step.latch }),
+      decided({ standingRangeM: standingRangeM(step.latch), latch: latchTrace(step.latch, step.reason) }),
+    );
   }
   const previous = step.latch;
   if (previous !== null && isStanding(previous) && !holdNeedsReissue(previous, wanted)) {
-    return readout(`${engaged.why} ${far ? "Closing in." : "In position."} ${sentence}`, memory);
+    // ⚠ THE ORDER ON THE SERVER IS THE STANDING ONE, so its range is the one said:
+    // the hold may have moved by less than the re-issue margin, and "in position at
+    // 8 km" must not name a range nobody ordered.
+    const sentence = holdSentence(hold, { rangeM: previous.rangeM, clamp, ratFactsMissing });
+    return readout(
+      `${engaged.why} ${far ? "Closing in." : "In position."} ${sentence}`,
+      memory,
+      decided({ standingRangeM: previous.rangeM, reissueSuppressed: true, latch: latchTrace(previous, null) }),
+    );
   }
   const next = withPosition(memory, { hold: { ...wanted, ...pendingLatch(previous) } });
   return {
     decision: {
       action: { kind: hold.order, targetID, range: rangeM },
       phase: engaged.phase,
-      why: sentence,
+      why: holdSentence(hold, { rangeM: hold.rangeM, clamp, ratFactsMissing }),
       memory: next,
       holdsNavigation: true,
       ...authorityOf(engaged),
     },
     memory: next,
+    trace: decided({ standingRangeM: standingRangeM(previous), latch: latchTrace(next.combatPosition.hold, null) }),
   };
+}
+
+/** A trace with nothing read: the base every path fills what it actually used into. */
+function combatTrace(
+  mode: "follow" | "auto",
+  outcome: CombatOutcome,
+  targetID: number | null,
+  fields: Partial<CombatTrace>,
+): CombatTrace {
+  return {
+    mode,
+    outcome,
+    targetID,
+    distanceM: null,
+    holdOrder: null,
+    holdRangeM: null,
+    standingRangeM: null,
+    floorM: null,
+    ceilingM: null,
+    far: false,
+    farTicks: 0,
+    spentAtM: null,
+    leashed: false,
+    leashApartM: null,
+    ratFactsMissing: false,
+    reissueSuppressed: false,
+    latch: null,
+    ...fields,
+  };
+}
+
+/** The latch record as the trace carries it; null when there is none. */
+function latchTrace(record: OrderLatch | null, wait: LatchWaitReason | null): LatchTrace | null {
+  return record === null ? null : {
+    status: record.status,
+    refusals: record.refusals,
+    deferrals: record.deferrals,
+    cooldown: record.cooldown ?? null,
+    wait,
+  };
+}
+
+/** The range of the order actually standing on the server; null unless the record says one is. */
+function standingRangeM(record: CombatHoldRecord | null): number | null {
+  return record !== null && isStanding(record) ? record.rangeM : null;
 }
