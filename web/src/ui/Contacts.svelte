@@ -101,6 +101,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import { showInfo } from "./showInfo.ts";
   import { doubleClickOwner } from "./ownerDoubleClick.ts";
+  import { showOwnerInfo } from "./ownerInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import { notify } from "./notices.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
@@ -657,14 +658,14 @@
     const isContact = contactIDs.has(ownerID);
     if (organization) {
       const editable = canManage && !npc;
-      return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
+      return { showInfo: true, mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
     }
     const isBlocked = blockedIDs.has(ownerID);
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
       // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
-      // Its Show Info the page's info window does not show yet (it shows a character, a type and an object).
-      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
+      // Show Info2297 carries the actual owner type, including NPC owners.
+      return { showInfo: true, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
     }
     return {
       // OfferShowInfo (350 to 353): every character's (an aura agent's aside, which no address book holds).
@@ -691,7 +692,7 @@
   function ownerInfo(ownerID: number): void {
     menuFor = null;
     searchMenuFor = null;
-    showInfo({ kind: "character", characterID: ownerID });
+    void run(() => showOwnerInfo(flow, ownerID));
   }
 
   /** Send Pilot EVEMail from an owner's menu (menusvc.py 590 to 591): the mail window, a new message to the pilot. */

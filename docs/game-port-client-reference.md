@@ -1596,6 +1596,19 @@ channel creations and elevated AddCharacterToChannel calls, with NPC DoAction
 separate. Recursive corpus searches found no dblClickUser or CreatePrivateChannel
 capture; unrelated space-double-click telemetry is not evidence of this gesture.
 
+Explicit owner Show Info (read2026-10-19). User.ShowInfo549-552 and menusvc579-580
+use cfg.eveowners' actual type; GetMenuFromItemIDTypeID2281-2297 offers it for
+corporation/alliance/faction owners too. Their shared Contacts menu now does so,
+independently of the configured double-click action. Missing local ownerType
+resolution for NPC/faction rows is fixed: LoadEveOwners548-584 preloads faction30,
+NPC corporation2 and NPC character1373. Known rows use local tables; player types
+retain the native GetMultiOwnersEx read. Original compiled User.ShowInfo, actual
+AppFlow types and desktop/phone typed corporation/faction windows verified this.
+Recorded owner-type reads contain player owners only, no NPC/faction lookup and
+no private-chat creation. The compiled ShowInfo window selection policy and the
+remaining complete multiple-window unit are recorded in
+[game-port-info-windows.md](game-port-info-windows.md).
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config

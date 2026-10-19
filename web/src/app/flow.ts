@@ -2419,6 +2419,7 @@ export interface AppFlow {
   readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
   readonly ownerDoubleClickPreference: ReadableSignal<0 | 1>;
   setOwnerDoubleClickPreference(value: 0 | 1): void;
+  ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
   ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
   openMoneyTransfer(toID: number, corporate?: boolean): Promise<void>;
   confirmMoneyTransfer(n: number, amount: string, reason: string): Promise<void>;
@@ -15047,6 +15048,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // Compiled User.OnDblClick: this path has no menu IsMe/IsNPC gate. Invite
     // itself supplies ChtCannotInviteSelf/ErrorNotAPlayerCharacter as native.
     if (preference === 1) { await conversations.start(ownerID); return; }
+    await ownerEntryInfo(ownerID, onInfo);
+  }
+  async function ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
     const current = callOptions.captureRequestGuard!();
     const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
     await memberNames(scope, [{ kind: "ownerType", id: ownerID }]); current();
@@ -29257,6 +29261,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     get ownerDoubleClickPreference() { return ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value; },
     setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
     ownerEntryDoubleClick,
+    ownerEntryInfo,
     openMoneyTransfer,
     confirmMoneyTransfer,
     closeMoneyTransfer,

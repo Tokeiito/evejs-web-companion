@@ -525,7 +525,16 @@ the agent conversation callback. Recorded frames showed four private creations
 and a separate NPC DoAction, with no corporate transfer from the repeated Cancel
 checks. No exact double-click/private-chat Tranquility capture was found.
 
-Simultaneous information windows remain next, including typed owner menu callers.
+Typed owner menu callers are implemented (c6a): corporation/alliance/faction
+contacts now offer Show Info and resolve the actual owner type. Known NPC/faction
+types come from the native preloaded owner tables; explicit info ignores the
+double-click setting. Live desktop Corporation Contacts and personal faction
+search, plus personal phone faction menu/default double-click, opened the proper
+corporation/faction information. The actual AppFlow returned character1380,
+corporation2, faction30, alliance16159 and preloaded NPC character1373; no private
+chat or NPC/faction type lookup RPC was sent. The compiled window policy and
+complete remaining unit are in [game-port-info-windows.md](game-port-info-windows.md).
+Simultaneous information windows remain next (c6b).
 The rest of the Corporation window and Phases 5/6 are
 still required; this contract does not declare them complete.
 

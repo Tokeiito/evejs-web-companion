@@ -1919,6 +1919,16 @@ function resolveOwnerName(id) {
 /** The types of an owner that is no character (the client's owner rows): a corporation's, an alliance's, a faction's. */
 const OWNER_TYPE_IDS = Object.freeze({ corporation: 2, alliance: 16159, faction: 30 });
 
+/** eveCfg.LoadEveOwners548-584 preloads these NPC rows without a server call.
+ * Player owner types remain the live cfg rows resolved by /api/names. */
+function resolveStaticOwnerType(id) {
+  if (id >= 90000000) return null;
+  if (getFaction(id)) return String(OWNER_TYPE_IDS.faction);
+  if (getCorporation(id)) return String(OWNER_TYPE_IDS.corporation);
+  if (getNpcCharacter(id)) return String(NPC_CHARACTER_TYPE_ID);
+  return null;
+}
+
 /** A type's group, by name, where the type is known; else null. */
 function getKnownTypeGroupName(typeID) {
   return getType(typeID) ? getTypeGroupName(typeID) : null;
@@ -2025,6 +2035,8 @@ function resolveOneName(kind, id) {
     }
     case "owner":
       return resolveOwnerName(numericID);
+    case "ownerType":
+      return resolveStaticOwnerType(numericID);
     case "ownerGroup":
       return resolveOwnerGroupName(numericID);
     default:
