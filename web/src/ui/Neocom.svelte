@@ -24,6 +24,7 @@
   import { NEOCOM_GLYPHS, eveClock, portraitInitials, shortIsk } from "./neocomIcons.ts";
   import { formatIsk } from "./isk.ts";
   import { canClaimNow } from "../bridge/loginRewards.ts";
+  import { seasonalClaimable } from "../bridge/seasonalCampaigns.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -85,8 +86,9 @@
    */
   const loginRewardDue = $derived.by(() => {
     void clock;
-    const campaign = $loginRewards.campaign;
-    return campaign !== null && canClaimNow(campaign, Date.now());
+    const { campaign, seasonal } = $loginRewards;
+    const now = Date.now();
+    return (campaign !== null && canClaimNow(campaign, now)) || (seasonal !== null && seasonalClaimable(seasonal.active, seasonal.history, now));
   });
   $effect(() => {
     const tick = (): void => {
