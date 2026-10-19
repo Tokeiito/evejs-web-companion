@@ -2718,7 +2718,12 @@ const RETAIL_CALLS = Object.freeze({
   "calendarProxy.GetEventDetails": judged(`${CALENDAR_SVC}:261`, ofAnOpenedEvent, "GetCalendarProxy().GetEventDetails(eventID, ownerID), kept by event"),
   "calendarMgr.GetResponsesForCharacter": same(`${CALENDAR_SVC}:252`, "RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept"),
   "calendarMgr.GetResponsesToEvent": judged(`${CALENDAR_SVC}:415`, ofAnOpenedEvent, "RemoteSvc('calendarMgr').GetResponsesToEvent(eventID, ownerID)"),
-  "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
+  "account.GetCashBalance": same(`${WALLET_SVC}:41,156-170`, "GetCashBalance(0) for personal wealth; corporate GetCorpWealth sends (1, accountKey=None/explicit key) freshly, separately from its one-minute per-key cache"),
+  "account.GiveCashFromCorpAccount": Object.freeze({
+    status: "same", source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:150",
+    note: "Corporate-source transfer: character, float amount, captured source key; destination None and original edit reason by keyword. TQ Corp Transfers1804 has this three-argument/keyword shape and None reply.",
+    shape: (args, kwargs) => ({ args: [args[0], asFloat(args[1]), args[2]], kwargs: { ...kwargs, reason: typedText(kwargs.reason) }, status: "reshaped" }),
+  }),
   "account.GiveCash": typing(Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
