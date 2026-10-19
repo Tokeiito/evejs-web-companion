@@ -2478,6 +2478,103 @@ test("a WarpTo broadcast warps to the named object, ONCE", () => {
   assert.notEqual(second.action.kind, "warp");
 });
 
+/** The station `gridWithStation` puts on grid. */
+const WARP_TO_STATION = 60000001;
+
+/** As `gridWithStation`, but the ship reads FOLLOW: an approach under way. */
+function gridWithStationFollowing(distanceM: number): SpaceSnapshot {
+  const grid = gridWithStation(distanceM);
+  return { ...grid, ship: { ...grid.ship, mode: "FOLLOW" } } as unknown as SpaceSnapshot;
+}
+
+/** One other ship on grid, at a given surface distance. */
+function gridWithShipAt(itemID: number, distanceM: number): SpaceSnapshot {
+  const grid = gridWithEntities([itemID]) as unknown as { entities: { itemID: number; position: { x: number } }[] };
+  grid.entities.find((entity) => entity.itemID === itemID)!.position.x = distanceM;
+  return grid as unknown as SpaceSnapshot;
+}
+
+test("a WarpTo broadcast for a station the FLEET warp already landed this ship at is not warped to", () => {
+  // ⚠ SEEN LIVE: the FC's fleet warp (`CmdWarpToStuff`, `fleet=1`) landed two
+  // companions 260 m off a station, the FC's `WarpTo` broadcast for that
+  // station was still standing, and each companion warped to it and was
+  // refused `WARP_DISTANCE_TOO_CLOSE`. The latch only ever knew about warps
+  // this pilot made itself.
+  const broadcast = fleetBroadcast("WarpTo", WARP_TO_STATION);
+  const landed = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(260), fleetBroadcast: broadcast }));
+  assert.equal(landed.action.kind, "wait");
+  assert.equal(landed.phase, "Obeying fleet");
+  assert.match(landed.why, /Already there\./);
+  assert.equal(landed.memory.lastWarpedToID, WARP_TO_STATION);
+
+  // And answered: the next tick is the standing readout, still no warp.
+  const after = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(260), fleetBroadcast: broadcast }), landed.memory);
+  assert.equal(after.action.kind, "wait");
+  assert.match(after.why, /Already there\./);
+});
+
+test("a WarpTo answered by being there stays answered when the ship is moved off afterwards", () => {
+  // The latch is what keeps the order from pulling the ship back across the
+  // grid for the rest of the broadcast's freshness window.
+  const broadcast = fleetBroadcast("WarpTo", WARP_TO_STATION);
+  const landed = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(260), fleetBroadcast: broadcast }));
+  const movedOff = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(60_000), fleetBroadcast: broadcast }), landed.memory);
+  assert.equal(movedOff.action.kind, "wait");
+  assert.match(movedOff.why, /Already on the way\./);
+});
+
+test("a WarpTo for something inside the warp floor is closed on, as a client's autopilot does", () => {
+  // autopilot.py: under `minWarpDistance` it is `AP_ApproachDestID`, a
+  // `CmdFollowBall` at nought, never a warp. The floor is the companion's own
+  // warp's, 162.5 km for a hull of no radius (see the get-safe tests).
+  const broadcast = fleetBroadcast("WarpTo", WARP_TO_STATION);
+  for (const metres of [12_500, 100_000, 162_499]) {
+    const decision = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(metres), fleetBroadcast: broadcast }));
+    assert.deepEqual(decision.action, { kind: "approach", targetID: WARP_TO_STATION }, `${metres} m off the station`);
+    assert.equal(decision.memory.closingOn, WARP_TO_STATION);
+    assert.equal(decision.memory.lastWarpedToID, null, "an approach has not arrived yet");
+  }
+  assert.deepEqual(
+    decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(162_500), fleetBroadcast: broadcast })).action,
+    { kind: "warp", targetID: WARP_TO_STATION },
+  );
+});
+
+test("a WarpTo approach is not restarted while it runs, and arriving answers the order", () => {
+  const broadcast = fleetBroadcast("WarpTo", WARP_TO_STATION);
+  const approach = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStation(100_000), fleetBroadcast: broadcast }));
+  assert.equal(approach.action.kind, "approach");
+
+  const closing = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStationFollowing(60_000), fleetBroadcast: broadcast }), approach.memory);
+  assert.equal(closing.action.kind, "wait");
+  assert.match(closing.why, /Closing on it\./);
+
+  const arrived = decideCompanionAction(REQUEST, obs({ snapshot: gridWithStationFollowing(12_000), fleetBroadcast: broadcast }), closing.memory);
+  assert.equal(arrived.action.kind, "wait");
+  assert.match(arrived.why, /Already there\./);
+  assert.equal(arrived.memory.lastWarpedToID, WARP_TO_STATION);
+});
+
+test("a companion the fleet warp landed at the broadcast's station never asks the server to warp there", async () => {
+  // The live sequence through the controller: in warp (the fleet's), landed,
+  // and several ticks of the broadcast standing after it.
+  let current = obs({ snapshot: gridWithStation(150_000_000), inWarp: true, fleetBroadcast: fleetBroadcast("WarpTo", WARP_TO_STATION) });
+  const issued: FleetCompanionAction[] = [];
+  const companion = createFleetCompanion({
+    observe: async () => current,
+    issue: async (action) => { issued.push(action); },
+    now: () => 1_000,
+    sleep: async () => {},
+  });
+  companion.start(REQUEST);
+  await companion.tick();
+  current = { ...current, inWarp: false, snapshot: gridWithStation(260) };
+  for (let tick = 0; tick < 4; tick += 1) {
+    await companion.tick();
+  }
+  assert.deepEqual(issued.filter((action) => action.kind === "warp" || action.kind === "approach"), []);
+});
+
 test("a JumpTo broadcast for a gate OFF this grid falls through", () => {
   const decision = decideCompanionAction(
     REQUEST,
@@ -2828,7 +2925,8 @@ test("a chat 'warp <link>' to something ON THIS GRID is an ordinary item warp", 
   const decision = decideCompanionAction(
     request,
     obs({
-      snapshot: gridWithEntities([LOGI]),
+      // Beyond the warp floor: nearer, it is closed on rather than warped to.
+      snapshot: gridWithShipAt(LOGI, 500_000),
       chatMessages: [chatLine(chatCommandText("warp", LOGI), HUMAN)],
     }),
   );
@@ -7333,7 +7431,7 @@ test("a completed salvage approach restores formation after the wreck disappears
 
 for (const code of ["CALL_REFUSED", "BRIDGE_NETWORK_ERROR"]) {
   test(`formation resumes once after a superseding warp ends despite ${code}, without replaying warp`, async () => {
-    let current = obs({ snapshot: gridWithAnchor(gridWithEntities([LOGI])) });
+    let current = obs({ snapshot: gridWithAnchor(gridWithShipAt(LOGI, 500_000)) });
     const issued: FleetCompanionAction[] = [];
     const companion = createFleetCompanion({
       observe: async () => current,
