@@ -10,16 +10,22 @@
   import Standings from "./Standings.svelte";
   import Contacts from "./Contacts.svelte";
   import CorporationMembers from "./CorporationMembers.svelte";
+  import CorporationApplications from "./CorporationApplications.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
   let { store, flow, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; openMail?: () => void; openWatchlist?: () => void } = $props();
 
-  let panel = $state<"contacts" | "npc" | "members" | "allianceContacts">("contacts");
+  let panel = $state<"contacts" | "npc" | "members" | "allianceContacts" | "applications">("contacts");
+  let applicationsOpened = $state(false);
+  // svelte-ignore state_referenced_locally
+  const applicationsRequested = flow.corporationApplicationsRequested;
+  $effect(() => { if ($applicationsRequested > 0) { applicationsOpened = true; panel = "applications"; flow.serveCorporationApplicationsRequest($applicationsRequested); } });
   let membersOpened = $state(false);
   // svelte-ignore state_referenced_locally
   const station = store.station;
   const playerCorporation = $derived(($station.online?.corporationID ?? 0) >= 98_000_000);
+  $effect(() => { if (!playerCorporation && panel !== "applications") { applicationsOpened = true; panel = "applications"; } });
   const allianceID = $derived($station.online?.allianceID ?? null);
   $effect(() => { if (panel === "allianceContacts" && allianceID === null) panel = "contacts"; });
   // svelte-ignore state_referenced_locally
@@ -32,6 +38,8 @@
     "UI/Corporations/CorporationWindow/Alliances/AllianceContacts": "Alliance Contacts",
     "UI/InfoWindow/TabNames/Standings": "Standing",
     "UI/Corporations/BaseCorporationUI/Members": "Members",
+    "UI/Corporations/BaseCorporationUI/Recruitment": "Recruitment",
+    "UI/Corporations/CorpApplications/MyApplications": "My Applications",
     "UI/Corporations/BaseCorporationUI/MemberList": "Member List",
     "UI/Corporations/CorporationWindow/Standings/CorpContacts": "Contacts",
     "UI/Corporations/CorporationWindow/Standings/NPCStandings": "NPCs' standing",
@@ -51,8 +59,10 @@
   </header>
   <div class="corp-window">
     <!-- The Standings node has the corporation Contacts form and NPC Standings panel. -->
-    {#if playerCorporation}
     <nav class="corp-tree" aria-label={word("UI/Corporations/BaseCorporationUI/Corporation")}>
+      <span class="corp-tree-group">{word("UI/Corporations/BaseCorporationUI/Recruitment")}</span>
+      <button type="button" class="corp-tree-node" class:active={panel === "applications"} aria-current={panel === "applications" ? "page" : undefined} onclick={() => { applicationsOpened = true; panel = "applications"; }}>{word("UI/Corporations/CorpApplications/MyApplications")}</button>
+      {#if playerCorporation}
       <span class="corp-tree-group">{word("UI/Corporations/BaseCorporationUI/Members")}</span>
       <button type="button" class="corp-tree-node" class:active={panel === "members"} aria-current={panel === "members" ? "page" : undefined} onclick={() => { membersOpened = true; panel = "members"; }}>{word("UI/Corporations/BaseCorporationUI/MemberList")}</button>
       <span class="corp-tree-group">{word("UI/InfoWindow/TabNames/Standings")}</span>
@@ -63,9 +73,14 @@
         <span class="corp-tree-group">{word("UI/Corporations/CorporationWindow/Alliances/Relationships")}</span>
         <button type="button" class="corp-tree-node" class:active={panel === "allianceContacts"} aria-current={panel === "allianceContacts" ? "page" : undefined} onclick={() => (panel = "allianceContacts")}>{word("UI/Corporations/CorporationWindow/Alliances/AllianceContacts")}</button>
       {/if}
+      {/if}
     </nav>
     <div class="corp-panel">
+      {#key $station.online?.characterID}
+        {#if applicationsOpened}<div hidden={panel !== "applications"}><CorporationApplications {store} {flow} /></div>{/if}
+      {/key}
       {#key $station.online?.corporationID}
+      {#if playerCorporation}
       {#if membersOpened}<div hidden={panel !== "members"}><CorporationMembers {store} {flow} {openMail} {openWatchlist} /></div>{/if}
       {#if panel === "contacts"}
         <Contacts {store} {flow} contactType="corpcontact" {openWatchlist} />
@@ -74,11 +89,9 @@
       {:else if panel === "allianceContacts" && $station.online?.allianceID}
         {#key $station.online.allianceID}<Contacts {store} {flow} contactType="alliancecontact" {openWatchlist} />{/key}
       {/if}
+      {/if}
       {/key}
     </div>
-    {:else}
-      <p class="empty">Corporation member and standings panels are available for player corporations.</p>
-    {/if}
   </div>
 </section>
 

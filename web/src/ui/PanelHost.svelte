@@ -122,7 +122,7 @@
 {:else if tab === "market"}
   <Market {store} {flow} />
 {:else if tab === "activity"}
-  <Activity {store} {flow} showMail={() => onOpen?.("mail")} />
+  <Activity {store} {flow} showMail={() => onOpen?.("mail")} openApplications={() => { flow.requestCorporationApplications(); onOpen?.("corporation"); }} />
 {:else if tab === "fleet"}
   <FleetCenter {store} {flow} />
 {:else if tab === "scanner"}
