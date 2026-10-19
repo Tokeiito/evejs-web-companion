@@ -1,6 +1,6 @@
 "use strict";
 
-// eveSessions.GetReason170-285, with newReason='corp.kickself'. Keep label
+// eveSessions.GetReason170-285, with a new corp.* operation. Keep label
 // arguments typed so the installed client data renders the nested reason.
 function corporationSessionReason(oldReason, timeLeftMs) {
   const label = (name, entries = []) => [101, `UI/Sessions/${name}`, { type: "dict", entries }];

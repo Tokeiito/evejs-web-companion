@@ -162,7 +162,8 @@ test("the page's calls that are made on an object of the service's own say what 
   assert.deepEqual([objectOfPageCall("agentMgr", "RemoveOfferFromJournal"), isPageWritePair("agentMgr", "DoAction"), isPageWritePair("agentMgr", "RemoveOfferFromJournal")], ["agent", true, true]);
   // base_corporation.KickOut397-412 and KickOutMultipleMembers459-476 call
   // GetCorpRegistry(): both writes must stay on their originating corporation object.
-  for (const method of ["KickOutMember", "KickOutMembers"]) {
+  // base_corporation.__ResignFromCEO780-783 uses the same originating registry.
+  for (const method of ["KickOutMember", "KickOutMembers", "ResignFromCEO"]) {
     assert.deepEqual([objectOfPageCall("corpRegistry", method), isBridgeWritePair("corpRegistry", method), isPageWritePair("corpRegistry", method)], ["corporationExpected", true, true]);
   }
   // fleetSvc.LeaveFleet: on the fleet's own object, of which the session has one. A write, and one of the page's.

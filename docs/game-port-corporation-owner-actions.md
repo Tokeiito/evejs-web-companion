@@ -184,6 +184,44 @@ self, including when evaluating a merged selection.
    The corpus has a real disband recording; its companion Markdown describes an
    older server state, so inspect current handlers and parity ledgers before
    treating any listed difference as an outstanding defect.
+   Read/split: original compiled `base_corporation:780-824` confirms space refusal
+   before the CEO check; retained member count; default-No destruction/resignation
+   warnings; `PerformSessionChange('corp.resignceo')`; then either completed None or
+   a candidate list. An empty list still opens the picker. A choice explicitly
+   calls `ResetSessionChangeTimer` before the second guarded RPC. The private
+   callback refuses sole-member alliance destruction inside that guarded operation.
+   The TQ disband capture (call3275, lines263/790) decodes to bound
+   `ResignFromCEO(None)` and a None response; it records no candidate-list case.
+   Current server code already implements one-member liquidation and successor
+   changes; the companion Markdown's missing-liquidation list is historical.
+   - **c4d1: transport prerequisite, implemented.** The typed CEO mutation names
+     its originating registry while sending native `ResignFromCEO(None or ID)`.
+     It retains the pilot/corporation generation, locks until the actual RPC
+     returns, starts the native ten-second cooldown, and restores the timer on
+     refusal. Returned successor IDs authorize only their original operation's
+     explicit timer reset and retry; another pilot in the same corporation cannot
+     use that choice. The sole-member alliance refusal runs inside the guarded
+     mutation before RPC, using retained native member IDs without draining notices.
+     Actual native and gateway successor handoffs, concurrent-write refusal while
+     a native reply was held, cooldown/reset and refusal rollback were verified.
+     Funded disposable solo liquidation returned None, paid the exact two-division
+     balance and changed the pilot to its NPC corporation. Its native recording
+     also exposed wallet shapes and lifecycle ordering fixed in EveJS; the
+     original full store is restored after the live walk. No menu is exposed
+     until c4d2 supplies the complete callback.
+   - **c4d2: complete shared submenu and flow.** Preserve self/CEO gates and the
+     contact-multiple caller distinction. Use the native retained member IDs for
+     `len(GetMembers())`; request `GetNumberOfPotentialCEOs` only on the many-member
+     branch and use the actual returned list's length. Implement every warning,
+     refusal, cancellation, both mutations and the successor picker together.
+     Compiled `ListWindow:109-204` sorts case-insensitively and stably when ordered1,
+     starts with no selection and the one-choice error, keeps OK open without a
+     choice, and confirms on double-click. Owner priming deduplicates IDs while
+     candidate rows retain the returned entries. Hold the original pilot/corporation
+     across all dialogs, sorting/naming and dispatch; accept intended own changes.
+     Verify desktop/phone, candidate cancel/choice, native session-busy behavior,
+     alliance/space refusal and actual disband/role/session effects, with full
+     store/settings restoration. Keep every later administration unit in scope.
 5. **D2p18c4e — decorations.** Read the complete award window, menu merge, available
    decorations and write before exposing either single or multiple award actions.
 6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
