@@ -1141,7 +1141,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (objectKind === "corporationExpected") {
     if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
-    else if (body.method === "UpdateApplicationOffer") await dispatchCorporationApplicationWrite(req, res, next, body);
+    else if (["UpdateApplicationOffer", "InsertInvitation"].includes(body.method)) await dispatchCorporationRecruitmentWrite(req, res, next, body);
     else await dispatchCorporationMemberWrite(req, res, next, body);
     return;
   }
@@ -6778,25 +6778,28 @@ async function dispatchCorporationAwardWrite(req, res, next, body) {
   } catch (error) { next(error); }
 }
 
-// CorpApplicationEntry746-770 / bco_applications141: recipient decisions use
-// the current registry, even when the invitation is from another corporation.
-async function dispatchCorporationApplicationWrite(req, res, next, body) {
+// base_corporation1145-1149 and CorpApplicationEntry746-770: invitation and
+// recipient decisions use the originating current registry. The invitation's
+// target corporation in the recipient's arguments does not select its moniker.
+async function dispatchCorporationRecruitmentWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const args = body.args, origin = strictPositiveID(body.of);
   const text = args?.[3];
-  if (!Array.isArray(args) || args.length !== 7 || !origin || strictPositiveID(args[0]) === null ||
-      args[1] !== held.characterID || strictPositiveID(args[2]) === null ||
-      !(typeof text === "string" || text?.type === "wstring" && typeof text.value === "string") ||
-      ![2, 3, 7].includes(args[4]) || args[5] !== "" || args[6] !== null || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A recipient decision names its own application and the original seven arguments." }); return;
+  const sender = body.method === "InsertInvitation";
+  const validArguments = Array.isArray(args) && (sender ? args.length === 1 && strictPositiveID(args[0]) !== null :
+    args.length === 7 && strictPositiveID(args[0]) !== null && args[1] === held.characterID && strictPositiveID(args[2]) !== null &&
+    (typeof text === "string" || text?.type === "wstring" && typeof text.value === "string") &&
+    [2, 3, 7].includes(args[4]) && args[5] === "" && args[6] === null);
+  if (!validArguments || !origin || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: sender ? "An invitation names one character." : "A recipient decision names its own application and the original seven arguments." }); return;
   }
   try {
     assertCurrentHeldSession(held, req.webSessionID);
-    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation application decisions require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation recruitment actions require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
     const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
-    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This decision belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
-    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "UpdateApplicationOffer", args, null, origin, context.version);
+    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This action belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, origin, context.version);
     res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: outcome.notifications ?? [], ...pilotClock(held) });
   } catch (error) { next(error); }
 }
