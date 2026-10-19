@@ -300,10 +300,10 @@ self, including when evaluating a merged selection.
      callback, including actual error values and suppressYes; the current server
      did not produce those errors, so no live fee/retry case is claimed. Full
      store/preferences restored. Other corporation and character panels remain.
-6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
+6. **D2p18c4f — recruitment invitations, implemented.** Native `InviteToJoinCorp` asks
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
-   Complete the actual acceptance/decline/session behavior and notices required by
-   its existing UI, using recordings and compiled code as available.
+   The recipient acceptance/decline/session behavior and required notices are
+   ported from the recorded applied path and compiled direct-invitation consumers.
    Read/split: compiled `CharacterChecker.OfferSendCorpInvite:332-341` rejects
    multiple selection, NPC targets, missing Personnel Manager and current members.
    It has no separate NPC-pilot-corporation gate. `base_corporation:1145-1149`
@@ -373,11 +373,28 @@ self, including when evaluating a merged selection.
      type18 entry opened the first's. AppFlow verified cancelled/stale-pilot
      withdrawals, history setting and wrong originating registry refusal.
      The wire recording has one personal prime per selected BFF session and the
-     native seven arguments for every decision. No send menu is exposed yet.
-   - **c4f3: complete shared send action.** Once the receiver flow works, expose
-     single-target SendCorpInvite on the original gates, OK/Cancel and originating
-     registry fence. Verify sender/recipient effects live, cancellation, authority
-     changes and retirement in browser/phone, then restore/commit/push.
+     native seven arguments for every decision. The sender unit below completes
+     the shared invitation action.
+   - **c4f3: complete shared send action, implemented.** The character owner menu
+     exposes SendCorpInvite for a single non-NPC character outside retained
+     GetMemberIDs, with Personnel Manager bit128. There is no separate NPC-pilot
+     corporation gate and no merged action. Contacts/search distinguish character
+     owners by eveowners type; Member List omits the action for current members.
+     ConfirmSendInviteToJoinCorp receives charID and OK/Cancel; Cancel sends
+     nothing, OK sends bound InsertInvitation(charID), with the originating
+     registry/pilot fence through dispatch. Live role0 omitted the action and
+     Personnel-only128 offered it; stored Director1 expanded to an effective mask
+     containing Personnel128, so it also offered it by that same native bit check.
+     AppFlow verified the full target/multiple/membership gates, Cancel, replaced
+     pilot and wrong originating-registry refusal. Browser Corporation Contacts,
+     personal Contacts and search offered the action; Member List omitted it and
+     mixed ContactMultiple had only its native Edit/Remove. Desktop OK sent one
+     argument and the actual NPC recipient's browser showed Directly Invited,
+     then its Decline retained Invitation Rejected. Desktop/390px Cancel added
+     no RPC. Native recording contains exactly the two confirmed sends (AppFlow
+     and browser), both bound and scalar, plus the recipient row/139 notification.
+     No direct TQ invitation packet was found; only the companion mentions this
+     separate path. Full store/settings restoration is recorded in the journal.
 7. **D2p18c4g — corporation cash from the shared menu.** Reuse the existing wallet
    transfer machinery only after comparing its corporate-source, recipient,
    division and authority behavior with this exact native entry point.

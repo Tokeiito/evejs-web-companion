@@ -420,6 +420,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
+import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -2109,6 +2110,7 @@ export interface AppFlow {
   selectCorporationCEO(n: number, index: number): void;
   answerCorporationCEO(n: number, confirmed: boolean): void;
   corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null>;
+  corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null>;
   readonly corporationAwardAsk: ReadableSignal<CorporationAwardAsk | null>;
   selectCorporationAward(n: number, index: number): void;
   answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
@@ -15160,6 +15162,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationAwardAnswer = answer => { corporationAwardAnswer = null; corporationAwardAskSignal.set(null); resolve(answer); };
       corporationAwardAskSignal.set({ ...value, n: ++dialogsSaidCount });
     });
+  }
+  async function corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null> {
+    const online = store.station.get().online, target = ownerIDs[0];
+    // CharacterChecker332-341: no multi, NPC target, missing Personnel Manager
+    // or own member. There is no separate NPC-corporation gate on the sender.
+    if (ownerIDs.length !== 1 || typeof target !== "number" || !Number.isSafeInteger(target) || target <= 0 || isNpcOwner(target) || !online || online.corporationID === null || (BigInt(online.corpRole ?? "0") & 128n) === 0n) return null;
+    const scope = captureMemberOperation();
+    // CharacterMenu callers supply a character. Contacts also has corporation
+    // and alliance owners: use the retained eveowners type to distinguish them.
+    await memberNames(scope, [{ kind: "ownerType", id: target }]);
+    if (!CHARACTER_TYPES.has(Number(nameCache.get(nameKey("ownerType", target))))) return null;
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its invitation menu was being read.", 0);
+    if (members.memberIDs.includes(target)) return null;
+    return { invite: async () => {
+      scope.current();
+      await memberNames(scope, [{ kind: "owner", id: target }]);
+      await wordsNow(["dialog:ConfirmSendInviteToJoinCorp/title", "dialog:ConfirmSendInviteToJoinCorp/body"]); scope.current();
+      if (!await askDialog("ConfirmSendInviteToJoinCorp", { type: "dict", entries: [["charID", target]] }, "Send this pilot an invitation to join your corporation?", "okcancel")) return;
+      scope.current();
+      try { await scope.write("corpRegistry", "InsertInvitation", [target], null, scope.online.corporationID); scope.current(); }
+      catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    }};
   }
   async function corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null> {
     const online = store.station.get().online;
@@ -28998,6 +29023,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationExpelMenu,
     corporationCEOMenu,
     corporationAwardMenu,
+    corporationInviteMenu,
     corporationAwardAsk: readonlySignal(corporationAwardAskSignal),
     selectCorporationAward,
     answerCorporationAward,
