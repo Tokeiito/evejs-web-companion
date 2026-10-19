@@ -774,6 +774,7 @@ import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, typ
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
 import { keptByType, keptTypeAttributes, keptWhereKnown } from "../bridge/keptTypeFacts.ts";
+import { moduleActivation, type ModuleActivation } from "../nav/moduleActivation.ts";
 import type { AmmoPlace, AmmoSession } from "../bridge/dogmaWrites.ts";
 import type { DogmaItemInfo } from "../bridge/boundDogma.ts";
 import {
@@ -3976,6 +3977,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
   const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
+  // Whether a module type can be switched on at all, by the server's own test (nav/moduleActivation.ts): asked
+  // once for a type, and copied here as it arrives so the module classifiers, which are synchronous, can read it.
+  const activationOfTypes = keptByType((typeIDs: readonly number[]) => api.loadTypeActivation(typeIDs, callOptions));
+  const typeActivatable = new Map<number, boolean | null>();
+  async function readTypeActivation(typeIDs: readonly number[]): Promise<void> {
+    try {
+      for (const [typeID, answer] of Object.entries(await activationOfTypes(typeIDs))) typeActivatable.set(Number(typeID), answer);
+    } catch { /* Not read is not known: `fittedModuleActivation` falls back, and never excludes on it. */ }
+  }
+  /** The one test every list of modules to switch on is gated by: only "passive" excludes. */
+  function fittedModuleActivation(module: { readonly typeID: number; readonly itemID: number }): ModuleActivation {
+    return moduleActivation({
+      typeActivatable: typeActivatable.get(module.typeID),
+      itemCycles: itemHasActivationCycle(store.fitting.get().dogma, module.itemID),
+    });
+  }
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
   // The scanner's four orders, as the client's scan service makes them (bridge/scannerWrites.ts).
@@ -22588,8 +22605,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // scales the capacity back out (`companionUtilities.ts`), so the page's own
       // last snapshot is enough.
       const seen = store.space.get().snapshot?.ship ?? null;
-      companionCombatUtilities = utilityIDs.size === 0 ? null : combatUtilityFit(shipID, slots, bound.allInfo.value,
+      const utilities = utilityIDs.size === 0 ? null : combatUtilityFit(shipID, slots, bound.allInfo.value,
         types, null, seen !== null && seen.itemID === shipID ? seen.capacitorRatio : null);
+      // Gated like every other list of modules to switch on (`fittedModuleActivation`).
+      if (utilities !== null) await readTypeActivation(utilities.modules.map((module) => module.typeID));
+      companionCombatUtilities = utilities === null ? null
+        : { ...utilities, modules: utilities.modules.filter((module) => fittedModuleActivation(module) !== "passive") };
       return request.weaponModuleIDs.length === 0 ? null
         : combatFit(shipID, slots, request.weaponModuleIDs, decodeChargeFits(reads.chargeFits), bound.allInfo.value, null);
     } catch {
@@ -22640,6 +22661,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // classifier falls back to the name every time and inherits the very
       // defect it now avoids.
       await loadDogma().catch(() => {});
+      // ⚠ AWAITED FOR THE SAME REASON, and before every classifier below: each
+      // list is gated by whether its module can be switched on at all
+      // (`fittedModuleActivation`), and that is this read. Kept per type, so it
+      // is a call only the first time a type is fitted.
+      await readTypeActivation(fit.slots.flatMap((slot) => slot.module === null ? [] : [slot.module.typeID]));
       const defense = resolveDefenseModuleIDs();
       const remote = resolveRemoteRepModuleIDs();
       // The buffer fit's own answer to "where is this ship's tank", voted off
@@ -23042,7 +23068,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // cycling a passive module wastes a call, refusing to cycle a real one
         // loses the tank or the guns. `itemHasActivationCycle` is three-state and
         // only an explicit `false` excludes.
-        if (itemHasActivationCycle(fit.dogma, slot.module.itemID) === false) {
+        //
+        // ⚠ SINCE 2026-10-14 THE TYPE'S OWN ANSWER COMES FIRST: the server's
+        // test of whether the type has an effect a pilot switches on
+        // (`fittedModuleActivation`, nav/moduleActivation.ts), with the item's
+        // cycle standing in only while that is unread. Still only "passive"
+        // excludes.
+        if (fittedModuleActivation(slot.module) === "passive") {
           continue;
         }
         if (/remote/i.test(group)) {
@@ -23168,8 +23200,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // every family. No remote repairer group is known to be passive, so this
         // is expected to exclude nothing — it is here so that "group says what,
         // duration says whether" is one rule with no exceptions to remember,
-        // rather than a rule with a footnote. Three-state; only `false` excludes.
-        if (itemHasActivationCycle(fit.dogma, slot.module.itemID) === false) {
+        // rather than a rule with a footnote. Three-state; only "passive" excludes.
+        if (fittedModuleActivation(slot.module) === "passive") {
           continue;
         }
         if (/remote shield/i.test(group)) {
@@ -23822,8 +23854,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Fitted, online modules that boost the DRONES and must be switched on to do
    * it: the game's "Drone Tracking Modules" (Omnidirectional Tracking Link) and
    * "Drone Navigation Computer" groups, matched exactly. The passive "Drone
-   * Tracking Enhancer" group is a different name and is never matched, so
-   * nothing here is a module that cannot be activated.
+   * Tracking Enhancer" group is a different name and is never matched.
+   *
+   * ⚠ THE GROUP NAME DID NOT MAKE THEM SWITCHABLE. Seen live 2026-10-14: on this
+   * server a Drone Navigation Computer I has no effect a pilot switches on, and
+   * companions asked for it once a fight ("... cannot be activated."). The
+   * group says what a module is FOR; whether it can be switched on is
+   * `fittedModuleActivation`, here as in every list.
    */
   function resolveDroneAssistModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
@@ -23837,7 +23874,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         continue;
       }
       const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
-      if (group !== null && /^(drone tracking modules|drone navigation computer)$/i.test(group.trim())) {
+      if (group !== null && /^(drone tracking modules|drone navigation computer)$/i.test(group.trim()) &&
+        fittedModuleActivation(slot.module) !== "passive") {
         ids.push(slot.module.itemID);
       }
     }
@@ -23856,7 +23894,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         continue;
       }
       const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
-      if (group !== null && /salvager/i.test(group)) {
+      if (group !== null && /salvager/i.test(group) && fittedModuleActivation(slot.module) !== "passive") {
         ids.push(slot.module.itemID);
       }
     }
