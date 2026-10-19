@@ -1563,6 +1563,17 @@ export interface CompanionLadderMemory {
    */
   readonly droneAssistLit: readonly number[];
   /**
+   * The job-over recall rung 6 last issued, or null when none is in flight.
+   *
+   * ⚠ WITHOUT THIS THE RUNG RE-ISSUES ITS RECALL EVERY TICK while the drones fly
+   * home (observed live, 2026-10-12: 20-30 identical recalls per pilot, ~390 ms
+   * apart, one of them a failed call). A tick that issues an action comes back
+   * at `FLEET_COMPANION_BURST_MS`, and the drones are still on grid for the
+   * whole flight, so the condition stays true and every burst tick spent its
+   * one atomic call on an order the server had already taken.
+   */
+  readonly jobOverRecall: JobOverRecall | null;
+  /**
    * The ship this pilot's repair drones were last sent to.
    *
    * ⚠ WITHOUT THIS THE RUNG RE-ISSUES ITS ORDER EVERY TICK. Drones already
@@ -1888,6 +1899,16 @@ export interface CompanionLadderMemory {
   readonly reloadAttempts: Readonly<Record<number, number>>;
 }
 
+/** A job-over recall in flight: which drones it named, and when. */
+export interface JobOverRecall {
+  /**
+   * Watched individually: a drone out that is NOT in this list was launched
+   * since, and the recall never named it.
+   */
+  readonly droneIDs: readonly number[];
+  readonly sinceMs: number;
+}
+
 export function freshLadderMemory(): CompanionLadderMemory {
   return {
     standingChatCursor: null,
@@ -1916,6 +1937,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     droneSizeSwitchAtMs: null,
     droneSizeRecalledIDs: [],
     droneAssistLit: [],
+    jobOverRecall: null,
     lastDroneRepairTargetID: null,
     lastDroneRepairIDs: [],
     lastDroneEngageTargetID: null,
@@ -2357,6 +2379,7 @@ function decideCompanionStep(
     droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
     droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
     droneAssistLit: memory.droneAssistLit,
+    jobOverRecall: memory.jobOverRecall,
     // ⚠ CARRIED, NOT CLEARED, and the difference from `abandonment` above is
     // the whole point. That one is cleared because a human coming back is
     // exactly the thing it was waiting for. A flee is about the ship's health
@@ -7459,10 +7482,17 @@ function decideDrones(
   // with them is decided by WHAT THEY ARE, not by a checkbox -- see
   // `wantedDroneRole`.
   if (obs.inSpace !== true || obs.snapshot == null) {
-    return nothing;
+    return { decision: null, memory };
   }
   const out = obs.myDroneIDs ?? [];
   const role = wantedDroneRole(obs, memory);
+  // A job-over recall is over once its drones are home, or once there is a job
+  // again -- a fight that restarts mid-recall must not have its next end wait
+  // out a recall the drones were since sent away from.
+  if (memory.jobOverRecall !== null && (role !== null || out.length === 0)) {
+    memory = { ...memory, jobOverRecall: null };
+    nothing = { decision: null, memory };
+  }
 
   // --- never two kinds at once --------------------------------------------
   //
@@ -7526,6 +7556,17 @@ function decideDrones(
   // ⚠ ONLY ON A GRID WE CAN SEE. `hostileOnGrid` is three-state and `null` means
   // the read failed -- recalling on that would pull drones in every time a
   // snapshot stumbled, mid-fight. Only a confident `false` ends the job.
+  //
+  // ⚠ ONCE, THEN WAIT FOR THEM TO LEAVE THE GRID. See `jobOverRecall`: the
+  // drones stay on grid for the whole flight home, and re-sending on every
+  // burst tick spent a server call and the tick's one action on an order
+  // already taken. It is sent again only if a drone it did not name is out, or
+  // after DRONE_RECALL_GIVE_UP_MS -- the recall itself may have failed, and
+  // unlike a rotation there is no relaunch riding on this one, so
+  // asking again every half-minute is the cheap way to not leave them out. A
+  // full bay (refused silently, see DRONE_RECALL_GIVE_UP_MS) is not fixed by
+  // asking again either, but it then costs a call a half-minute, not three a
+  // second.
   if (role !== "combat") {
     const off = droneAssistOff(obs, memory);
     if (off.decision !== null) {
@@ -7536,12 +7577,20 @@ function decideDrones(
   }
   if (role === null) {
     if (out.length > 0 && obs.hostileOnGrid === false) {
+      const held = memory.jobOverRecall;
+      if (
+        held !== null &&
+        out.every((droneID) => held.droneIDs.includes(droneID)) &&
+        nowMs - held.sinceMs < DRONE_RECALL_GIVE_UP_MS
+      ) {
+        return nothing;
+      }
       return {
         decision: {
           action: { kind: "recallDrones", droneIDs: out },
           phase: "Drones",
           why: "Nothing left to do here. Bringing the drones home.",
-          memory,
+          memory: { ...memory, jobOverRecall: { droneIDs: [...out], sinceMs: nowMs } },
         },
         memory,
       };
@@ -8392,6 +8441,17 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     }
   }
 
+  // A job-over recall that failed is not one to wait on. The ladder recorded it
+  // when it chose the call, and this is the one place that knows the call did
+  // not land (seen live 2026-10-12: a first recall refused CHARACTER_IN_USE).
+  // Dropped, the next tick sends it again instead of after the half-minute.
+  function forgetFailedJobOverRecall(decision: CompanionDecision): void {
+    const held = decision.memory.jobOverRecall;
+    if (decision.action.kind === "recallDrones" && held !== null && mem.ladder.jobOverRecall === held) {
+      mem.ladder = { ...mem.ladder, jobOverRecall: null };
+    }
+  }
+
   async function tickBody(): Promise<FleetCompanionAction> {
     if (mem.status !== "running") {
       return { kind: "wait" };
@@ -8516,6 +8576,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         settleAlignment(decision, isDefiniteCompanionRefusal(error) ? "refused" : "uncertain");
         settleFollow(decision, false, error);
         settleDroneEngagement(decision, false, error);
+        forgetFailedJobOverRecall(decision);
         if (token !== runToken || mem.status !== "running") {
           return { kind: "wait" };
         }
@@ -8652,6 +8713,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           droneSizeSwitchAtMs: null,
           droneSizeRecalledIDs: [],
           droneAssistLit: [],
+          jobOverRecall: null,
       // Run-local, both of them. See `CompanionFlee`'s header for why a flee is
       // not persisted the way an abandonment is: a companion coming back up
       // reads its own health on the first tick and leaves again within one tick
