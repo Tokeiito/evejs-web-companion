@@ -1251,6 +1251,7 @@
       "corpRegistry.MoveCompanyShares",
       "corpRegistry.RemoveCorporateContacts",
       "corpRegistry.RemoveLabels",
+      "corpRegistry.ResignFromCEO",
       "corpRegistry.UpdateMember",
       "crimewatch.SetSafetyLevel",
       "dogmaIM.Activate",

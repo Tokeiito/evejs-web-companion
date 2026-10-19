@@ -1917,6 +1917,11 @@ export async function quitCorporation(characterID: number, corporationID: number
   await bridgeDo(options)("corpRegistry", "KickOutMember", [characterID], null, corporationID);
 }
 
+/** Native corp.resignceo; a returned candidate choice resets its original operation's timer before retrying. */
+export async function resignCorporationCEO(newCEOID: number | null, corporationID: number, options: ApiOptions = {}): Promise<JsonValue> {
+  return bridgeDo(options)("corpRegistry", "ResignFromCEO", [newCEOID], null, corporationID);
+}
+
 function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | undefined, write: boolean): Ask {
   return async (service, method, args, kwargs = null, of) => {
     const notificationSink = options.captureNotificationSink?.();
