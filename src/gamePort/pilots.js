@@ -1923,6 +1923,7 @@ function createGamePortPilots({
       /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
       corporationRow: null,
       corporationMembers: createPilotCorporationMembers(),
+      corporationVersion: 0,
       /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
       corporateContacts: null,
       allianceContacts: null,
@@ -2160,6 +2161,7 @@ function createGamePortPilots({
       }
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
+        entry.corporationVersion++;
         for (const service of CORPORATION_SERVICES) entry.monikers.delete(service);
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
@@ -2416,6 +2418,15 @@ function createGamePortPilots({
 
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
+    // A pending corporation action still names the registry it was opened for.
+    // Check at native dispatch too: binding can yield across a corporation change.
+    const expectedCorporationID = positive(sessionFields.expectedCorporationID);
+    const corporationVersion = Number.isSafeInteger(sessionFields.expectedCorporationVersion) ? sessionFields.expectedCorporationVersion : entry.corporationVersion;
+    const dispatchCurrent = service === CORP_REGISTRY && isBridgeWritePair(service, method) && expectedCorporationID !== null ? () => {
+      if (entry.ended || sessions.get(entry.handle) !== entry || entry.corporationVersion !== corporationVersion || attribute(entry, "corpid") !== expectedCorporationID)
+        throw fail("SESSION_REQUEST_RETIRED", "This action belongs to the pilot's previous corporation.");
+    } : undefined;
+    dispatchCurrent?.();
     // The cfg's price table is the cfg's own, asked once two seconds after it loads (eveCfg.GetAveragePricesThread,
     // 522 to 525; averagePricesThread): the page's asking is answered from it, and the server asked nothing. Where
     // the cfg has no table yet, or its one asking failed, there is none to answer.
@@ -2680,7 +2691,7 @@ function createGamePortPilots({
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const allianceVersionForCall = entry.allianceVersion;
     const result = await run(entry, service, method, async () => (form.moniker
-      ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
+      ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs, dispatchCurrent)
       : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
       : byName(entry.session, service, method, form))).finally(() => {
       forgetKeptAfter(entry, service, method);
@@ -5060,25 +5071,31 @@ function createGamePortPilots({
    * the object is held under `key`, until the pilot is somewhere else or the server lets it go. A moniker the
    * client binds before it uses it is bound with no call, and the call made on what it bound.
    */
-  async function keptCall(entry, kept, key, service, paramsOf, method, args, kwargs) {
+  async function keptCall(entry, kept, key, service, paramsOf, method, args, kwargs, dispatchCurrent) {
     const name = `${service}:${key}`;
     while (!kept.has(key) && entry.binding.has(name)) await entry.binding.get(name).catch(() => {});
+    dispatchCurrent?.();
     if (kept.has(key)) return entry.session.callBound(kept.get(key), method, args, kwargs);
     const carries = !BOUND_BEFORE_USE.has(service);
-    const bound = await binds(entry, kept, key, name, service, paramsOf(), carries ? [method, args, kwargs] : null);
+    const bound = await binds(entry, kept, key, name, service, paramsOf(), carries ? [method, args, kwargs] : null, dispatchCurrent);
+    dispatchCurrent?.();
     return carries ? bound.result : entry.session.callBound(bound.objectID, method, args, kwargs);
   }
 
   /** A moniker's bind, with the call it carries or none: known as binding while it is, and its object kept when it answers. */
-  async function binds(entry, kept, key, name, service, params, call) {
+  async function binds(entry, kept, key, name, service, params, call, dispatchCurrent) {
+    const corporationVersion = CORPORATION_SERVICES.has(service) ? entry.corporationVersion : null;
     const binding = entry.session.bind(service, params, call);
     entry.binding.set(name, binding);
     try {
       const bound = await binding;
+      if (corporationVersion !== null && (entry.ended || entry.corporationVersion !== corporationVersion))
+        throw fail("SESSION_REQUEST_RETIRED", "This binding belongs to the pilot's previous corporation.");
+      dispatchCurrent?.();
       kept.set(key, bound.objectID);
       return bound;
     } finally {
-      entry.binding.delete(name);
+      if (entry.binding.get(name) === binding) entry.binding.delete(name);
     }
   }
 
@@ -5116,7 +5133,8 @@ function createGamePortPilots({
    * A call on a moniker the client keeps: for where the pilot is (eveMoniker.py: GetShipAccess for `ship`,
    * CharGetDogmaLocation for `dogmaIM`), for its corporation, or its skill handler.
    */
-  async function monikerCall(entry, service, method, args, kwargs = null) {
+  async function monikerCall(entry, service, method, args, kwargs = null, dispatchCurrent) {
+    dispatchCurrent?.();
     if (madeAfresh(service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
       // A Moniker the client makes for the one call: it binds carrying the call, and is not kept.
       return (await entry.session.bind(service, monikerParams(entry, service, undefined), [method, args, kwargs])).result;
@@ -5142,7 +5160,7 @@ function createGamePortPilots({
       warMonikerIsItsOwners(entry);
     }
     if (service !== SKILL_HANDLER) {
-      const result = await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+      const result = await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs, dispatchCurrent);
       // addressbook.DeleteContactLabel (1072-1084): clear this bit in every held corporate contact, after success.
       if (service === CORP_REGISTRY && method === "DeleteLabel" && entry.corporateContacts?.answer?.type === "dict") {
         const bit = wholeOf(args[0]);
@@ -5853,6 +5871,12 @@ function createGamePortPilots({
     return { corporationID, memberIDs, notifications: drain(entry) };
   }
 
+  // Transport identity only: observing it neither asks nor drains native notices.
+  function corporationContext(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    return { characterID: entry.characterID, corporationID: attribute(entry, "corpid"), version: entry.corporationVersion };
+  }
+
   /**
    * What the client's services ask of the corporation's registry when the session's corporation changes, the
    * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
@@ -6250,6 +6274,7 @@ function createGamePortPilots({
     fleetKept,
     standingsKept,
     corporationMemberIDs,
+    corporationContext,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,

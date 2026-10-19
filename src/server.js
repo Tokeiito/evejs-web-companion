@@ -1069,6 +1069,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
     return;
   }
+  if (objectKind === "corporationExpected" && strictPositiveID(body.of) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_CORPORATION", message: "A corporation action names the corporation it was opened for." });
+    return;
+  }
   // (An invitation turned down goes with the client's word for it or with none: true, false, or nothing at all.)
   if (objectKind === "fleetByNumber" && body.method === "RejectInvite" && decliningWordOf(body.args) === null) {
     res.status(400).json({ ok: false, error: "INVALID_ALREADY_IN_FLEET", message: "An invitation is turned down with true, with false, or with nothing." });
@@ -1130,6 +1134,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // client's session manager makes it and as its route made it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS): it
   // is answered as any call here is, once the pilot is usable in its new place.
   const placeChange = placeChangeOf(body.service, body.method, body.args);
+  if (objectKind === "corporationExpected") {
+    await dispatchCorporationMemberWrite(req, res, next, body);
+    return;
+  }
   if (placeChange !== null) {
     await dispatchPlaceChangeWrite(req, res, next, placeChange, body.service, body.method,
       Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
@@ -6621,13 +6629,77 @@ function readIndustryJobStatus(row) {
 
 // Dispatch a top-level (non-bound) call on the held live session. A lost
 // persistent session drops the whole held session (as /api/bridge/call).
-async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs) {
+// base_corporation.KickOut self uses PerformSessionChange('corp.kickself').
+// This is a corporation mutation, not a scene arrival: its native lock ends with
+// the RPC, even if the server answers None without changing corporation.
+async function dispatchCorporationMemberWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const corporationID = strictPositiveID(body.of), args = body.args;
+  if (!Array.isArray(args) || args.length !== 1 || strictPositiveID(args[0]) === null || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "KickOutMember names one character and no keyword arguments." });
+    return;
+  }
+  let mutation = null;
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    const native = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    const contextNotifications = [];
+    let expectedCorporationVersion;
+    const currentCorporation = async () => {
+      if (native) {
+        const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+        expectedCorporationVersion ??= context.version;
+        return context.corporationID;
+      }
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null);
+      contextNotifications.push(...(answer.notifications ?? []));
+      const header = mailListItems(readMailKeyVal(answer.result, "header"));
+      const line = mailListItems(readMailKeyVal(answer.result, "line"));
+      return answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")];
+    };
+    const currentCorporationID = await currentCorporation();
+    const beforeNoticeCount = contextNotifications.length;
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (strictPositiveID(currentCorporationID) !== corporationID) {
+      res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "This action belongs to the pilot's previous corporation." });
+      return;
+    }
+    held.corporationID = corporationID;
+    if (Number(args[0]) === Number(held.characterID)) {
+      // Native PerformSessionChange(wait=0): an active cooldown refuses rather
+      // than queueing a quit that could later target a different corporation.
+      if (Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
+        res.status(409).json({ ok: false, error: "SESSION_CHANGE_IN_PROGRESS", message: "The session-change cooldown is still running.", transition: publicTransition(held) });
+        return;
+      }
+      if (!beginRouteTransition(res, held, "other-session", {})) return;
+      mutation = held.transition;
+    }
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, corporationID, expectedCorporationVersion);
+    const afterCorporationID = strictPositiveID(await currentCorporation());
+    if (afterCorporationID !== null) held.corporationID = afterCorporationID;
+    if (mutation && held.transition === mutation) {
+      Object.assign(mutation, { phase: "ready", locationReady: true, sceneReady: true, egoReady: true, shipReady: true, boundContextReady: true });
+    }
+    res.json({ ok: true, service: "corpRegistry", method: body.method, result: outcome.result ?? null,
+      notifications: [...contextNotifications.slice(0, beforeNoticeCount), ...(outcome.notifications ?? []), ...contextNotifications.slice(beforeNoticeCount)], ...pilotClock(held) });
+  } catch (error) {
+    if (mutation && held.transition === mutation) {
+      if (["CALL_REFUSED", "SESSION_REQUEST_RETIRED", "SESSION_NOT_FOUND"].includes(error?.code)) cancelHeldTransition(held);
+      else markTransitionFailed(held, error?.message);
+    }
+    next(error);
+  }
+}
+
+async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs, expectedCorporationID, expectedCorporationVersion) {
   return heldRequest(held, webSessionID, isBridgeWritePair(service, method), () => gateway.callMethod(
     service,
     method,
     args,
     kwargs,
-    { userid: held.accountID },
+    { userid: held.accountID, ...(expectedCorporationID === undefined ? {} : { expectedCorporationID, expectedCorporationVersion }) },
     held.bridgeSessionID,
   ));
 }

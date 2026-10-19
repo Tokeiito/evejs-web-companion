@@ -125,6 +125,23 @@ self, including when evaluating a merged selection.
      active-war warning, self confirmation and session-change handling. The
      native gate is self, player corporation, non-CEO; it has no explicit
      multi-selection check. Read actual menu merge before choosing UI behavior.
+     **c4c2a, transport prerequisite implemented:** the typed native quit call
+     names its originating corporation in HTTP `of`, while its native RPC remains
+     `KickOutMember(charID)` on that corporation's registry. Self dispatch uses the
+     shared mutation lock and ten-second cooldown, ends the lock when the RPC
+     returns, and restores the prior timer on refusal. Original compiled
+     `carbon/common/script/sys/sessions.PerformSessionChange:418-501` confirmed
+     these rules, including `None` without a corporation change. Actual native
+     and gateway quits, a held real native reply, concurrent-write refusal,
+     cooldown and refusal rollback were verified. Native dispatch also retains
+     the originating corporation generation through asynchronous binding; a
+     delayed real bind across an actual join/departure retired the queued write,
+     and returning to the same corporation ID did not revive its old generation.
+     Old corporation bind replies cannot publish their object into the new cache.
+     **c4c2b remains:** the complete submenu, confirmations, eligibility/war
+     checks, native session-busy dialog wording and desktop/phone proof. The
+     original compiled merge kept Quit for a selection containing self and peer,
+     invoking each self callback once. No Quit UI is exposed by c4c2a alone.
    - **c4c3: Expel Corporation Member(s).** Complete the single and merged
      multiple callbacks together, including authority/eligibility differences,
      war warning, confirmation, self refusal and kicked/notKicked result dialog.
