@@ -1903,6 +1903,12 @@ The wallet's `GiveSharesDialog.TransferShares` passes the holding's issuer as th
 owner is `session.corpid` (`CorpSharesPanel.GetOwnerID`), and `GetCorpRegistry` remains bound to that session
 corporation. Corporate transfer authority and the debited allocation belong to that owner.
 
+Bulk member grants use the compiled task-management `ExecuteActions(targetIDs, actions)` path. `bco_members`
+forwards numeric GIVE cash/share actions unchanged. The native `SharesPanel.OnShareChange` rereads a visible
+owner's holdings, so the server publishes the grant's share changes after settlement completes. Mixed cash/share
+settlements keep the actual write's before/after allocations with their applied checkpoint; replay does not
+reapply or republish a completed grant. No Tranquility bulk-grant call or notice was found in the corpus.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
