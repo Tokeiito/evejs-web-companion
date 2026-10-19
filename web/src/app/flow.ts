@@ -27,6 +27,7 @@ import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, slotFlagOf } from "../bridge/fitting.ts";
+import { pickRearmFitting, planCorpFetch, rearmFitParts, rearmNeeds, rearmReport, sumOfType, type RearmCorpMove } from "../nav/companionRearm.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -10153,6 +10154,96 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   let companionDroneStackSizes: ReadonlyMap<number, number> = new Map();
 
+  /** What the last `rearmShip` came to, handed to the next tick's observation. */
+  let companionRearmOutcome: { readonly orderedAtMs: number; readonly lines: readonly string[] } | null = null;
+
+  /**
+   * The `rearm` order's docked work, as a pilot does it at the fitting window:
+   * the saved fitting the ship was built to (companionRearm.ts picks it), what
+   * the hold and the drone bay lack of its charges and drones, the corporation's
+   * stock of it moved into the hangar where the pilot's own falls short, and
+   * then Fit Ship -- the client's `FitFitting`, which loads only the difference.
+   * Answers the lines the pilot says, and never throws: a refusal is a line too.
+   */
+  async function rearmDockedShip(stationID: number): Promise<string[]> {
+    const flight = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    const shipID = flight.shipID;
+    if (!flight.docked || flight.stationID !== stationID || !shipID || flight.shipTypeID == null) {
+      return ["Could not rearm: not docked at that station."];
+    }
+    const [library, fitReads] = await Promise.all([loadRefitLibrary(), api.loadFitting(callOptions)]);
+    const fitted = buildSlots(fitReads.slots, fitReads.shipInfo, fitReads.online).flatMap((slot) => {
+      const flagID = slotFlagOf(slot.family, slot.index);
+      return slot.module !== null && flagID !== null ? [{ flagID, typeID: slot.module.typeID }] : [];
+    });
+    const choice = pickRearmFitting(library, flight.shipTypeID, fitted);
+    if (choice.fitting === null) return [`Cannot rearm: ${choice.reason}`];
+    const fitting = choice.fitting;
+    const readAboard = async () => {
+      const [panel, drones] = await Promise.all([api.loadInventory(callOptions), api.getDrones(callOptions)]);
+      return {
+        hangar: decodeInventoryRows(panel.hangar.list, panel.volumes).filter((row) => row.flagID === null || row.flagID === 4),
+        cargo: decodeInventoryRows(panel.cargo.list, panel.volumes),
+        // Unreadable reads as empty: the server subtracts what the bay holds itself.
+        bay: decodeDroneBay(drones.bay) ?? [],
+      };
+    };
+    const before = await readAboard();
+    const needs = rearmNeeds(fitting, before.cargo, before.bay);
+    // The corporation's stock, read only when the pilot's own hangar falls short.
+    let divisions: { division: number; rows: ReturnType<typeof decodeInventoryRows> }[] = [];
+    const short = needs.some((need) => need.missing > sumOfType(before.hangar, need.typeID));
+    if (short) {
+      try {
+        const corp = await api.loadCorpHangar(callOptions);
+        divisions = corp.available
+          ? corp.divisions.map((division) => ({ division: division.division, rows: division.list === null ? [] : decodeInventoryRows(division.list) }))
+          : [];
+      } catch (error) {
+        if (isSessionLost(error)) throw error;
+      }
+    }
+    const stocked = (typeID: number): number =>
+      sumOfType(before.hangar, typeID) + divisions.reduce((sum, division) => sum + sumOfType(division.rows, typeID), 0);
+    const moved: RearmCorpMove[] = [];
+    const fetch = planCorpFetch(needs, before.hangar, divisions);
+    if (fetch.length > 0) {
+      const officeID = await officeAt(bridgeAsk, stationID);
+      for (const move of officeID === null ? [] : fetch) {
+        const row = divisions.find((division) => division.division === move.division)?.rows.find((r) => r.itemID === move.itemID);
+        if (row === undefined) continue;
+        try {
+          await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, officeID!, [row], move.wholeStack ? null : move.quantity);
+          moved.push(move);
+        } catch (error) {
+          if (isSessionLost(error)) throw error;
+          // A division this pilot may not take from: what it held is short below.
+        }
+      }
+    }
+    const stocking = moved.length > 0 ? await readAboard() : before;
+    const parts = rearmFitParts(fitting, needs, stocking.hangar);
+    if (parts !== null) {
+      await applyFitting(bridgeDo, { shipID, typeID: flight.shipTypeID }, stationID, {}, parts.itemsByType, parts);
+    }
+    const after = parts === null ? stocking : await readAboard();
+    const typeIDs = needs.map((need) => need.typeID);
+    try {
+      await resolveNamesNow(typeIDs.map((id) => ({ kind: "type" as const, id })));
+    } catch {
+      // Unresolved names are said as unnamed items; the rearm itself stands.
+    }
+    const resolved = store.names.get().resolved;
+    return rearmReport(
+      fitting,
+      needs,
+      rearmNeeds(fitting, after.cargo, after.bay),
+      moved,
+      (typeID) => resolved[nameKey("type", typeID)] ?? null,
+      stocked,
+    );
+  }
+
   /**
    * The reload rung's three facts, and the clock that rations them.
    *
@@ -10835,6 +10926,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 failureReason: autopilot.snapshot().failureReason,
               }
             : null,
+          // The last docked rearm's answer; the rung matches it to its own order.
+          rearmOutcome: companionRearmOutcome,
           lowestDroneHealth,
           // Absent, not empty, on a blind scene: "did not look" (see `sceneBlind`).
           myDroneIDs: sceneBlind ? undefined : myDroneIDs,
@@ -10994,6 +11087,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "travelTo":
             await startRoute(action.systemID);
             return;
+          // The `rearm` trip's way there: the same shared autopilot, given a
+          // station, so the plan ends docked in it.
+          case "routeToStation":
+            await startRoute(action.stationID);
+            return;
+          // The `rearm` trip's work. ⚠ ITS ANSWER IS THE NEXT TICK'S, NOT A THROW:
+          // the rung waits for the lines under its own order, so a failure here
+          // has to come back as one of them or the pilot sits until it times out.
+          case "rearmShip": {
+            let lines: string[];
+            try {
+              lines = await rearmDockedShip(action.stationID);
+            } catch (error) {
+              if (isSessionLost(error)) throw error;
+              lines = [`Could not rearm: ${errorWords(error)}`];
+            }
+            companionRearmOutcome = { orderedAtMs: action.orderedAtMs, lines };
+            return;
+          }
           // Rung 4, "tackle → tag". ⚠ NOTHING IS READ BACK OFF THIS CALL, AND
           // NOTHING CAN BE. The server refuses a non-commander with a bare
           // `false` that its own caller discards, so the ack is identical
