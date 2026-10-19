@@ -3391,6 +3391,152 @@ test("the stand-down clears its record once everything it lit is off, issuing NO
   assert.deepEqual(decision.memory.lastTankUpModuleIDs, []);
 });
 
+// --- the fight-end stand-down leaves REPAIRERS to steps 2/3 ----------------------
+//
+// ⚠ THE LIVE LOOP. A wave ends with armour still hurt. Step 2 lit the repairer;
+// the next tick step 2 had nothing new to say and fell through to the
+// fight-over stand-down, which switched the repairer off; the tick after, the
+// layer was still hurt and the repairer off, so step 2 lit it again. On/off
+// every ~10 s, a repairer that never completed a cycle.
+
+/** Apply a decision's activate/deactivate to a synthetic active-module list, as the server would. */
+function applyModuleAction(active: readonly number[], action: { kind: string; moduleID?: number }): number[] {
+  if (action.kind === "activate" && action.moduleID !== undefined) {
+    return [...active, action.moduleID];
+  }
+  if (action.kind === "deactivate") {
+    return active.filter((id) => id !== action.moduleID);
+  }
+  return [...active];
+}
+
+test("fight over with the armour still hurt: a running repairer is NOT stood down, tick after tick", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  let active: number[] = [];
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const seen: string[] = [];
+  for (let tick = 0; tick < 6; tick += 1) {
+    const decision = decideCompanionAction(
+      request,
+      tankObs({
+        hostileOnGrid: false,
+        armorRatio: 0.5,
+        capacitorRatio: 1,
+        snapshot: gridWithShipsAndActive([], active),
+      }),
+      memory,
+    );
+    seen.push(decision.action.kind);
+    assert.notEqual(decision.action.kind === "deactivate", true, `tick ${tick}: the repairer must not be switched off`);
+    assert.notEqual(decision.phase, "Standing down");
+    active = applyModuleAction(active, decision.action);
+    memory = decision.memory;
+  }
+  // It lit once on the first tick and was left alone after that.
+  assert.deepEqual(active, [ARMOR_REPAIRER]);
+  assert.equal(seen.filter((kind) => kind === "activate").length, 1);
+  // Still on the record: step 2/3 is holding it on.
+  assert.deepEqual(memory.lastTankUpModuleIDs, [ARMOR_REPAIRER]);
+});
+
+test("fight over: a hardener lit during the fight IS stood down while the repairer keeps cycling", () => {
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    defenseModuleIDs: [HARDENER_1],
+    armorRepairerModuleIDs: [ARMOR_REPAIRER],
+  };
+  let memory: CompanionLadderMemory = {
+    ...freshLadderMemory(),
+    lastTankUpModuleIDs: [HARDENER_1, ARMOR_REPAIRER],
+  };
+  const first = decideCompanionAction(
+    request,
+    tankObs({
+      hostileOnGrid: false,
+      armorRatio: 0.5,
+      snapshot: gridWithShipsAndActive([], [HARDENER_1, ARMOR_REPAIRER]),
+    }),
+    memory,
+  );
+  assert.deepEqual(first.action, { kind: "deactivate", moduleID: HARDENER_1 });
+  assert.equal(first.phase, "Standing down");
+  assert.deepEqual(first.memory.lastTankUpModuleIDs, [ARMOR_REPAIRER]);
+  memory = first.memory;
+
+  // With the hardener off, the repairer is all that is left, and it is left alone.
+  for (let tick = 0; tick < 3; tick += 1) {
+    const next = decideCompanionAction(
+      request,
+      tankObs({
+        hostileOnGrid: false,
+        armorRatio: 0.5,
+        snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]),
+      }),
+      memory,
+    );
+    assert.notEqual(next.action.kind, "deactivate");
+    assert.deepEqual(next.memory.lastTankUpModuleIDs, [ARMOR_REPAIRER]);
+    memory = next.memory;
+  }
+});
+
+test("fight over and the armour whole again: the repairer switches off by step 2/3's own rule", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const memory: CompanionLadderMemory = { ...freshLadderMemory(), lastTankUpModuleIDs: [ARMOR_REPAIRER] };
+  const decision = decideCompanionAction(
+    request,
+    tankObs({
+      hostileOnGrid: false,
+      armorRatio: 1,
+      snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]),
+    }),
+    memory,
+  );
+  assert.deepEqual(decision.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
+  assert.equal(decision.phase, "Tanking up");
+  assert.match(decision.why, /whole/i);
+  assert.deepEqual(decision.memory.lastTankUpModuleIDs, []);
+});
+
+test("fight over, armour hurt, capacitor below the floor: the repairer is switched off and NOT re-lit while below", () => {
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    armorRepairerModuleIDs: [ARMOR_REPAIRER],
+    capacitorFloor: 0.2,
+  };
+  const memory: CompanionLadderMemory = { ...freshLadderMemory(), lastTankUpModuleIDs: [ARMOR_REPAIRER] };
+  const off = decideCompanionAction(
+    request,
+    tankObs({
+      hostileOnGrid: false,
+      armorRatio: 0.5,
+      capacitorRatio: 0.1,
+      snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]),
+    }),
+    memory,
+  );
+  assert.deepEqual(off.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
+  assert.match(off.why, /capacitor/i);
+  assert.deepEqual(off.memory.lastTankUpModuleIDs, []);
+
+  let carried = off.memory;
+  for (let tick = 0; tick < 3; tick += 1) {
+    const next = decideCompanionAction(
+      request,
+      tankObs({
+        hostileOnGrid: false,
+        armorRatio: 0.5,
+        capacitorRatio: 0.1,
+        snapshot: gridWithShipsAndActive([], []),
+      }),
+      carried,
+    );
+    assert.notEqual(next.action.kind, "activate", `tick ${tick}: no re-light below the floor`);
+    assert.notEqual(next.phase, "Tanking up");
+    carried = next.memory;
+  }
+});
+
 // --- RUNG ORDER: the tank goes up before the fleet is obeyed -------------------
 
 test("with both a hurt tank and a live fleet target call, the tank goes up FIRST", () => {
