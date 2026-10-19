@@ -8657,6 +8657,17 @@ app.get("/api/bridge/chat", requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get("/api/bridge/chat/:roomName/info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const session = heldChatSession(held);
+  if (!session) return chatUnavailable(res);
+  try {
+    const chat = await session.roomInfo(req.params.roomName, chatContext(held, req));
+    res.json({ ok: true, chat, notifications: [] });
+  } catch (error) { next(error); }
+});
+
 for (const operation of ["join", "leave", "invite"]) {
   app.post(`/api/bridge/chat/:channel/${operation}`, requireAuth, async (req, res, next) => {
     const held = requireHeldBridgeSession(req, res);

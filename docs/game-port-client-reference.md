@@ -1549,8 +1549,19 @@ writes use the existing confirmed pilot-call boundary. Three live BFF pilots hel
 rooms, exchanged messages, added a third participant, exercised all decline reasons and kept one room working
 after closing the other. A real successful preflight held across logout/reselection was retired without a late
 invitation request; closing a native session during its actual spam-list read prevented the late line.
-The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Page orchestration,
-acceptance dialogs and member actions remain next; the visible page still exposes Local/Corp only.
+The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Native private
+GetDisplayName asks disco#info at the full room JID; a player room asks the conference service with its
+room name as node (1327 to 1342). The adapter now correlates these IQ replies, returns the actual identity
+name and occupant count, and rejects pending requests when the connection closes, using IssueRequest
+203 to 234's thirty-second deadline. Original compiled GetDisplayName and xmpphandler.issue_request
+confirmed both stanzas: private counts below two choose PrivateChatAlone; without a window, two or more
+choose PrivateChat with the count. GetPrivateChannelDisplayName uses other member names, a pending
+target fallback, and GroupChat for multiple others. GetMembers is the native member dict's keys (window459),
+so names follow its Python dict order. Live room counts changed 0/1/2/1/0, concurrent private/player IQs
+kept distinct replies, and queries never implicitly joined. A real successful response held across pilot
+replacement retired; closing an actual pending IQ rejected it and ignored the held late reply.
+Page orchestration, acceptance dialogs and member actions remain next; the visible page still exposes
+Local/Corp only.
 
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to

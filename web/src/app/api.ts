@@ -1964,6 +1964,10 @@ export async function readChatRooms(options: ApiOptions = {}): Promise<JsonValue
   return (await getJson("/api/bridge/chat", options)).chat ?? null;
 }
 
+export async function readChatRoomInfo(roomName: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await getJson(`/api/bridge/chat/${encodeURIComponent(roomName)}/info`, options)).chat ?? null;
+}
+
 export async function joinChatRoom(roomName: string, password = "", options: ApiOptions = {}): Promise<JsonValue> {
   return (await postJson(`/api/bridge/chat/${encodeURIComponent(roomName)}/join`, { password }, options)).chat ?? null;
 }
