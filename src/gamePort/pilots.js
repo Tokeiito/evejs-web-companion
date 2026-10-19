@@ -1924,6 +1924,8 @@ function createGamePortPilots({
       /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
       corporateContacts: null,
       allianceContacts: null,
+      allianceReads: createKeptReads(),
+      allianceVersion: 0,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -2138,6 +2140,8 @@ function createGamePortPilots({
         entry.monikers.delete(ALLIANCE_REGISTRY);
         // addressbook: another alliance's contacts are another's to ask for.
         entry.allianceContacts = null;
+        entry.allianceVersion += 1;
+        entry.allianceReads.forget();
         if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
       }
       // war_cso.OnSessionChanged (69 to 80): in another alliance or corporation, what is kept of the wars of the
@@ -2654,7 +2658,7 @@ function createGamePortPilots({
       (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
       // The address book's organization contacts, noted where they are asked for (addressBookRead, monikerCall).
       (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
-      (service === ALLIANCE_REGISTRY && method === ALLIANCE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
+      (service === ALLIANCE_REGISTRY && (method === ALLIANCE_CONTACTS || method === "GetAlliance") && form.args.length === 0 && form.kwargs === null) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -2672,6 +2676,7 @@ function createGamePortPilots({
       if (Array.isArray(favorites)) entry.watchlist = favorites.filter((id) => Number.isSafeInteger(id) && id > 0);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
+    const allianceVersionForCall = entry.allianceVersion;
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
@@ -2688,6 +2693,7 @@ function createGamePortPilots({
       throw error;
     });
     await afterPersonalContactCall(entry, service, method, form, result);
+    await afterAllianceContactCall(entry, service, method, form, allianceVersionForCall);
     // The claim is answered once the fetch after it is in, so that the tokens read next are what is left.
     if (service === USER_SVC && method === CLAIM_REDEEM_TOKENS) await entry.redeemTokensWork;
     // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60): each row the server answers is made the client's
@@ -5128,12 +5134,9 @@ function createGamePortPilots({
       return corporationDoes(entry, async () => (entry.corporateContacts ??= { answer: await corporationAsk(entry, CORPORATE_CONTACTS) }).answer);
     }
     if (service === ALLIANCE_REGISTRY && method === ALLIANCE_CONTACTS && args.length === 0 && kwargs === null) {
-      if (entry.allianceContacts === null) {
-        ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
-        entry.allianceContacts = { answer: await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs) };
-      }
-      return entry.allianceContacts.answer;
+      return allianceKeptRead(entry, "contacts", method);
     }
+    if (service === ALLIANCE_REGISTRY && method === "GetAlliance" && args.length === 0 && kwargs === null) return allianceKeptRead(entry, "info", method);
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -5792,6 +5795,47 @@ function createGamePortPilots({
     return doing;
   }
 
+  // all_cso_alliance keeps the alliance row; addressbook keeps its contact dict.
+  // Serialize reads and amendments, including notices arriving during a read.
+  const allianceCurrent = (entry, version) => !entry.ended && (!sessions.has(entry.handle) || sessions.get(entry.handle) === entry) && entry.allianceVersion === version;
+  async function allianceKeptRead(entry, key, method) {
+    const version = entry.allianceVersion;
+    const kept = await entry.allianceReads.read(key, async () => {
+      ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
+      return { answer: await keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null) };
+    });
+    if (key === "contacts" && allianceCurrent(entry, version)) entry.allianceContacts = kept;
+    return kept.answer;
+  }
+  function amendAlliance(entry, key, version, change) {
+    return entry.allianceReads.amend(key, kept => {
+      if (!allianceCurrent(entry, version)) return kept;
+      const next = change(kept);
+      if (key === "contacts") entry.allianceContacts = next ?? null;
+      return next;
+    });
+  }
+  async function afterAllianceContactCall(entry, service, method, form, version) {
+    if (service !== ALLIANCE_REGISTRY || !allianceCurrent(entry, version)) return;
+    const writes = ["AddAllianceContact", "EditAllianceContact", "RemoveAllianceContacts", "EditContactsRelationshipID", "AssignLabels", "RemoveLabels", "DeleteLabel"];
+    if (!writes.includes(method)) return;
+    await amendAlliance(entry, "contacts", version, kept => {
+      if (form.status === "differs" || form.kwargs !== null) return undefined;
+      const args = argumentsToWire(form.args);
+      const level = args[1]?.type === "real" ? args[1].value : args[1];
+      if (method === "AddAllianceContact" || method === "EditAllianceContact") return corporateContactsChanged(kept, [[args[0], level, null]]);
+      const ids = itemsOf(args[0]);
+      if (method === "RemoveAllianceContacts") return corporateContactsChanged(kept, ids.map(id => [id, null, null]));
+      if (method === "EditContactsRelationshipID") return corporateContactsChanged(kept, ids.map(id => [id, level, null]));
+      const bit = wholeOf(method === "DeleteLabel" ? args[0] : args[1]);
+      if (bit === null) return undefined;
+      return corporateContactsChanged(kept, kept.answer.entries.filter(([id]) => method === "DeleteLabel" || ids.some(owner => Number(owner) === Number(id))).map(([id, contact]) => {
+        const mask = wholeOf(dictValue(contact.args, "labelMask")) ?? 0n;
+        return [id, null, method === "AssignLabels" ? mask | bit : mask & (9223372036854775807n - bit)];
+      }));
+    });
+  }
+
   /**
    * What the client's services ask of the corporation's registry when the session's corporation changes, the
    * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
@@ -5827,17 +5871,13 @@ function createGamePortPilots({
    * onlineStatus.GetInitialState. The corporation's and the alliance's are kept too (corporateContacts,
    * allianceContacts), for the page's reading of them by name (an owner's Standings tab); the client works the
    * server's word of a change into them (OnOrganizationContactsUpdated, 157 to 191). The corporation's kept dict
-   * is updated from those tuples too; the alliance's is still let go and asked for when next wanted.
+   * and alliance dicts are updated from those tuples without another read.
    */
   async function addressBookRead(entry) {
-    const ofTheAlliance = (method) => {
-      ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
-      return keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null);
-    };
     await Promise.all([
       keptRead(entry, CHAR_MGR, CONTACT_LIST, shape(CHAR_MGR, CONTACT_LIST, [], null, contextFor(entry))),
       ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, CORPORATE_CONTACTS).then((answer) => { entry.corporateContacts = { answer }; })]),
-      ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance(ALLIANCE_CONTACTS).then((answer) => { entry.allianceContacts = { answer }; })]),
+      ...(attribute(entry, "allianceid") === null ? [] : [allianceKeptRead(entry, "contacts", ALLIANCE_CONTACTS)]),
       keptRead(entry, ONLINE_STATUS, "GetInitialState", shape(ONLINE_STATUS, "GetInitialState", [], null, contextFor(entry))),
     ].map((asked) => asked.catch(() => {})));
   }
@@ -5874,7 +5914,15 @@ function createGamePortPilots({
     if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
       const ownerID = Number(notification.args[0]);
       if (ownerID === Number(attribute(entry, "corpid"))) entry.corporateContacts = corporateContactsChanged(entry.corporateContacts, notification.args[1]);
-      if (ownerID === Number(attribute(entry, "allianceid"))) entry.allianceContacts = null;
+      if (ownerID === Number(attribute(entry, "allianceid"))) amendAlliance(entry, "contacts", entry.allianceVersion, kept => corporateContactsChanged(kept, notification.args[1]));
+    }
+    if (notification.method === "OnAllianceChanged" && Number(notification.args?.[0]) === attribute(entry, "allianceid")) {
+      amendAlliance(entry, "info", entry.allianceVersion, kept => {
+        const changes = itemsOf(notification.args[1]?.entries);
+        if (!kept.answer?.args?.entries || changes.length > 0 && changes.every(([, pair]) => itemsOf(pair)[1] === null)) return undefined;
+        const updates = new Map(changes.map(([name, pair]) => [textOf(name), itemsOf(pair)[1]]));
+        return { answer: { ...kept.answer, args: { ...kept.answer.args, entries: kept.answer.args.entries.map(([name, value]) => [name, updates.has(textOf(name)) ? updates.get(textOf(name)) : value]) } } };
+      });
     }
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
     // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
@@ -6060,6 +6108,7 @@ function createGamePortPilots({
     // A planet's colony and what the planet carries are kept by the planet, where they are asked as the client asks them.
     const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
+    const allianceVersionForCall = entry.allianceVersion;
     try {
       result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
@@ -6076,6 +6125,7 @@ function createGamePortPilots({
     forgetKeptAfter(entry, service, method);
     if (changesAColony(service, method)) forgetColonies(entry);
     await afterPersonalContactCall(entry, service, method, form, result);
+    await afterAllianceContactCall(entry, service, method, form, allianceVersionForCall);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

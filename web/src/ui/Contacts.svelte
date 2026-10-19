@@ -104,7 +104,8 @@
   import type { ContactAction } from "./contactAction.ts";
 
   let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
-  const corporate = $derived(contactType === "corpcontact");
+  const organization = $derived(contactType !== "contact");
+  const alliance = $derived(contactType === "alliancecontact");
   // svelte-ignore state_referenced_locally
   const live = store.live;
 
@@ -119,7 +120,24 @@
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // addressbook.ShowLabelMenuAndManageBtn and sessionChecker.IsDiplomat; appConst 316, 347.
-  const canManage = $derived(!corporate || /^(0|[1-9][0-9]*)$/.test($station.online?.corpRole ?? "") && (BigInt($station.online?.corpRole ?? "0") & (1n | 17179869184n)) !== 0n);
+  const ownerID = $derived(alliance ? $station.online?.allianceID : $station.online?.corporationID);
+  const authorityScope = $derived(`${$station.online?.characterID}:${$station.online?.corporationID}:${$station.online?.allianceID}:${$station.online?.corpRole}`);
+  let executor = $state<{ scope: string; allowed: boolean } | null>(null);
+  const allianceChanged = $derived($live.notifications.slice().reverse().find(notice => notice.method === "OnAllianceChanged" && Number(notice.args[0]) === ownerID));
+  $effect(() => {
+    const scope = authorityScope;
+    const active = alliance;
+    const changed = allianceChanged;
+    let retired = false;
+    if (active) untrack(() => {
+      void changed;
+      executor = null;
+      // ShowLabelMenuAndManageBtn reads the executor even for an ordinary member.
+      void flow.saveForAllianceOffered().then(allowed => { if (!retired) executor = { scope, allowed }; }, () => {});
+    });
+    return () => { retired = true; };
+  });
+  const canManage = $derived(!organization || (!alliance || executor?.scope === authorityScope && executor.allowed) && /^(0|[1-9][0-9]*)$/.test($station.online?.corpRole ?? "") && (BigInt($station.online?.corpRole ?? "0") & (1n | 17179869184n)) !== 0n);
   // svelte-ignore state_referenced_locally
   const fleetState = store.fleet;
   // svelte-ignore state_referenced_locally
@@ -332,7 +350,7 @@
   const keptOnlineOnly: unknown = flow.onlineBuddyOnly();
   // The contact scope is fixed for this mounted form; each parent mounts its own.
   // svelte-ignore state_referenced_locally
-  let onlineOnly = $state(!corporate && keptOnlineOnly === true);
+  let onlineOnly = $state(!organization && keptOnlineOnly === true);
   /** What the quick filter holds, and the text it filters by: taken 0.4 s after the typing stops (_SetQuickFilterInput). */
   let filterText = $state("");
   let filtering = $state("");
@@ -384,11 +402,12 @@
   async function load(): Promise<void> {
     const generation = ++readGeneration;
     const characterID = store.station.get().online?.characterID;
+    const owner = ownerID;
     busy = true;
     error = "";
     try {
-      const [read, notifications] = await Promise.all([flow.addressBook(contactType), corporate ? Promise.resolve(null) : flow.contactNotifications().catch(() => null)]);
-      if (disposed || characterID !== store.station.get().online?.characterID) return;
+      const [read, notifications] = await Promise.all([flow.addressBook(contactType), organization ? Promise.resolve(null) : flow.contactNotifications().catch(() => null)]);
+      if (disposed || characterID !== store.station.get().online?.characterID || owner !== ownerID) return;
       notificationsHeld = notifications;
       if (generation !== readGeneration) return;
       book = read;
@@ -408,7 +427,7 @@
   // addressbookService's own ScatterEvents (contactsForm 611-635). Read the
   // amended held answer, without reloading notifications or disturbing a draft.
   function applyPersonalNotices(notices: typeof $live.notifications): void {
-    if (corporate || contactAction || disposed) return;
+    if (organization || contactAction || disposed) return;
     let changed = false;
     for (const notice of notices) {
       if (seenPersonalNotices.has(notice)) continue;
@@ -432,12 +451,12 @@
     });
   }
   function applyOrganizationNotices(notices: typeof $live.notifications): void {
-    if (!corporate || book === null) return;
+    if (!organization || book === null) return;
     const values = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : value && typeof value === "object" && "items" in value && Array.isArray(value.items) ? value.items : [];
     for (const notice of notices) {
       if (seenOrganizationNotices.has(notice)) continue;
       seenOrganizationNotices.add(notice);
-      if (notice.method !== "OnOrganizationContactsUpdated" || Number(notice.args[0]) !== store.station.get().online?.corporationID) continue;
+      if (notice.method !== "OnOrganizationContactsUpdated" || Number(notice.args[0]) !== ownerID) continue;
       const contacts: Map<number, NamedAddressBook["contacts"][number]> = new Map(book.contacts.map(contact => [contact.contactID, contact]));
       for (const update of values(notice.args[1])) {
         const [id, level, mask] = values(update); const contactID = Number(id);
@@ -469,7 +488,7 @@
 
   /** LoadData's filter (contactsForm.py 548 to 552; quickFilter.py QuickFilter): an owner whose name holds the text. */
   const matches = (name: string): boolean => filtering === "" || name.toLowerCase().includes(filtering.toLowerCase());
-  const contacts = $derived((book?.contacts ?? []).map(contact => corporate ? { ...contact, name: resolvedName($names.resolved, "owner", contact.contactID, contact.name) } : contact).filter((contact) => matches(contact.name)));
+  const contacts = $derived((book?.contacts ?? []).map(contact => organization ? { ...contact, name: resolvedName($names.resolved, "owner", contact.contactID, contact.name) } : contact).filter((contact) => matches(contact.name)));
   const blocked = $derived((book?.blocked ?? []).filter((owner) => matches(owner.name)));
   const blockedIDs = $derived(new Set((book?.blocked ?? []).map((owner) => owner.ownerID)));
   const watched = $derived(new Set((book?.contacts ?? []).filter((contact) => contact.inWatchlist).map((contact) => contact.contactID)));
@@ -516,7 +535,7 @@
    */
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
     let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
-    let hint = corporate ? word("UI/PeopleAndPlaces/NoCorpContacts", "No corporation contacts yet.") : word(WORDS.noContacts, "No contacts yet.");
+    let hint = organization ? alliance ? word("UI/PeopleAndPlaces/NoAllianceContacts", "No alliance contacts yet.") : word("UI/PeopleAndPlaces/NoCorpContacts", "No corporation contacts yet.") : word(WORDS.noContacts, "No contacts yet.");
     if (group === CONTACT_GROUP.notifications) {
       // Its entries are the notifications' (notificationEntries, below), and no contact is among them.
       entries = [];
@@ -537,7 +556,7 @@
     } else {
       entries = contacts.filter((contact) => inStandingGroup(group as number, contact.relationshipID)).map(entryOf);
       const [label, own] = STANDING_SHORT[group] ?? [WORDS.standingNeutral, "Neutral"];
-      hint = filledWord(corporate ? "UI/PeopleAndPlaces/NoCorpContactsStanding" : WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
+      hint = filledWord(organization ? alliance ? "UI/PeopleAndPlaces/NoAllianceContactsStanding" : "UI/PeopleAndPlaces/NoCorpContactsStanding" : WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
     }
     if (onlineOnly) {
       entries = entries.filter((entry) => watched.has(entry.id) && onlineOf(entry.id) === true);
@@ -637,7 +656,7 @@
     const mine = ownerID === myID;
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
-    if (corporate) {
+    if (organization) {
       const editable = canManage && !npc;
       return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
     }
@@ -1516,7 +1535,7 @@
   // svelte-ignore state_referenced_locally
   const keptTab = flow.addressBookTab();
   // svelte-ignore state_referenced_locally
-  let tab = $state<AddressBookTab>(!corporate && (keptTab === "agents" || keptTab === "search") ? keptTab : "contacts");
+  let tab = $state<AddressBookTab>(!organization && (keptTab === "agents" || keptTab === "search") ? keptTab : "contacts");
   /** What the Search tab's last search found, by kind; none before any. */
   let searchFound = $state<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]> | null>(null);
   function chooseTab(chosen: AddressBookTab): void {
@@ -2159,6 +2178,7 @@
     flow.requestWords([
       ...Object.values(WORDS),
       "UI/PeopleAndPlaces/NoCorpContacts", "UI/PeopleAndPlaces/NoCorpContactsStanding",
+      "UI/PeopleAndPlaces/NoAllianceContacts", "UI/PeopleAndPlaces/NoAllianceContactsStanding",
       ...Object.values(AGENT_WORDS),
       ...Object.values(FLEET_WORDS),
       ...DISTANCE_WORD_LABELS,
@@ -2172,9 +2192,9 @@
       if (contactAction.kind === "manage") manage(contactAction.ownerID, contactAction.name);
       else removeContacts([{ id: contactAction.ownerID, name: contactAction.name }]);
     } else void load();
-    if (!contactAction && !corporate) void flow.primeContactsOnline().catch(() => {});
+    if (!contactAction && !organization) void flow.primeContactsOnline().catch(() => {});
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
-    if (!contactAction && !corporate && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
+    if (!contactAction && !organization && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
     return () => {
       disposed = true;
       ++readGeneration;
@@ -2220,7 +2240,7 @@
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{editingSeveral.names}</strong></p>
       <p>{editingSeveral.level === null ? word(WORDS.selectStanding, "Choose a standing") : word(LEVELS.find(([level]) => level === editingSeveral?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === editingSeveral?.level)?.[2] ?? "Neutral Standing")}</p>
-      {#if corporate}
+      {#if organization}
         <label>Standing <input type="range" aria-label="Standing" min="-10" max="10" step="0.1" value={editingSeveral.level ?? 0} oninput={(event) => { if (editingSeveral) editingSeveral.level = Number(event.currentTarget.value); }} /></label>
         {#if editingSeveral.level !== null}<span>{editingSeveral.level.toFixed(1)}</span>{/if}
       {/if}
@@ -2297,8 +2317,8 @@
     <section class="contacts-confirm" aria-label={word(WORDS.management, "Contact Management")}>
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{managing.name}</strong></p>
-      <p>{corporate ? managing.level.toFixed(1) : word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
-      {#if corporate}<input type="range" aria-label="Standing" min="-10" max="10" step="0.1" bind:value={managing.level} />{/if}
+      <p>{organization ? managing.level.toFixed(1) : word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      {#if organization}<input type="range" aria-label="Standing" min="-10" max="10" step="0.1" bind:value={managing.level} />{/if}
       <p class="controls">
         {#each LEVELS as [level, label, own] (level)}
           <button type="button" class="minor" class:active={managing.level === level} aria-pressed={managing.level === level} title={word(label, own)} onclick={() => { if (managing) managing.level = level; }}>
@@ -2317,7 +2337,7 @@
           </select>
         </p>
       {/if}
-      {#if managing.isCharacter && !corporate}
+      {#if managing.isCharacter && !organization}
         <p class="controls">
           <label title={word(WORDS.buddyHint, "")}>
             <input type="checkbox" bind:checked={managing.inWatchlist} />
@@ -2386,7 +2406,7 @@
 
   <!-- The window's tabs (ConstructTabs, 85 to 92): Contacts and Agents. -->
   {#if !contactAction}
-  {#if !corporate}
+  {#if !organization}
   <nav class="tabs">
     <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
     <button type="button" class:active={tab === "agents"} aria-pressed={tab === "agents"} onclick={() => chooseTab("agents")}>{word(AGENT_WORDS.agents, "Agents")}</button>
@@ -2654,10 +2674,10 @@
       {/each}
     </div>
   {:else}
-  <div class="contacts-form" class:corporate>
+  <div class="contacts-form" class:organization>
     <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength), and the labels under theirs. -->
     <ul class="contacts-groups">
-      {#each GROUPS.filter(([id]) => !corporate || id === CONTACT_GROUP.all || id <= 10) as [groupID, label, own] (groupID)}
+      {#each GROUPS.filter(([id]) => !organization || id === CONTACT_GROUP.all || id <= 10) as [groupID, label, own] (groupID)}
         {#if groupID === CONTACT_GROUP.blocked}
           <li class="contacts-gap" aria-hidden="true"></li>
         {/if}
@@ -2698,7 +2718,7 @@
     </ul>
 
     <div class="contacts-list">
-      {#if corporate && canManage}
+      {#if organization && canManage}
         <div class="controls">
           <input type="search" aria-label="Find contact to add" placeholder="Find contact to add" bind:value={ownerQuery} onkeydown={(event) => { if (event.key === "Enter") void findCorporateOwner(); }} />
           <button type="button" disabled={busy || ownerQuery.trim().length < 3} onclick={() => void findCorporateOwner()}>{word(SEARCH_WORDS.search, "Search")}</button>
@@ -2706,7 +2726,7 @@
         {#each ownerMatches as owner (owner.id)}<p><button type="button" onclick={() => { manage(owner.id, owner.name); ownerMatches = []; }}>{owner.name}</button></p>{/each}
       {/if}
       <p class="controls">
-        {#if !corporate}<label>
+        {#if !organization}<label>
           <input type="checkbox" bind:checked={onlineOnly} onchange={onlineOnlyChanged} />
           {word(WORDS.onlineOnly, "Online only")}
         </label>{/if}
@@ -3018,7 +3038,8 @@
     flex-wrap: wrap;
     gap: 0.75rem;
   }
-  .contacts-form.corporate .contacts-groups { order: 2; }
+  .contacts-form.organization .contacts-groups { order: 2; }
+  .contacts-form.organization .contacts-list table { width: 100%; }
   .contacts-groups {
     list-style: none;
     margin: 0;

@@ -1899,7 +1899,32 @@ The existing Contact Management and removal question are reused without opening 
 the five positional `charMgr` arguments, removal passes the ID list, and BlockOwners/UnblockOwners each pass a list.
 Buddy additions prime the held online state before a missing status lookup; removing personal contacts clears
 their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
-in the recursive Tranquility corpus search. Corporate/alliance row contact actions are separate work.
+in the recursive Tranquility corpus search. Alliance row contact actions are separate work.
+
+Corporation member-row contacts follow compiled `CharacterChecker` 55-60/314-321 and
+`SessionChecker.IsDiplomat`: director or diplomat, non-NPC targets, including self and multiple selections.
+`menusvc` 604-609 and compiled `menuMerge.MergeMenus`/`_ExecMulti` keep a separate callback for each
+eligible owner. A mixed selection offers Add for missing contacts and Edit/Remove for existing ones. Each owner
+gets its own management window or removal question; canceling one leaves the others pending. This differs from
+the Contacts list's bulk standing editor. The shared dialog host preserves those independent modal lifetimes.
+Corporate dialogs use the existing fractional standing/label controls and corporation moniker writers; personal
+dialogs retain their buddy/notification fields and personal scope. Live CEO, ordinary-member and non-director
+diplomat checks cover single/self/mixed/multiple selections, cancellation, fractional readback and phone layout.
+A second client's already-open Corporate Contacts view follows the actual organization notices, without another
+`GetCorporateContacts`; successful writes are positional Add/EditCorporateContact(id, level) and separate
+RemoveCorporateContacts([id]) calls. No exact corporate-write TQ recording was found. Alliance scope and its
+executor-corporation gate are the next unit, rather than inferred from the corporation implementation.
+
+The alliance server contact foundation is corrected in EveJS `82608f269` (native-rule assertion follow-up
+`bba9a58b8`). Compiled corporate/alliance Confirm methods return decimal standings; the native address book keeps
+the existing mask on Edit, keeps the other label field when one is None, and consumes mask-only organization
+notices. Live TCP before/after checks show Edit2.5/multi-edit-1.5 preserved, bit60 retained, label name/color
+preserved independently, and assignment/removal notices delivered to executor and non-executor alliance members.
+AssignLabels now leaves an absent contact absent in both corporation and alliance scopes, as the native controller
+opens Add separately and its cancellation creates no contact. A non-executor write remains refused. The resulting
+standing, full mask and labels survive a stopped-store check and a fresh server boot/login. No exact alliance-write
+TQ capture was found; this proves the compiled-client rules and local wire behavior. Alliance member-menu UI,
+scoped labels/writers and the BFF's held alliance-notice amendments remain the next unit.
 
 Successful personal contact writes now amend the held native `GetContactList` and `GetLabels` answers
 (`addressbookService.py` 617-869, 1001-1147). Existing row descriptors, row order, unrelated fields and full-width

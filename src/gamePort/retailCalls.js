@@ -813,6 +813,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's contact labels made, renamed and deleted, and given to contacts or taken off them
   // (addressbookService.py 1001 to 1147). The gateway's list has none of them.
   "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+  // Alliance contact forms use their own moniker and label table (all_cso243-278).
+  "allianceRegistry.EditAllianceContact", "allianceRegistry.RemoveAllianceContacts", "allianceRegistry.EditContactsRelationshipID",
+  "allianceRegistry.GetLabels", "allianceRegistry.CreateLabel", "allianceRegistry.EditLabel", "allianceRegistry.DeleteLabel", "allianceRegistry.AssignLabels", "allianceRegistry.RemoveLabels",
   // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline for the pilot
   // (bookmarkSvc.py 483 to 589). The gateway's list has its folders' and bookmarks' writes and none of these.
   "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
@@ -2753,6 +2756,16 @@ const RETAIL_CALLS = Object.freeze({
   }),
   "allianceRegistry.GetAlliancePublicInfo": same(`${ALLIANCE_SVC}/all_cso.py:136`, "RemoteSvc('allianceRegistry').GetAlliancePublicInfo(allianceID), by name: Show Info on an alliance"),
   "allianceRegistry.GetAllianceContacts": same(`${ALLIANCE_SVC}/all_cso.py:243`, "GetMoniker().GetAllianceContacts(), no arguments, on the alliance's moniker: the address book asks it as the character is chosen, for a pilot in an alliance"),
+  "allianceRegistry.AddAllianceContact": reshaped(`${ALLIANCE_SVC}/all_cso.py:246`, corporationContactStanding, "AddAllianceContact(id, standing), positional on the alliance moniker; compiled editor Confirm sends a float rounded to tenths. No exact TQ write capture."),
+  "allianceRegistry.EditAllianceContact": reshaped(`${ALLIANCE_SVC}/all_cso.py:250`, corporationContactStanding, "EditAllianceContact(id, standing), the same float and moniker as Add. No exact TQ write capture."),
+  "allianceRegistry.RemoveAllianceContacts": reshaped(`${ALLIANCE_SVC}/all_cso.py:254`, ownersListed, "RemoveAllianceContacts(ids), a positional list; member menu merged callbacks remove each owner separately."),
+  "allianceRegistry.EditContactsRelationshipID": reshaped(`${ALLIANCE_SVC}/all_cso.py:258`, corporationContactsStanding, "ContactsForm's multi editor sends a list and rounded float on the alliance moniker."),
+  "allianceRegistry.GetLabels": same(`${ALLIANCE_SVC}/all_cso.py:261`, "GetLabels(), no args on the alliance moniker, kept separately from other scopes."),
+  "allianceRegistry.CreateLabel": typing(same(`${ALLIANCE_SVC}/all_cso.py:264`, "CreateLabel(name, color), unicode name and None color from addressbook.CreateContactLabel."), [0]),
+  "allianceRegistry.EditLabel": typing(reshaped(`${ALLIANCE_SVC}/all_cso.py:271`, labelFirst, "EditLabel(bit, name, color), positional; None preserves each field."), [1]),
+  "allianceRegistry.DeleteLabel": reshaped(`${ALLIANCE_SVC}/all_cso.py:268`, labelFirst, "DeleteLabel(bit), long bits preserved; native clears this mask bit and rereads labels."),
+  "allianceRegistry.AssignLabels": reshaped(`${ALLIANCE_SVC}/all_cso.py:274`, ownersLabelled, "AssignLabels(ids, mask), positional list and full-width label bits."),
+  "allianceRegistry.RemoveLabels": reshaped(`${ALLIANCE_SVC}/all_cso.py:277`, ownersLabelled, "RemoveLabels(ids, mask), positional list and full-width label bits."),
   "allianceRegistry.GetApplications": same(`${ALLIANCE_SVC}/all_cso_applications.py:26`, "GetMoniker().GetApplications(), no arguments, on the alliance's moniker, kept"),
   "allianceRegistry.GetBulletins": same(`${ALLIANCE_SVC}/all_cso.py:231`, "GetMoniker().GetBulletins(), no arguments, on the alliance's moniker, kept for fifteen minutes"),
   "allianceRegistry.GetBills": same(`${ALLIANCE_SVC}/all_cso.py:217`, "GetMoniker().GetBills(), no arguments, on the alliance's moniker, by an accountant"),

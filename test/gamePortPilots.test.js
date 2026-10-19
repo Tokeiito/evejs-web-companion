@@ -4126,17 +4126,19 @@ test("what the BFF asks of the alliance's registry is made on the moniker, or by
   // A pair nobody has read against the client goes to the moniker too, as it was given.
   await ask("SetRelationship", [5, 99000002]);
   assert.deepEqual([session.boundCalls.at(-1), ledgerOf(pilots, "allianceRegistry.SetRelationship")[0]], [{ objectID: "N=1:1", method: "SetRelationship", args: [5, 99000002], kwargs: null }, { unchecked: 1 }]);
-  // The alliance's own record: of the moniker, with nothing, however the BFF named the alliance.
+  // all_cso_alliance.py 43-53 keeps the alliance's own record: ask once on
+  // the moniker, with nothing, however the page named the alliance.
+  const beforeAlliance = session.boundCalls.length;
   await ask("GetAlliance");
   await ask("GetAlliance", [ALLIANCE]);
-  assert.deepEqual([session.boundCalls.slice(-2), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0]], [
-    [{ objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }, { objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }], { reshaped: 2 },
+  assert.deepEqual([session.boundCalls.slice(beforeAlliance), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0]], [
+    [{ objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }], { same: 1 },
   ]);
   // Another alliance's, and the ranking of them all, by name.
   await ask("GetAlliance", [ALLIANCE + 1]);
   assert.deepEqual(await ask("GetRankedAlliances", [100]), { type: "list", items: [1] });
   assert.deepEqual([byName(), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0], ledgerOf(pilots, "allianceRegistry.GetRankedAlliances")[0], session.binds.length], [
-    [["GetAlliance", [ALLIANCE + 1]], ["GetRankedAlliances", [100]]], { reshaped: 2, same: 1 }, { same: 1 }, 1,
+    [["GetAlliance", [ALLIANCE + 1]], ["GetRankedAlliances", [100]]], { same: 2 }, { same: 1 }, 1,
   ]);
 });
 
