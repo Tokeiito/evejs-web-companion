@@ -2275,6 +2275,12 @@ export interface SpaceSnapshot {
    * of its own; null or absent when it is not known.
    */
   readonly timeDilation?: number | null;
+  /**
+   * The BFF's own word that it could not read this pilot's ballpark, when it says so.
+   * `false` is a snapshot to disbelieve; absent is an older BFF, which `isSceneBlind` still
+   * catches by the missing ship.
+   */
+  readonly stateValid?: boolean;
 }
 
 /**

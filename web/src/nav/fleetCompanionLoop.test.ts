@@ -12718,3 +12718,84 @@ test("the drone navigation computer refused once a fight is asked ONCE a run, no
   for (let i = 0; i < 5; i += 1) await companion.tick();
   assert.equal(activated.filter((id) => id === PASSIVE_NAV).length, 1);
 });
+
+// --- a blind scene: the ship is in space and nothing can be seen -------------
+// ⚠ SEEN LIVE 2026-10-14 12:00:11 UTC: a dead ballpark answered `{inSpace:true,
+// entities:[], ship:null}` with a 200 for ten minutes. The page read it as a
+// quiet grid: the clear-grid reload fired mid-fight and the rejoin stood by on
+// "health could not be read" for ever.
+
+const BLIND_WHY = "Cannot see space right now: reading again.";
+
+test("the ladder decides nothing on a blind scene, whatever else the observation says", () => {
+  // Everything that would normally move the pilot is present: the grid reads
+  // clear, drones are out, a hostile-less commander is unseen. Blind overrides.
+  const decision = decideCompanionAction(
+    DEFAULT_FLEET_COMPANION_REQUEST,
+    obs({ sceneBlind: true, hostileOnGrid: false, dronesOut: true, myDroneIDs: [90000021], health: null }),
+  );
+  assert.equal(decision.action.kind, "wait");
+  assert.equal(decision.why, BLIND_WHY);
+  assert.equal(decision.stop, undefined);
+  assert.equal(decision.pause, undefined);
+});
+
+test("a blind scene preempts the rejoin's 'health could not be read' standing-by", () => {
+  const decision = decideCompanionAction(
+    DEFAULT_FLEET_COMPANION_REQUEST,
+    obs({ sceneBlind: true, hostileOnGrid: null, dronesOut: null, health: null, snapshot: null }),
+  );
+  assert.equal(decision.why, BLIND_WHY);
+  assert.doesNotMatch(decision.why, /health could not be read/);
+});
+
+test("a blind scene waits and reads again, then ends the run in an error after the grace", async () => {
+  let nowMs = 1_000_000;
+  const controller = createFleetCompanion({
+    observe: async () => obs({ sceneBlind: true, hostileOnGrid: null, dronesOut: null }),
+    issue: async () => { throw new Error("a pilot that cannot see must issue nothing"); },
+    sleep: async () => {},
+    now: () => nowMs,
+  });
+  controller.start(DEFAULT_FLEET_COMPANION_REQUEST);
+  assert.equal((await controller.tick()).kind, "wait");
+  assert.equal(controller.snapshot().status, "running");
+  assert.equal(controller.snapshot().why, BLIND_WHY);
+  nowMs += FLEET_COMPANION_READ_GRACE_MS - 1;
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running");
+  nowMs += 1;
+  await controller.tick();
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "error");
+  assert.match(snap.failureReason ?? "", /^Lost sight of space for 60 s: reload the page or dock and undock to recover\.$/);
+});
+
+test("a scene that comes back inside the grace restarts the blind clock", async () => {
+  let nowMs = 1_000_000;
+  let blind = true;
+  const controller = createFleetCompanion({
+    observe: async () => (blind ? obs({ sceneBlind: true }) : obs({ sceneBlind: false, hostileOnGrid: false })),
+    issue: async () => {},
+    sleep: async () => {},
+    now: () => nowMs,
+  });
+  controller.start(DEFAULT_FLEET_COMPANION_REQUEST);
+  await controller.tick();
+  nowMs += FLEET_COMPANION_READ_GRACE_MS - 1;
+  blind = false;
+  await controller.tick();
+  assert.notEqual(controller.snapshot().why, BLIND_WHY);
+  blind = true;
+  nowMs += FLEET_COMPANION_READ_GRACE_MS - 1;
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running", "the earlier blind streak was forgotten");
+});
+
+test("a quiet grid (scene readable, nothing on it) is not blind and still reads clear", () => {
+  const decision = decideCompanionAction(
+    DEFAULT_FLEET_COMPANION_REQUEST,
+    obs({ sceneBlind: false, hostileOnGrid: false }),
+  );
+  assert.notEqual(decision.why, BLIND_WHY);
+});

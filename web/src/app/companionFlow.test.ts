@@ -1267,10 +1267,29 @@ function gridHarness(options: {
    * can switch it on at all. Left out, the read answers nothing (not known).
    */
   readonly activation?: Readonly<Record<number, boolean | null>>;
+  /**
+   * The scene a dead ballpark answers: `inSpace` with no ship and no entities, as a
+   * 200 (seen live 2026-10-14 12:00:11 UTC). `entities` is ignored when set.
+   */
+  readonly blind?: boolean;
 }) {
   const calls: RecordedCall[] = [];
 
   function spaceBodyWithGrid(): unknown {
+    if (options.blind === true) {
+      return {
+        ok: true,
+        space: {
+          inSpace: true,
+          solarSystemID: SOLAR_SYSTEM_ID,
+          shipID: SHIP_ID,
+          sampledAtMs: 0,
+          ship: null,
+          entities: [],
+        },
+        notifications: [],
+      };
+    }
     return {
       ok: true,
       space: {
@@ -1855,4 +1874,41 @@ test("a push with nothing for the ladder to do leaves the cadence alone", async 
   const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 700);
   flow.stopFleetCompanion();
   assert.equal(wokeAfterMs, null, "a push the ladder cannot act on must not buy a tick");
+});
+
+test("a blind scene (inSpace, no ship, no entities) is unknown: the pilot says it cannot see and decides nothing", async () => {
+  // ⚠ SEEN LIVE 2026-10-14 12:00:11 UTC: a dead ballpark answered this with a 200.
+  // `decodeSpaceSnapshot` never returns null, so `hostileOnGrid` read a confident
+  // `false` and the grid-clear reload fired mid-fight. A hardener and a player
+  // lock would normally light the rack; here nothing may be issued at all.
+  const { store, flow, calls } = gridHarness({ hardener: true, entities: [], blind: true });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(store.get().companion.phase, "Reading space");
+  assert.equal(store.get().companion.why, "Cannot see space right now: reading again.");
+  assert.equal(store.get().companion.status, "running");
+  assert.doesNotMatch(store.get().companion.why ?? "", /health could not be read/);
+  const issued = calls.filter(
+    (call) =>
+      call.path.startsWith("/api/bridge/modules/") ||
+      call.path.startsWith("/api/bridge/drones/") ||
+      call.path === "/api/bridge/flight/warp-to",
+  );
+  assert.deepEqual(issued.map((call) => call.path), [], "a pilot that cannot see issues nothing");
+  flow.stopFleetCompanion();
+});
+
+test("an empty grid with the ship present is still a clear grid, not a blind one", async () => {
+  // The other half of the pair: ship in the scene, nothing else on grid. This is
+  // the quiet grid the blind rung must not swallow.
+  const { store, flow } = gridHarness({ entities: [] });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(store.get().companion.phase, "Standing by");
+  assert.notEqual(store.get().companion.why, "Cannot see space right now: reading again.");
+  flow.stopFleetCompanion();
 });
