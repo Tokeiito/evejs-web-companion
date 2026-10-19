@@ -435,6 +435,9 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { LOGIN_CAMPAIGN_NOTICE, campaignAfterClaim, decodeLoginCampaign, type LoginClaim } from "../bridge/loginRewards.ts";
+import { readLoginCampaign } from "../bridge/loginRewardReads.ts";
+import { claimLoginReward as claimLoginRewardCall } from "../bridge/loginRewardWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -1340,6 +1343,13 @@ export interface AppFlow {
   pilotWealth(): Promise<number | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
+  /** Daily Login Rewards (loginCampaignService.py): the account's campaign, read again. */
+  loadLoginRewards(): Promise<void>;
+  /**
+   * The window's Claim (loginCampaignService.py claim_reward, 196 to 212): the day's reward, into the account's redeem
+   * queue. Fails where the server gave nothing (already claimed today), and the campaign is read again.
+   */
+  claimLoginReward(): Promise<LoginClaim>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -2732,6 +2742,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "standings/char", char: after });
         }
       }
+      return;
+    }
+    // loginCampaignService.OnCampaignEnrollmentChanged (84 to 88): the account's campaign is another, and is read again.
+    if (method === LOGIN_CAMPAIGN_NOTICE) {
+      void loadLoginRewards().catch(() => {});
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -6956,6 +6971,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const cash = decodeWalletCash(await walletReads.wealth());
     const value = cash === null ? Number.NaN : Number(cash);
     return Number.isFinite(value) ? value : null;
+  }
+
+  // loginCampaignService._get_campaign_state (106 to 119): the page reads the account's campaign as the pilot comes
+  // online and at the server's OnCampaignEnrollmentChanged (84 to 88), by the service's own call
+  // (bridge/loginRewardReads.ts). A transport that does not carry the call has none to give.
+  async function loadLoginRewards(): Promise<void> {
+    let answer: JsonValue;
+    try {
+      answer = await readLoginCampaign(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      store.apply({ type: "login-rewards/state", campaign: null, error: "Your daily login rewards could not be read just now." });
+      return;
+    }
+    const campaign = answer === null ? null : decodeLoginCampaign(answer);
+    store.apply({ type: "login-rewards/state", campaign, error: null });
+    if (campaign !== null) requestNames(campaign.days.map((day) => ({ kind: "type", id: day.typeID })));
+  }
+
+  async function claimLoginReward(): Promise<LoginClaim> {
+    const claim = await claimLoginRewardCall(bridgeDo);
+    const campaign = store.loginRewards.get().campaign;
+    if (claim === null || campaign === null) {
+      // claim_reward answers None where nothing may be claimed: what the server holds is read again.
+      await loadLoginRewards().catch(() => {});
+      if (claim === null) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+      return claim;
+    }
+    store.apply({ type: "login-rewards/claimed", campaign: campaignAfterClaim(campaign, claim), reward: claim.reward });
+    if (claim.reward !== null) requestNames([{ kind: "type", id: claim.reward.typeID }]);
+    return claim;
   }
 
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
@@ -16286,6 +16332,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      void loadLoginRewards().catch(() => {});
       await refreshStationPanel();
     },
 
@@ -16886,6 +16933,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWallet,
     pilotWealth,
     giveMoney,
+    loadLoginRewards,
+    claimLoginReward,
 
     loadStandings,
 

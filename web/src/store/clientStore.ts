@@ -102,6 +102,7 @@ import type {
 } from "./types.ts";
 import type { NamesState, WordsState } from "./names.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
+import type { LoginCampaign } from "../bridge/loginRewards.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 import { EMPTY_RECIPE_BOOK } from "../bridge/piRecipes.ts";
@@ -175,6 +176,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly addressBook: AddressBookState;
   readonly wallet: WalletState;
+  readonly loginRewards: LoginRewardsState;
   readonly standings: StandingsState;
   readonly characterSheet: CharacterSheetState;
   readonly flight: FlightState;
@@ -494,6 +496,20 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
 // like a corporation with no divisions or a wallet with no history. An empty
 // `corpDivisions`/`journal`/`transactions` list becomes a real answer only from a
 // SUCCESSFUL read that carried no rows.
+/**
+ * The account's daily login campaign (loginCampaignService.py): null until read, where the account is in none, and
+ * where the pilot's transport does not carry the read. A failed re-read keeps what was had, with its error.
+ * `lastClaim` is what the last claim on this page gave, for the window to say.
+ */
+export interface LoginRewardsState {
+  readonly campaign: LoginCampaign | null;
+  readonly loaded: boolean;
+  readonly error: string | null;
+  readonly lastClaim: { readonly typeID: number; readonly quantity: number } | null;
+}
+
+const INITIAL_LOGIN_REWARDS: LoginRewardsState = Object.freeze({ campaign: null, loaded: false, error: null, lastClaim: null });
+
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
   cashError: null,
@@ -848,6 +864,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly addressBook: ReadableSignal<AddressBookState>;
   readonly wallet: ReadableSignal<WalletState>;
+  readonly loginRewards: ReadableSignal<LoginRewardsState>;
   readonly standings: ReadableSignal<StandingsState>;
   readonly characterSheet: ReadableSignal<CharacterSheetState>;
   readonly flight: ReadableSignal<FlightState>;
@@ -910,6 +927,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const addressBook = createSignal<AddressBookState>(INITIAL_ADDRESS_BOOK);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
+  const loginRewards = createSignal<LoginRewardsState>(INITIAL_LOGIN_REWARDS);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
@@ -959,6 +977,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     addressBook: addressBook.get(),
     wallet: wallet.get(),
+    loginRewards: loginRewards.get(),
     standings: standings.get(),
     characterSheet: characterSheet.get(),
     flight: flight.get(),
@@ -1016,6 +1035,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        loginRewards.set(INITIAL_LOGIN_REWARDS);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1080,6 +1100,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        loginRewards.set(INITIAL_LOGIN_REWARDS);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1123,6 +1144,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        loginRewards.set(INITIAL_LOGIN_REWARDS);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1897,6 +1919,14 @@ export function createClientStore(): ClientStore {
           journalError: event.journalError,
           loaded: true,
         });
+        break;
+      case "login-rewards/state":
+        loginRewards.set(event.campaign === null && event.error !== null
+          ? { ...loginRewards.get(), loaded: true, error: event.error }
+          : { ...loginRewards.get(), campaign: event.campaign, loaded: true, error: event.error });
+        break;
+      case "login-rewards/claimed":
+        loginRewards.set({ campaign: event.campaign, loaded: true, error: null, lastClaim: event.reward });
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
@@ -2835,6 +2865,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     addressBook: readonlySignal(addressBook),
     wallet: readonlySignal(wallet),
+    loginRewards: readonlySignal(loginRewards),
     standings: readonlySignal(standings),
     characterSheet: readonlySignal(characterSheet),
     flight: readonlySignal(flight),

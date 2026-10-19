@@ -44,6 +44,7 @@ export type TabID =
   | "chat"
   | "wallet"
   | "corpWallet"
+  | "loginRewards"
   | "standings"
   | "characterSheet"
   | "showInfo"
@@ -181,6 +182,8 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
+  // The client's login rewards window (loginCampaignService.py): the account's daily login campaign.
+  { id: "loginRewards", label: "Daily Login Rewards", where: "both" },
   { id: "standings", label: "Standings", where: "both" },
   { id: "characterSheet", label: "Character Sheet", where: "both" },
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),

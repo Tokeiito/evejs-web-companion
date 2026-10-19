@@ -77,6 +77,7 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   assets: ["M4 14h7v6H4z", "M13 14h7v6h-7z", "M8.5 7h7v6h-7z"],
   wallet: ["M4 7h16v11H4z", "M4 7l12-3v3", "M17 13h.01"],
   corpWallet: ["M6 9h12v3H6z", "M6 14h12v4H6z", "M8 6h8"],
+  loginRewards: ["M4 6h16v14H4z", "M4 10h16", "M8 4v4M16 4v4", "M9 15l2 2 4-4"],
 
   // --- career ---
   agents: ["M11 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6", "M6 21a5 5 0 0 1 10 0", "M16 3h5v4h-5z"],

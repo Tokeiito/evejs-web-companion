@@ -2520,6 +2520,20 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
+  /* A mark on an entry (Daily Login Rewards: a reward is ready): at the row's right end, centred on it; in the
+   * icon-only strip, in the corner, so the icons stay where they are. */
+  .neocom-item:has(.neocom-dot) {
+    position: relative;
+  }
+  .neocom-dot {
+    position: absolute;
+    top: 50%;
+    right: 0.55rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    transform: translateY(-50%);
+    background: var(--color-accent);
+  }
   /* Below about 9rem a name cannot be read anyway, so the rail goes icon-only and
    * the tooltip / accessible name carry it. */
   @container (max-width: 9rem) {
@@ -2527,6 +2541,7 @@
     .neocom-item-label { display: none; }
     .neocom-pilot { justify-content: center; }
     .neocom-pilot-name { display: none; }
+    .neocom-dot { top: 4px; right: 4px; transform: none; }
   }
 
   /* --- the readouts --- */
