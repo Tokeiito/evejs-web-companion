@@ -579,6 +579,9 @@ export type FeedEvent =
   | { readonly type: "login-rewards/seasonal"; readonly seasonal: { readonly active: ActiveSeasonalCampaign; readonly history: readonly SeasonalClaim[]; readonly definition: SeasonalCampaignDefinition | null } | null }
   // The day's reward claimed: the campaign after the claim, and what was given.
   | { readonly type: "login-rewards/claimed"; readonly campaign: LoginCampaign; readonly reward: { readonly typeID: number; readonly quantity: number } | null }
+  // What the server told the player unasked (OnRemoteMessage, bridge/serverMessages.ts), as the player reads it: a
+  // notice or an error. null clears it, so that the same words said again are a message again.
+  | { readonly type: "server-messages/said"; readonly kind: "notice" | "error"; readonly text: string | null }
   // Goal R55 — the Standings page. One BFF pull carries the character's own
   // standings (standingMgr.GetCharStandings) and the corporation's standings
   // (standingMgr.GetCorpStandings). Each keeps its own error; a list is null when

@@ -180,6 +180,7 @@ export interface ClientState {
   readonly wallet: WalletState;
   readonly redeem: RedeemState;
   readonly loginRewards: LoginRewardsState;
+  readonly serverMessages: ServerMessagesState;
   readonly standings: StandingsState;
   readonly characterSheet: CharacterSheetState;
   readonly flight: FlightState;
@@ -525,6 +526,17 @@ export interface LoginRewardsState {
 }
 
 const INITIAL_LOGIN_REWARDS: LoginRewardsState = Object.freeze({ campaign: null, loaded: false, error: null, lastClaim: null, seasonal: null });
+
+/**
+ * The last thing the server told the player unasked (gameui.py OnRemoteMessage), as words: a notice, or an error. The
+ * notice board raises each new one (ui/noticeSources.ts); nothing else reads them.
+ */
+export interface ServerMessagesState {
+  readonly notice: string | null;
+  readonly error: string | null;
+}
+
+const INITIAL_SERVER_MESSAGES: ServerMessagesState = Object.freeze({ notice: null, error: null });
 
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
@@ -884,6 +896,7 @@ export interface ClientStore {
   readonly wallet: ReadableSignal<WalletState>;
   readonly redeem: ReadableSignal<RedeemState>;
   readonly loginRewards: ReadableSignal<LoginRewardsState>;
+  readonly serverMessages: ReadableSignal<ServerMessagesState>;
   readonly standings: ReadableSignal<StandingsState>;
   readonly characterSheet: ReadableSignal<CharacterSheetState>;
   readonly flight: ReadableSignal<FlightState>;
@@ -948,6 +961,7 @@ export function createClientStore(): ClientStore {
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
   const redeem = createSignal<RedeemState>(INITIAL_REDEEM);
   const loginRewards = createSignal<LoginRewardsState>(INITIAL_LOGIN_REWARDS);
+  const serverMessages = createSignal<ServerMessagesState>(INITIAL_SERVER_MESSAGES);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
@@ -999,6 +1013,7 @@ export function createClientStore(): ClientStore {
     wallet: wallet.get(),
     redeem: redeem.get(),
     loginRewards: loginRewards.get(),
+    serverMessages: serverMessages.get(),
     standings: standings.get(),
     characterSheet: characterSheet.get(),
     flight: flight.get(),
@@ -1058,6 +1073,7 @@ export function createClientStore(): ClientStore {
         wallet.set(INITIAL_WALLET);
         redeem.set(INITIAL_REDEEM);
         loginRewards.set(INITIAL_LOGIN_REWARDS);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1124,6 +1140,7 @@ export function createClientStore(): ClientStore {
         wallet.set(INITIAL_WALLET);
         redeem.set(INITIAL_REDEEM);
         loginRewards.set(INITIAL_LOGIN_REWARDS);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1169,6 +1186,7 @@ export function createClientStore(): ClientStore {
         wallet.set(INITIAL_WALLET);
         redeem.set(INITIAL_REDEEM);
         loginRewards.set(INITIAL_LOGIN_REWARDS);
+        serverMessages.set(INITIAL_SERVER_MESSAGES);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1959,6 +1977,9 @@ export function createClientStore(): ClientStore {
         break;
       case "login-rewards/seasonal":
         loginRewards.set({ ...loginRewards.get(), seasonal: event.seasonal });
+        break;
+      case "server-messages/said":
+        serverMessages.set({ ...serverMessages.get(), [event.kind]: event.text });
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
@@ -2901,6 +2922,7 @@ export function createClientStore(): ClientStore {
     wallet: readonlySignal(wallet),
     redeem: readonlySignal(redeem),
     loginRewards: readonlySignal(loginRewards),
+    serverMessages: readonlySignal(serverMessages),
     standings: readonlySignal(standings),
     characterSheet: readonlySignal(characterSheet),
     flight: readonlySignal(flight),

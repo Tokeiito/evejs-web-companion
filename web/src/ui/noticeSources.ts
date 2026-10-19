@@ -84,6 +84,9 @@ export const NOTICE_SOURCES: readonly NoticeSource[] = [
   { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet" },
   // Not a refusal: what another pilot answered to an invitation. It happened, and the pilot pressed nothing.
   { slice: "fleet", field: "inviteAnswered", kind: "info", title: "Fleet" },
+  // What the server told the player unasked (OnRemoteMessage): its notices, and its errors.
+  { slice: "serverMessages", field: "notice", kind: "info", title: "Server" },
+  { slice: "serverMessages", field: "error", kind: "danger", title: "Server" },
 ];
 
 /**
