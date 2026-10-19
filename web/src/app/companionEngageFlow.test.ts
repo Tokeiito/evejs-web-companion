@@ -39,8 +39,7 @@ function harness(role: "combat" | "repair", unreadable = false) {
     // An order to the ship is the page's own call (bridge/movementWrites.ts), answered as its route was: taken.
     if (path === "/api/bridge/call" && body.service === "beyonce") answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
     if (path === "/api/bridge/fitting") answer = fittingBody({});
-    // The targets read also says who has the ship locked (GetTargeters).
-    if (path.split("?")[0] === "/api/bridge/targets") answer = { ok: true, targetIDs: role === "combat" ? [TARGET] : [], notifications: [] };
+    if (path === "/api/bridge/targets") answer = { ok: true, targetIDs: role === "combat" ? [TARGET] : [], notifications: [] };
     if (path === "/api/bots/active") answer = { ok: true, bots: [], characterIDs: [] };
     if (path === "/api/names") {
       const base = namesBody(body) as { names: Record<string, string> };

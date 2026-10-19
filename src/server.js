@@ -9616,19 +9616,12 @@ async function readLockedTargetIDs(held, webSessionID) {
  * The ships that have the pilot's locked RIGHT NOW (dogmaIM.GetTargeters), asked straight after GetTargets as the
  * client's godma.RefreshTargets asks it (2364); the client keeps the answer as its target service's targetedBy, each
  * one OnTarget('otheradd'). On the game port it is answered from the list kept the same way.
- *
- * ⚠ A FAILURE IS UNREADABLE, NEVER A THROW. The lock list beside it is what the Targeting panel reads, and a page
- * must not lose that because this half could not answer.
  */
 async function readTargeterIDs(held, webSessionID) {
-  try {
-    const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
-    const raw = outcome.result;
-    const readable = raw?.type === "list" && Array.isArray(raw.items);
-    return { ids: decodeTargetIDList(raw), readable, notifications: outcome.notifications };
-  } catch {
-    return { ids: [], readable: false, notifications: [] };
-  }
+  const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
+  const raw = outcome.result;
+  const readable = raw?.type === "list" && Array.isArray(raw.items);
+  return { ids: decodeTargetIDList(raw), readable, notifications: outcome.notifications };
 }
 
 /**

@@ -438,8 +438,9 @@ test("⚠ a park that lost its place is given the state it asked for, even when 
   const seen = [];
   park.onEvent = (name) => seen.push(name);
   park.doPreTick();
-  // The state is read, and the update queued for its tick is applied on top of it.
-  assert.deepEqual([park.validState, park.resets, park.history.length, park.currentTime, seen], [true, 1, 0, 104, ["GotoDirection"]]);
+  // The state is read (its warfare buffs told, as michelle.SetState tells them), and the update queued for its tick
+  // is applied on top of it.
+  assert.deepEqual([park.validState, park.resets, park.history.length, park.currentTime, seen], [true, 1, 0, 104, ["OnDbuffUpdated", "GotoDirection"]]);
   assert.deepEqual([park.ballpark.ball(1).mode, park.ballpark.ball(2).mode], [MODE.GOTO, MODE.STOP]);
 });
 
