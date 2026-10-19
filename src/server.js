@@ -6644,8 +6644,9 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const corporationID = strictPositiveID(body.of), args = body.args;
-  if (!Array.isArray(args) || args.length !== 1 || strictPositiveID(args[0]) === null || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "KickOutMember names one character and no keyword arguments." });
+  const multiple = body.method === "KickOutMembers";
+  if (!Array.isArray(args) || args.length !== 1 || (multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : strictPositiveID(args[0]) === null) || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
     return;
   }
   let mutation = null;
@@ -6674,7 +6675,7 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       return;
     }
     held.corporationID = corporationID;
-    if (Number(args[0]) === Number(held.characterID)) {
+    if (!multiple && Number(args[0]) === Number(held.characterID)) {
       // Native PerformSessionChange(wait=0): an active cooldown refuses rather
       // than queueing a quit that could later target a different corporation.
       if (Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {

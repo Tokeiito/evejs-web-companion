@@ -4304,9 +4304,10 @@ test("an explicit corporation owner read is forwarded; unexposed administration 
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["corpRegistry", "GetEveOwners", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
-  // Native bco_members.UpdateMember243 and base_corporation.KickOut397-412 now
-  // have page callers. The latter names its originating registry with `of`.
-  for (const method of ["UpdateMembers", "KickOutMembers", "ExecuteActions", "ResignFromCEO"]) {
+  // Native bco_members.UpdateMember243, base_corporation.KickOut397-412 and
+  // KickOutMultipleMembers459-476 have page callers. Both kick methods name
+  // the originating registry with `of`; other administration writes stay private.
+  for (const method of ["UpdateMembers", "ExecuteActions", "ResignFromCEO"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "corpRegistry", method, args: [7], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }

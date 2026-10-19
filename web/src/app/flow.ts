@@ -2081,6 +2081,7 @@ export interface AppFlow {
   corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null>;
   corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
   corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null>;
+  corporationExpelMenu(ownerIDs: readonly number[]): Promise<{ readonly multiple: boolean; readonly confirm: () => Promise<void> } | null>;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -14935,6 +14936,87 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } };
   }
   let resignation: { readonly pilot: number } | null = null;
+  async function confirmCorporationWarKick(scope: MemberOperation): Promise<boolean> {
+    const wars = await scope.ask("warRegistry", "GetWars", [scope.online.allianceID || scope.online.corporationID]); scope.current();
+    if (!wars || typeof wars !== "object" || Array.isArray(wars) || !("type" in wars) || wars.type !== "dict") throw new Error("The corporation's wars could not be read.");
+    let active = 0;
+    for (const [, war] of readDictPairs(wars)) {
+      const mutual = memberField(war, "mutual"), finished = memberField(war, "timeFinished");
+      const mutualNumber = typeof mutual === "boolean" ? (mutual ? 1n : 0n) : unwrapLong(mutual);
+      if (mutualNumber === null || finished === undefined) throw new Error("A corporation war could not be read.");
+      // Native counts future declarations too: there is no timeStarted comparison.
+      if (mutualNumber === 0n && finished === null) active++;
+    }
+    if (!active) return true;
+    const confirmed = await askDialog("CorpMemberKickActiveWarConfirm", { type: "dict", entries: [["noOfWars", active]] }, `Remove members while the corporation has ${active} active wars?`);
+    scope.current();
+    return confirmed;
+  }
+  async function corporationMemberNamesList(scope: MemberOperation, characterIDs: readonly number[]): Promise<string> {
+    await memberNames(scope, characterIDs.map(id => ({ kind: "owner" as const, id })));
+    await wordsNow([LIST_DELIMITER]); scope.current();
+    return characterIDs.map(id => resolvedName(store.names.get().resolved, "owner", id, "")).join(store.words.get().templates[LIST_DELIMITER] ?? ", ");
+  }
+  async function confirmCorporationMemberKick(scope: MemberOperation, characterIDs: readonly number[]): Promise<boolean> {
+    // ConfirmKickMembers433-458 guards only the final prompt, shared by Quit and Expel.
+    const pilot = requestGeneration;
+    if (resignation?.pilot === pilot) return false;
+    const lease = { pilot }; resignation = lease;
+    try {
+      const single = characterIDs.length === 1, self = single && characterIDs[0] === scope.online.characterID;
+      const dialog = self ? "ConfirmQuitCorporation" : single ? "ConfirmKickCorpMember" : "ConfirmKickCorpMembers";
+      const entries: [string, JsonValue][] = self ? [] : single ? [["member", characterIDs[0]!]] : [["members", await corporationMemberNamesList(scope, characterIDs)]];
+      scope.current();
+      const confirmed = await askDialog(dialog, { type: "dict", entries }, self ? "Quit your corporation?" : "Expel these corporation members?", "okcancel");
+      scope.current();
+      return confirmed;
+    } catch (error) { throwIfRequestRetired(error); return false; }
+    finally { if (resignation === lease) resignation = null; }
+  }
+  function cannotKickCorporationMember(): void {
+    sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/BaseCorporationUI/CannotKickMember"]]] }, "You cannot remove this corporation member.");
+  }
+  async function corporationExpelMenu(ownerIDs: readonly number[]): Promise<{ readonly multiple: boolean; readonly confirm: () => Promise<void> } | null> {
+    // OfferExpelCorpMember151-160: native menu merge keeps only eligible peer entries.
+    if (!store.station.get().online || (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) === 0n) return null;
+    const scope = captureMemberOperation(), multiple = ownerIDs.length > 1;
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its menu was being read.", 0);
+    const targets = ownerIDs.filter(id => id !== scope.online.characterID && !isNpcOwner(id) && members.memberIDs.includes(id));
+    if (!targets.length) return null;
+    return { multiple, confirm: async () => {
+      scope.current();
+      try {
+        const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+        if (multiple) {
+          if (targets.includes(scope.online.characterID)) { sayDialog("CorpCantKickSelfInMultiKick", null, "You cannot expel yourself in a multiple expulsion."); return; }
+          if (!director) { sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/AccessRestrictions/NotDirector"]]] }, "You must be a Director."); return; }
+        } else {
+          if (!director) { cannotKickCorporationMember(); return; }
+          const eligible = await scope.ask("corpRegistry", "CanBeKickedOut", [targets[0]!]); scope.current();
+          if (!(typeof eligible === "boolean" ? eligible : (unwrapLong(eligible) ?? 0n) !== 0n)) { cannotKickCorporationMember(); return; }
+        }
+        if (!await confirmCorporationWarKick(scope) || !await confirmCorporationMemberKick(scope, targets)) return;
+        scope.current();
+        // KickOutMultipleMembers459-476 does not read each target's eligibility first.
+        const result = await scope.write("corpRegistry", multiple ? "KickOutMembers" : "KickOutMember", multiple ? [targets] : [targets[0]!], null, scope.online.corporationID);
+        scope.current();
+        if (!multiple) return;
+        const kicked = readDictEntry(result, "kicked"), notKicked = readDictEntry(result, "notKicked");
+        if (!isListValue(kicked) || !isListValue(notKicked)) throw new Error("The corporation's expulsion results could not be read.");
+        const ids = (items: readonly JsonValue[]) => items.map(value => { const id = Number(unwrapLong(value)); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("An expelled member could not be read."); return id; });
+        const kickedMembers = await corporationMemberNamesList(scope, ids(kicked.items));
+        let notKickedMessage = "";
+        if (notKicked.items.length) {
+          const names = await corporationMemberNamesList(scope, ids(notKicked.items)), label = "UI/Corporations/BaseCorporationUI/CorpKickedMultipleMembersFailed";
+          await wordsNow([label]); scope.current();
+          notKickedMessage = formatTemplate(store.words.get().templates[label] ?? "The following members could not be expelled: {notKickedMembers}", { notKickedMembers: names }, { nameOf: () => "" });
+        }
+        scope.current();
+        sayDialog("CorpKickedMultipleMembersResult", { type: "dict", entries: [["kickedMembers", kickedMembers], ["notKickedMessage", notKickedMessage]] }, `Expelled: ${kickedMembers}. ${notKickedMessage}`);
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
   async function corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null> {
     // CharacterChecker.OfferQuitCorp245-252 has no multiple-selection gate.
     // userentry._GetMultiMenu omits CharacterMenu for contact-list multiple selection; the caller handles that.
@@ -14963,33 +15045,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // base_corporation.KickOut397-431: eligibility, wars, confirmation, then the session mutation.
           const eligible = await scope.ask("corpRegistry", "CanBeKickedOut", [self]); scope.current();
           if (!(typeof eligible === "boolean" ? eligible : (unwrapLong(eligible) ?? 0n) !== 0n)) {
-            sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/BaseCorporationUI/CannotKickMember"]]] }, "You cannot leave the corporation yet.");
+            cannotKickCorporationMember();
             return;
           }
-          const wars = await scope.ask("warRegistry", "GetWars", [scope.online.allianceID || scope.online.corporationID]); scope.current();
-          if (!wars || typeof wars !== "object" || Array.isArray(wars) || !("type" in wars) || wars.type !== "dict") throw new Error("The corporation's wars could not be read.");
-          let active = 0;
-          for (const [, war] of readDictPairs(wars)) {
-            const mutual = memberField(war, "mutual"), finished = memberField(war, "timeFinished");
-            const mutualNumber = typeof mutual === "boolean" ? (mutual ? 1n : 0n) : unwrapLong(mutual);
-            if (mutualNumber === null || finished === undefined) throw new Error("A corporation war could not be read.");
-            // Native counts future declarations too: there is no timeStarted comparison.
-            if (mutualNumber === 0n && finished === null) active++;
-          }
-          if (active) {
-            const confirmed = await askDialog("CorpMemberKickActiveWarConfirm", { type: "dict", entries: [["noOfWars", active]] }, `Leave while the corporation has ${active} active wars?`);
-            scope.current();
-            if (!confirmed) return;
-          }
-          // ConfirmKickMembers433-458 guards only the final prompt, and releases even on cancellation.
-          const pilot = requestGeneration;
-          if (resignation?.pilot === pilot) return;
-          const lease = { pilot }; resignation = lease;
-          let confirmed = false;
-          try { confirmed = await askDialog("ConfirmQuitCorporation", { type: "dict", entries: [] }, "Quit your corporation?", "okcancel"); }
-          finally { if (resignation === lease) resignation = null; }
-          scope.current();
-          if (!confirmed) return;
+          if (!await confirmCorporationWarKick(scope) || !await confirmCorporationMemberKick(scope, [self])) return;
           // Keep the originating corporation until actual dispatch. The intended successful reply
           // may change it; notification delivery and the response still belong to this same pilot.
           const pilotCurrent = callOptions.captureRequestGuard!(), send = callOptions.fetch ?? pageFetch();
@@ -28613,6 +28672,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showMemberDetails,
     corporationMemberMenu,
     corporationQuitMenu,
+    corporationExpelMenu,
     corporationRoleAllowance,
     openCorporationMemberDetails,
     memberDetailsPanel,

@@ -67,6 +67,7 @@
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
   import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
   import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
+  import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -2390,6 +2391,7 @@
                       <OwnerChatMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
                       <OwnerMemberMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
                       <OwnerQuitMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerExpelMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id)}
                       {/if}
@@ -2597,6 +2599,7 @@
                     {#if selectedRows.length <= 1}<OwnerChatMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
                     {#if selectedRows.length <= 1}<OwnerMemberMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
                     {#if selectedRows.length <= 1}<OwnerQuitMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerExpelMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id)}
                     {/if}

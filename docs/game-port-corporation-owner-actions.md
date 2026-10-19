@@ -163,6 +163,21 @@ self, including when evaluating a merged selection.
      war warning, confirmation, self refusal and kicked/notKicked result dialog.
      Multiple expulsion calls `KickOutMembers` directly after the confirmations;
      it does not perform the single-target eligibility read per selected ID.
+     **Implemented:** Contacts/search and Member List share the single-target
+     submenu; contact-list multiple selection retains its separate contact menu.
+     Member List merges eligible nonself member targets, retaining the plural
+     callback even when only one target survives. That case uses the single
+     named confirmation followed by `KickOutMembers([target])` and its result
+     dialog. Quit and Expel share the native war and final-confirmation guard.
+     Both kick writes retain their originating corporation through dispatch;
+     only single self departure creates a session mutation/cooldown.
+     Compiled gates, merge classification/arguments, callback order, self refusal
+     and partial-result formatting were checked in the installed Python runtime.
+     Live desktop/phone covered single refusal and success, cancellation, merged
+     self exclusion, partial/all-failed results, an online expelled recipient's
+     corporation change, and read/dialog/result retirement after pilot replacement.
+     Actual plural packets contained one ID list and no per-member eligibility
+     calls. The native result's kicked/notKicked lists drive the displayed names.
 4. **D2p18c4d — CEO resignation.** Read the complete candidate, warning, picker and
    session-change flow (`base_corporation:785+`). It distinguishes a successful
    `None` from a replacement-candidate list. Its default confirmation is No.
