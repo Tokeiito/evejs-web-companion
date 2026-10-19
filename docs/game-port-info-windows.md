@@ -124,12 +124,26 @@ cannot reproduce the Blue scheduler. The observed rules are:
   ShowInfo does not reconstruct. Ship controls require their separate reading.
 
 c6b2a ports ordinary content replacement and scroll reset on reconstruction. Each
-window's chrome and geometry remain retained. Native loading/history guards and
-scoped read retirement are required c6b2b work next. Current UI tickets only drop
-stale displayed results, not later RPCs within old reads. Use actual held native
-replies to prove call order, reuse, close, independent windows and pilot
-retirement, without cancelling shared service caches. Audit each native content
-class's read order before porting its reconstruction; the current sections are
-not a claim of complete native content or asynchronous parity.
+window's chrome and geometry remain retained.
+
+c6b2b1 scopes the existing corporation public-info/attribute read chain to its
+reconstruction. Close and reuse retire its registered read, and dispatch checks
+run inside the shared request lane as well as between phases. An in-flight
+native reply still passes through the pilot's notification sink; retiring one
+window does not cancel the shared transport or another window. Same-content
+ordinary history has an unregistered scope, matching NavigateHistory's direct
+call. Pilot retirement invalidates every scope. UpdateDataCorp1226-1233's existing
+friendly-fire and enlistment reads now run in their native sequence. The original
+compiled attribute method confirms aggression before enlistments, with no later
+call after interruption. This does not claim the complete corporation header,
+service caches, native content tabs or all its data reads have been ported.
+
+Required c6b2b2 work remains: ordinary loading/history guards, full reconstruction
+completion boundaries and retirement of other content-owned continuations. Read
+each native content class's order and spawned/shared work first. Do not impose
+ordinary loading on ships or an automatic pending drain unsupported by the
+compiled methods. Existing tickets alone drop displayed stale results; actual
+held native replies must verify every continuation newly placed under a scope.
+The current sections are not complete native content/asynchronous parity.
 
 The Corporation window, the rest of its panels, and Phases5/6 remain unfinished.

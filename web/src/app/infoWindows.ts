@@ -1,5 +1,6 @@
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import type { InfoIdentity, InfoOpenOptions, InfoSubject } from "../bridge/infoWindow.ts";
+import { createInfoReadScope, type InfoReadScope } from "./infoReadScope.ts";
 
 interface Entry { readonly request: InfoSubject; readonly subject: InfoSubject; readonly identity: InfoIdentity }
 export interface InfoWindowState {
@@ -10,6 +11,7 @@ export interface InfoWindowState {
   readonly index: number;
   /** Ordinary content: ConstructLayout/ReconstructSubContainer flush old controls. */
   readonly reconstruction: number;
+  readonly reads: InfoReadScope;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
 }
@@ -30,13 +32,16 @@ export function createInfoWindows(deps: {
     state.update(windows => windows.map(w => w.id === id ? change(w) : w));
   };
   const requestRaise = (id: number): void => { raised.set({ n: ++raisedSerial, id }); };
-  function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean): void {
+  function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {
     let history = w.history;
     let index = w.index;
     if (branch) { history = [...history.slice(0, index + 1), entry]; index = history.length - 1; }
     else { history = history.map((e, i) => i === index ? entry : e); }
+    w.reads.retireRegistered();
+    const epoch = generation;
+    const reads = createInfoReadScope(() => epoch === generation, !directHistory);
     subjects.get(w.id)?.set({ ...entry.subject });
-    update(w.id, current => ({ ...current, entry, history, index,
+    update(w.id, current => ({ ...current, entry, history, index, reads,
       reconstruction: current.reconstruction + (entry.identity.content === "ship" ? 0 : 1), minimized: false }));
     requestRaise(w.id);
   }
@@ -67,6 +72,7 @@ export function createInfoWindows(deps: {
         subjects.set(id, signal);
         const offset = (windows.length % 8) * 24;
         const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [entry], index: 0, reconstruction: 1,
+          reads: createInfoReadScope(() => epoch === generation),
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
@@ -87,7 +93,7 @@ export function createInfoWindows(deps: {
       const z = top ?? Math.max(0, ...state.get().map(w => w.z)) + 1;
       update(id, w => ({ ...w, z }));
     },
-    close(id: number): void { subjects.delete(id); state.update(windows => windows.filter(w => w.id !== id)); },
+    close(id: number): void { state.get().find(w => w.id === id)?.reads.retireRegistered(); subjects.delete(id); state.update(windows => windows.filter(w => w.id !== id)); },
     minimize(id: number): void {
       const w = state.get().find(w => w.id === id); if (!w) return;
       update(id, current => ({ ...current, minimized: !current.minimized }));
@@ -103,7 +109,7 @@ export function createInfoWindows(deps: {
       const index = w.index + direction, entry = history[index]; if (!entry) return;
       update(id, current => ({ ...current, history, index }));
       const current = state.get().find(w => w.id === id)!;
-      if (w.entry.identity.content === entry.identity.content) reconstruct(current, entry, false);
+      if (w.entry.identity.content === entry.identity.content) reconstruct(current, entry, false, entry.identity.content !== "ship");
       else await show(entry.request, { traversingHistory: true, shift });
     },
     reset(): void { generation++; subjects.clear(); state.set([]); raised.set(null); queue = Promise.resolve(); },

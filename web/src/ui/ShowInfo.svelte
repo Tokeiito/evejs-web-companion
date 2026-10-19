@@ -51,9 +51,10 @@
   import { abbreviate } from "./fittingIcons.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import type { InfoReadScope } from "../app/infoReadScope.ts";
   import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
-  let { store: pilotStore, flow: pilotFlow, subject: windowSubject }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null> } = $props();
+  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, reads: reconstructionReads }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; reads?: InfoReadScope } = $props();
   // A component belongs to one native window for its lifetime. Capture these
   // handles so chrome/focus changes cannot become dependencies of its reads.
   // The captured subject signal itself changes only on reconstruction.
@@ -63,6 +64,8 @@
   const flow = pilotFlow;
   // svelte-ignore state_referenced_locally
   const subject = windowSubject;
+  // svelte-ignore state_referenced_locally
+  const reads = reconstructionReads;
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -274,11 +277,11 @@
     if (current?.kind === "corporation") {
       // construct_header's faction (get_corporation_faction_id), from the client's table of NPC corporations.
       flow.loadCorporationFactions();
-      void flow.corporationShowInfo(current.corporationID).then((read) => {
+      void flow.corporationShowInfo(current.corporationID, reads).then((read) => {
         if (ticket !== ownerReads) return;
         corporationRead = read;
         ownerReadDone = true;
-      });
+      }, () => {});
     } else if (current?.kind === "alliance") {
       void flow.allianceShowInfo(current.allianceID).then((read) => {
         if (ticket !== ownerReads) return;

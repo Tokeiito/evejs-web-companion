@@ -64,7 +64,7 @@
     <button type="button" class="minor" disabled={w.index >= w.history.length - 1} onclick={() => navigate(w, 1)}>{word("UI/Control/EveWindow/Next", "Next")}</button>
   </nav>
   {#key w.reconstruction}
-    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} /></ErrorBoundary></div>
+    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} reads={w.reads} /></ErrorBoundary></div>
   {/key}
 {/snippet}
 

@@ -272,6 +272,7 @@ import { createCorporationWealth, type CorporationWealthChange } from "../bridge
 import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
 import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
+import type { InfoReadScope } from "./infoReadScope.ts";
 import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
 import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
@@ -2987,7 +2988,7 @@ export interface AppFlow {
    * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
    * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
    */
-  corporationShowInfo(corporationID: number): Promise<CorporationShowInfo | null>;
+  corporationShowInfo(corporationID: number, reads?: InfoReadScope): Promise<CorporationShowInfo | null>;
   /**
    * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
    * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
@@ -12358,21 +12359,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } else await buyFitOf(open.fitting);
   }
 
-  /**
-   * _get_save_sub_menu_data (123 to 131): whether the Save menu offers Save for Alliance, a pilot in an alliance whose
-   * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
-   * the alliance's moniker).
-   */
-  async function corporationShowInfo(corporationID: number): ReturnType<AppFlow["corporationShowInfo"]> {
-    const info = corporationPublicInfoOf(await bridgeAsk("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
-    if (info === null) return null;
-    const [aggression, enlistmentFactions] = await Promise.all([
-      bridgeAsk("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null),
-      isNpcCorporation(corporationID)
-        ? Promise.resolve(null)
-        : bridgeAsk("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null),
-    ]);
-    return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+  /** CorporationInfoWindow.reconstruct_info_window49-51 and infosvc.UpdateDataCorp's attributes. */
+  async function corporationShowInfo(corporationID: number, reads?: InfoReadScope): ReturnType<AppFlow["corporationShowInfo"]> {
+    // Fence dispatch in the shared lane, but keep the pilot's notification sink:
+    // retiring one window must not discard notices accompanying an in-flight RPC.
+    const ask = reads ? api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
+      reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
+    } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); }) : bridgeAsk;
+    try {
+      reads?.assertCurrent();
+      const info = corporationPublicInfoOf(await ask("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
+      reads?.assertCurrent();
+      if (info === null) return null;
+      // infosvc.UpdateDataCorp1226-1233 reads friendly fire before enlistments.
+      const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null);
+      reads?.assertCurrent();
+      const enlistmentFactions = isNpcCorporation(corporationID) ? null
+        : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null);
+      return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+    } finally {
+      // An expected retirement is not an empty or partially successful read.
+      reads?.assertCurrent();
+    }
   }
 
   async function allianceShowInfo(allianceID: number): ReturnType<AppFlow["allianceShowInfo"]> {
