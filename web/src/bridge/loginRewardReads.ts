@@ -14,11 +14,28 @@
 
 import { failureCode, type Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
+import { decodeActiveSeasonal, decodeClaimHistory, type ActiveSeasonalCampaign, type SeasonalClaim } from "./seasonalCampaigns.ts";
 
 /** The account's campaign as the server answers it, or null where there is none or the transport does not carry the call. */
 export async function readLoginCampaign(ask: Ask): Promise<JsonValue> {
   try {
     return await ask("loginCampaignManager", "get_client_campaign_state", []);
+  } catch (error) {
+    if (failureCode(error) === "CALL_NOT_ALLOWED") return null;
+    throw error;
+  }
+}
+
+/**
+ * The account's seasonal campaign, as the client's seasonal campaign service reads it (seasonalLoginCampaignService.py
+ * 39 to 51, 90 to 97): seasonalLoginCampaignManager.get_active_campaign(), and where a campaign is on, its
+ * get_claim_history(), each with nothing. null where none is on or the transport does not carry the calls.
+ */
+export async function readSeasonalCampaign(ask: Ask): Promise<{ readonly active: ActiveSeasonalCampaign; readonly history: readonly SeasonalClaim[] } | null> {
+  try {
+    const active = decodeActiveSeasonal(await ask("seasonalLoginCampaignManager", "get_active_campaign", []));
+    if (active === null) return null;
+    return { active, history: decodeClaimHistory(await ask("seasonalLoginCampaignManager", "get_claim_history", [])) };
   } catch (error) {
     if (failureCode(error) === "CALL_NOT_ALLOWED") return null;
     throw error;

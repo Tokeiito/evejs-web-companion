@@ -103,6 +103,7 @@ import type {
 import type { NamesState, WordsState } from "./names.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
 import type { LoginCampaign } from "../bridge/loginRewards.ts";
+import type { ActiveSeasonalCampaign, SeasonalCampaignDefinition, SeasonalClaim } from "../bridge/seasonalCampaigns.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 import { EMPTY_RECIPE_BOOK } from "../bridge/piRecipes.ts";
@@ -506,9 +507,11 @@ export interface LoginRewardsState {
   readonly loaded: boolean;
   readonly error: string | null;
   readonly lastClaim: { readonly typeID: number; readonly quantity: number } | null;
+  /** The account's seasonal campaign: the one on, the days claimed of it, and its days' rewards; null where none is on. */
+  readonly seasonal: { readonly active: ActiveSeasonalCampaign; readonly history: readonly SeasonalClaim[]; readonly definition: SeasonalCampaignDefinition | null } | null;
 }
 
-const INITIAL_LOGIN_REWARDS: LoginRewardsState = Object.freeze({ campaign: null, loaded: false, error: null, lastClaim: null });
+const INITIAL_LOGIN_REWARDS: LoginRewardsState = Object.freeze({ campaign: null, loaded: false, error: null, lastClaim: null, seasonal: null });
 
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
@@ -1926,7 +1929,10 @@ export function createClientStore(): ClientStore {
           : { ...loginRewards.get(), campaign: event.campaign, loaded: true, error: event.error });
         break;
       case "login-rewards/claimed":
-        loginRewards.set({ campaign: event.campaign, loaded: true, error: null, lastClaim: event.reward });
+        loginRewards.set({ ...loginRewards.get(), campaign: event.campaign, loaded: true, error: null, lastClaim: event.reward });
+        break;
+      case "login-rewards/seasonal":
+        loginRewards.set({ ...loginRewards.get(), seasonal: event.seasonal });
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
