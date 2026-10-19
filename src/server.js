@@ -14585,6 +14585,32 @@ app.get("/api/client-data/notification-formats", requireAuth, async (req, res, n
 app.post("/api/names", requireAuth, async (req, res, next) => {
   try {
     const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    if (req.body?.recordset === "eveowners") {
+      // Native cfg.Recordset.Get callers need the row/missing distinction and
+      // propagated failures, rather than the display resolver's best effort.
+      // eveCfg.LoadEveOwners545-583 seeds only NPCs, factions and system owner1;
+      // player rows must come from the session's native config cache.
+      const wanted = [...new Set(items.filter(item => item && item.kind === "owner" && Number.isSafeInteger(item.id)).map(item => item.id))].slice(0, 200);
+      const owners = {}, unknown = [];
+      const seeded = staticData.resolveNames({ items: wanted.filter(id => id > 1 && id < MIN_PLAYER_OWNER_ID).flatMap(id => [{ kind: "owner", id }, { kind: "ownerType", id }]) }).names;
+      for (const id of wanted) {
+        if (id === OWNER_SYSTEM_ID) {
+          const name = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
+          if (typeof name !== "string") throw Object.assign(new Error("The client's EVE System name is unavailable."), { code: "CLIENT_DATA_UNAVAILABLE", statusCode: 503 });
+          owners[id] = { name, typeID: 0 };
+        } else if (seeded[`ownerType:${id}`] != null) {
+          owners[id] = { name: seeded[`owner:${id}`] ?? null, typeID: Number(seeded[`ownerType:${id}`]) };
+        } else unknown.push(id);
+      }
+      if (unknown.length) {
+        const held = bridgeSessions.get(req.webSessionID) || null;
+        if (!gamePortPilots || !held || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("A game-port pilot is required to read owner records."), { code: "NO_LIVE_SESSION", statusCode: 409 });
+        const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(unknown, { userid: held.accountID }, held.bridgeSessionID, true));
+        for (const id of unknown) owners[id] = named.get(id) ?? null;
+      }
+      res.json({ ok: true, source: "cfg.eveowners", owners });
+      return;
+    }
     const result = staticData.resolveNames({ items });
     const names = { ...result.names };
 

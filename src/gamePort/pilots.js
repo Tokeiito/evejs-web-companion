@@ -2981,9 +2981,12 @@ function createGamePortPilots({
    * Answers a Map of each owner asked about to { name, typeID }, or to null for one with no row. The type says
    * what the owner is. Fails as the call fails, with nothing kept of it.
    */
-  async function ownersNamed(ownerIDs, sessionFields = {}, bridgeSessionID = undefined) {
+  async function ownersNamed(ownerIDs, sessionFields = {}, bridgeSessionID = undefined, nativeKeys = false) {
     const entry = held(bridgeSessionID, sessionFields);
-    const wanted = [...new Set((Array.isArray(ownerIDs) ? ownerIDs : []).map(positive).filter((ownerID) => ownerID !== null))];
+    // Recordset.Get int(key) also accepts zero/negative keys; the ordinary
+    // display-name caller keeps its existing positive-ID input filter.
+    const ownerKey = value => { const whole = wholeOf(value); return whole !== null && whole >= BigInt(Number.MIN_SAFE_INTEGER) && whole <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(whole) : null; };
+    const wanted = [...new Set((Array.isArray(ownerIDs) ? ownerIDs : []).map(nativeKeys ? ownerKey : positive).filter((ownerID) => ownerID !== null))];
     const priming = entry.ownersWork.then(() => run(entry, "config", "GetMultiOwnersEx", async () => {
       const unknown = wanted.filter((ownerID) => !entry.owners.has(ownerID));
       if (unknown.length > 0) {
@@ -2991,7 +2994,7 @@ function createGamePortPilots({
         const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiOwnersEx", [{ type: "list", items: unknown }], null));
         const columns = itemsOf(header).map(textOf);
         const [ownerID, ownerName, typeID] = ["ownerID", "ownerName", "typeID"].map((column) => columns.indexOf(column));
-        for (const row of itemsOf(rows).map(itemsOf)) entry.owners.set(positive(row[ownerID]), { name: textOf(row[ownerName]), typeID: positive(row[typeID]) ?? 0 });
+        for (const row of itemsOf(rows).map(itemsOf)) entry.owners.set(ownerKey(row[ownerID]), { name: textOf(row[ownerName]), typeID: positive(row[typeID]) ?? 0 });
         for (const each of unknown) if (!entry.owners.has(each)) entry.owners.set(each, null);
       }
       return new Map(wanted.map((each) => [each, entry.owners.get(each)]));

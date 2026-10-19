@@ -381,6 +381,26 @@ with normal public/aggression/enlistment order and no console errors. Nonempty
 iterables still need the native int(key), owner-cache/Prime failure and ordering
 port; no general dict or string iteration behavior is claimed by this change.
 
+The next owner-read layer is available through the existing names endpoint's
+eveowners recordset mode and api.readEveOwners. It seeds only the native
+LoadEveOwners NPC/faction/system records; player and unseeded signed keys go
+through the selected pilot's shared config.GetMultiOwnersEx cache. It accepts
+type-0 rows and distinguishes a missing row from a row whose name is None.
+The ordinary display resolver retains its input policy. Native lookup failures
+propagate rather than becoming unresolved display names; the HTTP helper now
+preserves the BFF's native UserError refusal metadata too.
+
+Live wire checks establish static seeds without config reads, a single query
+for player/unseeded/zero/negative keys, and no repeat query for cached rows.
+Original compiled Recordset.Get with those actual reply rows accepts all four,
+including EveJS's Item 0 and Item -1 type-0 records. A Prime delivery boundary
+installs the captured rows; native unmarshalling and RPC are not executed there.
+Controlled missing/None-name replacements preserve the distinction, a real
+permission refusal reached through controlled read redirection preserves its
+dialog metadata, and a captured guard rejects a retired late result. This layer
+is not yet connected to the enlistment row; conversion and sequential owner
+lookup must follow before claiming that window's completion order is ported.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/

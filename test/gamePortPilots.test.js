@@ -3973,7 +3973,9 @@ test("owners are named as the client's cfg.eveowners names them: those not known
   const first = await pilots.ownersNamed([A_CORPORATION, AN_ALLIANCE], WHO, handle);
   assert.deepEqual([...first], [[A_CORPORATION, { name: "Made-up Industries", typeID: 2 }], [AN_ALLIANCE, { name: "Made-up", typeID: 16159 }]]);
   assert.deepEqual(ownersAsked(session), [["GetMultiOwnersEx", [{ type: "list", items: [A_CORPORATION, AN_ALLIANCE] }], null]]);
-  // Asked about again among others: only what is not known is asked for, each owner once however often it is named.
+  // The display-name helper filters to positive IDs. Native Recordset.Get also
+  // permits zero/negative int(key) (carbon cfg.py630-645, compiled Get);
+  // its dedicated caller passes nativeKeys=true instead of this UI filter.
   const second = await pilots.ownersNamed([AN_ALLIANCE, A_CHARACTER, A_CORPORATION, A_CHARACTER, 0, null, "nobody"], WHO, handle);
   assert.deepEqual([...second], [[AN_ALLIANCE, { name: "Made-up", typeID: 16159 }], [A_CHARACTER, { name: "Someone Else", typeID: 1380 }], [A_CORPORATION, { name: "Made-up Industries", typeID: 2 }]]);
   assert.deepEqual(ownersAsked(session).slice(1), [["GetMultiOwnersEx", [{ type: "list", items: [A_CHARACTER] }], null]]);

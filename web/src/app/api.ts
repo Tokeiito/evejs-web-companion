@@ -6,7 +6,7 @@
 // The opaque bridgeSessionID never appears here: the BFF holds it server-side
 // in its cookie-session store and attaches it to bridge calls itself.
 
-import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
+import { BridgeCallError, callMethod, refusalOfBody } from "../bridge/callMethod.ts";
 import type { Ask } from "../bridge/ask.ts";
 import type { CorporationRoleData, CorporationRoleGroupSpec } from "../bridge/corporationRoles.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
@@ -215,13 +215,16 @@ async function requestJson(
     (data as { ok?: unknown }).ok !== true ||
     !response.ok
   ) {
-    const errorBody = (data ?? {}) as { error?: unknown; message?: unknown };
+    const errorBody = (data ?? {}) as { error?: unknown; message?: unknown; refusal?: unknown };
     throw new BridgeCallError(
       typeof errorBody.error === "string" ? errorBody.error : "BRIDGE_BAD_RESPONSE",
       typeof errorBody.message === "string"
         ? errorBody.message
         : `${path} failed (HTTP ${response.status}).`,
       response.status,
+      null,
+      null,
+      refusalOfBody(errorBody.refusal),
     );
   }
   const body = data as Record<string, JsonValue>;
@@ -3343,6 +3346,28 @@ export async function stopServerBot(botID: string, options: ApiOptions = {}): Pr
 // over the static reference getters — read-only, like /api/map/find, NOT a
 // gateway/bridge call. A null value is a definitive "unknown" (an NPC/type not
 // in the static tables); the client name-cache caches it so it never refetches.
+
+/** A cfg.eveowners row: a missing row is distinct from a row with a None name. */
+export interface EveOwnerRecord {
+  readonly name: string | null;
+  readonly typeID: number;
+}
+
+/** Native Recordset callers: static NPC seeds, session rows/misses, and propagated failures. */
+export async function readEveOwners(ownerIDs: readonly number[], options: ApiOptions = {}): Promise<Readonly<Record<string, EveOwnerRecord | null>>> {
+  const data = await postJson("/api/names", { recordset: "eveowners", items: ownerIDs.map(id => ({ kind: "owner", id })) }, options);
+  if (!data.owners || typeof data.owners !== "object" || Array.isArray(data.owners)) throw new BridgeCallError("BRIDGE_BAD_RESPONSE", "Owner records are unreadable.", 502);
+  const rawOwners = data.owners as Readonly<Record<string, JsonValue>>;
+  const owners: Record<string, EveOwnerRecord | null> = {};
+  for (const id of ownerIDs) {
+    const value = rawOwners[String(id)];
+    const row = value && typeof value === "object" && !Array.isArray(value) ? value as Readonly<Record<string, JsonValue>> : null;
+    if (value === null) owners[id] = null;
+    else if (row && (typeof row.name === "string" || row.name === null) && typeof row.typeID === "number") owners[id] = { name: row.name, typeID: row.typeID };
+    else throw new BridgeCallError("BRIDGE_BAD_RESPONSE", "An owner record is unreadable.", 502);
+  }
+  return owners;
+}
 
 export interface ResolveNamesResult {
   /** Keyed by `${kind}:${id}`; value is the resolved name or null (unknown). */
