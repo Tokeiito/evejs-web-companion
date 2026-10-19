@@ -13,7 +13,6 @@ import { readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire
 
 /** A holding: the corporation's shares the shareholder holds. */
 export interface ShareHolding {
-  readonly shareholderID: number;
   readonly corporationID: number;
   readonly shares: number;
 }
@@ -39,7 +38,6 @@ export function decodeShareHoldings(result: JsonValue | null | undefined): reado
     const corporationID = numberOf(readRowField(row, "corporationID"));
     if (corporationID <= 0) continue;
     byCorporation.set(corporationID, {
-      shareholderID: numberOf(readRowField(row, "shareholderID")),
       corporationID,
       shares: numberOf(readRowField(row, "shares")),
     });
