@@ -158,7 +158,7 @@
       onMove={(x, y) => onMove(win.id, x, y)}
       onResize={(w, h) => onResize(win.id, w, h)}
     >
-      <PanelHost {store} {flow} tab={win.id} onOpen={onOpen} {sessions} />
+      <PanelHost {store} {flow} tab={win.id} onOpen={onOpen} onClose={() => onClose(win.id)} {sessions} />
     </DesktopWindow>
   {/each}
   {#if openHere.length > 0 || globalChips.length > 0}

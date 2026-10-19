@@ -27,6 +27,7 @@
     location: "UI/Common/Location", faction: "UI/Corporations/CorporationWindow/Members/FactionEnlistment",
     logon: "UI/Common/Online", logoff: "UI/Common/Offline", none: "UI/Generic/None", unknown: "UI/Generic/Unknown",
     empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo", mail: "UI/EVEMail/SendPilotEVEMail",
+    viewMember: "UI/Corporations/Common/ViewCorpMemberDetails", editMember: "UI/Corporations/Common/EditCorpMember",
   };
   const ONLINE = "UI/Corporations/CorpMemberTracking/";
   const lastLabels = ["MoreThanAMonth", "Online", "LessThanAnHour", "Hours", "LastWeek", "LastMonth"];
@@ -177,6 +178,7 @@
         {#if selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID}
           <button type="button" class="minor" onclick={mailSelected}>{word(LABELS.mail, "Send Pilot EVEMail")}</button>
         {/if}
+        {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
     {/if}

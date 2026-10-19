@@ -176,6 +176,7 @@ import {
 import { locationKind } from "../bridge/clientWords.ts";
 import { resolvedName } from "../store/names.ts";
 import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
+import { corporationMemberOf, memberInteger, memberTitleOf, MEMBER_ROLE_FIELDS, type CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
 import { addressBookOf, corporateAddressBookOf, type ContactScope, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
@@ -2050,6 +2051,10 @@ export interface AppFlow {
   /** Corporation member tracking, full for Directors, simple for other members (base_corporation.py 863-867). */
   corporationMemberTracking(filter?: string): Promise<CorporationTracking>;
   corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
+  readonly memberDetailsShown: ReadableSignal<{ readonly characterID: number; readonly n: number } | null>;
+  showMemberDetails(characterID: number): void;
+  corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
+  saveMemberGeneral(details: CorporationMemberDetails, title: string, baseID: number | null): Promise<CorporationMemberDetails>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -14582,6 +14587,56 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return roles;
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
+  const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
+  let memberDetailsRequests = 0;
+  function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
+  async function corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    // EditMemberDialog.LoadChar 144-190: security, private row, corporation, my grantable state, member, offices.
+    const security = await bridgeAsk("crimewatch", "GetCharacterSecurityStatus", [characterID]);
+    const info = await bridgeAsk("charMgr", "GetPrivateInfo", [characterID]);
+    const corporation = await bridgeAsk("corpRegistry", "GetCorporation", []);
+    const mine = await bridgeAsk("corpRegistry", "GetMember", [online.characterID]);
+    const myMember = corporationMemberOf(mine);
+    if (Number(memberInteger(corporation, "ceoID") ?? 0n) !== online.characterID && (myMember.masks.roles & 1n) === 0n && myMember.titleMask) await bridgeAsk("corpRegistry", "GetTitles", []);
+    // GetMember's 0.1s memoization supplies the same member when viewing yourself.
+    const member = corporationMemberOf(characterID === online.characterID ? mine : await bridgeAsk("corpRegistry", "GetMember", [characterID]));
+    const offices = await bridgeAsk("officeManager", "GetMyCorporationsOffices", []);
+    const officeRows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const stationIDs = officeRows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    const raceID = Number(memberInteger(info, "raceID") ?? 0n);
+    const raceNames = await api.getRaceNameIDs(callOptions);
+    const raceNameID = raceNames[raceID];
+    if (!raceNameID) throw new Error("That race's name is missing from the installed client.");
+    await wordsNow([`#${raceNameID}`]);
+    await resolveNamesNow([{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
+    const names = store.names.get().resolved;
+    const ceoID = Number(memberInteger(corporation, "ceoID") ?? 0n);
+    const viewerIsCEO = ceoID === online.characterID, targetIsCEO = ceoID === characterID;
+    // Compiled corp_util.CanEditBase: only the CEO edits the CEO; a Director may edit other members.
+    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
+    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], callOptions);
+    const raw = config.values.content_compliance_control_system_enabled;
+    const controlled = typeof raw === "number" ? Number.isFinite(raw) && Math.trunc(raw) !== 0 : typeof raw === "boolean" ? raw : typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim()) && BigInt(raw.trim()) !== 0n;
+    return { member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
+      raceNameID, gender: Number(memberInteger(info, "gender") ?? 0n), createDateTime: memberInteger(info, "createDateTime") ?? 0n,
+      security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
+      bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
+  }
+  async function saveMemberGeneral(details: CorporationMemberDetails, title: string, baseID: number | null): Promise<CorporationMemberDetails> {
+    const member = details.member;
+    if (details.targetIsCEO && !details.viewerIsCEO) return details;
+    const nextTitle = details.canEditTitle ? memberTitleOf(title) : member.title;
+    const nextBase = details.canEditBase ? baseID : member.baseID;
+    if (nextTitle === member.title && nextBase === member.baseID) return details;
+    const masks = MEMBER_ROLE_FIELDS.map(key => ({ type: "long", value: member.masks[key].toString() } as const));
+    // EditMemberDialog.UpdateMember 466-520 and bco_members.UpdateMember 243: all 15 positional arguments.
+    if ((member.masks.roles & 1n) !== 0n) for (let i = 1; i < masks.length; i++) masks[i] = { type: "long", value: "0" };
+    const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, null, null]);
+    return corporationMemberDetails(member.characterID);
+  }
   async function checkSearchWordsAllowed(value: string): Promise<boolean> {
     if (value.length === 0) return true;
     // bannedwords_client.py 80-82; monolithconfig.enabled 245-252 uses its synonyms, without stripping whitespace.
@@ -27970,6 +28025,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     addressBook,
     corporationMemberTracking,
     corporationMemberRoleOptions,
+    memberDetailsShown: readonlySignal(memberDetailsSignal),
+    showMemberDetails,
+    corporationMemberDetails,
+    saveMemberGeneral,
     primeContactsOnline,
     addOrEditContact,
     deleteContacts,

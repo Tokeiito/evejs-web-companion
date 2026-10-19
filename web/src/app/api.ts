@@ -4526,6 +4526,13 @@ export async function getEffectDisplayNameIDs(
   return { available: data.available === true, displayNameIDs };
 }
 
+/** characterdata.races.get_race_name: message IDs from the installed race table. */
+export async function getRaceNameIDs(options: ApiOptions = {}): Promise<Readonly<Record<number, number>>> {
+  const data = await getJson("/api/client-data/race-name-ids", options);
+  if (data.available !== true || !data.names || typeof data.names !== "object" || Array.isArray(data.names)) throw new Error("The client's race names could not be read.");
+  return data.names as Readonly<Record<number, number>>;
+}
+
 /** monolithconfig.enabled's accepted text, from its installed compiled synonyms module. */
 export async function getConfigEnabledValues(options: ApiOptions = {}): Promise<readonly string[]> {
   const data = await getJson("/api/client-data/config-enabled-values", options);

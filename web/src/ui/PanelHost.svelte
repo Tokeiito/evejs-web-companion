@@ -42,6 +42,7 @@
   import CorpWallet from "./CorpWallet.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
   import CorporationWindow from "./CorporationWindow.svelte";
+  import CorporationMemberDetails from "./CorporationMemberDetails.svelte";
   import Settings from "./Settings.svelte";
   import ShowInfo from "./ShowInfo.svelte";
   import NoticeLog from "./NoticeLog.svelte";
@@ -56,6 +57,7 @@
     flow,
     tab,
     onOpen,
+    onClose,
     sessions,
     onGoToPilot,
   }: {
@@ -72,6 +74,7 @@
      * means the active pilot, which is what every other caller wants.
      */
     onOpen?: (tab: TabID, sessionID?: string) => void;
+    onClose?: () => void;
     // R107 — the full pilot roster (every session, not just the active one).
     // Optional and forwarded only to the Bot Manager panel, which is the only
     // one that needs to see pilots beyond its own store/flow.
@@ -185,6 +188,8 @@
   <CharacterSheet {store} {flow} />
 {:else if tab === "corporation"}
   <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} />
+{:else if tab === "memberDetails"}
+  <CorporationMemberDetails {store} {flow} {onClose} />
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}

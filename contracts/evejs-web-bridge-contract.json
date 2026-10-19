@@ -1227,6 +1227,7 @@
       "corpRegistry.EditLabel",
       "corpRegistry.RemoveCorporateContacts",
       "corpRegistry.RemoveLabels",
+      "corpRegistry.UpdateMember",
       "crimewatch.SetSafetyLevel",
       "dogmaIM.Activate",
       "dogmaIM.AddTarget",

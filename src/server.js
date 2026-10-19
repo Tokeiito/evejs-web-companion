@@ -13524,6 +13524,14 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
   }
 });
 
+// characterdata.races.get_race_name: the installed race table's message IDs.
+app.get("/api/client-data/race-name-ids", requireAuth, async (req, res, next) => {
+  try {
+    const names = await clientBuiltData.table("raceNameIDs");
+    res.json({ ok: true, available: names !== null, names });
+  } catch (error) { next(error); }
+});
+
 // monolithconfig.enabled: the accepted enabled spellings from the installed compiled module.
 app.get("/api/client-data/config-enabled-values", requireAuth, async (req, res, next) => {
   try {

@@ -260,7 +260,8 @@
     const online = $station.online;
     if (online && loadedFor !== online.characterID) {
       const saved = loadLayout(online.characterID);
-      wins = saved ? saved.wins.slice() : [];
+      // Member Details opens for a character (memberDetails.OpenMemberDetails); keep its place, not an empty window.
+      wins = saved ? saved.wins.filter(win => win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
       dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
       targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
@@ -469,6 +470,16 @@
     openFromPopup("inventory");
   });
   let servedOpenRequest = 0;
+  // memberDetails.OpenMemberDetails: one per pilot; repeat requests raise the same member's window.
+  // svelte-ignore state_referenced_locally
+  const memberDetailsShown = flow.memberDetailsShown;
+  let servedMemberDetails = memberDetailsShown.get()?.n ?? 0;
+  $effect(() => {
+    const request = $memberDetailsShown;
+    if (request === null || request.n === servedMemberDetails) return;
+    servedMemberDetails = request.n;
+    openFromPopup("memberDetails");
+  });
   $effect(() => {
     const request = openRequest;
     if (!request || request.sessionID !== sessionID) return;

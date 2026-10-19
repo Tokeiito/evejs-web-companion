@@ -637,6 +637,7 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "charMgr.GetPrivateInfo",
   "bannedwords.check_search_words_allowed",
   "facWarMgr.GetCorporationWarFactionID",
   "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
@@ -2738,6 +2739,9 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
   "corpRegistry.GetMemberTrackingInfo": same(`${CORP_SVC}/base_corporation.py:865`, "GetCorpRegistry().GetMemberTrackingInfo(), no arguments, for a Director. Recorded bound in Archive/Opening all corp admin panels and assets search.txt:1033; cached for five minutes."),
   "corpRegistry.GetMemberTrackingInfoSimple": same(`${CORP_SVC}/base_corporation.py:867`, "GetCorpRegistry().GetMemberTrackingInfoSimple(), no arguments, for other members. CorpMemberTracking.ShowMemberTracking asks again as filters change."),
+  "corpRegistry.GetMember": same(`${CORP_SVC}/bco_members.py:168`, "GetCorpRegistry().GetMember(charID), positional on the corporation moniker. EditMemberDialog reads the viewer's grantable state and the target member."),
+  "charMgr.GetPrivateInfo": same("eve/client/script/ui/shared/neocom/corporation/corp_dlg_edit_member.py:148", "RemoteSvc('charMgr').GetPrivateInfo(charID), the one positional character ID, when Member Details loads the character."),
+  "corpRegistry.UpdateMember": same(`${CORP_SVC}/bco_members.py:243`, "UpdateMember(charID,title,divisionID,squadronID,roles,grantableRoles,rolesAtHQ,grantableRolesAtHQ,rolesAtBase,grantableRolesAtBase,rolesAtOther,grantableRolesAtOther,baseID,titleMask,blockRoles), all 15 positional. Member Details General preserves role masks, titleMask=None, blockRoles=None; typed title Unicode."),
   "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
   "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),
   "corpRegistry.GetLabels": same(`${CORP_SVC}/base_corporation.py:1011`, "GetCorpRegistry().GetLabels(), no arguments; the corporation contact labels, read on first showing the form."),
