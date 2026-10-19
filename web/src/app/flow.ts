@@ -470,6 +470,7 @@ import {
 import { decodeInstanceRows, decodeWeaponBanks, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
+import { RAT_COMBAT_ATTRIBUTE_IDS, ratCombatFromAttributes, type RatCombatFacts } from "../nav/combatPosition.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
@@ -3811,6 +3812,13 @@ const ATTR_SIGNATURE_RADIUS = 552;
  * prices a size switch.
  */
 const ratHitPointsByTypeID = new Map<number, CompanionHitPoints>();
+/**
+ * What each hostile type fights with and how it moves -- missile or turret,
+ * optimal, falloff, attack range, orbit range, speed -- for the `flight auto`
+ * positioning rung. Filled by the same fetch and under the same rules as the
+ * three caches above: static type dogma, permanent, one round trip per new type.
+ */
+const ratCombatByTypeID = new Map<number, RatCombatFacts>();
 const ATTR_SHIELD_CAPACITY = 263;
 const ATTR_ARMOR_HP = 265;
 const ATTR_HULL_HP = 9;
@@ -20596,6 +20604,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     maxLockedTargets: null,
     maxTargetRangeM: null,
   };
+  /**
+   * The drone boat's leash for `flight auto`. Same read as `companionTargeting`
+   * and the same rule: once, at start, off the hull and the pilot's skills;
+   * `null` is "cannot say".
+   */
+  let companionDroneControlRangeM: number | null = null;
+  /**
+   * The fitted weapons with the reach of their LOADED charge (`combatFit`), for
+   * the range gate and the `flight auto` rung. `null` until read, and whenever
+   * the read fails -- the gate fails open on it.
+   *
+   * ⚠ BUILT FROM THE AMMO READ'S OWN FIT AND CARGO, AND THE DOGMA ONLY WHEN A
+   * CHARGE CHANGED. Reach needs the bound dogma (`boundDogma`), which fans out
+   * to about eleven gateway reads; reading it on every ammo interval tripled a
+   * pilot's gateway calls, the saturation that has caused gateway timeouts
+   * before. Reach moves only when a gun's loaded charge or the fit moves, so the
+   * dogma is re-read only when `companionCombatChargeKey` changes.
+   */
+  let companionCombatWeapons: CombatWeapons | null = null;
+  let companionCombatChargeKey: string | null = null;
 
   // --- waking the companion on a push ---------------------------------------
   //
@@ -21048,6 +21076,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           threatByTypeID,
           signatureByTypeID: ratSignaturesOnGrid(snapshot, origin),
           hitPointsByTypeID: ratHitPointsOnGrid(snapshot, origin),
+          ratCombatByTypeID: ratCombatOnGrid(snapshot, origin),
+          droneControlRangeM: companionDroneControlRangeM,
           combatDroneStacks,
           droneFactsByTypeID: companionDroneFacts,
           droneLimits: companionDroneLimits,
@@ -21173,6 +21203,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 status.inSpace === true,
                 Date.now(),
               )),
+          // The guns' reach with what is LOADED, for the range gate and the
+          // `flight auto` rung. ⚠ AFTER THE AMMO READ, WHICH FILLS IT: a literal
+          // evaluates in order, so above it this was always one read stale and
+          // `null` on the first tick in space.
+          combatWeapons: companionCombatWeapons,
         };
       },
       issue: async (action) => {
@@ -21380,6 +21415,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // the memory gate lives up in the ladder and not down here.
           case "keepAtRange":
             await keepShipAtRange(action.targetID, action.range);
+            return;
+          // `flight auto`: a gun boat orbits what it is shooting. Standing on the
+          // server like keep-at-range, and gated the same way up in the ladder
+          // (`holdNeedsReissue`), so this case is sent once per anchor and range.
+          case "orbit":
+            await orbitShip(action.targetID, action.range);
             return;
           // `stop` in fleet chat — the only companion action that exists to
           // UNDO standing orders rather than to issue one.
@@ -22327,8 +22368,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     let emptyWeaponModuleIDs: readonly number[] | null = null;
     let weaponChargeGroups: Readonly<Record<number, readonly number[]>> | null = null;
+    let fitReads: Awaited<ReturnType<typeof api.loadFitting>> | null = null;
     try {
       const reads = await api.loadFitting(callOptions);
+      fitReads = reads;
       if (!reads.errors.slots && !reads.errors.online) {
         const slots = buildSlots(reads.slots, reads.shipInfo, reads.online);
         const chargeFits = decodeChargeFits(reads.chargeFits);
@@ -22385,7 +22428,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
 
     companionAmmoFacts = { emptyWeaponModuleIDs, cargoCharges, weaponChargeGroups };
+    companionCombatWeapons = await readCompanionCombatWeapons(request, fitReads);
     return companionAmmoFacts;
+  }
+
+  /**
+   * The guns' reach with their loaded charges, from the fit the ammo read just
+   * made. See `companionCombatWeapons` for why the bound dogma is read only when
+   * `companionCombatChargeKey` changes: the key is every gun's loaded charge
+   * type plus the hull, which is everything reach depends on that can change
+   * mid-run. Any failure answers `null`, which the range gate reads as "fire".
+   */
+  async function readCompanionCombatWeapons(
+    request: FleetCompanionRequest,
+    reads: Awaited<ReturnType<typeof api.loadFitting>> | null,
+  ): Promise<CombatWeapons | null> {
+    const shipID = companionShipID;
+    if (request.weaponModuleIDs.length === 0 || shipID === null || reads === null ||
+      reads.activeShipID !== shipID || reads.errors.slots || reads.errors.online || reads.errors.shipInfo) {
+      companionCombatChargeKey = null;
+      return null;
+    }
+    const slots = buildSlots(reads.slots, reads.shipInfo, reads.online);
+    const guns = new Set(request.weaponModuleIDs);
+    const key = `${shipID}|` + slots
+      .flatMap((slot) => slot.module !== null && guns.has(slot.module.itemID)
+        ? [`${slot.module.itemID}:${slot.module.online ? 1 : 0}:${slot.module.charge?.typeID ?? "-"}`] : [])
+      .join(",");
+    if (key === companionCombatChargeKey && companionCombatWeapons !== null) {
+      return companionCombatWeapons;
+    }
+    try {
+      const bound = await api.boundDogma(callOptions);
+      if (bound.allInfo.error || Number(bound.allInfo.value?.activeShipID) !== shipID) {
+        companionCombatChargeKey = null;
+        return null;
+      }
+      companionCombatChargeKey = key;
+      // No cargo: the reload rung reads its own (`cargoCharges`), and reach does
+      // not depend on what is in the hold.
+      return combatFit(shipID, slots, request.weaponModuleIDs, decodeChargeFits(reads.chargeFits),
+        bound.allInfo.value, null);
+    } catch {
+      companionCombatChargeKey = null;
+      return null;
+    }
   }
 
   async function readCompanionFitFacts(): Promise<CompanionFitFacts> {
@@ -22401,6 +22488,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           ? fit.stats.targeting.maxTargetRange.value
           : null,
       };
+      // The DSL's own resolver: the fit stat when it is known, the pilot's
+      // drone skills otherwise, `null` for a hull with a known-empty bay.
+      companionDroneControlRangeM = await resolveDroneControlRange(fit);
       if (fit.slotsError !== null) {
         return UNREADABLE_COMPANION_FIT;
       }
@@ -23227,7 +23317,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // `threatFromAttributes` reads only the ids it names.
         const attributes = await api.fetchTypeDogma(
           missing,
-          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS, ATTR_SHIELD_CAPACITY, ATTR_ARMOR_HP, ATTR_HULL_HP],
+          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS, ATTR_SHIELD_CAPACITY, ATTR_ARMOR_HP, ATTR_HULL_HP, ...RAT_COMBAT_ATTRIBUTE_IDS],
           callOptions,
         );
         for (const typeID of missing) {
@@ -23252,6 +23342,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               armor: layer(ATTR_ARMOR_HP),
               hull: layer(ATTR_HULL_HP),
             });
+            ratCombatByTypeID.set(typeID, ratCombatFromAttributes(row));
           }
         }
       } catch {
@@ -23293,6 +23384,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     return signatures;
+  }
+
+  /** As `ratSignaturesOnGrid`, for the positioning facts. Free; same ordering rule. */
+  function ratCombatOnGrid(
+    snapshot: ReturnType<typeof decodeSpaceSnapshot>,
+    origin: SpaceVector,
+  ): Readonly<Record<number, RatCombatFacts>> | null {
+    if (snapshot === null) {
+      return null;
+    }
+    const facts: Record<number, RatCombatFacts> = {};
+    for (const row of hostileRows(snapshot, origin)) {
+      const known = row.typeID === null ? undefined : ratCombatByTypeID.get(row.typeID);
+      if (row.typeID !== null && known !== undefined) {
+        facts[row.typeID] = known;
+      }
+    }
+    return facts;
   }
 
   /** As `ratSignaturesOnGrid`, for the full hit points. Free; same ordering rule. */
