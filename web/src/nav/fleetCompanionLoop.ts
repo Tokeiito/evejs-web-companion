@@ -53,14 +53,18 @@ import { fleetTagRank, pickPrimary } from "./targetPriority.ts";
 import { isTransitionTimeout, isTransportTransient, panelErrorWords } from "../bridge/refusals.ts";
 import { isNotActivatableRefusal } from "./moduleActivation.ts";
 import { FLEET_BROADCAST_TTL_MS } from "../bridge/fleetBroadcasts.ts";
-// Rung 6's hurt-drone rotation: the drone-boat block's own machine, one drone at
-// a time on its own shield, so the companion and the block judge a hurt drone the
-// same way.
+// Rung 6's hurt-drone rotation: the companion's own machine, which pulls every
+// shot drone at once and does not hand a rat back the drone it was shooting
+// (companionDroneRotation.ts). The trigger is the drone-boat block's: its own
+// shield below full.
 import {
-  decideDroneRotation,
-  emptyDroneRotationMemory,
-  type DroneRotationMemory,
-} from "./droneRotation.ts";
+  decideCompanionDroneRotation,
+  emptyCompanionDroneRotation,
+  homewardIDs,
+  rotationBusy,
+  type CompanionDroneRotationMemory,
+  type RotationBayStack,
+} from "./companionDroneRotation.ts";
 // The prop-mod policy (rung 3b), imported for the third time the same reason
 // holds: the drone-boat block wants the identical answer to "light it, stop it,
 // or leave the rack alone", and a scram rule that lived in two files would be
@@ -1843,20 +1847,21 @@ export interface CompanionLadderMemory {
    */
   readonly preLocked: readonly { readonly targetID: number; readonly atMs: number }[];
   /**
-   * Rung 6's hurt-drone rotation: the drone being pulled and relaunched, if
-   * any, and how many times each drone has been pulled IN THIS FIGHT.
+   * Rung 6's hurt-drone rotation: the drones flying home for their shields, the
+   * ones aboard waiting to be replaced or sent back out, the launches landing,
+   * and how many times each drone has been pulled IN THIS FIGHT.
    *
    * ⚠ A RECORD, BECAUSE THE TRIGGER EXTINGUISHES ITSELF. The instant the recall
    * lands the drone is not in space, so its shield cannot be read and the
-   * condition that started the rotation is no longer true. `droneRotation.ts`
-   * carries the rest of the reasoning.
+   * condition that started the rotation is no longer true.
+   * `companionDroneRotation.ts` carries the rest of the reasoning.
    *
    * ⚠ THE COUNTS ARE PER FIGHT, NOT PER RUN. They are dropped when the grid is
    * seen quiet (`hostileOnGrid === false`). A per-run budget is what this
    * replaced: three pulls in the first fight and the drones were left to die
    * in every fight after it, for the rest of the session.
    */
-  readonly droneRotation: DroneRotationMemory;
+  readonly droneRotation: CompanionDroneRotationMemory;
   /**
    * When this pilot last recalled its combat drones to swap them for a better
    * size, or null. `shouldSwitch`'s minimum interval reads it, so a commander
@@ -2396,7 +2401,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockGaveUpOn: [],
     lockPending: null,
     preLocked: [],
-    droneRotation: emptyDroneRotationMemory(),
+    droneRotation: emptyCompanionDroneRotation(),
     droneSizeSwitchAtMs: null,
     droneSizeRecalledIDs: [],
     droneAssistLit: [],
@@ -6504,7 +6509,7 @@ function decideFlee(
     // leaving. Nothing is lost by dropping it -- the outbound leg recalls
     // everything this ship controls before it commits to a warp, whichever rung
     // launched it.
-    droneRotation: emptyDroneRotationMemory(),
+    droneRotation: emptyCompanionDroneRotation(),
     // A rejoin under way is over: the return leg after this flee starts its own.
     rejoin: null,
   };
@@ -6573,7 +6578,7 @@ function withRepairOrder(
   };
   // As a flee's latch does: the rotation and a rejoin under way end here, and
   // the leg recalls every drone before it warps.
-  return { ...cleared, flee: ordered, droneRotation: emptyDroneRotationMemory(), rejoin: null };
+  return { ...cleared, flee: ordered, droneRotation: emptyCompanionDroneRotation(), rejoin: null };
 }
 
 /**
@@ -9635,9 +9640,9 @@ function withObservedDroneFlights(
 ): CompanionLadderMemory {
   // The drone a rotation is bringing home is not part of the flight an order
   // names (see the engage in `decideDrones`), so it is not a change of flight.
-  const homeward = memory.droneRotation.active?.phase === "recalling" ? memory.droneRotation.active.itemID : null;
+  const homeward = homewardIDs(memory.droneRotation);
   const sameFlight = (observed: readonly number[], ordered: readonly number[]): boolean => {
-    const flying = homeward === null || ordered.includes(homeward) ? observed : observed.filter((id) => id !== homeward);
+    const flying = observed.filter((id) => ordered.includes(id) || !homeward.includes(id));
     return flying.length === ordered.length && flying.every((id) => ordered.includes(id));
   };
   if (
@@ -9868,10 +9873,10 @@ function decideDroneSizeSwitch(
 }
 
 /**
- * Rung 6's hurt-drone rotation: pull the one drone that is being shot, send it
- * back out when it is aboard. The machine is `decideDroneRotation`
- * (`droneRotation.ts`), the drone-boat block's own; this is the companion's
- * wiring of it.
+ * Rung 6's hurt-drone rotation: pull every drone that is being shot, and put
+ * the fight back together without handing a rat the drone it was shooting. The
+ * machine is `decideCompanionDroneRotation` (`companionDroneRotation.ts`); this
+ * is its wiring to the observation.
  *
  * ⚠ THE TRIGGER IS THAT DRONE'S SHIELD BELOW FULL, NOT THE WORST LAYER OF THE
  * FLIGHT AGAINST A FLOOR, and both halves of that were costing drones. A
@@ -9884,9 +9889,10 @@ function decideDroneSizeSwitch(
  * be shot until it is 2,500 m from the ship, so the recall has to start while
  * there is still shield to fly home on.
  *
- * ⚠ ONE DRONE, NOT THE FLIGHT. Recalling everything for one hurt drone took
- * the pilot's whole damage off the field for the round trip, which only made
- * the fight, and the rats' time on the next drone, longer.
+ * ⚠ WHO IS SHOOTING IT IS READ OFF THE RATS' MOVEMENT. A rat orbits or follows
+ * the ball it has chosen (`syncNpcMovement`, npcBehaviorLoop.js), and its row's
+ * `targetEntityID` is that ball. That is how the machine knows which rats to
+ * wait out before a drone with no spare goes back out.
  *
  * ⚠ PER FIGHT. The counts go when the grid is seen quiet. A drone that has
  * been pulled `MAX_DRONE_ROTATIONS` times in one fight is left to fight on, and
@@ -9896,55 +9902,104 @@ function rotateHurtDrone(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
   role: CompanionDroneRole | null,
+  nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
   const record = memory.droneRotation;
   // A fight that is over takes the rotation with it: a drone coming home now
   // is coming home for good, and the next fight starts with fresh counts.
   // Only a confident `false` ends it -- `null` is a snapshot that stumbled.
   if (obs.hostileOnGrid === false || role === null) {
-    const clean = record.active === null && Object.keys(record.rotations).length === 0;
-    return { decision: null, memory: clean ? memory : { ...memory, droneRotation: emptyDroneRotationMemory() } };
+    const clean = !rotationBusy(record) && Object.keys(record.rotations).length === 0 &&
+      Object.keys(record.recalledAtMs).length === 0;
+    return { decision: null, memory: clean ? memory : { ...memory, droneRotation: emptyCompanionDroneRotation() } };
   }
   // A new rotation only on a grid we can see; one under way is seen through.
-  if (obs.hostileOnGrid !== true && record.active === null) {
+  if (obs.hostileOnGrid !== true && !rotationBusy(record)) {
     return { decision: null, memory };
   }
-  // This role's drones only: a drone of another kind is the wrong-role
-  // recall's business. The drone being rotated is always included, whatever
-  // the role lists say about it this tick.
-  const flight = new Set(droneIDsOutFor(obs, role));
-  const rotatingID = record.active?.itemID ?? null;
-  const step = decideDroneRotation({
-    dronesInSpace: obs.myDrones == null
-      ? null
-      : obs.myDrones.filter((drone) => flight.has(drone.itemID) || drone.itemID === rotatingID),
-    droneIDsInBay: obs.droneBayItemIDs ?? null,
-    memory: record,
-  });
+  const step = decideCompanionDroneRotation(rotationInputs(obs, record, role, nowMs));
   const next: CompanionLadderMemory = { ...memory, droneRotation: step.memory };
-  if (step.action === "recall" && step.itemID !== null) {
+  const action = step.action;
+  if (action.kind === "recall") {
+    const many = action.droneIDs.length > 1;
     return {
       decision: {
-        action: { kind: "recallDrones", droneIDs: [step.itemID] },
+        action: { kind: "recallDrones", droneIDs: [...action.droneIDs] },
         phase: "Drones",
-        why: "A drone is being shot. Bringing that one home for its shield; the rest keep fighting.",
+        why: many
+          ? `${action.droneIDs.length} drones are being shot. Bringing them home for their shields; the rest keep fighting.`
+          : "A drone is being shot. Bringing that one home for its shield; the rest keep fighting.",
         memory: next,
       },
       memory,
     };
   }
-  if (step.action === "relaunch" && step.itemID !== null) {
+  if (action.kind === "launch") {
     return {
       decision: {
-        action: { kind: "launchDrones", droneItemIDs: [step.itemID] },
+        action: { kind: "launchDrones", droneItemIDs: [...action.droneItemIDs], quantities: { ...action.quantities } },
         phase: "Drones",
-        why: "The drone is aboard with its shield back. Sending it out again.",
+        why: action.spares > 0
+          ? "Sending out a fresh drone in place of the one that was shot; the rats are still after that one."
+          : "The drone is aboard with its shield back and the rats have moved on. Sending it out again.",
         memory: next,
       },
       memory,
     };
   }
   return { decision: null, memory: next };
+}
+
+/**
+ * What the rotation reads: this role's drones in space (and any it is bringing
+ * home, whatever the role lists say about them this tick), each with its type
+ * and the rats on it; this role's bay stacks; and the hostiles with the ball
+ * each one is on.
+ */
+function rotationInputs(
+  obs: FleetCompanionObservation,
+  record: CompanionDroneRotationMemory,
+  role: CompanionDroneRole,
+  nowMs: number,
+): Parameters<typeof decideCompanionDroneRotation>[0] {
+  const snapshot = obs.snapshot ?? null;
+  const hostiles = snapshot === null
+    ? null
+    : snapshot.entities.filter(isHostile).map((entity) => ({ itemID: entity.itemID, targetEntityID: entity.targetEntityID ?? null }));
+  const flight = new Set(droneIDsOutFor(obs, role));
+  const homeward = homewardIDs(record);
+  const drones = obs.myDrones == null
+    ? null
+    : obs.myDrones
+      .filter((drone) => flight.has(drone.itemID) || homeward.includes(drone.itemID))
+      .map((drone) => ({
+        itemID: drone.itemID,
+        typeID: snapshot === null ? null : (entityOnGrid(drone.itemID, snapshot.entities)?.typeID ?? null),
+        shieldRatio: drone.shieldRatio,
+        attackers: (hostiles ?? []).filter((rat) => rat.targetEntityID === drone.itemID).map((rat) => rat.itemID),
+      }));
+  return { drones, bay: rotationBay(obs, role), hostiles, memory: record, nowMs };
+}
+
+/**
+ * The bay as stacks: the WHOLE bay, as the block's machine reads it, because
+ * "is it aboard" must not depend on the role split -- a drone the split missed
+ * for a tick would otherwise read as dead. Only this role's combat stacks carry
+ * their types (drone sizing reads them), so only they can be a spare for the
+ * drone they replace; any other stack, or a combat bay whose types did not
+ * read, is an id only, and the machine relaunches the drone itself rather than
+ * guessing at a spare.
+ */
+function rotationBay(obs: FleetCompanionObservation, role: CompanionDroneRole): readonly RotationBayStack[] | null {
+  const ids = obs.droneBayItemIDs ?? null;
+  if (ids === null) {
+    return null;
+  }
+  const typed = role === "combat" ? (obs.combatDroneStacks ?? null) : null;
+  return ids.map((itemID) => {
+    const stack = typed?.find((row) => row.itemID === itemID);
+    return { itemID, typeID: stack?.typeID ?? null, quantity: stack?.quantity ?? 1 };
+  });
 }
 
 /**
@@ -10029,16 +10084,17 @@ function decideDrones(
   // and the launch branch sizes the next one once it is aboard; a rotation
   // started now would relaunch one of those drones into the middle of that.
   const swapLanding =
-    memory.droneRotation.active === null &&
+    !rotationBusy(memory.droneRotation) &&
     (memory.droneSizeRecalledIDs ?? []).some((id) => out.includes(id)) &&
     nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS;
-  const rotation = swapLanding ? { decision: null, memory } : rotateHurtDrone(obs, memory, role);
+  const rotation = swapLanding ? { decision: null, memory } : rotateHurtDrone(obs, memory, role, nowMs);
   if (rotation.decision !== null) {
     return rotation;
   }
   memory = rotation.memory;
   nothing = { decision: null, memory };
-  const rotating = memory.droneRotation.active;
+  const rotationUnderWay = rotationBusy(memory.droneRotation);
+  const homeward = homewardIDs(memory.droneRotation);
 
   // --- the job is over: bring them home -----------------------------------
   //
@@ -10096,9 +10152,11 @@ function decideDrones(
   // --- putting the right drones out, and giving them their job ------------
   const roleOut = droneIDsOutFor(obs, role);
   if (roleOut.length === 0) {
-    if (rotating !== null) {
-      // The one drone out is the one being rotated. It goes back out by
-      // itself; launching the bay now would put a whole flight out around it.
+    if (rotationUnderWay) {
+      // The drones of this role are all being rotated: flying home, held
+      // aboard, or launching. They go back out by themselves (or a spare goes
+      // in their place); launching the bay now would put a whole flight out
+      // around them.
       return nothing;
     }
     const bay = droneBayFor(obs, role);
@@ -10163,8 +10221,7 @@ function decideDrones(
   // for the fifth to land and relaunch. The rest take the new order now; the
   // relaunched drone changes the flight, which `withObservedDroneFlights`
   // reads as a new order to give, and it joins them.
-  const homewardID = rotating?.phase === "recalling" ? rotating.itemID : null;
-  const fighting = homewardID === null ? roleOut : roleOut.filter((id) => id !== homewardID);
+  const fighting = roleOut.filter((id) => !homeward.includes(id));
   if (fighting.length === 0) {
     return nothing;
   }
@@ -10186,7 +10243,7 @@ function decideDrones(
     }
     // Never in the middle of a rotation: the swap would recall the flight
     // around a drone that is about to be relaunched on its own.
-    const swap = rotating === null ? decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs) : null;
+    const swap = !rotationUnderWay ? decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs) : null;
     if (swap !== null) {
       return { decision: swap, memory };
     }
@@ -11487,7 +11544,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // the server's own doing on a session drop, not something a restart
           // can undo - so the honest state is "no rotation", not a
           // half-remembered one.
-          droneRotation: emptyDroneRotationMemory(),
+          droneRotation: emptyCompanionDroneRotation(),
           droneSizeSwitchAtMs: null,
           droneSizeRecalledIDs: [],
           droneAssistLit: [],
