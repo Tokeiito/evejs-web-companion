@@ -2412,17 +2412,17 @@ function createGamePortPilots({
   }
 
   /** A service's own method: at the proxy node for a service the client reaches with sm.ProxySvc, by the name alone for any other. */
-  const byName = (session, service, method, form) => (form.proxy
+  const byName = (session, service, method, form, beforeDispatch) => (form.proxy
     ? session.proxyCall(service, method, argumentsToWire(form.args), form.kwargs)
-    : session.call(service, method, argumentsToWire(form.args), form.kwargs));
+    : session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch));
 
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
-    // A pending corporation action still names the registry it was opened for.
-    // Check at native dispatch too: binding can yield across a corporation change.
+    // A pending corporation action still names the corporation it was opened for.
+    // Check at native dispatch too: preparation/binding can yield across a change.
     const expectedCorporationID = positive(sessionFields.expectedCorporationID);
     const corporationVersion = Number.isSafeInteger(sessionFields.expectedCorporationVersion) ? sessionFields.expectedCorporationVersion : entry.corporationVersion;
-    const dispatchCurrent = service === CORP_REGISTRY && isBridgeWritePair(service, method) && expectedCorporationID !== null ? () => {
+    const dispatchCurrent = (service === CORP_REGISTRY || service === "corporationSvc" && method === "GiveMedalToCharacters") && isBridgeWritePair(service, method) && expectedCorporationID !== null ? () => {
       if (entry.ended || sessions.get(entry.handle) !== entry || entry.corporationVersion !== corporationVersion || attribute(entry, "corpid") !== expectedCorporationID)
         throw fail("SESSION_REQUEST_RETIRED", "This action belongs to the pilot's previous corporation.");
     } : undefined;
@@ -2690,10 +2690,13 @@ function createGamePortPilots({
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const allianceVersionForCall = entry.allianceVersion;
-    const result = await run(entry, service, method, async () => (form.moniker
-      ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs, dispatchCurrent)
-      : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
-      : byName(entry.session, service, method, form))).finally(() => {
+    const result = await run(entry, service, method, async () => {
+      dispatchCurrent?.();
+      return form.moniker
+        ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs, dispatchCurrent)
+        : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
+        : byName(entry.session, service, method, form, dispatchCurrent);
+    }).finally(() => {
       forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();
     }).catch((error) => {

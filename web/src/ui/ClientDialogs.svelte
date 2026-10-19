@@ -102,6 +102,7 @@
   const progressWnd = flow.progressWnd;
   // svelte-ignore state_referenced_locally
   const corporationCEOChoice = flow.corporationCEOChoice;
+  const corporationAwardAsk = flow.corporationAwardAsk;
   // svelte-ignore state_referenced_locally
   const imageServer = flow.imageServer;
   $effect(() => { if ($corporationCEOChoice !== null) flow.loadImageServer(); });
@@ -1004,7 +1005,40 @@
   }
 </script>
 
-<svelte:window onkeydown={event => { if (event.key === "Escape" && inFront && $corporationCEOChoice !== null) { event.preventDefault(); flow.answerCorporationCEO($corporationCEOChoice.n, false); } }} />
+<svelte:window onkeydown={event => {
+  if (event.key !== "Escape" || !inFront) return;
+  if ($corporationAwardAsk !== null) { event.preventDefault(); flow.answerCorporationAward($corporationAwardAsk.n, false); }
+  else if ($corporationCEOChoice !== null) { event.preventDefault(); flow.answerCorporationCEO($corporationCEOChoice.n, false); }
+}} />
+
+{#if $corporationAwardAsk !== null}
+  {@const ask = $corporationAwardAsk}
+  {@const caption = ask.stage === "medal" ? wordOf("UI/Corporations/Common/AwardCorpMemberDecoration", "Award Corporation Member Decoration") : wordOf("UI/Corporations/CorporationWindow/Members/AwardReasonTitle", "Award Reason")}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-modal={inFront} aria-label={caption} data-dialog={ask.stage === "medal" ? "AwardDecoration" : "AwardReason"} data-in-front={inFront}>
+      {#if ask.stage === "medal"}
+        <form class="quantity" onsubmit={event => { event.preventDefault(); flow.answerCorporationAward(ask.n, true); }}>
+          <strong>{caption}</strong><p class="body">{ask.hint}</p>
+          <span>{wordOf("UI/Inventory/InvItemNameShort", "Name")}</span>
+          <div class="ceo-choices" role="listbox" aria-label={caption}>
+            {#each ask.rows as row, index (index)}
+              <button type="button" role="option" aria-selected={ask.selectedIndex === index} class:selected={ask.selectedIndex === index} onclick={() => flow.selectCorporationAward(ask.n, index)} ondblclick={() => { flow.selectCorporationAward(ask.n, index); flow.answerCorporationAward(ask.n, true); }}>{row.name}</button>
+            {/each}
+          </div>
+          {#if ask.selectionError}<span class="ceo-choice-error" role="status">{ask.selectionError}</span>{/if}
+          <span class="answers"><button type="submit">{wordOf("UI/Common/Buttons/OK", "OK")}</button><button type="button" onclick={() => flow.answerCorporationAward(ask.n, false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button></span>
+        </form>
+      {:else}
+        {#key ask.n}
+          <NamePopup {caption} label={wordOf("UI/Corporations/CorporationWindow/Members/PromptForReason", "Reason for awarding this decoration")} maxLength={200}
+            refusal={wordOf("UI/Common/PleaseTypeSomething", "Please type something.")} okWord={wordOf("UI/Common/Buttons/OK", "OK")} cancelWord={wordOf("UI/Common/Buttons/Cancel", "Cancel")}
+            onok={reason => flow.answerCorporationAward(ask.n, true, reason)} oncancel={() => flow.answerCorporationAward(ask.n, false)} />
+        {/key}
+        {#if ask.selectionError}<span class="ceo-choice-error" role="status">{ask.selectionError}</span>{/if}
+      {/if}
+    </div>
+  </div>
+{/if}
 
 {#if $corporationCEOChoice !== null}
   {@const choice = $corporationCEOChoice}

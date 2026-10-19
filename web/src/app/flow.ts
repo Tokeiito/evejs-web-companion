@@ -414,7 +414,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, iskWords } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
@@ -1107,6 +1107,16 @@ export interface CorporationCEOChoice {
   readonly selectedIndex: number | null;
   readonly selectionError: string;
 }
+
+/** AwardDecoration's generic ListWnd and the following native NamePopup. */
+export type CorporationAwardAsk = {
+  readonly n: number;
+  readonly hint: string;
+  readonly rows: readonly { readonly medalID: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+  readonly stage: "medal" | "reason";
+};
 
 /** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
 export interface ShipNameAsk {
@@ -2094,6 +2104,10 @@ export interface AppFlow {
   readonly corporationCEOChoice: ReadableSignal<CorporationCEOChoice | null>;
   selectCorporationCEO(n: number, index: number): void;
   answerCorporationCEO(n: number, confirmed: boolean): void;
+  corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null>;
+  readonly corporationAwardAsk: ReadableSignal<CorporationAwardAsk | null>;
+  selectCorporationAward(n: number, index: number): void;
+  answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -5346,7 +5360,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); }
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -15026,6 +15040,82 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (choice !== null) await mutate(choice);
       } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
     } };
+  }
+  const corporationAwardAskSignal = createSignal<CorporationAwardAsk | null>(null);
+  let corporationAwardAnswer: ((answer: number | string | null) => void) | null = null;
+  function cancelCorporationAward(): void { corporationAwardAnswer?.(null); }
+  function selectCorporationAward(n: number, index: number): void {
+    const ask = corporationAwardAskSignal.get();
+    if (ask?.n !== n || ask.stage !== "medal" || !Number.isInteger(index) || !ask.rows[index]) return;
+    corporationAwardAskSignal.set({ ...ask, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationAward(n: number, confirmed: boolean, reason = ""): void {
+    const ask = corporationAwardAskSignal.get();
+    if (ask?.n !== n || !corporationAwardAnswer) return;
+    if (!confirmed) { corporationAwardAnswer(null); return; }
+    // Installed Python27 uses two-byte Unicode (maxunicode65535): its edit's
+    // maximum counts UTF-16 units, as HTML maxlength and JS string.length do.
+    if (ask.stage === "medal") {
+      if (ask.selectedIndex !== null) corporationAwardAnswer(ask.rows[ask.selectedIndex]!.medalID);
+    } else if (reason.trim().length && reason.length <= 200) corporationAwardAnswer(reason);
+    else corporationAwardAskSignal.set({ ...ask, selectionError: templateWords("UI/Common/PleaseTypeSomething", {}, "Please type something.") });
+  }
+  function askCorporationAward(value: Omit<CorporationAwardAsk, "n">): Promise<number | string | null> {
+    cancelCorporationAward();
+    return new Promise(resolve => {
+      corporationAwardAnswer = answer => { corporationAwardAnswer = null; corporationAwardAskSignal.set(null); resolve(answer); };
+      corporationAwardAskSignal.set({ ...value, n: ++dialogsSaidCount });
+    });
+  }
+  async function corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null> {
+    const online = store.station.get().online;
+    // Compiled CharacterChecker95-102 uses Personnel Manager, without Director.
+    if (!online || online.corporationID === null || isNpcOwner(online.corporationID) || (BigInt(online.corpRole ?? "0") & 128n) === 0n) return null;
+    const possible = ownerIDs.filter(id => id > 0 && !isNpcOwner(id));
+    if (!possible.length) return null;
+    const scope = captureMemberOperation();
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its award menu was being read.", 0);
+    const targets = possible.filter(id => members.memberIDs.includes(id));
+    if (!targets.length) return null;
+    return { award: async () => {
+      scope.current();
+      try {
+        const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
+        const tuple = Array.isArray(raw) ? raw : isListValue(raw) ? raw.items : [];
+        if (tuple.length !== 2) throw new Error("The corporation's decorations could not be read.");
+        const rows = readRowsetRows(tuple[0]!).map(row => ({ medalID: Number(unwrapLong(row.medalID)), name: typeof row.title === "string" ? row.title : "" }));
+        if (!rows.length) { sayDialog("MedalCreateToAward", null, "Create a decoration before awarding one."); return; }
+        if (rows.some(row => !Number.isSafeInteger(row.medalID) || row.medalID <= 0 || !row.name)) throw new Error("A corporation decoration could not be read.");
+        await memberNames(scope, [...new Set(targets)].map(id => ({ kind: "owner" as const, id })));
+        await wordsNow(["UI/Corporations/Common/AwardCorpMemberDecoration", "UI/Inventory/InvItemNameShort", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "UI/Corporations/CorporationWindow/Members/AwardReasonTitle", "UI/Corporations/CorporationWindow/Members/PromptForReason", "UI/Common/PleaseTypeSomething", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]);scope.current();
+        const hint = targets.slice(0,5).map(id => resolvedName(store.names.get().resolved, "owner", id, String(id))).join(", ") + (targets.length > 5 ? ", ..." : "");
+        rows.sort((a,b) => {const l=a.name.toLowerCase(),r=b.name.toLowerCase();return l<r?-1:l>r?1:0;});
+        const missing = templateWords("UI/Control/ListWindow/MustSelectError", { num: 1 }, "Select one item.");
+        const picked = await askCorporationAward({ stage: "medal", hint, rows, selectedIndex: null, selectionError: templateWords("UI/Control/ListWindow/DisplayError", { errorMessage: missing }, missing) });scope.current();
+        if (typeof picked !== "number") return;
+        // medals93-105: Director OR Personnel is checked at this callback, before NamePopup.
+        if ((BigInt(store.station.get().online?.corpRole ?? "0") & 129n) === 0n) {
+          await wordsNow(["UI/Corporations/CreateDecorationWindow/NeedRolesError"]);scope.current();
+          sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", templateWords("UI/Corporations/CreateDecorationWindow/NeedRolesError", {}, "You need corporation roles to award decorations.")]] }, "You need corporation roles to award decorations."); return;
+        }
+        const reason = await askCorporationAward({ stage: "reason", hint, rows: [], selectedIndex: null, selectionError: "" });scope.current();
+        if (typeof reason !== "string" || !reason) return;
+        const args: JsonValue[] = [picked, targets, reason];
+        try { await scope.write("corporationSvc", "GiveMedalToCharacters", args, null, scope.online.corporationID);scope.current(); }
+        catch (error) {
+          scope.current();
+          const refusal = error instanceof BridgeCallError ? error.refusal : null;
+          if (!refusal?.key.startsWith("ConfirmGivingMedal")) throw error;
+          await wordsNow(["UI/Corporations/MedalsToUsers", "UI/Util/FmtIsk"]);scope.current();
+          const rawCost = readDictEntry(refusal.values, "cost"), cost = Number(unwrapLong(rawCost) ?? (typeof rawCost === "number" ? rawCost : 0));
+          const costText = iskWords(cost, 2, store.words.get().templates, () => "") ?? `${cost.toLocaleString("en-US", {minimumFractionDigits:2,maximumFractionDigits:2})} ISK`;
+          const membersText = templateWords("UI/Corporations/MedalsToUsers", {numMembers: targets.length}, `${targets.length} members`);
+          if (!await askDialog(refusal.key, { type: "dict", entries: [["amount",targets.length],["members",membersText],["cost",costText]] }, `Award decorations to ${membersText} for ${costText}?`, "yesno", { suppressAnswer: "yes" })) return;
+          scope.current();await scope.write("corporationSvc", "GiveMedalToCharacters", [...args, true], null, scope.online.corporationID);scope.current();
+        }
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    }};
   }
   let resignation: { readonly pilot: number } | null = null;
   async function confirmCorporationWarKick(scope: MemberOperation): Promise<boolean> {
@@ -27558,6 +27648,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       conversations.reset();
       requestGeneration++;
       cancelCorporationCEOChoice();
+      cancelCorporationAward();
       recoveryGeneration++;
       recoveryTask = null;
       recoveryIDs.clear();
@@ -28767,6 +28858,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationQuitMenu,
     corporationExpelMenu,
     corporationCEOMenu,
+    corporationAwardMenu,
+    corporationAwardAsk: readonlySignal(corporationAwardAskSignal),
+    selectCorporationAward,
+    answerCorporationAward,
     corporationCEOChoice: readonlySignal(corporationCEOChoiceSignal),
     selectCorporationCEO,
     answerCorporationCEO,
@@ -29483,6 +29578,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         conversations.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
+        cancelCorporationAward();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();
@@ -29509,6 +29605,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         conversations.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
+        cancelCorporationAward();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();

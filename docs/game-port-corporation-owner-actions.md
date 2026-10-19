@@ -272,7 +272,7 @@ self, including when evaluating a merged selection.
      claim of captured Tranquility bytes. Full disposable store was restored.
      Existing server assertions and harness inputs now name native list/Unicode
      values and the original refresh consumers; they were updated, not run.
-   - **c4e2: complete shared award UI.** Implement the gates/merge, no-medals
+   - **c4e2: complete shared award UI, implemented.** Includes the gates/merge, no-medals
      refusal, ordered single-choice medal picker, recipient hint, reason prompt,
      all cancellations, conditional confirmation/retry and errors together.
      Preserve originating pilot/corporation through reads, dialogs and dispatch;
@@ -280,6 +280,26 @@ self, including when evaluating a merged selection.
      multiple targets, Director-versus-personnel gates, each cancellation and
      actual award/recipient effects on desktop/phone, with native wire and full
      store/settings restoration. No partial menu or placeholder is exposed.
+     Contacts/search offer the single action; Member List merges eligible IDs
+     into one call, including self. Contact-list multiple selection omits it.
+     The ordered picker starts unselected, retains the native selection error,
+     accepts double-click and cancels with Cancel/Escape. NamePopup requires a
+     reason and limits it to200 UTF-16 units, as the installed Python27 runtime
+     confirms. A top-level corporationSvc write carries only the native scalar
+     medal ID, Python recipient list and Unicode reason (optional fourth True
+     after server-requested confirmation). The originating corporation is private
+     BFF context, checked again at the actual send; it never becomes a native
+     argument or changes this RemoteSvc into a moniker call.
+     Actual empty-catalogue refusal, single/self/merged awards, role128 award,
+     revoked-role refusal, cancellations, held-read/pilot replacement, wrong-origin
+     no-RPC refusal and recipient cache invalidation were verified. Desktop and
+     390px phone screenshots/AX/bounds verify both prompts and merged menu. The
+     existing BFF notice consumer refreshes a recipient's GetMedalsReceived cache;
+     this owner action does not add a Character Sheet decorations panel.
+     ConfirmGivingMedal*/NotEnoughMoney branches follow the original compiled
+     callback, including actual error values and suppressYes; the current server
+     did not produce those errors, so no live fee/retry case is claimed. Full
+     store/preferences restored. Other corporation and character panels remain.
 6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
    Complete the actual acceptance/decline/session behavior and notices required by
