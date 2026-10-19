@@ -2921,6 +2921,8 @@ export interface FleetCompanionState {
   readonly startedAt: number | null;
   readonly startError: string | null;
   readonly failureReason: string | null;
+  /** The run paused itself rather than being paused by the operator. See FleetCompanionProgress. */
+  readonly selfPaused: boolean;
 }
 
 export interface MissionBotState {
