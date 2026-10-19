@@ -32,7 +32,8 @@
   // ⚠ AND VOLUME IS USUALLY UNKNOWN. Ship-bay contents carry no per-unit m³ at
   // all (the read does not send it), so the m³ columns are empty in the bays
   // view. That is normal. Unknown renders as "—" / "not known", never 0.
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { shipHoldTarget } from "./shipHold.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import KeyActivationWindow from "./KeyActivationWindow.svelte";
   import { ABYSS_WINDOW_LABELS, offersActivateAbyssalKey, type FilamentPlace } from "../bridge/abyssalKeys.ts";
@@ -42,6 +43,8 @@
     divisionLabel,
     isBoardableShip,
     isOpenableContainer,
+    isUnassembledContainer,
+    offersAssembleContainer,
   } from "../bridge/inventoryShip.ts";
   import {
     DRAG_MIME,
@@ -203,6 +206,43 @@
       ? plainText(formatTemplate(template, { item: row.typeID }, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }))
       : `Activate ${nameOf(row)}`;
   }
+  // A packaged container, assembled from its menu's Assemble Container where the pilot is docked and it lies where
+  // the pilot is (itemCheckers.OfferAssembleContainer), or by a double click on it where it lies where the pilot is
+  // (item.py OnDblClick 826 to 839). Where the pilot is (IsInPilotLocation): the hangar it is docked in, the active
+  // ship's holds but the ship maintenance bay (not flagShipHangar), the corporation's office here, a container open
+  // here. A place the panel lists read-only (another ship's bays) offers neither.
+  const ASSEMBLE_CONTAINER_LABEL = "UI/Inventory/ItemActions/AssembleContainer";
+  function inPilotLocation(place: InventoryPlace): boolean {
+    if (place.kind === "hangar") return isDocked;
+    if (place.kind === "shipBay") return place.bay !== "shipMaintenance";
+    return true;
+  }
+  function assemblable(row: InventoryItemRow, place: InventoryPlace): boolean {
+    return offersAssembleContainer(row, isDocked, inPilotLocation(place));
+  }
+  function assembleWords(): string {
+    const template = $words.templates[ASSEMBLE_CONTAINER_LABEL];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: () => "" })) : "Assemble";
+  }
+  /**
+   * A double click on a row, as on the client's item (item.py OnDblClick, 803 to 839): an assembled container opened;
+   * where the place may be changed, a packaged one assembled where it lies where the pilot is, and a filament's key
+   * window opened.
+   */
+  function doubleClicked(row: InventoryItemRow, group: Group): void {
+    if (isOpenableContainer(row)) {
+      void run(() => flow.openContainer(row.itemID));
+      return;
+    }
+    if (group.readOnly) return;
+    if (activatable(row, group.place)) {
+      openKeyWindow(row);
+      return;
+    }
+    if (isUnassembledContainer(row) && inPilotLocation(group.place)) {
+      void run(() => flow.assembleContainer(row.itemID, group.place));
+    }
+  }
   /** The filament whose key activation window is open (KeyActivationWindow.Open: one at a time). */
   let activatingKey = $state<{ itemID: number; typeID: number; groupID: number | null; quantity: number; ownedByPilot: boolean } | null>(null);
   function openKeyWindow(row: InventoryItemRow): void {
@@ -299,6 +339,26 @@
     if (shown === null || shown.n === servedCargoShown) return;
     servedCargoShown = shown.n;
     if ($inventory.container?.itemID === shown.itemID) view = "container";
+  });
+
+  // A hold of the active ship asked for from outside (shipHold.ts: the Fitting window's readouts' OnHoldClicked): the
+  // ship's holds shown, that one unfolded and brought into view; the active ship's holds read first where another's
+  // are open.
+  const holdRequests = shipHoldTarget.requests;
+  $effect(() => {
+    void $holdRequests;
+    const key = untrack(() => shipHoldTarget.take());
+    if (key === null) return;
+    untrack(() => {
+      view = "ship";
+      collapsedBays = { ...collapsedBays, [key]: false };
+      const activeID = store.inventory.get().activeShipID;
+      void (async () => {
+        if (activeID !== null && store.inventory.get().openShip?.itemID !== activeID) await flow.openShipBays(activeID).catch(() => {});
+        await tick();
+        document.querySelector(`[data-bay-group="${key}"]`)?.scrollIntoView({ block: "nearest" });
+      })();
+    });
   });
 
   // The container closed under us (or was never open): fall back rather than
@@ -399,7 +459,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey, CONFIRM_MOVE_TO_NEWBIE_SHIP]);
+    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey, CONFIRM_MOVE_TO_NEWBIE_SHIP, ASSEMBLE_CONTAINER_LABEL]);
     void run(async () => {
       await flow.loadInventory();
       await flow.loadCorpHangar();
@@ -663,7 +723,7 @@
     }
     const anchor = button.getBoundingClientRect();
     const frame = panel.getBoundingClientRect();
-    const height = 34 + (where.length + (activatable(row, place) ? 1 : 0)) * 30;
+    const height = 34 + (where.length + (activatable(row, place) ? 1 : 0) + (assemblable(row, place) ? 1 : 0)) * 30;
     const width = 190;
     // Below the button, flipped above when there is no room, and clamped so the
     // menu is never drawn off the side of a narrow panel.
@@ -727,6 +787,17 @@
       // Refused, and SAID — through the panel's own message line, so a rejected
       // drop reads the same way a rejected click does.
       error = verdict;
+      return;
+    }
+    // One item off a slot of the active ship, onto this place (invControllers BaseInvContainer.AddItems 509 to 517):
+    // a module is UnloadModuleToContainer to its container, a charge UnloadAmmoToContainer. It carries no selection.
+    if (payload?.kind === "fittedModule" || payload?.kind === "fittedCharge") {
+      const taken = payload;
+      void run(async () => {
+        // (Each re-reads every open place itself: the open container it went into too.)
+        if (taken.kind === "fittedModule") await flow.unloadModuleToPlace(taken.itemID, place);
+        else await flow.unloadChargeToPlace(taken.flagID, place);
+      });
       return;
     }
     // ⚠ A drag carries the SELECTION, not its own item list, so a drop that
@@ -1226,7 +1297,7 @@
     }}
     ondblclick={(event) => {
       if ((event.target as HTMLElement).closest("button, input, label")) return;
-      if (activatable(row, group.place)) openKeyWindow(row);
+      doubleClicked(row, group);
     }}
   >
     <span class="stn-cell-pick">
@@ -1282,7 +1353,7 @@
             class="stn-quick-short">to {shortLabel(group.targets[0]!.label)}</span>
         </button>
       {/if}
-      {#if !group.readOnly && (group.targets.length > 0 || activatable(row, group.place))}
+      {#if !group.readOnly && (group.targets.length > 0 || activatable(row, group.place) || assemblable(row, group.place))}
         <button
           type="button"
           class="stn-btn stn-btn-more"
@@ -1301,7 +1372,7 @@
      the rows. In the bays view the header folds the bay away. -->
 {#snippet group(g: Group)}
   {@const allPicked = g.shown.length > 0 && g.shown.every((row) => isPicked(row, g.place))}
-  <section class="stn-group">
+  <section class="stn-group" data-bay-group={g.key}>
     <div class="stn-group-head">
       {#if g.collapsible}
         <button
@@ -2046,6 +2117,20 @@
       {#if activatable(menu.row, menu.place)}
         <button type="button" class="stn-menu-item" onclick={() => openKeyWindow(menu!.row)}>
           {activateWords(menu.row)}
+        </button>
+      {/if}
+      {#if assemblable(menu.row, menu.place)}
+        <button
+          type="button"
+          class="stn-menu-item"
+          disabled={busy}
+          onclick={() => {
+            const { row, place } = menu!;
+            menu = null;
+            void run(() => flow.assembleContainer(row.itemID, place));
+          }}
+        >
+          {assembleWords()}
         </button>
       {/if}
       {#each menu.targets as target (target.label)}

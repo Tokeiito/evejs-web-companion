@@ -1,12 +1,13 @@
 // The order CPython 2.7 iterates a dict of whole-number keys in, for the page's own reckoning of a list the client
 // builds from a dict (the client is Python 2.7, 64-bit Windows: a C long is 32 bits). The BFF's src/gamePort/py27.js
-// has the whole of it, strings and longs too, checked against the client's own python27.dll; this is its int part.
+// has the whole of it, strings and longs too, checked against the client's own python27.dll; this is its int part,
+// and str keys of plain ASCII.
 
 const PERTURB_SHIFT = 5n;
 const MIN_TABLE_SIZE = 8;
 
-interface Slot {
-  readonly key: number;
+interface Slot<K = number> {
+  readonly key: K;
   readonly hash: number;
 }
 
@@ -14,7 +15,7 @@ interface Slot {
 const hashOf = (key: number): number => (key === -1 ? -2 : key);
 
 /** lookdict: the slot holding `key`, or the empty slot it would go in. No deletions. */
-function findSlot(table: (Slot | undefined)[], hash: number, key: number): number {
+function findSlot<K>(table: (Slot<K> | undefined)[], hash: number, key: K): number {
   const mask = BigInt(table.length - 1);
   let perturb = BigInt.asUintN(64, BigInt(hash));
   let index = perturb & mask;
@@ -27,10 +28,10 @@ function findSlot(table: (Slot | undefined)[], hash: number, key: number): numbe
 }
 
 /** dictresize: the smallest power of two above `minimumUsed`, refilled in slot order. */
-function resized(table: (Slot | undefined)[], minimumUsed: number): (Slot | undefined)[] {
+function resized<K>(table: (Slot<K> | undefined)[], minimumUsed: number): (Slot<K> | undefined)[] {
   let size = MIN_TABLE_SIZE;
   while (size <= minimumUsed) size *= 2;
-  const next: (Slot | undefined)[] = new Array(size);
+  const next: (Slot<K> | undefined)[] = new Array(size);
   for (const entry of table) {
     if (entry !== undefined) next[findSlot(next, entry.hash, entry.key)] = entry;
   }
@@ -100,9 +101,225 @@ export class IntDict {
   }
 }
 
+/** string_hash of a str (a C long of 32 bits, no hash randomization), as py27.js hashString; -1 kept for an error. */
+function stringHashOf(text: string): number {
+  if (text.length === 0) return 0;
+  let x = BigInt(text.charCodeAt(0)) << 7n;
+  for (let index = 0; index < text.length; index += 1) {
+    x = BigInt.asIntN(32, (1000003n * x) ^ BigInt(text.charCodeAt(index)));
+  }
+  x = BigInt.asIntN(32, x ^ BigInt(text.length));
+  return x === -1n ? -2 : Number(x);
+}
+
+/**
+ * The order a dict keyed by `keys` (ASCII str) iterates in, set in that order into an empty dict (PyDict_SetItem)
+ * and then, `copies` times, put into another empty dict by update (PyDict_Merge, as IntDict.update), as a rowset's
+ * Index is built and then copied (crowset CIndexedRowset.Build, then godmarowset GodmaIndexedRowset's update of it).
+ * Checked against the client's python27.dll for four modules' effect names (2026-10-18): the copy reorders an
+ * afterburner's.
+ */
+export function strDictOrder(keys: readonly string[], copies = 0): string[] {
+  let table: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+  let used = 0;
+  for (const key of keys) {
+    const hash = stringHashOf(key);
+    const slot = findSlot(table, hash, key);
+    if (table[slot] !== undefined) continue;
+    table[slot] = { key, hash };
+    used += 1;
+    if (used * 3 >= table.length * 2) table = resized(table, (used > 50000 ? 2 : 4) * used);
+  }
+  for (let copy = 0; copy < copies; copy += 1) {
+    const entries = table.filter((entry): entry is Slot<string> => entry !== undefined);
+    let next: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+    if (entries.length * 3 >= next.length * 2) next = resized(next, entries.length * 4);
+    for (const entry of entries) next[findSlot(next, entry.hash, entry.key)] = entry;
+    table = next;
+  }
+  return table.filter((entry): entry is Slot<string> => entry !== undefined).map((entry) => entry.key);
+}
+
+/** long_hash (30-bit digits, a C unsigned long of 32 bits), as py27.js hashLong; -1 kept for an error. */
+function longHashOf(value: bigint): number {
+  let magnitude = value < 0n ? -value : value;
+  const digits: bigint[] = [];
+  while (magnitude > 0n) {
+    digits.push(magnitude & ((1n << 30n) - 1n));
+    magnitude >>= 30n;
+  }
+  let x = 0n;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    x = BigInt.asUintN(32, (x >> 2n) | (x << 30n));
+    x = BigInt.asUintN(32, x + digits[index]!);
+    if (x < digits[index]!) x += 1n;
+  }
+  const signed = Number(BigInt.asIntN(32, value < 0n ? -x : x));
+  return signed === -1 ? -2 : signed;
+}
+
+/**
+ * hash() of a whole number on this platform: an int (within 32 bits) is itself, a long beyond is long_hash, and a
+ * float of a whole value hashes as that number does; -1 is kept for an error.
+ */
+export function wholeHashOf(value: number): number {
+  if (!Number.isSafeInteger(value)) throw new TypeError("A whole number is hashed here.");
+  return value >= -2147483648 && value <= 2147483647 ? hashOf(value) : longHashOf(BigInt(value));
+}
+
+/** tuplehash (a C long of 32 bits) of a tuple whose items hash to `hashes`. */
+export function tupleHashOf(hashes: readonly number[]): number {
+  let x = 0x345678n;
+  let mult = 1000003n;
+  let left = hashes.length;
+  for (const y of hashes) {
+    left -= 1;
+    x = BigInt.asIntN(32, BigInt.asIntN(32, x ^ BigInt(y)) * mult);
+    mult = BigInt.asIntN(32, mult + 82520n + BigInt(left) + BigInt(left));
+  }
+  x = BigInt.asIntN(32, x + 97531n);
+  return x === -1n ? -2 : Number(x);
+}
+
+/**
+ * The order a set that began empty iterates `items` in, added in that order (s.add each: set_add_key, the table
+ * grown to four times the keys when two-thirds of it is filled; no discards): each by its hash, and by `idOf` for
+ * which two are the same key.
+ */
+export function hashedSetOrder<T>(items: readonly T[], hashOf: (item: T) => number, idOf: (item: T) => string): T[] {
+  let table: (Slot<string> | undefined)[] = new Array(MIN_TABLE_SIZE);
+  const byID = new Map<string, T>();
+  let used = 0;
+  for (const item of items) {
+    const key = idOf(item);
+    const hash = hashOf(item);
+    const slot = findSlot(table, hash, key);
+    if (table[slot] !== undefined) continue;
+    table[slot] = { key, hash };
+    byID.set(key, item);
+    used += 1;
+    if (used * 3 >= table.length * 2) table = resized(table, (used > 50000 ? 2 : 4) * used);
+  }
+  return table.filter((entry): entry is Slot<string> => entry !== undefined).map((entry) => byID.get(entry.key)!);
+}
+
 /** A dict set with `keys` in that order (IntDict.set each). */
 export function intDictOf(keys: readonly number[]): IntDict {
   const dict = new IntDict();
   for (const key of keys) dict.set(key);
   return dict;
+}
+
+/** setobject.c's dummy: the mark a discarded key leaves in its slot. */
+const DUMMY = Symbol("dummy");
+
+/**
+ * A set of whole numbers as CPython 2.7 lays out its table (setobject.c), for the order it iterates in. `add` is
+ * s.add(key), set(list) and a set comprehension (set_add_key: the table grown to four times the keys when two-thirds
+ * of it is filled, dummies counted). `discard` leaves a dummy. `update` is set(other) and s | other of a set
+ * (set_merge: the table first made big enough for both where they would fill two-thirds of it, then the other's keys
+ * put in the order it iterates in, with no growing after). `differenceUpdate` is s -= other (the table remade where a
+ * fifth of it is dummies). A merge grows the table to above twice the keys of both, as the source reads (measured
+ * against the client's python27.dll: set(list), s | t, s -= t, s.add and a comprehension, 400 lists alike; its dict
+ * merge grows by four). Whole numbers within 32 bits.
+ */
+export class IntSet {
+  private table: (Slot | typeof DUMMY | undefined)[] = new Array(MIN_TABLE_SIZE);
+  private fill = 0;
+  private used = 0;
+
+  /** set_lookkey: the slot holding `key`, else the first dummy met, else the empty slot the probe ends at. */
+  private lookup(hash: number, key: number): number {
+    const mask = BigInt(this.table.length - 1);
+    let perturb = BigInt.asUintN(64, BigInt(hash));
+    let index = perturb & mask;
+    let freeSlot: number | null = null;
+    for (;;) {
+      const entry = this.table[Number(index)];
+      if (entry === undefined) return freeSlot ?? Number(index);
+      if (entry === DUMMY) freeSlot ??= Number(index);
+      else if (entry.hash === hash && entry.key === key) return Number(index);
+      index = BigInt.asUintN(64, index * 5n + perturb + 1n) & mask;
+      perturb >>= PERTURB_SHIFT;
+    }
+  }
+
+  /** set_insert_key: the key put where the lookup ends, unless it is there already. */
+  private insert(key: number): void {
+    if (!Number.isInteger(key) || key < -2147483648 || key > 2147483647) throw new TypeError("A whole number within 32 bits is a set key here.");
+    const hash = hashOf(key);
+    const slot = this.lookup(hash, key);
+    const entry = this.table[slot];
+    if (entry === undefined) {
+      this.fill += 1;
+      this.used += 1;
+      this.table[slot] = { key, hash };
+    } else if (entry === DUMMY) {
+      this.used += 1;
+      this.table[slot] = { key, hash };
+    }
+  }
+
+  /** set_table_resize: the smallest power of two above `minimumUsed`, the keys put back in slot order. */
+  private resize(minimumUsed: number): void {
+    let size = MIN_TABLE_SIZE;
+    while (size <= minimumUsed) size *= 2;
+    const old = this.table;
+    this.table = new Array(size);
+    this.fill = 0;
+    this.used = 0;
+    for (const entry of old) if (entry !== undefined && entry !== DUMMY) this.insert(entry.key);
+  }
+
+  add(key: number): void {
+    const before = this.used;
+    this.insert(key);
+    if (this.used > before && this.fill * 3 >= this.table.length * 2) this.resize(this.used > 50000 ? this.used * 2 : this.used * 4);
+  }
+
+  discard(key: number): void {
+    const slot = this.lookup(hashOf(key), key);
+    const entry = this.table[slot];
+    if (entry === undefined || entry === DUMMY) return;
+    this.table[slot] = DUMMY;
+    this.used -= 1;
+  }
+
+  update(other: IntSet): void {
+    const keys = other.keys();
+    if (keys.length === 0) return;
+    if ((this.fill + keys.length) * 3 >= this.table.length * 2) this.resize((this.used + keys.length) * 2);
+    for (const key of keys) this.insert(key);
+  }
+
+  differenceUpdate(other: IntSet): void {
+    for (const key of other.keys()) this.discard(key);
+    if ((this.fill - this.used) * 5 < this.table.length - 1) return;
+    this.resize(this.used > 50000 ? this.used * 2 : this.used * 4);
+  }
+
+  has(key: number): boolean {
+    const entry = this.table[this.lookup(hashOf(key), key)];
+    return entry !== undefined && entry !== DUMMY;
+  }
+
+  /** The keys in the order the set iterates them: its table's slots in order. */
+  keys(): number[] {
+    return this.table.filter((entry): entry is Slot => entry !== undefined && entry !== DUMMY).map((entry) => entry.key);
+  }
+}
+
+/** set(keys) of a list, or a set comprehension over it (IntSet.add each). */
+export function intSetOf(keys: Iterable<number>): IntSet {
+  const set = new IntSet();
+  for (const key of keys) set.add(key);
+  return set;
+}
+
+/** left | right of two sets: a copy of the left (set_copy: merged into an empty set), the right merged into it. */
+export function intSetUnion(left: IntSet, right: IntSet): IntSet {
+  const result = new IntSet();
+  result.update(left);
+  result.update(right);
+  return result;
 }

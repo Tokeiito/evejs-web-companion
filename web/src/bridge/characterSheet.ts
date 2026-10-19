@@ -4,14 +4,13 @@
 // BFF), not assumed — the orchestrator's briefs have guessed char-sheet shapes
 // wrong before, so every one here is pinned against a real read:
 //
-//   GetPublicInfo3          -> {type:"list", items:[util.KeyVal{characterID,
-//                              characterName, corporationID, allianceID|null,
-//                              securityStatus (float), ...}]}
-//                              ⚠ THE ROW IS items[0], A util.KeyVal — not a
-//                              Rowset, not a bare dict. Reading `items` as the
-//                              rows (as a Rowset decoder would) yields the KeyVal,
-//                              and reading the KeyVal's own fields with a Rowset
-//                              reader returns undefined for every one.
+//   GetPublicInfo           -> a util.KeyVal of Tranquility's seventeen fields
+//                              (characterID, characterName, corporationID,
+//                              allianceID|null, ...): the retail client's cached
+//                              answer of 2026-07-03. No security status among them:
+//                              the sheet asks crimewatch.GetMySecurityStatus for it,
+//                              a bare float (characterOverviewPanel 153). A list
+//                              wrapping the KeyVal is read too.
 //   GetCharacterDescription -> a BARE JS STRING (the bio). No marshaled wrapper,
 //                              no ids — the simplest read on the bridge.
 //   GetHomeStation          -> a SINGLE util.KeyVal (not a list) carrying the home
@@ -98,13 +97,14 @@ function publicInfoRow(result: JsonValue | null | undefined): JsonValue | null {
 }
 
 /**
- * Decode charMgr.GetPublicInfo3 -> the character's PUBLIC identity. Only the
- * name-resolvable ids and the plain security float are carried out; bloodline /
- * race / ancestry are deliberately dropped (no name path — R7d). null when the
- * read did not produce the KeyVal row (a shape we did not get / a failed read).
+ * Decode charMgr.GetPublicInfo -> the character's PUBLIC identity, with its security status from its own read
+ * (crimewatch.GetMySecurityStatus), the row having none. Only the name-resolvable ids and the plain security float
+ * are carried out; bloodline / race / ancestry are deliberately dropped (no name path — R7d). null when the read
+ * did not produce the KeyVal row (a shape we did not get / a failed read).
  */
 export function decodeCharacterIdentity(
   result: JsonValue | null | undefined,
+  securityStatus: JsonValue | null | undefined = null,
 ): CharacterIdentity | null {
   const row = publicInfoRow(result);
   if (row === null) {
@@ -123,7 +123,7 @@ export function decodeCharacterIdentity(
     corporationID: toInt(readKeyVal(row, "corporationID")),
     // 0 (or absent) means no alliance; carried as null so the page omits the row.
     allianceID: allianceID > 0 ? allianceID : null,
-    securityStatus: toFloat(readKeyVal(row, "securityStatus")),
+    securityStatus: toFloat(securityStatus ?? undefined),
   };
 }
 

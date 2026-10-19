@@ -14,13 +14,17 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, corporate = false }: { store: ClientStore; flow: AppFlow; corporate?: boolean } = $props();
   // svelte-ignore state_referenced_locally
-  const read = flow.walletShares;
+  const read = corporate ? flow.corpWalletShares : flow.walletShares;
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  // PersonalSharesPanel.GetOwnerID returns session.charid; the holding row has no owner column.
+  const ownerID = $derived((corporate ? $station.online?.corporationID : $station.online?.characterID) ?? null);
 
   const W = "UI/Wallet/WalletWindow";
   const WORDS = {
@@ -28,13 +32,15 @@
     corporation: `${W}/ColHeaderCorporation`,
     shares: `${W}/ColHeaderShares`,
     none: `${W}/HintNoShares`,
+    noneCorp: `${W}/HintNoCorpShares`,
     menuOwner: `${W}/MenuOwner`,
   } as const;
   $effect(() => {
     flow.requestWords(Object.values(WORDS));
   });
   $effect(() => {
-    const refs: NameRef[] = $read.holdings.flatMap((holding) => [{ kind: "owner", id: holding.shareholderID }, { kind: "owner", id: holding.corporationID }]);
+    const refs: NameRef[] = $read.holdings.map(holding => ({ kind: "owner", id: holding.corporationID }));
+    if (ownerID !== null) refs.push({ kind: "owner", id: ownerID });
     if (refs.length > 0) flow.requestNames(refs);
   });
   const word = (label: string, own: string): string => {
@@ -45,7 +51,9 @@
   let menuFor = $state<number | null>(null);
 
   onMount(() => {
-    void flow.loadWalletShares().catch(() => undefined);
+    flow.setWalletSharesVisible(true, corporate);
+    void flow.loadWalletShares(corporate).catch(() => undefined);
+    return () => flow.setWalletSharesVisible(false, corporate);
   });
 </script>
 
@@ -55,7 +63,7 @@
   {:else if !$read.loaded}
     <p class="empty">Reading…</p>
   {:else if $read.holdings.length === 0}
-    <p class="empty">{word(WORDS.none, "You hold no shares.")}</p>
+    <p class="empty">{word(corporate ? WORDS.noneCorp : WORDS.none, corporate ? "Your corporation holds no shares." : "You hold no shares.")}</p>
   {:else}
     <div class="table-wrap overflow-x-auto">
       <table class="guests reflow">
@@ -70,14 +78,14 @@
         <tbody>
           {#each $read.holdings as holding (holding.corporationID)}
             <tr>
-              <td data-label={word(WORDS.owner, "Owner")}>{ownerName(holding.shareholderID)}</td>
+              <td data-label={word(WORDS.owner, "Owner")}>{ownerID === null ? "" : ownerName(ownerID)}</td>
               <td data-label={word(WORDS.corporation, "Corporation")}>{ownerName(holding.corporationID)}</td>
               <td class="num" data-label={word(WORDS.shares, "Shares")}>{Math.trunc(holding.shares).toLocaleString("en-US")}</td>
               <td data-label="">
                 <button type="button" class="minor" aria-label="The holding's menu" aria-expanded={menuFor === holding.corporationID}
                   onclick={() => (menuFor = menuFor === holding.corporationID ? null : holding.corporationID)}>⋯</button>
-                {#if menuFor === holding.corporationID}
-                  <button type="button" class="minor" onclick={() => { menuFor = null; showInfo({ kind: "character", characterID: holding.shareholderID }); }}>{word(WORDS.menuOwner, "Owner")}</button>
+                {#if menuFor === holding.corporationID && ownerID !== null}
+                  <button type="button" class="minor" onclick={() => { menuFor = null; if (ownerID !== null) showInfo(corporate ? { kind: "corporation", corporationID: ownerID } : { kind: "character", characterID: ownerID }); }}>{word(WORDS.menuOwner, "Owner")}</button>
                 {/if}
               </td>
             </tr>

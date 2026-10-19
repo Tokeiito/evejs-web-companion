@@ -47,9 +47,10 @@ export type TabID =
   | "chat"
   | "wallet"
   | "corpWallet"
-  | "standings"
   | "characterSheet"
+  | "corporation"
   | "showInfo"
+  | "memberDetails"
   | "routeWindow"
   | "missionTracker"
   | "log"
@@ -197,12 +198,15 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
-  { id: "standings", label: "Standings", where: "both" },
+  // The client's Neocom offers Character Sheet and Corporation, with standings inside each
+  // (btnDataRaw.py BTNDATARAW_BY_ID); there is no separate Standings window.
   { id: "characterSheet", label: "Character Sheet", where: "both" },
+  { id: "corporation", label: "Corporation", where: "both" },
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.
   { id: "showInfo", label: "Show Info", where: "both", launchable: false },
+  { id: "memberDetails", label: "Member Details", where: "both", launchable: false },
   // The client's route window (autopilotSettings.py AutopilotSettings): the waypoints in their order and the avoidance
   // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does
   // the page, from Travel.

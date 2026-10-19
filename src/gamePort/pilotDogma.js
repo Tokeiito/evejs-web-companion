@@ -138,6 +138,13 @@ const ATTRIBUTE = Object.freeze({
   CAPACITOR_CAPACITY: 482,
   QUANTITY: 805,
 });
+/**
+ * godma's sublocrd: the columns of an inventory row (itemID, typeID, ownerID, locationID, flagID, quantity, groupID,
+ * categoryID, customInfo), the itemID a string for the tuple a charge in a module is keyed by.
+ */
+const SUBLOCATION_COLUMNS = Object.freeze([["itemID", 129], ["typeID", 3], ["ownerID", 3], ["locationID", 20], ["flagID", 2], ["quantity", 3], ["groupID", 3], ["categoryID", 3], ["customInfo", 129]]);
+/** const.ixStackSize: the column a change names a stack's size by. */
+const IX_STACKSIZE = 9;
 /** dogma/const.py heatAttributes: each rack's heat, with its capacity and its dissipation rate; and the family the snapshot names it by. */
 const HEAT = new Map([
   [1175, { capacity: 1178, dissipation: 1179, family: "high" }],
@@ -257,7 +264,17 @@ function chargeValue(oldVal, oldTime, tau, Ec, newTime) {
  * of each module in a slot, which godma asks the server about, and `onFitted`
  * of each item newly fitted, after it.
  */
-function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null, onSlotted = () => {}, onFitted = () => {} } = {}) {
+function createPilotDogma({
+  characterID = null,
+  now = filetimeNow,
+  effectCategory = () => null,
+  onSlotted = () => {},
+  onFitted = () => {},
+  // sm.ScatterEvent('OnItemChange', item, change, location), as godma scatters it: (row, change).
+  onItemChange = () => {},
+  // A type's { groupID, categoryID } (evetypes.GetGroupID, GetCategoryID), or null.
+  typeFacts = () => null,
+} = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
@@ -527,10 +544,18 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   /**
    * godma's GetAllInfo answered from what godma holds: `allInfo` the priming's answer, with its ship's items as godma
    * holds them now (the ship and what is in its slots, each its row with its attributes now) and the ship its active
-   * one. Each item's active effects are as godma holds them now (infoNow).
+   * one. Each item's active effects are as godma holds them now (infoNow). The ship's weapon banks in its state are
+   * the ones held now (the client's dogma location keeps them from its own calls' answers and the server's notices:
+   * OnWeaponBanksChanged, UngroupModule), where the priming's answer has them as they were when it was asked.
    */
   function allInfoNow(allInfo, shipID) {
     const ship = key(shipID);
+    const state = fieldsOf(allInfo).get("shipState");
+    const heldBanks = banks.get(ship);
+    if (Array.isArray(state) && state.length >= 3 && heldBanks) {
+      const entries = [...heldBanks].map(([masterID, slaves]) => [masterID, { type: "list", items: [...slaves] }]);
+      allInfo = withField(allInfo, "shipState", [state[0], state[1], { type: "dict", entries }, ...state.slice(3)]);
+    }
     // The character is in the ship, and is charInfo's, never shipInfo's.
     const mine = characterID === null ? null : key(characterID);
     const entries = [];
@@ -637,7 +662,35 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       if (rack) rack.value = number(newValue);
     }
     if (HEAT_INPUTS.has(attribute_)) settleHeat(id, now());
-    return applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
+    const ofACharge = Array.isArray(itemKey) && attribute_ === ATTRIBUTE.QUANTITY && attributes.has(id);
+    const before = ofACharge ? attribute(id, attribute_) : null;
+    const changed = applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
+    if (changed && ofACharge) chargeQuantityChanged(itemKey, id, number(newValue), before);
+    return changed;
+  }
+
+  /**
+   * godma.ApplyAttributeChange of a charge in a module's quantity, once it has changed (2589 to 2602): nothing where
+   * another type is loaded in that slot now; a charge emptied is let go (out of sublocationsByLocationFlag and
+   * sublocationsByKey, so nothing the server says of it after is about anything held); and the inventory cache told
+   * of it as an item (OnItemChange), its row godma's own (the tuple, no owner, the new quantity) and the change its
+   * stack before.
+   */
+  function chargeQuantityChanged(itemKey, id, newValue, oldValue) {
+    const [shipID, flagID, typeID] = itemKey;
+    for (const [held, what] of identity) {
+      if (held !== id && typeof held === "string" && what.locationID === key(shipID) && what.flagID === number(flagID) && what.typeID !== number(typeID)) return;
+    }
+    if (newValue === 0) {
+      identity.delete(id);
+      attributes.delete(id);
+      effects.delete(id);
+      rows.delete(id);
+    }
+    const facts = typeFacts(number(typeID)) ?? {};
+    const values = [itemKey, typeID, null, shipID, flagID, newValue, facts.groupID ?? null, facts.categoryID ?? null, null];
+    const fields = Object.fromEntries(SUBLOCATION_COLUMNS.map(([name], index) => [name, values[index]]));
+    onItemChange({ type: "packedrow", header: null, columns: SUBLOCATION_COLUMNS, values, fields }, { type: "dict", entries: [[IX_STACKSIZE, oldValue]] });
   }
 
   /**
@@ -711,7 +764,13 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       return true;
     }
     if (notification.method === "OnModuleAttributeChanges") {
-      for (const each of items(notification.args[0])) {
+      // godma.OnModuleAttributeChanges (1342 to 1360): a charge in a module emptied in this notice has its other
+      // changes in it left untaken.
+      const changes = items(notification.args[0]);
+      const ofACharge = (each) => Array.isArray(each) && Array.isArray(each[2]);
+      const emptied = new Set(changes.filter((each) => ofACharge(each) && number(each[3]) === ATTRIBUTE.QUANTITY && number(each[5]) === 0).map((each) => key(each[2])));
+      for (const each of changes) {
+        if (ofACharge(each) && emptied.has(key(each[2])) && number(each[3]) !== ATTRIBUTE.QUANTITY) continue;
         try {
           change(each);
         } catch {

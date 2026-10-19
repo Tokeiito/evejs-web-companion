@@ -389,6 +389,14 @@ function formatValue(given: number, unitID: number | null, words: AttributeWords
   return value;
 }
 
+/**
+ * A value and its unit as dogma's FormatValue and FormatUnit write them into UI/InfoWindow/ValueAndUnit (the dbuff
+ * hint's, dbuff/client/uiFormatters.py GetDisplayNameAndValue).
+ */
+export function valueAndUnitText(value: number, unitID: number | null, words: AttributeWords): string {
+  return words.label("UI/InfoWindow/ValueAndUnit", { value: writtenText(formatValue(value, unitID, words)), unit: formatUnit(unitID, words) });
+}
+
 /** eveformat.volume(amount): to two places, one or none as its fraction asks, as the client's m3 quantity. */
 function volumeText(amount: number, words: AttributeWords): string {
   const places = (10 * amount) % 1 ? 2 : amount % 1 ? 1 : 0;

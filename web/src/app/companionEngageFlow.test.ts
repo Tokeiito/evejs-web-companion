@@ -1,3 +1,6 @@
+// Fleet request paths below ignore only the menu view selector. Native fleetSvc
+// GetMembers/GetWings/GetOptions do not open composition/join-request windows;
+// that read scope is checked against real game-port frames, not these HTTP fixtures.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAppFlow } from "./flow.ts";
@@ -29,7 +32,7 @@ function harness(role: "combat" | "repair", unreadable = false) {
     controlled: true, targetID: targets.get(itemID) ?? null, activity: targets.has(itemID) ? "fighting" : "idle",
   }));
   const fetcher = (async (input: unknown, init?: RequestInit) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
     let answer: unknown = { ok: true };
     if (path === "/api/bridge/flight/status") answer = flightBody(false);

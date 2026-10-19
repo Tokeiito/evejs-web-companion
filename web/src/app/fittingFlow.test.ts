@@ -378,8 +378,9 @@ test("destroyRig is the page's own call on the ship's own inventory, and only fo
 });
 
 test("no fitting action ever runs against a route that was not asked for", async () => {
-  // A guard against a mis-wired button: an unfitting makes exactly one write,
-  // the page's own call (plus the reads of the slots around it).
+  // A guard against a mis-wired button: an unfitting of a module with no charge
+  // and in no weapon bank makes exactly one write, the page's own call (plus the
+  // reads of the slots around it).
   const { flow, requests } = await dockedFlow(respondOk());
 
   await flow.unfitModule(5001);

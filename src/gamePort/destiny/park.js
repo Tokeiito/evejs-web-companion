@@ -578,6 +578,20 @@ class Park {
     this.solItem = fields.get("solItem") ?? null;
     // gameui is told of each ball of a state as it is of one added (ProcessBallAdd, then DoBallsAdded).
     this._egoAwaited();
+    // michelle.SetState (996 and 997): each effect the state says is playing, as an OnSpecialFX of it, and its electronic
+    // warfare (ScatterEwars, 1561 to 1567: an OnEwarOnConnect(shipID, moduleID, moduleTypeID, targetID, guid) for its
+    // module, or for each of its modules where it names several).
+    if (typeof this.onEvent === "function") {
+      for (const effectInfo of items(fields.get("effectStates"))) {
+        const info = items(effectInfo);
+        this.onEvent("OnSpecialFX", info, null);
+        const [shipID, moduleID, moduleTypeID, targetID, , guid] = info;
+        const modules = Array.isArray(moduleID) || (moduleID && Array.isArray(moduleID.items)) ? items(moduleID) : [moduleID];
+        for (const each of modules) this.onEvent("OnEwarOnConnect", [shipID, each, moduleTypeID, targetID, guid], null);
+      }
+    }
+    // michelle.SetState (1002): the warfare buffs the state carries for the ship, as an OnDbuffUpdated(ego, dbuffState).
+    if (typeof this.onEvent === "function") this.onEvent("OnDbuffUpdated", [fields.get("ego") ?? null, fields.get("dbuffState") ?? null], null);
   }
 
   /**

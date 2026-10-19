@@ -2282,7 +2282,31 @@ function getNpcIndustryFacility(facilityID) {
   ).get(Number(facilityID) || 0) || null;
 }
 
+/**
+ * A dbuff collection as the client's dbuff/storage.py has it (dbuffCollections): its displayName's English text or
+ * null, its operation's name and how its value is shown (showOutputValueInUI); null for none.
+ */
+function getDbuffCollection(collectionID) {
+  const row = buildJsonlIndex("dbuffCollections.jsonl").get(Number(collectionID) || 0);
+  if (!row) return null;
+  const name = row.displayName && typeof row.displayName.en === "string" ? row.displayName.en : null;
+  return {
+    name,
+    operationName: typeof row.operationName === "string" ? row.operationName : "",
+    showOutputValueInUI: typeof row.showOutputValueInUI === "string" ? row.showOutputValueInUI : "",
+  };
+}
+
+/** A dogma unit's displayName's English text (units.get_display_name), or "" for none. */
+function getDogmaUnitDisplayName(unitID) {
+  const row = buildJsonlIndex("dogmaUnits.jsonl").get(Number(unitID) || 0);
+  return row && row.displayName && typeof row.displayName.en === "string" ? row.displayName.en : "";
+}
+
 module.exports = {
+  buildJsonlIndex,
+  getDbuffCollection,
+  getDogmaUnitDisplayName,
   getSkillGroupCertificates,
   findAgents,
   findCharacters,

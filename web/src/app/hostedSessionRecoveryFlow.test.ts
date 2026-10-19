@@ -1,3 +1,6 @@
+// Fleet request paths below ignore only the menu view selector. Native fleetSvc
+// GetMembers/GetWings/GetOptions do not open composition/join-request windows;
+// that read scope is checked against real game-port frames, not these HTTP fixtures.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAppFlow } from "./flow.ts";
@@ -16,7 +19,7 @@ function fixture(inSpace = false) {
   const keyVal = (entries: unknown[][]) => ({ type: "object", args: { type: "dict", entries } });
   const store = createClientStore();
   const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
-    const path = String(input); paths.push(path);
+    const path = String(input).replace(/\?view=menu$/, ""); paths.push(path);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     let result: unknown = { ok: true };
     if (path === "/api/bridge/select") result = { ok: true, character: { characterID: 42, characterName: "Test", stationID: 60000358 }, station: null, droneRecoveryCheckID: "current-check" };

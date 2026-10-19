@@ -637,6 +637,9 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "charMgr.GetPrivateInfo",
+  "bannedwords.check_search_words_allowed",
+  "facWarMgr.GetCorporationWarFactionID",
   "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
   // The lobby's buttons, on the station's own office object. (The BFF's list of writes names the renting; the
   // gateway's list of what it will carry has none of these.)
@@ -785,6 +788,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's contact labels made, renamed and deleted, and given to contacts or taken off them
   // (addressbookService.py 1001 to 1147). The gateway's list has none of them.
   "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+  // Alliance contact forms use their own moniker and label table (all_cso243-278).
+  "allianceRegistry.EditAllianceContact", "allianceRegistry.RemoveAllianceContacts", "allianceRegistry.EditContactsRelationshipID",
+  "allianceRegistry.GetLabels", "allianceRegistry.CreateLabel", "allianceRegistry.EditLabel", "allianceRegistry.DeleteLabel", "allianceRegistry.AssignLabels", "allianceRegistry.RemoveLabels",
   // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline for the pilot
   // (bookmarkSvc.py 483 to 589). The gateway's list has its folders' and bookmarks' writes and none of these.
   "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
@@ -822,6 +828,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's expert systems and one of them taken out (expertSystems/client/service.py: GetMyExpertSystems,
   // RemoveMyExpertSystem, on expertSystemMgr by its name). The gateway's list has nothing of the expert systems'.
   "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
+  // The NPCs' standings with each other, which the standing service keeps (standingsvc.py 115) and an owner's Show Info
+  // reads in its Standings tab (panelStandings.GetStandingsFromManyToOneMutual). The gateway's list has it not.
+  "standingMgr.GetNPCNPCStandings",
 ]);
 
 /**
@@ -1155,6 +1164,11 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 /** The address book's writes of owners (addressbookService.py 658, 674, 842): the owners a list, as the client's are. */
 const ownersListed = ([owners, ...rest], kwargs) => ({ args: [list(owners), ...rest], kwargs });
+/** Corporation contact editors confirm round(slider.value, 1), a Python float (corpAllianceContactManagementWindow.py 117). */
+const corporationContactStanding = ([owner, standing, ...rest], kwargs) => ({
+  args: [owner, typeof standing === "number" && Number.isFinite(standing) ? { type: "real", value: standing } : standing, ...rest], kwargs,
+});
+const corporationContactsStanding = (args, kwargs) => corporationContactStanding(ownersListed(args, kwargs).args, kwargs);
 /** notificationSvc.DeleteNotifications (319): the notifications a list, as the client's are. */
 const notificationsListed = ([notifications, ...rest], kwargs) => ({ args: [list(notifications), ...rest], kwargs });
 /**
@@ -1765,6 +1779,19 @@ function overloading(args, kwargs, context) {
     : "The client names the module's own overload effect. This call names another." };
 }
 
+/**
+ * godma.RepairManyModules (2206): InitiateModuleRepairMany(itemIDs), the list the module button's Repair All makes
+ * (shipmodulebutton.GetMenu 507 to 516), and nothing else. The page's array goes as the client's list.
+ */
+const moduleList = (args, kwargs) => {
+  const [itemIDs] = args;
+  const items = Array.isArray(itemIDs) ? itemIDs : itemIDs && itemIDs.type === "list" && Array.isArray(itemIDs.items) ? itemIDs.items : null;
+  if (!(args.length === 1 && items && items.length > 0 && items.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client sends one list of the modules, and nothing else." };
+  }
+  return { args: [{ type: "list", items }] };
+};
+
 /** godma.RepairModule and StopRepairModule (2227, 2261): the one module, a whole number above nought, and nothing else. */
 const oneModule = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
@@ -1777,6 +1804,26 @@ const oneModule = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(a
 const ownShipAlone = (args, kwargs, context) => {
   if (!(args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0)) {
     return { status: "differs", note: "The client names the one ship, the one its session is flying, and nothing else." };
+  }
+  return context.shipID === null || context.shipID === undefined || Number(context.shipID) === args[0]
+    ? {}
+    : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
+};
+
+/** remoteDogmaLM.UnlinkModule(shipID, moduleID): the ship the session is flying, and the bank's master by its number. */
+const ownShipAndModule = (args, kwargs, context) => {
+  if (!(args.length === 2 && args.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client names the ship its session is flying and the bank's master, and nothing else." };
+  }
+  return context.shipID === null || context.shipID === undefined || Number(context.shipID) === args[0]
+    ? {}
+    : { status: "differs", note: "The client names the ship its session is flying. This call names another." };
+};
+
+/** LinkWeapons and MergeModuleGroups(shipID, masterID, moduleID): the ship the session is flying, and two modules by their numbers. */
+const ownShipAndTwoModules = (args, kwargs, context) => {
+  if (!(args.length === 3 && args.every((id) => Number.isSafeInteger(id) && id > 0) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client names the ship its session is flying, the bank's master and a module, and nothing else." };
   }
   return context.shipID === null || context.shipID === undefined || Number(context.shipID) === args[0]
     ? {}
@@ -1815,7 +1862,10 @@ function loading(args, kwargs, context) {
 function unloading(args, kwargs, context) {
   const [shipID, modules, destination, quantity] = args;
   const whose = namesAnotherShip(shipID, context) ? ANOTHER_SHIP : {};
-  if (quantity === undefined || quantity === null) return { args: [shipID, list(modules), destination], kwargs, ...whose };
+  // Three: UnloadAmmoFromModules (1136), the modules a list; UnloadModuleToContainer (1095, 1097), one module and the
+  // container, as Tranquility recorded it (UnloadAmmo(ship, module, ship)). Four: UnloadAmmoToContainer (1127), one
+  // module, where, and the quantity, None where none is named, which goes as None.
+  if (args.length < 4) return { args: [shipID, list(modules), destination], kwargs, ...whose };
   const several = Array.isArray(modules) ? modules : modules && Array.isArray(modules.items) ? modules.items : null;
   if (several === null) return { args: [shipID, modules, destination, quantity], kwargs, ...whose };
   if (several.length === 1) return { args: [shipID, several[0], destination, quantity], kwargs, ...whose };
@@ -2072,6 +2122,7 @@ const RETAIL_CALLS = Object.freeze({
     "parentInv.DestroyFitting(moduleID), on the ship's own inventory (invCache.GetInventoryFromId(the ship)): a rig taken off the ship from the Fitting window, after the RigUnFittingInfo dialog's OK, where the rig cannot be unfitted whole (Unfit, 245 to 266). In no recording."),
   "invbroker.SetLabel": typing(same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:343", "invCache.GetInventoryMgr().SetLabel(itemID, name), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr): an item named, from a ship's Change Name or a container's Set Name, the name the window answered with its line breaks made spaces. Recorded on Tranquility (SetLabel(itemID, u'LittleLittle')), the server's OnCfgDataChanged('evelocations', ...) after it."), [1]),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
+  "invbroker.AssembleCargoContainer": same("eve/client/script/ui/services/menusvc.py:3564", "invCache.GetInventoryMgr().AssembleCargoContainer(itemID, None, 0.0), on the inventory manager of where the pilot is (eveMoniker.GetInventoryMgr), once for each item: a packaged container assembled from its menu's Assemble Container (itemCheckers.OfferAssembleContainer: a player's container that is not a siphon's, packaged, the pilot docked, the container where the pilot is) or by a double click on it (item.py 838 and 839). No name, and a real zero. In no recording."),
 
   // ── an agent (a bound agentMgr object) ────────────────────────────────────
   "agentMgr.DoAction": same(`${AGENT_WINDOW}:428`, "DoAction(actionID)"),
@@ -2167,6 +2218,10 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetAgents": judged(`${AGENTS}:92`, sentWithNothing,
     "agents = sm.RemoteSvc('agentMgr').GetAgents().Clone(), by name and with nothing: the whole table, kept for the life of the client's agents service. Recorded on Tranquility so, in two logins. The transport keeps the table as the client does, and answers the page's asking from it; the page keeps it too, and picks a station's agents from it as the client's docked view does."),
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
+  "charMgr.GetPublicInfo": same("eve/client/script/ui/shared/info/panels/panelStandings.py:120", "RemoteSvc('charMgr').GetPublicInfo(ownerID): a character's public row, its corporation for its Show Info's Standings tab"),
+  "corpmgr.GetCorporationIDForCharacter": same("eve/client/script/ui/shared/info/characterInfoWindow.py:111", "RemoteSvc('corpmgr').GetCorporationIDForCharacter(item_id): an NPC character's corporation, for its Show Info header, where it is no agent"),
+  "corpmgr.GetCorporations": same(`${CORP_SVC}/bco_corporations.py:51`, "RemoteSvc('corpmgr').GetCorporations(corpid): another corporation's row, which the corporation service keeps (GetCorporation)"),
+  "standingMgr.GetNPCNPCStandings": same(`${STANDING_SVC}:115`, "RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments: the NPCs' standings with each other, kept by the standing service"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
   "standingMgr.GetStandingTransactions": ofAnEntity(`${STANDING_SVC}:178`, "RemoteSvc('standingMgr').GetStandingTransactions(fromID, toID): the entity, then the character. The panel asks it for a row that is the character's (standingsPanel.py 108), and the client keeps the answer for the two until the standing changes"),
@@ -2676,6 +2731,16 @@ const RETAIL_CALLS = Object.freeze({
   }),
   "allianceRegistry.GetAlliancePublicInfo": same(`${ALLIANCE_SVC}/all_cso.py:136`, "RemoteSvc('allianceRegistry').GetAlliancePublicInfo(allianceID), by name: Show Info on an alliance"),
   "allianceRegistry.GetAllianceContacts": same(`${ALLIANCE_SVC}/all_cso.py:243`, "GetMoniker().GetAllianceContacts(), no arguments, on the alliance's moniker: the address book asks it as the character is chosen, for a pilot in an alliance"),
+  "allianceRegistry.AddAllianceContact": reshaped(`${ALLIANCE_SVC}/all_cso.py:246`, corporationContactStanding, "AddAllianceContact(id, standing), positional on the alliance moniker; compiled editor Confirm sends a float rounded to tenths. No exact TQ write capture."),
+  "allianceRegistry.EditAllianceContact": reshaped(`${ALLIANCE_SVC}/all_cso.py:250`, corporationContactStanding, "EditAllianceContact(id, standing), the same float and moniker as Add. No exact TQ write capture."),
+  "allianceRegistry.RemoveAllianceContacts": reshaped(`${ALLIANCE_SVC}/all_cso.py:254`, ownersListed, "RemoveAllianceContacts(ids), a positional list; member menu merged callbacks remove each owner separately."),
+  "allianceRegistry.EditContactsRelationshipID": reshaped(`${ALLIANCE_SVC}/all_cso.py:258`, corporationContactsStanding, "ContactsForm's multi editor sends a list and rounded float on the alliance moniker."),
+  "allianceRegistry.GetLabels": same(`${ALLIANCE_SVC}/all_cso.py:261`, "GetLabels(), no args on the alliance moniker, kept separately from other scopes."),
+  "allianceRegistry.CreateLabel": typing(same(`${ALLIANCE_SVC}/all_cso.py:264`, "CreateLabel(name, color), unicode name and None color from addressbook.CreateContactLabel."), [0]),
+  "allianceRegistry.EditLabel": typing(reshaped(`${ALLIANCE_SVC}/all_cso.py:271`, labelFirst, "EditLabel(bit, name, color), positional; None preserves each field."), [1]),
+  "allianceRegistry.DeleteLabel": reshaped(`${ALLIANCE_SVC}/all_cso.py:268`, labelFirst, "DeleteLabel(bit), long bits preserved; native clears this mask bit and rereads labels."),
+  "allianceRegistry.AssignLabels": reshaped(`${ALLIANCE_SVC}/all_cso.py:274`, ownersLabelled, "AssignLabels(ids, mask), positional list and full-width label bits."),
+  "allianceRegistry.RemoveLabels": reshaped(`${ALLIANCE_SVC}/all_cso.py:277`, ownersLabelled, "RemoveLabels(ids, mask), positional list and full-width label bits."),
   "allianceRegistry.GetApplications": same(`${ALLIANCE_SVC}/all_cso_applications.py:26`, "GetMoniker().GetApplications(), no arguments, on the alliance's moniker, kept"),
   "allianceRegistry.GetBulletins": same(`${ALLIANCE_SVC}/all_cso.py:231`, "GetMoniker().GetBulletins(), no arguments, on the alliance's moniker, kept for fifteen minutes"),
   "allianceRegistry.GetBills": same(`${ALLIANCE_SVC}/all_cso.py:217`, "GetMoniker().GetBills(), no arguments, on the alliance's moniker, by an accountant"),
@@ -2685,6 +2750,24 @@ const RETAIL_CALLS = Object.freeze({
   "allianceRegistry.GetRankedAlliances": same(`${ALLIANCE_SVC}/all_cso_alliance.py:30`, "RemoteSvc('allianceRegistry').GetRankedAlliances(maxLen), by name, kept for five seconds"),
   "corpRegistry.GetAggressionSettings": same("eve/client/script/ui/services/crimewatchSvc.py:615", "GetCorpRegistry().GetAggressionSettings(), no arguments, on the corporation's moniker: asked when the session's corporation changes, the choosing of a character among them, and kept"),
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
+  "corpRegistry.GetMemberTrackingInfo": same(`${CORP_SVC}/base_corporation.py:865`, "GetCorpRegistry().GetMemberTrackingInfo(), no arguments, for a Director. Recorded bound in Archive/Opening all corp admin panels and assets search.txt:1033; cached for five minutes."),
+  "corpRegistry.GetMemberTrackingInfoSimple": same(`${CORP_SVC}/base_corporation.py:867`, "GetCorpRegistry().GetMemberTrackingInfoSimple(), no arguments, for other members. CorpMemberTracking.ShowMemberTracking asks again as filters change."),
+  "corpRegistry.GetMember": same(`${CORP_SVC}/bco_members.py:168`, "GetCorpRegistry().GetMember(charID), positional on the corporation moniker. EditMemberDialog reads the viewer's grantable state and the target member."),
+  "corpRegistry.MoveCompanyShares": same(`${CORP_SVC}/bco_shares.py:43`, "Compiled EditMemberDialog.OnGiveShares526 uses QtyPopup(2147483647,1,'1',HowManySharesToGive(player=charID),GiveShares), then MoveCompanyShares(session.corpid,charID,qty); Cancel sends nothing, no role gate or profile Apply. Wallet GiveSharesDialog.TransferShares104 passes the holding's issuerID as first argument; CorpSharesPanel.GetOwnerID supplies session.corpid as owner. Both send three unchanged positional arguments on the current corporation moniker; no TQ transfer recording found."),
+  "charMgr.GetPrivateInfo": same("eve/client/script/ui/shared/neocom/corporation/corp_dlg_edit_member.py:148", "RemoteSvc('charMgr').GetPrivateInfo(charID), the one positional character ID, when Member Details loads the character."),
+  "corpRegistry.UpdateMember": same(`${CORP_SVC}/bco_members.py:243`, "UpdateMember(charID,title,divisionID,squadronID,roles,grantableRoles,rolesAtHQ,grantableRolesAtHQ,rolesAtBase,grantableRolesAtBase,rolesAtOther,grantableRolesAtOther,baseID,titleMask,blockRoles), all 15 positional. Member Details General preserves role masks, titleMask=None, blockRoles=None; typed title Unicode."),
+  "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
+  "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),
+  "corpRegistry.GetLabels": same(`${CORP_SVC}/base_corporation.py:1011`, "GetCorpRegistry().GetLabels(), no arguments; the corporation contact labels, read on first showing the form."),
+  "corpRegistry.AddCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:995`, corporationContactStanding, "AddCorporateContact(contactID, relationshipID), positional on the corporation moniker; the slider rounds to one decimal (corpAllianceContactManagementWindow.py 117-118), a float even at whole standings. In no recording."),
+  "corpRegistry.EditCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:999`, corporationContactStanding, "EditCorporateContact(contactID, relationshipID), the same corporation editor's float, positional on the corporation moniker. In no recording."),
+  "corpRegistry.RemoveCorporateContacts": reshaped(`${CORP_SVC}/base_corporation.py:1003`, ownersListed, "RemoveCorporateContacts(contactIDs), a list from addressbookService.RemoveFromAddressBook (817-869), positional on the corporation moniker. In no recording."),
+  "corpRegistry.EditContactsRelationshipID": reshaped(`${CORP_SVC}/base_corporation.py:1007`, corporationContactsStanding, "EditContactsRelationshipID(contactIDs, relationshipID), a list and the multi-editor's rounded float; Confirm's compiled code returns that float (the decompile misindents self.level). In no recording."),
+  "corpRegistry.CreateLabel": typing(same(`${CORP_SVC}/base_corporation.py:1014`, "CreateLabel(name, color), positional on the corporation moniker; addressbookService.CreateContactLabel (1011-1021), typed unicode and color None. In no recording."), [0]),
+  "corpRegistry.EditLabel": typing(reshaped(`${CORP_SVC}/base_corporation.py:1021`, labelFirst, "EditLabel(labelID, name, color), positional on the corporation moniker; addressbookService.EditContactLabel (1001-1006), typed unicode and color None. In no recording."), [1]),
+  "corpRegistry.DeleteLabel": reshaped(`${CORP_SVC}/base_corporation.py:1017`, labelFirst, "DeleteLabel(labelID), the label's bit as received; addressbookService.DeleteContactLabel (1072-1084) then asks for labels again. In no recording."),
+  "corpRegistry.AssignLabels": reshaped(`${CORP_SVC}/base_corporation.py:1025`, ownersLabelled, "AssignLabels(contactIDs, labelMask), the selected contacts a list and the label bits, positional on the corporation moniker (addressbookService.AssignLabelFromWnd, 1094-1100). In no recording."),
+  "corpRegistry.RemoveLabels": reshaped(`${CORP_SVC}/base_corporation.py:1029`, ownersLabelled, "RemoveLabels(contactIDs, labelMask), a list and the label bits, positional on the corporation moniker (addressbookService.RemoveLabelFromWnd, 1131-1137). In no recording."),
   "corpRegistry.GetCorporateContacts": same(`${CORP_SVC}/base_corporation.py:993`, "GetCorpRegistry().GetCorporateContacts(), no arguments, on the corporation's moniker: the address book asks it as the character is chosen, and only for a pilot whose corporation is not an NPC one (991)"),
   "corpRegistry.GetEveOwners": judged(`${CORP_SVC}/bco_members.py:136`, sentWithNothing,
     "eveowners = self.GetCorpRegistry().GetEveOwners(), with nothing, on the corporation's moniker: recorded on Tranquility so, seven times. Asked when the session's corporation changes, for its members' names and their numbers, which the client keeps and changes as the server says a member changed (OnCorporationMemberChanged); a pilot is a member to the client where its number is among them (161). The page asks it each time it wants to know that, and the transport keeps nothing of it."),
@@ -2720,12 +2803,28 @@ const RETAIL_CALLS = Object.freeze({
     note: "GetDogmaLM().StopOverload(itemID, effectID), the same two as Overload. No recording has one.",
     shape: overloading,
   }), "dogma"),
+  "dogmaIM.OverloadRack": judged(`${GODMA}:2082`, oneModule,
+    "GetDogmaLM().OverloadRack(itemID), on the dogma location bound for where the pilot is: the module button's Overload Rack (shipmodulebutton 695), with the module whose rack it is. It answers the rack's modules overloaded. No recording has one."),
+  "dogmaIM.StopOverloadRack": judged(`${GODMA}:2127`, oneModule,
+    "GetDogmaLM().StopOverloadRack(itemID): the button's Stop Overloading Rack (699), the same module. It answers the modules stopped. No recording has one."),
   "dogmaIM.InitiateModuleRepair": judged(`${GODMA}:2227`, oneModule,
     "GetDogmaLM().InitiateModuleRepair(itemID), on the dogma location bound for where the pilot is: the module button's Repair, for a module with damage. The server takes the paste and begins; an answer of False begins nothing. No recording has one."),
+  "dogmaIM.InitiateModuleRepairMany": judged(`${GODMA}:2206`, moduleList,
+    "GetDogmaLM().InitiateModuleRepairMany(itemIDs), on the dogma location bound for where the pilot is: the module button's Repair All (shipmodulebutton 516, RepairManyModules), the ship's damaged modules not being repaired, in the order godma's set of them gives, the one clicked first. It answers (success, missingCharges, failed), each a list of modules. No recording has one."),
   "dogmaIM.StopModuleRepair": judged(`${GODMA}:2261`, oneModule,
     "GetDogmaLM().StopModuleRepair(itemID): godma's own doing when the repair's time is up (the damage over the character's repair rate, in minutes, and a second), at Cancel Repair, and at a session's change. The server mends the module at this call. No recording has one."),
   "dogmaIM.LinkAllWeapons": judged(`${CLIENT_DOGMA}:800`, ownShipAlone,
     "remoteDogmaLM.LinkAllWeapons(shipID), on the dogma location: the group-all button, with session.shipid (groupAllIcon.py 36), where some weapon could still be grouped. It answers the ship's banks. No recording has one; LinkWeapons(shipID, master, slave) is recorded, riding the dogma location's bind."),
+  "dogmaIM.LinkWeapons": judged(`${CLIENT_DOGMA}:780`, ownShipAndTwoModules,
+    "remoteDogmaLM.LinkWeapons(shipID, masterID, moduleID), on the dogma location: a weapon dropped with Shift held on a slot of the same type (the fitting slot's LinkWithWeapon), with the master of that slot's bank or its module. It answers the ship's banks. Tranquility recorded it twice: (ship, master, module), riding the dogma location's bind."),
+  "dogmaIM.MergeModuleGroups": judged(`${CLIENT_DOGMA}:776`, ownShipAndTwoModules,
+    "remoteDogmaLM.MergeModuleGroups(shipID, masterID, otherMasterID), on the dogma location: as LinkWeapons, where the weapon dropped is in a bank already, with that bank's master. It answers the ship's banks. No recording has one."),
+  "dogmaIM.PeelAndLink": judged(`${CLIENT_DOGMA}:778`, ownShipAndTwoModules,
+    "remoteDogmaLM.PeelAndLink(shipID, masterID, otherMasterID), on the dogma location: as MergeModuleGroups, where the HUD's drag of a bank onto another weapon has Shift held (slotsContainer.ChangeSlots 84, merge=not shift): a weapon peeled off the bank dragged and linked alone. It answers the ship's banks. No recording has one."),
+  "dogmaIM.DestroyWeaponBank": judged(`${CLIENT_DOGMA}:865`, ownShipAndModule,
+    "remoteDogmaLM.DestroyWeaponBank(shipID, masterID), on the dogma location: a grouped weapon put into a container off its slot once its pilot has said Yes to ClearGroupModule (UnloadModuleToContainer, 1086), with the bank's master. It answers nothing, and the client's own banks lose that bank (OnWeaponGroupDestroyed). No recording has one."),
+  "dogmaIM.UnlinkModule": judged(`${CLIENT_DOGMA}:785`, ownShipAndModule,
+    "remoteDogmaLM.UnlinkModule(shipID, moduleID), on the dogma location: UngroupModule (784), with the bank's master, as a grouped weapon is unfitted from its slot once its pilot has said Yes to ClearGroupModule (fittingSlotController.UnfitModule, 234). It answers the slave the server took out of the bank. No recording has one."),
   "dogmaIM.UnlinkAllModules": judged(`${CLIENT_DOGMA}:794`, ownShipAlone,
     "remoteDogmaLM.UnlinkAllModules(shipID): the same button where every weapon that can be is grouped (groupAllIcon.py 38). No recording has one."),
   "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),

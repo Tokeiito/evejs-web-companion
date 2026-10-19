@@ -6,10 +6,12 @@
 // Reckoned so far: the missing subsystems, modules in slots the hull has not, the CPU, powergrid and calibration
 // overloaded, the cargo hold overloaded, the tanking warnings (dual tanked, a shield hull armour tanked and the other
 // way round), mixed turret groups, launcher groups and turret sizes, polarized weapons, offline modules, undersized and
-// inefficient propulsion modules, and bubble immunity disabled. Not yet: the modules giving no bonus, the missing
-// charges and the stacking penalties.
+// inefficient propulsion modules, bubble immunity disabled, the modules missing their charges, the stacking
+// penalties, and the modules giving no bonus. Not read: a mutated item's own attributes (GetMutaplasmidAttributeIDs),
+// which the bonus check adds to its type's.
 
 import type { DogmaStatic } from "./location.ts";
+import { intDictOrder } from "../py27DictOrder.ts";
 
 /** fittingWarningConst's levels. */
 export const WARNING_LEVEL_LOW = 1;
@@ -156,8 +158,50 @@ const SUBSYSTEM_INFO_BY_SLOT: Readonly<Record<number, { readonly groupID: number
 export const TYPE_LIST_FITTING_WARNINGS_SHIELD = 145;
 export const TYPE_LIST_FITTING_WARNINGS_ARMOR = 146;
 export const TYPE_LIST_FITTING_WARNINGS_HULL = 147;
+/** evetypes TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES and _NEED_CHARGES. */
+export const TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES = 216;
+export const TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES = 217;
+/** evetypes TYPE_LIST_FITTING_WARNINGS_BUFFING: the modules whose bonus the warnings look for something to take. */
+export const TYPE_LIST_FITTING_WARNINGS_BUFFING = 148;
 /** The type lists the warnings go by, to read for the fitted types. */
-export const WARNING_TYPE_LISTS: readonly number[] = [TYPE_LIST_FITTING_WARNINGS_SHIELD, TYPE_LIST_FITTING_WARNINGS_ARMOR, TYPE_LIST_FITTING_WARNINGS_HULL];
+export const WARNING_TYPE_LISTS: readonly number[] = [
+  TYPE_LIST_FITTING_WARNINGS_SHIELD, TYPE_LIST_FITTING_WARNINGS_ARMOR, TYPE_LIST_FITTING_WARNINGS_HULL,
+  TYPE_LIST_FITTING_WARNINGS_BUFFING, TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES, TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES,
+];
+/**
+ * GROUPS_AFFECTING_MODULE_GROUPS: a module group and the groups it gives its bonus to. The drone link augmentor's and
+ * the drone navigation computer's are every group of the drone category, and of the drone and fighter categories
+ * (GetGroupIDsByCategory, GetGroupIDsByCategories), held here as those categories.
+ */
+const GROUPS_AFFECTING_MODULE_GROUPS: Readonly<Record<number, { readonly groups: readonly number[]; readonly categories: readonly number[] }>> = {
+  59: { groups: [55], categories: [] },
+  302: { groups: [74], categories: [] },
+  205: { groups: [53], categories: [] },
+  645: { groups: [100, 1653, 1652, 4777, 4779], categories: [] },
+  1988: { groups: [1986], categories: [] },
+  647: { groups: [], categories: [18] },
+  644: { groups: [], categories: [18, 87] },
+};
+/** DRONE_AND_FIGHTER_BAYS: flagDroneBay, flagFighterBay and fighterTubeFlags. */
+const DRONE_AND_FIGHTER_BAYS: ReadonlySet<number> = new Set([87, 158, 159, 160, 161, 162, 163]);
+/**
+ * The effects baseEffectCompiler.GetPythonEffects makes python ones in the client's effect compiler
+ * (clientEffectCompiler), which hold no compiled modifiers (taken from the compiled classes through the python27 oracle).
+ */
+const BASE_PYTHON_EFFECT_IDS: ReadonlySet<number> = new Set([
+  16, 40, 42, 54, 660, 661, 662, 668, 848, 876, 878, 1730, 1851, 2192, 2193, 2194, 2195, 2196, 2197, 2663, 3772, 3773, 3774,
+]);
+/** The kinds of modifier CreateEffect makes (modifierGetterByType, GetSideEffectClassByTypeString); an effect with another fails to load. */
+const COMPILED_MODIFIER_FUNCS: ReadonlySet<string> = new Set([
+  "ItemModifier", "LocationRequiredSkillModifier", "OwnerRequiredSkillModifier", "LocationModifier", "LocationGroupModifier", "EffectStopper",
+]);
+/** appConst categoryCharge, flagCargo, flagSpecializedAmmoHold; attributeCapacity, attributeVolume. */
+const CATEGORY_CHARGE = 8;
+const FLAG_SPECIALIZED_AMMO_HOLD = 143;
+const ATTRIBUTE_CAPACITY = 38;
+const ATTRIBUTE_VOLUME = 161;
+/** fittingWarningsCharges TREAT_AS_FULL: a scan probe launcher full at eight. */
+const TREAT_AS_FULL: Readonly<Record<number, number>> = { 481: 8 };
 /** fittingWarningConst INFO_BUBBLE_SHIELD, INFO_BUBBLE_ARMOR, INFO_BUBBLE_SHIELD_OR_ARMOR: a hull's tanking elements. */
 const INFO_BUBBLE_SHIELD = 20;
 const INFO_BUBBLE_ARMOR = 7;
@@ -182,7 +226,9 @@ export type FitWarningRow =
   | { readonly kind: "subsystem"; readonly flagID: number; readonly groupID: number; readonly icon: string }
   | { readonly kind: "module"; readonly typeID: number; readonly flagID: number }
   | { readonly kind: "group"; readonly groupID: number; readonly icon: string | null; readonly flags: readonly number[] }
-  | { readonly kind: "size"; readonly size: number; readonly icon: string | null; readonly flags: readonly number[] };
+  | { readonly kind: "size"; readonly size: number; readonly icon: string | null; readonly flags: readonly number[] }
+  /** AddAttributes: an attribute penalized, the skill its change is for, the modules making it (modulesKey: which, sorted). */
+  | { readonly kind: "attribute"; readonly attributeID: number; readonly skillTypeID: number | null; readonly flags: readonly number[]; readonly modulesKey: string };
 
 /** A warning the fitting has: its level, the slots it is shown on, the rows under its line. */
 export interface FitWarning {
@@ -212,6 +258,143 @@ export interface FitWarningInputs {
   readonly typeLists: (typeID: number) => ReadonlySet<number>;
   /** cfg.infoBubbleTypeElements of the ship's type: its elements; null where it has none. */
   readonly shipElements: readonly number[] | null;
+  /**
+   * FindModulesWithMissingCharges' fitting: each item fitted in a module slot (a module one, a charge its quantity:
+   * GetQuantity) and each stack in the cargo hold and the specialized ammo hold (GetHoldItems), (typeID, flagID, qty);
+   * null where the ship's item is no ship.
+   */
+  readonly chargesFit: readonly (readonly [number, number, number])[] | null;
+  /** fittingSvc.GetFighterTypesInTubes: the types of the squadrons in the tubes. */
+  readonly fighterTypesInTubes: readonly number[];
+  /** evetypes.GetTypeIDsByGroup of a group, for the used-with table; undefined where it is not read. */
+  readonly groupTypes: (groupID: number) => readonly number[] | undefined;
+  /** skills.GetRequiredSkillsRecursive of a type: every skill it needs however deep; null where it is not read. */
+  readonly requiredSkillsOf: (typeID: number) => ReadonlySet<number> | null;
+}
+
+/**
+ * infoSvc.GetUsedWithTypeIDs of a module, of the charges named: a published charge in one of the module's charge
+ * groups, its volume within the module's capacity, its size the module's where the module has one
+ * (_AddUsedWithTypeIDs). Null for a module not published or with no charge groups.
+ */
+function usedWithOf(staticData: DogmaStatic, moduleTypeID: number, chargeTypeIDs: readonly number[]): number[] | null {
+  const module = staticData.types[moduleTypeID];
+  const chargeGroups = (module?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+  if (!module || module.published === false || chargeGroups.length === 0) return null;
+  const capacity = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY);
+  const size = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CHARGE_SIZE) ?? 0;
+  return chargeTypeIDs.filter((chargeTypeID) => {
+    const charge = staticData.types[chargeTypeID];
+    if (!charge || charge.published === false || charge.groupID === null || !chargeGroups.includes(charge.groupID)) return false;
+    if (capacity !== null && capacity < (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0)) return false;
+    return !size || (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_CHARGE_SIZE) ?? 0) === size;
+  });
+}
+
+/**
+ * fittingWarningsCharges.FindModulesMissingCharges: the modules that need charges (list 217) and those that take
+ * optional ones (list 216), each with no charge, or short by more than one of full (its capacity over the charge's
+ * volume, a scan probe launcher's eight), that the charges in the cargo and ammo holds cannot fill
+ * (FindModulesThatCannotBeFilled: the modules of the same usable charges and capacity together, each charge's full
+ * rounds taken off them in turn).
+ */
+/**
+ * infoSvc.GetUsedWithTypeIDs of a module as the table of every type gives it: the charges of its groups it may use.
+ * Null where the table has nothing for it (no charge it may use at all); undefined where a group's types or a charge's
+ * facts are not read.
+ */
+export function usedWithTypeIDs(staticData: DogmaStatic, moduleTypeID: number, groupTypes: (groupID: number) => readonly number[] | undefined): number[] | null | undefined {
+  const module = staticData.types[moduleTypeID];
+  const chargeGroups = (module?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+  if (!module || module.published === false || chargeGroups.length === 0) return null;
+  const candidates = new Set<number>();
+  for (const groupID of chargeGroups) {
+    const types = groupTypes(groupID);
+    if (types === undefined) return undefined;
+    for (const typeID of types) candidates.add(typeID);
+  }
+  if ([...candidates].some((typeID) => !Object.hasOwn(staticData.types, typeID))) return undefined;
+  const usable = usedWithOf(staticData, moduleTypeID, [...candidates]) ?? [];
+  return usable.length > 0 ? usable : null;
+}
+
+function findModulesMissingCharges(
+  staticData: DogmaStatic,
+  currentFit: readonly (readonly [number, number, number])[],
+  lists: (typeID: number) => ReadonlySet<number>,
+  usedWithTable: (typeID: number) => number[] | null | undefined,
+): { readonly required: [number, number][]; readonly optional: [number, number][] } {
+  const chargesInFlags = new Map<number, [number, number][]>();
+  for (const [typeID, flagID, qty] of currentFit) {
+    if (staticData.types[typeID]?.categoryID !== CATEGORY_CHARGE) continue;
+    const list = chargesInFlags.get(flagID) ?? [];
+    list.push([typeID, qty]);
+    chargesInFlags.set(flagID, list);
+  }
+  // _GetAllChargesInHolds: the cargo hold's and the ammo hold's charges by type.
+  const chargesLeft = new Map<number, number>();
+  for (const flagID of intDictOrder([...chargesInFlags.keys()])) {
+    if (flagID !== FLAG_CARGO && flagID !== FLAG_SPECIALIZED_AMMO_HOLD) continue;
+    for (const [chargeTypeID, qty] of chargesInFlags.get(flagID) ?? []) chargesLeft.set(chargeTypeID, (chargesLeft.get(chargeTypeID) ?? 0) + qty);
+  }
+  const needing: [number, number][] = currentFit.filter(([typeID]) => lists(typeID).has(TYPE_LIST_FITTING_WARNINGS_NEED_CHARGES)).map(([typeID, flagID]) => [typeID, flagID]);
+  const optional: [number, number][] = currentFit.filter(([typeID]) => lists(typeID).has(TYPE_LIST_FITTING_WARNINGS_USE_OPTIONAL_CHARGES)).map(([typeID, flagID]) => [typeID, flagID]);
+  const withoutCharges: [number, number][] = [];
+  const partiallyFull = new Map<number, [number, number, number][]>();
+  for (const [moduleTypeID, flagID] of [...needing, ...optional]) {
+    const loaded = chargesInFlags.get(flagID);
+    if (!loaded) {
+      withoutCharges.push([moduleTypeID, flagID]);
+      continue;
+    }
+    const [chargeTypeID, chargeQty] = loaded[0]!;
+    let qtyFull = Math.trunc((typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY) ?? 0) / (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0));
+    const overridden = TREAT_AS_FULL[staticData.types[moduleTypeID]?.groupID ?? -1];
+    if (overridden && overridden < qtyFull) qtyFull = overridden;
+    if (qtyFull - chargeQty > 1) {
+      const list = partiallyFull.get(chargeTypeID) ?? [];
+      list.push([moduleTypeID, flagID, chargeQty]);
+      partiallyFull.set(chargeTypeID, list);
+    }
+  }
+  for (const chargeTypeID of intDictOrder([...partiallyFull.keys()])) {
+    for (const [moduleTypeID, flagID, chargeQty] of partiallyFull.get(chargeTypeID) ?? []) {
+      withoutCharges.push([moduleTypeID, flagID]);
+      chargesLeft.set(chargeTypeID, (chargesLeft.get(chargeTypeID) ?? 0) + chargeQty);
+    }
+  }
+  // GetGroupsDict and FindModulesThatCannotBeFilled.
+  const chargeTypesLeft = [...chargesLeft.keys()];
+  const groupings = new Map<string, { readonly chargeTypeIDs: readonly number[]; readonly capacity: number; readonly modules: [number, number][] }>();
+  for (const [moduleTypeID, flagID] of withoutCharges) {
+    // _GetUsedWithTuple: the table's charges of the module that are left in the holds (where the table is not read,
+    // those left reckoned alone); a module the table has nothing for passed over.
+    const all = usedWithTable(moduleTypeID);
+    const usedWith = all === undefined ? usedWithOf(staticData, moduleTypeID, chargeTypesLeft) : all === null ? null : all.filter((typeID) => chargesLeft.has(typeID));
+    if (usedWith === null) continue;
+    const chargeTypeIDs = [...new Set(usedWith)].sort((a, b) => a - b);
+    const capacity = typeAttribute(staticData, moduleTypeID, ATTRIBUTE_CAPACITY) ?? 0;
+    const key = `${chargeTypeIDs.join(",")}|${capacity}`;
+    const group = groupings.get(key) ?? { chargeTypeIDs, capacity, modules: [] };
+    group.modules.push([moduleTypeID, flagID]);
+    groupings.set(key, group);
+  }
+  const cannotBeFilled: [number, number][] = [];
+  for (const { chargeTypeIDs, capacity, modules } of groupings.values()) {
+    let leftToFill = modules.length;
+    let filled = false;
+    for (const chargeTypeID of chargeTypeIDs) {
+      const qtyForFull = Math.trunc(capacity / (typeAttribute(staticData, chargeTypeID, ATTRIBUTE_VOLUME) ?? 0));
+      leftToFill -= Math.trunc((chargesLeft.get(chargeTypeID) ?? 0) / qtyForFull);
+      if (leftToFill <= 0) {
+        filled = true;
+        break;
+      }
+    }
+    if (!filled) cannotBeFilled.push(...modules);
+  }
+  const among = (pairs: readonly [number, number][]) => (pair: [number, number]) => pairs.some(([typeID, flagID]) => typeID === pair[0] && flagID === pair[1]);
+  return { required: cannotBeFilled.filter(among(needing)), optional: cannotBeFilled.filter(among(optional)) };
 }
 
 function typeAttribute(staticData: DogmaStatic, typeID: number, attributeID: number): number | null {
@@ -220,6 +403,149 @@ function typeAttribute(staticData: DogmaStatic, typeID: number, attributeID: num
 
 function hasEffect(staticData: DogmaStatic, typeID: number, effectID: number): boolean {
   return staticData.types[typeID]?.effects.includes(effectID) ?? false;
+}
+
+/**
+ * _GetSkillsAnModifiedAttributesForSkillModifier: of each of a type's effects as the client's effect compiler holds it
+ * (one with modifierInfo a ModifierEffect of its modifiers, CreateEffect; none where it has no modifierInfo, where one
+ * of its kinds is none CreateEffect makes, or where it is one of baseEffectCompiler's python effects, which hold no
+ * modifiers), each LocationRequiredSkillModifier on the ship: its skill and the attribute it changes.
+ */
+function shipSkillModifiers(staticData: DogmaStatic, typeID: number): (readonly [number, number])[] {
+  const pairs: (readonly [number, number])[] = [];
+  for (const effectID of staticData.types[typeID]?.effects ?? []) {
+    if (BASE_PYTHON_EFFECT_IDS.has(effectID)) continue;
+    const modifiers = staticData.effects[effectID]?.modifiers ?? [];
+    if (modifiers.length === 0 || modifiers.some((modifier) => !COMPILED_MODIFIER_FUNCS.has(modifier.func ?? ""))) continue;
+    for (const modifier of modifiers) {
+      // IsShipModifier: the ship its domain. A skill or attribute that is none matches no type.
+      if (modifier.func !== "LocationRequiredSkillModifier" || modifier.domain !== "shipID") continue;
+      if (modifier.skillTypeID === null || modifier.modifiedAttributeID === null) continue;
+      pairs.push([modifier.skillTypeID, modifier.modifiedAttributeID]);
+    }
+  }
+  return pairs;
+}
+
+/** GetTypeIDsBySkill: of the types, those whose skills (GetRequiredSkillsRecursive) take in each skill asked; null where any type's are not read. */
+function typesBySkill(typeIDs: Iterable<number>, skills: ReadonlySet<number>, requiredSkillsOf: (typeID: number) => ReadonlySet<number> | null): Map<number, Set<number>> | null {
+  const bySkill = new Map<number, Set<number>>();
+  for (const typeID of typeIDs) {
+    const required = requiredSkillsOf(typeID);
+    if (required === null) return null;
+    for (const skillTypeID of required) {
+      if (!skills.has(skillTypeID)) continue;
+      const types = bySkill.get(skillTypeID) ?? new Set<number>();
+      types.add(typeID);
+      bySkill.set(skillTypeID, types);
+    }
+  }
+  return bySkill;
+}
+
+/** GetTypeIDsByAttributeIDs: of the types, those with each attribute asked among theirs (get_type_attributes_by_id). */
+function typesByAttribute(staticData: DogmaStatic, typeIDs: Iterable<number>, attributes: ReadonlySet<number>): Map<number, Set<number>> {
+  const byAttribute = new Map<number, Set<number>>();
+  for (const typeID of typeIDs) {
+    for (const [attributeID] of staticData.types[typeID]?.attributes ?? []) {
+      if (!attributes.has(attributeID)) continue;
+      const types = byAttribute.get(attributeID) ?? new Set<number>();
+      types.add(typeID);
+      byAttribute.set(attributeID, types);
+    }
+  }
+  return byAttribute;
+}
+
+/**
+ * FindModulesNotProvidingBonusBasedOnSkillModifier: of the modules looked into, those with a skill modifier on the ship
+ * (shipSkillModifiers) that no fitted type takes, one needing the skill and having the attribute; nor any charge a
+ * fitted launcher may use (infoSvc.GetUsedWithTypeIDs). Where a type's skills or a launcher's charges are not read, the
+ * module is not said to give none.
+ */
+function modulesNotProvidingBonusBySkill(
+  staticData: DogmaStatic,
+  fittedTypeIDs: readonly number[],
+  lookedInto: ReadonlySet<number>,
+  requiredSkillsOf: (typeID: number) => ReadonlySet<number> | null,
+  usedWith: (typeID: number) => number[] | null | undefined,
+): Set<number> {
+  const skillsOfInterest = new Set<number>();
+  const attributesOfInterest = new Set<number>();
+  const needed = new Map<number, (readonly [number, number])[]>();
+  for (const typeID of lookedInto) {
+    const pairs = shipSkillModifiers(staticData, typeID);
+    if (pairs.length === 0) continue;
+    for (const [skillTypeID, attributeID] of pairs) {
+      skillsOfInterest.add(skillTypeID);
+      attributesOfInterest.add(attributeID);
+    }
+    needed.set(typeID, pairs);
+  }
+  if (needed.size === 0) return new Set();
+  const takes = (bySkill: ReadonlyMap<number, ReadonlySet<number>>, byAttribute: ReadonlyMap<number, ReadonlySet<number>>, pairs: readonly (readonly [number, number])[]) =>
+    pairs.some(([skillTypeID, attributeID]) => {
+      const withAttribute = byAttribute.get(attributeID);
+      return withAttribute !== undefined && [...(bySkill.get(skillTypeID) ?? [])].some((typeID) => withAttribute.has(typeID));
+    });
+  const bySkill = typesBySkill(fittedTypeIDs, skillsOfInterest, requiredSkillsOf);
+  if (bySkill === null) return new Set();
+  const byAttribute = typesByAttribute(staticData, fittedTypeIDs, attributesOfInterest);
+  const providing = new Set<number>();
+  for (const [typeID, pairs] of needed) if (takes(bySkill, byAttribute, pairs)) providing.add(typeID);
+  for (const [typeID, pairs] of needed) {
+    if (providing.has(typeID)) continue;
+    for (const fittedTypeID of fittedTypeIDs) {
+      if (!hasEffect(staticData, fittedTypeID, EFFECT_LAUNCHER_FITTED)) continue;
+      const charges = usedWith(fittedTypeID);
+      const chargesBySkill = charges ? typesBySkill(charges, skillsOfInterest, requiredSkillsOf) : charges;
+      if (chargesBySkill === undefined || (charges && chargesBySkill === null)) {
+        providing.add(typeID);
+        break;
+      }
+      if (!charges || !chargesBySkill) continue;
+      if (takes(chargesBySkill, typesByAttribute(staticData, charges, attributesOfInterest), pairs)) {
+        providing.add(typeID);
+        break;
+      }
+    }
+  }
+  return new Set([...needed.keys()].filter((typeID) => !providing.has(typeID)));
+}
+
+/**
+ * FindModulesNotProvidingBonus: a fitted module whose group gives its bonus to groups (GROUPS_AFFECTING_MODULE_GROUPS)
+ * none of which is fitted or among the drones and fighters; and each fitted module of a type on the buffing list that
+ * gives no bonus by its skill modifiers. A module of such a group is not looked into further (its compiled loop goes
+ * on to the next module either way, which the decompiled text does not show).
+ */
+function findModulesNotProvidingBonus(
+  staticData: DogmaStatic,
+  fittedModules: readonly (readonly [number, number, number])[],
+  dronesAndFighters: ReadonlySet<number>,
+  lists: (typeID: number) => ReadonlySet<number>,
+  requiredSkillsOf: (typeID: number) => ReadonlySet<number> | null,
+  usedWith: (typeID: number) => number[] | null | undefined,
+): [number, number][] {
+  const missing: [number, number][] = [];
+  const items = [...fittedModules.map(([typeID]) => typeID), ...dronesAndFighters];
+  const allFittedGroups = new Set(items.map((typeID) => staticData.types[typeID]?.groupID ?? null));
+  const allFittedCategories = new Set(items.map((typeID) => staticData.types[typeID]?.categoryID ?? null));
+  const lookedInto = new Set<number>();
+  for (const [typeID, flagID] of fittedModules) {
+    const affected = GROUPS_AFFECTING_MODULE_GROUPS[staticData.types[typeID]?.groupID ?? -1];
+    if (affected) {
+      if (!affected.groups.some((groupID) => allFittedGroups.has(groupID)) && !affected.categories.some((categoryID) => allFittedCategories.has(categoryID))) {
+        missing.push([typeID, flagID]);
+      }
+      continue;
+    }
+    if (lists(typeID).has(TYPE_LIST_FITTING_WARNINGS_BUFFING)) lookedInto.add(typeID);
+  }
+  const fittedTypeIDs = [...new Set(fittedModules.map(([typeID]) => typeID))];
+  const notProviding = modulesNotProvidingBonusBySkill(staticData, fittedTypeIDs, lookedInto, requiredSkillsOf, usedWith);
+  for (const [typeID, flagID] of fittedModules) if (notProviding.has(typeID)) missing.push([typeID, flagID]);
+  return missing;
 }
 
 /** _IsOverloaded: a difference below nought by more than the tolerance. */
@@ -343,6 +669,50 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
         .map(([size, pairs]) => ({ kind: "size", size, icon: ICON_BY_SIZE[size] ?? null, flags: pairs.map(([, flagID]) => flagID) })),
     });
   }
+  // The used-with table of every type (infoSvc.GetUsedWithTypeIDs), as far as it is read.
+  const usedWith = (typeID: number) => usedWithTypeIDs(staticData, typeID, inputs.groupTypes);
+  // FindModulesNotProvidingBonus: of the fitted modules, with the drones and fighters (the fitting's in the drone bay,
+  // the fighter bay and the tubes, and GetFighterTypesInTubes); AddModuleRows: by their slots' order.
+  const dronesAndFighters = new Set([...fit.filter(([, flagID]) => DRONE_AND_FIGHTER_BAYS.has(flagID)).map(([typeID]) => typeID), ...inputs.fighterTypesInTubes]);
+  const notProvidingBonus = findModulesNotProvidingBonus(staticData, fittedModules, dronesAndFighters, inputs.typeLists, inputs.requiredSkillsOf, usedWith)
+    .sort(([, left], [, right]) => MODULE_SLOT_FLAGS.indexOf(left) - MODULE_SLOT_FLAGS.indexOf(right));
+  if (notProvidingBonus.length > 0) {
+    found.set(WARNING.NOT_PROVIDING_BONUS, {
+      flags: [...new Set(notProvidingBonus.map(([, flagID]) => flagID))],
+      rows: notProvidingBonus.map(([typeID, flagID]) => ({ kind: "module", typeID, flagID })),
+    });
+  }
+  // FindModulesWithMissingCharges: of a ship.
+  if (inputs.chargesFit !== null) {
+    const missing = findModulesMissingCharges(staticData, inputs.chargesFit, inputs.typeLists, usedWith);
+    if (missing.required.length > 0) found.set(WARNING.MISSING_REQ_CHARGES, { flags: [...new Set(missing.required.map(([, flagID]) => flagID))], rows: [] });
+    if (missing.optional.length > 0) found.set(WARNING.MISSING_OPTIONAL_CHARGES, { flags: [...new Set(missing.optional.map(([, flagID]) => flagID))], rows: [] });
+  }
+  // FindFittedModulesWithStackingPenalty: of the items in the fitting's slots; each penalized attribute a row under its
+  // line (AddAttributes), the modules making the change.
+  const stacking = fittedModulesWithStackingPenalty(staticData, fit.filter(([, flagID]) => FITTING_FLAGS.has(flagID)).map(([typeID, flagID]) => [typeID, flagID] as const));
+  const stackingWarnings = [
+    [WARNING.STACKING_PENALTY_MED, stacking.medium],
+    [WARNING.STACKING_PENALTY_LOW, stacking.low],
+    [WARNING.STACKING_PENALTY_TARGETED_LOW, stacking.targetedLow],
+  ] as const;
+  for (const [warningID, penalized] of stackingWarnings) {
+    if (penalized.length === 0) continue;
+    const flags = new Set<number>();
+    const rows: FitWarningRow[] = [];
+    for (const { change, modules } of penalized) {
+      const pairs = [...modules.values()];
+      for (const [, flagID] of pairs) flags.add(flagID);
+      rows.push({
+        kind: "attribute",
+        attributeID: change.modifiedAttributeID,
+        skillTypeID: change.skillTypeID,
+        flags: pairs.map(([, flagID]) => flagID),
+        modulesKey: pairs.map(([typeID, flagID]) => `${typeID}:${flagID}`).sort().join(","),
+      });
+    }
+    found.set(warningID, { flags: [...flags], rows });
+  }
   // FindOfflineModules (AddModuleRows: by their slots' order).
   const offline = [...inputs.offlineModules]
     .filter(([typeID, flagID]) => MODULE_SLOT_FLAGS.includes(flagID) && [CATEGORY_MODULE, CATEGORY_STRUCTURE_MODULE].includes(staticData.types[typeID]?.categoryID ?? -1))
@@ -383,6 +753,242 @@ export function evaluateFit(inputs: FitWarningInputs): FitWarning[] {
     return warning ? [{ warningID, level: WARNINGS_BY_ID[warningID]!.level, ...warning }] : [];
   });
 }
+
+/**
+ * The Fitting window's effect compiler's python effects (GhostFittingEffectCompiler.GetPythonEffects, with
+ * baseEffectCompiler's before them, a later one of an effect in its place): every effect one of them is, and of those
+ * with any, its MODIFIER_CHANGES (operation, modified attribute, modifying attribute) and its
+ * SKILL_MODIFIER_CHANGES_FOR_LOCATION (operation, skill, modified, modifying). Taken from the compiled classes through the
+ * python27 oracle (nf338-py-oracle.py).
+ */
+export const PYTHON_EFFECT_IDS: ReadonlySet<number> = new Set([
+  10, 16, 17, 34, 38, 40, 42, 46, 47, 48, 54, 55, 67, 81, 607, 660,
+  661, 662, 668, 848, 876, 878, 980, 1086, 1199, 1730, 1851, 2192, 2193, 2194, 2195, 2196,
+  2197, 2663, 2726, 3380, 3772, 3773, 3774, 4921, 4928, 5788, 5945, 6063, 6208, 6421, 6422, 6423,
+  6424, 6425, 6426, 6427, 6428, 6443, 6484, 6682, 6683, 6684, 6686, 6719, 6730, 6731, 6753, 6995,
+  12126,
+]);
+interface PythonEffectModifiers {
+  readonly modifiers: readonly (readonly [number, number, number])[];
+  readonly skillModifiers: readonly (readonly [number, number, number, number])[];
+}
+export const PYTHON_EFFECT_MODIFIERS: Readonly<Record<number, PythonEffectModifiers>> = {
+  3380: {
+    modifiers: [[6, 4, 1131], [6, 37, 1076], [6, 552, 554]],
+    skillModifiers: [],
+  },
+  4928: {
+    modifiers: [[0, 267, 267], [0, 268, 268], [0, 269, 269], [0, 270, 270]],
+    skillModifiers: [],
+  },
+  5788: {
+    modifiers: [
+      [7, 192, 192], [0, 564, 565], [6, 37, 20], [2, 104, 852], [4, 4, 1471], [7, 872, 872],
+      [0, 267, 267], [0, 268, 268], [0, 269, 269], [0, 270, 270], [0, 113, 974], [0, 111, 975],
+      [0, 109, 976], [0, 110, 977], [0, 271, 271], [0, 272, 272], [0, 273, 273], [0, 274, 274],
+    ],
+    skillModifiers: [
+      [6, 21803, 84, 895], [6, 21803, 73, 896], [6, 21802, 68, 548], [6, 21802, 73, 897], [6, 21666, 64, 292],
+      [6, 21666, 160, 767], [6, 20327, 64, 292], [6, 20327, 160, 767], [6, 21667, 64, 292], [6, 21667, 160, 767],
+      [6, 3309, 54, 351], [6, 3307, 54, 351], [6, 3308, 54, 351], [6, 3309, 158, 349], [6, 3307, 158, 349],
+      [6, 3308, 158, 349], [6, 3393, 84, 895], [6, 3416, 68, 548], [2, 4385, 1349, 1350],
+    ],
+  },
+  6063: {
+    modifiers: [[6, 208, 1030], [6, 210, 1029], [6, 211, 1027], [6, 209, 1028]],
+    skillModifiers: [],
+  },
+  6422: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6423: {
+    modifiers: [],
+    skillModifiers: [[6, 3319, 37, 547], [6, 3319, 281, 596], [6, 3319, 653, 847], [6, 3319, 654, 848]],
+  },
+  6424: {
+    modifiers: [],
+    skillModifiers: [[6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767]],
+  },
+  6425: {
+    modifiers: [[6, 552, 2147]],
+    skillModifiers: [],
+  },
+  6426: {
+    modifiers: [[6, 37, 2148]],
+    skillModifiers: [],
+  },
+  6427: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6428: {
+    modifiers: [],
+    skillModifiers: [[6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767]],
+  },
+  6484: {
+    modifiers: [[4, 113, 974], [4, 110, 977], [4, 109, 976], [4, 111, 975]],
+    skillModifiers: [],
+  },
+  6682: {
+    modifiers: [[6, 37, 2148]],
+    skillModifiers: [],
+  },
+  6683: {
+    modifiers: [[6, 552, 2147]],
+    skillModifiers: [],
+  },
+  6684: {
+    modifiers: [[6, 211, 2255], [6, 209, 2256], [6, 210, 2257], [6, 208, 2258], [6, 564, 2137], [6, 76, 2136]],
+    skillModifiers: [],
+  },
+  6686: {
+    modifiers: [],
+    skillModifiers: [
+      [6, 3300, 54, 351], [6, 3300, 158, 349], [6, 3300, 160, 767], [6, 3319, 37, 547], [6, 3319, 281, 596],
+      [6, 3319, 653, 847], [6, 3319, 654, 848],
+    ],
+  },
+  6730: {
+    modifiers: [[2, 4, 796], [6, 552, 554]],
+    skillModifiers: [],
+  },
+  6731: {
+    modifiers: [[2, 4, 796]],
+    skillModifiers: [],
+  },
+};
+
+/** dogma const: the effect categories and the operations the stacking warnings go by. */
+const EFFECT_CATEGORY_TARGET = 2;
+const EFFECT_CATEGORY_OVERLOAD = 5;
+const OPERATION = Object.freeze({ PRE_MUL: 0, PRE_DIV: 1, MOD_ADD: 2, MOD_SUB: 3, POST_MUL: 4, POST_DIV: 5, POST_PERCENT: 6 });
+/** fittingWarningsStackingPenalty ITEM_MODIFIER and NOT_ITEM_MOTIFIER: a modifier's domain told apart by its kind. */
+const ITEM_MODIFIER = 1;
+const NOT_ITEM_MODIFIER = 2;
+
+/** IsItGoodChange: whether a modifier's value makes its attribute better, by its operation and the attribute's highIsGood. */
+function isItGoodChange(value: number | null, operation: number, wantHigh: boolean): boolean {
+  if (value === null) return false;
+  if (operation === OPERATION.MOD_ADD || operation === OPERATION.MOD_SUB) return false;
+  const multiplies = operation === OPERATION.PRE_MUL || operation === OPERATION.POST_MUL;
+  const divides = operation === OPERATION.PRE_DIV || operation === OPERATION.POST_DIV;
+  if (wantHigh) {
+    if (multiplies) return value > 1.0;
+    if (operation === OPERATION.POST_PERCENT) return value > 0;
+    if (divides) return value < 1.0;
+    return false;
+  }
+  if (multiplies) return value < 1.0 && value !== 0;
+  if (operation === OPERATION.POST_PERCENT) return value < 0;
+  if (divides) return value > 1.0;
+  return false;
+}
+
+/** One unstackable change a module makes: the attribute, the operation, the skill it is for, the domain and its kind. */
+interface UnstackableChange {
+  readonly modifiedAttributeID: number;
+  readonly operation: number;
+  readonly skillTypeID: number | null;
+  readonly domain: string;
+}
+const changeKey = (change: UnstackableChange, skillTypeID = change.skillTypeID): string =>
+  `${change.modifiedAttributeID}|${change.operation}|${skillTypeID ?? "None"}|${change.domain}`;
+
+/**
+ * _FindModulesWithStackingPenalty: of each published module (IsModuleOfInterestForStacking), each effect but an
+ * overload's, its modifiers (a python effect's MODIFIER_CHANGES and SKILL_MODIFIER_CHANGES_FOR_LOCATION, on the target
+ * for a target effect, else on the ship; any other's modifierInfo) on an unstackable attribute; a target effect's all of
+ * them, any other's those its value makes better (IsItGoodChange).
+ */
+function unstackableChanges(staticData: DogmaStatic, typeID: number): { readonly own: UnstackableChange[]; readonly targeted: UnstackableChange[] } {
+  const own: UnstackableChange[] = [];
+  const targeted: UnstackableChange[] = [];
+  const type = staticData.types[typeID];
+  if (!type || type.published === false || ![CATEGORY_MODULE, CATEGORY_STRUCTURE_MODULE].includes(type.categoryID ?? -1)) return { own, targeted };
+  for (const effectID of type.effects) {
+    const effect = staticData.effects[effectID];
+    if (!effect || effect.category === EFFECT_CATEGORY_OVERLOAD) continue;
+    type Modifier = { readonly modifiedAttributeID: number | null; readonly modifyingAttributeID: number | null; readonly operation: number | null; readonly skillTypeID: number | null; readonly domain: string | null; readonly func: string | null };
+    let modifiers: Modifier[];
+    if (PYTHON_EFFECT_IDS.has(effectID)) {
+      const domain = effect.category === EFFECT_CATEGORY_TARGET ? "target" : "shipID";
+      const python = PYTHON_EFFECT_MODIFIERS[effectID];
+      modifiers = [
+        ...(python?.modifiers ?? []).map(([operation, to, from]): Modifier => ({ operation, modifiedAttributeID: to, modifyingAttributeID: from, domain, skillTypeID: null, func: "ItemModifier" })),
+        ...(python?.skillModifiers ?? []).map(([operation, skillTypeID, to, from]): Modifier => ({ operation, modifiedAttributeID: to, modifyingAttributeID: from, domain, skillTypeID, func: "LocationRequiredSkillModifier" })),
+      ];
+    } else {
+      modifiers = [...(effect.modifiers ?? [])];
+    }
+    for (const modifier of modifiers) {
+      if (modifier.modifiedAttributeID === null || modifier.operation === null) continue;
+      const modified = staticData.attributes[modifier.modifiedAttributeID];
+      if (!modified || modified.stackable) continue;
+      const change = {
+        modifiedAttributeID: modifier.modifiedAttributeID,
+        operation: modifier.operation,
+        skillTypeID: modifier.skillTypeID ?? null,
+        domain: `${modifier.domain}|${modifier.func === "ItemModifier" ? ITEM_MODIFIER : NOT_ITEM_MODIFIER}`,
+      };
+      if (effect.category === EFFECT_CATEGORY_TARGET) targeted.push(change);
+      else if (isItGoodChange(modifier.modifyingAttributeID === null ? null : typeAttribute(staticData, typeID, modifier.modifyingAttributeID), modifier.operation, modified.highIsGood)) own.push(change);
+    }
+  }
+  return { own, targeted };
+}
+
+/** A change and the fitted modules making it, each (typeID, flagID). */
+interface PenalizedChange {
+  readonly change: UnstackableChange;
+  readonly modules: Map<string, readonly [number, number]>;
+}
+
+/**
+ * FindFittedModulesWithStackingPenalty (FindModulesWithStackingPenalty, _GetStackingWarnings): of the items in the
+ * fitting's slots, each unstackable change and the modules making it (a skill's with those making it for every skill);
+ * more than three a medium warning, more than two a low one. The targeted ones low either way.
+ */
+function fittedModulesWithStackingPenalty(staticData: DogmaStatic, fittedModules: readonly (readonly [number, number])[]): { readonly medium: PenalizedChange[]; readonly low: PenalizedChange[]; readonly targetedLow: PenalizedChange[] } {
+  const own = new Map<string, PenalizedChange>();
+  const targeted = new Map<string, PenalizedChange>();
+  const changesOf = new Map<number, ReturnType<typeof unstackableChanges>>();
+  for (const [typeID, flagID] of fittedModules) {
+    let changes = changesOf.get(typeID);
+    if (!changes) {
+      changes = unstackableChanges(staticData, typeID);
+      changesOf.set(typeID, changes);
+    }
+    for (const [list, into] of [[changes.own, own], [changes.targeted, targeted]] as const) {
+      for (const change of list) {
+        const key = changeKey(change);
+        const held = into.get(key) ?? { change, modules: new Map<string, readonly [number, number]>() };
+        held.modules.set(`${typeID}|${flagID}`, [typeID, flagID]);
+        into.set(key, held);
+      }
+    }
+  }
+  const warnings = (changes: ReadonlyMap<string, PenalizedChange>) => {
+    const medium: PenalizedChange[] = [];
+    const low: PenalizedChange[] = [];
+    for (const held of changes.values()) {
+      const modules = new Map(held.modules);
+      if (held.change.skillTypeID) {
+        for (const [key, pair] of changes.get(changeKey(held.change, null))?.modules ?? []) modules.set(key, pair);
+      }
+      if (modules.size > 3) medium.push({ change: held.change, modules });
+      else if (modules.size > 2) low.push({ change: held.change, modules });
+    }
+    return { medium, low };
+  };
+  const ofOwn = warnings(own);
+  const ofTargeted = warnings(targeted);
+  return { medium: ofOwn.medium, low: ofOwn.low, targetedLow: [...ofTargeted.low, ...ofTargeted.medium] };
+}
+
+/** The attributes the python effects' changes name, for the static data to hold their records. */
+export const PYTHON_EFFECT_ATTRIBUTES: readonly number[] = [...new Set(Object.values(PYTHON_EFFECT_MODIFIERS)
+  .flatMap(({ modifiers, skillModifiers }) => [...modifiers.flatMap(([, to, from]) => [to, from]), ...skillModifiers.flatMap(([, , to, from]) => [to, from])]))];
 
 /** GetActiveWarningsByLevelFromResults: how many warnings at each level. */
 export function warningsByLevel(warnings: readonly FitWarning[]): ReadonlyMap<number, number> {

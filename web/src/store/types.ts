@@ -4,6 +4,7 @@
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
+import type { FittingSkillWarning } from "../bridge/fittingSkills.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { SkillNotification } from "../bridge/skillNotifications.ts";
@@ -441,6 +442,8 @@ export interface FittingState {
   readonly bayReadout?: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
   /** The active ship's fitting warnings as the page reckoned them (bridge/dogma/fittingWarnings.ts evaluateFit). */
   readonly warnings?: readonly FitWarning[];
+  /** Its skill warning (bridge/fittingSkills.ts); null where a fact it goes by is not held. */
+  readonly skillWarning?: FittingSkillWarning | null;
   /**
    * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
    * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
@@ -476,6 +479,8 @@ export interface FittingState {
     readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
     /** The simulated ship's fitting warnings (evaluateFit). */
     readonly warnings: readonly FitWarning[];
+    /** The simulated ship's skill warning; null where a fact it goes by is not held. */
+    readonly skillWarning: FittingSkillWarning | null;
     /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
     readonly fighterSquadrons: { readonly full: number; readonly partial: number };
     /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */
@@ -1322,6 +1327,8 @@ export interface AgentRow {
   readonly corporationID: number | null;
   readonly missionKind: string | null;
   readonly missionTypeLabel: string | null;
+  /** The agent's bloodline (Tranquility's table has it), where the table gives one: its Show Info's Description is the bloodline's. */
+  readonly bloodlineID?: number;
 }
 
 /**
@@ -1652,17 +1659,23 @@ export interface StandingComposition {
 
 /**
  * One row of a standing's HISTORY (standingMgr.GetStandingTransactions): a dated
- * event that changed the standing. `eventTypeID` is mapped to a plain label
- * (R9a); `modification` is the recorded raw change (a small server-owned float,
- * shown as-is — the client does not recompute standing math). `id` is a stable
- * list key only and is never rendered; the row's own fromID/toID/int_* fields
- * are entity ids and are NOT decoded, so no raw id can reach the panel (R7d).
+ * event that changed the standing, as the client's standing service keeps it
+ * (standingsvc.GetStandingTransactions: the modification times ten). Its fromID,
+ * int_1 to int_3 and msg are what the client words its reason by
+ * (eveFormat.FmtStandingTransaction, bridge/standingTransactions.ts): an owner or a
+ * place they name is shown by its name, never its number (R7d). `id` is a stable
+ * list key only and is never rendered.
  */
 export interface StandingTransaction {
   readonly id: string;
   readonly date: bigint | null;
   readonly eventTypeID: number;
   readonly modification: number;
+  readonly fromID: number | null;
+  readonly msg: string | null;
+  readonly int1: number | null;
+  readonly int2: number | null;
+  readonly int3: number | null;
 }
 
 /**
@@ -1677,28 +1690,30 @@ export interface StandingTransaction {
  * rides in the matching *Error); a SUCCESSFUL read with no rows decodes to [] —
  * a real "no standings with anyone yet" (worldHasNoContracts precedent).
  *
- * The drill-down is loaded on demand for one selected entity: a character-row's
- * standing HISTORY (`transactions`) or a corp-row's per-member COMPOSITION
- * (`compositions`). `detailFromID`/`detailScope` say which row (and section) the
- * loaded detail belongs to, so a late read never repaints the wrong row.
+ * Each list's selected owner's drill-down is loaded on demand, each list its own (the
+ * client's two standings panels hold one each): the pilot's standing HISTORY with it
+ * (`transactions`) or the corporation's per-member COMPOSITION (`compositions`).
+ * `fromID` says whose it is, so a late read never repaints another owner.
  */
+export interface StandingDetail {
+  readonly fromID: number;
+  readonly transactions: readonly StandingTransaction[] | null;
+  readonly compositions: readonly StandingComposition[] | null;
+  readonly error: string | null;
+}
 export interface StandingsState {
   readonly char: readonly CharStanding[] | null;
   readonly charError: string | null;
   readonly corp: readonly CharStanding[] | null;
   readonly corpError: string | null;
   readonly loaded: boolean;
-  readonly detailFromID: number | null;
-  readonly detailScope: "char" | "corp" | null;
-  readonly transactions: readonly StandingTransaction[] | null;
-  readonly compositions: readonly StandingComposition[] | null;
-  readonly detailError: string | null;
+  readonly details: { readonly char: StandingDetail | null; readonly corp: StandingDetail | null };
 }
 
 // --- R56 Character Sheet ----------------------------------------------------
 
 /**
- * Who this character is, from charMgr.GetPublicInfo3 (goal R56). Public identity
+ * Who this character is, from charMgr.GetPublicInfo and crimewatch.GetMySecurityStatus (goal R56). Public identity
  * only — the same fields any character can see about another. Every id here is
  * kept ONLY to be resolved to a name (R7d): `corporationID`/`allianceID` are
  * name-resolved by the page and NEVER rendered as numbers; a PLAYER corp that

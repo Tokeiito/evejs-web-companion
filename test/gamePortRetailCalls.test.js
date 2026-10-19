@@ -485,14 +485,18 @@ test("targeting, onlining, scooping and boarding a ship are the client's calls a
   }
 });
 
-test("ammunition goes in and out with its modules as a list, and one module by itself when a quantity is named", () => {
+test("ammunition goes in and out with its modules as a list, and one module by itself when a quantity is named or a module goes into a container", () => {
   assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, [7, 8], [31, 32], 60003760]).args, [5000, list([7, 8]), list([31, 32]), 60003760]);
   assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, list([7]), list([31]), 5000]).args, [5000, list([7]), list([31]), 5000], "already lists: kept");
   assert.equal(form("dogmaIM.LoadAmmo", [5000, [7], [31], 5000]).status, "reshaped");
   const hangar = [60003760, 140000001, 4];
-  // No quantity: the modules as a list, the place as it came (a tuple, which is what an array is on the wire).
+  // No quantity (UnloadAmmoFromModules): the modules as a list, the place as it came (a tuple, which is what an
+  // array is on the wire).
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7, 8], hangar]).args, [5000, list([7, 8]), hangar]);
-  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, null]).args, [5000, list([7]), hangar]);
+  // UnloadModuleToContainer: one module by itself and the container, as Tranquility recorded it.
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, 7, 5000]).args, [5000, 7, 5000]);
+  // UnloadAmmoToContainer with no quantity named: the one module, and None for the quantity.
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, null]).args, [5000, 7, hangar, null]);
   // A quantity: the one module by itself.
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, 40]).args, [5000, 7, hangar, 40]);
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, list([7]), hangar, 40]).args, [5000, 7, hangar, 40]);
@@ -1722,6 +1726,12 @@ test("what goes up into a customs office, and comes down from one, goes as the c
 
 test("the game port carries the customs office's transfer, the station's offices and the clone's grade, which the web gateway's list has not got", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // EditMemberDialog.LoadChar 148: the private character row for Member Details.
+    "charMgr.GetPrivateInfo",
+    // bannedwords_client.py 80-82: config-gated positional search validation.
+    "bannedwords.check_search_words_allowed",
+    // facWarSvc.py 92; the member panel and recorded corporate invite read this militia affiliation.
+    "facWarMgr.GetCorporationWarFactionID",
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
     "subscriptionMgr.GetCloneGrade",
@@ -1841,6 +1851,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions",
     // The pilot's expert systems and one taken out. The gateway's list has nothing of the expert systems'.
     "expertSystemMgr.GetMyExpertSystems", "expertSystemMgr.RemoveMyExpertSystem",
+    // The NPCs' standings with each other, an owner's Standings tab. The gateway's list has it not.
+    "standingMgr.GetNPCNPCStandings",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.

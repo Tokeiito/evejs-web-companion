@@ -88,8 +88,15 @@
   const globalChips = $derived(globalWins ?? []);
   // Only the ones actually on the surface get drawn.
   const shown = $derived(openHere.filter((w) => !w.minimized));
+  // OpenMemberDetails maximizes the existing dialog, preserving its unsubmitted edits.
+  const mounted = $derived(openHere.filter((w) => !w.minimized || w.id === "memberDetails"));
 
   let deskEl = $state<HTMLElement | null>(null);
+  /** The desktop's size now, in whole pixels, or null before it is laid out (a window's place is registered with it). */
+  export function surfaceSize(): { readonly w: number; readonly h: number } | null {
+    const box = deskEl?.getBoundingClientRect();
+    return box && box.width > 0 && box.height > 0 ? { w: Math.round(box.width), h: Math.round(box.height) } : null;
+  }
 
   // A window is absolutely positioned and the desktop clips anything past its
   // own box (the same clip R70's tactical view relies on) — so a window placed
@@ -142,7 +149,7 @@
       lose sight of what you were doing.
     </p>
   {/if}
-  {#each shown as win (win.id)}
+  {#each mounted as win (win.id)}
     <DesktopWindow
       {win}
       title={tabLabel(win.id)}
@@ -153,7 +160,7 @@
       onMove={(x, y) => onMove(win.id, x, y)}
       onResize={(w, h) => onResize(win.id, w, h)}
     >
-      <PanelHost {store} {flow} tab={win.id} onOpen={onOpen} {sessions} />
+      <PanelHost {store} {flow} tab={win.id} onOpen={onOpen} onClose={() => onClose(win.id)} {sessions} />
     </DesktopWindow>
   {/each}
   {#if openHere.length > 0 || globalChips.length > 0}

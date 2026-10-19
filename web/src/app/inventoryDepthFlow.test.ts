@@ -558,18 +558,25 @@ test("selectCorpDivision switches the shown division and clears the selection", 
   );
 });
 
-test("a corp move names the division by ORDINAL — never by a flag number", async () => {
+test("a move into the corporation's hangar asks the client's one-way question first, and Cancel moves nothing", async () => {
+  // invControllers BaseCorpContainer.oneWay (820) and PromptOneWayMove (595 and 596): ConfirmOneWayItemMove, OK and
+  // Cancel, before anything from elsewhere is put into the corporation's hangar (__AddItem 197 to 202, AddItems 529).
+  // (Until 2026-10-18 this test named the division by ordinal on /api/bridge/inventory/transfer, a route the page no
+  // longer moves by: it makes the client's own call, bridge/inventoryWrites.ts, the division's flag its own.)
   const store = createClientStore();
   const { fetch, requests } = standardFetch();
   const flow = createAppFlow(store, { fetch });
+  const before = requests.length;
 
-  await flow.transferItems([100], { kind: "hangar" }, { kind: "corp", division: 2 });
+  const moving = flow.transferItems([100], { kind: "hangar" }, { kind: "corp", division: 2 });
+  for (let tries = 0; tries < 5 && flow.dialogsSaid.get().length === 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  const asked = flow.dialogsSaid.get();
+  assert.deepEqual(asked.map((one) => [one.dialog, one.answers]), [["ConfirmOneWayItemMove", "okcancel"]]);
+  flow.answerDialog(asked[0]!.n, false);
+  await moving;
 
-  const transfer = requests.find((r) => r.path === "/api/bridge/inventory/transfer");
-  assert.deepEqual(transfer!.body.to, { kind: "corp", division: 2 });
-  // 116 is flagCorpSAG2 — the mapping lives on the BFF and must never appear
-  // in a request the browser builds.
-  assert.equal(JSON.stringify(transfer!.body).includes("116"), false);
+  assert.deepEqual(requests.slice(before).map((r) => r.path).filter((path) => path.startsWith("/api/bridge/call") || path.startsWith("/api/bridge/inventory/transfer")), []);
+  assert.equal(store.inventory.get().actionError, null, "Cancel is no failure");
 });
 
 test("after a mutation every open place is re-read, not just the hangar", async () => {

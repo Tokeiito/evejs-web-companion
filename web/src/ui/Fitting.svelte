@@ -31,7 +31,8 @@
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
   import { abbreviate } from "./fittingIcons.ts";
-  import { HANGAR_NAME } from "./inventoryModel.ts";
+  import { HANGAR_NAME, moveQuantityFor, rowsIn } from "./inventoryModel.ts";
+  import type { InventoryPlace } from "../store/types.ts";
   // R78 — drag and drop. The RULES (what may be dropped where, and why not) live
   // in a pure module, because a target that decides inside `dragover` can only be
   // checked by dragging onto it — and `dragover` is also what tells the cursor
@@ -41,6 +42,7 @@
     DRAG_MIME,
     carriesOurPayload,
     decodeDrag,
+    dropOnPlaceVerdict,
     dropOnSocketVerdict,
     encodeDrag,
     type DragPayload,
@@ -57,14 +59,25 @@
     WARNING_LEVEL_HIGH,
     WARNING_LEVEL_LOW,
     WARNING_LEVEL_MEDIUM,
+    WARNING_LEVEL_SKILL,
     WARNINGS_BY_ID,
     type FitWarningRow,
   } from "../bridge/dogma/fittingWarnings.ts";
+  import RequiredSkillRow from "./RequiredSkillRow.svelte";
+  import SkillTrainingAction from "./SkillTrainingAction.svelte";
+  import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
+  import { createSkillPlanButton } from "./skillPlanTemplate.ts";
+  import { openShipHold } from "./shipHold.ts";
+  import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
+  import { BAY_FLAGS } from "../bridge/inventoryWrites.ts";
+  import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
+  import type { TypeMetaFacts } from "../app/api.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import LabelText from "./LabelText.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  import type { AppFlow, SkillsRequiredRow, SkillTrainingRecord } from "../app/flow.ts";
   import type {
     FittingResource,
     FittingSlot,
@@ -763,12 +776,31 @@
   // search for the type's exact name, assetsSearch.ts); and Compare, the type's category being among compareCategories
   // (2347 to 2348: every hull's is; CompareType, the compare tool, typeCompare.ts). Not the page's: a GM's "GM / WM
   // Extras".
-  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  // The same menu is a picker's entry's and a tube's squadron's (ItemPickerBase.GetMenu, SingleTube.GetSquadronMenu:
+  // GetMenuFromItemIDTypeID(itemID, typeID, includeMarketDetails=True); the item only Show Info's, and the simulation's
+  // items have no info of their own), its type's market group, publishing and category read as it opens (`facts`:
+  // undefined for a hull, whose the browser holds; null until read).
+  let hullMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number; readonly facts?: TypeMetaFacts | null } | null>(null);
   function openHullMenu(typeID: number, event: MouseEvent): void {
     event.preventDefault();
     nodeMenu = null;
     hullMenu = { typeID, x: event.clientX, y: event.clientY };
   }
+  function openTypeMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    nodeMenu = null;
+    hullMenu = { typeID, x: event.clientX, y: event.clientY, facts: null };
+    void flow.typeFacts([typeID]).then((read) => {
+      const facts = read?.get(typeID) ?? null;
+      if (facts !== null && hullMenu?.typeID === typeID && hullMenu.facts === null) hullMenu = { ...hullMenu, facts };
+    }).catch(() => {});
+  }
+  /** The menu's type's market group, publishing, whether it may be compared (compareCategories), and its name. */
+  type TypeMenu = NonNullable<typeof hullMenu>;
+  const menuMarketGroup = (menu: TypeMenu) => (menu.facts === undefined ? $hullBrowser?.types.get(menu.typeID)?.marketGroupID ?? null : menu.facts?.marketGroupID ?? null);
+  const menuPublished = (menu: TypeMenu) => (menu.facts === undefined ? $hullBrowser?.types.get(menu.typeID)?.published === true : menu.facts?.published === true);
+  const menuComparable = (menu: TypeMenu) => (menu.facts === undefined ? true : COMPARE_CATEGORIES.includes(menu.facts?.categoryID ?? -1));
+  const menuTypeName = (menu: TypeMenu) => (menu.facts === undefined ? hullName(menu.typeID) : moduleName(menu.typeID));
   // A group's or a race's menu (ShipParentGroup.GetMenu, fittingBrowser.py 579 to 583): Compare, which compares the
   // node's hulls in the order it holds them (menusvc.CompareTypes(node.typeIDs): the compare tool opened, typeCompare.ts);
   // then the list group's own (ListGroup.GetMenu, 284 to 311): Expand or Collapse, the node being locked (no Change
@@ -1168,6 +1200,35 @@
     "UI/Fitting/FittingWindow/Warnings/HeaderHigh": "Fitting problems",
     "UI/Fitting/FittingWindow/Warnings/HeaderMedium": "Fitting cautions",
     "UI/Fitting/FittingWindow/Warnings/HeaderLow": "Fitting notes",
+    // The skill warning's tooltip (GetSkillTooltip, AddMissingSkillRequirements, RequiredSkillRow).
+    "UI/Fitting/FittingWindow/Warnings/HeaderSkills": "Skills short",
+    "UI/Skills/RequiredSkills": "Skills needed",
+    "UI/Fitting/FittingWindow/Warnings/ShipAndFit": "The ship and its modules",
+    "UI/Fitting/FittingWindow/Warnings/CargoHold": "In the cargo",
+    "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
+    "UI/SkillQueue/SkillBookMissing": "The book is not injected",
+    "UI/SkillQueue/RareSkillBookMissing": "The book is not injected, and is not sold",
+    "UI/InfoWindow/SkillNotTrainedToRequiredLevel": "Short of the level needed",
+    // The tooltip's training time and action (AddTrainingTime, SkillActionContainer).
+    "Tooltips/SkillPlanner/OmegaTrainingTime": "Time to train it (omega)",
+    "Tooltips/SkillPlanner/TrainingTime": "Time to train it",
+    "Tooltips/SkillPlanner/TrainingComplete": "Trained",
+    "Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity": "Only an omega clone can {doActivity}",
+    "Tooltips/SkillPlanner/ActivityFlyFittedShip": "fly this ship as fitted",
+    "UI/CloneState/Upgrade": "Upgrade",
+    "UI/Skills/SkillPointsRequired": "Points it takes",
+    "UI/Skills/TrainSkills": "Train them",
+    "Tooltips/SkillPlanner/AddAllSkillsToQueueButton": "Put them all in the queue",
+    "Tooltips/SkillPlanner/AddAllSkillsToQueueButtonFinished": "They are all in the queue",
+    "UI/Skills/BuyAndTrain": "Buy them and train",
+    "UI/Skills/ErrorRareRequirements": "A book this needs is not sold directly",
+    "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
+    "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
+    // Its Create Skill Plan button (CreateSkillPlanButton), its plan named for the fit (GetSkillTooltip's skillPlanName).
+    "Tooltips/SkillPlanner/SkillPlanButtonTooltip": "Begin a skill plan of these",
+    "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as may be had.",
+    "Tooltips/SkillPlanner/SkillPlanNameStringWithType": "A plan for {typeName}",
+    "UI/SkillPlan/DefaultCreateFitSkillPlanName": "A plan for this fit",
     "UI/Fitting/FittingWindow/Warnings/SubsystemShort": "Subsystem slots empty",
     "UI/Fitting/FittingWindow/Warnings/SubsystemHint": "A strategic cruiser needs a subsystem in each of its subsystem slots.",
     "UI/Fitting/FittingWindow/Warnings/ModulesInInvalidSlotsShort": "Modules in slots the hull lacks",
@@ -1202,6 +1263,19 @@
     "UI/Fitting/FittingWindow/Warnings/InefficientPropModHint": "A freighter gains little from a propulsion module.",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledShort": "Bubble immunity lost",
     "UI/Fitting/FittingWindow/Warnings/BubbleImmunityDisabledHint": "A fitted module takes away the hull's immunity to warp bubbles.",
+    "UI/Fitting/FittingWindow/Warnings/NotProvidingBonusShort": "Modules with nothing to improve",
+    "UI/Fitting/FittingWindow/Warnings/NotProvidingBonusHint": "These modules improve other equipment, and nothing fitted or carried is of the kind they improve.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedShort": "Penalized several times over",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyMedHint": "More than three modules change the same thing, each a little less than the last.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyLowShort": "Penalized when stacked",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyLowHint": "Three modules change the same thing, the third a little less than the others.",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyTargetedLowShort": "Penalized when stacked on one target",
+    "UI/Fitting/FittingWindow/Warnings/StackingPenaltyTargetedLowHint": "Several modules change the same thing on a target, each a little less than the last.",
+    "UI/Fitting/FittingWindow/Warnings/ForEquipmentRequiringSkill": "(on modules needing {skillName})",
+    "UI/Fitting/FittingWindow/Warnings/MissingChargesForRequiredShort": "Modules without their charges",
+    "UI/Fitting/FittingWindow/Warnings/MissingChargesForRequiredHint": "These modules do nothing without charges, and the holds have too few to fill them.",
+    "UI/Fitting/FittingWindow/Warnings/MissingChargesForOptionalShort": "Modules short of charges",
+    "UI/Fitting/FittingWindow/Warnings/MissingChargesForOptionalHint": "These modules work better loaded, and the holds have too few charges to fill them.",
     "UI/InfoWindow/SmallSize": "Small",
     "UI/InfoWindow/MediumSize": "Medium",
     "UI/InfoWindow/LargeSize": "Large",
@@ -1403,13 +1477,77 @@
     return slots;
   }
   function openWarningTooltip(level: number): void {
+    skillTooltipOpen = false;
     warningTooltipLevel = level;
     warningSlots = levelSlots(level);
   }
   /** TooltipPanelBeingDestroyed: the tooltip closed, no slot shown with a warning. */
   function closeWarningTooltip(): void {
     warningTooltipLevel = null;
+    skillTooltipOpen = false;
     warningSlots = new Map();
+  }
+  // The skill warning (SkillWarningIcon: warningSkills.png in the skill level's colour, with how many skills the ship
+  // and what it holds miss), on the icons' row where fewer than three levels have warnings, else under them.
+  const fitSkillWarning = $derived.by(() => (simulation ? simulation.skillWarning : $fitting.skillWarning ?? null));
+  const SKILL_WARNING_ICON = clientTexture("res:/ui/Texture/classes/Fitting/warningSkills.png");
+  let skillTooltipOpen = $state(false);
+  /** The tooltip's rows as read when it opened, by skill and level; and its training time and action. */
+  let skillRows = $state<ReadonlyMap<string, SkillsRequiredRow>>(new Map());
+  let skillTraining = $state<SkillTrainingRecord | null>(null);
+  /** The personal plans' count as the tooltip opened, for its Create Skill Plan button's limit. */
+  let skillPlanCount = $state<number | null>(null);
+  /**
+   * LoadSkillTooltip: the tooltip open (GetSkillTooltip), its rows read as the pilot's skills and queue stand now, and
+   * the slots and holds whose items miss skills shown at the skill level (GetSlotsMissingSkills).
+   */
+  function openSkillTooltip(): void {
+    const warning = fitSkillWarning;
+    if (!warning) return;
+    warningTooltipLevel = null;
+    skillTooltipOpen = true;
+    warningSlots = new Map(warning.flags.map((flagID) => [flagID, WARNING_LEVEL_SKILL]));
+    skillTraining = null;
+    void flow.personalSkillPlanCount().then((count) => (skillPlanCount = count)).catch(() => {});
+    void flow.fittingSkillTooltip(warning)
+      .then(({ rows, training }) => {
+        skillRows = new Map(rows.map((row) => [`${row.skill}:${row.level}`, row]));
+        skillTraining = training;
+      })
+      .catch(() => {});
+  }
+  function closeSkillTooltip(): void {
+    skillTooltipOpen = false;
+    warningSlots = new Map();
+  }
+  /** The pickers' entries' and the tubes' warning mark (slotWarningIcon.png, tinted the level's colour). */
+  const PICKER_WARNING_ICON = clientTexture("res:/UI/Texture/classes/Fitting/slotWarningIcon.png");
+  /**
+   * HiliteProblematicEntries and UpdateProblematicEntries: a picker's entry marked at the level its picker's flag is
+   * shown with (the cargo hold's, the drone bay's, the fighter bay's): every entry at another level, at the skill
+   * level only those whose types miss skills (GetMissingSkills_HighestLevelByTypeID).
+   */
+  function pickerWarningColor(flagID: number, typeID: number): string | null {
+    const level = warningSlots.get(flagID);
+    if (level === undefined) return null;
+    if (level === WARNING_LEVEL_SKILL && !(fitSkillWarning?.typesMissing ?? []).includes(typeID)) return null;
+    return COLOR_BY_LEVEL[level] ?? null;
+  }
+  /**
+   * UpdateProblematicFigtersInTubes: a tube's squadron marked in the colour its tube's flag is shown with, only where
+   * its fighters' type misses skills.
+   */
+  function tubeWarningColor(tubeFlagID: number, typeID: number): string | null {
+    if (!(fitSkillWarning?.typesMissing ?? []).includes(typeID)) return null;
+    const level = warningSlots.get(tubeFlagID);
+    return level === undefined ? null : COLOR_BY_LEVEL[level] ?? null;
+  }
+  /** AddMissingSkillRequirements' rows: by the skills' names (SortListOfTuples). */
+  function bySkillName(skills: readonly (readonly [number, number])[]): readonly (readonly [number, number])[] {
+    return [...skills].sort(([left], [right]) => {
+      const [a, b] = [moduleName(left), moduleName(right)];
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
   }
   /** OnMouseEnterContainer: a line's or a row's slots shown with its warning; OnMouseExitContainer: none. */
   function showWarningSlots(flags: readonly number[], level: number): void {
@@ -1417,6 +1555,18 @@
   }
   /** FilterResultsForWarningLevel: the open level's warnings, in the tooltip's order. */
   const tooltipWarnings = $derived.by(() => (warningTooltipLevel === null ? [] : fitWarnings.filter((warning) => warning.level === warningTooltipLevel)));
+  /**
+   * CargoFighterSlots.ChangeWarningDisplay: the fighter bay's readout framed at the highest level its bay's or its
+   * tubes' flags are shown with (the drone bay's readout has no frame).
+   */
+  function fighterBayWarningColor(): string | null {
+    let level: number | null = null;
+    for (const flagID of [158, 159, 160, 161, 162, 163]) {
+      const at = warningSlots.get(flagID);
+      if (at !== undefined && (level === null || at > level)) level = at;
+    }
+    return level === null ? null : COLOR_BY_LEVEL[level] ?? null;
+  }
   /** A warning's colour at a slot's flag, where it is shown with one. */
   function slotWarningColor(flagID: number | null): string | null {
     const level = flagID === null ? undefined : warningSlots.get(flagID);
@@ -1439,8 +1589,74 @@
   }
   /** The rows under a line: AddTurretOrLauncherGroups by the groups' names; the others as they come. */
   function warningRows(rows: readonly FitWarningRow[]): readonly FitWarningRow[] {
+    if (rows.some((row) => row.kind === "attribute")) return attributeRows(rows);
     const groupName = (row: FitWarningRow) => (row.kind === "group" ? resolvedName($names.resolved, "group", row.groupID) : "");
     return [...rows].sort((left, right) => (left.kind === "group" && right.kind === "group" ? (groupName(left) < groupName(right) ? -1 : groupName(left) > groupName(right) ? 1 : 0) : 0));
+  }
+  // The penalized attributes' names and pictures (dogma_data.get_attribute_display_name, get_attribute_icon_id), read once.
+  let warningAttributes = $state<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }>>(new Map());
+  $effect(() => {
+    const wanted = [...new Set(fitWarnings.flatMap((warning) => warning.rows.flatMap((row) => (row.kind === "attribute" ? [row.attributeID] : []))))]
+      .filter((attributeID) => !warningAttributes.has(attributeID))
+      .slice(0, 32);
+    if (wanted.length === 0) return;
+    void flow.attributeDisplay(wanted).then((shown) => {
+      const merged = new Map(warningAttributes);
+      for (const attributeID of wanted) merged.set(attributeID, shown?.get(attributeID) ?? { displayNameID: null, iconFile: null });
+      warningAttributes = merged;
+      flow.requestWords([...merged.values()].flatMap((each) => (each.displayNameID === null ? [] : [`#${each.displayNameID}`])));
+    });
+  });
+  /** An attribute's name as its message gives it. */
+  function attributeName(attributeID: number): string {
+    const messageID = warningAttributes.get(attributeID)?.displayNameID ?? null;
+    const template = messageID === null ? undefined : $words.templates[`#${messageID}`];
+    return typeof template === "string" ? plainText(formatTemplate(template, {}, { nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id) })) : "";
+  }
+  /**
+   * AddAttributes' row, in the label's markup: the attribute's name, and for a skill's change ForEquipmentRequiringSkill
+   * on the line under it.
+   */
+  function attributeRowText(row: Extract<FitWarningRow, { kind: "attribute" }>): string {
+    const name = attributeName(row.attributeID);
+    if (row.skillTypeID === null) return name;
+    const label = "UI/Fitting/FittingWindow/Warnings/ForEquipmentRequiringSkill";
+    const template = $words.templates[label];
+    const skillLine = formatTemplate(typeof template === "string" && template !== "" ? template : SIMULATION_WORDS[label] ?? "", { skillName: moduleName(row.skillTypeID) }, {
+      nameOf: (kind, id) => String($names.resolved[nameKey(kind, id)] ?? id),
+    });
+    return `${name}<br>${skillLine}`;
+  }
+  /**
+   * AddAttributes: the penalized attributes by the modules making the change (those groups in the order met; the
+   * client walks them in its dict's hash order), each
+   * group's by their names; one already shown for the same modules under the same words not again.
+   */
+  function attributeRows(rows: readonly FitWarningRow[]): readonly FitWarningRow[] {
+    const groups = new Map<string, Extract<FitWarningRow, { kind: "attribute" }>[]>();
+    for (const row of rows) {
+      if (row.kind !== "attribute") continue;
+      const group = groups.get(row.modulesKey) ?? [];
+      group.push(row);
+      groups.set(row.modulesKey, group);
+    }
+    const shown: FitWarningRow[] = [];
+    const added = new Map<string, Set<string>>();
+    for (const [modulesKey, group] of groups) {
+      const sorted = [...group].sort((left, right) => {
+        const [a, b] = [attributeName(left.attributeID), attributeName(right.attributeID)];
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      for (const row of sorted) {
+        const text = attributeRowText(row).toLowerCase();
+        const seen = added.get(text) ?? new Set<string>();
+        if (seen.has(modulesKey)) continue;
+        seen.add(modulesKey);
+        added.set(text, seen);
+        shown.push(row);
+      }
+    }
+    return shown;
   }
   const SIZE_LABELS: Readonly<Record<number, string>> = { 1: "UI/InfoWindow/SmallSize", 2: "UI/InfoWindow/MediumSize", 3: "UI/InfoWindow/LargeSize", 4: "UI/InfoWindow/XLargeSize" };
   $effect(() => {
@@ -1453,9 +1669,13 @@
       for (const row of warning.rows) {
         if (row.kind === "module") refs.push({ kind: "type", id: row.typeID });
         else if (row.kind === "group" || row.kind === "subsystem") refs.push({ kind: "group", id: row.groupID });
+        else if (row.kind === "attribute" && row.skillTypeID !== null) refs.push({ kind: "type", id: row.skillTypeID });
       }
     }
-    if (fitWarnings.length > 0) flow.requestNames(refs);
+    // The skills the skill tooltip lists, and the injectors its apply-points button may name.
+    for (const [skill] of [...(fitSkillWarning?.fit ?? []), ...(fitSkillWarning?.cargo ?? [])]) refs.push({ kind: "type", id: skill });
+    if ((fitSkillWarning?.count ?? 0) > 0) refs.push({ kind: "type", id: TYPE_SKILL_INJECTOR }, { kind: "type", id: TYPE_ALPHA_TRAINING_INJECTOR });
+    if (fitWarnings.length > 0 || (fitSkillWarning?.count ?? 0) > 0) flow.requestNames(refs);
   });
   /** The fit-name label's link icon (fittingWnd: res:/UI/Texture/classes/HyperNet/hyperlink_icon.png). */
   const HYPERLINK_ICON = clientTexture("res:/UI/Texture/classes/HyperNet/hyperlink_icon.png");
@@ -1631,6 +1851,120 @@
     }
     simFightersOpen = !simFightersOpen;
   }
+  /**
+   * An item dragged out of the inventory onto a simulated hold (minihangar CargoSlots.OnDropData, its nodes): its row,
+   * as the inventory holds it (the hangar, the cargo, a ship's bays or a container open), for its type, category and
+   * stack. Any item: the hold's own rules then take what they take.
+   */
+  function droppedItem(event: DragEvent): { readonly typeID: number; readonly categoryID: number | null; readonly quantity: number } | null {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    if (payload?.kind !== "inventoryItem") return null;
+    const rows = [
+      ...$inventory.hangar.rows, ...$inventory.cargo.rows, ...($inventory.container?.rows ?? []),
+      ...($inventory.openShip?.bays ?? []).flatMap((bay) => bay.items ?? []),
+    ];
+    const row = rows.find((each) => each.itemID === payload.itemID);
+    return { typeID: payload.typeID, categoryID: row?.categoryID ?? null, quantity: row?.quantity ?? 1 };
+  }
+  /**
+   * A hold's readout given items dragged out of the inventory, not simulating (CargoCargoSlots, CargoDroneSlots and
+   * CargoFighterSlots OnDropData: invCtrl.ShipCargo, ShipDroneBay, ShipFighterBay(activeShip).OnDropData): the drag's
+   * selection (its nodes) moved into that hold of the active ship, as the inventory moves them (a single stack held to
+   * what fits; a drop on the place it is in refused and said).
+   */
+  function dropOnRealHold(event: DragEvent, to: InventoryPlace): void {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    if (payload === null) return;
+    event.preventDefault();
+    const verdict = dropOnPlaceVerdict(payload, to);
+    if (verdict !== null) {
+      error = verdict;
+      return;
+    }
+    // One node off a slot of the ship, onto the cargo (CargoCargoSlots.OnDropData, 282 to 290): a module is
+    // UnloadModuleToContainer to the cargo, a charge UnloadAmmoToContainer.
+    if (payload.kind === "fittedModule") {
+      void run(async () => {
+        await flow.unloadModuleToCargo(payload.itemID);
+        selected = null;
+        await flow.loadInventory();
+      });
+      return;
+    }
+    if (payload.kind === "fittedCharge") {
+      void run(async () => {
+        await flow.unloadChargeToCargo(payload.flagID);
+        await flow.loadInventory();
+      });
+      return;
+    }
+    const from = payload.from;
+    const ticked = $inventory.selection.length > 0 ? [...$inventory.selection] : [payload.itemID];
+    const selectedRows = rowsIn($inventory, from).filter((row) => ticked.includes(row.itemID));
+    const quantity = moveQuantityFor({ inventory: $inventory, destination: to, selection: ticked, selectedRows, typedQuantity: null });
+    if (quantity.kind === "refused") {
+      error = quantity.message;
+      return;
+    }
+    void run(() => flow.transferItems(ticked, from, to, quantity.quantity));
+  }
+  /**
+   * The type a Shift-held drag of a module that groups is linking (OnStartSlotLinkingMode, baseFitting 147 to 155):
+   * while it lasts every slot with a module of another type is faded to a tenth, and back at the drag's end
+   * (OnResetSlotLinkingMode, slot.OnEndDrag).
+   */
+  let linkingTypeID = $state<number | null>(null);
+  /**
+   * A real slot dragged (fittingSlotController.GetDragData): the charge where one is loaded (its nodes, whatever is
+   * held), else the module; with Shift held a module that groups is dragged as ever and starts the slot linking mode,
+   * and one that does not is not dragged at all.
+   */
+  function startSlotDrag(event: DragEvent, slot: FittingSlot): void {
+    const module = slot.module;
+    const flagID = slotFlagOf(slot.family, slot.index);
+    if (simulation || module === null || flagID === null || !event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
+    let payload: DragPayload;
+    if (module.charge) {
+      payload = { kind: "fittedCharge", moduleID: module.itemID, flagID, typeID: module.charge.typeID };
+    } else if (event.shiftKey && !GROUPABLE_GROUP_IDS.has(module.groupID ?? -1)) {
+      event.preventDefault();
+      return;
+    } else {
+      payload = { kind: "fittedModule", itemID: module.itemID, typeID: module.typeID };
+      if (event.shiftKey) linkingTypeID = module.typeID;
+    }
+    event.dataTransfer.setData(DRAG_MIME, encodeDrag(payload));
+    event.dataTransfer.setData("text/plain", moduleName(payload.typeID));
+    event.dataTransfer.effectAllowed = "move";
+  }
+  /** A simulated hold's readout taking an item dragged out of the inventory (its OnDropData). */
+  function overSimulatedHold(event: DragEvent): void {
+    if (carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) event.preventDefault();
+  }
+  /** CargoCargoSlots.AddSimulatedCargo: one of each item dropped (GetQtyByTypeIDs), put in the hold (TryFitItemsToCargo). */
+  function dropOnSimulatedCargo(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    void run(() => flow.addSimulatedCargo(item.typeID));
+  }
+  /** CargoDroneSlots.AddSimulatedDrones: one of each item dropped, a drone only (TryFitDronesToDroneBay). */
+  function dropOnSimulatedDroneBay(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    void run(() => flow.addSimulatedDrones(item.typeID));
+  }
+  /** CargoFighterSlots.AddSimulatedFighters: one of each item dropped, a fighter only, to a tube or the bay. */
+  function dropOnSimulatedFighterBay(event: DragEvent): void {
+    const item = droppedItem(event);
+    if (!item) return;
+    event.preventDefault();
+    if (item.categoryID === 87) void run(() => flow.addSimulatedFighters(item.typeID, 1));
+  }
   /** The picked item's stack (a dropped item's stacksize). */
   function pickedQuantity(): number {
     return fittableRows().find((entry) => entry.row.itemID === pickedItemID)?.row.quantity ?? 1;
@@ -1675,6 +2009,13 @@
     if (typeID !== null && fighter) void run(() => flow.addSimulatedFighterBay(typeID, qty));
   }
   function dropOnFighterBayList(event: DragEvent): void {
+    // An item dragged out of the inventory: _TryAddToFighterBay, as many as its stack, a fighter only.
+    const item = droppedItem(event);
+    if (item) {
+      event.preventDefault();
+      if (item.categoryID === 87) void run(() => flow.addSimulatedFighterBay(item.typeID, item.quantity));
+      return;
+    }
     const drag = fighterDrag;
     fighterDrag = null;
     if (drag?.from !== "tube") return;
@@ -1855,14 +2196,56 @@
 
   function dropOnSocket(event: DragEvent, slot: FittingSlot): void {
     dropSlot = null;
+    linkingTypeID = null;
     const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
-    const verdict = dropOnSocketVerdict(payload);
+    const verdict = dropOnSocketVerdict(payload, simulation !== null);
     event.preventDefault();
     if (verdict !== null) {
       // Refused, and SAID — the panel's existing error line, so a rejected drop
       // reads the same way a rejected click does.
       error = verdict;
       return;
+    }
+    // The real ship's slot (fittingScreen/fittingSlotController.OnDropData, Shift as it is at the drop): a module off
+    // another slot is grouped with this one's with Shift held, else moved here; a charge, off another slot or out of
+    // a hold, is loaded into the module here (FitCharges), and taken nowhere else.
+    const flagID = slotFlagOf(slot.family, slot.index);
+    const shift = event.shiftKey;
+    if (!simulation && flagID !== null && payload !== null) {
+      if (payload.kind === "fittedModule") {
+        void run(async () => {
+          await flow.dropFittedModuleOnSlot(payload.itemID, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
+      if (payload.kind === "fittedCharge") {
+        void run(async () => {
+          await flow.dropFittedChargeOnSlot(payload.flagID, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
+      const row = rowsIn($inventory, payload.from).find((each) => each.itemID === payload.itemID);
+      // fittingUtil.IsCharge: the charge category (and the frequency crystals' number, as the client compares it).
+      if (row && (row.categoryID === 8 || row.categoryID === 86)) {
+        // Where it lies (DropLoadChargeToModule: chargeItems[0].locationID): the hangar, or the ship flown for its
+        // cargo and every other hold of it, the charge's own flag kept for a split.
+        const from = payload.from;
+        const ofShipFlown = from.kind === "cargo" || (from.kind === "shipBay" && $inventory.openShip?.itemID === $inventory.activeShipID);
+        if (from.kind !== "hangar" && !ofShipFlown) {
+          error = "The page loads charges from the hangar or the holds of the ship you fly so far.";
+          return;
+        }
+        const place = from.kind === "hangar" ? "hangar" : "cargo";
+        // The hold's own flag, the place's (measured: the row's own flag gave a split into the cargo).
+        const chargeFlag = from.kind === "hangar" ? 4 : from.kind === "cargo" ? 5 : BAY_FLAGS[from.bay] ?? row.flagID ?? 5;
+        void run(async () => {
+          await flow.dropChargeOnSlot({ itemID: row.itemID, typeID: row.typeID, quantity: row.quantity, from: place, flagID: chargeFlag }, flagID, shift);
+          await flow.loadInventory();
+        });
+        return;
+      }
     }
     // Narrowed by the verdict above: only an inventory item can reach here.
     const item = payload as Extract<DragPayload, { kind: "inventoryItem" }>;
@@ -2341,7 +2724,9 @@
           {:else}
             <ul class="fit-sim-drones">
               {#each simulation.drones as entry (entry.typeID)}
-                <li>
+                {@const mark = pickerWarningColor(87, entry.typeID)}
+                <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                   <span class="fit-sim-drone-count">{entry.active} of {entry.total} active</span>
                   <span class="row-actions">
@@ -2419,19 +2804,24 @@
         <dt>Cargo hold</dt>
         {#if simulation}
           <!-- The simulated hold's use and capacity (GetSimulatedCapacity: the fitting location's GetCapacity). -->
-          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}>
+          <dd><button type="button" class="minor fit-sim-cargo-open" aria-expanded={simCargoOpen} disabled={busy} onclick={clickSimulatedCargo}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedCargo}>
             {holdReadout(simulation.holdUse.cargo, stats.bays.cargoCapacity.known ? stats.bays.cargoCapacity.value : simulation.cargoCapacity.capacity)}</button></dd>
         {:else}
-          <dd>{cargoBayText}</dd>
+          <!-- OnHoldClicked: the ship's cargo hold in the inventory (OpenCargoHoldOfActiveShip); a drop from the inventory
+               moved into it. -->
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("cargo")}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "cargo" })}>{cargoBayText}</button></dd>
         {/if}
       </div>
       {#if simulation?.fighterBay}
         <!-- The simulated fighter bay (minihangar CargoFighterSlots) in the drone bay's place, where the hull has one
              (ContructDroneAndFighterIcons: HasFighterBay): its use and capacity (GetCapacity(flagFighterBay)); a click
              shows its picker, a picked fighter put on it goes to a tube or the bay. -->
-        <div>
+        <div class:fit-readout-warning={fighterBayWarningColor() !== null} style={fighterBayWarningColor() ? `--slot-warning: ${fighterBayWarningColor()}` : undefined}>
           <dt>{offenseWord("UI/Fitting/FittingWindow/FighterBay")}</dt>
-          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}>
+          <dd><button type="button" class="minor fit-sim-fighters-open" aria-expanded={simFightersOpen} disabled={busy} onclick={clickSimulatedFighterBay}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedFighterBay}>
             {holdReadout(simulation.holdUse.fighter, simulation.fighterBay.capacity)}</button></dd>
         </div>
       {:else if simulation}
@@ -2439,20 +2829,26 @@
              GetDroneCapacity; a picked drone put on it goes in the bay, a click shows its drones. -->
         <div>
           <dt>Drone bay</dt>
-          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}>
+          <dd><button type="button" class="minor fit-sim-drones-open" disabled={busy} onclick={clickSimulatedDroneBay}
+            ondragover={overSimulatedHold} ondrop={dropOnSimulatedDroneBay}>
             {holdReadout(simulation.holdUse.drone, stats.bays.droneCapacity.known ? stats.bays.droneCapacity.value : 0)}</button></dd>
         </div>
       {:else if realBayReadout}
         <!-- The ship's own fighter bay, or its drone bay where it has none (CargoFighterSlots, CargoDroneSlots): its
              inventory's use over GetFighterCapacity or GetDroneCapacity. -->
-        <div>
+        {@const frame = realBayReadout.kind === "fighter" ? fighterBayWarningColor() : null}
+        <div class:fit-readout-warning={frame !== null} style={frame ? `--slot-warning: ${frame}` : undefined}>
           <dt>{realBayReadout.kind === "fighter" ? offenseWord("UI/Fitting/FittingWindow/FighterBay") : "Drone bay"}</dt>
-          <dd>{holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</dd>
+          <!-- OnHoldClicked: the bay in the inventory (OpenFighterBayOfActiveShip, OpenDroneBayOfActiveShip). -->
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold(realBayReadout.kind)}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "shipBay", bay: realBayReadout.kind })}>
+            {holdReadout(sentNumber(realBayReadout.used), realBayReadout.capacity)}</button></dd>
         </div>
       {:else}
         <div>
           <dt>Drone bay</dt>
-          <dd>{@render statValue(stats.bays.droneCapacity, asVolume)}</dd>
+          <dd><button type="button" class="minor fit-hold-open" onclick={() => openShipHold("drone")}
+            ondragover={overSimulatedHold} ondrop={(event) => dropOnRealHold(event, { kind: "shipBay", bay: "drone" })}>{@render statValue(stats.bays.droneCapacity, asVolume)}</button></dd>
         </div>
       {/if}
       <div class="fit-readout-value">
@@ -2469,7 +2865,9 @@
         {:else}
           <ul class="fit-sim-drones">
             {#each cargoByName(simulation.cargo) as entry (entry.typeID)}
-              <li>
+              {@const mark = pickerWarningColor(5, entry.typeID)}
+              <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
+                {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                 <span class="fit-sim-drone-name">{moduleName(entry.typeID)}</span>
                 <input class="fit-sim-cargo-count" type="number" min="0" max={entry.most} value={entry.quantity} disabled={busy}
                   title={simulationWord("UI/Fitting/FittingWindow/ClickToEdit")} aria-label={`${moduleName(entry.typeID)}: ${simulationWord("UI/Fitting/FittingWindow/ClickToEdit")}`}
@@ -2513,9 +2911,12 @@
                 ondragend={() => (fighterDrag = null)}
                 ondragover={(event) => { if (fighterDrag) event.preventDefault(); }}
                 ondrop={(event) => dropOnTube(event, tube)}
+                oncontextmenu={(event) => (tube.squadron ? openTypeMenu(tube.squadron.typeID, event) : event.preventDefault())}
                 onclick={() => clickSimulatedTube(tube)}>
                 <span class="fit-sim-tube-number">{tube.number}</span>
                 {#if tube.squadron}
+                  {@const mark = tubeWarningColor(tube.flagID, tube.squadron.typeID)}
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <TypeIcon typeID={tube.squadron.typeID} name={moduleName(tube.squadron.typeID)} size="md" />
                   {#if FIGHTER_ROLES[tube.squadron.role]?.icon}
                     <img class="fit-sim-tube-role" src={FIGHTER_ROLES[tube.squadron.role]?.icon} width="16" height="16"
@@ -2546,7 +2947,7 @@
         </ol>
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <div class="fit-sim-fighter-bay" role="group" aria-label={offenseWord("UI/Fitting/FittingWindow/FighterBay")}
-          ondragover={(event) => { if (fighterDrag?.from === "tube") event.preventDefault(); }}
+          ondragover={(event) => { if (fighterDrag?.from === "tube" || carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) event.preventDefault(); }}
           ondrop={dropOnFighterBayList}
           onclick={clickFighterBayList}>
           {#if simulation.fighterBayTypes.length === 0}
@@ -2554,7 +2955,9 @@
           {:else}
             <ul class="fit-sim-drones">
               {#each cargoByName(simulation.fighterBayTypes) as entry (entry.typeID)}
-                <li>
+                {@const mark = pickerWarningColor(158, entry.typeID)}
+                <li oncontextmenu={(event) => openTypeMenu(entry.typeID, event)}>
+                  {#if mark}<span class="fit-picker-warning" style={`--warning-color: ${mark}; --warning-icon: url("${PICKER_WARNING_ICON}")`} aria-hidden="true"></span>{/if}
                   <button type="button" class="fit-sim-drone-name fit-sim-fighter-name" draggable="true" disabled={busy}
                     ondragstart={(event) => startFighterDrag(event, { from: "bay", typeID: entry.typeID })}
                     ondragend={() => (fighterDrag = null)}
@@ -2681,7 +3084,7 @@
               title={`${fitName}\n${simulationWord("Tooltips/FittingWindow/ShipName_description")}`}
               ondragstart={(event) => startFittingSourceDrag(event, "fittingWindow")}
               onclick={() => void flow.saveFitAs().catch(() => {})}><img src={HYPERLINK_ICON} alt="" width="16" height="16" />{fitName}</button>
-            {#if warningIcons.length > 0}
+            {#if warningIcons.length > 0 || (fitSkillWarning?.count ?? 0) > 0}
               <!-- WarningIconCont: the red, yellow and white icons, each with how many warnings it has; its tooltip
                    (LoadWarningTooltipPanel: EvaluateFitAndPopulateTooltip) the level's header and each warning's line
                    (its icon, its line, its hint behind "?") with its rows under it; a line or row pointed at shows its
@@ -2697,6 +3100,61 @@
                     <span class="fit-warning-glyph" aria-hidden="true"></span><span class="fit-warning-count">{icon.count}</span>
                   </button>
                 {/each}
+                {#if fitSkillWarning && fitSkillWarning.count > 0}
+                  <!-- SkillWarningIcon: its tooltip (LoadSkillTooltip, GetSkillTooltip) the skills the ship and fit
+                       miss under Skills Required (Ship and Fit where the cargo's miss some too), the cargo's under
+                       Cargo Hold, each at the highest level needed with its mark and skill bar (RequiredSkillRow). -->
+                  {#if warningIcons.length >= 3}<span class="fit-warning-break" aria-hidden="true"></span>{/if}
+                  <button type="button" class="fit-warning-icon" style={`--warning-color: ${COLOR_BY_LEVEL[WARNING_LEVEL_SKILL]}; --warning-icon: url("${SKILL_WARNING_ICON}")`}
+                    aria-expanded={skillTooltipOpen}
+                    aria-label={`${simulationWord(HEADER_BY_LEVEL[WARNING_LEVEL_SKILL] ?? "")}: ${fitSkillWarning.count}`}
+                    onmouseenter={openSkillTooltip}
+                    onfocus={openSkillTooltip}
+                    onclick={() => (skillTooltipOpen ? closeSkillTooltip() : openSkillTooltip())}>
+                    <span class="fit-warning-glyph" aria-hidden="true"></span><span class="fit-warning-count">{fitSkillWarning.count}</span>
+                  </button>
+                {/if}
+                {#if skillTooltipOpen && fitSkillWarning && (fitSkillWarning.fit.length > 0 || fitSkillWarning.cargo.length > 0)}
+                  {@const skills = fitSkillWarning}
+                  <div class="fit-warning-tooltip fit-skill-tooltip" role="tooltip">
+                    {#if skills.fit.length > 0}
+                      <h3 class="fit-skill-header">{simulationWord("UI/Skills/RequiredSkills")}</h3>
+                      {#if skills.shipAndFitHeading}<h4 class="fit-skill-section">{simulationWord("UI/Fitting/FittingWindow/Warnings/ShipAndFit")}</h4>{/if}
+                      <ul class="fit-skill-rows">
+                        {#each bySkillName(skills.fit) as [skill, level] (skill)}
+                          {@const row = skillRows.get(`${skill}:${level}`) ?? null}
+                          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={simulationWord} />
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if skills.cargo.length > 0}
+                      <h4 class="fit-skill-section" class:cargo-alone={skills.fit.length === 0}>{simulationWord("UI/Fitting/FittingWindow/Warnings/CargoHold")}</h4>
+                      <ul class="fit-skill-rows">
+                        {#each bySkillName(skills.cargo) as [skill, level] (skill)}
+                          {@const row = skillRows.get(`${skill}:${level}`) ?? null}
+                          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={simulationWord} />
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if skillTraining !== null}
+                      <!-- AddTrainingTime (the fitted ship's activity) and AddSkillActionForList: the time to train the
+                           list, the points, Train Skills or Buy and Train, shown however the clone stands. -->
+                      {@const training = skillTraining}
+                      <div class="fit-skill-training">
+                        <SkillTrainingAction record={training} activity="Tooltips/SkillPlanner/ActivityFlyFittedShip" word={simulationWord}
+                          timeText={(ticks) => trainingTimeText(ticks, $words.templates, simulationWord("Tooltips/SkillPlanner/TrainingComplete"))}
+                          apply={applyPointsButton(training, simulationWord, () => void flow.applySkillPointsFor(training).catch(() => {}), closeSkillTooltip)}
+                          onTrain={() => void flow.trainSkillsFor(training).catch(() => {})}
+                          onBuy={() => void flow.buySkillsFor(training).catch(() => {})}
+                          plan={createSkillPlanButton({
+                            kind: "list",
+                            requirements: skills.listed,
+                            name: fitName ? simulationWord("Tooltips/SkillPlanner/SkillPlanNameStringWithType", { typeName: fitName }) : simulationWord("UI/SkillPlan/DefaultCreateFitSkillPlanName"),
+                          }, skillPlanCount, simulationWord)} />
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
                 {#if warningTooltipLevel !== null && tooltipWarnings.length > 0}
                   {@const level = warningTooltipLevel}
                   <div class="fit-warning-tooltip" role="tooltip" style={`--warning-color: ${COLOR_BY_LEVEL[level]}`}>
@@ -2714,6 +3172,7 @@
                         </li>
                         {#each warningRows(warning.rows) as row, at (at)}
                           {@const flags = row.kind === "module" || row.kind === "subsystem" ? [row.flagID] : row.flags}
+                          {@const attributeIcon = row.kind === "attribute" ? warningAttributes.get(row.attributeID)?.iconFile ?? null : null}
                           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                           <li class="fit-warning-row" onmouseenter={() => (row.kind === "subsystem" ? undefined : showWarningSlots(flags, warning.level))}
                             onmouseleave={() => (row.kind === "subsystem" ? undefined : (warningSlots = new Map()))}>
@@ -2723,6 +3182,9 @@
                             {:else if row.kind === "size"}
                               {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
                               <span>{simulationWord(SIZE_LABELS[row.size] ?? "")}</span>
+                            {:else if row.kind === "attribute"}
+                              {#if attributeIcon}<img src={clientTexture(attributeIcon)} alt="" width="20" height="20" />{/if}
+                              <div class="fit-warning-attribute"><LabelText markup={attributeRowText(row)} /></div>
                             {:else}
                               {#if row.icon}<img src={clientTexture(row.icon)} alt="" width="20" height="20" />{/if}
                               <span>{resolvedName($names.resolved, "group", row.groupID)}</span>
@@ -2794,6 +3256,10 @@
                   aria-label={simulation ? simulatedSocketDescription(slot) : socketDescription(slot)}
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
+                  draggable={!simulation && slot.module !== null}
+                  ondragstart={(event) => startSlotDrag(event, slot)}
+                  ondragend={() => (linkingTypeID = null)}
+                  class:link-faded={linkingTypeID !== null && slot.module !== null && slot.module.typeID !== linkingTypeID}
                   onclick={(event) => (simulation ? clickSimulated(slot, event) : clickSocket(slot))}
                   oncontextmenu={(event) => unfitSimulated(slot, event)}
                   ondragover={(event) => overSocket(event, slot)}
@@ -3110,14 +3576,16 @@
       {@const menuFor = hullMenu}
       <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
         <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showInfo({ kind: "type", typeID }); }}>{fitWord("UI/Commands/ShowInfo")}</button>
-        {#if ($hullBrowser?.types.get(menuFor.typeID)?.marketGroupID ?? null) !== null}
+        {#if menuMarketGroup(menuFor) !== null}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; showMarketDetails(typeID); }}>{fitWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
         {/if}
-        {#if $hullBrowser?.types.get(menuFor.typeID)?.published === true}
+        {#if menuPublished(menuFor)}
           <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInContracts(typeID); }}>{fitWord("UI/Inventory/ItemActions/FindInContracts")}</button>
-          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), hullName(typeID))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; findInPersonalAssets(assetSearchTextForType(fitWord("UI/Inventory/AssetSearch/KeywordTypeExact"), menuTypeName(menuFor))); }}>{fitWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
         {/if}
-        <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        {#if menuComparable(menuFor)}
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; hullMenu = null; compareType(typeID); }}>{fitWord("UI/Compare/CompareButton")}</button>
+        {/if}
       </span>
     {/if}
     {#if nodeMenu !== null}

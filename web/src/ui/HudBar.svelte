@@ -21,6 +21,8 @@
   // surface that is always on screen — and it must never be disabled; see below.
   import ModuleRack from "./ModuleRack.svelte";
   import ShipHud from "./ShipHud.svelte";
+  import HudButtons from "./HudButtons.svelte";
+  import BuffBar from "./BuffBar.svelte";
   import CargoBays from "./CargoBays.svelte";
   import { onMount } from "svelte";
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
@@ -327,6 +329,10 @@
     {/if}
   </header>
 
+  <!-- The buff bar (shipUI's BuffBarContainer): above the instruments, and under them where the HUD is aligned to the
+       top (UpdatePosition: CENTERBOTTOM above the HUD, CENTERTOP below it). -->
+  <BuffBar {store} {flow} />
+
   <div class="hud-body">
     <!--
       ⚠ THE THIRD QUESTION A PILOT ASKS WITHOUT OPENING ANYTHING. The cell
@@ -342,6 +348,11 @@
     <section class="hud-cluster cargo-cluster" aria-label="Cargo holds">
       <CargoBays {store} {flow} />
     </section>
+
+    <!-- The HUD's utility buttons beside the wheel (shipUI's hudButtons). -->
+    <div class="hud-cluster hud-utility">
+      <HudButtons {store} {flow} />
+    </div>
 
     <section class="hud-cluster ship-gauges" aria-label="Ship status">
       <ShipHud {store} />

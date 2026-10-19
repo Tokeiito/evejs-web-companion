@@ -1,8 +1,9 @@
 // Character-sheet decoders (goal R56) against REAL captured bytes.
 //
-// The fixtures below are the exact retail shapes captured live from Farmer
-// (character 140000005, corp 98000001) through the BFF on 2026-07-22:
-//   • charMgr.GetPublicInfo3         -> {type:"list", items:[util.KeyVal{…}]}
+// The fixtures below are the retail shapes, Farmer's (character 140000005, corp 98000001):
+//   • charMgr.GetPublicInfo          -> a util.KeyVal of Tranquility's seventeen fields (the retail client's
+//                                       cached answer of 2026-07-03: no security status among them)
+//   • crimewatch.GetMySecurityStatus -> a bare float, the sheet's security status (characterOverviewPanel 153)
 //   • charMgr.GetCharacterDescription-> a bare JS string
 //   • charMgr.GetHomeStation         -> a single util.KeyVal
 //   • charMgr.GetCloneInfo           -> a single util.KeyVal whose clones/implants
@@ -39,44 +40,32 @@ function dict(entries: readonly (readonly [JsonValue, JsonValue])[]): JsonValue 
   return { type: "dict", entries: entries as JsonValue };
 }
 
-// --- GetPublicInfo3 (the real list-wrapped KeyVal) --------------------------
+// --- GetPublicInfo (Tranquility's KeyVal) -----------------------------------
 
-// Verbatim from the live read: a list of ONE util.KeyVal.
-const PUBLIC_INFO_3: JsonValue = {
-  type: "list",
-  items: [
-    keyval([
-      ["characterID", 140000005],
-      ["characterName", "Farmer"],
-      ["typeID", 1386],
-      ["raceID", 2],
-      ["bloodlineID", 14],
-      ["ancestryID", 64],
-      ["corporationID", 98000001],
-      ["allianceID", null],
-      ["factionID", 500001],
-      ["empireID", 500001],
-      ["schoolID", 33],
-      ["gender", 1],
-      ["createDateTime", longVal("134274243893290000")],
-      ["startDateTime", longVal("134276026827720000")],
-      ["description", "Character created via EveJS Elysian"],
-      ["securityRating", 0.1404],
-      ["securityStatus", 0.1404],
-      ["bounty", 0],
-      ["title", ""],
-      ["shortName", "none"],
-      ["stationID", 60000358],
-      ["solarSystemID", 30000144],
-      ["militiaFactionID", null],
-      ["medal1GraphicID", null],
-    ]),
-  ],
-};
+// Tranquility's keys (the cached answer of 2026-07-03), Farmer's values.
+const PUBLIC_INFO: JsonValue = keyval([
+  ["characterID", 140000005],
+  ["characterName", "Farmer"],
+  ["typeID", 1386],
+  ["raceID", 2],
+  ["bloodlineID", 14],
+  ["ancestryID", 64],
+  ["schoolID", 33],
+  ["careerID", 21],
+  ["careerSpecialityID", 21],
+  ["gender", true],
+  ["createDateTime", longVal("134274243893290000")],
+  ["corporationID", 98000001],
+  ["corporationDateTime", longVal("134276026827720000")],
+  ["allianceID", null],
+  ["warFactionID", null],
+  ["age", 0],
+  ["description", "Character created via EveJS Elysian"],
+]);
 
-test("decodeCharacterIdentity reads the list-wrapped KeyVal (name, corp, security)", () => {
-  const identity = decodeCharacterIdentity(PUBLIC_INFO_3);
-  assert.ok(identity, "the real GetPublicInfo3 shape must decode");
+test("decodeCharacterIdentity reads the public KeyVal (name, corp) and the security status read beside it", () => {
+  const identity = decodeCharacterIdentity(PUBLIC_INFO, 0.1404);
+  assert.ok(identity, "Tranquility's GetPublicInfo shape must decode");
   assert.equal(identity!.characterID, 140000005);
   assert.equal(identity!.characterName, "Farmer");
   assert.equal(identity!.corporationID, 98000001);
@@ -87,7 +76,7 @@ test("decodeCharacterIdentity reads the list-wrapped KeyVal (name, corp, securit
 });
 
 test("decodeCharacterIdentity OMITS bloodline / race / ancestry (no name path, R7d)", () => {
-  const identity = decodeCharacterIdentity(PUBLIC_INFO_3) as unknown as Record<
+  const identity = decodeCharacterIdentity(PUBLIC_INFO, 0.1404) as unknown as Record<
     string,
     unknown
   >;
@@ -98,7 +87,7 @@ test("decodeCharacterIdentity OMITS bloodline / race / ancestry (no name path, R
   assert.equal("ancestryID" in identity, false);
 });
 
-test("decodeCharacterIdentity tolerates a bare KeyVal (the GetPublicInfo sibling)", () => {
+test("decodeCharacterIdentity's security status is its own read's, never a field of the row", () => {
   const bare = keyval([
     ["characterID", 140000005],
     ["characterName", "Farmer"],
@@ -106,12 +95,12 @@ test("decodeCharacterIdentity tolerates a bare KeyVal (the GetPublicInfo sibling
     ["allianceID", 99000001],
     ["securityStatus", -1.5],
   ]);
-  const identity = decodeCharacterIdentity(bare);
+  const identity = decodeCharacterIdentity(bare, 2.5);
   assert.ok(identity);
   assert.equal(identity!.characterName, "Farmer");
   // A real alliance id survives as a number for name resolution.
   assert.equal(identity!.allianceID, 99000001);
-  assert.equal(identity!.securityStatus, -1.5);
+  assert.equal(identity!.securityStatus, 2.5);
 });
 
 test("decodeCharacterIdentity returns null for a shape it did not get", () => {

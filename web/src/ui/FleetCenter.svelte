@@ -184,7 +184,9 @@
   }
 
   onMount(() => {
+    const release = flow.retainFleetDetails();
     void refresh();
+    return release;
   });
 </script>
 

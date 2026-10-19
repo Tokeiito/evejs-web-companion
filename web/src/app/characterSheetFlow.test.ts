@@ -35,22 +35,16 @@ function dict(entries: readonly (readonly [JsonValue, JsonValue])[]): JsonValue 
 
 const PILOT = 140000005;
 
-// The real GetPublicInfo3 (list of one KeyVal); alliance/corporation overridable.
+// Tranquility's GetPublicInfo (a KeyVal, with no security status among its fields); alliance/corporation overridable.
 function publicInfo(
   over: { allianceID?: JsonValue; corporationID?: number } = {},
 ): JsonValue {
-  return {
-    type: "list",
-    items: [
-      keyval([
-        ["characterID", PILOT],
-        ["characterName", "Farmer"],
-        ["corporationID", over.corporationID ?? 98000001],
-        ["allianceID", over.allianceID ?? null],
-        ["securityStatus", 0.1404],
-      ]),
-    ],
-  };
+  return keyval([
+    ["characterID", PILOT],
+    ["characterName", "Farmer"],
+    ["corporationID", over.corporationID ?? 98000001],
+    ["allianceID", over.allianceID ?? null],
+  ]);
 }
 
 /** homestation.types.StationData, as the home station service answers: what the sheet reads the home station from. */
@@ -82,6 +76,8 @@ interface SheetBody {
   /** The row, for a BFF that does not carry the home station service's call. */
   readonly homeStationRow?: JsonValue;
   readonly implants?: JsonValue;
+  /** crimewatch.GetMySecurityStatus's float (0.1404 where none is given). */
+  readonly securityStatus?: JsonValue;
   /** Why a call fails, by its method. */
   readonly errors?: Record<string, readonly [number, string]>;
 }
@@ -90,7 +86,7 @@ interface Asked {
   readonly body: Record<string, unknown>;
 }
 
-// A fetch answering the choosing of a pilot, the sheet's four calls by the generic call, the static data's
+// A fetch answering the choosing of a pilot, the sheet's five calls by the generic call, the static data's
 // attributes, and /api/names. The names route captures the request refs and, unless an id is in `unnameable`,
 // echoes a name. With nobody chosen a pilot's call is refused, as the BFF refuses it.
 function sheetFetch(
@@ -101,7 +97,8 @@ function sheetFetch(
 ): typeof fetch {
   let chosen = false;
   const answers: Record<string, JsonValue> = {
-    GetPublicInfo3: body.publicInfo ?? null,
+    GetPublicInfo: body.publicInfo ?? null,
+    GetMySecurityStatus: body.securityStatus ?? 0.1404,
     GetCharacterDescription: body.description ?? null,
     get_home_station: body.homeStation ?? null,
     GetHomeStationRow: body.homeStationRow ?? null,
@@ -144,7 +141,7 @@ function sheetFetch(
 const noStream = () => ({ onmessage: null, onopen: null, onerror: null, close() {} });
 /** The sheet's own calls, each as service.method(args), in the order they were asked. */
 const sheetCalls = (asked: readonly Asked[]): string[] => asked
-  .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "charMgr" || request.body.service === "home_station" || request.body.method === "GetImplants"))
+  .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "charMgr" || request.body.service === "home_station" || request.body.method === "GetImplants" || request.body.method === "GetMySecurityStatus"))
   .map((request) => `${String(request.body.service)}.${String(request.body.method)}(${JSON.stringify(request.body.args).slice(1, -1)})`);
 
 /** A flow with the pilot chosen, as the page has whenever the sheet is on show. */
@@ -176,8 +173,8 @@ test("loadCharacterSheet decodes identity, bio, home station and a clean clone",
 
   // The client's own calls: the character named where the client names it, the rest with nothing. Each is asked
   // as a pilot's call; the route is not read, and with no implants nothing is asked of the static data.
-  assert.deepEqual(sheetCalls(asked), [`charMgr.GetPublicInfo3(${PILOT})`, `charMgr.GetCharacterDescription(${PILOT})`, "home_station.get_home_station()", "skillHandler.GetImplants()"]);
-  assert.deepEqual(asked.filter((request) => request.path === "/api/bridge/call").map((request) => request.body.pilot), [true, true, true, true]);
+  assert.deepEqual(sheetCalls(asked), [`charMgr.GetPublicInfo(${PILOT})`, `charMgr.GetCharacterDescription(${PILOT})`, "home_station.get_home_station()", "skillHandler.GetImplants()", "crimewatch.GetMySecurityStatus()"]);
+  assert.deepEqual(asked.filter((request) => request.path === "/api/bridge/call").map((request) => request.body.pilot), [true, true, true, true, true]);
   assert.deepEqual(asked.map((request) => request.path).filter((path) => path.startsWith("/api/bridge/character-sheet") || path === "/api/types/dogma"), []);
 
   const sheet = store.characterSheet.get();
@@ -204,7 +201,7 @@ test("the clone on show is the implants the skill handler answers, each in the s
   // Read again: the calls again, and nothing of the static data, which does not change.
   asked.length = 0;
   await flow.loadCharacterSheet();
-  assert.deepEqual([sheetCalls(asked).length, asked.filter((request) => request.path === "/api/types/dogma").length], [4, 0]);
+  assert.deepEqual([sheetCalls(asked).length, asked.filter((request) => request.path === "/api/types/dogma").length], [5, 0]);
   assert.deepEqual(store.characterSheet.get().clone?.implants, [{ typeID: 9941, slot: 1 }, { typeID: 9899, slot: 6 }]);
 });
 
@@ -268,7 +265,7 @@ test("loadCharacterSheet: a FAILED clone read leaves clone null with cloneError;
 });
 
 test("each of the other reads fails by itself too, with why, and the rest are on show", async () => {
-  const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS, errors: { GetPublicInfo3: [502, "CALL_REFUSED"], get_home_station: [504, "EVE_GATEWAY_TIMEOUT"] } });
+  const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS, errors: { GetPublicInfo: [502, "CALL_REFUSED"], get_home_station: [504, "EVE_GATEWAY_TIMEOUT"] } });
   await flow.loadCharacterSheet();
   const sheet = store.characterSheet.get();
   assert.deepEqual([sheet.loaded, sheet.identity, sheet.identityError, sheet.homeStationID, sheet.homeStationError], [true, null, "your character info: CALL_REFUSED", null, "your home station: EVE_GATEWAY_TIMEOUT"]);
@@ -301,12 +298,12 @@ test("with nobody chosen there is no sheet: the BFF says there is no pilot, and 
   const flow = createAppFlow(store, { fetch: sheetFetch({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS_NONE }, [], new Set(), asked), eventSource: noStream });
   await assert.rejects(flow.loadCharacterSheet(), (error: { code?: string }) => error.code === "NO_LIVE_SESSION");
   // Asked with no one named, since there is no one; and the BFF is what refuses.
-  assert.deepEqual(sheetCalls(asked), ["charMgr.GetPublicInfo3()", "charMgr.GetCharacterDescription()", "home_station.get_home_station()", "skillHandler.GetImplants()"]);
+  assert.deepEqual(sheetCalls(asked), ["charMgr.GetPublicInfo()", "charMgr.GetCharacterDescription()", "home_station.get_home_station()", "skillHandler.GetImplants()", "crimewatch.GetMySecurityStatus()"]);
   assert.equal(store.characterSheet.get().loaded, false);
 });
 
 test("the pilot's session gone fails the whole sheet, whichever read met it", async () => {
-  for (const method of ["GetPublicInfo3", "GetImplants"]) {
+  for (const method of ["GetPublicInfo", "GetImplants"]) {
     const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS_NONE, errors: { [method]: [404, "SESSION_NOT_FOUND"] } });
     await assert.rejects(flow.loadCharacterSheet(), (error: { code?: string }) => error.code === "SESSION_NOT_FOUND", method);
     assert.equal(store.characterSheet.get().loaded, false, method);
@@ -316,7 +313,7 @@ test("the pilot's session gone fails the whole sheet, whichever read met it", as
 test("through a BFF that does not carry the home station service's call, the sheet's home station is the row's", async () => {
   const { store, flow, asked } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStationRow: HOME_STATION_ROW, implants: IMPLANTS_NONE });
   await flow.loadCharacterSheet();
-  assert.deepEqual(sheetCalls(asked), [`charMgr.GetPublicInfo3(${PILOT})`, `charMgr.GetCharacterDescription(${PILOT})`, "home_station.get_home_station()", "skillHandler.GetImplants()", "charMgr.GetHomeStationRow()"]);
+  assert.deepEqual(sheetCalls(asked), [`charMgr.GetPublicInfo(${PILOT})`, `charMgr.GetCharacterDescription(${PILOT})`, "home_station.get_home_station()", "skillHandler.GetImplants()", "crimewatch.GetMySecurityStatus()", "charMgr.GetHomeStationRow()"]);
   const sheet = store.characterSheet.get();
   assert.deepEqual([sheet.loaded, sheet.homeStationID, sheet.homeStationError, sheet.identity?.characterName], [true, 60015249, null, "Farmer"]);
 });

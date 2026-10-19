@@ -343,7 +343,8 @@ test("opening a window gives the work area back", () => {
   const opener = workspace.slice(workspace.indexOf("const open = (id: TabID)"));
   const body = opener.slice(0, opener.indexOf("};") + 2);
   assert.match(body, /expandPreferred = false;/, "opening a window must un-expand");
-  assert.match(body, /openWindow\(wins, id\)/);
+  // (With the window's registered place, where it has one: desktop.ts placeOnDesktop.)
+  assert.match(body, /wins = openWindow\(wins, id\b/);
   // ...but the docked Neocom pick that folds INTO the dock panel must not, or
   // choosing "Inventory & Ship" would throw the expansion away.
   const neocom = workspace.slice(workspace.indexOf("const openFromNeocom"));

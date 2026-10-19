@@ -27,6 +27,9 @@ const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
+const { createEwarTypes } = require("./gamePort/ewarTypes");
+const { createMapLocationInfo } = require("./mapLocationInfo");
+const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { createPublicGateway, publicGatewayUrl } = require("./gamePort/publicGateway");
@@ -201,6 +204,12 @@ const gamePortPilots = options.gamePortPilots !== undefined
         const table = await clientBuiltData.table("travelEffects");
         return table ? new Set(Object.keys(table)) : null;
       },
+      // tactical.OnEwarOnConnect's kind of electronic warfare, from the client's own dogma data (gamePort/ewarTypes.js).
+      ewarTypeOf: createEwarTypes({
+        typeDogma: async (typeID) => ((await clientBuiltData.rows("typeDogma", [typeID])) || {})[typeID] ?? null,
+        dogmaEffects: async (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
+        categoryOf: (typeID) => (staticData.getType(typeID) || {}).categoryID ?? null,
+      }).ewarTypeOf,
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
@@ -2696,6 +2705,9 @@ app.get("/api/pi/planet-richness", requireAuth, async (req, res, next) => {
 const FLEET_READ_METHODS = Object.freeze(["GetInitState", "GetWings", "GetMotd", "GetJoinRequests", "GetFleetComposition"]);
 
 app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
+  // CharacterMenu reads members/options/wings, without opening either of the
+  // fleet's separate composition/join-request windows (fleetSvc, menusvc736).
+  const menuOnly = req.query.view === "menu";
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
@@ -2748,7 +2760,7 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   let kept = null;
   if (own) {
     try {
-      kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
+      kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID, { details: !menuOnly });
     } catch (error) {
       if (error && error.code === "SESSION_NOT_FOUND") {
         forgetBridgeSession(req.webSessionID, held);
@@ -2778,6 +2790,7 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
     const settled = await Promise.allSettled(
       FLEET_READS.map(([method, args]) => (kept && Object.hasOwn(kept, method)
         ? { result: kept[method] }
+        : menuOnly && method !== "GetInitState" && method !== "GetWings" ? { result: null }
         : boundCall(held, req.webSessionID, spec, method, args, null, notifications))),
     );
     // A lost live session cannot be recovered by any read; surface it so the page
@@ -7219,8 +7232,12 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
 // --- R56 Character Sheet -----------------------------------------------------
 // "Who is this character." Four plain TOP-LEVEL charMgr reads the retail
 // charactersheet window issues, each scoped server-side off the docked session:
-//   • charMgr.GetPublicInfo3   -> {type:"list", items:[util.KeyVal{name, corp,
-//     alliance, security, ...}]} — public identity.
+//   • charMgr.GetPublicInfo3   -> a CRowset of one row (bounty, title, startDateTime,
+//     description, corporationID, militiaFactionID, bloodlineID), as Tranquility
+//     answers it. ⚠ The page has read the sheet by its own calls since 2026-10-10
+//     (web/src/bridge/characterSheetReads.ts: charMgr.GetPublicInfo and
+//     crimewatch.GetMySecurityStatus, as the client's sheet asks them); no page
+//     reads this route.
 //   • charMgr.GetCharacterDescription -> a plain STRING (the bio).
 //   • charMgr.GetHomeStationRow -> util.KeyVal carrying the home stationID: the
 //     read the client's character sheet makes (charactersheet.py 59). EveJS
@@ -10275,6 +10292,10 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
           else entry.capacity.used = used;
         }));
         byFlag = new Map(presentReadings.map((entry) => [entry.bay.flag, []]));
+        // Each stack's unit volume as the client's GetItemVolume has it (packaged where it is not assembled), as the
+        // other routes that list items give theirs (readTypeVolumes): what a move's want of room is answered by
+        // (invControllers._AddItem, the page's noRoomForAll).
+        const volumes = readTypeVolumes(listed.result, await packagedTablesOrNull());
         for (const row of decodeInventoryRows(listed.result)) {
           const bucket = byFlag.get(row.flagID);
           if (bucket) {
@@ -10288,6 +10309,7 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
               categoryID: row.categoryID,
               quantity: row.quantity,
               singleton: row.singleton,
+              volume: (!row.singleton ? volumes[`p${row.typeID}`] : undefined) ?? volumes[String(row.typeID)] ?? null,
             });
           }
         }
@@ -12499,6 +12521,40 @@ app.post("/api/map/security", requireAuth, (req, res) => {
 // Resolve a picked destination (a courier destination is a station; the route
 // solver works on systems) to its solar system, from static reference data —
 // the same client-local resolution the select route does for station identity.
+// A region, constellation or solar system as the client's info window shows it (mapLocationInfo.js): its name, its own
+// description, a system's security, the places it lies in, its children and its neighbours by a stargate.
+let mapLocationInfoOf = null;
+app.get("/api/map/location/:id", requireAuth, (req, res, next) => {
+  try {
+    mapLocationInfoOf ??= createMapLocationInfo(staticData).mapLocationInfo;
+    const place = mapLocationInfoOf(Number(req.params.id) || 0);
+    if (place === null) {
+      res.status(404).json({ ok: false, error: "NOT_A_MAP_LOCATION", message: "That is no region, constellation or solar system." });
+      return;
+    }
+    res.json({ ok: true, place });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A faction as the client's info window shows it (factionInfo.js): its description and headquarters, its member races,
+// settled systems and stations, its corporations, the territory it holds and the types it holds illegal.
+let factionInfoOf = null;
+app.get("/api/factions/:id", requireAuth, (req, res, next) => {
+  try {
+    factionInfoOf ??= createFactionInfo(staticData).factionInfo;
+    const faction = factionInfoOf(Number(req.params.id) || 0);
+    if (faction === null) {
+      res.status(404).json({ ok: false, error: "NOT_A_FACTION", message: "That is no faction." });
+      return;
+    }
+    res.json({ ok: true, faction });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
   try {
     const id = Number(req.params.id) || 0;
@@ -13071,6 +13127,169 @@ app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res,
 // the corporation's factionID), what its overview's Faction column names for a thing an NPC owns (overviewWindow.py
 // 967 to 975). `available` is false when the table could not be read (no client install, or no Python to host the
 // client's loader); `factions` is then empty.
+// A solar system's items as the client lists them (mapSvc.GetSolarsystemItems: eveCfg.GetLocationsLocalBySystem, from
+// the client's own map database): each celestial and NPC station by its number, type, group, the item it orbits and
+// its celestial and orbit index; a stargate with the system it leads to, and a celestial with a name of its own (its
+// celestialNameID, GenericText) with that name. The page names the rest as the client's formatters do. `available`
+// is false when the client cannot be read.
+app.get("/api/client-data/system-objects/:id", requireAuth, (req, res, next) => {
+  const solarSystemID = Number(req.params.id);
+  if (!Number.isSafeInteger(solarSystemID) || solarSystemID < 30_000_000 || solarSystemID >= 40_000_000) {
+    res.status(400).json({ ok: false, error: "INVALID_SOLAR_SYSTEM", message: "A solar system's number is required." });
+    return;
+  }
+  try {
+    const read = clientBuiltData.systemObjects ? clientBuiltData.systemObjects(solarSystemID) : null;
+    if (read === null) {
+      res.json({ ok: true, available: false, objects: [] });
+      return;
+    }
+    const GROUP_STARGATE = 10;
+    const named = read.celestials.filter((row) => row.celestialNameID !== null && row.groupID !== GROUP_STARGATE);
+    const names = named.length > 0 ? clientWords.messages(named.map((row) => Number(row.celestialNameID))) : {};
+    const objects = [
+      ...read.celestials.map((row) => ({
+        itemID: row.celestialID,
+        typeID: row.typeID,
+        groupID: row.groupID,
+        orbitID: row.orbitID,
+        celestialIndex: row.celestialIndex,
+        orbitIndex: row.orbitIndex,
+        ...(row.groupID === GROUP_STARGATE ? { destinationID: row.celestialNameID } : {}),
+        ...(row.celestialNameID !== null && row.groupID !== GROUP_STARGATE ? { name: names[String(row.celestialNameID)] ?? null } : {}),
+      })),
+      // An NPC station's group is its type's (evetypes.GetGroupID).
+      ...read.stations.map((row) => ({
+        itemID: row.stationID,
+        typeID: row.typeID,
+        groupID: Number(staticData.getType(row.typeID)?.groupID) || null,
+        orbitID: row.orbitID,
+        celestialIndex: row.celestialIndex,
+        orbitIndex: row.orbitIndex,
+      })),
+    ];
+    res.json({ ok: true, available: true, objects });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The standings an owner's stations ask for their services, as the client's own data has them
+// (evestations/standingsrestriction.py get_all_station_standings_restrictions: by owner, each service's required
+// standing). `available` is false when the table could not be read; `restrictions` is then empty.
+app.get("/api/client-data/station-standings-restrictions", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("stationStandingsRestrictions");
+    const restrictions = {};
+    for (const [ownerID, row] of Object.entries(table || {})) {
+      const services = {};
+      for (const [serviceID, standing] of Object.entries((row && row.services) || {})) {
+        if (Number.isFinite(Number(standing))) services[serviceID] = Number(standing);
+      }
+      restrictions[ownerID] = services;
+    }
+    res.json({ ok: true, available: Boolean(table), restrictions });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// A bloodline as the client's own data has it (characterdata/bloodlines.py get_bloodline): the messages of its name and
+// its description, its race and its corporation. A character's Show Info words its Description by the description
+// (characterInfoWindow.update_description_caption_and_sub_caption: get_bloodline_description). `available` is false
+// when the table could not be read; `bloodline` is null for one it has not.
+app.get("/api/client-data/bloodlines/:id", requireAuth, async (req, res, next) => {
+  const bloodlineID = Number(req.params.id);
+  if (!Number.isSafeInteger(bloodlineID) || bloodlineID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_BLOODLINE", message: "A bloodline's number is required." });
+    return;
+  }
+  try {
+    const { available, row } = await clientBuiltData.lookup("bloodlines", bloodlineID);
+    const messageOf = (value) => (Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null);
+    const bloodline = row
+      ? {
+          bloodlineID,
+          nameID: messageOf(row.nameID),
+          descriptionID: messageOf(row.descriptionID),
+          raceID: Number(row.raceID) || null,
+          corporationID: Number(row.corporationID) || null,
+        }
+      : null;
+    res.json({ ok: true, available, bloodline });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An NPC corporation's headquarters, as its Show Info names it (corporationInfoWindow.get_corporation_headquarters:
+// the client's own NPC corporation's stationID, the station's type; else its solarSystemID). `available` is false
+// when the table could not be read; `headquarters` is null for a corporation it has not, or one with neither.
+app.get("/api/client-data/npc-corporation-headquarters/:id", requireAuth, async (req, res, next) => {
+  const corporationID = Number(req.params.id);
+  if (!Number.isSafeInteger(corporationID) || corporationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CORPORATION", message: "A corporation's number is required." });
+    return;
+  }
+  try {
+    const { available, row } = await clientBuiltData.lookup("npcCorporations", corporationID);
+    const stationID = Number(row && row.stationID) || 0;
+    const solarSystemID = Number(row && row.solarSystemID) || 0;
+    const stationTypeID = stationID > 0 ? Number(staticData.getStation(stationID)?.stationTypeID) || 0 : 0;
+    const headquarters = stationID > 0 && stationTypeID > 0
+      ? { itemID: stationID, typeID: stationTypeID }
+      : solarSystemID > 0
+        ? { itemID: solarSystemID, typeID: 5 }
+        : null;
+    res.json({ ok: true, available, headquarters });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Icon.ConvertIconNoToResPath (eveIcon.py 111 to 142): an icon number's texture. A res: path is itself; "ui_s_z_n"
+ * is the icons sheet's; "corps_..." and "alliance_..." the corporations' and alliances' folders; "c_s_n" and "a_s_n"
+ * their 128s. (The two-part "s_n", sized by the sheet, is in none of the owners' tables, and is null here.)
+ */
+function iconNumberResPath(iconNo) {
+  if (typeof iconNo !== "string") return null;
+  if (iconNo.startsWith("res:")) return iconNo;
+  const parts = iconNo.split("_");
+  const whole = (value) => String(Number.parseInt(value, 10));
+  if (iconNo.startsWith("ui_") && parts.length === 4) return `res:/ui/texture/icons/${whole(parts[1])}_${whole(parts[2])}_${whole(parts[3])}.png`;
+  if (iconNo.startsWith("corps_")) return `res:/ui/texture/corps/${iconNo.slice(6)}.png`;
+  if (iconNo.startsWith("alliance_")) return `res:/ui/texture/alliance/${iconNo.slice(9)}.png`;
+  if (iconNo.startsWith("c_") && parts.length === 3) return `res:/ui/texture/corps/${whole(parts[1])}_128_${whole(parts[2])}.png`;
+  if (iconNo.startsWith("a_") && parts.length === 3) return `res:/ui/texture/alliance/${whole(parts[1])}_128_${whole(parts[2])}.png`;
+  return null;
+}
+
+// The owners' logos as the client draws them from its own tables (eveIcon.LogoIcon): a faction's
+// (GetFactionIconID: IN_ICONS, else IN_CORP_ICONS; small, IN_SMALL_ICONS first) and an NPC corporation's (CORP_ICONS),
+// each its texture's res: path. `available` is false when the client's tables could not be read.
+app.get("/api/client-data/owner-logos", requireAuth, async (req, res, next) => {
+  try {
+    const logos = await clientConstants.ownerLogos();
+    if (!logos) {
+      res.json({ ok: true, available: false, factions: {}, factionsSmall: {}, corporations: {} });
+      return;
+    }
+    const pathsOf = (entries) => Object.fromEntries([...entries].map(([id, iconNo]) => [id, iconNumberResPath(iconNo)]).filter(([, resPath]) => resPath !== null));
+    const factionIDs = new Set([...logos.factions.keys(), ...logos.factionCorporations.keys(), ...logos.factionsSmall.keys()]);
+    const large = (id) => logos.factions.get(id) ?? logos.factionCorporations.get(id);
+    res.json({
+      ok: true,
+      available: true,
+      factions: pathsOf([...factionIDs].map((id) => [id, large(id)])),
+      factionsSmall: pathsOf([...factionIDs].map((id) => [id, logos.factionsSmall.get(id) ?? large(id)])),
+      corporations: pathsOf(logos.corporations),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/corporation-factions", requireAuth, async (req, res, next) => {
   try {
     const table = await clientBuiltData.table("npcCorporations");
@@ -13309,6 +13528,30 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
   }
 });
 
+// characterdata.races.get_race_name: the installed race table's message IDs.
+app.get("/api/client-data/race-name-ids", requireAuth, async (req, res, next) => {
+  try {
+    const names = await clientBuiltData.table("raceNameIDs");
+    res.json({ ok: true, available: names !== null, names });
+  } catch (error) { next(error); }
+});
+
+// monolithconfig.enabled: the accepted enabled spellings from the installed compiled module.
+app.get("/api/client-data/config-enabled-values", requireAuth, async (req, res, next) => {
+  try {
+    const values = await clientConstants.configEnabledValues();
+    res.json({ ok: true, available: values !== null, values });
+  } catch (error) { next(error); }
+});
+
+// CorpMemberTracking._GetRoleOptions / GetRoleGroupings: installed role data; bco_members also uses appConst's locational set.
+app.get("/api/client-data/corporation-roles", requireAuth, async (req, res, next) => {
+  try {
+    const [roles, groups, locationalRoles] = await Promise.all([clientBuiltData.table("corporationRoles"), clientBuiltData.table("corporationRoleGroups"), clientConstants.corporationRoleLocations()]);
+    res.json({ ok: true, available: roles !== null && groups !== null && locationalRoles !== null, roles, groups, locationalRoles });
+  } catch (error) { next(error); }
+});
+
 // An alpha clone's skills and their highest levels for a race, as the client's clone grade storage has them
 // (clonegrade.CloneGradeStorage()[raceID]; src/clientData/clientBuiltData.js cloneGrades): a skill not listed is 0.
 // The client goes by them for an alpha (clone_grade_svc.get_max_skill_level). `available` false where the client's
@@ -13320,6 +13563,7 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
 // ships, each hull's group, faction, meta group, category and whether it is published, the same of each type asked (a saved
 // fitting's hull; null for a type the client does not have), and each race's name as the number of its message.
 // `available` false where the client's data could not be read. No session: they do not vary by player.
+
 app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -13424,6 +13668,37 @@ app.get("/api/client-data/attribute-display", requireAuth, async (req, res, next
       attributes[attributeID] = { displayNameID: whole(row.displayNameID), iconFile: typeof iconFile === "string" ? iconFile : null };
     }
     res.json({ ok: true, available: true, attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The ship HUD's buff bar (buffButtons.py; dbuff/client/uiFormatters.py): each dbuff collection asked as
+// dbuff/storage.py has it (its name, operation and how its value shows), the res: path of each icon asked
+// (Icon.LoadIconByIconID: fsdBuiltData iconIDs), and the relative-percent unit's name (unitModifierRelativePercent,
+// 124, the unit of a PostPercent collection's value). At most 128 collections and 128 icons at once.
+app.get("/api/client-data/dbuff-collections", requireAuth, async (req, res, next) => {
+  try {
+    const askedOf = (text) => {
+      const asked = [];
+      for (const part of String(text || "").split(",")) {
+        const id = Number(part);
+        if (Number.isSafeInteger(id) && id > 0 && !asked.includes(id)) asked.push(id);
+      }
+      return asked.slice(0, 128);
+    };
+    const collections = {};
+    for (const collectionID of askedOf(req.query && req.query.ids)) collections[collectionID] = staticData.getDbuffCollection(collectionID);
+    const iconIDs = askedOf(req.query && req.query.iconIDs);
+    const iconFiles = {};
+    if (iconIDs.length > 0) {
+      const files = await clientBuiltData.table("iconFiles");
+      for (const iconID of iconIDs) {
+        const file = files ? files[String(iconID)] : null;
+        iconFiles[iconID] = typeof file === "string" ? file : null;
+      }
+    }
+    res.json({ ok: true, collections, iconFiles, percentUnitName: staticData.getDogmaUnitDisplayName(124) });
   } catch (error) {
     next(error);
   }
@@ -13558,9 +13833,11 @@ app.get("/api/client-data/type-attributes", requireAuth, async (req, res, next) 
 // baseDogmaLocation), from the client's own tables, for at most 50 types at once:
 //   each type      its attributes as dogma/data.py get_type_attributes lists them (its typeDogma rows in their order,
 //                  then its mass, capacity, volume and radius), its effects (its typeDogma dogmaEffects, in their
-//                  order), its group and category, and the skills it requires (get_dogma_required_skills: the item's
-//                  reqSkills, which a location's required-skill modifiers go by)
-//   each effect    of those types: its category, the attribute a fitting's chance goes by
+//                  order) and those marked isDefault, its group and category, and the skills it requires
+//                  (get_dogma_required_skills: the item's reqSkills, which a location's required-skill modifiers go
+//                  by), and its base price and computed base price (evetypes.GetBasePrice; inventoryUtil
+//                  GetComputedBasePrice(typeID, 1), which baseDogmaLocation.FindNumUnitsToRepairModule prices a repair by)
+//   each effect    of those types: its name, its category, the attribute a fitting's chance goes by
 //                  (fittingUsageChanceAttributeID), its modifierInfo (null where it has none: the compiler makes
 //                  it a neutral effect, baseEffectCompiler SetupDogmaEffects), and the attributes it goes by for its
 //                  cycle, drain, range, falloff and tracking; each type's default effect besides
@@ -13579,12 +13856,15 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
     };
     const wanted = listed("typeIDs", 50);
     const askedAttributes = listed("attributeIDs", 200);
-    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills] = await Promise.all([
+    const [dogmaRows, typeRows, attributeRows, groupCategories, requiredSkills, materialRows, basePrices, portionSizes] = await Promise.all([
       clientBuiltData.rows("typeDogma", wanted),
       clientBuiltData.rows("types", wanted),
       clientBuiltData.table("dogmaAttributes"),
       clientBuiltData.table("groupCategories"),
       clientBuiltData.table("requiredSkillsForTypes"),
+      clientBuiltData.rows("typeMaterials", wanted),
+      clientBuiltData.table("typeBasePrices"),
+      clientBuiltData.table("typePortionSizes"),
     ]);
     if (!dogmaRows || !typeRows || !attributeRows) {
       res.json({ ok: true, available: false, types: {}, effects: {}, attributes: {} });
@@ -13592,6 +13872,30 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
     }
     const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const whole = (value) => (value !== null && value !== undefined && Number.isSafeInteger(Number(value)) ? Number(value) : null);
+    // inventoryUtil.GetComputedBasePrice (9 to 33): by the materials, each material's base price over its portion
+    // size cut to a whole number, times its quantity, times the quantity asked over the material's portion size (the
+    // loop reads each material's into the name the type's portion size was in); with none, the type's own base price
+    // times the quantity over its portion size; cut to a whole number. Null where the tables are not had.
+    const basePriceOf = (typeID) => Number(basePrices && basePrices[String(typeID)]) || 0;
+    const portionSizeOf = (typeID) => Number(portionSizes && portionSizes[String(typeID)]) || 0;
+    const computedBasePrice = (typeID, quantity) => {
+      if (!materialRows || !basePrices || !portionSizes) return null;
+      let portionSize = portionSizeOf(typeID) || 1;
+      const asked = quantity ?? portionSize;
+      const row = materialRows[String(typeID)];
+      const materials = row && Array.isArray(row.materials) ? row.materials : [];
+      let price = 0;
+      if (materials.length > 0) {
+        for (const material of materials) {
+          portionSize = portionSizeOf(material.materialTypeID);
+          if (portionSize === 0) continue;
+          price += (Number(material.quantity) || 0) * Math.trunc(basePriceOf(material.materialTypeID) / portionSize) * (asked / portionSize);
+        }
+      } else {
+        price = basePriceOf(typeID) * (asked / portionSize);
+      }
+      return Math.trunc(price);
+    };
     const types = {};
     const effectIDs = [];
     const attributeIDs = new Set(askedAttributes);
@@ -13615,6 +13919,10 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
       // more are).
       let defaultEffectID = null;
       for (const row of effectRowsOfType) if (row && Number(row.isDefault || 0) && whole(row.effectID)) defaultEffectID = whole(row.effectID);
+      // Every row marked isDefault, as godma's RefreshItemEffects goes by each (godma.py 1657).
+      const defaultEffectIDs = effectRowsOfType
+        .filter((row) => row && Number(row.isDefault || 0) && whole(row.effectID))
+        .map((row) => whole(row.effectID));
       for (const effectID of effects) if (!effectIDs.includes(effectID)) effectIDs.push(effectID);
       const groupID = whole(type.groupID);
       const required = requiredSkills && Array.isArray(requiredSkills[String(typeID)]) ? requiredSkills[String(typeID)] : [];
@@ -13638,12 +13946,17 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         attributes: rows,
         effects,
         defaultEffectID,
+        defaultEffectIDs,
         fitsShipGroups,
         fitsShipTypes,
         chargeGroups,
         groupID,
         categoryID: groupID !== null && groupCategories && groupCategories[String(groupID)] !== undefined ? whole(groupCategories[String(groupID)]) : null,
         requiredSkills: required.map(([skillID]) => whole(skillID)).filter((skillID) => skillID !== null && skillID > 0),
+        // evetypes.IsPublished.
+        published: type.published === undefined || type.published === null ? null : Boolean(type.published),
+        basePrice: number(type.basePrice),
+        computedBasePrice: computedBasePrice(typeID, 1),
       };
     }
     const effectRows = effectIDs.length > 0 ? await clientBuiltData.rows("dogmaEffects", effectIDs) : {};
@@ -13677,7 +13990,7 @@ app.get("/api/client-data/dogma-types", requireAuth, async (req, res, next) => {
         named[field] = whole(row[field]) || null;
         if (named[field]) attributeIDs.add(named[field]);
       }
-      effects[effectID] = { category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
+      effects[effectID] = { name: typeof row.effectName === "string" ? row.effectName : null, category: whole(row.effectCategory), chanceAttributeID: chanceAttributeID || null, modifiers, ...named };
     }
     const attributes = {};
     const keep = (attributeID) => {
@@ -13869,6 +14182,40 @@ app.get("/api/client-data/fighter-abilities", requireAuth, async (req, res, next
 // The ships' info bubble elements (cfg.infoBubbleTypeElements): of each type asked, up to 50, its elements in its
 // slots' order, or null for one that has none. The Fitting window's tanking warnings go by them
 // (fittingWarnings.GetProblematicShipAndTankingCombo).
+// The types of each group asked (evetypes.GetTypeIDsByGroup), out of the client's types table's groups (typeGroups),
+// in type order: what a module's charge groups hold, which the client's used-with table is made of
+// (InfoSvc._AddUsedWithTypeIDs). The index is made once.
+let typeIDsByGroup = null;
+app.get("/api/client-data/group-types", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.groupIDs) || "").split(",")) {
+      const groupID = Number(part);
+      if (Number.isSafeInteger(groupID) && groupID > 0 && !asked.includes(groupID)) asked.push(groupID);
+    }
+    if (!typeIDsByGroup) {
+      const table = await clientBuiltData.table("typeGroups");
+      if (table) {
+        const index = new Map();
+        for (const [key, value] of Object.entries(table)) {
+          const typeID = Number(key);
+          const groupID = Number(value);
+          if (!Number.isSafeInteger(typeID) || !Number.isSafeInteger(groupID)) continue;
+          if (!index.has(groupID)) index.set(groupID, []);
+          index.get(groupID).push(typeID);
+        }
+        for (const list of index.values()) list.sort((a, b) => a - b);
+        typeIDsByGroup = index;
+      }
+    }
+    const groups = {};
+    for (const groupID of asked.slice(0, 32)) groups[groupID] = typeIDsByGroup ? typeIDsByGroup.get(groupID) ?? [] : null;
+    res.json({ ok: true, available: typeIDsByGroup !== null, groups });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/client-data/info-bubble-elements", requireAuth, async (req, res, next) => {
   try {
     const asked = [];
@@ -14074,6 +14421,55 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
 // the game-port transport, which keeps each it is answered (pilots.js corpTickersNamed): in one call, or in one for
 // each where `each` is said, as the client's own askings go. A ticker that could not be asked (no pilot on the game
 // port, or the call refused) is named in `unresolved`; null is the server's answer of none.
+// Player corporations' logos as cfg.corptickernames has them (eveIcon.CorpIcon: three shapes and colours, each a
+// number or null), primed with their tickers by the pilot's game-port transport (config.GetMultiCorpTickerNamesEx).
+// A logo is null where the server answered no row; one in `unresolved` was not asked.
+app.post("/api/corp-logos", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];
+    const players = [...new Set(asked.filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0 && !(corpID >= 1000000 && corpID < 2000000)))].slice(0, 200);
+    const logos = {};
+    const unresolved = [];
+    const held = bridgeSessions.get(req.webSessionID) || null;
+    if (players.length > 0 && (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID))) {
+      unresolved.push(...players);
+    } else if (players.length > 0) {
+      try {
+        const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corpLogosNamed(players, { userid: held.accountID }, held.bridgeSessionID));
+        for (const corpID of players) logos[corpID] = named.get(corpID) ?? null;
+      } catch (_error) {
+        unresolved.push(...players);
+      }
+    }
+    res.json({ ok: true, logos, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The client's corporation logo library (appConst: graphicCorpLogoLibShapes, graphicCorpLogoLibColors), each shape
+// a texture's res: path and each colour its RGBA and blend. `available` is false when it could not be read.
+app.get("/api/client-data/corp-logo-library", requireAuth, async (req, res, next) => {
+  try {
+    const library = await clientConstants.corpLogoLibrary();
+    if (!library) {
+      res.json({ ok: true, available: false });
+      return;
+    }
+    res.json({
+      ok: true,
+      available: true,
+      shapes: Object.fromEntries(library.shapes),
+      noShape: library.noShape,
+      colors: Object.fromEntries(library.colors),
+      blends: library.blends,
+      defaultColor: library.defaultColor,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
   try {
     const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];

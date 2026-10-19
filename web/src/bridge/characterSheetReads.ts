@@ -7,7 +7,11 @@
 //
 // THE CALLS, as the client makes them:
 //
-//   charMgr.GetPublicInfo3(characterID)           characterInfoWindow.py 194: the character named
+//   charMgr.GetPublicInfo(characterID)            charsheet/characterOverviewPanel.py 47: session.charid, its
+//                                                 name, corporation and alliance
+//   crimewatch.GetMySecurityStatus()              crimewatchSvc.py 590 (characterOverviewPanel.py 153): the
+//                                                 pilot's security status, with nothing, which the public info
+//                                                 has not
 //   charMgr.GetCharacterDescription(characterID)  charsheet/bioPanel.py 28: session.charid
 //   home_station.get_home_station()               homestation/client/service.py 67: the home station service,
 //                                                 with nothing, which the sheet reads
@@ -39,18 +43,20 @@ import { readRowField, type JsonValue } from "./wire.ts";
 /** dogma/const.py attributeImplantness: the slot an implant's type goes in. */
 export const ATTRIBUTE_IMPLANTNESS = 331;
 
-/** The four reads as answered, each with why it failed where it did (decoded in bridge/characterSheet.ts). */
+/** The five reads as answered, each with why it failed where it did (decoded in bridge/characterSheet.ts). */
 export interface RawCharacterSheetReads {
   readonly publicInfo: JsonValue;
   readonly description: JsonValue;
   readonly homeStation: JsonValue;
   /** The implants in the pilot's head, in the form a clone is read in: a KeyVal of `implants`, each with its type and slot. */
   readonly cloneInfo: JsonValue;
+  readonly securityStatus: JsonValue;
   readonly errors: {
     readonly publicInfo: string | null;
     readonly description: string | null;
     readonly homeStation: string | null;
     readonly cloneInfo: string | null;
+    readonly securityStatus: string | null;
   };
 }
 
@@ -107,16 +113,17 @@ export function createCharacterSheetReads(ask: Ask, typeAttributes: TypeAttribut
 
   return {
     /**
-     * The four reads, asked together and each failing by itself. Fails as a whole only for what fails a whole
+     * The five reads, asked together and each failing by itself. Fails as a whole only for what fails a whole
      * reading (ask.ts): the pilot gone, or the BFF not reached.
      */
     async read(whose) {
       const named: readonly JsonValue[] = whose.characterID === null ? [] : [whose.characterID];
       const reads = await Promise.allSettled([
-        ask("charMgr", "GetPublicInfo3", named),
+        ask("charMgr", "GetPublicInfo", named),
         ask("charMgr", "GetCharacterDescription", named),
         homeStation(),
         ask("skillHandler", "GetImplants", []).then(cloneOfImplants),
+        ask("crimewatch", "GetMySecurityStatus", []),
       ]);
       for (const each of reads) {
         if (each.status === "rejected" && failsTheReading(each.reason)) throw each.reason;
@@ -128,7 +135,8 @@ export function createCharacterSheetReads(ask: Ask, typeAttributes: TypeAttribut
         description: value(1),
         homeStation: value(2),
         cloneInfo: value(3),
-        errors: { publicInfo: why(0), description: why(1), homeStation: why(2), cloneInfo: why(3) },
+        securityStatus: value(4),
+        errors: { publicInfo: why(0), description: why(1), homeStation: why(2), cloneInfo: why(3), securityStatus: why(4) },
       };
     },
   };

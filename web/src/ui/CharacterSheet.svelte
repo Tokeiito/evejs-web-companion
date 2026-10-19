@@ -37,8 +37,57 @@
   import type { AppFlow } from "../app/flow.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import ExpertSystems from "./ExpertSystems.svelte";
+  import Standings from "./Standings.svelte";
+  import { sheetPanelRequest, type SheetPanel } from "./characterSheetPanels.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // The client's Character Sheet's tabs (characterSheetWindow.GetMainTabData; charsheet GetPanelName): Character,
+  // Interactions, PLEX, Personalization and History, of which the page has Character (characterPanel: Home Station,
+  // Implants & Boosters, Bio, Expert Systems of its tabs), Interactions (interactionsPanel: Standings, the pilot's
+  // standings panel, of its tabs) and History (historyPanel: Employment History and Skill History).
+  type SheetTab = "character" | "interactions" | "history";
+
+  /** The tabs' names, with the page's own words where the install's are not had. */
+  const TAB_WORDS: Readonly<Record<string, string>> = {
+    "Tooltips/CharacterSheet/Character": "Character",
+    "Tooltips/CharacterSheet/Interactions": "Dealings",
+    "Tooltips/CharacterSheet/History": "Past",
+    "Tooltips/CharacterSheet/HomeStation": "Home",
+    "Tooltips/CharacterSheet/Augmentations": "Implants",
+    "Tooltips/CharacterSheet/Bio": "Bio",
+    "Tooltips/CharacterSheet/ExpertSystems": "Expert systems",
+    "Tooltips/CharacterSheet/EmploymentHistory": "Corporations",
+    "Tooltips/CharacterSheet/Skills": "Skills trained",
+    "Tooltips/CharacterSheet/Standings": "Standing",
+  };
+  const tabWord = (label: string): string => {
+    const template = $words.templates[label];
+    return typeof template === "string" ? template : TAB_WORDS[label] ?? "";
+  };
+
+  let { store, flow, panel = null }: { store: ClientStore; flow: AppFlow; panel?: SheetPanel | null } = $props();
+  // svelte-ignore state_referenced_locally
+  const opening = panel;
+  let sheetTab = $state<SheetTab>(opening === "standings" ? "interactions" : opening === "employment" || opening === "skills" ? "history" : "character");
+  let characterTab = $state<"home" | "implants" | "bio" | "expert">(opening === "implants" || opening === "bio" || opening === "expert" ? opening : "home");
+  let historyTab = $state<"employment" | "skills">(opening === "skills" ? "skills" : "employment");
+  /** _StartLoadingPanel: a panel asked for while the window is open, or as it opens (characterSheetPanels.ts). */
+  function loadPanel(panel: SheetPanel): void {
+    if (panel === "standings") {
+      sheetTab = "interactions";
+    } else if (panel === "employment" || panel === "skills") {
+      sheetTab = "history";
+      historyTab = panel;
+    } else {
+      sheetTab = "character";
+      characterTab = panel;
+    }
+  }
+  $effect(() => {
+    const asked = $sheetPanelRequest;
+    if (asked === null) return;
+    loadPanel(asked);
+    sheetPanelRequest.set(null);
+  });
 
   // svelte-ignore state_referenced_locally
   const sheet = store.characterSheet;
@@ -73,7 +122,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([...SKILL_HISTORY_WORD_LABELS, ...Object.values(EMPLOYMENT_WORD_LABELS)]);
+    flow.requestWords([...SKILL_HISTORY_WORD_LABELS, ...Object.values(EMPLOYMENT_WORD_LABELS), ...Object.keys(TAB_WORDS)]);
     refresh();
   });
 
@@ -187,6 +236,19 @@
     </dl>
   {/if}
 
+  <!-- The window's tabs, then the tab's own. -->
+  <nav class="sheet-tabs" aria-label="Character Sheet">
+    {#each [["character", "Tooltips/CharacterSheet/Character"], ["interactions", "Tooltips/CharacterSheet/Interactions"], ["history", "Tooltips/CharacterSheet/History"]] as [id, label] (id)}
+      <button type="button" class:active={sheetTab === id} aria-pressed={sheetTab === id} onclick={() => (sheetTab = id as SheetTab)}>{tabWord(label!)}</button>
+    {/each}
+  </nav>
+  {#if sheetTab === "character"}
+  <nav class="sheet-tabs sub" aria-label="Character">
+    {#each [["home", "Tooltips/CharacterSheet/HomeStation"], ["implants", "Tooltips/CharacterSheet/Augmentations"], ["bio", "Tooltips/CharacterSheet/Bio"], ["expert", "Tooltips/CharacterSheet/ExpertSystems"]] as [id, label] (id)}
+      <button type="button" class:active={characterTab === id} aria-pressed={characterTab === id} onclick={() => (characterTab = id as typeof characterTab)}>{tabWord(label!)}</button>
+    {/each}
+  </nav>
+  {#if characterTab === "home"}
   <!-- Home station (the medical-clone home), by name. -->
   <h3>Home station</h3>
   {#if $sheet.homeStationError}
@@ -197,6 +259,8 @@
     <p>{resolvedName($names.resolved, "station", $sheet.homeStationID, "Unknown station")}</p>
   {/if}
 
+  {/if}
+  {#if characterTab === "bio"}
   <!-- Bio. An empty bio is a real answer, not a failure. -->
   <h3>Bio</h3>
   {#if $sheet.descriptionError}
@@ -209,6 +273,8 @@
     <p class="bio">{$sheet.description}</p>
   {/if}
 
+  {/if}
+  {#if characterTab === "implants"}
   <!-- Active clone's implants, by name. A clean clone is a real answer. -->
   <h3>Implants</h3>
   {#if $sheet.cloneError}
@@ -225,6 +291,19 @@
     </ul>
   {/if}
 
+  {/if}
+  {#if characterTab === "expert"}
+  <!-- The character panel's Expert Systems tab (characterPanel.py: expertSystems.ExpertSystemsPanel). -->
+  <ExpertSystems {store} {flow} />
+  {/if}
+  {/if}
+  {#if sheetTab === "history"}
+  <nav class="sheet-tabs sub" aria-label="History">
+    {#each [["employment", "Tooltips/CharacterSheet/EmploymentHistory"], ["skills", "Tooltips/CharacterSheet/Skills"]] as [id, label] (id)}
+      <button type="button" class:active={historyTab === id} aria-pressed={historyTab === id} onclick={() => (historyTab = id as typeof historyTab)}>{tabWord(label!)}</button>
+    {/each}
+  </nav>
+  {#if historyTab === "employment"}
   <!-- The employment history, as the client's History panel's employment tab lists it (its first tab). -->
   <h3>Employment history</h3>
   {#if $sheet.employmentHistoryError}
@@ -247,6 +326,8 @@
     {/if}
   {/if}
 
+  {/if}
+  {#if historyTab === "skills"}
   <!-- The skill history, as the client's History panel's skills tab lists it. No rows is a real answer. -->
   <h3>Skill history</h3>
   {#if $sheet.skillHistoryError}
@@ -280,12 +361,43 @@
     </div>
   {/if}
 
-  <!-- The character panel's Expert Systems tab (characterPanel.py: expertSystems.ExpertSystemsPanel). -->
-  <ExpertSystems {store} {flow} />
+  {/if}
+  {/if}
+  {#if sheetTab === "interactions"}
+  <nav class="sheet-tabs sub" aria-label="Interactions">
+    <button type="button" class="active" aria-pressed="true">{tabWord("Tooltips/CharacterSheet/Standings")}</button>
+  </nav>
+  <!-- interactionsPanel's Standings: the pilot's standings panel (toID the pilot). -->
+  <Standings {store} {flow} scopes={["char"]} />
+  {/if}
 
 </section>
 
 <style>
+  .sheet-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin: 0.5rem 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .sheet-tabs.sub {
+    border-bottom: 0;
+    margin-top: 0;
+  }
+  .sheet-tabs button {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-muted);
+  }
+  .sheet-tabs button.active {
+    color: var(--color-text-bright);
+    border-bottom-color: var(--color-accent);
+  }
   .name {
     margin-bottom: 0.25rem;
   }

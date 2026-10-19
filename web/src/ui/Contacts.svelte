@@ -63,7 +63,7 @@
   //
   // Not here yet: Capture Portrait, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
   // fleet's own menu).
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -82,6 +82,7 @@
     type AgentFolders,
     type ContactLabel,
     type NamedAddressBook,
+    type ContactScope,
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
@@ -100,8 +101,13 @@
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
+  import type { ContactAction } from "./contactAction.ts";
 
-  let { store, flow, showAgents, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
+  const organization = $derived(contactType !== "contact");
+  const alliance = $derived(contactType === "alliancecontact");
+  // svelte-ignore state_referenced_locally
+  const live = store.live;
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -113,6 +119,25 @@
   const addressBookState = store.addressBook;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // addressbook.ShowLabelMenuAndManageBtn and sessionChecker.IsDiplomat; appConst 316, 347.
+  const ownerID = $derived(alliance ? $station.online?.allianceID : $station.online?.corporationID);
+  const authorityScope = $derived(`${$station.online?.characterID}:${$station.online?.corporationID}:${$station.online?.allianceID}:${$station.online?.corpRole}`);
+  let executor = $state<{ scope: string; allowed: boolean } | null>(null);
+  const allianceChanged = $derived($live.notifications.slice().reverse().find(notice => notice.method === "OnAllianceChanged" && Number(notice.args[0]) === ownerID));
+  $effect(() => {
+    const scope = authorityScope;
+    const active = alliance;
+    const changed = allianceChanged;
+    let retired = false;
+    if (active) untrack(() => {
+      void changed;
+      executor = null;
+      // ShowLabelMenuAndManageBtn reads the executor even for an ordinary member.
+      void flow.saveForAllianceOffered().then(allowed => { if (!retired) executor = { scope, allowed }; }, () => {});
+    });
+    return () => { retired = true; };
+  });
+  const canManage = $derived(!organization || (!alliance || executor?.scope === authorityScope && executor.allowed) && /^(0|[1-9][0-9]*)$/.test($station.online?.corpRole ?? "") && (BigInt($station.online?.corpRole ?? "0") & (1n | 17179869184n)) !== 0n);
   // svelte-ignore state_referenced_locally
   const fleetState = store.fleet;
   // svelte-ignore state_referenced_locally
@@ -305,16 +330,27 @@
   const labelGroup = (labelID: bigint): string => `label:${labelID}`;
   const NO_LABEL = labelGroup(-1n);
 
+  let ownerQuery = $state("");
+  let ownerMatches = $state<readonly { id: number; name: string }[]>([]);
+  async function findCorporateOwner(): Promise<void> {
+    if (!canManage || ownerQuery.trim().length < 3) return;
+    await run(async () => {
+      const found = await flow.searchOwners(ownerQuery.trim(), [2, 3, 4], flow.ownersSearchBy());
+      ownerMatches = [...found.values()].flat().filter(owner => !isNpcOwner(owner.id));
+    });
+  }
   let book = $state<NamedAddressBook | null>(null);
   let error = $state("");
   let busy = $state(false);
   // svelte-ignore state_referenced_locally
-  const lastSelected: unknown = flow.contactsLastSelected();
+  const lastSelected: unknown = flow.contactsLastSelected(contactType);
   let group = $state<number | string>(typeof lastSelected === "number" || typeof lastSelected === "string" ? lastSelected : CONTACT_GROUP.all);
   let startPos = $state(0);
   // svelte-ignore state_referenced_locally
   const keptOnlineOnly: unknown = flow.onlineBuddyOnly();
-  let onlineOnly = $state(keptOnlineOnly === true);
+  // The contact scope is fixed for this mounted form; each parent mounts its own.
+  // svelte-ignore state_referenced_locally
+  let onlineOnly = $state(!organization && keptOnlineOnly === true);
   /** What the quick filter holds, and the text it filters by: taken 0.4 s after the typing stops (_SetQuickFilterInput). */
   let filterText = $state("");
   let filtering = $state("");
@@ -361,19 +397,86 @@
   /** The notification whose menu is open. */
   let notificationMenuFor = $state<number | null>(null);
 
+  let readGeneration = 0;
+  let disposed = false;
   async function load(): Promise<void> {
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
+    const owner = ownerID;
     busy = true;
     error = "";
     try {
-      const [read, notifications] = await Promise.all([flow.addressBook(), flow.contactNotifications().catch(() => null)]);
-      book = read;
+      const [read, notifications] = await Promise.all([flow.addressBook(contactType), organization ? Promise.resolve(null) : flow.contactNotifications().catch(() => null)]);
+      if (disposed || characterID !== store.station.get().online?.characterID || owner !== ownerID) return;
       notificationsHeld = notifications;
+      if (generation !== readGeneration) return;
+      book = read;
+      applyOrganizationNotices(store.live.get().notifications);
     } catch (cause) {
+      if (disposed || generation !== readGeneration) return;
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
-      busy = false;
+      if (!disposed && generation === readGeneration) busy = false;
     }
   }
+
+  // The held answer already includes old notices. Only apply updates arriving after this form was mounted;
+  // updates received during its read are applied once the answer arrives too.
+  const seenOrganizationNotices = new WeakSet<object>(live.get().notifications);
+  const seenPersonalNotices = new WeakSet<object>(live.get().notifications);
+  // addressbookService's own ScatterEvents (contactsForm 611-635). Read the
+  // amended held answer, without reloading notifications or disturbing a draft.
+  function applyPersonalNotices(notices: typeof $live.notifications): void {
+    if (organization || contactAction || disposed) return;
+    let changed = false;
+    for (const notice of notices) {
+      if (seenPersonalNotices.has(notice)) continue;
+      seenPersonalNotices.add(notice);
+      if ((notice.method === "OnContactChange" || notice.method === "OnEditLabel") && notice.args[1] === "contact"
+        || notice.method === "OnMyLabelsChanged" && notice.args[0] === "contact"
+        || notice.method === "OnBlockContacts" || notice.method === "OnUnblockContacts") changed = true;
+    }
+    if (!changed) return;
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
+    void flow.addressBook().then(read => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      book = read;
+      busy = false;
+      drawnAgain();
+    }).catch(cause => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      busy = false;
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
+    });
+  }
+  function applyOrganizationNotices(notices: typeof $live.notifications): void {
+    if (!organization || book === null) return;
+    const values = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : value && typeof value === "object" && "items" in value && Array.isArray(value.items) ? value.items : [];
+    for (const notice of notices) {
+      if (seenOrganizationNotices.has(notice)) continue;
+      seenOrganizationNotices.add(notice);
+      if (notice.method !== "OnOrganizationContactsUpdated" || Number(notice.args[0]) !== ownerID) continue;
+      const contacts: Map<number, NamedAddressBook["contacts"][number]> = new Map(book.contacts.map(contact => [contact.contactID, contact]));
+      for (const update of values(notice.args[1])) {
+        const [id, level, mask] = values(update); const contactID = Number(id);
+        if (!(contactID > 0)) continue;
+        if (level == null && mask == null) { contacts.delete(contactID); continue; }
+        const previous = contacts.get(contactID);
+        contacts.set(contactID, { contactID, name: previous?.name ?? "Unknown contact", inWatchlist: false,
+          relationshipID: previous && mask != null ? previous.relationshipID : Number(level ?? previous?.relationshipID ?? 0),
+          labelMask: mask == null ? previous?.labelMask ?? 0n : BigInt(typeof mask === "object" && "value" in mask ? String(mask.value) : String(mask)) });
+        flow.requestNames([{kind: "owner", id: contactID}]);
+      }
+      book = { ...book, contacts: [...contacts.values()] };
+      drawnAgain();
+    }
+  }
+  $effect(() => {
+    const notices = $live.notifications;
+    untrack(() => applyOrganizationNotices(notices));
+    untrack(() => applyPersonalNotices(notices));
+  });
 
   /** The labels by name in lower case (GetLabelsSubContent, 197 to 204). */
   const labels = $derived([...(book?.labels ?? [])].sort((left, right) => {
@@ -385,7 +488,7 @@
 
   /** LoadData's filter (contactsForm.py 548 to 552; quickFilter.py QuickFilter): an owner whose name holds the text. */
   const matches = (name: string): boolean => filtering === "" || name.toLowerCase().includes(filtering.toLowerCase());
-  const contacts = $derived((book?.contacts ?? []).filter((contact) => matches(contact.name)));
+  const contacts = $derived((book?.contacts ?? []).map(contact => organization ? { ...contact, name: resolvedName($names.resolved, "owner", contact.contactID, contact.name) } : contact).filter((contact) => matches(contact.name)));
   const blocked = $derived((book?.blocked ?? []).filter((owner) => matches(owner.name)));
   const blockedIDs = $derived(new Set((book?.blocked ?? []).map((owner) => owner.ownerID)));
   const watched = $derived(new Set((book?.contacts ?? []).filter((contact) => contact.inWatchlist).map((contact) => contact.contactID)));
@@ -432,7 +535,7 @@
    */
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
     let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
-    let hint = word(WORDS.noContacts, "No contacts yet.");
+    let hint = organization ? alliance ? word("UI/PeopleAndPlaces/NoAllianceContacts", "No alliance contacts yet.") : word("UI/PeopleAndPlaces/NoCorpContacts", "No corporation contacts yet.") : word(WORDS.noContacts, "No contacts yet.");
     if (group === CONTACT_GROUP.notifications) {
       // Its entries are the notifications' (notificationEntries, below), and no contact is among them.
       entries = [];
@@ -453,7 +556,7 @@
     } else {
       entries = contacts.filter((contact) => inStandingGroup(group as number, contact.relationshipID)).map(entryOf);
       const [label, own] = STANDING_SHORT[group] ?? [WORDS.standingNeutral, "Neutral"];
-      hint = filledWord(WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
+      hint = filledWord(organization ? alliance ? "UI/PeopleAndPlaces/NoAllianceContactsStanding" : "UI/PeopleAndPlaces/NoCorpContactsStanding" : WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
     }
     if (onlineOnly) {
       entries = entries.filter((entry) => watched.has(entry.id) && onlineOf(entry.id) === true);
@@ -553,6 +656,10 @@
     const mine = ownerID === myID;
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
+    if (organization) {
+      const editable = canManage && !npc;
+      return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
+    }
     const isBlocked = blockedIDs.has(ownerID);
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
@@ -989,6 +1096,7 @@
     error = "";
     try {
       await action();
+      if (contactAction) onActionDone?.(book);
     } catch (cause) {
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -1036,7 +1144,7 @@
         sendNotification: held.isCharacter ? held.notify : false,
         message: held.isCharacter ? held.message : "",
         isCharacter: held.isCharacter,
-      }, held.isContact);
+      }, held.isContact, contactType);
       if (book !== null) {
         const before = book.contacts.find((each) => each.contactID === held.contactID);
         const contact = { contactID: held.contactID, name: held.name, relationshipID: held.level, inWatchlist: held.isCharacter && held.inWatchlist, labelMask: before?.labelMask ?? 0n };
@@ -1057,6 +1165,7 @@
     const held = managing;
     managing = null;
     held?.afterAdd?.(false);
+    if (contactAction) onActionDone?.(book);
   }
 
   /**
@@ -1065,7 +1174,7 @@
    * is its, and told, only where it is added. Told where `tellIt` (from a menu, not from Manage Labels).
    */
   async function labelGiven(ownerIDs: readonly number[], bits: bigint, labelName: string, tellIt: boolean): Promise<void> {
-    await flow.labelContacts(ownerIDs, bits, true);
+    await flow.labelContacts(ownerIDs, bits, true, contactType);
     const first = ownerIDs[0];
     const lone = ownerIDs.length === 1 && first !== undefined && !contactIDs.has(first) ? first : null;
     changeMasks(ownerIDs, (labelMask) => labelMask | bits);
@@ -1103,7 +1212,7 @@
     notes = [];
     told = [];
     void run(async () => {
-      await flow.labelContacts(ownerIDs, label.labelID, false);
+      await flow.labelContacts(ownerIDs, label.labelID, false, contactType);
       changeMasks(ownerIDs, (labelMask) => labelMaskWithout(labelMask, label.labelID));
       drawnAgain();
       tell(filledWord(WORDS.labelRemoved, "Label {labelName} taken off {numContacts}", { labelName: label.name, numContacts: String(ownerIDs.length) }));
@@ -1125,9 +1234,9 @@
       body: filledWord(`dialog:${dialog}/body`, "Take {names} off your contacts?", { names: owners.map((owner) => owner.name).join(", ") }),
       answer: (yes) => {
         question = null;
-        if (!yes) return;
+        if (!yes) { if (contactAction) onActionDone?.(book); return; }
         void run(async () => {
-          await flow.deleteContacts(ownerIDs);
+          await flow.deleteContacts(ownerIDs, contactType);
           if (book !== null) {
             book = { ...book, contacts: book.contacts.filter((each) => !ownerIDs.includes(each.contactID)) };
           }
@@ -1159,7 +1268,7 @@
     const level = held.level;
     notes = [];
     void run(async () => {
-      await flow.editContactsRelationship(held.ids, level);
+      await flow.editContactsRelationship(held.ids, level, contactType);
       if (book !== null) {
         book = { ...book, contacts: book.contacts.map((contact) => (held.ids.includes(contact.contactID) ? { ...contact, relationshipID: level } : contact)) };
       }
@@ -1225,7 +1334,7 @@
     renaming = null;
     if (name === "") return;
     void run(async () => {
-      await flow.renameContactLabel(held.labelID, name);
+      await flow.renameContactLabel(held.labelID, name, contactType);
       if (book !== null) {
         book = { ...book, labels: (book.labels ?? []).map((label) => (label.labelID === held.labelID ? { ...label, name } : label)) };
       }
@@ -1244,7 +1353,7 @@
         question = null;
         if (!yes) return;
         void run(async () => {
-          const asked = await flow.deleteContactLabel(label.labelID);
+          const asked = await flow.deleteContactLabel(label.labelID, contactType);
           if (book !== null) {
             book = {
               ...book,
@@ -1285,7 +1394,7 @@
       return;
     }
     void run(async () => {
-      const labelID = await flow.createContactLabel(name);
+      const labelID = await flow.createContactLabel(name, contactType);
       if (labelID !== null && book !== null) {
         book = { ...book, labels: [...(book.labels ?? []).filter((label) => label.labelID !== labelID), { labelID, name, color: null }] };
         checkedLabels = [...checkedLabels, String(labelID)];
@@ -1322,7 +1431,7 @@
         await labelGiven(ownerIDs, bits, "", false);
         return;
       }
-      await flow.labelContacts(ownerIDs, bits, false);
+      await flow.labelContacts(ownerIDs, bits, false, contactType);
       changeMasks(ownerIDs, (labelMask) => labelMaskWithout(labelMask, bits));
       drawnAgain();
     });
@@ -1358,7 +1467,7 @@
     }
     selectedIDs = [];
     menuFor = null;
-    flow.keepContactsLastSelected(groupID);
+    flow.keepContactsLastSelected(groupID, contactType);
   }
 
   /** BrowseContacts (554 to 558): a page back or on. */
@@ -1425,7 +1534,8 @@
   type AddressBookTab = "contacts" | "agents" | "search";
   // svelte-ignore state_referenced_locally
   const keptTab = flow.addressBookTab();
-  let tab = $state<AddressBookTab>(keptTab === "agents" || keptTab === "search" ? keptTab : "contacts");
+  // svelte-ignore state_referenced_locally
+  let tab = $state<AddressBookTab>(!organization && (keptTab === "agents" || keptTab === "search") ? keptTab : "contacts");
   /** What the Search tab's last search found, by kind; none before any. */
   let searchFound = $state<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]> | null>(null);
   function chooseTab(chosen: AddressBookTab): void {
@@ -2067,6 +2177,8 @@
   onMount(() => {
     flow.requestWords([
       ...Object.values(WORDS),
+      "UI/PeopleAndPlaces/NoCorpContacts", "UI/PeopleAndPlaces/NoCorpContactsStanding",
+      "UI/PeopleAndPlaces/NoAllianceContacts", "UI/PeopleAndPlaces/NoAllianceContactsStanding",
       ...Object.values(AGENT_WORDS),
       ...Object.values(FLEET_WORDS),
       ...DISTANCE_WORD_LABELS,
@@ -2075,20 +2187,28 @@
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
       ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
-    void load();
-    void flow.primeContactsOnline().catch(() => {});
+    if (contactAction) {
+      book = contactAction.book;
+      if (contactAction.kind === "manage") manage(contactAction.ownerID, contactAction.name);
+      else removeContacts([{ id: contactAction.ownerID, name: contactAction.name }]);
+    } else void load();
+    if (!contactAction && !organization) void flow.primeContactsOnline().catch(() => {});
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
-    if (store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
+    if (!contactAction && !organization && store.fleet.get().availability === "unknown") void flow.loadFleet(true).catch(() => {});
     return () => {
+      disposed = true;
+      ++readGeneration;
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
   });
 </script>
 
 <section class="panel">
+  {#if !contactAction}
   <header class="panel-head">
     <h2 class="panel-title">{word(WORDS.title, "Contacts")}</h2>
   </header>
+  {/if}
 
   {#if error}
     <p class="error">{error}</p>
@@ -2120,6 +2240,10 @@
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{editingSeveral.names}</strong></p>
       <p>{editingSeveral.level === null ? word(WORDS.selectStanding, "Choose a standing") : word(LEVELS.find(([level]) => level === editingSeveral?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === editingSeveral?.level)?.[2] ?? "Neutral Standing")}</p>
+      {#if organization}
+        <label>Standing <input type="range" aria-label="Standing" min="-10" max="10" step="0.1" value={editingSeveral.level ?? 0} oninput={(event) => { if (editingSeveral) editingSeveral.level = Number(event.currentTarget.value); }} /></label>
+        {#if editingSeveral.level !== null}<span>{editingSeveral.level.toFixed(1)}</span>{/if}
+      {/if}
       <p class="controls">
         {#each LEVELS as [level, label, own] (level)}
           <button type="button" class="minor" class:active={editingSeveral.level === level} aria-pressed={editingSeveral.level === level} title={word(label, own)} onclick={() => { if (editingSeveral) editingSeveral.level = level; }}>
@@ -2193,7 +2317,8 @@
     <section class="contacts-confirm" aria-label={word(WORDS.management, "Contact Management")}>
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{managing.name}</strong></p>
-      <p>{word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      <p>{organization ? managing.level.toFixed(1) : word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      {#if organization}<input type="range" aria-label="Standing" min="-10" max="10" step="0.1" bind:value={managing.level} />{/if}
       <p class="controls">
         {#each LEVELS as [level, label, own] (level)}
           <button type="button" class="minor" class:active={managing.level === level} aria-pressed={managing.level === level} title={word(label, own)} onclick={() => { if (managing) managing.level = level; }}>
@@ -2212,7 +2337,7 @@
           </select>
         </p>
       {/if}
-      {#if managing.isCharacter}
+      {#if managing.isCharacter && !organization}
         <p class="controls">
           <label title={word(WORDS.buddyHint, "")}>
             <input type="checkbox" bind:checked={managing.inWatchlist} />
@@ -2280,11 +2405,14 @@
   {/if}
 
   <!-- The window's tabs (ConstructTabs, 85 to 92): Contacts and Agents. -->
+  {#if !contactAction}
+  {#if !organization}
   <nav class="tabs">
     <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
     <button type="button" class:active={tab === "agents"} aria-pressed={tab === "agents"} onclick={() => chooseTab("agents")}>{word(AGENT_WORDS.agents, "Agents")}</button>
     <button type="button" class:active={tab === "search"} aria-pressed={tab === "search"} onclick={() => chooseTab("search")}>{word(SEARCH_WORDS.search, "Search")}</button>
   </nav>
+  {/if}
 
   {#if tab === "agents"}
     <div class="contacts-agents">
@@ -2546,10 +2674,10 @@
       {/each}
     </div>
   {:else}
-  <div class="contacts-form">
+  <div class="contacts-form" class:organization>
     <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength), and the labels under theirs. -->
     <ul class="contacts-groups">
-      {#each GROUPS as [groupID, label, own] (groupID)}
+      {#each GROUPS.filter(([id]) => !organization || id === CONTACT_GROUP.all || id <= 10) as [groupID, label, own] (groupID)}
         {#if groupID === CONTACT_GROUP.blocked}
           <li class="contacts-gap" aria-hidden="true"></li>
         {/if}
@@ -2564,7 +2692,7 @@
         <!-- The Labels group, with its Manage Labels (LabelGroupMenu, 532 to 535; manage_labels_callback, 162). -->
         <li class="contacts-labels-head">
           {word(WORDS.labels, "Labels")}
-          <button type="button" class="minor" onclick={() => { notes = []; told = []; managingLabels = !managingLabels; }}>{word(WORDS.manageLabels, "Manage Labels")}</button>
+          {#if canManage}<button type="button" class="minor" onclick={() => { notes = []; told = []; managingLabels = !managingLabels; }}>{word(WORDS.manageLabels, "Manage Labels")}</button>{/if}
         </li>
         <li>
           <button type="button" class="minor contacts-label" class:active={group === NO_LABEL} onclick={() => choose(NO_LABEL)}>
@@ -2576,7 +2704,7 @@
             <button type="button" class="minor contacts-label" class:active={group === labelGroup(label.labelID)} onclick={() => choose(labelGroup(label.labelID))}>
               {label.name} [{countOf(labelGroup(label.labelID))}]
             </button>
-            <button type="button" class="minor" aria-expanded={labelMenuFor === String(label.labelID)} aria-label="Label menu" onclick={() => (labelMenuFor = labelMenuFor === String(label.labelID) ? null : String(label.labelID))}>⋯</button>
+            {#if canManage}<button type="button" class="minor" aria-expanded={labelMenuFor === String(label.labelID)} aria-label="Label menu" onclick={() => (labelMenuFor = labelMenuFor === String(label.labelID) ? null : String(label.labelID))}>⋯</button>{/if}
           </li>
           {#if labelMenuFor === String(label.labelID)}
             <!-- A label's menu (GetLabelMenu, 226 to 233): Rename, and Delete with the entry's own words, its count with them. -->
@@ -2590,11 +2718,18 @@
     </ul>
 
     <div class="contacts-list">
+      {#if organization && canManage}
+        <div class="controls">
+          <input type="search" aria-label="Find contact to add" placeholder="Find contact to add" bind:value={ownerQuery} onkeydown={(event) => { if (event.key === "Enter") void findCorporateOwner(); }} />
+          <button type="button" disabled={busy || ownerQuery.trim().length < 3} onclick={() => void findCorporateOwner()}>{word(SEARCH_WORDS.search, "Search")}</button>
+        </div>
+        {#each ownerMatches as owner (owner.id)}<p><button type="button" onclick={() => { manage(owner.id, owner.name); ownerMatches = []; }}>{owner.name}</button></p>{/each}
+      {/if}
       <p class="controls">
-        <label>
+        {#if !organization}<label>
           <input type="checkbox" bind:checked={onlineOnly} onchange={onlineOnlyChanged} />
           {word(WORDS.onlineOnly, "Online only")}
-        </label>
+        </label>{/if}
         <input type="search" maxlength="100" aria-label="Filter" bind:value={filterText} oninput={filterTyped} />
       </p>
       {#if book === null}
@@ -2667,7 +2802,7 @@
                   <button type="button" class="minor" aria-expanded={menuFor === row.id} aria-label="Menu" onclick={() => (menuFor = menuFor === row.id ? null : row.id)}>⋯</button>
                 </td>
               </tr>
-              {#if menuFor === row.id && selectedRows.length > 1 && selectedIDs.includes(row.id)}
+              {#if canManage && menuFor === row.id && selectedRows.length > 1 && selectedIDs.includes(row.id)}
                 {@const several = selectedRows}
                 {@const masks = several.map((each) => each.labelMask)}
                 {@const toAssign = labelsToAssign(masks, labels)}
@@ -2696,8 +2831,8 @@
                 </tr>
               {:else if menuFor === row.id}
                 {@const offers = offersOf(row.id)}
-                {@const toAssign = labelsToAssign([row.labelMask], labels)}
-                {@const toRemove = labelsToRemove([row.labelMask], labels)}
+                {@const toAssign = canManage ? labelsToAssign([row.labelMask], labels) : []}
+                {@const toRemove = canManage ? labelsToRemove([row.labelMask], labels) : []}
                 <!-- The entry's menu of a contact (menusvc.py 590 to 602), and its labels' (userentry.py GetMenu, 444 to 452). -->
                 <tr class="contacts-menu">
                   <td colspan="5">
@@ -2762,6 +2897,7 @@
       {/if}
     </div>
   </div>
+  {/if}
   {/if}
 </section>
 
@@ -2902,6 +3038,8 @@
     flex-wrap: wrap;
     gap: 0.75rem;
   }
+  .contacts-form.organization .contacts-groups { order: 2; }
+  .contacts-form.organization .contacts-list table { width: 100%; }
   .contacts-groups {
     list-style: none;
     margin: 0;

@@ -8,6 +8,7 @@
 
 import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
 import type { Ask } from "../bridge/ask.ts";
+import type { CorporationRoleData, CorporationRoleGroupSpec } from "../bridge/corporationRoles.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
 import { decodeBeyonceWriteAck, type BeyonceWriteAck } from "../bridge/boundBeyonceWrites.ts";
@@ -48,6 +49,7 @@ import type {
   QuestionAnswer,
 } from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
+import { pyIntDictOrder } from "../bridge/pyDict.ts";
 import type { BotLaunchGrant, BotRiskClass } from "../bots/runPolicy.ts";
 import {
   type CompanionSetup,
@@ -1217,8 +1219,8 @@ export interface MarketChangeResult {
 // a null fleetID after decode is authoritative, not a blanking failure.
 
 /** Raw /api/bridge/bound-fleet envelope; decode with bridge/boundFleet.decodeBoundFleet. */
-export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<string, JsonValue>> {
-  return getJson("/api/bridge/bound-fleet", options);
+export async function loadBoundFleet(options: ApiOptions = {}, menuOnly = false): Promise<Record<string, JsonValue>> {
+  return getJson(`/api/bridge/bound-fleet${menuOnly ? "?view=menu" : ""}`, options);
 }
 
 // A pilot is invited to the fleet by the page itself, with the client's own
@@ -3833,6 +3835,22 @@ export async function getTypePrices(
  * read. At most 50 types an asking.
  */
 /** The ships' info bubble elements (cfg.infoBubbleTypeElements): each type's, in its slots' order; null for one with none. */
+/** The types of each group asked (evetypes.GetTypeIDsByGroup), at most 32 groups a read; null where not to be had. */
+export async function getGroupTypes(
+  groupIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{ readonly available: boolean; readonly groups: Readonly<Record<number, readonly number[] | null>> }> {
+  const data = await getJson(`/api/client-data/group-types?groupIDs=${groupIDs.join(",")}`, options);
+  const groups: Record<number, readonly number[] | null> = {};
+  const record = typeof data.groups === "object" && data.groups !== null && !Array.isArray(data.groups) ? (data.groups as Record<string, JsonValue>) : {};
+  for (const [key, value] of Object.entries(record)) {
+    const groupID = Number(key);
+    if (!Number.isSafeInteger(groupID) || groupID <= 0) continue;
+    groups[groupID] = Array.isArray(value) ? value.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id)) : null;
+  }
+  return { available: data.available === true, groups };
+}
+
 export async function getInfoBubbleElements(
   typeIDs: readonly number[],
   options: ApiOptions = {},
@@ -4013,6 +4031,332 @@ export async function getTypeMeta(typeIDs: readonly number[], options: ApiOption
   return { available: data.available === true, types, metaGroupNameIDs };
 }
 
+/** A map place's row, as the BFF's map location answers one. */
+export interface MapPlaceRow {
+  readonly typeID: number;
+  readonly itemID: number;
+  readonly name: string;
+  /** A solar system's security status; absent for a region or a constellation. */
+  readonly securityStatus?: number | null;
+}
+
+/** A region, constellation or solar system as the client's info window shows it (GET /api/map/location/:id). */
+export interface MapLocationInfo extends MapPlaceRow {
+  readonly description: string | null;
+  readonly parents: readonly MapPlaceRow[];
+  readonly children: readonly MapPlaceRow[];
+  readonly neighbours: readonly MapPlaceRow[];
+}
+
+/** A place a faction holds (GET /api/factions/:id): its name, and the names of the places it lies in. */
+export interface FactionPlaceRow {
+  readonly itemID: number;
+  readonly name: string;
+  readonly constellationID?: number;
+  readonly constellationName?: string;
+  readonly regionID?: number;
+  readonly regionName?: string;
+}
+
+/** A type a faction holds illegal, and what carrying it costs (contrabandtypes' factions entry). */
+export interface FactionIllegalType {
+  readonly typeID: number;
+  readonly name: string;
+  readonly standingLoss: number;
+  readonly confiscateMinSec: number;
+  readonly fineByValue: number;
+  readonly attackMinSec: number;
+}
+
+/** A faction as the client's info window shows it (GET /api/factions/:id). */
+export interface FactionInfo {
+  readonly factionID: number;
+  readonly name: string;
+  readonly description: string | null;
+  readonly headquarters: { readonly itemID: number; readonly name: string } | null;
+  readonly memberRaces: readonly { readonly raceID: number; readonly name: string }[];
+  readonly settledSystems: number;
+  readonly stations: number;
+  /** In the client's order (SortFunc: by name, a leading "The " left off). */
+  readonly corporations: readonly { readonly corporationID: number; readonly name: string }[];
+  readonly regions: readonly FactionPlaceRow[];
+  readonly constellations: readonly FactionPlaceRow[];
+  readonly systems: readonly FactionPlaceRow[];
+  /** By the type's name. */
+  readonly illegalTypes: readonly FactionIllegalType[];
+  /** Every faction by its number (iter_faction_ids). */
+  readonly factions: readonly { readonly factionID: number; readonly name: string }[];
+}
+
+/** A solar system's item as the client lists it (GET /api/client-data/system-objects/:id). */
+export interface SystemObjectRow {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly groupID: number | null;
+  readonly orbitID: number | null;
+  readonly celestialIndex: number | null;
+  readonly orbitIndex: number | null;
+  /** A stargate's: the system it leads to (its celestialNameID). */
+  readonly destinationID?: number | null;
+  /** A celestial's name of its own (its celestialNameID's message), where it has one. */
+  readonly name?: string | null;
+}
+
+/** A solar system's celestials and NPC stations from the client's own map; `available` is false where it cannot be read. */
+export async function getSystemObjects(solarSystemID: number, options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly objects: readonly SystemObjectRow[] }> {
+  const data = await getJson(`/api/client-data/system-objects/${solarSystemID}`, options);
+  const whole = (value: JsonValue | undefined): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  const objects: SystemObjectRow[] = [];
+  for (const raw of Array.isArray(data.objects) ? data.objects : []) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as Record<string, JsonValue>;
+    const itemID = whole(row.itemID);
+    const typeID = whole(row.typeID);
+    if (itemID === null || typeID === null) continue;
+    objects.push({
+      itemID,
+      typeID,
+      groupID: whole(row.groupID),
+      orbitID: whole(row.orbitID),
+      celestialIndex: whole(row.celestialIndex),
+      orbitIndex: whole(row.orbitIndex),
+      ...("destinationID" in row ? { destinationID: whole(row.destinationID) } : {}),
+      ...("name" in row ? { name: typeof row.name === "string" ? row.name : null } : {}),
+    });
+  }
+  return { available: data.available === true, objects };
+}
+
+/** An NPC corporation's headquarters (get_corporation_headquarters): its station by the station's type, else its system; or null. */
+export async function getNpcCorporationHeadquarters(corporationID: number, options: ApiOptions = {}): Promise<{ readonly itemID: number; readonly typeID: number } | null> {
+  const data = await getJson(`/api/client-data/npc-corporation-headquarters/${corporationID}`, options).catch(() => null);
+  const hq = data && typeof data.headquarters === "object" && data.headquarters !== null && !Array.isArray(data.headquarters) ? (data.headquarters as Record<string, JsonValue>) : null;
+  const itemID = hq === null ? 0 : Number(hq.itemID);
+  const typeID = hq === null ? 0 : Number(hq.typeID);
+  return Number.isSafeInteger(itemID) && itemID > 0 && Number.isSafeInteger(typeID) && typeID > 0 ? { itemID, typeID } : null;
+}
+
+/** The standings an owner's stations ask for their services (evestations standingsrestriction), by owner and service. */
+export async function loadStationStandingsRestrictions(options: ApiOptions = {}): Promise<Readonly<Record<string, Readonly<Record<string, number>>>>> {
+  const data = await getJson("/api/client-data/station-standings-restrictions", options);
+  const raw = typeof data.restrictions === "object" && data.restrictions !== null && !Array.isArray(data.restrictions) ? (data.restrictions as Record<string, JsonValue>) : {};
+  const out: Record<string, Record<string, number>> = {};
+  for (const [ownerID, services] of Object.entries(raw)) {
+    if (typeof services !== "object" || services === null || Array.isArray(services)) continue;
+    const kept: Record<string, number> = {};
+    for (const [serviceID, standing] of Object.entries(services as Record<string, JsonValue>)) if (typeof standing === "number") kept[serviceID] = standing;
+    out[ownerID] = kept;
+  }
+  return out;
+}
+
+/** A bloodline's description, the number of its message (bloodlines.get_bloodline_description: its descriptionID); null where none is had. */
+export async function getBloodlineDescriptionID(bloodlineID: number, options: ApiOptions = {}): Promise<number | null> {
+  const data = await getJson(`/api/client-data/bloodlines/${bloodlineID}`, options);
+  const bloodline = typeof data.bloodline === "object" && data.bloodline !== null && !Array.isArray(data.bloodline) ? (data.bloodline as Record<string, JsonValue>) : null;
+  const messageID = bloodline === null ? 0 : Number(bloodline.descriptionID);
+  return Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;
+}
+
+/** A colour of the corporation logo library: its RGBA and its blend (CORPLOGO_BLEND, _SOLID, _GRADIENT). */
+export interface CorpLogoColor {
+  readonly rgba: readonly number[];
+  readonly blend: number;
+}
+
+/** The client's corporation logo library (GET /api/client-data/corp-logo-library). */
+export interface CorpLogoLibrary {
+  /** Each shape's texture, its res: path, by the shape. */
+  readonly shapes: Readonly<Record<string, string>>;
+  readonly noShape: number;
+  readonly colors: Readonly<Record<string, CorpLogoColor>>;
+  readonly blends: { readonly blend: number; readonly solid: number; readonly gradient: number };
+  readonly defaultColor: CorpLogoColor;
+}
+
+/** A player corporation's logo as cfg.corptickernames has it: three shapes and three colours, each a number or none. */
+export interface CorpLogoData {
+  readonly shapes: readonly (number | null)[];
+  readonly colors: readonly (number | null)[];
+}
+
+export async function loadCorpLogoLibrary(options: ApiOptions = {}): Promise<CorpLogoLibrary | null> {
+  const data = await getJson("/api/client-data/corp-logo-library", options);
+  if (data.available !== true) return null;
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    (value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {});
+  const colorOf = (value: JsonValue | undefined): CorpLogoColor | null => {
+    const row = record(value);
+    const rgba = Array.isArray(row.rgba) ? row.rgba.map(Number) : [];
+    return rgba.length === 4 && rgba.every(Number.isFinite) && typeof row.blend === "number" ? { rgba, blend: row.blend } : null;
+  };
+  const shapes: Record<string, string> = {};
+  for (const [id, resPath] of Object.entries(record(data.shapes))) if (typeof resPath === "string") shapes[id] = resPath;
+  const colors: Record<string, CorpLogoColor> = {};
+  for (const [id, value] of Object.entries(record(data.colors))) {
+    const color = colorOf(value);
+    if (color !== null) colors[id] = color;
+  }
+  const blends = record(data.blends);
+  const defaultColor = colorOf(data.defaultColor);
+  if (defaultColor === null || typeof data.noShape !== "number") return null;
+  return {
+    shapes,
+    noShape: data.noShape,
+    colors,
+    blends: { blend: Number(blends.blend), solid: Number(blends.solid), gradient: Number(blends.gradient) },
+    defaultColor,
+  };
+}
+
+/** Player corporations' logos (POST /api/corp-logos): each one's, null where the server has none; `unresolved` not asked. */
+export async function corpLogos(corpIDs: readonly number[], options: ApiOptions = {}): Promise<{ readonly logos: Readonly<Record<string, CorpLogoData | null>>; readonly unresolved: readonly number[] }> {
+  const data = await postJson("/api/corp-logos", { corpIDs }, options);
+  const raw = data.logos !== null && typeof data.logos === "object" && !Array.isArray(data.logos) ? (data.logos as Record<string, JsonValue>) : {};
+  const ids = (value: JsonValue | undefined): (number | null)[] =>
+    [0, 1, 2].map((at) => (Array.isArray(value) && typeof value[at] === "number" ? (value[at] as number) : null));
+  const logos: Record<string, CorpLogoData | null> = {};
+  for (const [corpID, value] of Object.entries(raw)) {
+    const row = value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : null;
+    logos[corpID] = row === null ? null : { shapes: ids(row.shapes), colors: ids(row.colors) };
+  }
+  const unresolved = Array.isArray(data.unresolved) ? data.unresolved.filter((id): id is number => typeof id === "number") : [];
+  return { logos, unresolved };
+}
+
+/** The owners' logos the client draws from its own tables, each a texture's res: path by the owner (GET /api/client-data/owner-logos). */
+export interface OwnerLogos {
+  readonly factions: Readonly<Record<string, string>>;
+  readonly factionsSmall: Readonly<Record<string, string>>;
+  readonly corporations: Readonly<Record<string, string>>;
+}
+
+export async function loadOwnerLogos(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly logos: OwnerLogos }> {
+  const data = await getJson("/api/client-data/owner-logos", options);
+  const paths = (value: JsonValue | undefined): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      for (const [id, resPath] of Object.entries(value)) if (typeof resPath === "string") out[id] = resPath;
+    }
+    return out;
+  };
+  return { available: data.available === true, logos: { factions: paths(data.factions), factionsSmall: paths(data.factionsSmall), corporations: paths(data.corporations) } };
+}
+
+/** A faction, or null where the id is none. */
+export async function getFaction(factionID: number, options: ApiOptions = {}): Promise<FactionInfo | null> {
+  const data = await getJson(`/api/factions/${factionID}`, options).catch(() => null);
+  const raw = data && typeof data.faction === "object" && data.faction !== null && !Array.isArray(data.faction) ? (data.faction as Record<string, JsonValue>) : null;
+  if (raw === null) return null;
+  const record = (value: JsonValue | undefined): Record<string, JsonValue> | null =>
+    (value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : null);
+  const list = (value: JsonValue | undefined): Record<string, JsonValue>[] =>
+    (Array.isArray(value) ? value : []).map(record).filter((each): each is Record<string, JsonValue> => each !== null);
+  const id = (value: JsonValue | undefined): number => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0);
+  const text = (value: JsonValue | undefined): string => (typeof value === "string" ? value : "");
+  const number = (value: JsonValue | undefined): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const place = (row: Record<string, JsonValue>): FactionPlaceRow => ({
+    itemID: id(row.itemID),
+    name: text(row.name),
+    ...(id(row.constellationID) ? { constellationID: id(row.constellationID), constellationName: text(row.constellationName) } : {}),
+    ...(id(row.regionID) ? { regionID: id(row.regionID), regionName: text(row.regionName) } : {}),
+  });
+  const ownID = id(raw.factionID);
+  if (!ownID) return null;
+  const hq = record(raw.headquarters);
+  return {
+    factionID: ownID,
+    name: text(raw.name),
+    description: typeof raw.description === "string" ? raw.description : null,
+    headquarters: hq !== null && id(hq.itemID) ? { itemID: id(hq.itemID), name: text(hq.name) } : null,
+    memberRaces: list(raw.memberRaces).map((row) => ({ raceID: id(row.raceID), name: text(row.name) })),
+    settledSystems: number(raw.settledSystems),
+    stations: number(raw.stations),
+    corporations: list(raw.corporations).map((row) => ({ corporationID: id(row.corporationID), name: text(row.name) })).filter((row) => row.corporationID > 0),
+    regions: list(raw.regions).map(place).filter((row) => row.itemID > 0),
+    constellations: list(raw.constellations).map(place).filter((row) => row.itemID > 0),
+    systems: list(raw.systems).map(place).filter((row) => row.itemID > 0),
+    illegalTypes: list(raw.illegalTypes)
+      .map((row) => ({
+        typeID: id(row.typeID),
+        name: text(row.name),
+        standingLoss: number(row.standingLoss),
+        confiscateMinSec: number(row.confiscateMinSec),
+        fineByValue: number(row.fineByValue),
+        attackMinSec: number(row.attackMinSec),
+      }))
+      .filter((row) => row.typeID > 0),
+    factions: list(raw.factions).map((row) => ({ factionID: id(row.factionID), name: text(row.name) })).filter((row) => row.factionID > 0),
+  };
+}
+
+/** A map place, or null where the id is none. */
+export async function getMapLocation(itemID: number, options: ApiOptions = {}): Promise<MapLocationInfo | null> {
+  const data = await getJson(`/api/map/location/${itemID}`, options).catch(() => null);
+  const place = data && typeof data.place === "object" && data.place !== null && !Array.isArray(data.place) ? (data.place as Record<string, JsonValue>) : null;
+  if (place === null) return null;
+  const row = (value: JsonValue | undefined): MapPlaceRow | null => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const r = value as Record<string, JsonValue>;
+    const typeID = Number(r.typeID);
+    const id = Number(r.itemID);
+    if (!Number.isSafeInteger(typeID) || !Number.isSafeInteger(id) || id <= 0) return null;
+    const sec = typeof r.securityStatus === "number" ? r.securityStatus : null;
+    return { typeID, itemID: id, name: typeof r.name === "string" ? r.name : "", ...(typeID === 5 ? { securityStatus: sec } : {}) };
+  };
+  const rows = (value: JsonValue | undefined): MapPlaceRow[] =>
+    (Array.isArray(value) ? value : []).map(row).filter((each): each is MapPlaceRow => each !== null);
+  const self = row(place as JsonValue);
+  if (self === null) return null;
+  return {
+    ...self,
+    description: typeof place.description === "string" ? place.description : null,
+    parents: rows(place.parents),
+    children: rows(place.children),
+    neighbours: rows(place.neighbours),
+  };
+}
+
+/**
+ * What the ship HUD's buff bar needs (GET /api/client-data/dbuff-collections): each dbuff collection asked as the
+ * client's dbuff storage has it (null for none), the res: path of each icon asked (null for none), and the
+ * relative-percent unit's name.
+ */
+export async function getDbuffCollections(
+  collectionIDs: readonly number[],
+  iconIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<{
+  readonly collections: ReadonlyMap<number, { readonly name: string | null; readonly operationName: string; readonly showOutputValueInUI: string } | null>;
+  readonly iconFiles: ReadonlyMap<number, string | null>;
+  readonly percentUnitName: string;
+}> {
+  const data = await getJson(`/api/client-data/dbuff-collections?ids=${collectionIDs.join(",")}&iconIDs=${iconIDs.join(",")}`, options);
+  const recordOf = (value: JsonValue | undefined): Record<string, JsonValue> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
+  const collections = new Map<number, { readonly name: string | null; readonly operationName: string; readonly showOutputValueInUI: string } | null>();
+  for (const [key, value] of Object.entries(recordOf(data.collections))) {
+    const collectionID = Number(key);
+    if (!Number.isSafeInteger(collectionID) || collectionID <= 0) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      collections.set(collectionID, null);
+      continue;
+    }
+    const row = value as Record<string, JsonValue>;
+    collections.set(collectionID, {
+      name: typeof row.name === "string" ? row.name : null,
+      operationName: typeof row.operationName === "string" ? row.operationName : "",
+      showOutputValueInUI: typeof row.showOutputValueInUI === "string" ? row.showOutputValueInUI : "",
+    });
+  }
+  const iconFiles = new Map<number, string | null>();
+  for (const [key, value] of Object.entries(recordOf(data.iconFiles))) {
+    const iconID = Number(key);
+    if (Number.isSafeInteger(iconID) && iconID > 0) iconFiles.set(iconID, typeof value === "string" ? value : null);
+  }
+  return { collections, iconFiles, percentUnitName: typeof data.percentUnitName === "string" ? data.percentUnitName : "" };
+}
+
 /**
  * Dogma attributes as the client draws one by itself (GET /api/client-data/attribute-display): its name as the number
  * of its message, and its picture's res: path; null for one the client's tables have not. At most 32 at once.
@@ -4181,6 +4525,47 @@ export async function getEffectDisplayNameIDs(
     if (Number.isSafeInteger(effectID) && effectID > 0) displayNameIDs[effectID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
   }
   return { available: data.available === true, displayNameIDs };
+}
+
+/** characterdata.races.get_race_name: message IDs from the installed race table. */
+export async function getRaceNameIDs(options: ApiOptions = {}): Promise<Readonly<Record<number, number>>> {
+  const data = await getJson("/api/client-data/race-name-ids", options);
+  if (data.available !== true || !data.names || typeof data.names !== "object" || Array.isArray(data.names)) throw new Error("The client's race names could not be read.");
+  return data.names as Readonly<Record<number, number>>;
+}
+
+/** monolithconfig.enabled's accepted text, from its installed compiled synonyms module. */
+export async function getConfigEnabledValues(options: ApiOptions = {}): Promise<readonly string[]> {
+  const data = await getJson("/api/client-data/config-enabled-values", options);
+  if (data.available !== true || !Array.isArray(data.values)) throw new Error("The client's config flag definitions could not be read.");
+  return data.values.filter((value): value is string => typeof value === "string");
+}
+
+/** The client's corporation role/group tables, read in place by its compiled loaders. */
+export async function getCorporationRoleData(options: ApiOptions = {}): Promise<CorporationRoleData> {
+  const data = await getJson("/api/client-data/corporation-roles", options);
+  if (data.available !== true) throw new Error("The client's corporation role data could not be read.");
+  const groups = data.groups as unknown as Record<string, CorporationRoleGroupSpec> & { "#order": number[] };
+  return {
+    roles: data.roles as unknown as CorporationRoleData["roles"],
+    groups: Object.fromEntries(Object.entries(groups).filter(([key]) => /^\d+$/.test(key))) as CorporationRoleData["groups"],
+    order: groups["#order"],
+    locationalRoles: data.locationalRoles as string[],
+  };
+}
+
+export async function getCorporationRoleOptions(options: ApiOptions = {}): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
+  const data = await getJson("/api/client-data/corporation-roles", options);
+  if (data.available !== true) throw new Error("The client's corporation role data could not be read.");
+  const roles = data.roles as Record<string, { nameID: number }>;
+  const groups = data.groups as Record<string, { roleMask: number | string }> & { "#order": number[] };
+  return pyIntDictOrder(groups["#order"]).filter(id => id === 1 || id === 2).flatMap(groupID => {
+    const mask = BigInt(groups[String(groupID)]!.roleMask);
+    return Object.entries(roles).flatMap(([bit, role]) => {
+      const roleID = 1n << BigInt(bit);
+      return (mask & roleID) === roleID ? [{ roleID: roleID.toString(), nameID: role.nameID, groupID }] : [];
+    });
+  });
 }
 
 /**

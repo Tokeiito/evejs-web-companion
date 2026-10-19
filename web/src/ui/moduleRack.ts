@@ -155,6 +155,83 @@ export function buildModuleRack(
   }));
 }
 
+/** inventorycommon/const.py flagHiSlot0, flagMedSlot0, flagLoSlot0: each rack's first slot's flag. */
+const FIRST_SLOT_FLAG: Readonly<Record<RackFamily, number>> = { high: 27, mid: 19, low: 11 };
+
+/** One of the HUD's places: the slot whose flag stands there, and how it is drawn. */
+export interface RackPlace {
+  /** The flag of the slot at this place (GetSlotOrder()[r * 8 + i]). */
+  readonly flag: number;
+  /** The ship's slot of that flag, with what it holds; null where the ship has no such slot. */
+  readonly slot: RackSlotVM | null;
+  /**
+   * A module's button; an empty slot; while a module is dragged, a place it may be dropped on (StartDragMode: every
+   * place shown); or nothing, the place kept (a slot has its column: slotsContainer.InitDrawSlots).
+   */
+  readonly drawn: "module" | "empty" | "target" | null;
+}
+
+/** A rack's row of the HUD: its rack (name, heat) and its places, the last ones not drawn left off. */
+export interface RackPlacedRow extends RackRow {
+  readonly places: readonly RackPlace[];
+}
+
+/**
+ * The HUD's three rows of eight places, as the client's slotsContainer draws them (InitSlots, InitDrawSlots,
+ * CheckButtonVisibility): row r's place i holds the slot of the flag `order[r * 8 + i]` (GetSlotOrder, kept per ship
+ * where the pilot moved modules about), whichever rack that flag is of. A bank's slave has no button (InitSlots, 293
+ * to 297: its slot is left empty, the master's button standing for the bank); a module of `passiveFiltered` (Display
+ * Passive Modules off) none either, nor is its slot drawn empty (_FitSlot 526 to 528, 475); an empty slot is drawn
+ * only where the pilot shows empty slots (Display Empty Slots), and then not the high rack's first empty slots, by
+ * flag, as many as there are slaves (474 to 481); a place with no slot of the ship's, or none drawn, keeps its column.
+ * `dragging`: a module is being dragged, and every place is one to drop it on (StartDragMode, 729 to 742).
+ */
+export function rackPlaces(
+  rows: readonly RackRow[],
+  order: readonly number[],
+  showEmptySlots: boolean,
+  passiveFiltered: ReadonlySet<number> = new Set(),
+  dragging = false,
+): readonly RackPlacedRow[] {
+  const slaves = rows.flatMap((row) => row.slots).filter((slot) => slot.module !== null && slot.module.bankMasterID !== null).length;
+  // CheckButtonVisibility (443 to 491), rack by rack and slot by slot in flag order: what each slot of the ship's is.
+  const drawnOf = new Map<number, { readonly slot: RackSlotVM; readonly drawn: "module" | "empty" | null }>();
+  for (const row of rows) {
+    let ignored = 0;
+    row.slots.forEach((slot, index) => {
+      const flag = FIRST_SLOT_FLAG[row.family] + index;
+      if (slot.module !== null && passiveFiltered.has(slot.module.itemID)) {
+        drawnOf.set(flag, { slot, drawn: null });
+        return;
+      }
+      if (slot.module !== null && slot.module.bankMasterID === null) {
+        drawnOf.set(flag, { slot, drawn: "module" });
+        return;
+      }
+      if (!showEmptySlots) {
+        drawnOf.set(flag, { slot: { ...slot, module: null }, drawn: null });
+        return;
+      }
+      if (row.family === "high" && ignored < slaves) {
+        ignored += 1;
+        drawnOf.set(flag, { slot: { ...slot, module: null }, drawn: null });
+        return;
+      }
+      drawnOf.set(flag, { slot: { ...slot, module: null }, drawn: "empty" });
+    });
+  }
+  return RACK_FAMILIES.map((family, r) => {
+    const row = rows.find((each) => each.family === family) ?? { family, label: family, heat: null, slots: [] };
+    const places: RackPlace[] = order.slice(r * 8, r * 8 + 8).map((flag) => {
+      const held = drawnOf.get(flag) ?? null;
+      const drawn = held?.drawn === "module" ? "module" : dragging ? "target" : held?.drawn ?? null;
+      return { flag, slot: held?.slot ?? null, drawn };
+    });
+    while (places.length > 0 && places[places.length - 1]!.drawn === null) places.pop();
+    return { ...row, places };
+  });
+}
+
 /** What one click on a rack module means right now. */
 export type RackClickAction = "activate" | "deactivate" | null;
 
@@ -277,8 +354,9 @@ export function rackSlotTitle(
     module.bankSize > 1
       ? ` Banked: fires with ${module.bankSize - 1} other${module.bankSize === 2 ? "" : "s"}.`
       : "";
+  // The button's menu has Put Online (shipmodulebutton.GetMenu 482 to 486), as the Fitting window's slot has.
   if (!module.online) {
-    return `${name} — offline (bring it online from the Fitting window)${loaded}${wear}`;
+    return `${name} — offline (bring it online from its menu)${loaded}${wear}`;
   }
   // Overloading is destructive, so the tile SAYS it is running hot rather than
   // relying on a colour, and names the gesture that toggles it.

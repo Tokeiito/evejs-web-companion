@@ -14,8 +14,10 @@ import {
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
+import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
-import { evaluateFit, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
+import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, usedWithTypeIDs, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
+import { fittingSkillWarning, type FittingSkillWarning } from "../bridge/fittingSkills.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
@@ -61,6 +63,7 @@ import {
   simulatedHoldUse,
   emptyFighterBay,
   fighterBayRoomFor,
+  fighterBayRoomForAll,
   fitFighterToEmptyTube,
   fitFighterToTube,
   fitItemsToFighterBay,
@@ -170,7 +173,12 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
+import { locationKind } from "../bridge/clientWords.ts";
+import { resolvedName } from "../store/names.ts";
+import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
+import { corporationMemberOf, memberField, memberInteger, memberTitleOf, MEMBER_ROLE_FIELDS, type CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
+import { memberRoleGroups, myGrantableRoles, memberTitlesOf, changeMemberTitles, type RoleMasks, type CorporationTitle } from "../bridge/corporationRoles.ts";
+import { addressBookOf, corporateAddressBookOf, type ContactScope, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
@@ -259,7 +267,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
-import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
+import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -409,7 +417,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
-import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -421,6 +429,8 @@ const OWNER_SYSTEM = 1;
 const UE_LOC = 101;
 import { itemChangeLocations, itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
+import { BUFF_SLOTS } from "../bridge/dbuffs.ts";
+import { BUFF_BAR_FX_GUIDS, decodeDbuffUpdate, decodeEwarNotice, decodeSpecialFx, ewarNoticed, jamNoticed, jammersReset, jammersWithout, NO_BUFFS, shipEffectNoticed, shipEffectsReset, type BuffBarState } from "../bridge/buffBar.ts";
 import { buyUseCorp, setBuyUseCorp } from "./buyUseCorp.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { FittingResources, MarketEscrow } from "../store/types.ts";
@@ -436,6 +446,7 @@ import type {
   DroneInSpace,
   DroneBayStack,
   DroneOrderReport,
+  FittedModule,
   FittingSlot,
   FleetAction,
   FlightStatus,
@@ -455,7 +466,7 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
-import { decodeInstanceRows, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
+import { decodeInstanceRows, decodeWeaponBanks, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
@@ -504,7 +515,8 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_ALPHA, CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import type { AgentFinderRow, AgentRow, HoldItem, JournalMission, MissionSpot, SpaceEntity } from "../store/types.ts";
+import { readCharacterBloodline, readCharacterInfoHeader, readNpcCharacterCorporation, type CharacterInfoHeader } from "../bridge/characterInfo.ts";
 import { GATE_ACTIVATION_RANGE_M, TYPE_ABYSS_ENTRANCE_GATE, activateGate as activateGateCall, gateCallFor } from "../bridge/gateActivation.ts";
 import {
   ABYSS_LOOTABLE_OBJECTIVE,
@@ -631,9 +643,10 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
+import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
+import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -695,7 +708,7 @@ import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
 import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
-import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
+import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
 
 /**
@@ -738,7 +751,8 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
-import { IntDict, intDictOf } from "../bridge/py27DictOrder.ts";
+import { IntDict, hashedSetOrder, intDictOf, intDictOrder, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
+import { hudSettingNow, setSlotOrder, slotOrderOf } from "../store/hudSettings.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
@@ -754,6 +768,7 @@ import {
 } from "../bridge/fleetBroadcasts.ts";
 import {
   decodeJamNotification,
+  JAM_ASSUMED_DURATION_MS,
   isJamLive,
   scrammedByWarpScrambler,
   tacklersHolding,
@@ -819,6 +834,14 @@ export interface RouteWindowWaypoint extends RouteWindowPlace {
 export interface RouteWindowWaypoints {
   readonly currentSystemID: number;
   readonly waypoints: readonly RouteWindowWaypoint[];
+}
+
+/** A system on the info window's route (TAB_ROUTE): it, the constellation and region it lies in, its security. */
+export interface MapRouteStep {
+  readonly systemID: number;
+  readonly constellationID: number | null;
+  readonly regionID: number | null;
+  readonly security: number | null;
 }
 
 /**
@@ -1044,6 +1067,16 @@ export interface SupportTractorRequest {
  * it said no in its own words. The last two also land in `actionError`.
  */
 export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
+
+/**
+ * One of the rack button's own menu entries after the ammunition (shipmodulebutton.GetMenu 462 to 524): a toggle with
+ * the state it would change (`on`), a rule, or the rest by what each does.
+ */
+export type RackMenuEntry =
+  | { readonly kind: "autoReload" | "autoRepeat" | "online" | "overload"; readonly on: boolean; readonly text: string }
+  | { readonly kind: "overloadRack" | "stopOverloadRack" | "repair" | "cancelRepair" | "clearGroup" | "showInfo"; readonly text: string }
+  | { readonly kind: "repairAll" | "cancelAllRepairs"; readonly text: string; readonly moduleIDs: readonly number[] }
+  | { readonly kind: "rule" };
 
 /**
  * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
@@ -1324,6 +1357,9 @@ export interface SkillBooksAsk {
   readonly cost: number | null;
 }
 
+/** The training time and the skill action of a type's needs or of a list of skills (AddTrainingTime, SkillActionContainer). */
+export type SkillTrainingRecord = Pick<SkillsRequired, "omega" | "trainingTicks" | "skillPointsRequired" | "action" | "books" | "freeSkillPoints" | "applyLevels" | "offerInjection" | "omegaRestricted">;
+
 /** A skill of the skill requirement window: its level, its mark and its five boxes. */
 export interface SkillsRequiredRow {
   readonly skill: number;
@@ -1458,6 +1494,11 @@ export interface AppFlow {
   ): Promise<void>;
   /** DESTROY items. The caller must have confirmed first — this is irreversible. */
   trashItems(itemIDs: readonly number[], place: InventoryPlace): Promise<void>;
+  /**
+   * A packaged container listed in this place assembled, as its menu's Assemble Container and a double click on it
+   * assemble it (menusvc.AssembleContainer; item.py 838 and 839). Every open place is read again after.
+   */
+  assembleContainer(itemID: number, place: InventoryPlace): Promise<void>;
   /** Read the corporation hangar at the docked station. */
   loadCorpHangar(): Promise<void>;
   /** The lobby's offices where the pilot is docked, listed when the player asks for them. */
@@ -1502,8 +1543,122 @@ export interface AppFlow {
     source: "hangar" | "cargo",
     slot: { readonly family: SlotFamily; readonly index: number } | "auto",
   ): Promise<void>;
-  /** Unfit a module, as the client's Unfit does: to the hangar docked, and to the ship's own hold in space. */
+  /**
+   * Unfit a module, as the client's UnfitModule does: a grouped weapon asked of the pilot and taken out of its bank,
+   * its charge unloaded, and the module to the hangar docked and to the ship's own hold in space.
+   */
   unfitModule(itemID: number): Promise<void>;
+  /** A fitted module put into the ship's cargo, as the client's UnloadModuleToContainer puts it (a slot dragged to the cargo). */
+  unloadModuleToCargo(itemID: number): Promise<void>;
+  /** The charge in the slot of this flag put into the ship's cargo, as the client's UnloadAmmoToContainer puts it. */
+  unloadChargeToCargo(flagID: number): Promise<void>;
+  /**
+   * A fitted module dropped on a place of the inventory, as that container's controller takes it
+   * (BaseInvContainer.AddItems 505 to 514: UnloadModuleToContainer with its container's arguments and flag): the cargo
+   * and the ship's other holds, the hangar, a container, the corporation's hangar (asked first, ConfirmOneWayItemMove).
+   */
+  unloadModuleToPlace(itemID: number, place: InventoryPlace): Promise<void>;
+  /** The charge in the slot of this flag dropped on a place of the inventory (AddItems 515 to 517: UnloadAmmoToContainer). */
+  unloadChargeToPlace(flagID: number, place: InventoryPlace): Promise<void>;
+  /**
+   * A charge-taking module's ammunition menu on the rack, as the client's GetAmmoMenu makes it (bridge/ammoMenu.ts),
+   * each entry with its words; null where the module or the static data is not to be had.
+   */
+  rackAmmoMenu(moduleID: number, context: { readonly reloading: boolean; readonly bankCount: number }): Promise<readonly (AmmoMenuEntry & { readonly text: string })[] | null>;
+  /** The rack menu's Unload to Cargo: UnloadAmmoToContainer of the module's charge to the cargo. */
+  unloadRackCharge(moduleID: number): Promise<void>;
+  /**
+   * The rack button's own entries after the ammunition (shipmodulebutton.GetMenu 462 to 524), in its order: Set
+   * Auto-Reload for a module that takes charges; then, by the module's effects as godma's dict of them iterates, Set
+   * Auto-Repeat for a repeating one, a rule and Put Online or Offline (not for a bank's master) for the online one, and
+   * the overload toggle, Overload Rack and Stop Overloading Rack for the overload one where Thermodynamics is trained to
+   * the module's need; for a damaged module (the most damaged of its bank) Repair, with the paste it takes, or Cancel
+   * Repair; Repair All for more than one damaged module not being repaired, and Cancel All Repairs for more than one
+   * being repaired, each with its modules in the order godma's set of them gives; Clear Group for a bank's master;
+   * Show Info. Each with its words; null where the module is not had.
+   */
+  rackModuleMenu(moduleID: number): Promise<readonly RackMenuEntry[] | null>;
+  /** The button's ChangeOnline (823 to 846): an offline asked first (PutOffline), then the online effect switched. */
+  setRackModuleOnline(moduleID: number, online: boolean): Promise<void>;
+  /** The button's OverloadRack and StopOverloadRack (695, 699): godma's of the module's rack. */
+  setRackOverload(moduleID: number, overloaded: boolean): Promise<void>;
+  /** The button's UnlinkModule (684): the bank the module is master of broken up (DestroyWeaponBank). */
+  clearRackGroup(moduleID: number): Promise<void>;
+  /** The button's RepairModule (560 to 586): the module's repair begun (godma.RepairModule), then each of its bank's slaves'. */
+  repairRackModule(moduleID: number): Promise<void>;
+  /** CancelRepair (592 to 601): the module's repair ended (godma.StopRepairModule), then each slave's. */
+  cancelRackRepair(moduleID: number): Promise<void>;
+  /** RepairManyModules (588): godma's, of the modules named in that order, what became of them said (CustomNotify). */
+  repairRackModules(moduleIDs: readonly number[]): Promise<void>;
+  /** CancelRepairManyModuels (603): godma's StopRepairModuleManyModules, each named module's repair ended in turn. */
+  cancelRackRepairs(moduleIDs: readonly number[]): Promise<void>;
+  /**
+   * The active ship's fitted modules the rack leaves out where Display Passive Modules is off (slotsContainer._FitSlot
+   * 521 to 535): those with no activatable default effect among their effects as godma keeps them (GetDefaultEffect).
+   */
+  passiveRackModules(): Promise<ReadonlySet<number>>;
+  /**
+   * The module button's ToggleOverload with the overload state locked (221 to 227): LockedOverloadState said, unless
+   * it is up already.
+   */
+  sayOverloadLocked(): void;
+  /**
+   * A module's button dropped on another's on the HUD (shipmodulebutton.OnDropData 1002, slotsContainer.ChangeSlots
+   * 79 to 89): two of a type linked (merged unless `shift`), and their places swapped where that left the one dropped
+   * on no bank's master, or where they are not of a type.
+   */
+  rackChangeSlots(toFlag: number, fromFlag: number, shift: boolean): Promise<void>;
+  /**
+   * A module's button dropped on a place of the HUD's with no button (ShipSlot.OnDropData, slotsContainer.SwapSlots 91 to
+   * 107): the two places swapped in the ship's order; with `shift` and a bank dragged, a module taken out of it
+   * (UngroupModule) and that one moved.
+   */
+  rackSwapSlots(flag1: number, flag2: number, shift: boolean): Promise<void>;
+  /**
+   * A charge from a hold dropped on a module's button on the HUD (shipmodulebutton.OnDropData 1004 to 1023):
+   * DropLoadChargeToModule, the quantity asked first with `shift`. `charge` as dropChargeOnSlot has it.
+   */
+  dropChargeOnRackModule(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace; readonly flagID: number }, moduleID: number, shift: boolean): Promise<void>;
+  /**
+   * A module from the cargo dropped on a slot's place on the HUD (ShipSlot.OnDropData): the ship's inventory's Add of
+   * it, from where it lies, into that slot's flag, quantity None.
+   */
+  fitCargoModuleToRackSlot(itemID: number, flag: number): Promise<void>;
+  /**
+   * The HUD's cargo button's holds as its hold tracker has them (holdTracker.FetchInventoryControllers): the active
+   * ship's (GetHoldsInType, by the type's attributes) in the order the tracker's dict of them iterates, each named in
+   * the client's words (GetNameForFlag) with how full it is from the ship's bays (null where not read); and the hold
+   * tracked for the ship's type (CargoTrackingSettings.GetTrackedHoldForShip: settings.char.ui
+   * cargoHoldForShipType<typeID>, else the cargo). Null where the ship is not known.
+   */
+  cargoTrackerHolds(): Promise<{
+    readonly shipID: number;
+    readonly shipTypeID: number;
+    readonly tracked: string;
+    readonly holds: readonly { readonly holdName: string; readonly name: string; readonly capacity: CapacityInfo | null }[];
+  } | null>;
+  /** CargoTrackingSettings.SaveTrackedHoldForShip: the hold tracked for the ship's type. */
+  setTrackedHold(shipTypeID: number, holdName: string): void;
+  /** SetAutoReload: the setting kept, and the module reloaded where it is empty and now allowed to (AutoReload). */
+  setAutoReload(moduleID: number, on: boolean): Promise<void>;
+  /** SetRepeat(1000 or 0): the setting kept, which the module's next switch-on goes by. */
+  setAutoRepeat(moduleID: number, on: boolean): void;
+  /**
+   * Reload all, as the client's slotsContainer.OnReloadAmmo: each module of the rack that takes charges, reloaded with
+   * the type it holds or last held, where the cargo has it; `reloading` the modules reloading now. Answers each load's
+   * outcome.
+   */
+  reloadAll(reloading: ReadonlySet<number>): Promise<readonly { readonly moduleID: number; readonly outcome: AmmoOutcome }[]>;
+  /** A fitted module dropped on a slot of the ship (the slot's OnDropData): grouped with Shift held, else moved there. */
+  dropFittedModuleOnSlot(moduleID: number, flagID: number, shift: boolean): Promise<void>;
+  /** The charge in one slot dropped on another's module (FitCharges): unloaded to the cargo, then loaded there. */
+  dropFittedChargeOnSlot(fromFlagID: number, flagID: number, shift: boolean): Promise<void>;
+  /**
+   * A charge from the hangar or a hold of the ship flown dropped on a slot's module (FitCharges,
+   * DropLoadChargeToModule): `from` where it lies ("cargo" for any hold of the ship, which is where it lies), `flagID`
+   * its own flag.
+   */
+  dropChargeOnSlot(charge: { readonly itemID: number; readonly typeID: number; readonly quantity: number; readonly from: AmmoPlace; readonly flagID: number }, flagID: number, shift: boolean): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /** Simulate Fitting of the active ship (ghostFittingSvc.ToggleGhostFitting, LoadCurrentShip): its simulation shown. */
@@ -1718,7 +1873,9 @@ export interface AppFlow {
    */
   deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
-  loadFleet(): Promise<void>;
+  loadFleet(menuOnly?: boolean): Promise<void>;
+  /** Keep the fleet window's detail reads active only while that window is mounted. */
+  retainFleetDetails(): () => void;
   /** Form a fleet, then re-read membership before settling. */
   formFleet(): Promise<void>;
   /**
@@ -1731,6 +1888,8 @@ export interface AppFlow {
    * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
    */
   formFleetWith(characterID: number): Promise<void>;
+  /** Native member-menu callbacks: grouped Form targets, independent Invite callbacks. */
+  inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void>;
   /**
    * Accept a fleet invitation, then re-read membership before settling.
    *
@@ -1896,31 +2055,43 @@ export interface AppFlow {
   /** The pilot's contacts that are characters and not NPCs, named, in the address book's order (charMgr.GetContactList). */
   mailContacts(): Promise<readonly api.CharacterMatch[]>;
   /** The pilot's contacts and blocked owners, each named, as the Contacts window shows them (charMgr.GetContactList). */
-  addressBook(): Promise<NamedAddressBook>;
+  addressBook(contactType?: ContactScope): Promise<NamedAddressBook>;
+  /** Corporation member tracking, full for Directors, simple for other members (base_corporation.py 863-867). */
+  corporationMemberTracking(filter?: string): Promise<CorporationTracking>;
+  corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
+  readonly memberDetailsShown: ReadableSignal<{ readonly characterID: number; readonly n: number } | null>;
+  showMemberDetails(characterID: number): void;
+  corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
+  corporationMemberRoleBase(): Promise<number | null>;
+  corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
+  corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
+  corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
+  saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
+  giveCorporationShares(characterID: number): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
-  addOrEditContact(contact: ContactWrite, edit: boolean): Promise<void>;
+  addOrEditContact(contact: ContactWrite, edit: boolean, contactType?: ContactScope): Promise<void>;
   /** Contacts taken away (charMgr.DeleteContacts); fails with the server's words. */
-  deleteContacts(contactIDs: readonly number[]): Promise<void>;
+  deleteContacts(contactIDs: readonly number[], contactType?: ContactScope): Promise<void>;
   /** Owners blocked (charMgr.BlockOwners); fails with the server's words. */
   blockOwners(ownerIDs: readonly number[]): Promise<void>;
   /** Owners no longer blocked (charMgr.UnblockOwners); fails with the server's words. */
   unblockOwners(ownerIDs: readonly number[]): Promise<void>;
   /** Several contacts given one standing (charMgr.EditContactsRelationshipID); fails with the server's words. */
-  editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void>;
+  editContactsRelationship(contactIDs: readonly number[], relationshipID: number, contactType?: ContactScope): Promise<void>;
   /** A contact label made (charMgr.CreateLabel), answered its bit; fails with the server's words. */
-  createContactLabel(name: string): Promise<bigint | null>;
+  createContactLabel(name: string, contactType?: ContactScope): Promise<bigint | null>;
   /** A contact label renamed (charMgr.EditLabel); fails with the server's words. */
-  renameContactLabel(labelID: bigint, name: string): Promise<void>;
+  renameContactLabel(labelID: bigint, name: string, contactType?: ContactScope): Promise<void>;
   /** A contact label deleted (charMgr.DeleteLabel), and the labels asked again, as the client asks them; null where they could not be read. */
-  deleteContactLabel(labelID: bigint): Promise<readonly ContactLabel[] | null>;
+  deleteContactLabel(labelID: bigint, contactType?: ContactScope): Promise<readonly ContactLabel[] | null>;
   /** A label's bits, or a sum of them, given to contacts or taken off them (charMgr.AssignLabels, RemoveLabels); fails with the server's words. */
-  labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean): Promise<void>;
+  labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean, contactType?: ContactScope): Promise<void>;
   /** The Contacts window's last group viewed by the pilot online, kept on this machine; none where none was. */
-  contactsLastSelected(): number | string | null;
+  contactsLastSelected(contactType?: ContactScope): number | string | null;
   /** The Contacts window's group viewed kept for the pilot online, on this machine. */
-  keepContactsLastSelected(groupID: number | string): void;
+  keepContactsLastSelected(groupID: number | string, contactType?: ContactScope): void;
   /** The Agents tab's folders kept for the pilot online on this machine; "All Agents" open and no folder, where none were. */
   agentFolders(): AgentFolders;
   /** The Agents tab's folders kept for the pilot online, on this machine. */
@@ -1944,6 +2115,20 @@ export interface AppFlow {
   readonly corporationFactions: ReadableSignal<Readonly<Record<string, number>> | null>;
   /** The table of NPC corporations' factions read, once. */
   loadCorporationFactions(): void;
+  /** The owners' logos the client draws from its own tables (eveIcon.LogoIcon); null until read. */
+  readonly ownerLogos: ReadableSignal<api.OwnerLogos | null>;
+  /** The owners' logos read, once. */
+  loadOwnerLogos(): void;
+  /** The client's corporation logo library (appConst's shapes and colours); null until read, or where it is not had. */
+  readonly corpLogoLibrary: ReadableSignal<api.CorpLogoLibrary | null>;
+  /** The image server the game server names (the global config's 'imageserverurl'); null until read, or where it names none. */
+  readonly imageServer: ReadableSignal<string | null>;
+  /** The image server's address read from the pilot's global config, once. */
+  loadImageServer(): void;
+  /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
+  readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
+  /** The library read once, and the logos of these corporations asked for where they are not had. */
+  requestCorpLogos(corpIDs: readonly number[]): void;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -2292,7 +2477,9 @@ export interface AppFlow {
   readonly cargoShown: ReadableSignal<{ readonly n: number; readonly itemID: number } | null>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
-  loadWalletShares(): Promise<void>;
+  readonly corpWalletShares: ReadableSignal<WalletSharesRead>;
+  loadWalletShares(corporate?: boolean): Promise<void>;
+  setWalletSharesVisible(visible: boolean, corporate?: boolean): void;
   /** One of the character's settings kept at the server (characterSettingsSvc.Get); null for none. */
   readCharacterSetting(settingKey: string): Promise<string | null>;
   /** A character setting saved at the server (characterSettingsSvc.Save); an empty value deleted instead. */
@@ -2584,6 +2771,53 @@ export interface AppFlow {
    * shows them.
    */
   readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
+  /**
+   * The ship HUD's buff bar: the warfare buffs on the pilot's ship as the server last said them (michelle.OnDbuffUpdated,
+   * SetState's dbuffState), let go at another ship or place, and what the bar shows them with (bridge/buffBar.ts).
+   */
+  readonly buffBar: ReadableSignal<BuffBarState>;
+  /** The buff bar shown: the slots' icons read, once. */
+  wantBuffBar(): void;
+  /** A region, constellation or solar system as the info window shows it, or null for none (api.getMapLocation). */
+  mapLocationShowInfo(itemID: number): Promise<api.MapLocationInfo | null>;
+  /** A faction as the info window shows it, or null for none (api.getFaction). */
+  factionShowInfo(factionID: number): Promise<api.FactionInfo | null>;
+  /** The NPCs' standings with each other (standingMgr.GetNPCNPCStandings), read once and kept, as the standing service keeps them. */
+  npcNpcStandings(): Promise<readonly NpcNpcStanding[]>;
+  /**
+   * The address book's standings (addressbook.GetContacts): the pilot's contacts' (charMgr.GetContactList), its
+   * corporation's where it is a player's (corp.GetContactList) and its alliance's (alliance.GetContactList). A list
+   * not read is empty.
+   */
+  contactStandings(): Promise<ContactStandings>;
+  /** An NPC corporation's headquarters, its station or its system (api.getNpcCorporationHeadquarters), or null. */
+  npcCorporationHeadquarters(corporationID: number): Promise<{ readonly itemID: number; readonly typeID: number } | null>;
+  /** A character's corporation (charMgr.GetPublicInfo), or null. */
+  characterCorporation(characterID: number): Promise<number | null>;
+  /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
+  corporationAlliance(corporationID: number): Promise<number | null>;
+  /** A character's Show Info header's reads (construct_header_character): its Bio, bloodline, start, militia, corporation, titles and security status. */
+  characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
+  /** A character's bloodline as its window's Description reads it for one that is no agent (charMgr.GetPublicInfo3), or null. */
+  characterBloodline(characterID: number): Promise<number | null>;
+  /** Whether an NPC corporation has agents (agents.GetAgentsByCorpID: the agents' table's, by corporation). */
+  npcCorporationHasAgents(corporationID: number): Promise<boolean>;
+  /** The standings an owner's stations ask for their services (the client's own table), read once. */
+  stationStandingsRestrictions(): Promise<Readonly<Record<string, Readonly<Record<string, number>>>>>;
+  /** An NPC character's corporation, for one that is no agent (corpmgr.GetCorporationIDForCharacter), or null. */
+  npcCharacterCorporation(characterID: number): Promise<number | null>;
+  /** A bloodline's description, the number of its message (the client's bloodlines table), or null; asked once each. */
+  bloodlineDescriptionID(bloodlineID: number): Promise<number | null>;
+  /** An agent's row in the table of agents (agents.GetAgentByID), or null where it is none. */
+  agentRecord(agentID: number): Promise<AgentRow | null>;
+  /** A solar system's celestials and NPC stations, as the client's own map lists them (mapSvc.GetSolarsystemItems). */
+  mapSystemObjects(solarSystemID: number): Promise<{ readonly available: boolean; readonly objects: readonly api.SystemObjectRow[] }>;
+  /**
+   * The info window's route to a constellation or a solar system (starMapSvc.ShortestGeneralPath): the autopilot's path
+   * from the pilot's system to each of its systems, the shortest, less the system the pilot is in; each system with
+   * its constellation, region and security. Empty where the pilot is there, or no path reaches it.
+   */
+  mapLocationRoute(itemID: number): Promise<readonly MapRouteStep[]>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
@@ -2810,6 +3044,8 @@ export interface AppFlow {
    * had (the client's SkillPlanConnectionError).
    */
   personalSkillPlans(): Promise<PersonalSkillPlansRead | null>;
+  /** How many personal plans the pilot has (GetAll), for CreateSkillPlanButton's limit; null where not read. */
+  personalSkillPlanCount(): Promise<number | null>;
   /**
    * The certified skill plans (bridge/certifiedSkillPlans.ts), from the client's own table, as their entries show them;
    * the career paths in the table's order; whether the AIR plan is done (HasFinishedAIRSkillPlan) and the faction of
@@ -2906,6 +3142,16 @@ export interface AppFlow {
    * message (asked for) and its picture's res: path. Null where the client's tables could not be read.
    */
   attributeDisplay(attributeIDs: readonly number[]): Promise<ReadonlyMap<number, { readonly displayNameID: number | null; readonly iconFile: string | null }> | null>;
+  /**
+   * The Fitting window's skill tooltip (GetSkillTooltip) as the pilot's skills and queue stand now: its rows
+   * (AddMissingSkillRequirements: RequiredSkillRow), each skill at its level with its mark and its skill bar; and its
+   * training time and action (AddTrainingTime, AddSkillActionForList), null where there is no time to train.
+   */
+  fittingSkillTooltip(warning: FittingSkillWarning): Promise<{ readonly rows: readonly SkillsRequiredRow[]; readonly training: SkillTrainingRecord | null }>;
+  /** A skill action's Train Skills, Buy and Train, and apply-points button, of a record not the skill window's. */
+  trainSkillsFor(record: SkillTrainingRecord): Promise<void>;
+  buySkillsFor(record: SkillTrainingRecord): Promise<void>;
+  applySkillPointsFor(record: SkillTrainingRecord): Promise<void>;
   /**
    * Each skill group's certificates claimed (SkillGroupController GetAccumulatedCertificateLevelsTrained: each of its
    * certificates' levels, Certificate.GetLevel, summed) of all (GetAccumulatedCertificateLevelsTotal: five each). Null
@@ -3711,6 +3957,504 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     return fitted;
   }
+  /** The active ship's weapon banks as the page's dogma location holds them (GetAllInfo's ship state, as the transport keeps it). */
+  function heldWeaponBanks(): WeaponBanks {
+    const allInfo = store.dogma.get().allInfo;
+    const shipID = store.fitting.get().activeShipID;
+    return allInfo && shipID !== null && Number(allInfo.activeShipID) === shipID ? decodeWeaponBanks(allInfo.shipState) : new Map();
+  }
+  /**
+   * godma's chargeTypeByModule (ChangeAmmoTypeForModule, GetAmmoTypeForModule): the charge type each module last held,
+   * set as the rack's buttons are given a charge (shipmodulebutton.SetCharge), kept when it is spent, let go when the
+   * module is switched on with none (1341) or is no longer in a slot (godma.OnItemChange).
+   */
+  const usedChargeTypes = new Map<number, number>();
+  /**
+   * LoadChargesToModule as the page asks it (loadAmmo): one module that is a bank's slave asked for by its master
+   * (988 to 989), the charge's skills checked first (986), then LoadAmmo.
+   */
+  async function loadAmmoNow(requestedModuleIDs: readonly number[], chargeItemIDs: readonly number[], source: AmmoPlace): Promise<AmmoOutcome> {
+    const banks = heldWeaponBanks();
+    const moduleIDs = requestedModuleIDs.length === 1
+      ? [[...banks].find(([, slaves]) => slaves.includes(requestedModuleIDs[0]!))?.[0] ?? requestedModuleIDs[0]!]
+      : requestedModuleIDs;
+    // The skill check, by the charge's type as the hold lists it (the rack's menu and its reload, LoadAmmoTypeToModule;
+    // a charge loaded from the window's list). A type not listed is the server's to judge.
+    const inventory = store.inventory.get();
+    const typeID = [...inventory.cargo.rows, ...inventory.hangar.rows].find((row) => row.itemID === chargeItemIDs[0])?.typeID ?? null;
+    const refusal = typeID === null ? null : await chargeSkillsRefusal(typeID);
+    if (refusal !== null) {
+      store.apply({ type: "fitting/action-error", message: refusal, said: true });
+      return "refused";
+    }
+    return runAmmoAction(
+      moduleIDs,
+      () => loadAmmoFrom(moduleIDs, chargeItemIDs, source),
+      // Nothing about what the module holds changed, so nothing was loaded —
+      // unless the server queued it: in space the charges land after the
+      // module's reload time, and its announcement is the proof.
+      (before, after, reloadAnnounced) => before === after && !reloadAnnounced,
+      "The server accepted that and loaded nothing, and gave no reason. " +
+        "A module only takes certain kinds of charge.",
+    );
+  }
+  /** UnloadAmmoToContainer of the charge in the slot of this flag, to the cargo. */
+  /** inventorycommon/const.py containerHangar, and groupAuditLogSecureContainer. */
+  const CONTAINER_HANGAR = 10004;
+  const GROUP_AUDIT_LOG_SECURE_CONTAINER = 448;
+  /**
+   * invControllers BaseCorpContainer.oneWay (820) and PromptOneWayMove (595 and 596): the corporation's hangar asks,
+   * OK and Cancel, before anything from elsewhere is put into it (__AddItem 197 to 202, AddItems 507 and 529,
+   * MultiMerge 330, StackAll 383). The pilot may say not to be asked again.
+   */
+  const askOneWayMove = (): Promise<boolean> =>
+    askDialog("ConfirmOneWayItemMove", { type: "dict", entries: [] }, "Once it is in the corporation's hangar you may not be allowed to take it out again. Go ahead?", "okcancel");
+  /** The session's corporation (session.corpid), which owns its hangar's office and what is listed in it. */
+  function corporationNow(): number {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    if (corporationID === null) throw new Error("Which corporation this is is not known yet.");
+    return corporationID;
+  }
+  /**
+   * The owner of a container the panel lists (its controller's GetOwnerID: the container's item's owner): the
+   * corporation's where it is listed in the corporation's hangar, the pilot's otherwise.
+   */
+  function containerOwnerOf(itemID: number, characterID: number): number {
+    const inventory = store.get().inventory;
+    if ([...inventory.hangar.rows, ...inventory.cargo.rows].some((row) => row.itemID === itemID)) return characterID;
+    if (inventory.corp.divisions.some((division) => (division.rows ?? []).some((row) => row.itemID === itemID))) return corporationNow();
+    return characterID;
+  }
+  /**
+   * Where a container's controller has UnloadModuleToContainer put a module (_GetContainerArgs, locationFlag; the
+   * container's GetItem): a hold of the ship, the ship with the hold's flag; the hangar (StationItems:
+   * containerHangar, flagHangar), its item the docked station's or structure's, as the hangar's inventory answers it
+   * (bound by where the pilot is docked); a container, itself with no flag, an audit log secure container naming its
+   * owner (the pilot's, or the corporation's where it is the corporation's); the corporation's hangar
+   * (StationCorpHangar), the office where the pilot is docked with the division's flag (corpFlagByDivision).
+   */
+  async function moduleDestinationOf(place: InventoryPlace): Promise<ModuleDestination> {
+    const session = ammoSession();
+    if (place.kind === "cargo") return { inventory: session.shipID, containerItemID: session.shipID, flag: 5 };
+    if (place.kind === "shipBay") {
+      const flag = BAY_FLAGS[place.bay];
+      if (flag === undefined) throw new Error("That bay is not one the page knows.");
+      return { inventory: session.shipID, containerItemID: session.shipID, flag };
+    }
+    if (place.kind === "hangar") {
+      if (session.dockedAt === null) throw new Error("The hangar is at hand only while docked.");
+      return { inventory: THE_HANGAR, containerItemID: session.dockedAt, flag: 4 };
+    }
+    if (place.kind === "container") {
+      const inventory = store.get().inventory;
+      const row = [...inventory.hangar.rows, ...inventory.cargo.rows, ...inventory.corp.divisions.flatMap((division) => division.rows ?? [])]
+        .find((each) => each.itemID === place.itemID) ?? null;
+      const auditLog = row?.groupID === GROUP_AUDIT_LOG_SECURE_CONTAINER;
+      return { inventory: place.itemID, containerItemID: place.itemID, flag: null, auditLogOwnerID: auditLog ? containerOwnerOf(place.itemID, session.characterID) : null };
+    }
+    const office = await inventoryOfPlace(place);
+    if (office.inventory === "hangar") throw new Error("The corporation's hangar is not where the office is.");
+    return { inventory: office.inventory, containerItemID: office.liesIn, flag: corpDivisionFlag(place.division) };
+  }
+  /**
+   * UnloadAmmoToContainer's destination from a container's controller (AddItems 515 to 517): (the container's first
+   * argument, the owner, its flag), the owner the pilot where the flag is flagHangar and the controller's owner
+   * otherwise: a hold, (the ship, the pilot, the hold's flag); the hangar, (containerHangar, the pilot, flagHangar); a
+   * container, (itself, its owner, None); the corporation's hangar, (the office, the corporation, the division's flag).
+   */
+  async function chargeDestinationOf(place: InventoryPlace): Promise<readonly [number, number, number | null]> {
+    const session = ammoSession();
+    if (place.kind === "hangar") return [CONTAINER_HANGAR, session.characterID, 4];
+    const module = await moduleDestinationOf(place);
+    if (place.kind === "corp") return [module.containerItemID, corporationNow(), module.flag];
+    if (place.kind === "container") return [module.containerItemID, containerOwnerOf(place.itemID, session.characterID), module.flag];
+    return [module.containerItemID, session.characterID, module.flag];
+  }
+  async function unloadChargeInSlot(flagID: number): Promise<void> {
+    // The module in the charge's slot: the ship's listing of that flag, the item that is not the charge.
+    const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
+    if (moduleID === null) throw new Error("No module holds a charge in that slot.");
+    await runFittingAction(async () => {
+      const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
+      if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+    });
+  }
+  /**
+   * settings.char.autoreload and settings.char.autorepeat, as the rack's buttons keep them (shipmodulebutton.Setup,
+   * SetAutoReload, SetRepeat): per character and module, kept in this browser.
+   */
+  function charModuleSettings(name: "autoreload" | "autorepeat"): Record<string, number> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return {};
+    try {
+      const kept = JSON.parse(settingsStorage?.getItem(`evejs.char.${characterID}.${name}`) ?? "{}") as unknown;
+      return kept && typeof kept === "object" ? (kept as Record<string, number>) : {};
+    } catch {
+      return {};
+    }
+  }
+  function setCharModuleSetting(name: "autoreload" | "autorepeat", moduleID: number, value: number): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`evejs.char.${characterID}.${name}`, JSON.stringify({ ...charModuleSettings(name), [moduleID]: value }));
+    } catch {
+      // Storage refused: the choice lasts the page.
+    }
+  }
+  /** A settings.char.ui text kept in this browser for the pilot (evejs.char.<characterID>.<name>), or null. */
+  function charUiSetting(name: string): string | null {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return null;
+    try {
+      return settingsStorage?.getItem(`evejs.char.${characterID}.${name}`) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function setCharUiSetting(name: string, value: string): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return;
+    try {
+      settingsStorage?.setItem(`evejs.char.${characterID}.${name}`, value);
+    } catch {
+      // Storage refused: the choice lasts the page.
+    }
+  }
+  /** settings.char.autoreload.Get(itemID, 1): on unless the pilot set it off. */
+  const autoReloadOn = (moduleID: number): boolean => (charModuleSettings("autoreload")[moduleID] ?? 1) !== 0;
+  /** shipmodulebutton GROUPS_THAT_ALWAYS_AUTO_REPEAT: mining lasers, strip miners, entosis links. */
+  const ALWAYS_AUTO_REPEAT_GROUPS: ReadonlySet<number> = new Set([54, 464, 1313]);
+  /** dogma/const.py: dgmEffActivation, dgmEffTarget, dgmEffArea; effectOnline; attributeDisallowRepeatingActivation. */
+  const ACTIVATION_CATEGORIES: ReadonlySet<number> = new Set([1, 2, 3]);
+  const EFFECT_ONLINE = 16;
+  const ATTRIBUTE_DISALLOW_REPEATING = 1014;
+  /**
+   * IsEffectRepeatable of the module's default effect (894 to 899, IsEffectActivatible 901): its category activation or
+   * target, not online, the type not disallowing repeats, and the effect timed (a durationAttributeID).
+   */
+  function defaultEffectRepeats(staticData: DogmaStatic, typeID: number): boolean {
+    const facts = staticData.types[typeID];
+    const effectID = facts?.defaultEffectID ?? null;
+    if (!facts || effectID === null || effectID === EFFECT_ONLINE) return false;
+    const effect = staticData.effects[effectID];
+    if (!effect || (effect.category !== 1 && effect.category !== 2)) return false;
+    if (facts.attributes.find(([id]) => id === ATTRIBUTE_DISALLOW_REPEATING)?.[1]) return false;
+    return effect.durationAttributeID !== null && effect.durationAttributeID !== undefined;
+  }
+  /**
+   * The module's repeat count as its button holds it (GetRepeatCount, 112 to 122, written to the setting at Setup): a
+   * group that always repeats 1000; else the setting where there is one; else 1000 for an effect that repeats, 0 for
+   * one that does not. Null where the static data is not had.
+   */
+  async function moduleRepeatCount(moduleID: number, typeID: number, groupID: number | null): Promise<number | null> {
+    if (ALWAYS_AUTO_REPEAT_GROUPS.has(groupID ?? -1)) return 1000;
+    const kept = charModuleSettings("autorepeat")[moduleID];
+    if (kept !== undefined && kept !== -1) return kept;
+    const staticData = await dogmaStaticFor([typeID], [ATTRIBUTE_DISALLOW_REPEATING]);
+    return staticData === null ? null : defaultEffectRepeats(staticData, typeID) ? 1000 : 0;
+  }
+  /** godma's IsModuleReloading: a reload announced for it and not run out. */
+  function moduleReloading(moduleID: number): boolean {
+    const reload = store.fitting.get().reloads[moduleID];
+    return !!reload && Date.now() < reload.startedAtMs + reload.durationMs;
+  }
+  /**
+   * shipmodulebutton.AutoReload (727 to 738): nothing while it reloads, for a module that takes no charges, or where
+   * auto-reload is off and it is not forced; the charge type it holds or last held and its room (GetChargeReloadInfo);
+   * nothing where it holds some and it is not forced, or has no room; nothing docked (the HUD is not up); else
+   * LoadAmmoTypeToModule (973 to 978): every cargo stack of the type, through LoadChargesToModule, which says
+   * CannotLoadNotEnoughCharges where there is none.
+   */
+  async function autoReload(moduleID: number, force: boolean): Promise<void> {
+    const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+    if (module === null || moduleReloading(moduleID)) return;
+    if (!CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1) || !(autoReloadOn(moduleID) || force)) return;
+    const quantity = module.charge && module.charge.quantity > 0 ? module.charge.quantity : 0;
+    const chargeTypeID = quantity > 0 ? module.charge!.typeID : usedChargeTypes.get(moduleID) ?? null;
+    if (chargeTypeID === null) return;
+    const staticData = await dogmaStaticFor([module.typeID, chargeTypeID], AMMO_MENU_ATTRIBUTES);
+    if (staticData === null) return;
+    if ((quantity > 0 && !force) || roomForReload(staticData, module.typeID, chargeTypeID, quantity) <= 0) return;
+    if (dockedNow() !== null) return;
+    await loadInventory().catch(() => {});
+    const stacks = store.inventory.get().cargo.rows.filter((row) => row.typeID === chargeTypeID).map((row) => row.itemID);
+    if (stacks.length === 0) {
+      sayDialog("CannotLoadNotEnoughCharges", null, "The cargo holds too few of those charges to load the module.");
+      return;
+    }
+    await loadAmmoNow([moduleID], stacks, "cargo");
+  }
+  /**
+   * OnGodmaShipEffect's stop (1290 to 1297): an effect of the activation, target or area kind, not online, stopping on a
+   * module with no charge left in it reloads it (AutoReload).
+   */
+  async function autoReloadOnStop(moduleID: number, effectID: number): Promise<void> {
+    if (effectID === EFFECT_ONLINE) return;
+    const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+    if (module === null || (module.charge && module.charge.quantity > 0)) return;
+    if (!CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)) return;
+    const staticData = await dogmaStaticFor([module.typeID], []);
+    const category = staticData?.effects[effectID]?.category ?? null;
+    if (category === null || !ACTIVATION_CATEGORIES.has(category)) return;
+    await autoReload(moduleID, false);
+  }
+  /** godma's requiredEffects (godma.py 1093): online and the slot effects, kept for a module whatever their kind. */
+  const GODMA_REQUIRED_EFFECTS: ReadonlySet<number> = new Set([16, 12, 13, 11, 2663]);
+  /** dogma/const.py: effectSkillEffect; dgmEffActivation, dgmEffTarget, dgmEffArea, dgmEffOverload. */
+  const EFFECT_SKILL_EFFECT = 132;
+  const GODMA_KEPT_CATEGORIES: ReadonlySet<number> = new Set([1, 2, 3, 5]);
+  const EFFECT_CATEGORY_OVERLOAD = 5;
+  /** inventorycommon/const.py typeThermodynamics; dogma/const.py attributeRequiredThermoDynamicsSkill. */
+  const TYPE_THERMODYNAMICS = 28164;
+  const ATTRIBUTE_REQUIRED_THERMODYNAMICS = 1212;
+  /**
+   * A module's effects as godma keeps them (RefreshItemEffects, godma.py 1647 to 1679): of its type's, in their order,
+   * those marked default (save skillEffect), the required ones, those of the activation, target, area or overload kind,
+   * and any with a fitting chance; keyed by name into a rowset's Index, which godma's copies (godmarowset 72), and so
+   * iterated in that copy's order. Null where a name is not had.
+   */
+  function godmaEffectsOf(staticData: DogmaStatic, typeID: number): { readonly effectID: number; readonly name: string; readonly isDefault: boolean }[] | null {
+    const facts = staticData.types[typeID];
+    if (!facts) return null;
+    const defaults = new Set(facts.defaultEffectIDs ?? (facts.defaultEffectID ? [facts.defaultEffectID] : []));
+    const kept: { readonly effectID: number; readonly name: string; readonly isDefault: boolean }[] = [];
+    for (const effectID of facts.effects) {
+      const effect = staticData.effects[effectID];
+      if (!effect) continue;
+      const isDefault = defaults.has(effectID);
+      const keptByGodma = (isDefault && effectID !== EFFECT_SKILL_EFFECT) || GODMA_REQUIRED_EFFECTS.has(effectID)
+        || (effect.category !== null && GODMA_KEPT_CATEGORIES.has(effect.category)) || effect.chanceAttributeID !== null;
+      if (!keptByGodma) continue;
+      if (typeof effect.name !== "string") return null;
+      kept.push({ effectID, name: effect.name, isDefault });
+    }
+    const byName = new Map(kept.map((effect) => [effect.name, effect]));
+    return strDictOrder(kept.map((effect) => effect.name), 1).map((name) => byName.get(name)!);
+  }
+  /**
+   * IsEffectRepeatable (894 to 899): IsEffectActivatible (901: default, not online, of the activation or target kind),
+   * the module not disallowing repeats, and the effect timed.
+   */
+  function effectRepeats(staticData: DogmaStatic, typeID: number, effect: { readonly effectID: number; readonly name: string; readonly isDefault: boolean }): boolean {
+    const facts = staticData.effects[effect.effectID];
+    if (!facts || !effect.isDefault || effect.name === "online" || (facts.category !== 1 && facts.category !== 2)) return false;
+    if (staticData.types[typeID]?.attributes.find(([id]) => id === ATTRIBUTE_DISALLOW_REPEATING)?.[1]) return false;
+    return facts.durationAttributeID !== null && facts.durationAttributeID !== undefined;
+  }
+  /**
+   * dogmaLocation.GetAttributeValue(itemID, attributeID) of a fitted module, as far as the page has it: godma's priming
+   * of the module, else its type's value, else the attribute's default.
+   */
+  function fittedAttributeValue(staticData: DogmaStatic, moduleID: number, typeID: number, attributeID: number): number | null {
+    const primed = store.dogma.get().allInfo?.ships.find((item) => Number(item.itemID) === moduleID) ?? null;
+    return dogmaNumber(primed, attributeID)
+      ?? staticData.types[typeID]?.attributes.find(([id]) => id === attributeID)?.[1]
+      ?? staticData.attributes[attributeID]?.defaultValue
+      ?? null;
+  }
+  /** dogma/const.py attributeDamage and attributeShipBrokenModuleRepairCostMultiplier; inventorycommon typeNaniteRepairPaste. */
+  const ATTRIBUTE_DAMAGE = 3;
+  const ATTRIBUTE_REPAIR_COST_MULTIPLIER = 1277;
+  const TYPE_NANITE_REPAIR_PASTE = 28668;
+  /**
+   * The active ship's fitted modules as activeShipController.GetModules has them (shipItem.modules, godma.py 1928 to
+   * 1937: of the ship's itemsByLocationID set, the items in a fitting slot), in that set's order. The set holds the
+   * ship's items godma was primed with, its pilot among them, added as they were primed (godma.py 1612 to 1617): here
+   * the fitted modules, as the page's priming lists them, then the pilot.
+   */
+  function godmaShipModules() {
+    const fitted = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []));
+    const allInfo = store.dogma.get().allInfo;
+    const primed = (allInfo?.ships ?? []).map((item) => Number(item.itemID));
+    const ids = [
+      ...primed.filter((id) => fitted.some((module) => module.itemID === id)),
+      ...fitted.map((module) => module.itemID).filter((id) => !primed.includes(id)),
+    ];
+    const pilot = Number(allInfo?.characterID) || null;
+    return hashedSetOrder(pilot === null ? ids : [...ids, pilot], wholeHashOf, String)
+      .flatMap((id) => fitted.filter((module) => module.itemID === id));
+  }
+  /**
+   * A fitted module's damage in hit points (GetAccurateAttributeValue(itemID, attributeDamage)): the ship's reading of
+   * it, a share of its hit points (none listed: whole), else godma's priming.
+   */
+  function moduleDamageHP(staticData: DogmaStatic, moduleID: number, typeID: number): number {
+    const shares = store.space.get().snapshot?.ship?.moduleDamage ?? null;
+    if (shares !== null) return (fittedAttributeValue(staticData, moduleID, typeID, ATTRIBUTE_HP) ?? 0) * (shares[moduleID] ?? 0);
+    const primed = store.dogma.get().allInfo?.ships.find((item) => Number(item.itemID) === moduleID) ?? null;
+    return dogmaNumber(primed, ATTRIBUTE_DAMAGE) ?? 0;
+  }
+  /**
+   * activeShipController.GetNumUnitsToRepairModule (339 to 346) by baseDogmaLocation.FindNumUnitsToRepairModule (1948
+   * to 1958): the type's computed worth (GetComputedBasePrice(typeID, 1)) over the module's hit points, times its
+   * damage and the character's shipBrokenModuleRepairCostMultiplier, over the paste's base price, rounded up; 0 for a
+   * type of no worth, and where a figure is not had (its TypeError's 0).
+   */
+  function unitsToRepairModule(staticData: DogmaStatic, moduleID: number, typeID: number): number {
+    const damage = moduleDamageHP(staticData, moduleID, typeID);
+    const hp = fittedAttributeValue(staticData, moduleID, typeID, ATTRIBUTE_HP);
+    const basePrice = staticData.types[typeID]?.computedBasePrice ?? null;
+    const pastePrice = staticData.types[TYPE_NANITE_REPAIR_PASTE]?.basePrice ?? null;
+    const multiplier = dogmaNumber(store.dogma.get().allInfo?.character ?? null, ATTRIBUTE_REPAIR_COST_MULTIPLIER)
+      ?? staticData.attributes[ATTRIBUTE_REPAIR_COST_MULTIPLIER]?.defaultValue ?? null;
+    if (basePrice === null || basePrice === 0 || !hp || !pastePrice || multiplier === null) return 0;
+    return Math.ceil((damage * (basePrice / hp) * multiplier) / pastePrice);
+  }
+  /** godma's IsBeingRepaired (2234 to 2242): the module, or one of its bank's slaves, among the repairs begun. */
+  function isBeingRepaired(moduleID: number): boolean {
+    return moduleRepairs.beingRepaired(moduleID) || (heldWeaponBanks().get(moduleID) ?? []).some((slave) => moduleRepairs.beingRepaired(slave));
+  }
+  /** slotsContainer.GetModuleType (127 to 134): the module whose button is in the slot of this flag, a slave having none. */
+  function rackButtonModule(flag: number) {
+    const module = store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flag)?.module ?? null;
+    if (module === null || [...heldWeaponBanks().values()].some((slaves) => slaves.includes(module.itemID))) return null;
+    return module;
+  }
+  /** The flag of the slot this module is in, or null. */
+  function flagOfModule(moduleID: number): number | null {
+    const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+    return slot === null ? null : slotFlagOf(slot.family, slot.index);
+  }
+  /**
+   * slotsContainer.SwapSlots (91 to 107): with Shift held, a bank dragged onto a place with no button: a module taken
+   * out of the bank (clientDogmaLocation.UngroupModule, 784: UnlinkModule, answered the module taken out), and it is the
+   * one moved; then the two places swapped in the ship's order (GetSlotOrder), kept for the ship.
+   */
+  async function swapRackSlots(flag1: number, flag2: number, shift: boolean): Promise<void> {
+    const shipID = store.fitting.get().activeShipID;
+    if (shipID === null) return;
+    let moved = flag2;
+    const dragged = rackButtonModule(flag2);
+    if (shift && rackButtonModule(flag1) === null && dragged !== null && heldWeaponBanks().has(dragged.itemID)) {
+      const answer = await bridgeDo("dogmaIM", "UnlinkModule", [shipID, dragged.itemID]);
+      await Promise.all([loadDogma().catch(() => {}), loadSpaceSnapshot().catch(() => {}), loadFitting().catch(() => {})]);
+      const taken = wholeNumberOf(answer);
+      moved = (taken !== null ? flagOfModule(taken) : null) ?? flag2;
+    }
+    const order = [...slotOrderOf(shipID)];
+    const [at1, at2] = [order.indexOf(flag1), order.indexOf(moved)];
+    if (at1 < 0 || at2 < 0) return;
+    order[at1] = moved;
+    order[at2] = flag1;
+    setSlotOrder(shipID, order);
+  }
+  /**
+   * slotsContainer.LinkWeapons (108 to 122) by clientDogmaLocation.LinkWeapons (752 to 782): only turrets and launchers
+   * (WeaponGroupingRule said else); both online (CantLinkModuleNotOnline), of one type; the one dragged linked to the
+   * bank of the one dropped on, its own bank merged in or, not merging, peeled off. The location's answer is None, so
+   * the HUD swaps nothing after (119 to 121).
+   */
+  async function rackLinkWeapons(master: { readonly itemID: number; readonly typeID: number; readonly groupID: number | null; readonly online: boolean }, slave: { readonly itemID: number; readonly typeID: number; readonly online: boolean }, merge: boolean): Promise<void> {
+    if (!GROUPABLE_GROUP_IDS.has(master.groupID ?? -1)) {
+      await wordsNow(["UI/Inflight/WeaponGroupingRule"]).catch(() => {});
+      const notify = templateWords("UI/Inflight/WeaponGroupingRule", {}, "Only weapons group together on the rack.");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+      return;
+    }
+    if (master.itemID === slave.itemID) return;
+    if (!master.online || !slave.online) {
+      sayDialog("CantLinkModuleNotOnline", null, "A module groups with others only while it is online.");
+      return;
+    }
+    if (master.typeID !== slave.typeID) return;
+    await runTargetingAction(
+      "Link weapons",
+      () => linkWeaponsCall(bridgeDo, ammoSession(), master.itemID, slave.itemID, heldWeaponBanks(), merge),
+      async () => {
+        await Promise.all([loadDogma().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
+      },
+      () => true,
+      "",
+    );
+  }
+  /** The slot of the active ship with this flag, or null. */
+  const slotWithFlag = (flagID: number): FittingSlot | null =>
+    store.fitting.get().slots.find((slot) => slotFlagOf(slot.family, slot.index) === flagID) ?? null;
+  /** Each slot family's fitting effect, its GetPowerType: hiPower, medPower, loPower, rigSlot, subSystem. */
+  const POWER_EFFECT_OF_FAMILY: Readonly<Record<SlotFamily, number>> = { high: 12, mid: 13, low: 11, rig: 2663, subsystem: 3772 };
+  const POWER_WORDS: Readonly<Record<SlotFamily, string>> = { high: "high", mid: "medium", low: "low", rig: "rig", subsystem: "subsystem" };
+  /**
+   * ItemDoesntFitPower, as the slot's AddRealItem says it of a module whose fitting effect is not the slot's: the
+   * item, and the two effects' names (dogma_data.get_effect_display_name).
+   */
+  async function sayDoesntFitPower(typeID: number, slotFamily: SlotFamily, itemFamily: SlotFamily): Promise<void> {
+    const effects = [POWER_EFFECT_OF_FAMILY[slotFamily], POWER_EFFECT_OF_FAMILY[itemFamily]];
+    const ids = await api.getEffectDisplayNameIDs(effects, callOptions).then((read) => read.displayNameIDs).catch(() => ({} as Readonly<Record<number, number | null>>));
+    await Promise.all([
+      wordsNow(effects.flatMap((effectID) => (ids[effectID] ? [`#${ids[effectID]}`] : []))).catch(() => {}),
+      resolveNamesNow([{ kind: "type", id: typeID }]).catch(() => {}),
+    ]);
+    const powerName = (family: SlotFamily): string => {
+      const messageID = ids[POWER_EFFECT_OF_FAMILY[family]];
+      return messageID ? templateWords(`#${messageID}`, {}, POWER_WORDS[family]) : POWER_WORDS[family];
+    };
+    const item = nameCache.get(nameKey("type", typeID)) ?? String(typeID);
+    const [slotpower, itempower] = [powerName(slotFamily), powerName(itemFamily)];
+    sayDialog("ItemDoesntFitPower", { type: "dict", entries: [["item", item], ["slotpower", slotpower], ["itempower", itempower]] },
+      `${item} needs a ${itempower} slot, and this is a ${slotpower} one.`);
+  }
+  /**
+   * clientDogmaLocation.CheckSkillRequirementsForType(None, typeID, 'FittingHasSkillPrerequisites') (447 to 457), which
+   * LoadChargesToModule (986) and LoadChargeToAllModules (1032) ask before a charge is loaded: the skills the pilot is
+   * short of for the charge (GetMissingSkills: the skill service's skills, their effective levels, the type's needs in
+   * the order the client's table gives them), each worded by UI/SkillQueue/Skills/SkillNameAndLevel and joined as
+   * FormatGenericList joins (UI/Common/Formatting/ListGenericDelimiter). Where any is missing the dialog is said with
+   * requiredSkills, item and skillCount, and its words are answered; null where none is, and where the client's table
+   * could not be read (the server is asked as before).
+   */
+  async function chargeSkillsRefusal(typeID: number): Promise<string | null> {
+    const needs = await api.getRequiredSkills([typeID], callOptions);
+    // A type that needs nothing is not looked at further (GetMissingSkills iterates its needs).
+    if (!needs.available || (needs.order[typeID] ?? []).length === 0) return null;
+    const missing = missingSkills(typeID, needs.order, skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])));
+    if (missing.size === 0) return null;
+    const label = "UI/SkillQueue/Skills/SkillNameAndLevel";
+    await Promise.all([
+      wordsNow([label, LIST_DELIMITER]).catch(() => {}),
+      resolveNamesNow([typeID, ...missing.keys()].map((id) => ({ kind: "type" as const, id }))).catch(() => {}),
+    ]);
+    const nameOf = (id: number): string => nameCache.get(nameKey("type", id)) ?? `Type ${id}`;
+    const words = [...missing].map(([skill, level]) => templateWords(label, { skill, amount: level }, `${nameOf(skill)} : Level ${level}`));
+    const delimiter = store.words.get().templates[LIST_DELIMITER];
+    const requiredSkills = words.join(typeof delimiter === "string" && delimiter !== "" ? delimiter : ", ");
+    const fallback = `Loading ${nameOf(typeID)} needs ${requiredSkills}.`;
+    sayDialog("FittingHasSkillPrerequisites", { type: "dict", entries: [["requiredSkills", requiredSkills], ["item", typeID], ["skillCount", words.length]] }, fallback);
+    return fallback;
+  }
+  /**
+   * DropLoadChargeToModule (clientDogmaLocation 999 to 1028) and LoadChargesToModule (980 to 991): with Shift held, how
+   * many is asked (QtyPopup, up to the stack, from none), and that many split off the stack where it lies first (its
+   * container's Add, the same place and flag); then the charge's skills checked (chargeSkillsRefusal), and LoadAmmo of
+   * the module, its bank's master where it is a slave, with the charges and where they lie.
+   */
+  async function dropLoadChargeToModule(
+    module: FittedModule,
+    charge: { readonly itemID: number; readonly typeID: number; readonly locationID: number; readonly flagID: number; readonly stacksize: number },
+    from: AmmoPlace,
+    shift: boolean,
+  ): Promise<void> {
+    let chargeIDs = [charge.itemID];
+    if (shift) {
+      const most = Math.trunc(charge.stacksize);
+      const label = most === 0 ? "UI/Common/NoMoreUnits" : "UI/Common/SetQuantity";
+      await wordsNow([label]).catch(() => {});
+      const qty = await askQuantity({ min: 0, max: most, value: most, hintLabel: label, hint: most === 0 ? "There are none left where they were." : "How many?" });
+      if (qty === null || qty <= 0) return;
+      // containerInventory: GetInventoryFromId(chargeLocationID), the inventory of where the charges lie.
+      const split = await bridgeDo("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
+      const splitID = typeof split === "number" ? split : Number(unwrapLong(split));
+      if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
+      chargeIDs = [splitID];
+    }
+    if ((await chargeSkillsRefusal(charge.typeID)) !== null) return;
+    const banks = heldWeaponBanks();
+    const masterID = [...banks].find(([, slaves]) => slaves.includes(module.itemID))?.[0] ?? module.itemID;
+    await loadAmmoCall(bridgeDo, ammoSession(), [masterID], chargeIDs, from);
+  }
+  /** ClearGroupModule (fittingSlotController.UnfitModule, clientDogmaLocation.UnloadModuleToContainer): Yes to break the bank up. */
+  const askClearGroup = (): Promise<boolean> =>
+    askDialog("ClearGroupModule", { type: "dict", entries: [] }, "This module is grouped with other weapons, and taking it off splits the group up. Carry on?");
   /** Charges put into modules from the ship's own hold or the hangar, by the client's own call (bridge/dogmaWrites.ts). */
   const loadAmmoFrom = async (moduleIDs: readonly number[], chargeItemIDs: readonly number[], source: AmmoPlace): Promise<void> =>
     loadAmmoCall(bridgeDo, ammoSession(), moduleIDs, chargeItemIDs, source);
@@ -4133,6 +4877,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * One item's move, as each window of the client takes an OnItemChange (the server's own, or one of the items of an
+   * OnItemsChanged, which the client's inventory cache scatters one by one).
+   */
+  function oneItemChanged(args: readonly unknown[]): void {
+    // ONE item's move comes by this name, and several by OnItemsChanged: the
+    // server sends this one unless a batch is asked for. A drone landing in
+    // its bay is one item, and with only the batch's own refresh heard the window
+    // went on reading "Coming home" for a drone the server had in the bay.
+    //
+    // Which moves, the client's drones window says (dronesWindow.OnItemChange,
+    // 254 to 260; bridge/droneBayNotices.ts): the ones into or out of this
+    // ship's drone bay. A charge loaded or ore come aboard is not one.
+    //
+    // ⚠ THE DRONES ONLY. Their re-read is gated on the window having been
+    // read; the holds' is not, and what one item's move does to a hold has
+    // not been measured.
+    if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
+      scheduleDroneRefresh();
+    }
+    // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
+    // reckoned again where they are the page's, as the client's drone panel takes its drones again
+    // (clientDogmaLocation.GetActiveDrones).
+    const fittingNow = store.fitting.get();
+    if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
+    // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
+    // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
+    // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
+    else if (fittingNow.statsFrom === "page" && fittingNow.bayReadout?.kind === "fighter" && fittingNow.bayReadout.shipID === fittingNow.activeShipID) {
+      const places = itemChangeLocations(args);
+      if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
+    }
+    // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
+    // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
+    // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
+    // deploy came by this name, and the cargo went on listing it until a Refresh.
+    if (inventoryShowsItemChange(args)) {
+      scheduleInventoryRefresh();
+    }
+  }
+
   function applyPushedNotification(
     method: string | null,
     args: readonly unknown[],
@@ -4271,6 +5056,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "targeting/targeter-event", event: targeterEvent });
       return;
     }
+    // tactical.OnEwarStart and OnEwarEnd: another ship's module working on the pilot's, counted for the buff bar.
+    const ewar = method === null ? null : decodeEwarNotice(method, args as readonly JsonValue[]);
+    if (ewar !== null) {
+      buffBarSignal.set(ewarNoticed(buffBarSignal.get(), ewar, store.flight.get().status?.shipID ?? null));
+      return;
+    }
     // Fleet-companion phase 7 — `OnJamStart` / `OnJamEnd`, the ONLY read
     // anywhere that says who is holding this ship down. Like the two fleet
     // pushes above and unlike the invalidation sets below, these ARE the
@@ -4279,6 +5070,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const jam = decodeJamNotification(method, args, receivedAtMs);
     if (jam !== null) {
       store.apply({ type: "space/jam", event: jam });
+      // godma.OnJamStart and OnJamEnd, and shipUI's timer on the buff bar's button (bridge/buffBar.ts).
+      buffBarSignal.set(jamNoticed(buffBarSignal.get(), {
+        active: jam.active,
+        sourceID: jam.sourceBallID,
+        moduleID: jam.moduleID,
+        targetID: jam.targetBallID,
+        jammingType: jam.jammingType,
+        receivedAtMs: jam.receivedAtMs,
+        durationMs: jam.durationMs ?? JAM_ASSUMED_DURATION_MS,
+      }, store.flight.get().status?.shipID ?? null));
       // A jam STARTING is rung 4's whole trigger: something has this pilot held
       // down and the fleet has not been told. An END has nothing to issue.
       if (jam.active) {
@@ -4350,6 +5151,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (method === "OnMultipleCharactersTrainingUpdated") {
       trainingSlots.forget();
     }
+    // bco_titles.OnTitleChanged amends the held title authority; an open dialog retains its LoadChar snapshot.
+    if (method === "OnTitleChanged") {
+      const held = memberTitleReads.get(Number(unwrapLong(args[0] as JsonValue) ?? 0n));
+      if (held) changeMemberTitles(held, Number(unwrapLong(args[1] as JsonValue) ?? 0n), args[2] as JsonValue);
+      return;
+    }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
     if (method === "OnCorporationChanged") {
       walletReads.corporationChanged();
@@ -4388,6 +5195,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (method === "OnSkillsChanged" || method === "OnServerSkillsChanged" || method === "OnServerSkillsRemoved") {
       hasSkillByFittingID.clear();
       hasSkillByTypeID.clear();
+      // The skill warning's skills let go too, and the window's warnings reckoned again (WarningIconCont.UpdateIcon).
+      pilotSkillsHeld = null;
+      void reckonActiveShip().catch(() => {});
+      if (simulation) showSimulation();
     }
     // fittingSvc.OnCommunityFittingsUpdated and OnGlobalConfigChanged (machoNet's, at OnGlobalConfigUpdated): the
     // community's fittings let go, and read again.
@@ -4439,15 +5250,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
     // corporation, once the tab has been chosen.
-    if (method === "OnShareChange" && walletSharesWanted) {
-      const pilot = store.station.get().online?.characterID ?? null;
-      if (pilot !== null && (Number(args[0]) === pilot || Number(args[1]) === pilot)) void loadWalletShares().catch(() => undefined);
+    if (method === "OnShareChange") {
+      const online = store.station.get().online;
+      const ownerChanged = (owner: number | null | undefined): boolean => owner != null && (Number(args[0]) === owner || Number(args[1]) === owner);
+      if (walletSharesWanted && ownerChanged(online?.characterID)) void loadWalletShares().catch(() => undefined);
+      if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("corpid")) {
+      corpWalletSharesGeneration++;
+      corpWalletSharesSignal.set(NO_WALLET_SHARES);
+    }
+    // IncomingDbuffTracker.OnSessionChanged: another ship or place (shipid, locationid, structureid), and the buffs
+    // known are let go until the server says them again.
+    if (sessionNames?.some((name) => name === "shipid" || name === "locationid" || name === "structureid" || name === "stationid" || name === "solarsystemid") && buffBarSignal.get().incoming.size > 0) {
+      buffBarSignal.set({ ...buffBarSignal.get(), incoming: new Map() });
+    }
+    // tactical.ProcessSessionChange: another station, system or ship, and its jammers are reset (ResetJammers); and the
+    // ship's effects with the balls they were on (another ship, or the ballpark cleared: DoBallClear).
+    if (sessionNames?.some((name) => name === "stationid" || name === "solarsystemid" || name === "shipid" || name === "structureid")) {
+      buffBarSignal.set(shipEffectsReset(jammersReset(buffBarSignal.get())));
+    }
     contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
     if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole" || name === "corpAccountKey" || name === "role")) {
+      for (const [name, scope] of [["corpid", "corpcontact"], ["allianceid", "alliancecontact"]] as const) {
+        if (sessionNames.includes(name)) { organizationLabelEpoch[scope]++; organizationLabelReads.delete(scope); }
+      }
       const ownerOf = (value: unknown): number | null => {
         const id = Number(wholeDigits(value) ?? Number.NaN);
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -4562,6 +5392,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scheduleScannerRefresh();
       return;
     }
+    if (method === "OnWeaponBanksChanged") {
+      // clientDogmaLocation.OnWeaponBanksChanged (874 to 876): the location's banks set anew, and the rack drawn again
+      // (OnRefreshModuleBanks). The page's are godma's priming as the BFF keeps it, which has taken the notice.
+      void loadDogma().catch(() => {});
+      void loadSpaceSnapshot().catch(() => {});
+      return;
+    }
     if (method === "OnGodmaShipEffect") {
       applyCycleNotification(args);
       // ⚠ THE SAFETY NET UNDER THE ROUND COUNTS. A repeating weapon sends one
@@ -4577,6 +5414,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ) {
         scheduleReloadRefresh(0);
       }
+      if (Number(args[3]) !== 1) void autoReloadOnStop(moduleID, Number(args[1]) || 0).catch(() => {});
       return;
     }
     if (method === "OnModuleAttributeChanges") {
@@ -4605,8 +5443,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // subwaySvc.OnSpecialFX (417 to 438): a travel effect played on the pilot's own ship (the game port hands on no
     // other) begins its jump through the effect's target: PreJumpServiceCalls' OnJumpStarted(gateID, destinationID),
     // which the objectives hear as OnClientEvent_JumpStarted.
+    // michelle.OnDbuffUpdated (1574): IncomingDbuffTracker.OnDbuffUpdated, of the pilot's own ship alone; the game port
+    // hands on the state's too (SetState, 1002).
+    if (method === "OnDbuffUpdated") {
+      const incoming = decodeDbuffUpdate(args as readonly JsonValue[], store.flight.get().status?.shipID ?? null);
+      if (incoming !== null) {
+        buffBarSignal.set({ ...buffBarSignal.get(), incoming, clockOffsetMs: serverNow() - Date.now() });
+        readBuffBarFacts([...incoming.keys()]);
+      }
+      return;
+    }
     if (method === "OnSpecialFX") {
       const fx = args as readonly JsonValue[];
+      // FxSequencer's activations of the buff bar's effects on the pilot's ship (bridge/buffBar.ts); the game port
+      // hands on these and the travel effects, and no other.
+      const special = decodeSpecialFx(fx);
+      if (special !== null && BUFF_BAR_FX_GUIDS.has(special.guid)) {
+        buffBarSignal.set(shipEffectNoticed(buffBarSignal.get(), special, store.flight.get().status?.shipID ?? null, Date.now()));
+        return;
+      }
       const shipID = Number(unwrapLong(fx[0]) ?? NaN);
       const gateID = Number(unwrapLong(fx[3]) ?? NaN);
       const ownShipID = store.flight.get().status?.shipID ?? null;
@@ -4656,43 +5511,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // on the same character. Without it the Drones window's one read per
       // session was the whole of its knowledge.
       scheduleDroneRefresh();
+      // invCache.OnItemsChanged (219 to 226): each item scattered as an OnItemChange with the change they share, so
+      // every window's rule for one item's move is its rule for each of these. Measured 2026-10-17: a module put
+      // into the cargo off its slot came by this name, as on Tranquility, and the Inventory panel's cargo did not
+      // list it.
+      const [items, change, location] = args as readonly JsonValue[];
+      for (const item of isListValue(items) ? items.items : Array.isArray(items) ? items : []) oneItemChanged([item, change, location]);
       return;
     }
     if (method === "OnItemChange") {
-      // ONE item's move comes by this name, and several by the one above: the
-      // server sends this one unless a batch is asked for. A drone landing in
-      // its bay is one item, and with only the name above heard the window went
-      // on reading "Coming home" for a drone the server had in the bay.
-      //
-      // Which moves, the client's drones window says (dronesWindow.OnItemChange,
-      // 254 to 260; bridge/droneBayNotices.ts): the ones into or out of this
-      // ship's drone bay. A charge loaded or ore come aboard is not one.
-      //
-      // ⚠ THE DRONES ONLY. Their re-read is gated on the window having been
-      // read; the holds' is not, and what one item's move does to a hold has
-      // not been measured.
-      if (itemChangeTouchesDroneBay(args, droneBayShipID)) {
-        scheduleDroneRefresh();
-      }
-      // A drone launched, recalled or scooped (into or out of the ship's drone bay): the Fitting window's figures are
-      // reckoned again where they are the page's, as the client's drone panel takes its drones again
-      // (clientDogmaLocation.GetActiveDrones).
-      const fittingNow = store.fitting.get();
-      if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
-      // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
-      // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
-      // the fighter bay's readout, registered with the inventory, read again: CargoSlots.UpdateItem).
-      else if (fittingNow.statsFrom === "page" && fittingNow.bayReadout?.kind === "fighter" && fittingNow.bayReadout.shipID === fittingNow.activeShipID) {
-        const places = itemChangeLocations(args);
-        if (places === null || places.includes(fittingNow.activeShipID as number)) scheduleShipReckoning();
-      }
-      // The inventory's places, as the client's inventory windows keep theirs (invCache.OnItemChange): one item
-      // moved into, out of or within what the Inventory panel shows (the ship flown, the ship whose bays are open,
-      // the station's hangar) and those are read again. Measured 2026-10-15: a filament taken from the cargo by its
-      // deploy came by this name, and the cargo went on listing it until a Refresh.
-      if (inventoryShowsItemChange(args)) {
-        scheduleInventoryRefresh();
-      }
+      oneItemChanged(args);
       return;
     }
     if (method === "OnDamageMessage") {
@@ -5820,6 +6648,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slotsError: reads.errors.slots || reads.errors.online,
       resourcesError: reads.errors.shipInfo,
     });
+    // ChangeAmmoTypeForModule as the rack's buttons are given their charges (shipmodulebutton.SetCharge), and a module
+    // no longer in a slot let go (godma.OnItemChange).
+    const fittedIDs = new Set<number>();
+    for (const slot of store.fitting.get().slots) {
+      if (!slot.module) continue;
+      fittedIDs.add(slot.module.itemID);
+      if (slot.module.charge && slot.module.charge.quantity !== 0) usedChargeTypes.set(slot.module.itemID, slot.module.charge.typeID);
+    }
+    for (const moduleID of [...usedChargeTypes.keys()]) if (!fittedIDs.has(moduleID)) usedChargeTypes.delete(moduleID);
     // R24 slice C — seed each fitted module's BASE cycle length from static
     // data, so the panel can say how long a module takes before it has ever
     // been switched on. Best-effort and never blocking: it is reference data,
@@ -6070,19 +6907,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // GetCapacityInfo (GetFighterCapacity or GetDroneCapacity: GetStatsInfo, the controller's GetAttribute to ten
     // places). Its use is unknown where the inventory cannot be read.
     const kind: "fighter" | "drone" = accurate(reckoned.ship, 2055) ? "fighter" : "drone";
-    const used = await api.getShipBays(shipID, callOptions, [kind])
-      .then((read) => decodeShipBays(read.bays).find((entry) => entry.key === kind)?.capacity?.used ?? null)
-      .catch(() => null);
+    // Read with the specialized ammo hold, whose stacks the missing charges' warning counts (GetHoldItems).
+    const bays = await api.getShipBays(shipID, callOptions, [kind, "ammo"]).then((read) => decodeShipBays(read.bays)).catch(() => null);
+    const used = bays?.find((entry) => entry.key === kind)?.capacity?.used ?? null;
     if (store.fitting.get().activeShipID !== shipID) return;
     const bayReadout = { shipID, kind, capacity: roundTo10(shipValue(kind === "fighter" ? 2055 : 283)), used };
+    // FindModulesWithMissingCharges' fitting of the ship: what is in its module slots (a module one, a charge its
+    // quantity as godma has it: clientDogmaLocation.GetQuantity of a sublocation, its quantity attribute), and the stacks
+    // of its cargo hold and its specialized ammo hold (GetHoldItems: the ship's inventory). Only a ship's.
+    const holdStacks = [
+      ...store.inventory.get().cargo.rows.map((row) => [row.typeID, 5, row.quantity] as const),
+      ...(bays?.find((entry) => entry.key === "ammo")?.items ?? []).map((row) => [row.typeID, 143, row.quantity] as const),
+    ];
+    // The fighter bay's stacks, where the hull has one.
+    const fighterBay = kind === "fighter" ? (bays?.find((entry) => entry.key === "fighter")?.items ?? []) : [];
+    await dogmaStaticFor([...holdStacks.map(([typeID]) => typeID), ...fighterBay.map((row) => row.typeID)], []).catch(() => null);
+    const inModuleSlot = (flagID: number) => flagID >= 11 && flagID <= 34;
+    const chargeQuantity = (charge: (typeof charges)[number]) => godmaRows.get(`${reckoned.ship.key}|${charge.flagID}|${charge.typeID}`)?.get(805) ?? 1;
     // The window's warnings (WarningIconCont: GetActiveWarningsByLevel, EvaluateFit) of the ship as its inventory holds
-    // it (GetFittingDictForActiveShip: CreateFittingData of its fitted modules), its cargo hold's capacity and use as
-    // the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline (FindOfflineModules).
-    await ensureWarningFacts(modules.map((module) => module.typeID), shipTypeID).catch(() => false);
+    // it (GetFittingDictForActiveShip: CreateFittingData of its items, the drones out in space as in its drone bay), its
+    // cargo hold's capacity and use as the inventory gives them (clientDogmaLocation.GetCapacity), its modules offline
+    // (FindOfflineModules).
+    const shipFit = createFittingData([
+      ...modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: 1 })),
+      ...charges.map((charge) => ({ typeID: charge.typeID, flagID: charge.flagID, quantity: chargeQuantity(charge) })),
+      ...store.inventory.get().cargo.rows.map((row) => ({ typeID: row.typeID, flagID: 5, quantity: row.quantity })),
+      ...bay.map((stack) => ({ typeID: stack.typeID, flagID: 87, quantity: stack.quantity })),
+      ...inSpace.map((drone) => ({ typeID: drone.typeID, flagID: 87, quantity: 1 })),
+      ...fighterBay.map((row) => ({ typeID: row.typeID, flagID: 158, quantity: row.quantity })),
+    ], staticTypeFacts(staticData));
+    // _GetAllTypesForShipAndFit (the hull, what is fitted to it, the drone bay's, fighter bay's and tubes' types) and
+    // _GetAllTypesForCargoHold, with the items in their slots and holds (GetSlotsMissingSkills).
+    const cargoRows = store.inventory.get().cargo.rows;
+    // The items fitted to the ship as the page has them, then each bay's (the drone bay, fighter bay and each tube).
+    const skillTypes = {
+      ship: shipTypeID,
+      fitted: [...modules.map((module) => module.typeID), ...charges.map((charge) => charge.typeID)],
+      bays: [bay.map((stack) => stack.typeID), fighterBay.map((row) => row.typeID),
+        ...[159, 160, 161, 162, 163].map((flagID) => squadrons.filter((squadron) => squadron.tubeFlagID === flagID).map((squadron) => squadron.typeID))],
+      cargo: cargoRows.map((row) => row.typeID),
+    };
+    const skillShipAndFit = [skillTypes.ship, ...skillTypes.fitted, ...skillTypes.bays.flat()];
+    const skillItems = [
+      ...modules.map((module) => [module.typeID, module.flagID] as const), ...charges.map((charge) => [charge.typeID, charge.flagID] as const),
+      ...cargoRows.map((row) => [row.typeID, 5] as const), ...bay.map((stack) => [stack.typeID, 87] as const),
+      ...fighterBay.map((row) => [row.typeID, 158] as const), ...squadrons.map((squadron) => [squadron.typeID, squadron.tubeFlagID] as const),
+    ];
+    await ensureWarningFacts([...shipFit.map(([typeID]) => typeID), ...skillShipAndFit, ...cargoRows.map((row) => row.typeID)], shipTypeID).catch(() => false);
+    const chargesFit = staticData.types[shipTypeID]?.categoryID === 6
+      ? [
+        ...modules.filter((module) => inModuleSlot(module.flagID)).map((module) => [module.typeID, module.flagID, 1] as const),
+        ...charges.filter((charge) => inModuleSlot(charge.flagID)).map((charge) => [charge.typeID, charge.flagID, chargeQuantity(charge)] as const),
+        ...holdStacks,
+      ]
+      : null;
     const warnings = evaluateFit({
       static: staticData,
       shipTypeID,
-      fit: createFittingData(modules.map((module) => ({ typeID: module.typeID, flagID: module.flagID, quantity: 1 })), staticTypeFacts(staticData)),
+      fit: shipFit,
       slotExists: (flagID) => reckoned.location.slotExists(reckoned.ship, flagID),
       resources: resourceLoads(figures.resources),
       cargo: store.inventory.get().cargo.capacity ?? null,
@@ -6090,30 +6972,137 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       fittedItems: [...modules.map((module) => [module.typeID, module.flagID] as const), ...charges.map((charge) => [charge.typeID, charge.flagID] as const)],
       typeLists: warningListsOf,
       shipElements: bubbleElementsKept.get(shipTypeID) ?? null,
+      chargesFit,
+      fighterTypesInTubes: squadrons.map((squadron) => squadron.typeID),
+      groupTypes: groupTypesOf,
+      requiredSkillsOf,
     });
-    store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings });
+    const skillWarning = skillWarningOf(skillTypes, skillItems);
+    store.apply({ type: "fitting/reckoned", shipID, ...figures, bayReadout, warnings, skillWarning });
   }
 
   // What the warnings go by that the static data does not hold, read once a type: each fitted type's warning lists
-  // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID) and each hull's info bubble elements (cfg.infoBubbleTypeElements).
+  // (WARNING_TYPE_LISTS, evetypes.GetTypeIDsByListID), each hull's info bubble elements (cfg.infoBubbleTypeElements),
+  // the types of the charge groups of each (evetypes.GetTypeIDsByGroup), and the skills each type needs and those the
+  // charges its launchers may use need, however deep (requiredSkillsForTypes).
   const warningListsKept = new Map<number, ReadonlySet<number>>();
+  let pythonEffectAttributesRead = false;
   const bubbleElementsKept = new Map<number, readonly number[] | null>();
+  const groupTypesKept = new Map<number, readonly number[]>();
+  const requiredSkillsKept: Record<number, readonly (readonly [number, number])[]> = {};
+  const requiredSkillsAsked = new Set<number>();
   /** The warnings' facts of the types and the hull named that are not held yet, read; true where any were. */
   async function ensureWarningFacts(typeIDs: readonly number[], shipTypeID: number): Promise<boolean> {
     const types = [...new Set(typeIDs)].filter((typeID) => !warningListsKept.has(typeID));
     const hull = !bubbleElementsKept.has(shipTypeID);
-    if (types.length === 0 && !hull) return false;
+    let read = false;
     const reads: Promise<unknown>[] = [];
     for (let at = 0; at < types.length; at += 32) {
       const chunk = types.slice(at, at + 32);
       reads.push(api.loadTypeListsHolding(chunk, WARNING_TYPE_LISTS, callOptions).then((lists) => {
         for (const typeID of chunk) warningListsKept.set(typeID, new Set(lists[typeID] ?? []));
+        read = true;
       }));
     }
-    if (hull) reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((read) => bubbleElementsKept.set(shipTypeID, read.types[shipTypeID] ?? null)));
-    const settled = await Promise.allSettled(reads);
-    return settled.some((each) => each.status === "fulfilled");
+    if (hull) {
+      reads.push(api.getInfoBubbleElements([shipTypeID], callOptions).then((answer) => {
+        bubbleElementsKept.set(shipTypeID, answer.types[shipTypeID] ?? null);
+        read = true;
+      }));
+    }
+    // The records of the attributes the python effects change, for the stacking warnings (dogma_data.get_attribute).
+    if (!pythonEffectAttributesRead) {
+      pythonEffectAttributesRead = true;
+      reads.push(dogmaStaticFor([], PYTHON_EFFECT_ATTRIBUTES).then((answer) => {
+        if (!answer) pythonEffectAttributesRead = false;
+        else read = true;
+      }));
+    }
+    reads.push(ensureUsedWithAndSkills([...new Set(typeIDs)]).then((more) => {
+      if (more) read = true;
+    }));
+    reads.push(ensurePilotSkills().then((more) => {
+      if (more) read = true;
+    }));
+    await Promise.allSettled(reads);
+    return read;
   }
+  /**
+   * The used-with table's makings of the types (InfoSvc._AddUsedWithTypeIDs): the types of their charge groups and those
+   * types' static facts; and the skills of the types and of the charges their launchers may use (GetUsedWithTypeIDs),
+   * for GetRequiredSkillsRecursive. True where any were read.
+   */
+  async function ensureUsedWithAndSkills(typeIDs: readonly number[]): Promise<boolean> {
+    let read = false;
+    const staticData = await dogmaStaticFor(typeIDs, []);
+    if (!staticData) return false;
+    const groupsOf = (typeID: number) => (staticData.types[typeID]?.chargeGroups ?? []).filter((groupID) => groupID > 0).map(Math.trunc);
+    const groups = [...new Set(typeIDs.flatMap(groupsOf))].filter((groupID) => !groupTypesKept.has(groupID));
+    for (let at = 0; at < groups.length; at += 32) {
+      const chunk = groups.slice(at, at + 32);
+      const answer = await api.getGroupTypes(chunk, callOptions);
+      if (!answer.available) break;
+      for (const groupID of chunk) groupTypesKept.set(groupID, answer.groups[groupID] ?? []);
+      read = true;
+    }
+    const groupTypes = [...new Set(typeIDs.flatMap((typeID) => groupsOf(typeID).flatMap((groupID) => groupTypesKept.get(groupID) ?? [])))];
+    const unread = groupTypes.filter((typeID) => !Object.hasOwn(staticData.types, typeID));
+    if (unread.length > 0 && (await dogmaStaticFor(unread, []))) read = true;
+    const launcherCharges = typeIDs
+      .filter((typeID) => staticData.types[typeID]?.effects.includes(40))
+      .flatMap((typeID) => usedWithTypeIDs(staticData, typeID, groupTypesOf) ?? []);
+    const wanted = [...new Set([...typeIDs, ...launcherCharges])].filter((typeID) => !requiredSkillsAsked.has(typeID));
+    if (wanted.length > 0) {
+      const table = await requiredSkillsFor(wanted);
+      if (table) {
+        Object.assign(requiredSkillsKept, table);
+        for (const typeID of wanted) requiredSkillsAsked.add(typeID);
+        read = true;
+      }
+    }
+    return read;
+  }
+  const groupTypesOf = (groupID: number): readonly number[] | undefined => groupTypesKept.get(groupID);
+  // The pilot's skills as the skill service holds them (GetSkills, GetAllSkills), for the skill warning; kept for the
+  // pilot until the server says they changed.
+  let pilotSkillsHeld: {
+    readonly characterID: number | null;
+    readonly mine: ReturnType<typeof skillLevelsOf>;
+    readonly lapsed: ReturnType<typeof skillLevelsOf>;
+    readonly skillsAnswer: JsonValue;
+    readonly allSkillsAnswer: JsonValue;
+  } | null = null;
+  /** The pilot's skills read where they are not held for the pilot in session; true where they were. */
+  async function ensurePilotSkills(): Promise<boolean> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (pilotSkillsHeld !== null && pilotSkillsHeld.characterID === characterID) return false;
+    const [skillsAnswer, allSkillsAnswer] = await Promise.all([bridgeAsk("skillHandler", "GetSkills", []), bridgeAsk("skillHandler", "GetAllSkills", [])]);
+    pilotSkillsHeld = { characterID, mine: skillLevelsOf(skillsAnswer), lapsed: skillLevelsOf(allSkillsAnswer), skillsAnswer, allSkillsAnswer };
+    return true;
+  }
+  /**
+   * The window's skill warning (WarningIconCont: GetAllTypeIDsMissingSkillsForShipAndContent, GetSkillTooltip) of the
+   * ship and fit's types, the cargo's, and the items in the slots and holds; null where a fact it goes by is not held.
+   */
+  function skillWarningOf(
+    types: { readonly ship: number; readonly fitted: readonly number[]; readonly bays: readonly (readonly number[])[]; readonly cargo: readonly number[] },
+    items: readonly (readonly [number, number])[],
+  ): FittingSkillWarning | null {
+    const held = pilotSkillsHeld;
+    if (held === null || held.characterID !== (store.station.get().online?.characterID ?? null)) return null;
+    if ([types.ship, ...types.fitted, ...types.bays.flat(), ...types.cargo].some((typeID) => !requiredSkillsAsked.has(typeID))) return null;
+    return fittingSkillWarning({
+      ...types,
+      items,
+      required: requiredSkillsKept,
+      mine: held.mine,
+      lapsed: held.lapsed,
+      categoryOf: (typeID) => dogmaStaticKept.types[typeID]?.categoryID ?? null,
+    });
+  }
+  /** GetRequiredSkillsRecursive's skills of a type, where read. */
+  const requiredSkillsOf = (typeID: number): ReadonlySet<number> | null =>
+    requiredSkillsAsked.has(typeID) ? new Set(requiredSkillsRecursive(typeID, requiredSkillsKept).keys()) : null;
   const warningListsOf = (typeID: number): ReadonlySet<number> => warningListsKept.get(typeID) ?? new Set<number>();
 
   /** A type's group and category as the page's static dogma data holds them (no type list among them). */
@@ -6265,7 +7254,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // The current fitting (GetFittingDictForSimulatedShip), and the warnings' facts of its types read where they are
     // not held yet, the simulation shown again with them.
     const simulatedFit = createFittingData(simulatedShipItems(simulation.simulated), staticTypeFacts(location.static));
-    void ensureWarningFacts(simulatedFit.map(([typeID]) => typeID), ship.typeID)
+    // The skill warning's types and items (the fitting location's fitted items and holds).
+    const fittedToShip = [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null);
+    const simulatedCargo = [...simulation.simulated.cargo.keys()];
+    const fighters = [...ship.fighters.values()];
+    const skillTypes = {
+      ship: ship.typeID,
+      fitted: fittedToShip.map((item) => item.typeID),
+      bays: [[...ship.drones.values()].map((drone) => drone.typeID),
+        ...[158, 159, 160, 161, 162, 163].map((flagID) => fighters.filter((fighter) => fighter.flagID === flagID).map((fighter) => fighter.typeID))],
+      cargo: simulatedCargo,
+    };
+    const skillShipAndFit = [skillTypes.ship, ...skillTypes.fitted, ...skillTypes.bays.flat()];
+    const skillItems = [
+      ...fittedToShip.map((item) => [item.typeID, item.flagID as number] as const), ...simulatedCargo.map((typeID) => [typeID, 5] as const),
+      ...[...ship.drones.values()].map((drone) => [drone.typeID, 87] as const),
+      ...[...ship.fighters.values()].filter((fighter) => fighter.flagID !== null).map((fighter) => [fighter.typeID, fighter.flagID as number] as const),
+    ];
+    void ensureWarningFacts([...simulatedFit.map(([typeID]) => typeID), ...skillShipAndFit, ...simulatedCargo], ship.typeID)
       .then((read) => {
         if (read) showSimulation();
       })
@@ -6349,7 +7355,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         fittedItems: [...ship.fitted.values()].filter((item) => item !== ship && item !== pilot && item.flagID !== null).map((item) => [item.typeID, item.flagID as number] as const),
         typeLists: warningListsOf,
         shipElements: bubbleElementsKept.get(ship.typeID) ?? null,
+        // GetFighterTypesInTubes: the fighters the simulation has in its tubes.
+        fighterTypesInTubes: [...ship.fighters.values()].filter((fighter) => fighter.flagID !== null && fighter.flagID >= 159 && fighter.flagID <= 163).map((fighter) => fighter.typeID),
+        groupTypes: groupTypesOf,
+        requiredSkillsOf,
+        // FindModulesWithMissingCharges: what is in the module slots (a charge its stacksize: the fitting location's
+        // GetQuantity), and the cargo hold's stacks; only a ship's.
+        chargesFit: ship.categoryID === 6
+          ? [
+            ...[...ship.fitted.values()]
+              .filter((item) => item !== ship && item !== pilot && item.flagID !== null && item.flagID >= 11 && item.flagID <= 34)
+              .map((item) => [item.typeID, item.flagID as number, location.static.types[item.typeID]?.categoryID === 8 ? item.stacksize : 1] as const),
+            ...[...simulation.simulated.cargo].map(([typeID, qty]) => [typeID, 5, qty] as const),
+          ]
+          : null,
       }),
+      skillWarning: skillWarningOf(skillTypes, skillItems),
       fighterSquadrons: fullAndPartialSquadrons(location, ship),
       // The fighter bay's picker (FighterBayItemPickerMenu): the tubes, each kind's squadrons allowed and had, the bay.
       fighterTubes: simulatedFighterTubes(simulation.simulated),
@@ -6411,21 +7432,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       holdFactsFor(fitting.fitData.filter((item) => item.flagID === 5 || item.flagID === 158).map((item) => item.typeID)),
       ensureFighterAbilities(fitting.fitData.filter((item) => item.flagID >= 158 && item.flagID <= 163).map((item) => item.typeID)),
     ]);
+    const pilotFacts = { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 };
+    // FitFighters' TryFitItemsToFighterBay asks with Shift held (GetModifiedQtyDict: FindQty, the QtyPopup up to
+    // GetMaxQty of the bay's types as the load comes to them, the bay still empty, from one): every type in the bay that
+    // many; none where the question is let go or none fits. (Its drones and cargo do not ask.) The room is the bay's
+    // once the fitting is loaded without them.
+    let fitData = fitting.fitData;
+    const bayTypes = [...new Set(fitData.filter((item) => item.flagID === 158).map((item) => item.typeID))];
+    if (bayTypes.length > 0 && shiftHeld()) {
+      const withoutBay = fitData.filter((item) => item.flagID !== 158);
+      const probe = simulateFitData(staticData, fitting.shipTypeID, pilotFacts, brain, withoutBay, serverNow, { facts, notInFitting: [], errors: [] });
+      const most = fighterBayRoomForAll(probe, bayTypes);
+      const qty = most
+        ? await askQuantity({
+          min: 1, max: most, value: 1,
+          hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+        })
+        : null;
+      fitData = qty === null ? withoutBay : [...withoutBay, ...bayTypes.map((typeID) => ({ typeID, flagID: 158, quantity: qty }))];
+    }
     const notInFitting: number[] = [];
     const errors: SimulationUserError[] = [];
     simulation = {
       shipID: null,
       name: fitting.name,
       loadedFit: (fitting.fittingID ?? 0) > 0 && (fitting.ownerID ?? 0) > 0 ? { ownerID: fitting.ownerID!, fittingID: fitting.fittingID! } : null,
-      simulated: simulateFitData(
-        staticData,
-        fitting.shipTypeID,
-        { characterID, typeID: pilotTypeID, securityStatus: typeof security === "number" ? security : 0 },
-        brain,
-        fitting.fitData,
-        serverNow,
-        { facts, notInFitting, errors },
-      ),
+      simulated: simulateFitData(staticData, fitting.shipTypeID, pilotFacts, brain, fitData, serverNow, { facts, notInFitting, errors }),
     };
     sayNotInFitting(notInFitting);
     await sayFighterErrors(errors);
@@ -6674,12 +7706,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showSimulation();
   }
 
-  /** As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones). */
+  /**
+   * As many drones of a type in the simulated drone bay as wanted (dronePickerMenu.ChangeNumDrones): more through
+   * TryFitDronesToDroneBay, which with Shift held asks how many to add instead (GetModifiedQtyDict: FindQty, the QtyPopup
+   * up to the bay's room, from one; let go, none).
+   */
   async function setSimulatedDrones(typeID: number, wanted: number): Promise<void> {
     if (!simulation) return;
     await dogmaStaticFor([typeID], []);
     if (!simulation) return;
-    setDronesOfType(simulation.simulated, typeID, wanted);
+    const had = [...simulation.simulated.ship.drones.values()].filter((drone) => drone.typeID === typeID).length;
+    if (wanted > had && shiftHeld()) {
+      const most = droneBayRoomFor(simulation.simulated, typeID);
+      if (most === null) return;
+      const asked = await askQuantity({
+        min: 1, max: most, value: 1,
+        hintLabel: "UI/Common/SetQtyBetween", hint: `From 1 to ${most.toLocaleString("en-US")}.`, hintArgs: { min: "1", max: most.toLocaleString("en-US") },
+      });
+      if (asked === null || !simulation) return;
+      addDronesOfType(simulation.simulated, typeID, asked);
+    } else {
+      setDronesOfType(simulation.simulated, typeID, wanted);
+    }
     showSimulation();
   }
 
@@ -7956,6 +9004,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // notification burst into one initial read.
   let fleetRefreshPromise: Promise<void> | null = null;
   let fleetRefreshDirty = false;
+  // A character menu consumes the held roster, options and wings. Only an
+  // explicit fleet-details reader opens the composition/join-request views.
+  let fleetMenuOnly = true;
+  let fleetReadingMenuOnly = true;
+  let fleetDetailViews = 0;
+  function retainFleetDetails(): () => void {
+    fleetDetailViews++;
+    let kept = true;
+    return () => { if (kept) { kept = false; fleetDetailViews--; } };
+  }
   let fleetRefreshScheduled = false;
 
   /**
@@ -8005,16 +9063,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     fleetRefreshScheduled = true;
     queueMicrotask(() => {
       fleetRefreshScheduled = false;
-      void loadFleet().catch(() => undefined);
+      void loadFleet(fleetDetailViews === 0).catch(() => undefined);
     });
   }
 
-  async function loadFleetSnapshotOnce(): Promise<void> {
+  async function loadFleetSnapshotOnce(menuOnly: boolean): Promise<void> {
     store.apply({ type: "fleet/loading" });
     let snapshot: ReturnType<typeof decodeFleetCenter>;
     let readError: string | null = null;
     try {
-      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions));
+      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions, menuOnly));
       if (
         snapshot.availability === "ready" &&
         [
@@ -8085,7 +9143,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       while (fleetRefreshDirty) {
         fleetRefreshDirty = false;
-        await loadFleetSnapshotOnce();
+        fleetReadingMenuOnly = fleetMenuOnly && fleetDetailViews === 0;
+        fleetMenuOnly = true;
+        await loadFleetSnapshotOnce(fleetReadingMenuOnly);
       }
     } finally {
       // No callback can interleave between the loop condition and this reset,
@@ -8094,10 +9154,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  function loadFleet(): Promise<void> {
+  function loadFleet(menuOnly = false): Promise<void> {
+    const rosterOnly = menuOnly && fleetDetailViews === 0;
     if (fleetRefreshPromise !== null) {
+      if (!rosterOnly && fleetReadingMenuOnly) { fleetMenuOnly = false; fleetRefreshDirty = true; }
       return fleetRefreshPromise;
     }
+    fleetMenuOnly = rosterOnly;
     fleetRefreshDirty = true;
     fleetRefreshPromise = drainFleetRefreshes();
     return fleetRefreshPromise;
@@ -8212,6 +9275,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client's quantity question (uix.QtyPopup: modal, OK and Cancel), one open at a time; a newer one cancels it.
   const quantityAskedSignal = createSignal<QuantityAsk | null>(null);
+
+  // The ship HUD's buff bar (bridge/buffBar.ts): the buffs the server said are on the pilot's ship, and the collections
+  // and icons the bar shows them with, each read of the BFF once.
+  const buffBarSignal = createSignal<BuffBarState>(NO_BUFFS);
+  // tactical.RemoveBallFromJammers (DoBallRemove): a ball that leaves space takes what it was doing to the ship with it.
+  // Removed, not absent: a ball the page has not seen yet (one that came into space with its first cycle) keeps its
+  // jammers, as tactical keeps them until the ball goes.
+  let ballsLastSeen: ReadonlySet<number> | null = null;
+  store.space.subscribe(() => {
+    const entities = store.space.get().snapshot?.entities ?? null;
+    const seen = entities === null ? null : new Set(entities.map((entity) => entity.itemID));
+    const before = ballsLastSeen;
+    ballsLastSeen = seen;
+    const state = buffBarSignal.get();
+    if (before === null || seen === null || state.jammers.size === 0) return;
+    const next = jammersWithout(state, (ballID) => !before.has(ballID) || seen.has(ballID));
+    if (next !== state) buffBarSignal.set(next);
+  });
+  let buffBarIconsAsked = false;
+  function readBuffBarFacts(collectionIDs: readonly number[]): void {
+    const known = buffBarSignal.get();
+    const collections = collectionIDs.filter((collectionID) => !known.facts.has(collectionID));
+    const icons = buffBarIconsAsked ? [] : [...new Set(BUFF_SLOTS.map((slot) => slot.iconID))];
+    if (collections.length === 0 && icons.length === 0) return;
+    buffBarIconsAsked = true;
+    void api.getDbuffCollections(collections, icons, callOptions).then((read) => {
+      const now = buffBarSignal.get();
+      buffBarSignal.set({
+        ...now,
+        facts: new Map([...now.facts, ...read.collections]),
+        iconFiles: new Map([...now.iconFiles, ...read.iconFiles]),
+        percentUnitName: read.percentUnitName || now.percentUnitName,
+      });
+    }).catch(() => {
+      if (icons.length > 0) buffBarIconsAsked = false;
+    });
+  }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
   /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
@@ -8656,6 +9756,74 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * skillsvc.py 757 to 766; IsBoosterSkillAccelerator), each its bonus to the attribute. An alpha clone's ceilings
    * (CloneGradeStorage, by race) hold its levels back: the bar's omega boxes, NeedsOmegaUpgrade (no action then).
    */
+  /** RequiredSkillRow: a skill at a level, its mark (_GetTexturePathAndHint: its book sold or not) and its bar's boxes. */
+  function requiredSkillRow(
+    skill: number,
+    level: number,
+    required: RequiredSkills,
+    facts: Pick<Awaited<ReturnType<typeof pilotTrainingFacts>>, "mine" | "lapsed" | "queued" | "training" | "rank" | "ceilings">,
+    sold: boolean,
+  ): SkillsRequiredRow {
+    return {
+      skill,
+      level,
+      mark: skillRowMark(skill, level, facts.lapsed, sold),
+      boxes: skillLevelBoxes(skill, level, required, facts.mine, facts.lapsed, facts.queued, facts.training, facts.rank(skill), facts.ceilings === null ? null : facts.ceilings.get(skill) ?? 0),
+    };
+  }
+
+  async function fittingSkillTooltip(warning: FittingSkillWarning): Promise<{ readonly rows: readonly SkillsRequiredRow[]; readonly training: SkillTrainingRecord | null }> {
+    const held = pilotSkillsHeld;
+    const shown = [...warning.fit, ...warning.cargo];
+    if (held === null || (shown.length === 0 && warning.listed.length === 0)) return { rows: [], training: null };
+    const skills = [...new Set([...shown, ...warning.listed].map(([skill]) => skill))];
+    const skillTypes = [...new Set(skills.flatMap((skill) => [skill, ...requiredSkillsRecursive(skill, requiredSkillsKept).keys()]))];
+    const lists: Record<number, readonly number[]> = {};
+    const [facts, prices] = await Promise.all([
+      pilotTrainingFacts(skillTypes, held.skillsAnswer, held.allSkillsAnswer),
+      api.getTypePrices(skills, callOptions)
+        .catch(() => ({ available: false, published: {} as Readonly<Record<number, boolean | null>>, basePrice: {} as Readonly<Record<number, number | null>> })),
+      (async () => {
+        for (let at = 0; at < skills.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(skills.slice(at, at + 32), [SKILLS_FOR_PURCHASE_LIST], callOptions));
+      })(),
+    ]);
+    // evetypes.IsSkillAvailableForPurchase: published, and on the list (the list alone where the client's data is not to hand).
+    const sold = (skill: number) => lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true);
+    const rows = shown.map(([skill, level]) => requiredSkillRow(skill, level, requiredSkillsKept, facts, sold(skill)));
+    // After the rows: the time to train the list (GetSkillTrainingTimeLeftForTypesAndLevels, boosters left out); none
+    // and the tooltip ends there.
+    const { listed, missingBooks } = warning;
+    const ticks = trainingTimeForSkills(listed, facts.mine, facts.lapsed, { rank: facts.rank, rate: facts.rate, pointsNow: facts.pointsNow });
+    if (ticks === null || ticks <= 0) return { rows, training: null };
+    // ItemObject(skill).NeedsOmegaUpgrade of any listed (its level trained or queued: MySkillLevelIncludingQueued).
+    const ownLevel = (skill: number) => (facts.lapsed.has(skill)
+      ? Math.max(facts.lapsed.get(skill)?.trainedSkillLevel ?? 0, ...facts.queued.filter((entry) => entry.typeID === skill).map((entry) => entry.toLevel))
+      : 0);
+    const omegaRestricted = listed.some(([skill]) => needsOmegaUpgrade(skill, requiredSkillsKept, facts.mine, facts.ceilings, ownLevel(skill)));
+    // AddSkillActionForList: SkillActionContainer of the list and its missing books (shown however the clone stands).
+    const levels = levelsToTrain(listed, facts.mine);
+    const trainable = levels.filter(([skill]) => !missingBooks.includes(skill));
+    const action: SkillsRequired["action"] = missingBooks.length > 0
+      ? { kind: "buy", levels, missing: missingBooks }
+      : { kind: "train", levels: trainable, queued: allLevelsQueued(trainable, facts.queued) };
+    skillWindowFacts = { rank: facts.rank, pointsNow: facts.pointsNow, trainingRate: facts.rateWithBoosters, mine: facts.mine, queued: facts.queued };
+    const free = Number(Array.isArray(facts.queueAnswer) ? facts.queueAnswer[1] : 0);
+    return {
+      rows,
+      training: {
+        omega: facts.omega,
+        trainingTicks: ticks,
+        skillPointsRequired: skillPointsRequired(levels, facts.mine, facts.rank),
+        action,
+        books: Object.fromEntries(listed.map(([skill]) => [skill, { sold: sold(skill), basePrice: prices.basePrice[skill] ?? null }])),
+        freeSkillPoints: Number.isFinite(free) && free > 0 ? free : 0,
+        applyLevels: trainable,
+        offerInjection: missingBooks.length === 0,
+        omegaRestricted,
+      },
+    };
+  }
+
   async function skillWindowRest(
     typeID: number,
     required: RequiredSkills,
@@ -8674,12 +9842,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const prices = await api.getTypePrices([...new Set([...listed.map(([skill]) => skill), typeID])], callOptions)
       .catch(() => ({ available: false, basePrice: {} as Readonly<Record<number, number | null>>, published: {} as Readonly<Record<number, boolean | null>>, categoryID: {} as Readonly<Record<number, number | null>> }));
 
-    const rows = listed.map(([skill, level]) => ({
-      skill,
-      level,
-      mark: skillRowMark(skill, level, lapsed, lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)),
-      boxes: skillLevelBoxes(skill, level, required, mine, lapsed, queued, training, rank(skill), ceilings === null ? null : ceilings.get(skill) ?? 0),
-    }));
+    const rows = listed.map(([skill, level]) => requiredSkillRow(skill, level, required, { mine, lapsed, queued, training, rank, ceilings },
+      lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true)));
     const ticks = trainingTimeLeft(typeID, required, mine, lapsed, { rank, rate, pointsNow });
     const books = Object.fromEntries(listed.map(([skill]) => [skill, {
       sold: lists[skill]?.includes(SKILLS_FOR_PURCHASE_LIST) === true && (!prices.available || prices.published[skill] === true),
@@ -8731,8 +9895,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function applySkillPointsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
+    if (open !== null) await applySkillPointsOf(open);
+  }
+
+  /** ApplySkillPointsButton with free points: the Apply Skill Points window opened for the record's levels. */
+  async function applySkillPointsOf(open: SkillTrainingRecord): Promise<void> {
     const facts = skillWindowFacts;
-    if (open === null || facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
+    if (facts === null || !open.offerInjection || open.applyLevels.length === 0) return;
     const levels = open.applyLevels;
     const pointsBySkill = await freePointsAppliedToSkills(bridgeAsk, levels);
     const reached = new Map<number, readonly [number, number]>();
@@ -9240,6 +10409,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw Object.assign(new Error(`${request} was answered ${answer.statusCode}${answer.statusMessage ? `: ${answer.statusMessage}` : ""}.`), { statusCode: answer.statusCode });
     }
     return answer.payload;
+  }
+
+  async function personalSkillPlanCount(): Promise<number | null> {
+    try {
+      return planIDsFromGetAll(await gatewayAsk("eve_public.character.skill.plan.GetAllRequest")).length;
+    } catch {
+      return null;
+    }
   }
 
   async function personalSkillPlans(): Promise<PersonalSkillPlansRead | null> {
@@ -11532,7 +12709,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function buySkillsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
-    if (open === null || open.action?.kind !== "buy") return;
+    if (open !== null) await buySkillsOf(open);
+  }
+
+  /** BuyAndTrainButton: the books missing bought (the books window), then the levels queued. */
+  async function buySkillsOf(open: SkillTrainingRecord): Promise<void> {
+    if (open.action?.kind !== "buy") return;
     const action = open.action;
     if (!(await skillPurchaseEnabled())) {
       sayDialog("SkillPurchaseDisabled", null, "Skill books cannot be bought directly here.");
@@ -11964,7 +13146,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function trainSkillsRequired(): Promise<void> {
     const open = skillsRequiredSignal.get();
     skillsRequiredSignal.set(null);
-    if (open === null || open.action?.kind !== "train" || open.action.queued) return;
+    if (open !== null) await trainSkillsOf(open);
+  }
+
+  /** AddToQueueButton: the levels added to the queue, those there already passed over. */
+  async function trainSkillsOf(open: SkillTrainingRecord): Promise<void> {
+    if (open.action?.kind !== "train" || open.action.queued) return;
     const answered = await bridgeAsk("skillHandler", "GetSkillQueueAndFreePoints", []);
     const queue = queuedLevels(Array.isArray(answered) ? answered[0] : null);
     await saveSkillQueue(queueWithLevels(queue, open.action.levels), "Added to your skill queue", "those skills", true);
@@ -11975,12 +13162,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     mutate: () => Promise<void>,
     expected: "ready" | "not-in-fleet",
   ): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
     store.apply({ type: "fleet/action-started", action });
     let failure: string | null = null;
     let said = false;
     try {
       await mutate();
+      assertCurrent();
     } catch (error) {
+      throwIfRequestRetired(error);
+      assertCurrent();
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -11996,11 +13187,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       // The write acknowledgement is not treated as world state. Always read
       // the session's own bound fleet again, even after a refusal.
-      await loadFleet();
+      await loadFleet(fleetDetailViews === 0);
+      assertCurrent();
       if (failure === null && store.fleet.get().availability !== expected) {
         failure = fleetActionFailure(action);
       }
     } finally {
+      assertCurrent();
       store.apply({ type: "fleet/action-finished", error: failure, said });
     }
   }
@@ -12037,6 +13230,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (characterID === onlineCharacterID()) return;
     await inviteFleetMember(characterID);
+  }
+
+  async function inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
+    if (!form) {
+      for (const id of characterIDs) {
+        assertCurrent();
+        await inviteFleetMember(id, assertCurrent, undefined, place);
+        assertCurrent();
+        const state = store.fleet.get();
+        if (state.actionError && !state.actionErrorSaid) throw new Error(state.actionError);
+      }
+      return;
+    }
+    const act = fencedDo(assertCurrent);
+    // menusvc.InviteToFleet2707-2730 catches UserError per owner and reports
+    // one original error, or FleetInviteMultipleErrors after trying them all.
+    await runFleetAction("invite", async () => {
+      const refused: { id: number; error: unknown }[] = [];
+      for (const id of characterIDs) {
+        assertCurrent();
+        try {
+          if (store.fleet.get().availability !== "ready") {
+            await formFleetCall(act, false);
+            await loadFleet(fleetDetailViews === 0);
+            assertCurrent();
+          }
+          if (id !== onlineCharacterID()) await inviteToFleetCall(act, id, onlineCharacterID());
+        } catch (error) {
+          throwIfRequestRetired(error);
+          if (!(error instanceof BridgeCallError) || error.code !== "CALL_REFUSED") throw error;
+          refused.push({ id, error });
+        }
+      }
+      if (refused.length === 1) throw refused[0]!.error;
+      if (refused.length > 1) {
+        await resolveNamesNow(refused.map(({ id }) => ({ kind: "owner" as const, id })));
+        const namelist = intDictOrder(refused.map(({ id }) => id)).map(id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot")).join(", ");
+        throw new BridgeCallError("CALL_REFUSED", "FleetInviteMultipleErrors", 0, null, null, { key: "FleetInviteMultipleErrors", values: { type: "dict", entries: [["namelist", namelist]] } });
+      }
+    }, "ready");
   }
 
   async function acceptFleetInvite(fleetID?: number): Promise<void> {
@@ -12787,18 +14021,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // or the corporation (OnShareChange) while the tab has been chosen.
   const NO_WALLET_SHARES: WalletSharesRead = { loaded: false, holdings: [], error: null };
   const walletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
+  const corpWalletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
   let walletSharesWanted = false;
+  let corpWalletSharesWanted = false;
+  let walletSharesGeneration = 0;
+  let corpWalletSharesGeneration = 0;
 
-  async function loadWalletShares(): Promise<void> {
-    walletSharesWanted = true;
-    const characterID = store.station.get().online?.characterID ?? null;
+  function setWalletSharesVisible(visible: boolean, corporate = false): void {
+    if (corporate) corpWalletSharesWanted = visible;
+    else walletSharesWanted = visible;
+  }
+
+  async function loadWalletShares(corporate = false): Promise<void> {
+    const online = store.station.get().online;
+    if (corporate && !canViewCorporateShares(online?.corpRole)) return;
+    const characterID = online?.characterID ?? null;
+    const corporationID = online?.corporationID ?? null;
+    const generation = corporate ? ++corpWalletSharesGeneration : ++walletSharesGeneration;
+    const signal = corporate ? corpWalletSharesSignal : walletSharesSignal;
+    const isCurrent = (): boolean => generation === (corporate ? corpWalletSharesGeneration : walletSharesGeneration)
+      && (store.station.get().online?.characterID ?? null) === characterID
+      && (!corporate || (store.station.get().online?.corporationID ?? null) === corporationID);
     try {
-      const holdings = await readMyShares(bridgeAsk);
-      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
-      walletSharesSignal.set({ loaded: true, holdings, error: null });
+      const holdings = await (corporate ? readCorpShares(bridgeAsk) : readMyShares(bridgeAsk));
+      if (!isCurrent()) return;
+      signal.set({ loaded: true, holdings, error: null });
     } catch (error) {
       if (isSessionLost(error)) throw error;
-      walletSharesSignal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
+      if (isCurrent()) signal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -13318,24 +14568,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // (contactsForm.py 267 to 274, 424: contacts_lastselected), kept in this browser for each character.
   const CONTACTS_LAST_SELECTED_KEPT = "evejs.contacts.lastselected";
 
-  function contactsLastSelected(): number | string | null {
+  function contactsLastSelected(contactType: ContactScope = "contact"): number | string | null {
     const characterID = store.station.get().online?.characterID ?? null;
     let kept: unknown = null;
     try {
-      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_LAST_SELECTED_KEPT}.${characterID}`) ?? "null");
+      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : contactType === "alliancecontact" ? ".alliance" : ""}.${characterID}`) ?? "null");
     } catch {
       kept = null;
     }
     return (typeof kept === "number" && Number.isSafeInteger(kept)) || typeof kept === "string" ? kept : null;
   }
 
-  function keepContactsLastSelected(groupID: number | string): void {
+  function keepContactsLastSelected(groupID: number | string, contactType: ContactScope = "contact"): void {
     const characterID = store.station.get().online?.characterID ?? null;
     if (characterID === null) {
       return;
     }
     try {
-      settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}.${characterID}`, JSON.stringify(groupID));
+      settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}${contactType === "corpcontact" ? ".corp" : contactType === "alliancecontact" ? ".alliance" : ""}.${characterID}`, JSON.stringify(groupID));
     } catch {
       // Storage full or refused: the group lasts as long as the page.
     }
@@ -13439,12 +14689,233 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  async function corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
+    // GetRoleGroupings asks GetDivisionNames, which reads the held corporation row.
+    await bridgeAsk("corpRegistry", "GetCorporation", []);
+    const roles = await api.getCorporationRoleOptions(callOptions);
+    await wordsNow(roles.map(role => `#${role.nameID}`));
+    return roles;
+  }
+  let configEnabledValues: Promise<readonly string[]> | null = null;
+  const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
+  let memberDetailsRequests = 0;
+  function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
+  // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
+  const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
+  const memberTitleReads = new Map<number, Map<number, CorporationTitle>>();
+  let memberDataCorpID: number | null = null;
+  function memberReadKey(characterID: number): string {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    if (corporationID !== memberDataCorpID) { memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID; }
+    return `${corporationID}:${characterID}`;
+  }
+  async function readMemberTitles(corporationID: number): Promise<ReadonlyMap<number, CorporationTitle>> {
+    const held = memberTitleReads.get(corporationID);
+    if (held) return held;
+    const answer = await bridgeAsk("corpRegistry", "GetTitles", []);
+    const label = "UI/Corporations/Common/TitleUntitled";
+    await wordsNow([label]);
+    const template = store.words.get().templates[label] ?? "Untitled {index}";
+    const rows = memberTitlesOf(answer, index => plainText(formatTemplate(template, { index }, { nameOf: () => "" })));
+    memberTitleReads.set(corporationID, rows);
+    return rows;
+  }
+  async function corporationMemberTitles(): Promise<readonly CorporationTitle[]> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    memberReadKey(online.characterID);
+    return [...(await readMemberTitles(online.corporationID)).values()].sort((a, b) => a.titleID - b.titleID);
+  }
+  async function corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    memberReadKey(online.characterID);
+    // OnTabRolesSummary asks GetTitles, then GetMyGrantableRoles; the latter reuses the six-second member cache.
+    const titles = await readMemberTitles(online.corporationID);
+    const mine = corporationMemberOf(await readCorporationMember(online.characterID));
+    const data = await api.getCorporationRoleData(callOptions), corpRole = BigInt(online.corpRole ?? "0");
+    const grants = myGrantableRoles(mine, details.viewerIsCEO, (corpRole & 1n) !== 0n, data, titles);
+    const personnel = details.roleGroups.flatMap(group => group.roles).find(role => role.roleName === "rolePersonnelManager")?.roleID ?? 0n;
+    // Keep the service's title iteration order for provenance lists, unlike the ID-sorted Titles tab.
+    return { titles: [...titles.values()], showTitleNames: (corpRole & personnel) !== 0n || Object.values(grants).some(mask => mask !== 0n) };
+  }
+  function corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean {
+    // registry.Get/SetListGroupOpenState: RolesSummary groups live in settings.char.ui.listgroups, initially closed.
+    let groups: Record<string, boolean> = {};
+    try { const raw: unknown = JSON.parse(charUiSetting("corpRolesSummaryGroups") ?? "{}"); if (raw && typeof raw === "object" && !Array.isArray(raw)) groups = raw as Record<string, boolean>; } catch { /* Invalid stored preference: closed. */ }
+    if (open !== undefined) { groups[String(groupID)] = open; setCharUiSetting("corpRolesSummaryGroups", JSON.stringify(groups)); }
+    return groups[String(groupID)] === true;
+  }
+  async function readCorporationMember(characterID: number): Promise<JsonValue> {
+    const key = memberReadKey(characterID), kept = memberReads.get(key);
+    if (kept && kept.savedAt + 6_000 >= Date.now()) return kept.value;
+    const value = await bridgeAsk("corpRegistry", "GetMember", [characterID]);
+    memberReads.set(key, { value, savedAt: Date.now() });
+    return value;
+  }
+  async function corporationMemberRoleBase(): Promise<number | null> {
+    const online = store.station.get().online;
+    if (!online) throw new Error("No pilot is selected.");
+    return corporationMemberOf(await readCorporationMember(online.characterID)).baseID;
+  }
+  async function corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    // EditMemberDialog.LoadChar 144-190: security, private row, corporation, my grantable state, member, offices.
+    const security = await bridgeAsk("crimewatch", "GetCharacterSecurityStatus", [characterID]);
+    const info = await bridgeAsk("charMgr", "GetPrivateInfo", [characterID]);
+    const corporation = await bridgeAsk("corpRegistry", "GetCorporation", []);
+    const mine = await readCorporationMember(online.characterID);
+    const myMember = corporationMemberOf(mine);
+    const ceoID = Number(memberInteger(corporation, "ceoID") ?? 0n);
+    const viewerIsCEO = ceoID === online.characterID, viewerIsDirector = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
+    const titles = !viewerIsCEO && (myMember.masks.roles & 1n) === 0n && myMember.titleMask ? await readMemberTitles(online.corporationID) : new Map<number, RoleMasks>();
+    const member = corporationMemberOf(await readCorporationMember(characterID));
+    const offices = await bridgeAsk("officeManager", "GetMyCorporationsOffices", []);
+    const officeRows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const stationIDs = officeRows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    const raceID = Number(memberInteger(info, "raceID") ?? 0n);
+    const raceNames = await api.getRaceNameIDs(callOptions);
+    const raceNameID = raceNames[raceID];
+    if (!raceNameID) throw new Error("That race's name is missing from the installed client.");
+    await wordsNow([`#${raceNameID}`]);
+    await resolveNamesNow([{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
+    const names = store.names.get().resolved;
+    const targetIsCEO = ceoID === characterID;
+    const roleData = await api.getCorporationRoleData(callOptions);
+    const queryLabel = "UI/Corporations/BaseCorporationUI/Query", takeLabel = "UI/Corporations/BaseCorporationUI/Take", combinedLabel = "UI/Corporations/EditMemberDialog/RoleNameAndRole";
+    const ordinals = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
+    const divisionLabels = ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivision${ordinal}`).concat(["UI/Corporations/Common/CorporateDivisionMasterWallet"], ordinals.slice(1).map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`));
+    const goalsHangar = "UI/Inventory/GoalDeliveriesHangar";
+    await wordsNow([queryLabel, takeLabel, combinedLabel, goalsHangar, ...divisionLabels, ...Object.values(roleData.roles).flatMap(role => [`#${role.nameID}`, `#${role.descriptionID}`]), ...Object.values(roleData.groups).map(group => `#${group.roleGroupNameID}`)]);
+    const templates = store.words.get().templates;
+    const divisionName = (division: number): string => {
+      if (division === 0 || division === 15) return templates[goalsHangar] ?? "";
+      const raw = division === 8 ? null : memberField(corporation, division < 8 ? `division${division}` : `walletDivision${division - 7}`);
+      const name = typeof raw === "string" ? raw : raw && typeof raw === "object" && "value" in raw && typeof raw.value === "string" ? raw.value : "";
+      return name || templates[divisionLabels[division - 1]!] || "";
+    };
+    const roleGroups = memberRoleGroups(roleData, id => plainText(templates[`#${id}`] ?? ""), plainText(templates[queryLabel] ?? ""), plainText(templates[takeLabel] ?? ""), divisionName,
+      (role, name) => formatTemplate(templates[combinedLabel] ?? "", { role, name }, { nameOf: () => "" }));
+    // Compiled corp_util.CanEditBase: only the CEO edits the CEO; a Director may edit other members.
+    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
+    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], callOptions);
+    const raw = config.values.content_compliance_control_system_enabled;
+    const controlled = typeof raw === "number" ? Number.isFinite(raw) && Math.trunc(raw) !== 0 : typeof raw === "boolean" ? raw : typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim()) && BigInt(raw.trim()) !== 0n;
+    return { member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
+      viewerIsDirector, myBaseID: myMember.baseID, grants: myGrantableRoles(myMember, viewerIsCEO, viewerIsDirector, roleData, titles), roleGroups,
+      raceNameID, gender: Number(memberInteger(info, "gender") ?? 0n), createDateTime: memberInteger(info, "createDateTime") ?? 0n,
+      security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
+      bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
+  }
+  async function giveCorporationShares(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const caption = "UI/Corporations/EditMemberDialog/GiveShares", hint = "UI/Corporations/EditMemberDialog/HowManySharesToGive";
+    await wordsNow([caption, hint]);
+    await resolveNamesNow([{ kind: "owner", id: characterID }]);
+    // Compiled EditMemberDialog.OnGiveShares and uix.QtyPopup: no role gate,
+    // no profile Apply, no balance preflight; Cancel sends no call.
+    const amount = await askQuantity({ min: 1, max: 2_147_483_647, value: 1,
+      hintLabel: hint, hint: null, hintArgs: { player: characterID }, captionLabel: caption, caption: "Give Shares" });
+    if (amount === null) return;
+    const current = store.station.get().online;
+    if (current?.characterID !== online.characterID || current.corporationID !== online.corporationID) return;
+    try { await bridgeDo("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); }
+    catch (error) {
+      // OnGiveShares leaves UserError to the client's normal FSD dialog handler.
+      if (!sayRefusalDialog(error, errorWords(error))) throw error;
+    }
+  }
+  async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks, titleDraft: number): Promise<CorporationMemberDetails> {
+    const member = details.member;
+    if (details.targetIsCEO && !details.viewerIsCEO) return details;
+    const nextTitle = details.canEditTitle ? memberTitleOf(title) : member.title;
+    const nextBase = details.canEditBase ? baseID : member.baseID;
+    // A member who remains Director retains the original direct role state before change detection (466-480).
+    const continuesDirector = (member.masks.roles & roleDraft.roles & 1n) !== 0n;
+    const nextMasks = continuesDirector ? member.masks : roleDraft;
+    const nextTitleMask = continuesDirector ? member.titleMask : titleDraft;
+    if (nextTitle === member.title && nextBase === member.baseID && nextTitleMask === member.titleMask && MEMBER_ROLE_FIELDS.every(key => nextMasks[key] === member.masks[key])) return details;
+    const masks = MEMBER_ROLE_FIELDS.map(key => ({ type: "long", value: nextMasks[key].toString() } as const));
+    // EditMemberDialog.UpdateMember 466-520 and bco_members.UpdateMember 243: all 15 positional arguments.
+    if ((nextMasks.roles & 1n) !== 0n) for (let i = 1; i < masks.length; i++) masks[i] = { type: "long", value: "0" };
+    const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    const sentTitleMask = nextTitleMask === member.titleMask ? null : (nextMasks.roles & 1n) !== 0n ? 0 : nextTitleMask;
+    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]);
+    // base_corporation.ClearMemberCache clears this target's memoized GetMember before LoadChar.
+    memberReads.delete(memberReadKey(member.characterID));
+    return corporationMemberDetails(member.characterID);
+  }
+  async function checkSearchWordsAllowed(value: string): Promise<boolean> {
+    if (value.length === 0) return true;
+    // bannedwords_client.py 80-82; monolithconfig.enabled 245-252 uses its synonyms, without stripping whitespace.
+    const config = await api.getGlobalConfig(["banned_words_search_enabled"], callOptions);
+    const flag = config.values.banned_words_search_enabled;
+    if (flag === null || flag === undefined || flag === "") return true;
+    const enabled = await (configEnabledValues ??= api.getConfigEnabledValues(callOptions).catch(error => { configEnabledValues = null; throw error; }));
+    if (enabled.includes(String(flag).toLowerCase())) {
+      try { await bridgeAsk("bannedwords", "check_search_words_allowed", [value]); }
+      catch (error) {
+        if (sayRefusalDialog(error, "Those search words are not allowed.")) return false;
+        throw error;
+      }
+    }
+    return true;
+  }
+  async function corporationMemberTracking(filter = ""): Promise<CorporationTracking> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const director = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
+    const tracking = corporationTrackingOf(await bridgeAsk("corpRegistry", director ? "GetMemberTrackingInfo" : "GetMemberTrackingInfoSimple", []));
+    await resolveNamesNow(tracking.map(row => ({ kind: "owner" as const, id: row.characterID })));
+    if (!(await checkSearchWordsAllowed(filter))) return { members: [], factionID: null };
+    const names = store.names.get().resolved;
+    const members = filter ? tracking.filter(row => resolvedName(names, "owner", row.characterID, "").toLowerCase().includes(filter.toLowerCase())) : tracking;
+    const faction = await bridgeAsk("facWarMgr", "GetCorporationWarFactionID", [online.corporationID]);
+    const factionID = typeof faction === "number" && faction > 0 ? faction : null;
+    await resolveNamesNow([
+      ...members.flatMap(row => [row.baseID, ...(director ? [row.locationID] : [])].filter((id): id is number => id !== null && id > 0).map(id => ({ kind: locationKind(id), id }))),
+      ...(director ? members.flatMap(row => [
+        ...(row.shipTypeID ? [{ kind: "type" as const, id: row.shipTypeID }] : []),
+        ...((factionID ?? row.factionID) ? [{ kind: "owner" as const, id: (factionID ?? row.factionID)! }] : []),
+      ]) : []),
+    ]);
+    return { members, factionID };
+  }
+  // addressbook keeps a separate label table per scope. A reply for a departed
+  // owner or retired pilot must not fill the replacement owner's table.
+  const organizationLabelReads = new Map<ContactScope, { context: string; promise: Promise<readonly ContactLabel[] | null> }>();
+  const organizationLabelEpoch = { corpcontact: 0, alliancecontact: 0 };
+  const contactService = (scope: ContactScope): string => scope === "corpcontact" ? "corpRegistry" : scope === "alliancecontact" ? "allianceRegistry" : "charMgr";
+  function labelContext(scope: ContactScope): string {
+    const online = store.station.get().online;
+    return JSON.stringify([requestGeneration, callOptions.token, online?.characterID, scope === "corpcontact" ? online?.corporationID : online?.allianceID,
+      scope === "contact" ? 0 : organizationLabelEpoch[scope]]);
+  }
+  function readContactLabels(contactType: ContactScope): Promise<readonly ContactLabel[] | null> {
+    if (contactType === "contact") return bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
+    const context = labelContext(contactType);
+    const held = organizationLabelReads.get(contactType);
+    if (held?.context === context) return held.promise;
+    const promise = bridgeAsk(contactService(contactType), "GetLabels", []).then(contactLabelsOf, () => null);
+    organizationLabelReads.set(contactType, { context, promise });
+    void promise.then(labels => { if (labels === null && organizationLabelReads.get(contactType)?.promise === promise) organizationLabelReads.delete(contactType); });
+    return promise;
+  }
+  async function updateOrganizationLabels(scope: ContactScope, context: string, change: (labels: readonly ContactLabel[]) => readonly ContactLabel[]): Promise<void> {
+    if (context !== labelContext(scope)) return;
+    const promise = readContactLabels(scope);
+    const labels = await promise;
+    if (labels !== null && context === labelContext(scope) && organizationLabelReads.get(scope)?.promise === promise)
+      organizationLabelReads.set(scope, { context, promise: Promise.resolve(change(labels)) });
+  }
   // addressbook.GetContacts (addressbookService.py 193 to 250) for the Contacts window: charMgr.GetContactList() by
   // the generic call, every contact and blocked owner named as the client primes them (cfg.eveowners, 240 to 244).
-  async function addressBook(): Promise<NamedAddressBook> {
+  async function addressBook(contactType: ContactScope = "contact"): Promise<NamedAddressBook> {
     let answer: JsonValue;
     try {
-      answer = await bridgeAsk("charMgr", "GetContactList", []);
+      answer = await bridgeAsk(contactService(contactType), contactType === "corpcontact" ? "GetCorporateContacts" : contactType === "alliancecontact" ? "GetAllianceContacts" : "GetContactList", []);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -13452,10 +14923,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
-    const book = addressBookOf(answer);
+    const book = contactType !== "contact" ? corporateAddressBookOf(answer) : addressBookOf(answer);
     // GetContactLabels('contact') (1022 to 1044): the labels, asked as the form first shows them, and kept (on the
     // game port by the transport). A label not read leaves the form without its labels.
-    const labels = await bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
+    const labels = await readContactLabels(contactType);
     await resolveNamesNow([
       ...[...book.contacts.map((contact) => contact.contactID), ...book.blocked].map((id) => ({ kind: "owner" as const, id })),
       ...book.agents.map((id) => ({ kind: "agent" as const, id })),
@@ -13463,7 +14934,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const resolved = store.names.get().resolved;
     const nameOf = (id: number, kind: "owner" | "agent" = "owner"): string => {
       const name = resolved[nameKey(kind, id)];
-      return typeof name === "string" && name !== "" ? name : String(id);
+      return typeof name === "string" && name !== "" ? name : contactType !== "contact" ? "Unknown contact" : String(id);
     };
     return {
       contacts: book.contacts.map((contact) => ({ ...contact, name: nameOf(contact.contactID) })),
@@ -13494,9 +14965,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The address book's writes (addressbookService.py 645 to 869), each a page write by the generic call; a refusal
   // told in the server's words, as the mail's are.
-  async function contactWrite(method: string, args: readonly JsonValue[]): Promise<JsonValue> {
+  async function contactWrite(method: string, args: readonly JsonValue[], contactType: ContactScope = "contact"): Promise<JsonValue> {
     try {
-      return await bridgeDo("charMgr", method, [...args]);
+      return await bridgeDo(contactService(contactType), method, [...args]);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -13512,22 +14983,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // buddy list's box, the notification's and the message as the window's editor gives it (its markup). A character
   // put on the buddy list has its online state asked where the service keeps none (GetOnlineStatus, fetch: 806 to
   // 811; onlineStatus.py 42 to 51).
-  async function addOrEditContact(contact: ContactWrite, edit: boolean): Promise<void> {
+  async function addOrEditContact(contact: ContactWrite, edit: boolean, contactType: ContactScope = "contact"): Promise<void> {
+    // base_corporation.py 995-1000 and all_cso.py 246-252 forward both arguments on their own moniker.
+    if (contactType !== "contact") {
+      const method = contactType === "corpcontact" ? edit ? "EditCorporateContact" : "AddCorporateContact" : edit ? "EditAllianceContact" : "AddAllianceContact";
+      await contactWrite(method, [contact.contactID, contact.relationshipID], contactType);
+      return;
+    }
     await contactWrite(edit ? "EditContact" : "AddContact", [
       contact.contactID, contact.relationshipID, contact.inWatchlist, contact.sendNotification, mailMarkupOfTyped(contact.message),
     ]);
-    const online = store.addressBook.get().online;
-    if (contact.inWatchlist && contact.isCharacter && online !== null && online[contact.contactID] === undefined) {
-      const answer = await bridgeAsk("onlineStatus", "GetOnlineStatus", [contact.contactID]).catch(() => null);
-      if (typeof answer === "boolean") {
-        store.apply({ type: "address-book/online-changed", contactID: contact.contactID, online: answer });
+    if (contact.inWatchlist && contact.isCharacter) {
+      // onlineStatus.GetOnlineStatus(fetch=True) primes first, even when a
+      // contact was added from a menu without opening the Contacts window.
+      await primeContactsOnline();
+      const online = store.addressBook.get().online;
+      if (online !== null && online[contact.contactID] === undefined) {
+        const answer = await bridgeAsk("onlineStatus", "GetOnlineStatus", [contact.contactID]).catch(() => null);
+        if (typeof answer === "boolean") {
+          store.apply({ type: "address-book/online-changed", contactID: contact.contactID, online: answer });
+        }
       }
     }
   }
 
   // RemoveFromAddressBook (817 to 869), after its question: DeleteContacts with the contacts, a list.
-  async function deleteContacts(contactIDs: readonly number[]): Promise<void> {
-    await contactWrite("DeleteContacts", [[...contactIDs]]);
+  async function deleteContacts(contactIDs: readonly number[], contactType: ContactScope = "contact"): Promise<void> {
+    // The native service is primed on character selection. Hydrate that held
+    // initial state before clearing it when no Contacts window has opened.
+    if (contactType === "contact") await primeContactsOnline();
+    await contactWrite(contactType === "corpcontact" ? "RemoveCorporateContacts" : contactType === "alliancecontact" ? "RemoveAllianceContacts" : "DeleteContacts", [[...contactIDs]], contactType);
+    // RemoveFromAddressBook calls onlineStatus.ClearOnlineStatus for removed
+    // character contacts; a later buddy addition must fetch its status again.
+    if (contactType === "contact") store.apply({ type: "address-book/online-forgotten", contactIDs });
   }
 
   // BlockOwner (645 to 664) and UnblockOwner (666 to 677): BlockOwners([ownerID]), UnblockOwners(blocked), lists.
@@ -13541,8 +15029,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // EditContacts (682 to 703), from the window that edits several: EditContactsRelationshipID with the contacts, a
   // list, and the standing chosen.
-  async function editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void> {
-    await contactWrite("EditContactsRelationshipID", [[...contactIDs], relationshipID]);
+  async function editContactsRelationship(contactIDs: readonly number[], relationshipID: number, contactType: ContactScope = "contact"): Promise<void> {
+    await contactWrite("EditContactsRelationshipID", [[...contactIDs], relationshipID], contactType);
   }
 
   // notificationSvc.GetFormattedNotifications(groupContacts) for the Contacts tab's Notifications group
@@ -13752,6 +15240,58 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       .catch(() => setTimeout(() => (corporationFactionsAsked = false), ASK_AGAIN_MS));
   }
 
+  // eveIcon.LogoIcon's tables: a faction's and an NPC corporation's logo, read once.
+  const ownerLogosSignal = createSignal<api.OwnerLogos | null>(null);
+  let ownerLogosAsked = false;
+  function loadOwnerLogos(): void {
+    if (ownerLogosAsked) return;
+    ownerLogosAsked = true;
+    api.loadOwnerLogos(callOptions)
+      .then((read) => ownerLogosSignal.set(read.available ? read.logos : { factions: {}, factionsSmall: {}, corporations: {} }))
+      .catch(() => setTimeout(() => (ownerLogosAsked = false), ASK_AGAIN_MS));
+  }
+
+  // photo.GetImageServerURL (evePhotosvc.py 714 to 718): the global config's 'imageserverurl', as the pilot's login gave
+  // it, which the alliances' logos (and the portraits) are asked of.
+  const IMAGE_SERVER_CONFIG = "imageserverurl";
+  const imageServerSignal = createSignal<string | null>(null);
+  let imageServerAsked = false;
+  function loadImageServer(): void {
+    if (imageServerAsked) return;
+    imageServerAsked = true;
+    api.getGlobalConfig([IMAGE_SERVER_CONFIG], callOptions)
+      .then((read) => {
+        const value = read.values[IMAGE_SERVER_CONFIG];
+        imageServerSignal.set(typeof value === "string" ? value : null);
+      })
+      .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
+  }
+
+  // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
+  const corpLogoLibrarySignal = createSignal<api.CorpLogoLibrary | null>(null);
+  const corpLogosSignal = createSignal<Readonly<Record<string, api.CorpLogoData | null>>>({});
+  let corpLogoLibraryAsked = false;
+  const corpLogosAsked = new Set<number>();
+  function requestCorpLogos(corpIDs: readonly number[]): void {
+    if (!corpLogoLibraryAsked) {
+      corpLogoLibraryAsked = true;
+      api.loadCorpLogoLibrary(callOptions)
+        .then((library) => corpLogoLibrarySignal.set(library))
+        .catch(() => setTimeout(() => (corpLogoLibraryAsked = false), ASK_AGAIN_MS));
+    }
+    const wanted = [...new Set(corpIDs)].filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0 && !(corpID >= 1_000_000 && corpID < 2_000_000) && !corpLogosAsked.has(corpID));
+    if (wanted.length === 0) return;
+    for (const corpID of wanted) corpLogosAsked.add(corpID);
+    api.corpLogos(wanted, callOptions)
+      .then((read) => {
+        corpLogosSignal.set({ ...corpLogosSignal.get(), ...read.logos });
+        for (const corpID of read.unresolved) corpLogosAsked.delete(corpID);
+      })
+      .catch(() => {
+        for (const corpID of wanted) corpLogosAsked.delete(corpID);
+      });
+  }
+
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
   async function addAgentToAddressBook(agentID: number): Promise<void> {
     await contactWrite("AddContact", [agentID]);
@@ -13798,21 +15338,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The contact labels' writes (1001 to 1147): CreateLabel(name, None), answered the label's bit; EditLabel(labelID,
   // name, None), a rename; DeleteLabel(labelID), after which the client lets its labels go and asks them again
   // (1074 to 1084); AssignLabels and RemoveLabels(contactIDs, labelID), the contacts a list.
-  async function createContactLabel(name: string): Promise<bigint | null> {
-    return createdLabelOf(await contactWrite("CreateLabel", [name, null]));
+  async function createContactLabel(name: string, contactType: ContactScope = "contact"): Promise<bigint | null> {
+    const context = labelContext(contactType);
+    const labelID = createdLabelOf(await contactWrite("CreateLabel", [name, null], contactType));
+    if (contactType !== "contact" && labelID !== null) await updateOrganizationLabels(contactType, context, labels => [...labels.filter(label => label.labelID !== labelID), { labelID, name, color: null }]);
+    return labelID;
   }
 
-  async function renameContactLabel(labelID: bigint, name: string): Promise<void> {
-    await contactWrite("EditLabel", [labelBitsSent(labelID), name, null]);
+  async function renameContactLabel(labelID: bigint, name: string, contactType: ContactScope = "contact"): Promise<void> {
+    const context = labelContext(contactType);
+    await contactWrite("EditLabel", [labelBitsSent(labelID), name, null], contactType);
+    if (contactType !== "contact") await updateOrganizationLabels(contactType, context, labels => labels.map(label => label.labelID === labelID ? { ...label, name } : label));
   }
 
-  async function deleteContactLabel(labelID: bigint): Promise<readonly ContactLabel[] | null> {
-    await contactWrite("DeleteLabel", [labelBitsSent(labelID)]);
-    return bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
+  async function deleteContactLabel(labelID: bigint, contactType: ContactScope = "contact"): Promise<readonly ContactLabel[] | null> {
+    const context = labelContext(contactType);
+    await contactWrite("DeleteLabel", [labelBitsSent(labelID)], contactType);
+    if (context !== labelContext(contactType)) return null;
+    if (contactType !== "contact") organizationLabelReads.delete(contactType);
+    return readContactLabels(contactType);
   }
 
-  async function labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean): Promise<void> {
-    await contactWrite(give ? "AssignLabels" : "RemoveLabels", [[...contactIDs], labelBitsSent(bits)]);
+  async function labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean, contactType: ContactScope = "contact"): Promise<void> {
+    await contactWrite(give ? "AssignLabels" : "RemoveLabels", [[...contactIDs], labelBitsSent(bits)], contactType);
   }
 
   function contactLoggedOnOrOff(method: string | null, args: readonly unknown[]): void {
@@ -15232,6 +16780,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames(refs);
   }
 
+  /** The NPCs' standings with each other, once read (standingsvc's npcnpcstandingsfrom). */
+  let npcNpcStandingsRead: Promise<readonly NpcNpcStanding[]> | null = null;
+  /** The client's table of stations' standings restrictions, read once (a failed read is read again). */
+  let stationStandingsRestrictionsRead: Promise<Readonly<Record<string, Readonly<Record<string, number>>>>> | null = null;
+  /** The bloodlines' description messages, each asked once (a failed ask is asked again). */
+  const bloodlineDescriptionReads = new Map<number, Promise<number | null>>();
+
   // R55 — the drill-down for one selected entity. A char row shows its standing
   // HISTORY (GetStandingTransactions); a corp row shows the per-member breakdown
   // (GetStandingCompositions). The one the row wants is asked for, of the pilot
@@ -15302,7 +16857,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const reads = await characterSheetReads.read({ characterID: store.station.get().online?.characterID ?? null });
     const identity = reads.errors.publicInfo
       ? null
-      : decodeCharacterIdentity(reads.publicInfo);
+      : decodeCharacterIdentity(reads.publicInfo, reads.errors.securityStatus ? null : reads.securityStatus);
     const description = reads.errors.description
       ? null
       : decodeCharacterDescription(reads.description);
@@ -16131,6 +17686,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     itemID: number,
     opts: { effect?: string; typeID?: number; targetID?: number | null; repeat?: -1 | 0 } = {},
   ): Promise<void> {
+    // shipmodulebutton 1340 to 1341: a module switched on with no charge in it forgets the type it last held.
+    const fittedModule = store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
+    if (!fittedModule?.charge) usedChargeTypes.delete(itemID);
+    // Its repeats (1337 to 1339): Ctrl's 1000 where the caller says so, else the button's count; 0 for one the pilot
+    // set not to repeat, and -1 otherwise, which the transport makes 1000 for an effect that repeats and 0 else.
+    if (opts.repeat === undefined && fittedModule !== null) {
+      const count = await moduleRepeatCount(itemID, fittedModule.typeID, fittedModule.groupID).catch(() => null);
+      if (count === 0) opts = { ...opts, repeat: 0 };
+    }
     await runTargetingAction(
       "Switch on",
       () => switchModuleOn(itemID, opts, callOptions),
@@ -17088,7 +18652,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const asked = linked ? await weaponGrouping.linkAll(shipID) : await weaponGrouping.unlinkAll(shipID);
         if (!asked) throw new Error("That was done a moment ago. Try again in a moment.");
       },
-      () => loadSpaceSnapshot().catch(() => {}),
+      // The banks as the snapshot has them, and as godma keeps them (clientDogmaLocation.LinkAllWeapons and
+      // UnlinkAllModules set the location's from the answer).
+      async () => {
+        await Promise.all([loadSpaceSnapshot().catch(() => {}), loadDogma().catch(() => {})]);
+      },
       () => {
         const banks = store.space.get().snapshot?.ship?.weaponBanks ?? null;
         if (banks === null) {
@@ -25278,6 +26846,95 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     routeWindowAvoidance,
     moveWaypoint,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
+    buffBar: readonlySignal(buffBarSignal),
+    wantBuffBar() {
+      readBuffBarFacts([...buffBarSignal.get().incoming.keys()]);
+    },
+    mapLocationShowInfo(itemID) {
+      return api.getMapLocation(itemID, callOptions);
+    },
+    factionShowInfo(factionID) {
+      return api.getFaction(factionID, callOptions);
+    },
+    async contactStandings() {
+      const online = store.station.get().online;
+      const corporationID = online?.corporationID ?? null;
+      const allianceID = online?.allianceID ?? null;
+      const none = (): Map<number, number> => new Map();
+      const [personal, corporate, alliance] = await Promise.all([
+        bridgeAsk("charMgr", "GetContactList", []).then((answer) => new Map(addressBookOf(answer).contacts.map((contact) => [contact.contactID, contact.relationshipID] as const)), none),
+        corporationID === null || isNpcOwnerCorporation(corporationID) ? none() : bridgeAsk("corpRegistry", "GetCorporateContacts", []).then(relationshipsOf, none),
+        allianceID === null ? none() : bridgeAsk("allianceRegistry", "GetAllianceContacts", []).then(relationshipsOf, none),
+      ]);
+      return { personal, corporate, alliance };
+    },
+    npcCorporationHeadquarters(corporationID) {
+      return api.getNpcCorporationHeadquarters(corporationID, callOptions);
+    },
+    characterCorporation(characterID) {
+      return characterCorporationOf(bridgeAsk, characterID);
+    },
+    corporationAlliance(corporationID) {
+      return corporationAllianceOf(bridgeAsk, corporationID);
+    },
+    characterInfoHeader(characterID) {
+      return readCharacterInfoHeader(bridgeAsk, characterID);
+    },
+    characterBloodline(characterID) {
+      return readCharacterBloodline(bridgeAsk, characterID);
+    },
+    npcCharacterCorporation(characterID) {
+      return readNpcCharacterCorporation(bridgeAsk, characterID);
+    },
+    async npcCorporationHasAgents(corporationID) {
+      return (await agentsKnown()).some((agent) => agent.corporationID === corporationID);
+    },
+    stationStandingsRestrictions() {
+      stationStandingsRestrictionsRead ??= api.loadStationStandingsRestrictions(callOptions).catch((error: unknown) => {
+        stationStandingsRestrictionsRead = null;
+        throw error;
+      });
+      return stationStandingsRestrictionsRead;
+    },
+    bloodlineDescriptionID(bloodlineID) {
+      let read = bloodlineDescriptionReads.get(bloodlineID);
+      if (read === undefined) {
+        read = api.getBloodlineDescriptionID(bloodlineID, callOptions);
+        bloodlineDescriptionReads.set(bloodlineID, read);
+        read.catch(() => bloodlineDescriptionReads.delete(bloodlineID));
+      }
+      return read;
+    },
+    async agentRecord(agentID) {
+      return (await agentsKnown()).find((agent) => agent.agentID === agentID) ?? null;
+    },
+    npcNpcStandings() {
+      npcNpcStandingsRead ??= readNpcNpcStandings(bridgeAsk).catch((error: unknown) => {
+        npcNpcStandingsRead = null;
+        throw error;
+      });
+      return npcNpcStandingsRead;
+    },
+    mapSystemObjects(solarSystemID) {
+      return api.getSystemObjects(solarSystemID, callOptions);
+    },
+    async mapLocationRoute(itemID) {
+      const sourceID = pilotPlace().solarSystemID;
+      if (sourceID === null) return [];
+      const graph = await loadRouteGraph();
+      const map = await pathfinderMap(graph);
+      const settings = await pathfinderSettings(graph);
+      // min(paths, key=len): the first of the shortest, the place's systems taken in the map's order.
+      let best: readonly number[] | null = null;
+      for (const target of graph.systemsIn?.(itemID) ?? [itemID]) {
+        const way = autopilotPath(map, sourceID, target, settings);
+        if (way !== null && way.length > 0 && (best === null || way.length < best.length)) best = way;
+      }
+      return (best ?? []).slice(1).map((systemID) => {
+        const constellationID = graph.parentOf?.(systemID) ?? null;
+        return { systemID, constellationID, regionID: constellationID === null ? null : (graph.parentOf?.(constellationID) ?? null), security: graph.security(systemID) };
+      });
+    },
     dismissDialog,
     answerDialog,
     keepDialogAnswer,
@@ -25352,6 +27009,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     shipTraits: readonlySignal(shipTraitsSignal),
     requestShipTraits,
     personalSkillPlans,
+    personalSkillPlanCount,
     certifiedSkillPlans,
     certifiedPlanMilestones,
     buyMissingSkillBooks,
@@ -25367,6 +27025,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     skillRowInfoFor,
     skillCatalogueStates,
     attributeDisplay,
+    fittingSkillTooltip,
+    trainSkillsFor: trainSkillsOf,
+    buySkillsFor: buySkillsOf,
+    applySkillPointsFor: applySkillPointsOf,
     skillGroupCertificates,
     expertSystemsHome,
     removeExpertSystem,
@@ -25477,6 +27139,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
+      corpWalletSharesSignal.set(NO_WALLET_SHARES);
+      walletSharesGeneration++;
+      corpWalletSharesGeneration++;
       // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's; and so is the formation.
       probeResultsBySystem.clear();
       probeFormation = INITIAL_FORMATION;
@@ -25661,6 +27326,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
+        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
+        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
+        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -25734,6 +27402,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
     },
 
+    async assembleContainer(itemID, place) {
+      // The inventory manager's AssembleCargoContainer of it (bridge/inventoryWrites.ts). The client says nothing
+      // after it; the page says so where the server assembled nothing and gave no reason (a stack's one assembled is
+      // taken off the stack, a single one assembled where it lies).
+      await runInventoryAction(async () => {
+        const before = rowsAt(place)?.find((row) => row.itemID === itemID) ?? null;
+        if (before === null) {
+          throw new Error("That container is no longer where the panel last saw it; refresh and try again.");
+        }
+        await assembleCargoContainerCall(bridgeDo, itemID);
+        await refreshOpenPlaces();
+        const after = rowsAt(place)?.find((row) => row.itemID === itemID) ?? null;
+        if (after === null || after.singleton || after.quantity < before.quantity) return null;
+        return { applied: false, declinedSilently: true, message: "The server did not assemble that container, and gave no reason." };
+      });
+    },
+
     async trashItems(itemIDs, place) {
       await runInventoryAction(async () => {
         // The page's own call on the inventory manager of where the pilot is (bridge/inventoryWrites.ts), naming the
@@ -25783,7 +27468,480 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async unfitModule(itemID) {
-      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID));
+      // The slot's module with its charge (GetCharge), and the ship's banks.
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === itemID)?.module ?? null;
+      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), { itemID, charged: module?.charge != null }, heldWeaponBanks(), askClearGroup));
+    },
+
+    async unloadModuleToCargo(itemID) {
+      await runFittingAction(() => unloadModuleToCargoCall(bridgeDo, fittedNow, ammoSession(), itemID, heldWeaponBanks(), askClearGroup));
+    },
+
+    async dropFittedModuleOnSlot(moduleID, flagID, shift) {
+      // The fitting slot's OnDropData and AddRealItem (fittingScreen/fittingSlotController.py 82 to 136).
+      const from = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID) ?? null;
+      const to = slotWithFlag(flagID);
+      if (!from?.module || !to) return;
+      if (to.module && to.present === false) return;
+      // RigFittingCheck: a rig asks first, on a ship that is not modular (one with subsystem slots is).
+      if (from.family === "rig" && !store.fitting.get().slots.some((slot) => slot.family === "subsystem")
+        && !(await askDialog("RigFittingInfo", { type: "dict", entries: [] }, "A rig comes off its ship only by being destroyed. Fit it anyway?", "okcancel"))) return;
+      if (from.family !== to.family) {
+        await sayDoesntFitPower(from.module.typeID, to.family, from.family);
+        return;
+      }
+      const dragged = from.module;
+      if (shift && to.module) {
+        const target = to.module;
+        if (target.typeID !== dragged.typeID) {
+          await wordsNow(["UI/Fitting/GroupingIncompatible"]).catch(() => {});
+          const notify = templateWords("UI/Fitting/GroupingIncompatible", {}, "Only modules of one type group together.");
+          sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, notify);
+          return;
+        }
+        // LinkWithWeapon: clientDogmaLocation.LinkWeapons (751 to 782).
+        if (target.itemID === dragged.itemID) return;
+        if (!target.online || !dragged.online) {
+          sayDialog("CantLinkModuleNotOnline", null, "A module groups with others only while it is online.");
+          return;
+        }
+        if (!GROUPABLE_GROUP_IDS.has(target.groupID ?? -1)) return;
+        await runFittingAction(() => linkWeaponsCall(bridgeDo, ammoSession(), target.itemID, dragged.itemID, heldWeaponBanks()));
+        return;
+      }
+      // FitModule: TryFit, the ship's inventory's Add of the module where it lies, the ship, into this slot.
+      await runFittingAction(() => fitModuleCall(bridgeDo, fittedNow, ammoSession(), moduleID, "slot", { family: to.family, index: to.index }));
+    },
+
+    async dropFittedChargeOnSlot(fromFlagID, flagID, shift) {
+      // OnDropData: a charge for a module that takes charges (IsChargeable), FitCharges (fitting/fittingSlotController 142 to 155).
+      const from = slotWithFlag(fromFlagID);
+      const to = slotWithFlag(flagID);
+      const charge = from?.module?.charge ?? null;
+      if (!from?.module || !charge || !to?.module || to.present === false || !CHARGEABLE_GROUP_IDS.has(to.module.groupID ?? -1)) return;
+      const target = to.module;
+      const shipID = ammoSession().shipID;
+      await runFittingAction(async () => {
+        let item = { itemID: typeof charge.itemID === "number" ? charge.itemID : 0, typeID: charge.typeID, locationID: shipID, flagID: fromFlagID, stacksize: charge.quantity };
+        // A charge in a module by its tuple: UnloadAmmoToContainer to the cargo first, and loaded from what that answers.
+        if (Array.isArray(charge.itemID)) {
+          const outcome = await unloadChargeToCargoCall(bridgeDo, ammoSession(), from.module!.itemID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace");
+          if (outcome.kind === "bankWithoutRoom") {
+            sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "The cargo hold has too little room left for the charges of every weapon in the bank.");
+            return;
+          }
+          // The client goes on with the charge's tuple where the answer names no stack; the page has none to load then.
+          if (outcome.stackIDs.length === 0) return;
+          item = { ...item, itemID: outcome.stackIDs[0]!, flagID: 5 };
+        }
+        await dropLoadChargeToModule(target, item, "cargo", shift);
+      });
+    },
+
+    async dropChargeOnSlot(charge, flagID, shift) {
+      const to = slotWithFlag(flagID);
+      if (!to?.module || to.present === false || !CHARGEABLE_GROUP_IDS.has(to.module.groupID ?? -1)) return;
+      const session = ammoSession();
+      const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
+      if (locationID === null) return;
+      const target = to.module;
+      await runFittingAction(() => dropLoadChargeToModule(target, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.flagID, stacksize: charge.quantity }, charge.from, shift));
+    },
+
+    async unloadChargeToCargo(flagID) {
+      await unloadChargeInSlot(flagID);
+    },
+
+    async unloadModuleToPlace(itemID, place) {
+      // (The corporation's hangar asks first, AddItems 505 to 509.)
+      if (place.kind === "corp" && !(await askOneWayMove())) return;
+      const destination = await moduleDestinationOf(place);
+      await runFittingAction(() => unloadModuleToContainerCall(bridgeDo, fittedNow, ammoSession(), itemID, heldWeaponBanks(), askClearGroup, destination));
+      // The place it went into is on screen (an open container, the open ship's bays): every open place is re-read.
+      await refreshOpenPlaces();
+    },
+
+    async unloadChargeToPlace(flagID, place) {
+      const moduleID = store.fitting.get().slots.find((slot) => slot.module !== null && slotFlagOf(slot.family, slot.index) === flagID)?.module?.itemID ?? null;
+      if (moduleID === null) throw new Error("No module holds a charge in that slot.");
+      if (place.kind === "corp" && !(await askOneWayMove())) return;
+      const destination = await chargeDestinationOf(place);
+      await runFittingAction(async () => {
+        const outcome = await unloadChargeToContainerCall(bridgeDo, ammoSession(), moduleID, heldWeaponBanks(), (error) => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", destination);
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");
+      });
+      await refreshOpenPlaces();
+    },
+
+    async rackModuleMenu(moduleID) {
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+      if (module === null) return null;
+      const racks = (name: string): string => `UI/Inflight/ModuleRacks/${name}`;
+      const labels = [
+        ...["AutoReloadOn", "AutoReloadOff", "AutoRepeatOn", "AutoRepeatOff", "PutModuleOnline", "PutModuleOffline"].map(racks),
+        "UI/Inflight/Overload/TurnOnOverload", "UI/Inflight/Overload/TurnOffOverload", "UI/Inflight/OverloadRack",
+        "UI/Inflight/StopOverloadingRack", "UI/Fitting/ClearGroup", "UI/Commands/ShowInfo", "UI/Inflight/menuCancelRepair",
+        "UI/Inflight/RepairWithQty", "UI/Commands/Repair", "UI/Inflight/RepairAllWithQty", "UI/Commands/RepairAll",
+        "UI/Inflight/menuCancelAllRepairs",
+      ];
+      const fittedTypes = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module.typeID] : []));
+      const [staticData, skills] = await Promise.all([
+        dogmaStaticFor([module.typeID, ...fittedTypes, TYPE_NANITE_REPAIR_PASTE], [ATTRIBUTE_DISALLOW_REPEATING, ATTRIBUTE_REQUIRED_THERMODYNAMICS, ATTRIBUTE_HP, ATTRIBUTE_DAMAGE, ATTRIBUTE_REPAIR_COST_MULTIPLIER]),
+        bridgeAsk("skillHandler", "GetSkills", []).then(skillLevelsOf).catch(() => null),
+        wordsNow(labels).catch(() => {}),
+      ]);
+      const said = (label: string, own: string, args: Readonly<Record<string, number>> = {}): string => templateWords(label, args, own);
+      const entries: RackMenuEntry[] = [];
+      // GetMenu (462 to 466): a module that takes charges, auto-reload's opposite of what it is.
+      if (CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1)) {
+        const on = autoReloadOn(moduleID);
+        entries.push({ kind: "autoReload", on, text: on ? said(racks("AutoReloadOff"), "Stop reloading by itself") : said(racks("AutoReloadOn"), "Reload by itself") });
+      }
+      // GetSlaveModules (469), and GetMyLevel (470): the trained level, None (below every number) where it is not had.
+      const slaves = heldWeaponBanks().get(moduleID) ?? [];
+      const thermodynamics = skills?.get(TYPE_THERMODYNAMICS)?.trainedSkillLevel ?? null;
+      // 471 to 494, by the module's effects as godma's dict of them iterates.
+      for (const effect of (staticData === null ? null : godmaEffectsOf(staticData, module.typeID)) ?? []) {
+        if (effectRepeats(staticData!, module.typeID, effect) && !ALWAYS_AUTO_REPEAT_GROUPS.has(module.groupID ?? -1)) {
+          const count = await moduleRepeatCount(moduleID, module.typeID, module.groupID);
+          if (count !== null) {
+            entries.push({ kind: "autoRepeat", on: count !== 0, text: count === 0 ? said(racks("AutoRepeatOn"), "Repeat by itself") : said(racks("AutoRepeatOff"), "Stop repeating by itself") });
+          }
+        }
+        if (effect.name === "online") {
+          entries.push({ kind: "rule" });
+          if (slaves.length === 0) {
+            entries.push({ kind: "online", on: module.online, text: module.online ? said(racks("PutModuleOffline"), "Take it offline") : said(racks("PutModuleOnline"), "Bring it online") });
+          }
+        }
+        // Not where the overload state is locked (settings.user.ui lockOverload, 467: the HUD options' Lock Overload State).
+        if (!hudSettingNow("lockOverload") && staticData!.effects[effect.effectID]?.category === EFFECT_CATEGORY_OVERLOAD) {
+          const required = fittedAttributeValue(staticData!, moduleID, module.typeID, ATTRIBUTE_REQUIRED_THERMODYNAMICS);
+          if (thermodynamics !== null && required !== null && thermodynamics >= required) {
+            const active = store.space.get().snapshot?.ship?.overloadedModuleIDs?.includes(moduleID) ?? false;
+            entries.push(
+              { kind: "overload", on: active, text: active ? said("UI/Inflight/Overload/TurnOffOverload", "Stop overheating it") : said("UI/Inflight/Overload/TurnOnOverload", "Overheat it") },
+              { kind: "overloadRack", text: said("UI/Inflight/OverloadRack", "Overheat the whole rack") },
+              { kind: "stopOverloadRack", text: said("UI/Inflight/StopOverloadingRack", "Cool the whole rack") },
+            );
+          }
+        }
+      }
+      if (staticData !== null) {
+        // 496 to 506: GetModuleGroupDamage, the most damage of the bank's modules (the master's button stands for the
+        // bank); Cancel Repair where it is being repaired, else Repair with what GetNumUnitsToRepairModuleBank says it
+        // takes (each of the bank's by the master's type), or with no figure where that is none.
+        const bank = [moduleID, ...slaves];
+        if (Math.max(...bank.map((id) => moduleDamageHP(staticData, id, module.typeID))) > 0) {
+          if (isBeingRepaired(moduleID)) {
+            entries.push({ kind: "cancelRepair", text: said("UI/Inflight/menuCancelRepair", "Stop the repair") });
+          } else {
+            const units = Math.trunc(bank.reduce((sum, id) => sum + unitsToRepairModule(staticData, id, module.typeID), 0));
+            entries.push({ kind: "repair", text: units ? said("UI/Inflight/RepairWithQty", `Mend it (${units} paste)`, { qty: units }) : said("UI/Commands/Repair", "Mend it") });
+          }
+        }
+        // 507 to 515: GetDamagedModulesAndRepairCost (299 to 313), a set of (module, paste) of the ship's modules not
+        // being repaired that are damaged; for more than one, Repair All with the sum, its modules the set's, the one
+        // clicked first.
+        const modules = godmaShipModules();
+        const damaged = hashedSetOrder(
+          modules
+            .filter((each) => staticData.types[each.typeID]?.categoryID === 7 && !isBeingRepaired(each.itemID) && moduleDamageHP(staticData, each.itemID, each.typeID) > 0)
+            .map((each) => [each.itemID, unitsToRepairModule(staticData, each.itemID, each.typeID)] as const),
+          ([id, cost]) => tupleHashOf([wholeHashOf(id), wholeHashOf(cost)]),
+          ([id, cost]) => `${id},${cost}`,
+        );
+        if (damaged.length > 1) {
+          const units = damaged.reduce((sum, [, cost]) => sum + cost, 0);
+          const moduleIDs = damaged.map(([id]) => id);
+          if (moduleIDs.indexOf(moduleID) > 0) {
+            moduleIDs.splice(moduleIDs.indexOf(moduleID), 1);
+            moduleIDs.unshift(moduleID);
+          }
+          entries.push({ kind: "repairAll", moduleIDs, text: units ? said("UI/Inflight/RepairAllWithQty", `Mend every damaged module (${Math.trunc(units)} paste)`, { qty: Math.trunc(units) }) : said("UI/Commands/RepairAll", "Mend every damaged module") });
+        }
+        // 516 to 518: GetAllRepairingModules (315 to 322), a set of the modules being repaired; for more than one,
+        // Cancel All Repairs.
+        const repairing = hashedSetOrder(modules.filter((each) => isBeingRepaired(each.itemID)).map((each) => each.itemID), wholeHashOf, String);
+        if (repairing.length > 1) entries.push({ kind: "cancelAllRepairs", moduleIDs: repairing, text: said("UI/Inflight/menuCancelAllRepairs", "Stop every repair") });
+      }
+      // 519 to 523: Clear Group for a bank's master, then Show Info.
+      if (slaves.length > 0) entries.push({ kind: "clearGroup", text: said("UI/Fitting/ClearGroup", "Break up the group") });
+      entries.push({ kind: "showInfo", text: said("UI/Commands/ShowInfo", "Details") });
+      return entries;
+    },
+
+    async setRackModuleOnline(moduleID, online) {
+      // _ChangeOnline (823 to 846): an offline asked first, a Yes kept (suppress=uiconst.ID_YES); then the module's
+      // online effect, Activate() (godma.Activate(itemID, "online", None, 0)) or Deactivate(). (A module in a bank asks
+      // another question, but the menu gives a bank's master no such entry, and a slave no button.)
+      if (!online && !(await askDialog("PutOffline", { type: "dict", entries: [] }, "Take this module offline?"))) return;
+      await runTargetingAction(
+        online ? "Put online" : "Put offline",
+        () => (online ? bridgeDo("dogmaIM", "Activate", [moduleID, "online", null, 0]) : bridgeDo("dogmaIM", "Deactivate", [moduleID, "online"])),
+        async () => {
+          await Promise.all([loadFitting().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
+        },
+        () => {
+          const now = moduleOnlineState(moduleID);
+          return now === null || now === online;
+        },
+        online
+          ? "The server accepted that and the module is still offline, and gave no reason."
+          : "The server accepted that and the module is still online, and gave no reason.",
+      );
+    },
+
+    async setRackOverload(moduleID, overloaded) {
+      // godma.OverloadRack and StopOverloadRack (2081, 2126): the module named, the rack's modules answered.
+      await runTargetingAction(
+        overloaded ? "Overload rack" : "Stop overloading rack",
+        () => bridgeDo("dogmaIM", overloaded ? "OverloadRack" : "StopOverloadRack", [moduleID]),
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async repairRackModule(moduleID) {
+      // RepairModule (560 to 586): the module's repair begun, then each slave's; a want of paste
+      // (NotEnoughRepairMaterialToFinishAllRepairs) kept and raised once the rest were asked, any other at once.
+      const slaves = heldWeaponBanks().get(moduleID) ?? [];
+      await runTargetingAction(
+        "Repair",
+        async () => {
+          let wanting: unknown = null;
+          for (const id of [moduleID, ...slaves]) {
+            try {
+              await moduleRepairs.begin(id, await repairWaitOf(id));
+            } catch (error) {
+              if (refusalDialogOf(error)?.dialog !== "NotEnoughRepairMaterialToFinishAllRepairs") throw error;
+              wanting = error;
+            }
+          }
+          if (wanting !== null) throw wanting;
+        },
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async cancelRackRepair(moduleID) {
+      // CancelRepair (592 to 601): StopRepairModule of the module and each slave, each only where it is being repaired.
+      for (const id of [moduleID, ...(heldWeaponBanks().get(moduleID) ?? [])]) await moduleRepairs.end(id).catch(() => {});
+    },
+
+    async repairRackModules(moduleIDs) {
+      // godma.RepairManyModules (2204 to 2223): InitiateModuleRepairMany, then a CustomNotify of how many were begun,
+      // how many wanted paste, how many failed; each begun ended when its time is up (RepairModule_thread).
+      await runTargetingAction(
+        "Repair all",
+        async () => {
+          const waits = new Map<number, number>();
+          for (const id of moduleIDs) waits.set(id, await repairWaitOf(id));
+          const outcome = await moduleRepairs.beginMany(moduleIDs, (id) => waits.get(id) ?? 0);
+          await Promise.all([
+            wordsNow(["UI/Inflight/SuccessfullyStartedRepairing", "UI/Inflight/NotEnoughNaniteToRepairAll", "UI/Inflight/FailedToStartRepair"]).catch(() => {}),
+            resolveNamesNow([{ kind: "type", id: TYPE_NANITE_REPAIR_PASTE }]).catch(() => {}),
+          ]);
+          const paste = nameCache.get(nameKey("type", TYPE_NANITE_REPAIR_PASTE)) ?? String(TYPE_NANITE_REPAIR_PASTE);
+          const texts: string[] = [];
+          if (outcome.success.length > 0) {
+            const n = outcome.success.length;
+            texts.push(templateWords("UI/Inflight/SuccessfullyStartedRepairing", { numModules: n }, `Repairs begun on ${n} module${n === 1 ? "" : "s"}.`));
+          }
+          if (outcome.missingCharges.length > 0) {
+            const n = outcome.missingCharges.length;
+            texts.push(templateWords("UI/Inflight/NotEnoughNaniteToRepairAll", { typeName: paste, numModules: n }, `Too little ${paste} for ${n} module${n === 1 ? "" : "s"}.`));
+          }
+          if (outcome.failed.length > 0) {
+            const n = outcome.failed.length;
+            texts.push(templateWords("UI/Inflight/FailedToStartRepair", { numModules: n }, `${n} module${n === 1 ? "" : "s"} could not begin a repair.`));
+          }
+          if (texts.length > 0) sayDialog("CustomNotify", { type: "dict", entries: [["notify", texts.join("<br><br>")]] }, texts.join("\n\n"));
+        },
+        () => loadSpaceSnapshot().catch(() => {}),
+        () => true,
+        "",
+      );
+    },
+
+    async cancelRackRepairs(moduleIDs) {
+      // StopRepairModuleManyModules (2268 to 2271): StopRepairModule of each, in turn.
+      for (const id of moduleIDs) await moduleRepairs.end(id).catch(() => {});
+    },
+
+    async passiveRackModules() {
+      const modules = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []));
+      const staticData = await dogmaStaticFor(modules.map((module) => module.typeID), []);
+      if (staticData === null) return new Set<number>();
+      // IsEffectActivatible (slotsContainer, as the button's 901): default, not online, of the activation or target kind.
+      const activatable = (typeID: number): boolean | null => {
+        const effects = godmaEffectsOf(staticData, typeID);
+        if (effects === null) return null;
+        return effects.some((effect) => {
+          const category = staticData.effects[effect.effectID]?.category;
+          return effect.isDefault && effect.name !== "online" && (category === 1 || category === 2);
+        });
+      };
+      // A type whose effects are not had is drawn.
+      return new Set(modules.filter((module) => activatable(module.typeID) === false).map((module) => module.itemID));
+    },
+
+    sayOverloadLocked() {
+      // 222 to 226: nothing where the notice is up already; the error sound is the client's alone.
+      if (dialogsSaidSignal.get().some((said) => said.dialog === "LockedOverloadState")) return;
+      sayDialog("LockedOverloadState", null, "The overload state is locked; unlock it in the HUD options to change it.");
+    },
+
+    async rackChangeSlots(toFlag, fromFlag, shift) {
+      const to = rackButtonModule(toFlag);
+      const from = rackButtonModule(fromFlag);
+      if (to && from && to.typeID === from.typeID) {
+        await rackLinkWeapons(to, from, !shift);
+        // 85 to 86: IsModuleMaster, as the banks are now.
+        if (!heldWeaponBanks().has(to.itemID)) await swapRackSlots(fromFlag, toFlag, shift);
+        return;
+      }
+      await swapRackSlots(toFlag, fromFlag, shift);
+    },
+
+    async rackSwapSlots(flag1, flag2, shift) {
+      await swapRackSlots(flag1, flag2, shift);
+    },
+
+    async dropChargeOnRackModule(charge, moduleID, shift) {
+      // The button's own drop goes to DropLoadChargeToModule whatever the module (the server judges it): no IsChargeable.
+      const module = store.fitting.get().slots.find((slot) => slot.module?.itemID === moduleID)?.module ?? null;
+      if (module === null) return;
+      const session = ammoSession();
+      const locationID = charge.from === "cargo" ? session.shipID : session.dockedAt;
+      if (locationID === null) return;
+      await runFittingAction(() => dropLoadChargeToModule(module, { itemID: charge.itemID, typeID: charge.typeID, locationID, flagID: charge.flagID, stacksize: charge.quantity }, charge.from, shift));
+    },
+
+    async cargoTrackerHolds() {
+      const shipID = store.fitting.get().activeShipID ?? store.space.get().snapshot?.shipID ?? null;
+      const shipTypeID = store.flight.get().status?.shipTypeID ?? null;
+      if (shipID === null || shipTypeID === null) return null;
+      const bayKeys = [CARGO_HOLD, ...SHIP_HOLDS].flatMap((hold) => (hold.bayKey ? [hold.bayKey] : []));
+      const [staticData, bays] = await Promise.all([
+        dogmaStaticFor([shipTypeID], SHIP_HOLD_ATTRIBUTES),
+        api.getShipBays(shipID, callOptions, bayKeys).then((read) => decodeShipBays(read.bays)).catch(() => null),
+        wordsNow([CARGO_HOLD, ...SHIP_HOLDS].map((hold) => hold.label)).catch(() => {}),
+      ]);
+      if (staticData === null) return null;
+      const typeValue = (attributeID: number): number | null =>
+        staticData.types[shipTypeID]?.attributes.find(([id]) => id === attributeID)?.[1] ?? null;
+      const holds = trackedShipHolds(typeValue).map((hold) => {
+        const bay = hold.bayKey === null ? null : bays?.find((each) => each.key === hold.bayKey) ?? null;
+        return { holdName: hold.holdName, name: templateWords(hold.label, {}, bay?.label ?? hold.holdName), capacity: bay?.capacity ?? null };
+      });
+      return { shipID, shipTypeID, tracked: charUiSetting(`cargoHoldForShipType${shipTypeID}`) ?? CARGO_HOLD.holdName, holds };
+    },
+
+    setTrackedHold(shipTypeID, holdName) {
+      setCharUiSetting(`cargoHoldForShipType${shipTypeID}`, holdName);
+    },
+
+    async fitCargoModuleToRackSlot(itemID, flag) {
+      // invCache.GetInventoryFromId(session.shipid).Add(item.itemID, item.locationID, qty=None, flag=flag1): a cargo
+      // item lies in the ship.
+      const shipID = ammoSession().shipID;
+      await runFittingAction(async () => {
+        await bridgeDo("invbroker", "Add", [itemID, shipID], { qty: null, flag }, shipID);
+      });
+      await Promise.all([loadInventory().catch(() => {}), loadSpaceSnapshot().catch(() => {})]);
+    },
+
+    async clearRackGroup(moduleID) {
+      // UnlinkModule (684): clientDogmaLocation.DestroyWeaponBank(session.shipid, the module), nothing asked.
+      await runTargetingAction(
+        "Clear group",
+        () => bridgeDo("dogmaIM", "DestroyWeaponBank", [ammoSession().shipID, moduleID]),
+        async () => {
+          await Promise.all([loadSpaceSnapshot().catch(() => {}), loadDogma().catch(() => {})]);
+        },
+        () => !heldWeaponBanks().has(moduleID),
+        "The server accepted that and the group is still there, and gave no reason.",
+      );
+    },
+
+    async setAutoReload(moduleID, on) {
+      setCharModuleSetting("autoreload", moduleID, on ? 1 : 0);
+      await autoReload(moduleID, false);
+    },
+
+    setAutoRepeat(moduleID, on) {
+      setCharModuleSetting("autorepeat", moduleID, on ? 1000 : 0);
+    },
+
+    async unloadRackCharge(moduleID) {
+      const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+      const flagID = slot === null ? null : slotFlagOf(slot.family, slot.index);
+      if (flagID === null) throw new Error("That module is not in a slot of the ship.");
+      await unloadChargeInSlot(flagID);
+    },
+
+    async rackAmmoMenu(moduleID, context) {
+      const slot = store.fitting.get().slots.find((each) => each.module?.itemID === moduleID) ?? null;
+      const module = slot?.module ?? null;
+      const flagID = slot === null ? null : slotFlagOf(slot.family, slot.index);
+      if (module === null || flagID === null) return null;
+      if (module.charge && module.charge.quantity !== 0) usedChargeTypes.set(moduleID, module.charge.typeID);
+      // GetMatchingAmmo's cargo: the ship's own hold as the inventory lists it.
+      const cargo = store.inventory.get().cargo.rows
+        .filter((row) => row.categoryID === 8)
+        .map((row) => ({ itemID: row.itemID, typeID: row.typeID, groupID: row.groupID, stacksize: row.singleton || row.quantity < 0 ? 1 : row.quantity, singleton: row.singleton }));
+      const chargeTypes = [...new Set(cargo.map((row) => row.typeID))];
+      const staticData = await dogmaStaticFor([module.typeID, ...chargeTypes], AMMO_MENU_ATTRIBUTES);
+      if (staticData === null) return null;
+      // GetMissingSkills of each kind: the types' needs, and the pilot's skills where any has some.
+      const needs = chargeTypes.length > 0 ? await api.getRequiredSkills(chargeTypes, callOptions) : null;
+      const needing = needs?.available ? chargeTypes.filter((typeID) => (needs.order[typeID] ?? []).length > 0) : [];
+      const mine = needing.length > 0 ? skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])) : null;
+      const usable = (typeID: number): boolean =>
+        !needs?.available || mine === null || missingSkills(typeID, needs.order, mine).size === 0;
+      // GetAccurateAttributeValue: the module's reach, and the loaded charge's multipliers, as the dogma location has them.
+      const ships = store.dogma.get().allInfo?.ships ?? [];
+      const valueOf = (item: DogmaItemInfo | undefined, attributeID: number): number | null => {
+        const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+        return typeof value === "number" ? value : null;
+      };
+      const moduleInfo = ships.find((item) => Number(item.itemID) === moduleID);
+      const chargeInfo = ships.find((item) => item.flagID === flagID && (item.sublocation || item.categoryID === 8));
+      await Promise.all([
+        resolveNamesNow(chargeTypes.map((id) => ({ kind: "type" as const, id }))).catch(() => {}),
+        wordsNow(["ReloadUsed", "Reload", "ReloadAll", "UnloadToCargo", "AmmoTypeAndStatus", "AmmoTypeAndQuantity"].map((name) => `UI/Inflight/ModuleRacks/${name}`)).catch(() => {}),
+      ]);
+      const nameOf = (typeID: number): string => nameCache.get(nameKey("type", typeID)) ?? `Type ${typeID}`;
+      const entries = ammoMenu(staticData, {
+        moduleTypeID: module.typeID,
+        charge: module.charge && module.charge.quantity !== 0
+          ? { typeID: module.charge.typeID, quantity: module.charge.quantity, rangeMultiplier: valueOf(chargeInfo, AMMO_ATTRIBUTE.WEAPON_RANGE_MULTIPLIER), falloffMultiplier: valueOf(chargeInfo, AMMO_ATTRIBUTE.FALLOFF_MULTIPLIER) }
+          : null,
+        usedChargeTypeID: usedChargeTypes.get(moduleID) ?? null,
+        reloading: context.reloading,
+        bankCount: context.bankCount,
+        module: { maxRange: valueOf(moduleInfo, AMMO_ATTRIBUTE.MAX_RANGE), falloff: valueOf(moduleInfo, AMMO_ATTRIBUTE.FALLOFF) },
+        cargo,
+        usable,
+        nameOf,
+      });
+      // The page's own words for each label, where the install's are not had.
+      const own: Readonly<Record<string, (entry: AmmoMenuEntry) => string>> = {
+        "UI/Inflight/ModuleRacks/ReloadUsed": (entry) => `Reload used (${entry.kind === "load" ? nameOf(entry.typeID) : ""})`,
+        "UI/Inflight/ModuleRacks/Reload": (entry) => entry.kind === "load" ? `Reload ${nameOf(entry.typeID)}: ${entry.sumqty.toLocaleString("en-US")}` : "",
+        "UI/Inflight/ModuleRacks/ReloadAll": () => "Reload every weapon",
+        "UI/Inflight/ModuleRacks/UnloadToCargo": () => "Unload into the cargo",
+        "UI/Inflight/ModuleRacks/AmmoTypeAndStatus": (entry) => entry.kind === "load" ? `${nameOf(entry.typeID)}, used` : "",
+        "UI/Inflight/ModuleRacks/AmmoTypeAndQuantity": (entry) => entry.kind === "load" ? `${nameOf(entry.typeID)}: ${entry.sumqty.toLocaleString("en-US")}` : "",
+      };
+      return entries.map((entry) => ({
+        ...entry,
+        text: templateWords(entry.label, entry.kind === "load" ? { typeID: entry.typeID, sumqty: entry.sumqty } : {}, own[entry.label]?.(entry) ?? ""),
+      }));
     },
 
     simulateShip() {
@@ -25893,17 +28051,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     },
 
-    async loadAmmo(moduleIDs, chargeItemIDs, source) {
-      return runAmmoAction(
-        moduleIDs,
-        () => loadAmmoFrom(moduleIDs, chargeItemIDs, source),
-        // Nothing about what the module holds changed, so nothing was loaded —
-        // unless the server queued it: in space the charges land after the
-        // module's reload time, and its announcement is the proof.
-        (before, after, reloadAnnounced) => before === after && !reloadAnnounced,
-        "The server accepted that and loaded nothing, and gave no reason. " +
-          "A module only takes certain kinds of charge.",
-      );
+    async loadAmmo(requestedModuleIDs, chargeItemIDs, source) {
+      return loadAmmoNow(requestedModuleIDs, chargeItemIDs, source);
+    },
+
+    async reloadAll(reloading) {
+      // slotsContainer.OnReloadAmmo (574 to 609): the rack's modules (a bank's slaves have no button: 293 to 297) that
+      // take charges (cfg.IsChargeCompatible), by the charge each holds or last held (GetChargeReloadInfo); for each
+      // type the cargo's matching stacks of it (GetMatchingAmmo of its first module), and where there are any, each
+      // module's AutoReload(force) (727 to 738): one reloading or with no room left alone, else LoadAmmoTypeToModule (973
+      // to 978: every cargo stack of the type, to LoadChargesToModule). The stack OnReloadAmmo picks for each
+      // (bestItemID) AutoReload does not use.
+      const banks = heldWeaponBanks();
+      const isSlave = (moduleID: number): boolean => [...banks.values()].some((slaves) => slaves.includes(moduleID));
+      const modules = store.fitting.get().slots.flatMap((slot) => (slot.module ? [slot.module] : []))
+        .filter((module) => !isSlave(module.itemID) && CHARGEABLE_GROUP_IDS.has(module.groupID ?? -1));
+      const byCharge = new Map<number, FittedModule[]>();
+      for (const module of modules) {
+        const chargeTypeID = module.charge && module.charge.quantity !== 0 ? module.charge.typeID : usedChargeTypes.get(module.itemID) ?? null;
+        if (chargeTypeID === null) continue;
+        byCharge.set(chargeTypeID, [...(byCharge.get(chargeTypeID) ?? []), module]);
+      }
+      if (byCharge.size === 0) return [];
+      const cargo = store.inventory.get().cargo.rows.filter((row) => row.categoryID === 8);
+      const chargeTypes = [...byCharge.keys()];
+      const staticData = await dogmaStaticFor([...new Set([...modules.map((module) => module.typeID), ...chargeTypes])], AMMO_MENU_ATTRIBUTES);
+      if (staticData === null) return [];
+      const needs = await api.getRequiredSkills(chargeTypes, callOptions);
+      const needing = needs.available ? chargeTypes.filter((typeID) => (needs.order[typeID] ?? []).length > 0) : [];
+      const mine = needing.length > 0 ? skillLevelsOf(await bridgeAsk("skillHandler", "GetSkills", [])) : null;
+      const usable = (typeID: number): boolean => !needs.available || mine === null || missingSkills(typeID, needs.order, mine).size === 0;
+      const outcomes: { readonly moduleID: number; readonly outcome: AmmoOutcome }[] = [];
+      for (const [chargeTypeID, group] of byCharge) {
+        const matching = cargo.filter((row) => row.typeID === chargeTypeID && usable(chargeTypeID)
+          && isChargeCompatibleWithLauncher(staticData, row.typeID, row.groupID, group[0]!.typeID));
+        if (matching.length === 0) continue;
+        for (const module of group) {
+          if (reloading.has(module.itemID)) continue;
+          const room = roomForReload(staticData, module.typeID, chargeTypeID, module.charge && module.charge.typeID === chargeTypeID ? module.charge.quantity : 0);
+          if (room <= 0) continue;
+          const stacks = cargo.filter((row) => row.typeID === chargeTypeID).map((row) => row.itemID);
+          outcomes.push({ moduleID: module.itemID, outcome: await loadAmmoNow([module.itemID], stacks, "cargo") });
+        }
+      }
+      return outcomes;
     },
 
     async unloadAmmo(moduleIDs, destination) {
@@ -26080,9 +28271,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssShipTypeLists,
     deployAbyssalFilament,
     loadFleet,
+    retainFleetDetails,
     formFleet,
     inviteFleetMember,
     formFleetWith,
+    inviteFleetSelection,
     acceptFleetInvite,
     declineFleetInvite,
     leaveFleet,
@@ -26154,6 +28347,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepOwnersSearchBy,
     mailContacts,
     addressBook,
+    corporationMemberTracking,
+    corporationMemberRoleOptions,
+    memberDetailsShown: readonlySignal(memberDetailsSignal),
+    showMemberDetails,
+    corporationMemberDetails,
+    corporationMemberRoleBase,
+    corporationMemberTitles,
+    corporationMemberSummary,
+    corporationSummaryGroupOpen,
+    saveCorporationMember,
+    giveCorporationShares,
     primeContactsOnline,
     addOrEditContact,
     deleteContacts,
@@ -26178,6 +28382,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestOwnerTickers,
     corporationFactions: readonlySignal(corporationFactionsSignal),
     loadCorporationFactions,
+    ownerLogos: readonlySignal(ownerLogosSignal),
+    corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
+    imageServer: readonlySignal(imageServerSignal),
+    loadImageServer,
+    corpLogos: readonlySignal(corpLogosSignal),
+    requestCorpLogos,
+    loadOwnerLogos,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
@@ -26456,7 +28667,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     cargoShown: readonlySignal(cargoShownSignal),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
+    corpWalletShares: readonlySignal(corpWalletSharesSignal),
     loadWalletShares,
+    setWalletSharesVisible,
     readCharacterSetting,
     saveCharacterSetting,
     requestOwnSecurityStatus,

@@ -134,10 +134,9 @@ export function decodeStandingCompositions(
 
 /**
  * Decode standingMgr.GetStandingTransactions — a {type:"list"} of util.KeyVal
- * rows. Only the RENDERABLE fields are kept: the event date, the eventTypeID
- * (mapped to a plain label by the page) and the raw modification. The row's
- * fromID/toID/int_1..3 are entity ids and are deliberately NOT decoded, so no
- * raw id can reach the panel (R7d). `[]` is a real "no history yet" answer.
+ * rows — as the client's standing service keeps them (standingsvc.py 174 to 183):
+ * each modification times ten. The date, the event, and what the reason is worded
+ * by (fromID, msg, int_1 to int_3). `[]` is a real "no history yet" answer.
  */
 export function decodeStandingTransactions(
   result: JsonValue,
@@ -149,13 +148,23 @@ export function decodeStandingTransactions(
   result.items.forEach((row, index) => {
     const date = toFiletime(readRowField(row, "eventDateTime"));
     const eventTypeID = toNumber(readRowField(row, "eventTypeID"));
-    const modification = toNumber(readRowField(row, "modification"));
+    const modification = toNumber(readRowField(row, "modification")) * 10.0;
+    const optional = (name: string): number | null => {
+      const value = readRowField(row, name);
+      return value === null || value === undefined ? null : toNumber(value);
+    };
+    const msg = readRowField(row, "msg");
     rows.push({
       // A stable list key from the date + position; never rendered.
       id: `${date === null ? "0" : date.toString()}:${index}`,
       date,
       eventTypeID,
       modification,
+      fromID: optional("fromID"),
+      msg: typeof msg === "string" ? msg : msg && typeof msg === "object" && !Array.isArray(msg) && typeof (msg as { value?: unknown }).value === "string" ? (msg as { value: string }).value : null,
+      int1: optional("int_1"),
+      int2: optional("int_2"),
+      int3: optional("int_3"),
     });
   });
   return rows;

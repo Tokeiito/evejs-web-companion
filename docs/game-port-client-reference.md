@@ -1892,6 +1892,82 @@ send 1, so the server always answers in full. (What comes back is handled; see b
 
 ## Reading the server's answers in the browser
 
+Member List's personal contact actions follow compiled `User.GetMenu`, `CharacterChecker` and `menusvc`:
+a single other player offers Add Contact or Edit/Remove Contact, plus Block or Unblock. Self and multiple selected
+members offer none of those personal actions; the Contacts window's own multi-edit menu is a different path.
+The existing Contact Management and removal question are reused without opening the Contacts list. Add/Edit keep
+the five positional `charMgr` arguments, removal passes the ID list, and BlockOwners/UnblockOwners each pass a list.
+Buddy additions prime the held online state before a missing status lookup; removing personal contacts clears
+their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
+in the recursive Tranquility corpus search. Alliance row contact actions are separate work.
+
+Corporation member-row contacts follow compiled `CharacterChecker` 55-60/314-321 and
+`SessionChecker.IsDiplomat`: director or diplomat, non-NPC targets, including self and multiple selections.
+`menusvc` 604-609 and compiled `menuMerge.MergeMenus`/`_ExecMulti` keep a separate callback for each
+eligible owner. A mixed selection offers Add for missing contacts and Edit/Remove for existing ones. Each owner
+gets its own management window or removal question; canceling one leaves the others pending. This differs from
+the Contacts list's bulk standing editor. The shared dialog host preserves those independent modal lifetimes.
+Corporate dialogs use the existing fractional standing/label controls and corporation moniker writers; personal
+dialogs retain their buddy/notification fields and personal scope. Live CEO, ordinary-member and non-director
+diplomat checks cover single/self/mixed/multiple selections, cancellation, fractional readback and phone layout.
+A second client's already-open Corporate Contacts view follows the actual organization notices, without another
+`GetCorporateContacts`; successful writes are positional Add/EditCorporateContact(id, level) and separate
+RemoveCorporateContacts([id]) calls. No exact corporate-write TQ recording was found. Alliance scope and its
+executor-corporation gate are the next unit, rather than inferred from the corporation implementation.
+
+The alliance server contact foundation is corrected in EveJS `82608f269` (native-rule assertion follow-up
+`bba9a58b8`). Compiled corporate/alliance Confirm methods return decimal standings; the native address book keeps
+the existing mask on Edit, keeps the other label field when one is None, and consumes mask-only organization
+notices. Live TCP before/after checks show Edit2.5/multi-edit-1.5 preserved, bit60 retained, label name/color
+preserved independently, and assignment/removal notices delivered to executor and non-executor alliance members.
+AssignLabels now leaves an absent contact absent in both corporation and alliance scopes, as the native controller
+opens Add separately and its cancellation creates no contact. A non-executor write remains refused. The resulting
+standing, full mask and labels survive a stopped-store check and a fresh server boot/login. No exact alliance-write
+TQ capture was found; this proves the compiled-client rules and local wire behavior. Alliance member-menu UI,
+scoped labels/writers and the BFF's held alliance-notice amendments remain the next unit.
+
+Successful personal contact writes now amend the held native `GetContactList` and `GetLabels` answers
+(`addressbookService.py` 617-869, 1001-1147). Existing row descriptors, row order, unrelated fields and full-width
+label masks survive; refused writes and replies belonging to retired sessions publish no local change. Label
+deletion clears its bit on contacts and retires only the labels table, which native immediately reads again.
+The client's local contact/label/block events refresh already-open personal Contacts views from those held answers;
+these are local events, not server packets. A view discards superseded or unmounted reads.
+Live browser captures show one `GetContactList` per selected session through Add/Edit/Delete/Block/Unblock,
+label create/rename/assign/remove/delete and repeated member menus. Label deletion adds one `GetLabels` read.
+Live TCP instrumentation also preserved bit 60 through low-bit removal and multi-edit, retained the previous answer
+after an injected server refusal, and published no local event for a real reply held until after session release.
+The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
+this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
+
+Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
+`bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
+`corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
+has no client role gate; Cancel makes no call, and the action neither applies nor clears the member-profile
+draft. Server UserErrors go through the ordinary client dialog handler. No transfer recording was found in the
+recursive Tranquility corpus search; this contract comes from the compiled native methods (2026-10-19).
+
+The wallet's `GiveSharesDialog.TransferShares` passes the holding's issuer as the first argument. Its corporate
+owner is `session.corpid` (`CorpSharesPanel.GetOwnerID`), and `GetCorpRegistry` remains bound to that session
+corporation. Corporate transfer authority and the debited allocation belong to that owner.
+
+Bulk member grants use the compiled task-management `ExecuteActions(targetIDs, actions)` path. `bco_members`
+forwards numeric GIVE cash/share actions unchanged. The native `SharesPanel.OnShareChange` rereads a visible
+owner's holdings, so the server publishes the grant's share changes after settlement completes. Mixed cash/share
+settlements keep the actual write's before/after allocations with their applied checkpoint; replay does not
+reapply or republish a completed grant. No Tranquility bulk-grant call or notice was found in the corpus.
+
+The corporation wallet's Shares / Owned by Corp view follows compiled `CorpISKPanel.GetMainTabs`,
+`CorpSharesPanel` and `SharesPanel`: accountant or junior-accountant roles, owner from `session.corpid`,
+`GetSharesByShareholder(True)` on tab selection and matching `OnShareChange` while visible. Corporate and personal
+holdings are kept separately. Hiding either Shares view stops its notification-triggered reads. The Shareholders
+subtab and the remaining share menus are separate work.
+
+Compiled `corpvotes.ApplySanctionedAction` calls `voteManager.ActivateSanctionedAction(voteCaseID)`.
+Share-creation activation now sends the corporate holder's `OnShareChange` after recording the action as applied;
+an already applied activation changes neither issued shares nor the holding and sends no duplicate notice.
+The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
+The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the

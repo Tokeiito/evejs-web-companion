@@ -33,6 +33,9 @@ const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 // The tables read here: the name each goes by, the client's loader for it, and its resource (in lower case, as
 // the index is kept).
 const TABLES = Object.freeze({
+  // evecorporation.roles: the role masks and group membership come from the installed client, never a copied table.
+  corporationRoles: Object.freeze({ loader: "corporationRolesLoader", resource: "res:/staticdata/corporationroles.fsdbinary" }),
+  corporationRoleGroups: Object.freeze({ loader: "corporationRoleGroupsLoader", resource: "res:/staticdata/corporationrolegroups.fsdbinary", keyOrder: true, longStrings: true }),
   missions: Object.freeze({ loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" }),
   // An NPC corporation's own record: the client takes an agent's faction from its corporation's (npcs/npccorporations.py).
   npcCorporations: Object.freeze({ loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" }),
@@ -95,6 +98,12 @@ const TABLES = Object.freeze({
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
   typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
   raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),
+  // The bloodlines (characterdata/bloodlines.py): each one's name and description messages, its race and its
+  // corporation. A character's Show Info words its Description by its bloodline's (get_bloodline_description).
+  bloodlines: Object.freeze({ loader: "bloodlinesLoader", resource: "res:/staticdata/bloodlines.fsdbinary" }),
+  // The standings an owner's stations ask for each service (evestations/standingsrestriction.py: by owner, its
+  // services' required standings), which the standings bar marks (standingsUIUtil._GetStationServiceThresholdIDs).
+  stationStandingsRestrictions: Object.freeze({ loader: "stationStandingsRestrictionsLoader", resource: "res:/staticdata/stationstandingsrestrictions.fsdbinary" }),
   // A group's category (evetypes.GetCategoryIDByGroup), by which a structure's fitting's menu has no Fit to Active Ship
   // (fittingBrowser.GetFittingMenu, 513).
   groupCategories: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", attribute: "categoryID" }),
@@ -114,6 +123,9 @@ const TABLES = Object.freeze({
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).
   typeDogma: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", rowsOnly: true }),
+  // A type's materials (typematerials/data.py get_type_materials_by_id: typeMaterials.fsdbinary, its materials), which
+  // inventoryUtil.GetComputedBasePrice prices a type by. Read by the rows asked for only.
+  typeMaterials: Object.freeze({ loader: "typeMaterialsLoader", resource: "res:/staticdata/typematerials.fsdbinary", rowsOnly: true }),
   // A meta group's name, the number of its message (metaGroups/data.py get_name: the meta group's nameID), which the
   // assets search's metagroup keyword matches (assetSearchUtil.MatchMetagroup).
   metaGroupNameIDs: Object.freeze({ loader: "metaGroupsLoader", resource: "res:/staticdata/metagroups.fsdbinary", attribute: "nameID" }),
@@ -128,6 +140,10 @@ const TABLES = Object.freeze({
 // its infoBubbleGroups), each with its name's message, its icons and more. The cache is an SQLite file of fsdlite's,
 // a row of JSON for each of its tables; it is read where it is, as it is.
 const INFO_BUBBLES = "res:/staticdata/infobubbles.static";
+
+// The client's own map of each solar system's celestials and NPC stations (eveCfg.LoadSqliteDB('mapObjects'): a
+// packaged client's bin:/staticdata/mapObjects.db), which GetLocationsLocalBySystem reads a system's items from.
+const MAP_OBJECTS = ["tq", "bin64", "staticdata", "mapObjects.db"];
 
 // An alpha clone's skills and their highest levels, by race (clonegrade/storage.py CloneGradeStorage:
 // fsdlite.EveStorage(data='clonegrades', cache='clonegrades.static')): the same kind of cache, a record by race.
@@ -185,8 +201,8 @@ function orderedRows(printed) {
 // A table printed as a dict of whole-number keys, its rows as they are, with the order the loader printed its keys in
 // kept beside them as "#order" (a key no whole number, so not moved): JSON.parse would put whole-number keys in rising
 // order. Only for a table whose rows hold no whole-number keys of their own.
-function keyOrdered(printed) {
-  const marked = JSON.parse(printed.replace(/"(\d+)":/g, '"#$1":'));
+function keyOrdered(printed, parse = JSON.parse) {
+  const marked = parse(printed.replace(/"(\d+)":/g, '"#$1":'));
   const table = {};
   const order = [];
   for (const [key, row] of Object.entries(marked)) {
@@ -241,7 +257,11 @@ function createClientBuiltData({
       ...(described.attribute ? { attribute: described.attribute } : {}),
       ...(keys ? { keys } : {}),
     });
-    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed) : described.innerOrder ? innerOrdered(printed) : JSON.parse(printed);
+    // JSON.parse's source text preserves 64-bit role masks before a JS number can round them.
+    const parse = described.longStrings ? (text) => JSON.parse(text, (key, value, context) => (
+      typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value) ? context.source : value
+    )) : JSON.parse;
+    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed, parse) : described.innerOrder ? innerOrdered(printed) : parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
       throw new Error(`The client's ${described.loader} did not print a table.`);
     }
@@ -468,10 +488,38 @@ function createClientBuiltData({
     return fighterAbilitiesRead;
   }
 
+  /**
+   * A solar system's items as eveCfg.GetLocationsLocalBySystem reads them (778 to 860): each celestial's row (its
+   * celestialID, celestialNameID, typeID, groupID, orbitID, celestialIndex, orbitIndex) and each NPC station's (its
+   * stationID, typeID, orbitID, celestialIndex, orbitIndex), from the client's own map database. Null where the
+   * client cannot be read.
+   */
+  function systemObjects(solarSystemID) {
+    if (!available()) return null;
+    const { DatabaseSync } = require("node:sqlite");
+    const database = new DatabaseSync(path.join(clientRoot, ...MAP_OBJECTS), { readOnly: true });
+    try {
+      const plain = (row) => ({ ...row });
+      return {
+        celestials: database
+          .prepare("SELECT celestialID, celestialNameID, typeID, groupID, orbitID, orbitIndex, celestialIndex FROM celestials WHERE solarSystemID = ?")
+          .all(solarSystemID)
+          .map(plain),
+        stations: database
+          .prepare("SELECT stationID, typeID, orbitID, orbitIndex, celestialIndex FROM npcStations WHERE solarSystemID = ?")
+          .all(solarSystemID)
+          .map(plain),
+      };
+    } finally {
+      database.close();
+    }
+  }
+
   return {
     available,
     table,
     rows,
+    systemObjects,
     infoBubbleGroups,
     infoBubbleTypeBonuses,
     infoBubbleTypeElements,
