@@ -20,7 +20,7 @@
   import type { ContactStandings, NpcNpcStanding } from "../bridge/standingsReads.ts";
   import { applyStandingBonus, standingBonusSkill } from "../bridge/effectiveStanding.ts";
   import { showInfo, subjectTypeID, type InfoSubject } from "./showInfo.ts";
-  import type { ReadableSignal } from "../store/signals.ts";
+  import { createSignal, type ReadableSignal } from "../store/signals.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
@@ -51,10 +51,9 @@
   import { abbreviate } from "./fittingIcons.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { InfoReadScope } from "../app/infoReadScope.ts";
   import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
-  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, reads: reconstructionReads }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; reads?: InfoReadScope } = $props();
+  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, corporationResult: windowCorporationResult }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; corporationResult?: ReadableSignal<CorporationShowInfo | null | undefined> | null } = $props();
   // A component belongs to one native window for its lifetime. Capture these
   // handles so chrome/focus changes cannot become dependencies of its reads.
   // The captured subject signal itself changes only on reconstruction.
@@ -65,7 +64,7 @@
   // svelte-ignore state_referenced_locally
   const subject = windowSubject;
   // svelte-ignore state_referenced_locally
-  const reads = reconstructionReads;
+  const corporationResult = windowCorporationResult ?? createSignal<CorporationShowInfo | null | undefined>(undefined);
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -277,11 +276,6 @@
     if (current?.kind === "corporation") {
       // construct_header's faction (get_corporation_faction_id), from the client's table of NPC corporations.
       flow.loadCorporationFactions();
-      void flow.corporationShowInfo(current.corporationID, reads).then((read) => {
-        if (ticket !== ownerReads) return;
-        corporationRead = read;
-        ownerReadDone = true;
-      }, () => {});
     } else if (current?.kind === "alliance") {
       void flow.allianceShowInfo(current.allianceID).then((read) => {
         if (ticket !== ownerReads) return;
@@ -326,6 +320,13 @@
         ownerReadDone = true;
       });
     }
+  });
+
+  $effect(() => {
+    if ($subject?.kind !== "corporation") return;
+    const result = $corporationResult;
+    corporationRead = result ?? null;
+    ownerReadDone = result !== undefined;
   });
 
   onMount(() => {

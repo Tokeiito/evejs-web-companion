@@ -4018,6 +4018,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
   const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
   const infoWindows = createInfoWindows({
+    readCorporation: corporationShowInfo,
     reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
     shift: () => false, // UI snapshots the live modifier into each command.
     resolve: async (subject: InfoSubject): Promise<InfoIdentity | null> => {

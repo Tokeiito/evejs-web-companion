@@ -43,7 +43,7 @@
   }
   $effect(() => { if (!host) return; const observer = new ResizeObserver(fit); observer.observe(host.element); fit(); return () => observer.disconnect(); });
   $effect(() => { $windows; untrack(fit); });
-  $effect(() => { session.flow.requestWords(["UI/Control/EveWindow/Previous", "UI/Control/EveWindow/Next"]); });
+  $effect(() => { session.flow.requestWords(["UI/Control/EveWindow/Previous", "UI/Control/EveWindow/Next", "/Carbon/UI/Controls/Window/Loading"]); });
   function word(key: string, fallback: string): string { return plainText($words.templates[key] ?? "") || fallback; }
   function focus(w: InfoWindowState): void { model.focus(w.id, (host?.topZ() ?? Math.max(0, ...windows.get().map(w => w.z))) + 1); }
   function resize(w: InfoWindowState, width: number, height: number): void { model.geometry(w.id, { x: w.x, y: w.y, w: Math.max(260, width), h: Math.max(120, height) }); fit(); }
@@ -62,13 +62,19 @@
   }
 </script>
 
-{#snippet contents(w: InfoWindowState)}
+{#snippet historyControls(w: InfoWindowState)}
   <nav class="info-history" aria-label="Information history">
-    <button type="button" class="minor" disabled={w.index === 0} onclick={() => navigate(w, -1)}>{word("UI/Control/EveWindow/Previous", "Previous")}</button>
-    <button type="button" class="minor" disabled={w.index >= w.history.length - 1} onclick={() => navigate(w, 1)}>{word("UI/Control/EveWindow/Next", "Next")}</button>
+    {#if w.loading}<span class="info-loading" role="status" aria-label={word("/Carbon/UI/Controls/Window/Loading", "Loading")} title={word("/Carbon/UI/Controls/Window/Loading", "Loading")}></span>{/if}
+    <button type="button" class="win-btn" aria-label={word("UI/Control/EveWindow/Previous", "Previous")} title={word("UI/Control/EveWindow/Previous", "Previous")} disabled={w.index === 0}
+      onpointerdown={e => e.stopPropagation()} ondblclick={e => e.stopPropagation()} onclick={() => { focus(w); navigate(w, -1); }}>‹</button>
+    <button type="button" class="win-btn" aria-label={word("UI/Control/EveWindow/Next", "Next")} title={word("UI/Control/EveWindow/Next", "Next")} disabled={w.index >= w.history.length - 1}
+      onpointerdown={e => e.stopPropagation()} ondblclick={e => e.stopPropagation()} onclick={() => { focus(w); navigate(w, 1); }}>›</button>
   </nav>
+{/snippet}
+
+{#snippet contents(w: InfoWindowState)}
   {#key w.reconstruction}
-    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} reads={w.reads} /></ErrorBoundary></div>
+    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} corporationResult={w.visibleCorporationResult} /></ErrorBoundary></div>
   {/key}
 {/snippet}
 
@@ -77,14 +83,15 @@
     {#if w.modal}
       <div use:portal class="info-modal-shade" style:display={visible && !w.minimized ? undefined : "none"}>
         <div class="info-modal" tabindex="-1" role="dialog" aria-modal={visible && !w.minimized} aria-label={infoWindowLabel(w, $names.resolved)}>
-          <header><strong>{infoWindowLabel(w, $names.resolved)}</strong><button type="button" class="minor" aria-label="Close" onclick={() => model.close(w.id)}>✕</button></header>
-          <div class="info-modal-body">{@render contents(w)}</div>
+          <header><strong>{infoWindowLabel(w, $names.resolved)}</strong>{@render historyControls(w)}<button type="button" class="minor" aria-label="Close" onclick={() => model.close(w.id)}>✕</button></header>
+          <div class="info-modal-body" inert={w.loading} aria-busy={w.loading}>{@render contents(w)}</div>
         </div>
       </div>
     {:else}
-      <DesktopWindow win={{ ...w, minimized: w.minimized || (!!host?.mobile && w.id !== mobileID) }} title={infoWindowLabel(w, $names.resolved)} focused={w.z >= (host?.topZ() ?? 0)}
+      <DesktopWindow win={{ ...w, minimized: w.minimized || (!!host?.mobile && w.id !== mobileID) }} title={infoWindowLabel(w, $names.resolved)} focused={w.z >= (host?.topZ() ?? 0)} loading={w.loading}
         onFocus={() => focus(w)} onClose={() => model.close(w.id)} onToggleMinimize={() => model.minimize(w.id)}
         onMove={(x, y) => model.geometry(w.id, { x, y, w: w.w, h: w.h })} onResize={(width, height) => resize(w, width, height)}>
+        {#snippet headerActions()}{@render historyControls(w)}{/snippet}
         {@render contents(w)}
       </DesktopWindow>
     {/if}
@@ -99,7 +106,10 @@
 <style>
   .info-window-layer { position: absolute; inset: 0; pointer-events: none; }
   .info-window-layer :global(.win), .info-phone-tabs { pointer-events: auto; }
-  .info-history { display: flex; gap: .4rem; margin-bottom: .5rem; }
+  .info-history { display: flex; align-items: center; gap: .2rem; flex-shrink: 0; }
+  .info-history button { font-size: 1.2rem; }
+  .info-loading { width: .8rem; height: .8rem; margin: 0 .3rem; border: 2px solid #52748b; border-top-color: #b4d8ed; border-radius: 50%; animation: info-loading .8s linear infinite; }
+  @keyframes info-loading { to { transform: rotate(360deg); } }
   .info-phone :global(.win) { left: 0 !important; top: 0 !important; width: 100% !important; height: calc(100% - 2.8rem) !important; z-index: 10 !important; border-radius: 0; }
   .info-phone :global(.win-resize) { display: none; }
   .info-phone :global(.win-body) { overscroll-behavior: contain; }

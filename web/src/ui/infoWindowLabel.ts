@@ -1,7 +1,7 @@
 import type { InfoWindowState } from "../app/infoWindows.ts";
 import { resolvedName } from "../store/names.ts";
 export function infoWindowLabel(w: InfoWindowState, names: Readonly<Record<string, string | null>>): string {
-  const s = w.entry.subject;
+  const s = w.captionEntry.subject;
   switch (s.kind) {
     case "character": return resolvedName(names, "character", s.characterID, "Show Info");
     case "corporation": return resolvedName(names, "corporation", s.corporationID, "Show Info");

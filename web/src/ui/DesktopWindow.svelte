@@ -17,6 +17,8 @@
     onToggleMinimize,
     onMove,
     onResize,
+    headerActions,
+    loading = false,
     children,
   }: {
     win: Pick<WinState, "x" | "y" | "w" | "h" | "z" | "minimized"> & { readonly id?: string | number };
@@ -28,6 +30,8 @@
     onToggleMinimize: () => void;
     onMove: (x: number, y: number) => void;
     onResize: (w: number, h: number) => void;
+    headerActions?: Snippet;
+    loading?: boolean;
     children: Snippet;
   } = $props();
 
@@ -109,6 +113,7 @@
   -->
   <header class="win-bar" onpointerdown={startDrag} ondblclick={onToggleMinimize}>
     <span class="win-title">{title}</span>
+    {#if headerActions}{@render headerActions()}{/if}
     <span class="win-actions">
       <!--
         ⚠ TWO BUTTONS, NOT THREE. There used to be a "collapse" that shaded a
@@ -141,7 +146,7 @@
     </span>
   </header>
 
-  <div class="win-body">
+  <div class="win-body" inert={loading} aria-busy={loading}>
     {@render children()}
   </div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

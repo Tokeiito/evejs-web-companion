@@ -167,16 +167,38 @@ logs it with showExceptions=0, without a dialog. The page likewise logs this
 specific local error; Forward repairs the old slot from current content before
 reconstructing. Branching after Back trims the forward entries.
 
-Required c6b2b2b2b work remains: retain old visible corporation content during
-same-class history's public-info read (the native parent flush occurs after that
-reply), complete window-level loading/pending behavior, other ordinary headers'
-loading/completion and content-owned continuations. Current same-class history
-still rebuilds visible content too early. Current scopes also do not implement
-the native window-level pending request when an unregistered history read is
-still busy and ShowInfo replaces its content. Read/execute that whole transition
-before code. RPC/error completion and retained dead tasklet pointers need their
-own content/error reading; the current corporation coroutine still has its
-existing per-field fallback handling. This unit covers normal/replaced reads.
+c6b2b2b2b1 moves the existing corporation coroutine into the per-pilot window
+controller. Each scope owns one result signal; the view consumes it and cannot
+issue another copy on mount, caption/focus changes or viewport moves. Same-class
+history retains the old subject, result and controls until the successful
+public-info reply starts the monolith parent. That boundary replaces the body
+and resets its scroll once. The existing browser title updates on normal
+completion, while the result feeds the new body. Close/reuse/pilot retirement
+keep their registered/direct distinctions and cannot resurrect a closed view.
+
+InfoWindow.GetCustomHeaderButtons puts Previous/Next in the chrome. They are now
+header icon buttons on desktop, phone and modal windows, so scrolling does not
+move them away. Window.ShowLoad/HideLoad1547-1568 and Prepare_LoadingIndicator1110
+show a transparent blocking layer over content while the header controls remain
+reachable. The ported busy scope similarly makes the body inert and draws its
+loading indicator. Its label is the installed client's exact
+/Carbon/UI/Controls/Window/Loading (Loading in English). Other panels keep their
+existing chrome. Original compiled corporation wrapper, complete monolith body
+and ordinary window method confirm old controls/caption at GetPublicInfo, flush
+and fresh scroll after the reply, then caption assignment after content work;
+UI/service shells record these boundaries, not Blue scheduling or all RPCs.
+
+Required c6b2b2b2b2 work remains: complete window-level loading/pending behavior,
+other ordinary headers' loading/completion and content-owned continuations. The
+native window-level pending request when unregistered history is still busy and
+ShowInfo replaces its content requires the whole original transition, including
+caption evaluation of the newly replaced content. RPC/error completion, widget
+lifetime after close and retained dead tasklet pointers need their own content/
+error reading. The current corporation coroutine retains its per-field fallback
+handling. Complete native content tabs, ancillary header/relationship read order,
+service caches and native caption formatting remain content-port work; current
+browser title text and initial title behavior are unchanged. This unit covers
+the existing corporation data chain and normal/replaced visible history.
 Read each native content class's order and spawned/shared work first. Do not impose
 ordinary loading on ships or an automatic pending drain unsupported by the
 compiled methods. Existing tickets alone drop displayed stale results; actual

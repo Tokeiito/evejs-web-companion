@@ -1,21 +1,28 @@
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import type { InfoIdentity, InfoOpenOptions, InfoSubject } from "../bridge/infoWindow.ts";
 import { createInfoReadScope, type InfoReadScope } from "./infoReadScope.ts";
+import type { CorporationShowInfo } from "../bridge/ownerInfo.ts";
 
 interface Entry { readonly request: InfoSubject; readonly subject: InfoSubject; readonly identity: InfoIdentity }
 /** Empty native dict while reconstructing; null is the recorded None identity tuple. */
 const pendingHistory = { pending: true } as const;
 type HistoryEntry = Entry | null | typeof pendingHistory;
+type CorporationResult = CorporationShowInfo | null | undefined;
 const isPending = (entry: HistoryEntry): entry is typeof pendingHistory => entry !== null && "pending" in entry;
 export interface InfoWindowState {
   readonly id: number;
   readonly entry: Entry;
+  readonly captionEntry: Entry;
   readonly subject: ReadableSignal<InfoSubject | null>;
+  /** Current reconstruction's result and the result still visible during history. */
+  readonly corporationResult: ReadableSignal<CorporationResult> | null;
+  readonly visibleCorporationResult: ReadableSignal<CorporationResult> | null;
   readonly history: readonly HistoryEntry[];
   readonly index: number;
   /** Ordinary content: ConstructLayout/ReconstructSubContainer flush old controls. */
   readonly reconstruction: number;
   readonly reads: InfoReadScope;
+  readonly loading: boolean;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
 }
@@ -24,6 +31,7 @@ export interface InfoWindowState {
  * Windows stay in registration order; focus must never reorder that list. */
 export function createInfoWindows(deps: {
   resolve(subject: InfoSubject): Promise<InfoIdentity | null>;
+  readCorporation(corporationID: number, reads: InfoReadScope): Promise<CorporationShowInfo | null>;
   reuse(): boolean;
   shift(): boolean;
 }) {
@@ -31,6 +39,7 @@ export function createInfoWindows(deps: {
   const raised = createSignal<{ readonly n: number; readonly id: number } | null>(null);
   const subjects = new Map<number, ReturnType<typeof createSignal<InfoSubject | null>>>();
   const assignedEntries = new WeakMap<InfoReadScope, Entry | null>();
+  const corporationResults = new WeakMap<InfoReadScope, ReturnType<typeof createSignal<CorporationResult>>>();
   let serial = 0, raisedSerial = 0, generation = 0;
   let queue: Promise<unknown> = Promise.resolve();
   const update = (id: number, change: (w: InfoWindowState) => InfoWindowState): void => {
@@ -44,10 +53,19 @@ export function createInfoWindows(deps: {
     const current = (): InfoWindowState | undefined => state.get().find(w => w.id === id && w.reads === reads);
     const reads = createInfoReadScope(() => epoch === generation, {
       requested: entry.identity, registered: !directHistory, initialIdentity: initial?.identity ?? null,
-      onIdentify: () => { assignedEntries.set(reads, entry); },
+      onIdentify: () => {
+        assignedEntries.set(reads, entry);
+        // Same-class corporation history does not flush its old controls until
+        // GetPublicInfo returns and the monolith parent starts reconstruction.
+        if (directHistory && entry.identity.content === "corporation" && current()) {
+          subjects.get(id)?.set({ ...entry.subject });
+          update(id, w => ({ ...w, visibleCorporationResult: w.corporationResult, reconstruction: w.reconstruction + 1 }));
+        }
+      },
       onComplete: () => {
-        const w = current(); if (!w || !branch || !w.history.length) return;
-        update(id, w => ({ ...w, history: w.history.map((old, i) => i === w.index ? snapshot(w) : old) }));
+        const w = current(); if (!w) return;
+        update(id, w => ({ ...w, captionEntry: entry,
+          history: branch && w.history.length ? w.history.map((old, i) => i === w.index ? snapshot(w) : old) : w.history }));
       },
       onRetire: withHistory => {
         const w = current(); if (!withHistory || !w || !w.history.length || !isPending(w.history[w.index]!)) return;
@@ -55,7 +73,21 @@ export function createInfoWindows(deps: {
       },
     });
     assignedEntries.set(reads, initial);
+    if (entry.identity.content === "corporation") corporationResults.set(reads, createSignal<CorporationResult>(undefined));
+    reads.loading.subscribe(loading => {
+      const w = current(); if (w && w.loading !== loading) update(id, w => ({ ...w, loading }));
+    });
     return reads;
+  }
+  const corporationResult = (reads: InfoReadScope): ReadableSignal<CorporationResult> | null => {
+    const signal = corporationResults.get(reads); return signal ? readonlySignal(signal) : null;
+  };
+  function loadCorporation(entry: Entry, reads: InfoReadScope): void {
+    const signal = corporationResults.get(reads);
+    if (!signal || entry.identity.itemID === null) return;
+    // One controller-owned coroutine feeds the view. A remount/focus must not
+    // issue another copy, and an unregistered history read can outlive its view.
+    void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), () => signal.set(null));
   }
   function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {
     // Ordinary ShowInfo stops the old tasklet before replacing its content.
@@ -66,9 +98,14 @@ export function createInfoWindows(deps: {
     let index = w.index;
     if (branch) { history = [...history.slice(0, index + 1), entry.identity.content === "corporation" ? pendingHistory : entry]; index = history.length - 1; }
     const reads = makeReads(w.id, entry, branch, directHistory, w.reads);
-    subjects.get(w.id)?.set({ ...entry.subject });
-    update(w.id, current => ({ ...current, entry, history, index, reads,
-      reconstruction: current.reconstruction + (entry.identity.content === "ship" ? 0 : 1), minimized: false }));
+    const defer = directHistory && entry.identity.content === "corporation";
+    const result = corporationResult(reads);
+    if (!defer) subjects.get(w.id)?.set({ ...entry.subject });
+    update(w.id, current => ({ ...current, entry, history, index, reads, loading: false, corporationResult: result,
+      captionEntry: entry.identity.content === "corporation" ? current.captionEntry : entry,
+      visibleCorporationResult: defer ? current.visibleCorporationResult : result,
+      reconstruction: current.reconstruction + (defer || entry.identity.content === "ship" ? 0 : 1), minimized: false }));
+    loadCorporation(entry, reads);
     requestRaise(w.id);
   }
   function show(subject: InfoSubject, options: InfoOpenOptions = {}): Promise<number | null> {
@@ -97,12 +134,13 @@ export function createInfoWindows(deps: {
         const id = ++serial, signal = createSignal<InfoSubject | null>({ ...normalized });
         subjects.set(id, signal);
         const offset = (windows.length % 8) * 24;
-        const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [identity.content === "corporation" ? pendingHistory : entry], index: 0, reconstruction: 1,
-          reads: makeReads(id, entry, true),
+        const reads = makeReads(id, entry, true), result = corporationResult(reads);
+        const w: InfoWindowState = { id, entry, captionEntry: entry, subject: readonlySignal(signal), history: [identity.content === "corporation" ? pendingHistory : entry], index: 0, reconstruction: 1,
+          reads, loading: false, corporationResult: result, visibleCorporationResult: result,
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
-        state.set([...windows, w]); requestRaise(id); return id;
+        state.set([...windows, w]); loadCorporation(entry, reads); requestRaise(id); return id;
       }
       // Corporation content waits for GetPublicInfo before its parent assigns
       // type/item. Requested identity alone cannot decide a native duplicate.
