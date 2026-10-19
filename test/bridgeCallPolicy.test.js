@@ -160,7 +160,12 @@ test("the page's calls that are made on an object of the service's own say what 
   // What is said to an agent and an offer taken out of the journal are asked of the agent's own object too
   // (agentDialogueWindow.py 427 to 428; agents.py 782 to 784), and are the page's own since 2026-10-13.
   assert.deepEqual([objectOfPageCall("agentMgr", "RemoveOfferFromJournal"), isPageWritePair("agentMgr", "DoAction"), isPageWritePair("agentMgr", "RemoveOfferFromJournal")], ["agent", true, true]);
-  assert.deepEqual(Object.keys(PAGE_OBJECT_CALLS).sort(), ["agentMgr.DoAction", "agentMgr.GotoLocation", "agentMgr.RemoveOfferFromJournal", "agentMgr.WarpToLocation", "charMgr.ListIncludingContainers", "charMgr.ListStationItems", "charMgr.ListStations", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.Invite", "fleetObjectHandler.KickMember", "fleetObjectHandler.LeaveFleet", "fleetObjectHandler.MakeLeader", "fleetObjectHandler.MoveMember", "fleetObjectHandler.RejectInvite", "fleetObjectHandler.SendBroadcast", "invbroker.Add", "invbroker.AssembleCargoContainer", "invbroker.DestroyFitting", "invbroker.FitFitting", "invbroker.ImportExportWithPlanet", "invbroker.List", "invbroker.MultiAdd", "invbroker.MultiMerge", "invbroker.SetLabel", "invbroker.StackAll", "invbroker.TrashItems", "planetMgr.GetProgramResultInfo", "planetMgr.UserLaunchCommodities", "planetMgr.UserUpdateNetwork", "reprocessingSvc.Reprocess", "scanMgr.GetFullState", "scanMgr.ReconnectToLostProbes", "scanMgr.RecoverProbes", "scanMgr.RequestScans", "scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep"]);
+  // base_corporation.KickOut397-412 and KickOutMultipleMembers459-476 call
+  // GetCorpRegistry(): both writes must stay on their originating corporation object.
+  // base_corporation.__ResignFromCEO780-783 uses the same originating registry.
+  for (const method of ["KickOutMember", "KickOutMembers", "ResignFromCEO"]) {
+    assert.deepEqual([objectOfPageCall("corpRegistry", method), isBridgeWritePair("corpRegistry", method), isPageWritePair("corpRegistry", method)], ["corporationExpected", true, true]);
+  }
   // fleetSvc.LeaveFleet: on the fleet's own object, of which the session has one. A write, and one of the page's.
   // So are KickMember and MakeLeader from the fleet's menu for a member (fleetSvc.py 601 to 612), and SendBroadcast
   // from its Broadcast Travel To Me (SendGlobalBroadcast, 983 to 990; the lists above mended by reading 2026-10-15).

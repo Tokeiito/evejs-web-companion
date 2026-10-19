@@ -527,8 +527,8 @@ class GamePortSession {
   // ── calls: ServiceCallGPCS, ObjectCallGPCS, moniker ────────────────────────
 
   /** sm.RemoteSvc(service).method(*args, **kwargs) */
-  call(service, method, args = [], kwargs = null) {
-    return this._serviceCall(anyAddress(service), service, method, args, kwargs);
+  call(service, method, args = [], kwargs = null, beforeDispatch = undefined) {
+    return this._serviceCall(anyAddress(service), service, method, args, kwargs, beforeDispatch);
   }
 
   /** sm.ProxySvc(service).method(*args, **kwargs): addressed to our proxy node. */
@@ -543,8 +543,8 @@ class GamePortSession {
    * answer, which is kept in its place, or with CacheOK, and then the copy held is the answer and is good from
    * now (UpdateVersionCheckPeriod). With nothing held the version is 1.
    */
-  _serviceCall(destination, service, method, args, kwargs) {
-    return this._cachedCall({ destination, boundObject: null, service, method, args, kwargs }, service);
+  _serviceCall(destination, service, method, args, kwargs, beforeDispatch = undefined) {
+    return this._cachedCall({ destination, boundObject: null, service, method, args, kwargs, beforeDispatch }, service);
   }
 
   /** ServiceCallGPCS and ObjectCallGPCS both consult objectCaching, keyed by the persistent object or service. */
@@ -648,10 +648,13 @@ class GamePortSession {
   }
 
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null }, written) {
+  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
+    // A top-level corporation write can wait behind an identical outstanding
+    // call. Recheck its original session at the actual send, including retries.
+    beforeDispatch?.();
     const callID = this.nextCallID;
     this.nextCallID += 1;
     // Every call's keywords carry machoVersion, 1 unless a cached answer says

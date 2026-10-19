@@ -133,6 +133,15 @@
     if (!request || request === servedChatRequest) return;
     servedChatRequest = request; selected = "chat";
   });
+  // Native OpenMemberDetails raises the requested window on the phone as well.
+  // svelte-ignore state_referenced_locally
+  const memberDetails = flow.memberDetailsShown;
+  let servedMemberDetails = 0;
+  $effect(() => {
+    const request = $memberDetails;
+    if (!request || request.n === servedMemberDetails) return;
+    servedMemberDetails = request.n; selected = "memberDetails";
+  });
   const effective = $derived(
     selected !== null && isTabVisible(selected, isDocked) && isWindowTab(selected) ? selected : null,
   );

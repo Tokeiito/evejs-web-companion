@@ -65,6 +65,11 @@
   import { onMount, untrack } from "svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
+  import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
+  import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
+  import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
+  import OwnerCEOMenu from "./OwnerCEOMenu.svelte";
+  import OwnerDecorationMenu from "./OwnerDecorationMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -2386,6 +2391,11 @@
                         {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
                       {/if}
                       <OwnerChatMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
+                      <OwnerMemberMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
+                      <OwnerQuitMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerExpelMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerCEOMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerDecorationMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id)}
                       {/if}
@@ -2591,6 +2601,11 @@
                       {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
                     {/if}
                     {#if selectedRows.length <= 1}<OwnerChatMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerMemberMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerQuitMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerExpelMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerCEOMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerDecorationMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id)}
                     {/if}

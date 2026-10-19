@@ -45,7 +45,8 @@
   let title = $state("");
   let base = $state("");
   let masks = $state<RoleMasks | null>(null);
-  let active = $state<"general" | "roles" | "titles" | "summary">("general");
+  // svelte-ignore state_referenced_locally
+  let active = $state<"general" | "roles" | "titles" | "summary">(flow.memberDetailsPanel());
   let titleMask = $state(0);
   let titles = $state<readonly CorporationTitle[] | null>(null);
   let titlesLoading = $state(false);
@@ -71,6 +72,7 @@
     // Load runs the previous tab's DDX before switching, without submitting it.
     if (active === "general" && held?.canEditTitle) title = memberTitleOf(title);
     active = panel;
+    flow.memberDetailsPanel(panel);
     if (panel === "roles") void refreshRoleBase();
     if (panel === "titles") void refreshTitles();
     if (panel === "summary") void refreshSummary();
@@ -104,7 +106,7 @@
     const request = ++titleSerial, targetRequest = serial;
     titlesLoading = true;
     try {
-      const rows = await flow.corporationMemberTitles();
+      const rows = await flow.corporationMemberTitles(held?.assertCurrent);
       if (!disposed && request === titleSerial && targetRequest === serial) titles = rows;
     } catch (cause) { if (!disposed && request === titleSerial && targetRequest === serial) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed && request === titleSerial) titlesLoading = false; }
@@ -115,7 +117,7 @@
     const request = ++roleSerial, targetRequest = serial;
     rolesLoading = true;
     try {
-      const myBaseID = await flow.corporationMemberRoleBase();
+      const myBaseID = await flow.corporationMemberRoleBase(held.assertCurrent);
       if (!disposed && request === roleSerial && targetRequest === serial && held) held = { ...held, myBaseID };
     } catch (cause) { if (!disposed && request === roleSerial && targetRequest === serial) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed && request === roleSerial) rolesLoading = false; }
@@ -134,7 +136,9 @@
     const request = ++serial;
     held = null; error = ""; busy = true;
     try {
-      const value = await flow.corporationMemberDetails(id);
+      const value = await flow.corporationMemberDetails(id, () => {
+        if (disposed || request !== serial) throw Object.assign(new Error("This member window has been replaced."), { code: "SESSION_REQUEST_RETIRED" });
+      });
       if (!disposed && request === serial) {
         keep(value);
         if (active === "titles") await refreshTitles();
@@ -142,7 +146,10 @@
         else if (active === "summary") await refreshSummary();
       }
     }
-    catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { if (!disposed && request === serial) {
+      if ((cause as { code?: string })?.code === "CORPORATION_MEMBER_GONE") onClose?.();
+      else error = cause instanceof Error ? cause.message : String(cause);
+    } }
     finally { if (!disposed && request === serial) busy = false; }
   }
   async function apply(close: boolean): Promise<void> {
@@ -166,7 +173,7 @@
     if (!held || busy) return;
     const request = serial, id = held.member.characterID;
     busy = true; error = "";
-    try { await flow.giveCorporationShares(id); }
+    try { await flow.giveCorporationShares(id, held.assertCurrent); }
     catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed && request === serial) busy = false; }
   }
