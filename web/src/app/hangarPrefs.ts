@@ -59,7 +59,7 @@ export interface HangarPrefs {
    * LISTS ANY MORE. There is no role to pick and nothing here derives modules
    * from a fit -- see docs/fleet-companion-simplification.md. What is stored is
    * exactly `fleeHealthFloor`, `capacitorFloor`, `maxFleeAttempts` and
-   * `repairsAtStation`;
+   * `repairsAtStation`, plus `abandonDronesHealthFloor` when it was ever set;
    * `decodeCompanionSetupValue` is the door on the way out of localStorage, the
    * same door `botHost.start()` trusts, so this file invents no second codec.
    * A companion's eight module lists are never saved anywhere: they are read
