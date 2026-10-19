@@ -381,7 +381,7 @@ with normal public/aggression/enlistment order and no console errors. Nonempty
 iterables still need the native int(key), owner-cache/Prime failure and ordering
 port; no general dict or string iteration behavior is claimed by this change.
 
-The next owner-read layer is available through the existing names endpoint's
+The owner-read layer is available through the existing names endpoint's
 eveowners recordset mode and api.readEveOwners. It seeds only the native
 LoadEveOwners NPC/faction/system records; player and unseeded signed keys go
 through the selected pilot's shared config.GetMultiOwnersEx cache. It accepts
@@ -398,8 +398,8 @@ installs the captured rows; native unmarshalling and RPC are not executed there.
 Controlled missing/None-name replacements preserve the distinction, a real
 permission refusal reached through controlled read redirection preserves its
 dialog metadata, and a captured guard rejects a retired late result. This layer
-is not yet connected to the enlistment row; conversion and sequential owner
-lookup must follow before claiming that window's completion order is ported.
+requires the caller to convert each key and perform sequential owner lookups
+before completing its window, as the enlistment path below does.
 
 The enlistment row now converts each list/tuple key lazily with int(key), then
 awaits that one owner record before advancing to the next key. Floats truncate,
