@@ -2,23 +2,28 @@
   // The client's Corporation window (neocom/corporation/corporationWindow.py): its tabs (Corporation, Alliances and,
   // for a director, Administration) and under Corporation its navigation tree (ConstructNavigationTree: Wars, Voting,
   // Standings, Members and the rest, each its panels). The page has, of it, the Corporation tab's Standings node with
-  // its NPC Standings panel (CorpPanel.NPC_STANDINGS: the corporation's StandingsPanel, toID the corporation,
-  // corpMode).
+  // Contacts form (TAB_CORPCONTACTS) and NPC Standings panel (toID the corporation, corpMode).
   //
-  // Not here yet: the window's other tabs and nodes (the corporation's home, members, wars, voting, its contacts and
+  // Not here yet: the window's other tabs and nodes (the corporation's home, members, wars, voting and
   // the rest).
   import Standings from "./Standings.svelte";
+  import Contacts from "./Contacts.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
+  let panel = $state<"contacts" | "npc">("contacts");
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  const playerCorporation = $derived(($station.online?.corporationID ?? 0) >= 98_000_000);
   // svelte-ignore state_referenced_locally
   const words = store.words;
   /** The window's names, with the page's own words where the install's are not had (corpPanelConst NAME_BY_PANEL_ID). */
   const WORDS: Readonly<Record<string, string>> = {
     "UI/Corporations/BaseCorporationUI/Corporation": "Corporation",
     "UI/InfoWindow/TabNames/Standings": "Standing",
+    "UI/Corporations/CorporationWindow/Standings/CorpContacts": "Contacts",
     "UI/Corporations/CorporationWindow/Standings/NPCStandings": "NPCs' standing",
   };
   const word = (label: string): string => {
@@ -35,14 +40,25 @@
     <h2 class="panel-title">{word("UI/Corporations/BaseCorporationUI/Corporation")}</h2>
   </header>
   <div class="corp-window">
-    <!-- The navigation tree (Corporation > Standings > NPC Standings), the one node the page has selected. -->
+    <!-- The Standings node has the corporation Contacts form and NPC Standings panel. -->
+    {#if playerCorporation}
     <nav class="corp-tree" aria-label={word("UI/Corporations/BaseCorporationUI/Corporation")}>
       <span class="corp-tree-group">{word("UI/InfoWindow/TabNames/Standings")}</span>
-      <button type="button" class="corp-tree-node active" aria-current="page">{word("UI/Corporations/CorporationWindow/Standings/NPCStandings")}</button>
+      <button type="button" class="corp-tree-node" class:active={panel === "contacts"} aria-current={panel === "contacts" ? "page" : undefined} onclick={() => (panel = "contacts")}>{word("UI/Corporations/CorporationWindow/Standings/CorpContacts")}</button>
+      <button type="button" class="corp-tree-node" class:active={panel === "npc"} aria-current={panel === "npc" ? "page" : undefined} onclick={() => (panel = "npc")}>{word("UI/Corporations/CorporationWindow/Standings/NPCStandings")}</button>
     </nav>
     <div class="corp-panel">
-      <Standings {store} {flow} scopes={["corp"]} />
+      {#key $station.online?.corporationID}
+      {#if panel === "contacts"}
+        <Contacts {store} {flow} contactType="corpcontact" />
+      {:else}
+        <Standings {store} {flow} scopes={["corp"]} />
+      {/if}
+      {/key}
     </div>
+    {:else}
+      <p class="empty">Corporation standings panels are available for player corporations.</p>
+    {/if}
   </div>
 </section>
 

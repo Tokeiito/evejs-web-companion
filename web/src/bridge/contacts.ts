@@ -11,11 +11,14 @@
 import { pyIntDictOrder } from "./pyDict.ts";
 import { readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapBool, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
 
+/** The two ContactsForm owners currently drawn by the page. */
+export type ContactScope = "contact" | "corpcontact";
+
 /** One of the pilot's contacts. */
 export interface Contact {
   readonly contactID: number;
   readonly inWatchlist: boolean;
-  /** The standing the pilot gave the contact (+10, +5, 0, -5, -10). */
+  /** The contact standing: five levels for personal contacts, tenths from -10 to +10 for corporation contacts. */
   readonly relationshipID: number;
   readonly labelMask: bigint;
 }
@@ -44,13 +47,17 @@ export interface ContactLabel {
  */
 export function contactLabelsOf(answer: JsonValue): readonly ContactLabel[] {
   const labels: ContactLabel[] = [];
-  for (const [key, value] of readDictPairs(answer)) {
-    const labelID = unwrapLong(readKeyVal(value, "labelID") ?? key);
-    const name = readKeyVal(value, "name");
-    if (labelID === null || labelID <= 0n || readKeyVal(value, "static") === true) {
+  // corpRegistry.GetLabels answers a CIndexedRowset: its DBRows live in objectex2.dict.
+  const indexed = answer !== null && typeof answer === "object" && !Array.isArray(answer)
+    ? (answer as { dict?: readonly (readonly [JsonValue, JsonValue])[] }).dict : undefined;
+  for (const [key, value] of indexed ?? readDictPairs(answer)) {
+    const field = (name: string) => readKeyVal(value, name) ?? readRowField(value, name);
+    const labelID = unwrapLong(field("labelID") ?? key);
+    const name = field("name");
+    if (labelID === null || labelID <= 0n || field("static") === true) {
       continue;
     }
-    const color = readKeyVal(value, "color");
+    const color = field("color");
     labels.push({ labelID, name: typeof name === "string" ? name : "", color: typeof color === "number" ? color : null });
   }
   const order = pyIntDictOrder(labels.map((label) => Number(label.labelID)));
@@ -137,7 +144,7 @@ export function onlineStatesOf(answer: JsonValue): Readonly<Record<number, boole
 /** What the contact management window sends (ContactManagementWnd.Confirm: contactManagementWindow.py 146 to 160). */
 export interface ContactWrite {
   readonly contactID: number;
-  /** One of the five standings. */
+  /** One of five personal standings, or a corporation standing rounded to one decimal. */
   readonly relationshipID: number;
   readonly inWatchlist: boolean;
   readonly sendNotification: boolean;
@@ -246,6 +253,18 @@ const wholeOf = (value: JsonValue | undefined): number | null => {
   const id = whole === null ? Number.NaN : Number(whole);
   return Number.isSafeInteger(id) ? id : null;
 };
+
+/** addressbook.GetContacts: corporation contacts are a dict of KeyVals, without personal agents or blocked owners. */
+export function corporateAddressBookOf(answer: JsonValue): AddressBook {
+  const contacts = readDictPairs(answer).flatMap(([key, row]): Contact[] => {
+    const contactID = wholeOf(readKeyVal(row, "contactID") ?? key);
+    if (contactID === null || contactID <= 0) return [];
+    const standing = readKeyVal(row, "relationshipID");
+    return [{ contactID, relationshipID: (typeof standing === "number" ? standing : unwrapReal(standing)) ?? 0,
+      labelMask: unwrapLong(readKeyVal(row, "labelMask")) ?? 0n, inWatchlist: false }];
+  });
+  return { contacts: pyIntDictOrder(contacts.map(row => row.contactID)).flatMap(id => contacts.filter(row => row.contactID === id)), blocked: [], agents: [] };
+}
 
 /** charMgr.GetContactList's answer, as the address book keeps it; an answer that is not one keeps nothing. */
 export function addressBookOf(answer: JsonValue): AddressBook {

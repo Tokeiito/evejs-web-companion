@@ -5098,7 +5098,7 @@ function createGamePortPilots({
     // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
     if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
     // addressbook.GetContacts (193 to 250): the corporation's contacts and the alliance's as the address book keeps
-    // them from the choosing of the character, asked where none are kept (the server's word of a change lets them go).
+    // them from the choosing of the character, asked where none are kept; corporate notices amend the held dict.
     if (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && args.length === 0 && kwargs === null) {
       return corporationDoes(entry, async () => (entry.corporateContacts ??= { answer: await corporationAsk(entry, CORPORATE_CONTACTS) }).answer);
     }
@@ -5116,7 +5116,16 @@ function createGamePortPilots({
       warMonikerIsItsOwners(entry);
     }
     if (service !== SKILL_HANDLER) {
-      return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+      const result = await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+      // addressbook.DeleteContactLabel (1072-1084): clear this bit in every held corporate contact, after success.
+      if (service === CORP_REGISTRY && method === "DeleteLabel" && entry.corporateContacts?.answer?.type === "dict") {
+        const bit = wholeOf(args[0]);
+        if (bit !== null) entry.corporateContacts = corporateContactsChanged(entry.corporateContacts,
+          entry.corporateContacts.answer.entries.map(([id, contact]) => [id, null,
+            (wholeOf(dictValue(contact.args, "labelMask")) ?? 0n) & (9223372036854775807n - bit),
+          ]));
+      }
+      return result;
     }
     // What the client's skill services keep is theirs to answer. Anything else of the handler's is asked of it.
     if (Object.hasOwn(SKILL_KEPT, method)) return skillsDoes(entry, () => skillRead(entry, method, args));
@@ -5792,8 +5801,8 @@ function createGamePortPilots({
    * keeps them (KEPT_UNTIL_CHANGED), for the page's reading of them by charMgr.GetContactList and
    * onlineStatus.GetInitialState. The corporation's and the alliance's are kept too (corporateContacts,
    * allianceContacts), for the page's reading of them by name (an owner's Standings tab); the client works the
-   * server's word of a change into them (OnOrganizationContactsUpdated, 157 to 191), and here what is kept is let go
-   * at it and asked for when next wanted.
+   * server's word of a change into them (OnOrganizationContactsUpdated, 157 to 191). The corporation's kept dict
+   * is updated from those tuples too; the alliance's is still let go and asked for when next wanted.
    */
   async function addressBookRead(entry) {
     const ofTheAlliance = (method) => {
@@ -5808,12 +5817,38 @@ function createGamePortPilots({
     ].map((asked) => asked.catch(() => {})));
   }
 
+  /** addressbookService.OnOrganizationContactsUpdated (157 to 191): amend the held dict without another read. */
+  function corporateContactsChanged(kept, updates) {
+    if (!kept || kept.answer?.type !== "dict") return kept;
+    const contacts = new Map(kept.answer.entries.map(([id, contact]) => [Number(id), [id, contact]]));
+    for (const update of itemsOf(updates)) {
+      const [contactID, level, labelMask] = itemsOf(update);
+      const id = finite(contactID);
+      if (id === null || id <= 0) continue;
+      if (level === null && labelMask === null) { contacts.delete(id); continue; }
+      const previous = contacts.get(id);
+      if (!previous) {
+        contacts.set(id, [contactID, { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [
+          ["contactID", contactID], ["relationshipID", level], ["inWatchlist", 0], ["labelMask", labelMask ?? 0],
+        ] } }]);
+      } else {
+        const [key, contact] = previous;
+        const field = labelMask === null ? "relationshipID" : "labelMask";
+        const value = labelMask === null ? level : labelMask;
+        contacts.set(id, [key, { ...contact, args: { ...contact.args,
+          entries: contact.args.entries.map(([name, old]) => [name, textOf(name) === field ? value : old]),
+        } }]);
+      }
+    }
+    return { answer: { ...kept.answer, entries: [...contacts.values()] } };
+  }
+
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
     // addressbook.OnOrganizationContactsUpdated(ownerID, updates): the corporation's or the alliance's contacts changed.
     if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
       const ownerID = Number(notification.args[0]);
-      if (ownerID === Number(attribute(entry, "corpid"))) entry.corporateContacts = null;
+      if (ownerID === Number(attribute(entry, "corpid"))) entry.corporateContacts = corporateContactsChanged(entry.corporateContacts, notification.args[1]);
       if (ownerID === Number(attribute(entry, "allianceid"))) entry.allianceContacts = null;
     }
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;

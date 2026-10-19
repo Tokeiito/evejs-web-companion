@@ -1158,6 +1158,11 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 /** The address book's writes of owners (addressbookService.py 658, 674, 842): the owners a list, as the client's are. */
 const ownersListed = ([owners, ...rest], kwargs) => ({ args: [list(owners), ...rest], kwargs });
+/** Corporation contact editors confirm round(slider.value, 1), a Python float (corpAllianceContactManagementWindow.py 117). */
+const corporationContactStanding = ([owner, standing, ...rest], kwargs) => ({
+  args: [owner, typeof standing === "number" && Number.isFinite(standing) ? { type: "real", value: standing } : standing, ...rest], kwargs,
+});
+const corporationContactsStanding = (args, kwargs) => corporationContactStanding(ownersListed(args, kwargs).args, kwargs);
 /** notificationSvc.DeleteNotifications (319): the notifications a list, as the client's are. */
 const notificationsListed = ([notifications, ...rest], kwargs) => ({ args: [list(notifications), ...rest], kwargs });
 /**
@@ -2729,6 +2734,16 @@ const RETAIL_CALLS = Object.freeze({
   "allianceRegistry.GetRankedAlliances": same(`${ALLIANCE_SVC}/all_cso_alliance.py:30`, "RemoteSvc('allianceRegistry').GetRankedAlliances(maxLen), by name, kept for five seconds"),
   "corpRegistry.GetAggressionSettings": same("eve/client/script/ui/services/crimewatchSvc.py:615", "GetCorpRegistry().GetAggressionSettings(), no arguments, on the corporation's moniker: asked when the session's corporation changes, the choosing of a character among them, and kept"),
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
+  "corpRegistry.GetLabels": same(`${CORP_SVC}/base_corporation.py:1011`, "GetCorpRegistry().GetLabels(), no arguments; the corporation contact labels, read on first showing the form."),
+  "corpRegistry.AddCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:995`, corporationContactStanding, "AddCorporateContact(contactID, relationshipID), positional on the corporation moniker; the slider rounds to one decimal (corpAllianceContactManagementWindow.py 117-118), a float even at whole standings. In no recording."),
+  "corpRegistry.EditCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:999`, corporationContactStanding, "EditCorporateContact(contactID, relationshipID), the same corporation editor's float, positional on the corporation moniker. In no recording."),
+  "corpRegistry.RemoveCorporateContacts": reshaped(`${CORP_SVC}/base_corporation.py:1003`, ownersListed, "RemoveCorporateContacts(contactIDs), a list from addressbookService.RemoveFromAddressBook (817-869), positional on the corporation moniker. In no recording."),
+  "corpRegistry.EditContactsRelationshipID": reshaped(`${CORP_SVC}/base_corporation.py:1007`, corporationContactsStanding, "EditContactsRelationshipID(contactIDs, relationshipID), a list and the multi-editor's rounded float; Confirm's compiled code returns that float (the decompile misindents self.level). In no recording."),
+  "corpRegistry.CreateLabel": typing(same(`${CORP_SVC}/base_corporation.py:1014`, "CreateLabel(name, color), positional on the corporation moniker; addressbookService.CreateContactLabel (1011-1021), typed unicode and color None. In no recording."), [0]),
+  "corpRegistry.EditLabel": typing(reshaped(`${CORP_SVC}/base_corporation.py:1021`, labelFirst, "EditLabel(labelID, name, color), positional on the corporation moniker; addressbookService.EditContactLabel (1001-1006), typed unicode and color None. In no recording."), [1]),
+  "corpRegistry.DeleteLabel": reshaped(`${CORP_SVC}/base_corporation.py:1017`, labelFirst, "DeleteLabel(labelID), the label's bit as received; addressbookService.DeleteContactLabel (1072-1084) then asks for labels again. In no recording."),
+  "corpRegistry.AssignLabels": reshaped(`${CORP_SVC}/base_corporation.py:1025`, ownersLabelled, "AssignLabels(contactIDs, labelMask), the selected contacts a list and the label bits, positional on the corporation moniker (addressbookService.AssignLabelFromWnd, 1094-1100). In no recording."),
+  "corpRegistry.RemoveLabels": reshaped(`${CORP_SVC}/base_corporation.py:1029`, ownersLabelled, "RemoveLabels(contactIDs, labelMask), a list and the label bits, positional on the corporation moniker (addressbookService.RemoveLabelFromWnd, 1131-1137). In no recording."),
   "corpRegistry.GetCorporateContacts": same(`${CORP_SVC}/base_corporation.py:993`, "GetCorpRegistry().GetCorporateContacts(), no arguments, on the corporation's moniker: the address book asks it as the character is chosen, and only for a pilot whose corporation is not an NPC one (991)"),
   "corpRegistry.GetEveOwners": judged(`${CORP_SVC}/bco_members.py:136`, sentWithNothing,
     "eveowners = self.GetCorpRegistry().GetEveOwners(), with nothing, on the corporation's moniker: recorded on Tranquility so, seven times. Asked when the session's corporation changes, for its members' names and their numbers, which the client keeps and changes as the server says a member changed (OnCorporationMemberChanged); a pilot is a member to the client where its number is among them (161). The page asks it each time it wants to know that, and the transport keeps nothing of it."),

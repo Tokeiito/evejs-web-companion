@@ -3762,8 +3762,8 @@ test("the pilot's own contacts, the corporation's and the watched contacts' onli
   assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [1] }, { type: "list", items: [1] }, { same: 1 }]);
   // The watched contacts' online state is kept too (onlineStatus.py Prime, 74 to 82): the read asks nothing more.
   await read("onlineStatus", "GetInitialState");
-  // The corporation's contacts are kept too (the address book's corporateContacts, let go at the server's
-  // OnOrganizationContactsUpdated): the read asks nothing more than the choosing asked.
+  // The corporation's contacts are kept too (addressbookService.GetContacts, 237 to 240): the read asks
+  // nothing more than the choosing asked. Organization notices amend that dict (157 to 191, checked below).
   await read("corpRegistry", "GetCorporateContacts");
   const corporateAsked = session.boundCalls.filter((call) => call.method === "GetCorporateContacts");
   assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], corporateAsked.length], [{ same: 1 }, { same: 1 }, 1]);
@@ -3773,6 +3773,34 @@ test("the pilot's own contacts, the corporation's and the watched contacts' onli
   // Prime is the client's own service's method, and never a call of its: asked of the server it is the web's alone.
   await read("onlineStatus", "Prime");
   assert.deepEqual(ledgerOf(pilots, "onlineStatus.Prime"), [{ "web-only": 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:74"]);
+});
+
+test("corporation contact notices and label deletion amend the held dict, preserving standings and long label bits independently", async () => {
+  // addressbookService.OnOrganizationContactsUpdated, 157 to 191: a level-only tuple preserves labels;
+  // a mask tuple preserves an existing standing; both None delete; a new owner carries both values.
+  const mask = 1n << 60n;
+  const { pilots, session, handle } = await selected({ corpid: 98000001, answers: {
+    "bound:GetCorporateContacts": () => ({ type: "dict", entries: [[PILOT, keyVal([
+      ["contactID", PILOT], ["relationshipID", 5], ["inWatchlist", 0], ["labelMask", mask],
+    ])]] }),
+  } }, { allowed: new Set([...ADDRESS_BOOK_PAIRS.allowed, "corpRegistry.DeleteLabel"]) });
+  const read = async () => (await pilots.callMethod("corpRegistry", "GetCorporateContacts", [], null, FIELDS, handle)).result;
+  session.notify("OnOrganizationContactsUpdated", [98000001, [[PILOT, 2.5, null], [PILOT + 1, -1.5, 3n]]]);
+  let rows = (await read()).entries;
+  const field = (row, name) => row.args.entries.find(([key]) => key === name)[1];
+  assert.deepEqual(rows.map(([id, row]) => [id, field(row, "relationshipID"), field(row, "labelMask")]), [
+    [PILOT, 2.5, { type: "long", value: mask.toString() }], [PILOT + 1, -1.5, 3],
+  ]);
+  session.notify("OnOrganizationContactsUpdated", [98000001, [[PILOT, 10, 2n], [PILOT + 1, null, null]]]);
+  // The existing contact's level stays 2.5 even with a non-None level beside its new mask (187 to 190).
+  rows = (await read()).entries;
+  assert.deepEqual(rows.map(([id, row]) => [id, field(row, "relationshipID"), field(row, "labelMask")]), [[PILOT, 2.5, 2]]);
+  session.notify("OnOrganizationContactsUpdated", [98000002, [[PILOT, null, null]]]);
+  assert.deepEqual((await read()).entries, rows);
+  // DeleteContactLabel, 1072-1084: deleting a label removes its bit from every contact without another contacts read.
+  await pilots.callMethod("corpRegistry", "DeleteLabel", [2], null, FIELDS, handle);
+  assert.equal(field((await read()).entries[0][1], "labelMask"), 0);
+  assert.equal(session.boundCalls.filter(call => call.method === "GetCorporateContacts").length, 1);
 });
 
 test("each of the address book's reads fails for itself, and the choosing is none the worse", async () => {
