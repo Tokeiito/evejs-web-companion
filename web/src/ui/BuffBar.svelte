@@ -38,6 +38,8 @@
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
   // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
+  // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const names = store.names;
@@ -214,7 +216,7 @@
     if (action.unavailable !== null) return;
     spaceSelection.select(itemID);
     await dispatchRowAction(flow, action.id, { itemID, gateLink: gateLinkFor($space.gateLinks, itemID) }, {
-      warp: Number($flyingDistances.warp),
+      warp: $warpDistance,
       orbit: Number($flyingDistances.orbit),
       hold: Number($flyingDistances.hold),
     }).catch((error: unknown) => console.error(error));

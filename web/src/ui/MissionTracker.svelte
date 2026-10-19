@@ -22,7 +22,6 @@
     type ButtonState, type ObjectiveArg, type ObjectiveWords, type TrackedObjective,
   } from "../bridge/missionTracker.ts";
   import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
-  import { flyingDistances } from "./flyingDistances.ts";
   import { approachedBallID } from "../space/actionIndication.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -30,6 +29,8 @@
   import type { JournalMission, MissionSpot } from "../store/types.ts";
 
   let { store, flow, showAgents }: { store: ClientStore; flow: AppFlow; showAgents?: () => void } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
   // svelte-ignore state_referenced_locally
   const tracker = flow.missionTracker;
   // svelte-ignore state_referenced_locally
@@ -258,7 +259,7 @@
           if (bookmark?.itemID) await flow.dockAt(bookmark.itemID);
           break;
         case "warpTo":
-          if (bookmark !== null) await flow.warpToMissionBookmark(bookmark, Number($flyingDistances.warp));
+          if (bookmark !== null) await flow.warpToMissionBookmark(bookmark, $warpDistance);
           break;
         case "setDestination":
           if (bookmark?.itemID) flow.setDestination(bookmark.itemID);

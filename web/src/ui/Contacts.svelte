@@ -88,7 +88,7 @@
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
   import { fmtDist } from "../space/overview.ts";
   import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
-  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
+  import { WARP_RANGES } from "./flyingDistances.ts";
   import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -104,6 +104,8 @@
   import type { ContactAction } from "./contactAction.ts";
 
   let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
   const organization = $derived(contactType !== "contact");
   const alliance = $derived(contactType === "alliancecontact");
   // svelte-ignore state_referenced_locally
@@ -798,7 +800,7 @@
     return typeof value === "number" ? value !== 0 : value === true;
   });
   /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
-  const defaultWarp = $derived(Number($flyingDistances.warp));
+  const defaultWarp = $derived($warpDistance);
   const say = $derived(distanceSay($words.templates));
   /** The fleet menu open, by where it is and whose, and which of its parts is open. */
   let fleetPart = $state<"warp" | "default" | "groupWarp" | "groupDefault" | null>(null);
@@ -910,7 +912,7 @@
 
   /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
   function setDefaultWarp(metres: number): void {
-    setDistance("warp", String(metres));
+    flow.keepWarpDistance(metres);
     fleetPart = "warp";
   }
 

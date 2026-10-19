@@ -1933,6 +1933,9 @@ export interface AppFlow {
   warpToFleetMember(characterID: number, range: number): Promise<void>;
   /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
   warpFleetToMember(characterID: number, range: number): Promise<void>;
+  /** defaultRangeUtils.FetchRangeSetting('WarpTo'): settings.char.ui.defaultTypeWarpToDist[0], default 0. */
+  readonly warpDistance: ReadableSignal<number>;
+  keepWarpDistance(metres: number): void;
   /**
    * The fleet menu's Jump To, Conduit Jump To and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember,
    * BridgeToMember): by the member's cyno the fleet told of, nothing where it told of none.
@@ -4128,6 +4131,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       // Storage refused: the choice lasts the page.
     }
+  }
+
+  // defaultRangeUtils28-68/SetDefaultWarpToDist: WarpTo applies to every hull of this character.
+  // The old browser-wide distance cannot identify which character chose it, so it is not inherited.
+  const warpDistanceSignal = createSignal(0);
+  let warpDistanceFor: number | null | undefined;
+  function readWarpDistance(): number {
+    const characterID = onlineCharacterID();
+    if (characterID !== warpDistanceFor) {
+      warpDistanceFor = characterID;
+      let metres = 0;
+      try {
+        const kept: unknown = JSON.parse(charUiSetting("defaultTypeWarpToDist") ?? "{}");
+        if (kept && typeof kept === "object" && !Array.isArray(kept)) {
+          const value = (kept as Record<string, unknown>)["0"];
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0) metres = value;
+        }
+      } catch { /* Invalid local settings use the native default. */ }
+      warpDistanceSignal.set(metres);
+    }
+    return warpDistanceSignal.get();
+  }
+  const warpDistance: ReadableSignal<number> = {
+    get: readWarpDistance,
+    subscribe(listener) {
+      const stopPilot = store.station.subscribe(() => readWarpDistance());
+      const stopValue = warpDistanceSignal.subscribe(listener);
+      return () => { stopPilot(); stopValue(); };
+    },
+  };
+  function keepWarpDistance(metres: number): void {
+    if (!Number.isFinite(metres) || metres < 0) throw new Error("A warp distance must be a non-negative number.");
+    if (onlineCharacterID() === null) return;
+    readWarpDistance();
+    let kept: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(charUiSetting("defaultTypeWarpToDist") ?? "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) kept = parsed as Record<string, unknown>;
+    } catch { /* An invalid setting has no dictionary to amend. */ }
+    setCharUiSetting("defaultTypeWarpToDist", JSON.stringify({ ...kept, 0: metres }));
+    warpDistanceSignal.set(metres);
   }
   /** settings.char.autoreload.Get(itemID, 1): on unless the pilot set it off. */
   const autoReloadOn = (moduleID: number): boolean => (charModuleSettings("autoreload")[moduleID] ?? 1) !== 0;
@@ -28259,6 +28303,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     moveFleetMember,
     warpToFleetMember,
     warpFleetToMember,
+    warpDistance,
+    keepWarpDistance,
     toFleetMemberBeacon,
     broadcastTravelToMe,
     addToFleetWatchlist,

@@ -21,7 +21,13 @@
   import { autoRejectInvitations, setAutoRejectInvitations } from "../app/autoRejectInvitations.ts";
   import { plainText } from "../bridge/clientWords.ts";
 
+  import { readable } from "svelte/store";
+
   let { store, flow }: { store?: ClientStore; flow?: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow?.warpDistance ?? readable(0);
+  // svelte-ignore state_referenced_locally
+  const station = store?.station ?? null;
 
   // --- Chat ------------------------------------------------------------------
   //
@@ -200,7 +206,7 @@
     <p class="muted">These apply to whatever you have selected in the overview.</p>
     <div class="settings-field">
       <label for="fd-warp">Warp to within</label>
-      <select id="fd-warp" value={$flyingDistances.warp} onchange={(e) => setDistance("warp", e.currentTarget.value)}>
+      <select id="fd-warp" value={String($warpDistance)} disabled={!flow || !$station?.online} onchange={(e) => flow?.keepWarpDistance(Number(e.currentTarget.value))}>
         {#each WARP_RANGES as choice (choice.metres)}
           <option value={String(choice.metres)}>{choice.label}</option>
         {/each}

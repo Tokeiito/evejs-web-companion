@@ -44,7 +44,9 @@ const RAT_ID = 50002001;
 const ROCK_ID = 50001248;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // Native defaultRangeUtils.FetchRangeSetting('WarpTo'): this fixture has no character override.
+  const warpDistance = { get: () => 0, subscribe: (run: (value: number) => void) => { run(0); return () => {}; } };
+  return new Proxy({}, { get: (_target, key) => key === "warpDistance" ? warpDistance : async () => {} });
 }
 
 /** Everything a player can see, with markup and comments stripped. */
