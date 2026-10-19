@@ -2796,7 +2796,7 @@ export interface BotRefusal {
   readonly firstAt: number;
   readonly lastAt: number;
   readonly words: string;
-  readonly kind: "refused" | "unreachable" | "gone" | "no-room";
+  readonly kind: "refused" | "unreachable" | "gone" | "no-room" | "no-funds";
 }
 
 export interface CustomBotState {

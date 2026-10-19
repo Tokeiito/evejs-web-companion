@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   classifyRefusal,
   NO_ROOM_CODE,
+  pilotCannotPay,
   shipHasNoRoom,
   createRefusalLedger,
   isUnreachable,
@@ -232,6 +233,18 @@ test("an ordinary refusal does not read as no-room", () => {
   const ledger = createRefusalLedger();
   ledger.note(refusalKey("lc", "lootContainer", 1), NO_ROOM, 0, true);
   assert.equal(shipHasNoRoom(ledger.records(), "lc", "lootContainer"), false);
+});
+
+test("a wallet that cannot pay is its own kind, worded for a player, and answers for the whole step", () => {
+  const ledger = createRefusalLedger();
+  const record = ledger.note(refusalKey("cc", "exportCustoms", 501), "CALL_REFUSED: NotEnoughMoney", 0, true);
+  assert.equal(record.kind, "no-funds");
+  assert.match(record.words, /enough ISK/);
+  assert.equal(record.words.includes("NotEnoughMoney"), false);
+  assert.equal(pilotCannotPay(ledger.records(), "cc", "exportCustoms"), true);
+  assert.equal(pilotCannotPay(ledger.records(), "cc", "collectCustoms"), false, "a different action");
+  assert.equal(pilotCannotPay(ledger.records(), "other", "exportCustoms"), false, "a different step");
+  assert.equal(classifyRefusal("CALL_REFUSED: You cannot warp there right now.", true), "refused");
 });
 
 test("an UNREACHABLE target is eventually set aside, rather than approached for ever", () => {
