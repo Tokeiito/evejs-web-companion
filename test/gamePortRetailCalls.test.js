@@ -1753,6 +1753,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "insurgencySolarsystem.GetAllVisibleCampaigns",
     // What the account may redeem, fetched as the neocom is set up. The gateway's list has nothing of the user service's.
     "userSvc.GetRedeemTokens",
+    // The account's daily login campaign and the day's claim of it, which the page asks by name. The gateway's list has nothing of the login campaign manager's.
+    "loginCampaignManager.get_client_campaign_state", "loginCampaignManager.claim_reward",
     // Whether the character has done Project Discovery's tutorial and whether the project is enabled, asked by its client service. The gateway's list has nothing of Project Discovery's.
     "ProjectDiscovery.initialize_tutorial_status", "ProjectDiscovery.is_enabled",
     // Whether the client wraps its texts for QA, told on a session of the QA role. The gateway's list has nothing of the localization server's.
@@ -3217,5 +3219,14 @@ test("the survey scan is the client's with nothing sent", () => {
     const odd = scan(args, kwargs);
     assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
     assert.match(odd.note, /sends nothing/, why);
+  }
+});
+
+test("the daily login campaign's read and claim are the client's with nothing sent, and differ with anything", () => {
+  for (const method of ["get_client_campaign_state", "claim_reward"]) {
+    const sent = form(`loginCampaignManager.${method}`, []);
+    assert.deepEqual([sent.args, sent.status], [[], "same"], method);
+    assert.match(sent.source, /loginCampaignService\.py:\d+$/);
+    assert.equal(form(`loginCampaignManager.${method}`, [1]).status, "differs", method);
   }
 });
