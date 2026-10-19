@@ -1787,6 +1787,11 @@ test("the game port carries the customs office's transfer, the station's offices
     "userSvc.GetRedeemTokens",
     // The redeem window's claim of those tokens, which the page makes by name. The gateway's list has nothing of the user service's.
     "userSvc.ClaimRedeemTokens",
+    // The account's daily login campaign and the day's claim of it, which the page asks by name. The gateway's list has nothing of the login campaign manager's.
+    "loginCampaignManager.get_client_campaign_state", "loginCampaignManager.claim_reward",
+    // The seasonal login campaign: which is on, the days claimed of it, and the day's claim, which the page asks by name. The gateway's list has nothing of the seasonal login campaign manager's.
+    "seasonalLoginCampaignManager.get_active_campaign", "seasonalLoginCampaignManager.get_claim_history",
+    "seasonalLoginCampaignManager.claim_reward",
     // Whether the character has done Project Discovery's tutorial and whether the project is enabled, asked by its client service. The gateway's list has nothing of Project Discovery's.
     "ProjectDiscovery.initialize_tutorial_status", "ProjectDiscovery.is_enabled",
     // Whether the client wraps its texts for QA, told on a session of the QA role. The gateway's list has nothing of the localization server's.
@@ -1806,6 +1811,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureSettings.CharacterGetService",
     // A structure's guests. The gateway's list has a station's guests and nothing of a structure's.
     "structureGuests.GetGuests",
+    // A shared bookmark folder taken up, and a known one switched on or off (bookmarkSvc.py 357 and 483).
+    "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState",
     // A pilot's dock at a structure and its undock, by the client's structure docking service. The gateway's list has nothing of them.
     "structureDocking.Dock", "structureDocking.Undock",
     // A pilot's employment record and transfers, by the client's History panel. The gateway's list has nothing of the corporation service's.
@@ -3302,5 +3309,20 @@ test("a claim of redeem tokens goes out as the redeem window's: a list of (token
     [[[[101, null]], 90000001], { station: 60003760 }],
   ]) {
     assert.equal(withContext("userSvc.ClaimRedeemTokens", args, kwargs, own).status, "differs", JSON.stringify([args, kwargs]));
+  }
+});
+
+test("the daily login campaign's read and claim are the client's with nothing sent, and differ with anything", () => {
+  for (const method of ["get_client_campaign_state", "claim_reward"]) {
+    const sent = form(`loginCampaignManager.${method}`, []);
+    assert.deepEqual([sent.args, sent.status], [[], "same"], method);
+    assert.match(sent.source, /loginCampaignService\.py:\d+$/);
+    assert.equal(form(`loginCampaignManager.${method}`, [1]).status, "differs", method);
+  }
+  for (const method of ["get_active_campaign", "get_claim_history", "claim_reward"]) {
+    const sent = form(`seasonalLoginCampaignManager.${method}`, []);
+    assert.deepEqual([sent.args, sent.status], [[], "same"], method);
+    assert.match(sent.source, /seasonalLoginCampaignService\.py:\d+$/);
+    assert.equal(form(`seasonalLoginCampaignManager.${method}`, [1]).status, "differs", method);
   }
 });
