@@ -281,6 +281,18 @@ export interface FleetCompanionRequest {
   /** As `shieldBoosterModuleIDs`, for hull. */
   readonly hullRepairerModuleIDs: readonly number[];
   /**
+   * The ANCILLARY ones among the three lists above, by the game's own group
+   * name ("Ancillary Shield Booster", "Ancillary Armor Repairer"): the
+   * repairers that eat a charge every cycle when one is loaded.
+   *
+   * ⚠ ONLY THE CLEAR-GRID REPAIR READS IT (`clearGridStartable`). In a fight
+   * every repairer is fair game; after one, an ancillary shield booster would
+   * burn cap booster charges on a shield that comes back by itself, and the
+   * operator said the rep-up is done "without caps" (2026-10-14). Absent is the
+   * same as empty: nothing on this fit is ancillary.
+   */
+  readonly ancillaryRepairerModuleIDs?: readonly number[];
+  /**
    * Fitted REMOTE shield-repair modules by item id — the ones that repair
    * SOMEBODY ELSE. Answers a `HealShield` broadcast (and, alongside the other
    * two lists below, a `HealTarget` one — see `healModuleCandidates`'s own
@@ -616,6 +628,9 @@ export function withoutModules(
       shieldBoosterModuleIDs: keep(request.shieldBoosterModuleIDs),
       armorRepairerModuleIDs: keep(request.armorRepairerModuleIDs),
       hullRepairerModuleIDs: keep(request.hullRepairerModuleIDs),
+      ...(request.ancillaryRepairerModuleIDs === undefined
+        ? {}
+        : { ancillaryRepairerModuleIDs: keep(request.ancillaryRepairerModuleIDs) }),
       remoteShieldModuleIDs: keep(request.remoteShieldModuleIDs),
       remoteArmorModuleIDs: keep(request.remoteArmorModuleIDs),
       remoteCapacitorModuleIDs: keep(request.remoteCapacitorModuleIDs),
@@ -3972,6 +3987,41 @@ function decideShipLost(
  */
 export const TANK_LAYER_HURT_THRESHOLD = 0.75;
 
+/**
+ * ⚠ A CLEAR GRID REPS THE TANK ALL THE WAY UP (operator, 2026-10-14: "when the
+ * site is cleared, pilots do not rep up ... by using armor, hull reps or shield
+ * boosters (without caps.)"). The 0.75 above is a FIGHT number, and it was also
+ * the only number: a repairer started below it and stopped AT it, so a site
+ * cleared with the armour at 80% left the armour at 80% for good -- armour and
+ * hull never come back on their own. Seen live 2026-10-14: a companion sat 52
+ * minutes under its return mark ("not well enough yet to go back to the
+ * fight") with an armour repairer fitted and off, because the return mark
+ * (`returnMark`, the flee floor plus 0.2) sat above 0.75 and nothing on the
+ * grid would ever start the repairer again.
+ *
+ * Once the grid is seen clear, a layer below `CLEAR_GRID_REPAIR_START_BELOW`
+ * starts its repairer and the repairer runs until `CLEAR_GRID_REPAIR_WHOLE_AT`.
+ * The gap between the two is the hysteresis: a layer that stopped at 99% is not
+ * re-lit by a reading that wobbles a hair under it. Out of a fight a layer only
+ * ever rises, so the gap is about noisy reads, not damage.
+ */
+export const CLEAR_GRID_REPAIR_START_BELOW = 0.98;
+/** See `CLEAR_GRID_REPAIR_START_BELOW`: the layer counts as whole from here. */
+export const CLEAR_GRID_REPAIR_WHOLE_AT = 0.99;
+/**
+ * The capacitor the clear-grid rep-up never runs below (or the operator's own
+ * `capacitorFloor`, if that is higher). Nothing is shooting, so there is no
+ * reason to fly the capacitor down to the FIGHT floor: a quarter is left in
+ * hand for the next wave. A running repairer stops under it.
+ */
+export const CLEAR_GRID_REPAIR_CAP_FLOOR = 0.25;
+/**
+ * How far above that floor the capacitor has to come back before an idle
+ * repairer starts again. Without the gap a repairer would stop at 25%, start
+ * at 25.1% and stop again one cycle later, every cycle.
+ */
+export const CLEAR_GRID_REPAIR_CAP_RESUME_GAP = 0.25;
+
 /** One tank layer: its current reading and the operator's own repairer picks. */
 interface TankLayer {
   readonly name: "shield" | "armor" | "hull";
@@ -3999,7 +4049,66 @@ type LayerRepairAction =
       readonly layerName: TankLayer["name"];
       /** Which off-half fired: the capacitor floor, or the layer being whole again. */
       readonly because: "cap-floor" | "recovered";
-    };
+    }
+  /** Hurt, a repairer idle, and the capacitor not yet back to `capStartAt`: nothing is sent. */
+  | { readonly kind: "cap-wait"; readonly layerName: TankLayer["name"] };
+
+/**
+ * The numbers one layer's repair decision runs by. A fight uses one hurt line
+ * for both directions and the operator's capacitor floor for both (see
+ * `fightRepairBands`); a clear grid splits each pair (`clearGridRepairBands`).
+ */
+interface LayerRepairBands {
+  /** An idle repairer starts while the layer is below this. */
+  readonly startBelow: number;
+  /** A running repairer stops once the layer is at or above this. */
+  readonly wholeAt: number;
+  /** A running repairer stops while the capacitor is below this. */
+  readonly capFloor: number;
+  /** An idle repairer starts only with the capacitor at or above this. */
+  readonly capStartAt: number;
+}
+
+function fightRepairBands(request: FleetCompanionRequest): LayerRepairBands {
+  return {
+    startBelow: TANK_LAYER_HURT_THRESHOLD,
+    wholeAt: TANK_LAYER_HURT_THRESHOLD,
+    capFloor: request.capacitorFloor,
+    capStartAt: request.capacitorFloor,
+  };
+}
+
+function clearGridRepairBands(request: FleetCompanionRequest): LayerRepairBands {
+  const capFloor = Math.max(request.capacitorFloor, CLEAR_GRID_REPAIR_CAP_FLOOR);
+  return {
+    startBelow: CLEAR_GRID_REPAIR_START_BELOW,
+    wholeAt: CLEAR_GRID_REPAIR_WHOLE_AT,
+    capFloor,
+    capStartAt: Math.min(1, capFloor + CLEAR_GRID_REPAIR_CAP_RESUME_GAP),
+  };
+}
+
+/**
+ * The repairers a clear grid may START on one layer: never cap charges.
+ *
+ * ⚠ "WITHOUT CAPS" (operator, 2026-10-14). An ancillary shield booster burns a
+ * cap booster charge every cycle it has one loaded, and this loop cannot see
+ * whether it has, so out of a fight it is never started: the shield comes back
+ * on its own anyway. An ancillary armour repairer burns nanite paste, not a cap
+ * charge, and runs on capacitor without it; it is started only when the layer
+ * has no plain repairer, because armour never comes back by itself and leaving
+ * it hurt is the strand this rule exists to end. Nothing here ever starts a
+ * capacitor booster: none is on these lists (`resolveDefenseModuleIDs`).
+ */
+function clearGridStartable(layer: TankLayer, ancillary: ReadonlySet<number>): readonly number[] {
+  const plain = layer.moduleIDs.filter((id) => !ancillary.has(id));
+  return layer.name === "shield" || plain.length > 0 ? plain : layer.moduleIDs;
+}
+
+/** The player's words for a layer in a readout. */
+function layerWords(name: TankLayer["name"]): string {
+  return name === "armor" ? "armour" : name;
+}
 
 /**
  * One layer's own repair decision — the `repair` interrupt response's body,
@@ -4028,7 +4137,8 @@ function decideLayerRepairer(
   layer: TankLayer,
   active: ReadonlySet<number>,
   capacitorRatio: number | null,
-  capacitorFloor: number,
+  bands: LayerRepairBands,
+  startable: readonly number[] = layer.moduleIDs,
 ): LayerRepairAction | null {
   if (layer.ratio === null) {
     // Cannot tell: neither start a cycle nor stop one. Stopping blind is the
@@ -4036,7 +4146,7 @@ function decideLayerRepairer(
     // is not a layer this rung has seen recover.
     return null;
   }
-  if (layer.ratio >= TANK_LAYER_HURT_THRESHOLD) {
+  if (layer.ratio >= bands.wholeAt) {
     // ⚠ THE THERMOSTAT'S OTHER OFF-HALF, and the rung is wrong without it. A
     // layer that heals back up mid-fight leaves its repairer cycling on a whole
     // layer, and the DSL has a whole pass for exactly this (`repairShutdown`,
@@ -4062,14 +4172,29 @@ function decideLayerRepairer(
   // same choice the DSL's own `repair` case makes (`cap !== null && cap <
   // REPAIR_CAP_FLOOR`). The risk of an unseen empty cap is a wasted cycle; the
   // risk of refusing to repair on a guess is a layer this rung could have saved.
-  if (capacitorRatio !== null && capacitorRatio < capacitorFloor) {
+  if (capacitorRatio !== null && capacitorRatio < bands.capFloor) {
     const running = layer.moduleIDs.find((id) => active.has(id));
-    return running === undefined
-      ? null
-      : { kind: "deactivate", moduleID: running, layerName: layer.name, because: "cap-floor" };
+    if (running !== undefined) {
+      return { kind: "deactivate", moduleID: running, layerName: layer.name, because: "cap-floor" };
+    }
+    // Nothing running: falls to the start checks below, where a capacitor under
+    // the floor is also under `capStartAt` and answers "cap-wait".
   }
-  const idle = layer.moduleIDs.find((id) => !active.has(id));
-  return idle === undefined ? null : { kind: "activate", moduleID: idle, layerName: layer.name };
+  // Between the two lines a running repairer keeps running and an idle one
+  // stays idle. In a fight the lines are one line and this never fires.
+  if (layer.ratio >= bands.startBelow) {
+    return null;
+  }
+  const idle = startable.find((id) => !active.has(id));
+  if (idle === undefined) {
+    return null;
+  }
+  // The capacitor's own hysteresis, the same shape: in a fight `capStartAt` is
+  // the floor itself, so the check above has already answered.
+  if (capacitorRatio !== null && capacitorRatio < bands.capStartAt) {
+    return { kind: "cap-wait", layerName: layer.name };
+  }
+  return { kind: "activate", moduleID: idle, layerName: layer.name };
 }
 
 interface TankUpStep {
@@ -4105,7 +4230,10 @@ interface TankUpStep {
  *   1. a fitted hardener switches on while a fight is on
  *   2. a hurt layer's OWN repairer switches on — shield from the shield list,
  *      armour from the armour list, hull from the hull list, never across
- *      families
+ *      families. In a fight "hurt" is below `TANK_LAYER_HURT_THRESHOLD`; once
+ *      the grid is seen clear it is anything short of whole, never on cap
+ *      charges, with its own capacitor floor (`clearGridRepairBands`,
+ *      operator 2026-10-14)
  *   3. INVERTED below `request.capacitorFloor`: a RUNNING repairer switches
  *      OFF instead of another one starting, even while that layer is still
  *      hurt — see `decideLayerRepairer`'s own comment for why
@@ -4183,9 +4311,50 @@ function decideTankUp(
 
   // 2 & 3. Each layer's own repairer — on while hurt, inverted off below the
   //        capacitor floor. See `decideLayerRepairer`'s own comment.
+  //
+  //        ⚠ A CLEAR GRID REPAIRS TO FULL, NOT TO THE FIGHT LINE (operator,
+  //        2026-10-14). See `CLEAR_GRID_REPAIR_START_BELOW` for the strand this
+  //        ends. "Clear" is the ladder's one predicate (`gridSeenClear`, the
+  //        drones and the guns read the same one) and nobody locking this ship;
+  //        a blind read keeps the fight numbers. The moment hostiles are back,
+  //        the fight numbers own every repairer again.
+  const clear = gridSeenClear(obs) && obs.targetedByPlayer !== true;
+  const bands = clear ? clearGridRepairBands(request) : fightRepairBands(request);
+  const ancillary = new Set(request.ancillaryRepairerModuleIDs ?? []);
+  if (clear) {
+    // ⚠ "WITHOUT CAPS": an ancillary shield booster still running from the
+    // fight is spending a cap booster charge a cycle on a shield that comes back
+    // by itself. Switched off; the fight lights it again if one starts.
+    const burning = request.shieldBoosterModuleIDs.find((id) => ancillary.has(id) && active.has(id));
+    if (burning !== undefined) {
+      const dropped: CompanionLadderMemory = {
+        ...memory,
+        lastTankUpModuleIDs: memory.lastTankUpModuleIDs.filter((id) => id !== burning),
+      };
+      return {
+        decision: {
+          action: { kind: "deactivate", moduleID: burning },
+          phase: "Tanking up",
+          why: "The grid is clear: the ancillary shield booster is switching off so it spends no cap charges.",
+          memory: dropped,
+        },
+        memory: dropped,
+      };
+    }
+  }
   for (const layer of tankLayers(request, obs)) {
-    const layerAction = decideLayerRepairer(layer, active, obs.capacitorRatio ?? null, request.capacitorFloor);
+    const startable = clear ? clearGridStartable(layer, ancillary) : layer.moduleIDs;
+    const layerAction = decideLayerRepairer(layer, active, obs.capacitorRatio ?? null, bands, startable);
     if (layerAction === null) {
+      continue;
+    }
+    if (layerAction.kind === "cap-wait") {
+      // Said, not acted on: a rung that held the tick for this would hold the
+      // follow and the rejoin with it, for as long as the capacitor takes. In a
+      // fight the readout is the fight's; this only speaks on a clear grid.
+      if (clear) {
+        noteNotice(`Capacitor low: waiting before repairing the ${layerWords(layerAction.layerName)}.`);
+      }
       continue;
     }
     if (layerAction.kind === "activate") {
@@ -4197,7 +4366,9 @@ function decideTankUp(
         decision: {
           action: { kind: "activate", moduleID: layerAction.moduleID, targetID: 0 },
           phase: "Tanking up",
-          why: `The ${layerAction.layerName} is hurt, so a fitted repairer is switching on.`,
+          why: clear
+            ? `The grid is clear: repairing the ${layerWords(layerAction.layerName)}.`
+            : `The ${layerAction.layerName} is hurt, so a fitted repairer is switching on.`,
           memory: lit,
         },
         memory: lit,
@@ -4218,8 +4389,12 @@ function decideTankUp(
         phase: "Tanking up",
         why:
           layerAction.because === "cap-floor"
-            ? "The capacitor is too low to keep repairing, so a running repairer is switching off."
-            : `The ${layerAction.layerName} is whole again, so its repairer is switching off.`,
+            ? clear
+              ? `Capacitor low: the ${layerWords(layerAction.layerName)} repairer is switching off until it recovers.`
+              : "The capacitor is too low to keep repairing, so a running repairer is switching off."
+            : clear
+              ? `The grid is clear and the ${layerWords(layerAction.layerName)} is whole again, so its repairer is switching off.`
+              : `The ${layerAction.layerName} is whole again, so its repairer is switching off.`,
         memory: dropped,
       },
       memory: dropped,
