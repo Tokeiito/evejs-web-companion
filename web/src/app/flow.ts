@@ -493,6 +493,7 @@ import {
 } from "../bots/companionFitCheck.ts";
 import { voteTankLayer } from "../bots/tankLayer.ts";
 import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
+import { createBotLogBuffer } from "./botLogBuffer.ts";
 import {
   routeAlong,
   type SystemGraph,
@@ -24897,50 +24898,54 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * ship them to this character's log on the BFF.
    *
    * ⚠ IT MUST NEVER COST THE RUN ANYTHING. Nothing here is awaited by the
-   * runner, a failed flush drops its batch rather than retrying forever, and
-   * the buffer is capped — a recorder that cannot reach the BFF must not grow
-   * until the tab dies. A `start` line flushes at once, because it is what
-   * rotates the previous run's log and a run that ends badly must not take its
-   * own header with it.
+   * runner, and the buffer is capped (web/src/app/botLogBuffer.ts) — a
+   * recorder that cannot reach the BFF must not grow until the tab dies. A
+   * failed flush puts its batch back for exactly ONE retry; a batch that fails
+   * twice is dropped, so the log can never become an unbounded queue. A `start`
+   * line flushes at once, because it is what rotates the previous run's log and
+   * a run that ends badly must not take its own header with it.
    */
   const BOT_LOG_FLUSH_MS = 3000;
-  const BOT_LOG_MAX_BUFFER = 200;
-  let botLogBuffer: BotLogDraft[] = [];
+  const botLogBuffer = createBotLogBuffer<BotLogDraft>();
   let botLogTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleBotLogFlush(): void {
+    if (botLogTimer === null) {
+      botLogTimer = setTimeout(() => {
+        void flushBotLog();
+      }, BOT_LOG_FLUSH_MS);
+    }
+  }
 
   async function flushBotLog(): Promise<void> {
     if (botLogTimer !== null) {
       clearTimeout(botLogTimer);
       botLogTimer = null;
     }
-    if (botLogBuffer.length === 0) {
+    if (botLogBuffer.size === 0) {
       return;
     }
-    const batch = botLogBuffer;
-    botLogBuffer = [];
+    const batch = botLogBuffer.take();
     try {
-      await api.appendBotLog(batch, callOptions);
+      await api.appendBotLog(batch.lines, callOptions);
     } catch {
-      // The lines are gone. That is the deal: a diary that cannot be written
-      // must not become a queue that grows, or a reason a bot stops.
+      // Back to the front for one retry; a second failure drops it.
+      botLogBuffer.requeue(batch);
+    }
+    // More than one route-sized batch, or a retry, is still waiting.
+    if (botLogBuffer.size > 0) {
+      scheduleBotLogFlush();
     }
   }
 
   const botLogSink: BotLogSink = {
     write(draft) {
       botLogBuffer.push(draft);
-      if (botLogBuffer.length > BOT_LOG_MAX_BUFFER) {
-        botLogBuffer = botLogBuffer.slice(-BOT_LOG_MAX_BUFFER);
-      }
       if (draft.kind === "start" || draft.kind === "end") {
         void flushBotLog();
         return;
       }
-      if (botLogTimer === null) {
-        botLogTimer = setTimeout(() => {
-          void flushBotLog();
-        }, BOT_LOG_FLUSH_MS);
-      }
+      scheduleBotLogFlush();
     },
   };
 

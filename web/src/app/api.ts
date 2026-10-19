@@ -1629,9 +1629,9 @@ export async function appendBotLog(
   await postJson("/api/bots/bot-log", { entries }, options);
 }
 
-/** One character's bot log — the current run, or the one before it. */
+/** One character's bot log — the current run, or one of the two before it. */
 export async function readBotLog(
-  which: "current" | "previous" = "current",
+  which: "current" | "previous" | "previous2" = "current",
   options: ApiOptions = {},
 ): Promise<readonly JsonValue[]> {
   const data = await getJson(`/api/bots/bot-log?which=${which}`, options);
