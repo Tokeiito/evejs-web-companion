@@ -13524,6 +13524,14 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
   }
 });
 
+// CorpMemberTracking._GetRoleOptions: groups 1/2 of the installed client's role table, not server calls.
+app.get("/api/client-data/corporation-roles", requireAuth, async (req, res, next) => {
+  try {
+    const [roles, groups] = await Promise.all([clientBuiltData.table("corporationRoles"), clientBuiltData.table("corporationRoleGroups")]);
+    res.json({ ok: true, available: roles !== null && groups !== null, roles, groups });
+  } catch (error) { next(error); }
+});
+
 // An alpha clone's skills and their highest levels for a race, as the client's clone grade storage has them
 // (clonegrade.CloneGradeStorage()[raceID]; src/clientData/clientBuiltData.js cloneGrades): a skill not listed is 0.
 // The client goes by them for an alpha (clone_grade_svc.get_max_skill_level). `available` false where the client's
@@ -13535,6 +13543,7 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
 // ships, each hull's group, faction, meta group, category and whether it is published, the same of each type asked (a saved
 // fitting's hull; null for a type the client does not have), and each race's name as the number of its message.
 // `available` false where the client's data could not be read. No session: they do not vary by player.
+
 app.get("/api/client-data/hull-browser", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

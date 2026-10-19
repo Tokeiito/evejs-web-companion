@@ -33,6 +33,9 @@ const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 // The tables read here: the name each goes by, the client's loader for it, and its resource (in lower case, as
 // the index is kept).
 const TABLES = Object.freeze({
+  // evecorporation.roles: the role masks and group membership come from the installed client, never a copied table.
+  corporationRoles: Object.freeze({ loader: "corporationRolesLoader", resource: "res:/staticdata/corporationroles.fsdbinary" }),
+  corporationRoleGroups: Object.freeze({ loader: "corporationRoleGroupsLoader", resource: "res:/staticdata/corporationrolegroups.fsdbinary", keyOrder: true, longStrings: true }),
   missions: Object.freeze({ loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" }),
   // An NPC corporation's own record: the client takes an agent's faction from its corporation's (npcs/npccorporations.py).
   npcCorporations: Object.freeze({ loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" }),
@@ -198,8 +201,8 @@ function orderedRows(printed) {
 // A table printed as a dict of whole-number keys, its rows as they are, with the order the loader printed its keys in
 // kept beside them as "#order" (a key no whole number, so not moved): JSON.parse would put whole-number keys in rising
 // order. Only for a table whose rows hold no whole-number keys of their own.
-function keyOrdered(printed) {
-  const marked = JSON.parse(printed.replace(/"(\d+)":/g, '"#$1":'));
+function keyOrdered(printed, parse = JSON.parse) {
+  const marked = parse(printed.replace(/"(\d+)":/g, '"#$1":'));
   const table = {};
   const order = [];
   for (const [key, row] of Object.entries(marked)) {
@@ -254,7 +257,11 @@ function createClientBuiltData({
       ...(described.attribute ? { attribute: described.attribute } : {}),
       ...(keys ? { keys } : {}),
     });
-    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed) : described.innerOrder ? innerOrdered(printed) : JSON.parse(printed);
+    // JSON.parse's source text preserves 64-bit role masks before a JS number can round them.
+    const parse = described.longStrings ? (text) => JSON.parse(text, (key, value, context) => (
+      typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value) ? context.source : value
+    )) : JSON.parse;
+    const table = described.keepOrder ? orderedRows(printed) : described.keyOrder ? keyOrdered(printed, parse) : described.innerOrder ? innerOrdered(printed) : parse(printed);
     if (!table || typeof table !== "object" || Array.isArray(table)) {
       throw new Error(`The client's ${described.loader} did not print a table.`);
     }

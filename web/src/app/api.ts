@@ -48,6 +48,7 @@ import type {
   QuestionAnswer,
 } from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
+import { pyIntDictOrder } from "../bridge/pyDict.ts";
 import type { BotLaunchGrant, BotRiskClass } from "../bots/runPolicy.ts";
 import {
   type CompanionSetup,
@@ -4523,6 +4524,21 @@ export async function getEffectDisplayNameIDs(
     if (Number.isSafeInteger(effectID) && effectID > 0) displayNameIDs[effectID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
   }
   return { available: data.available === true, displayNameIDs };
+}
+
+/** The client's corporation role/group tables, read in place by its compiled loaders. */
+export async function getCorporationRoleOptions(options: ApiOptions = {}): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
+  const data = await getJson("/api/client-data/corporation-roles", options);
+  if (data.available !== true) throw new Error("The client's corporation role data could not be read.");
+  const roles = data.roles as Record<string, { nameID: number }>;
+  const groups = data.groups as Record<string, { roleMask: number | string }> & { "#order": number[] };
+  return pyIntDictOrder(groups["#order"]).filter(id => id === 1 || id === 2).flatMap(groupID => {
+    const mask = BigInt(groups[String(groupID)]!.roleMask);
+    return Object.entries(roles).flatMap(([bit, role]) => {
+      const roleID = 1n << BigInt(bit);
+      return (mask & roleID) === roleID ? [{ roleID: roleID.toString(), nameID: role.nameID, groupID }] : [];
+    });
+  });
 }
 
 /**

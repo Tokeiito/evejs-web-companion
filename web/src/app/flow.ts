@@ -173,6 +173,8 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
+import { locationKind } from "../bridge/clientWords.ts";
+import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
 import { addressBookOf, corporateAddressBookOf, type ContactScope, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
@@ -2044,6 +2046,9 @@ export interface AppFlow {
   mailContacts(): Promise<readonly api.CharacterMatch[]>;
   /** The pilot's contacts and blocked owners, each named, as the Contacts window shows them (charMgr.GetContactList). */
   addressBook(contactType?: ContactScope): Promise<NamedAddressBook>;
+  /** Corporation member tracking, full for Directors, simple for other members (base_corporation.py 863-867). */
+  corporationMemberTracking(): Promise<CorporationTracking>;
+  corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -14568,8 +14573,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  // addressbook.GetContacts (addressbookService.py 193 to 250) for the Contacts window: charMgr.GetContactList() by
-  // the generic call, every contact and blocked owner named as the client primes them (cfg.eveowners, 240 to 244).
+  async function corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
+    // GetRoleGroupings asks GetDivisionNames, which reads the held corporation row.
+    await bridgeAsk("corpRegistry", "GetCorporation", []);
+    const roles = await api.getCorporationRoleOptions(callOptions);
+    await wordsNow(roles.map(role => `#${role.nameID}`));
+    return roles;
+  }
+  async function corporationMemberTracking(): Promise<CorporationTracking> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const director = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
+    const members = corporationTrackingOf(await bridgeAsk("corpRegistry", director ? "GetMemberTrackingInfo" : "GetMemberTrackingInfoSimple", []));
+    const faction = await bridgeAsk("facWarMgr", "GetCorporationWarFactionID", [online.corporationID]);
+    const factionID = typeof faction === "number" && faction > 0 ? faction : null;
+    await resolveNamesNow([
+      ...members.map(row => ({ kind: "owner" as const, id: row.characterID })),
+      ...members.flatMap(row => [row.baseID, ...(director ? [row.locationID] : [])].filter((id): id is number => id !== null && id > 0).map(id => ({ kind: locationKind(id), id }))),
+      ...(director ? members.flatMap(row => [
+        ...(row.shipTypeID ? [{ kind: "type" as const, id: row.shipTypeID }] : []),
+        ...((factionID ?? row.factionID) ? [{ kind: "owner" as const, id: (factionID ?? row.factionID)! }] : []),
+      ]) : []),
+    ]);
+    return { members, factionID };
+  }
   let corporateLabelRead: { ownerID: number | null; promise: Promise<readonly ContactLabel[] | null> } | null = null;
   function readContactLabels(contactType: ContactScope): Promise<readonly ContactLabel[] | null> {
     if (contactType === "contact") return bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
@@ -14584,6 +14611,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const labels = await readContactLabels("corpcontact");
     if (labels !== null) corporateLabelRead = { ownerID: store.station.get().online?.corporationID ?? null, promise: Promise.resolve(change(labels)) };
   }
+  // addressbook.GetContacts (addressbookService.py 193 to 250) for the Contacts window: charMgr.GetContactList() by
+  // the generic call, every contact and blocked owner named as the client primes them (cfg.eveowners, 240 to 244).
   async function addressBook(contactType: ContactScope = "contact"): Promise<NamedAddressBook> {
     let answer: JsonValue;
     try {
@@ -27918,6 +27947,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepOwnersSearchBy,
     mailContacts,
     addressBook,
+    corporationMemberTracking,
+    corporationMemberRoleOptions,
     primeContactsOnline,
     addOrEditContact,
     deleteContacts,
