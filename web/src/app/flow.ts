@@ -18,7 +18,7 @@ import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
 import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, usedWithTypeIDs, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { fittingSkillWarning, type FittingSkillWarning } from "../bridge/fittingSkills.ts";
-import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
+import { FREIGHT_BAYS, planLootTransfers, splitNeverFits } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
 import { compressItemInSpace } from "../bridge/compressionWrites.ts";
@@ -415,7 +415,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
@@ -486,7 +486,7 @@ import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
 import { AUTOMATIC_UTILITY_FAMILIES } from "../nav/combatUtilityPolicy.ts";
 import { issueCombatUtility, issueUtilityReload } from "../nav/combatUtilityIssue.ts";
-import { nameKey, type NameRef } from "../store/names.ts";
+import { nameKey, type NameKind, type NameRef } from "../store/names.ts";
 import {
   companionFitWarnings,
   requestForFit,
@@ -706,6 +706,7 @@ import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, is
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
+import { classifySalvageModules } from "../nav/salvageModules.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
@@ -751,6 +752,13 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
+import { REDEEM_NOTICE, decodeRedeemTokens, type RedeemOutcome, type RedeemToken } from "../bridge/redeem.ts";
+import { readRedeemTokens } from "../bridge/redeemReads.ts";
+import { claimRedeemTokens } from "../bridge/redeemWrites.ts";
+import { LOGIN_CAMPAIGN_NOTICE, campaignAfterClaim, decodeLoginCampaign, type LoginClaim } from "../bridge/loginRewards.ts";
+import { readLoginCampaign, readSeasonalCampaign } from "../bridge/loginRewardReads.ts";
+import { claimLoginReward as claimLoginRewardCall, claimSeasonalReward as claimSeasonalRewardCall } from "../bridge/loginRewardWrites.ts";
+import { REMOTE_MESSAGE, decodeRemoteMessage, serverMessageText, type ServerMessage } from "../bridge/serverMessages.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -2389,6 +2397,27 @@ export interface AppFlow {
   pilotWealth(): Promise<number | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
+  /** Redeem Items (redeemsvc.py): what the account may redeem, read again of what the pilot's transport keeps. */
+  loadRedeemTokens(): Promise<void>;
+  /** The pilot's home station, where Redeem to Home Station delivers (homestation/client/service.py 67); null where it cannot be read. */
+  redeemHomeStation(): Promise<number | null>;
+  /**
+   * Redeem Items' Redeem to Current Station or Redeem to Home Station (redeemItemsContainer.py redeem, 343 to 356): the
+   * tokens for the pilot, and then what is left read again. Fails as the call fails.
+   */
+  redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome>;
+  /** Daily Login Rewards (loginCampaignService.py): the account's campaign, read again. */
+  loadLoginRewards(): Promise<void>;
+  /**
+   * The window's Claim (loginCampaignService.py claim_reward, 196 to 212): the day's reward, into the account's redeem
+   * queue. Fails where the server gave nothing (already claimed today), and the campaign is read again.
+   */
+  claimLoginReward(): Promise<LoginClaim>;
+  /**
+   * The seasonal tab's Claim (seasonalLoginCampaignService.py claim_reward, 80 to 88): the day's rewards, into the
+   * account's redeem queue; the campaign is read again after. Fails where the server gave nothing.
+   */
+  claimSeasonalReward(): Promise<void>;
   /**
    * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK): AskAreYouSure with the tab's words, then
    * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
@@ -3443,6 +3472,8 @@ export interface AppFlow {
   listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
+  /** The bookmark folders the character knows or administers (for the Bot Builder's folder picker). */
+  listBookmarkFolders(): Promise<readonly { folderID: number; name: string }[]>;
   /**
    * The pilot's bookmark folders, bookmarks and subfolders (accessGroupBookmarkMgr.GetMyActiveBookmarks, as the
    * client's bookmark service primes them): the Locations window's list.
@@ -5316,6 +5347,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "standings/char", char: after });
         }
       }
+      return;
+    }
+    // redeem.OnRedeemingQueueUpdated (redeemsvc.py 162 to 169): what the account may redeem has changed, and is read
+    // again.
+    if (method === REDEEM_NOTICE) {
+      void loadRedeemTokens().catch(() => {});
+      return;
+    }
+    // loginCampaignService.OnCampaignEnrollmentChanged (84 to 88): the account's campaign is another, and is read again.
+    if (method === LOGIN_CAMPAIGN_NOTICE) {
+      void loadLoginRewards().catch(() => {});
+      return;
+    }
+    // gameui.OnRemoteMessage (347 to 356): the server tells the player something, as a dialog of the client's, and the
+    // page says it on the notice board, in the client's words where it has them.
+    if (method === REMOTE_MESSAGE) {
+      const message = decodeRemoteMessage(args);
+      if (message !== null) void sayServerMessage(message).catch(() => {});
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -16943,6 +16992,159 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return Number.isFinite(value) ? value : null;
   }
 
+  // redeem.FetchRedeemTokens (redeemsvc.py 63 to 65): the page reads the tokens as the pilot comes online and at the
+  // server's OnRedeemingQueueUpdated, and after a claim; the transport answers from what it keeps, fetched as the
+  // client fetches (bridge/redeemReads.ts). A transport that does not carry the call has none to give.
+  async function loadRedeemTokens(): Promise<void> {
+    let answer: JsonValue;
+    try {
+      answer = await readRedeemTokens(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      store.apply({ type: "redeem/tokens", tokens: null, error: "What you may redeem could not be read just now." });
+      return;
+    }
+    if (answer === null) {
+      store.apply({ type: "redeem/tokens", tokens: null, error: null });
+      return;
+    }
+    const tokens = decodeRedeemTokens(answer);
+    store.apply(tokens === null
+      ? { type: "redeem/tokens", tokens: null, error: "What you may redeem could not be read just now." }
+      : { type: "redeem/tokens", tokens, error: null });
+    if (tokens !== null) requestNames(tokens.map((token) => ({ kind: "type", id: token.typeID })));
+  }
+
+  async function redeemHomeStation(): Promise<number | null> {
+    try {
+      const stationID = decodeHomeStationID(await bridgeAsk("home_station", "get_home_station", []));
+      if (stationID !== null) requestNames([{ kind: "station", id: stationID }]);
+      return stationID;
+    } catch {
+      return null;
+    }
+  }
+
+  async function redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) throw new Error("There is no pilot online to redeem for.");
+    try {
+      return await claimRedeemTokens(bridgeDo, tokens, characterID, useHomeStation);
+    } finally {
+      // redeemsvc.py 127: the claim, answered or refused, is followed by the tokens' fetch.
+      await loadRedeemTokens().catch(() => {});
+    }
+  }
+
+  // loginCampaignService._get_campaign_state (106 to 119): the page reads the account's campaign as the pilot comes
+  // online and at the server's OnCampaignEnrollmentChanged (84 to 88), by the service's own call
+  // (bridge/loginRewardReads.ts). A transport that does not carry the call has none to give.
+  async function loadLoginRewards(): Promise<void> {
+    await Promise.all([loadDailyLoginCampaign(), loadSeasonalCampaign()]);
+  }
+
+  // seasonalLoginCampaignService.prime_campaign_data and get_claim_history (39 to 51, 90 to 97): the seasonal campaign
+  // on, and the days the account has claimed of it. What each day gives is the client's own data, by the campaign's
+  // ID (bridge/seasonalCampaignTable.ts), which the window reads.
+  async function loadSeasonalCampaign(): Promise<void> {
+    let seasonal: Awaited<ReturnType<typeof readSeasonalCampaign>>;
+    try {
+      seasonal = await readSeasonalCampaign(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      return;
+    }
+    if (seasonal === null) {
+      store.apply({ type: "login-rewards/seasonal", seasonal: null });
+      return;
+    }
+    // SeasonalCampaignsStaticData().get_campaign(id): the table is the client's data, read only where a campaign is on.
+    const { SEASONAL_CAMPAIGNS } = await import("../bridge/seasonalCampaignTable.ts");
+    const definition = SEASONAL_CAMPAIGNS[seasonal.active.campaignID] ?? null;
+    store.apply({ type: "login-rewards/seasonal", seasonal: { ...seasonal, definition } });
+    if (definition !== null) {
+      requestNames([...definition.alpha, ...definition.omega].map(([, typeID]) => ({ kind: "type", id: typeID })));
+    }
+  }
+
+  async function claimSeasonalReward(): Promise<void> {
+    let given = false;
+    try {
+      given = await claimSeasonalRewardCall(bridgeDo);
+    } finally {
+      // The client keeps its own history after a claim (_add_rewards_to_history); the page reads the server's.
+      await loadSeasonalCampaign().catch(() => {});
+    }
+    if (!given) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+  }
+
+  async function loadDailyLoginCampaign(): Promise<void> {
+    let answer: JsonValue;
+    try {
+      answer = await readLoginCampaign(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      store.apply({ type: "login-rewards/state", campaign: null, error: "Your daily login rewards could not be read just now." });
+      return;
+    }
+    const campaign = answer === null ? null : decodeLoginCampaign(answer);
+    store.apply({ type: "login-rewards/state", campaign, error: null });
+    if (campaign !== null) requestNames(campaign.days.map((day) => ({ kind: "type", id: day.typeID })));
+  }
+
+  async function claimLoginReward(): Promise<LoginClaim> {
+    const claim = await claimLoginRewardCall(bridgeDo);
+    const campaign = store.loginRewards.get().campaign;
+    if (claim === null || campaign === null) {
+      // claim_reward answers None where nothing may be claimed: what the server holds is read again.
+      await loadDailyLoginCampaign().catch(() => {});
+      if (claim === null) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+      return claim;
+    }
+    store.apply({ type: "login-rewards/claimed", campaign: campaignAfterClaim(campaign, claim), reward: claim.reward });
+    if (claim.reward !== null) requestNames([{ kind: "type", id: claim.reward.typeID }]);
+    return claim;
+  }
+
+  /** How long a server's message waits for the client's dialog and names before it is said with what there is. */
+  const SERVER_MESSAGE_WORDS_WAIT_MS = 1500;
+
+  /** Resolves once `ready()` holds, re-checked as `signal` changes, or after `ms` whatever it says. */
+  function until(signal: { subscribe(run: () => void): () => void }, ready: () => boolean, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (ready()) {
+        resolve();
+        return;
+      }
+      let stop: () => void = () => {};
+      const timer = setTimeout(() => { stop(); resolve(); }, ms);
+      stop = signal.subscribe(() => {
+        if (!ready()) return;
+        clearTimeout(timer);
+        queueMicrotask(() => stop());
+        resolve();
+      });
+    });
+  }
+
+  // A server's message (bridge/serverMessages.ts): the client's dialog and the names in it are asked for, and given a
+  // moment to come, as the client's own text takes none; then it is said with what the page has.
+  async function sayServerMessage(message: ServerMessage): Promise<void> {
+    const client = (): ClientWording => ({ templates: store.words.get().templates, playerID: store.station.get().online?.characterID ?? null });
+    const keys = wordsLabels([message.words]);
+    requestWords(keys);
+    // (An answer without the client's words keeps each key too, as none: either way the keys are there when it comes.)
+    await until(store.words, () => keys.every((key) => key in store.words.get().templates), SERVER_MESSAGE_WORDS_WAIT_MS);
+    const refs = wordsNameRefs([message.words], client());
+    requestNames(refs);
+    await until(store.names, () => refs.every((ref) => nameKey(ref.kind, ref.id) in store.names.get().resolved), SERVER_MESSAGE_WORDS_WAIT_MS);
+    const nameOf = (kind: NameKind, id: number): string => resolvedName(store.names.get().resolved, kind, id, `${kind} ${id}`);
+    const text = serverMessageText(message, nameOf, client());
+    if (text === null) return;
+    store.apply({ type: "server-messages/said", kind: message.kind, text: null });
+    store.apply({ type: "server-messages/said", kind: message.kind, text });
+  }
+
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
     // (The page's own call, bridge/giveMoney.ts; the pilot's ISK is put right by the OnAccountChange that follows.)
     await giveMoneyCall(bridgeDo, toID, amount, reason);
@@ -24126,6 +24328,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return ids;
   }
 
+  /** The fitted, online tractor beams, judged as the salvagers are: high slot, online, group name (nav/salvageModules.ts). */
+  function resolveTractorModuleIDs(): readonly number[] {
+    const fit = store.fitting.get();
+    const resolved = store.names.get().resolved;
+    return classifySalvageModules(fit.slotsError === null ? fit.slots : null, (typeID) => resolved[nameKey("typeGroup", typeID)] ?? null)
+      .tractors.map((module) => module.moduleID);
+  }
+
   function resolveSalvageModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
     if (fit.slotsError !== null) {
@@ -24159,12 +24369,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "fly-to-mission-site",
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
-  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "board-previous-ship", "board-planetary-hauler", "move-items", "repair-ship", "sell-item", "jettison-cargo", "load-cargo", "haul-all", "route-hauler"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "board-previous-ship", "board-planetary-hauler", "move-items", "repair-ship", "sell-item", "jettison-cargo", "load-cargo", "haul-all", "route-hauler", "salvage-bookmarked-sites"]);
   // Blocks that need the ACTIVE HULL'S BAY LIST, contents included. Kept apart
   // from CARGO_MACROS because the two reads have very different prices: the
   // inventory panel is one call, `/bays` is one capacity call per candidate
   // flag plus a listing. Only a block that actually empties the ship earns it.
-  const BAY_MACROS = new Set(["unload-cargo", "load-cargo", "haul-all", "route-hauler"]);
+  const BAY_MACROS = new Set(["unload-cargo", "load-cargo", "haul-all", "route-hauler", "salvage-bookmarked-sites"]);
   // Blocks that WORK A ROCK, and so are worth running the mining surveyor for.
   // `travel-to-belt` and `compress-ore` are deliberately not here: neither one
   // reads a rock, and a scan they cannot use is a round trip nobody asked for.
@@ -25117,8 +25327,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // "hand it over and let the server judge" — never as "no room".
     const freeFor = (bay: string | null): number | null =>
       holdFreeM3(room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity ?? null);
+    // ⚠ A THING NO HOLD OF THIS HULL COULD TAKE EVEN EMPTY IS NOT A FULL SHIP.
+    // A 4,000 m3 drop in a wreck used to plan nothing, which reads as "no room"
+    // and sent a salvager home to unload and back again for ever. Such rows are
+    // left where they are (bayRouting.splitNeverFits); a can holding nothing
+    // else is as good as emptied, for this pilot and every one like it.
+    const capacityFor = (bay: string | null): number | null =>
+      room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity?.capacity ?? null;
+    const { rest } = splitNeverFits(rows, bays, capacityFor);
+    if (rest.length === 0) {
+      reportContainerEmptied(containerID);
+      return { stacks: rows.length, planned: 0, moved: 0 };
+    }
     const outcome = await transferLootedRows(
-      rows,
+      rest,
       { kind: "container", itemID: containerID },
       bays,
       freeFor,
@@ -25129,13 +25351,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // the container is actually empty. A planned transfer can fit only part
       // of a stack, or leave another stack behind for this or another hull.
       const remaining = await api.openContainer(containerID, callOptions);
-      if (decodeInventoryRows(remaining.list, remaining.volumes).length > 0) {
+      if (splitNeverFits(decodeInventoryRows(remaining.list, remaining.volumes), bays, capacityFor).rest.length > 0) {
         throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
       }
       reportContainerEmptied(containerID);
       return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
     }
-    if (outcome.moved >= rows.length) {
+    if (outcome.moved >= rest.length) {
       // Every stack it had, this ship took: it is empty NOW, which is the same
       // fact as "it was empty" to every pilot still to come. A PARTIAL move is
       // deliberately silent — what did not fit is a fact about this hull's
@@ -25635,7 +25857,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         let bookmarks: ScriptObservation["bookmarks"] = null;
         // (The mission block takes its spots from the journal, as the client's bookmark service does: no folder is read for it.)
-        if (macro === "warp-to-bookmark") {
+        if (macro === "warp-to-bookmark" || macro === "salvage-bookmarked-sites") {
           try {
             // The page's own call (bridge/bookmarkReads.ts), as the client's bookmark service makes it. A read
             // that fails leaves them unread, and the step reading: never an empty list of them. On the game port
@@ -25644,10 +25866,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             bookmarks = active.bookmarks.map((bm) => ({
               bookmarkID: bm.bookmarkID,
               name: bm.memo,
+              folderID: bm.folderID,
+              // FILETIME: 100 ns since 1601. A shared bookmark is not warped to by another pilot for its first
+              // two minutes (eve.js beyonceService.isBookmarkDelayed), so its age is what a bot needs.
+              ageMs: bm.created === null ? null : serverNow() - Number((bm.created - 116444736000000000n) / 10000n),
               solarSystemID: bm.locationID > 0 ? bm.locationID : null,
+              position: bm.x !== null && bm.y !== null && bm.z !== null ? { x: bm.x, y: bm.y, z: bm.z } : null,
             }));
           } catch {
             bookmarks = null;
+          }
+        }
+        let bookmarkFolders: ScriptObservation["bookmarkFolders"] = null;
+        if (macro === "use-bookmark-folders" || macro === "salvage-bookmarked-sites") {
+          try {
+            // The folders the pilot knows, and those it administers and may add: both of the client's reads
+            // (bridge/bookmarkReads.ts). A read that fails leaves them unread, never an empty list. The search is
+            // not kept by the transport, so it is asked only while a block is still taking its folders up.
+            const [active, administered] = await Promise.all([
+              readMyActiveBookmarks(bridgeAsk),
+              hint.needsFolderSearch === true ? readFoldersWithAdminAccess(bridgeAsk) : Promise.resolve([]),
+            ]);
+            bookmarkFolders = {
+              known: active.folders.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal, isActive: f.isActive })),
+              addable: administered.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal })),
+            };
+          } catch {
+            bookmarkFolders = null;
           }
         }
         let activeShipID: ScriptObservation["activeShipID"] = null;
@@ -25888,7 +26133,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetAds = null;
           }
         }
-        if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
+        // The salvager reads its hold only while emptying it at its station, not each tick it waits there for a site.
+        const readsHolds = macro !== "salvage-bookmarked-sites" || hint.salvagerUnloading === true;
+        if (macro !== null && (MISSION_MACROS.has(macro) || (CARGO_MACROS.has(macro) && readsHolds))) {
           if (MISSION_MACROS.has(macro)) {
             try {
               journal = decodeJournal(await readJournal(bridgeAsk));
@@ -25916,7 +26163,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               briefing = null;
             }
           }
-          if (CARGO_MACROS.has(macro)) {
+          if (CARGO_MACROS.has(macro) && readsHolds) {
             try {
               const panel = await api.loadInventory(callOptions);
               // ⚠ THE VOLUMES ARE NOT DECORATION. Per-unit m³ is what lets the
@@ -25941,7 +26188,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Gated hard on that block: the BFF answers `/bays` with a capacity
           // call per candidate flag, which is worth paying once at a drop-off
           // and never worth paying on a mining tick.
-          if (BAY_MACROS.has(macro)) {
+          if (BAY_MACROS.has(macro) && readsHolds) {
             try {
               // The hull the fit was resolved against, falling back to the
               // inventory panel's active ship: this block runs DOCKED, where the
@@ -25964,11 +26211,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Which parked hulls have a planetary hold, for the block that boards
           // one. One capacity read per ship, asked BY NAME, and only while that
           // block runs. A known hauler can be boarded despite other failed
-          // reads; proving none is parked requires every hull's answer.
-          if (macro === "board-planetary-hauler" && stationHangar !== null && activeShipID !== null) {
+          // reads; proving none is parked requires every hull's answer. In space
+          // there is no hangar, and the one hull asked is the ship flown: a
+          // hauler already out can haul from where it is.
+          if (macro === "board-planetary-hauler" && activeShipID !== null) {
             const shipIDs = [...new Set([
               activeShipID,
-              ...stationHangar.filter((row) => row.categoryID === 6 && row.singleton).map((row) => row.itemID),
+              ...(stationHangar ?? []).filter((row) => row.categoryID === 6 && row.singleton).map((row) => row.itemID),
             ])];
             const reads = await Promise.all(shipIDs.map(async (shipID) => {
               try {
@@ -26162,6 +26411,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           activeFitting,
           activeShipID,
           bookmarks,
+          bookmarkFolders,
           colonies,
           piLaunches,
           customsOffices,
@@ -26198,6 +26448,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           oreMiningModuleIDs: capabilities.oreMining,
           travelPropulsionModules: capabilities.travelPropulsion,
           salvageModuleIDs: capabilities.salvage,
+          tractorModuleIDs: macro === "salvage-bookmarked-sites" ? resolveTractorModuleIDs() : [],
           shieldRepairerIDs: capabilities.defense.shield,
           armorRepairerIDs: capabilities.defense.armor,
           hullRepairerIDs: capabilities.defense.hull,
@@ -26666,6 +26917,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "warpBookmark":
             await warpToSpot(action.bookmarkID);
             return;
+          case "addKnownFolder":
+            await addToKnownFoldersCall(bridgeDo, action.folderID, true);
+            return;
+          case "setFolderActive":
+            await setFolderActiveCall(bridgeDo, action.folderID, action.active);
+            return;
+          case "moveBookmarks":
+            await moveBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, null, action.bookmarkIDs);
+            return;
+          case "salvageBatch": {
+            // A salvager's module work for the tick, as a pilot clicks it: each step by itself, the same calls the
+            // single actions make. A refused step does not stop the rest; all refused is the batch refused.
+            const failed: string[] = [];
+            for (const step of action.steps) {
+              try {
+                if (step.kind === "lock") await lockTargetCall(bridgeDo, step.targetID, null);
+                else if (step.kind === "unlock") await releaseTarget(step.targetID);
+                else if (step.kind === "activate") requireModuleOutcome(await switchModuleOn(step.moduleID, { targetID: step.targetID, repeat: -1 }, callOptions), step.moduleID, "activate");
+                else requireModuleOutcome(await switchModuleOff(step.moduleID, {}, callOptions), step.moduleID, "deactivate");
+              } catch (error) {
+                if (isSessionLost(error)) throw error;
+                failed.push(`${step.kind}: ${String(error)}`);
+              }
+            }
+            if (failed.length === action.steps.length) throw new Error(failed[0]);
+            return failed.length > 0 ? `${failed.length} of ${action.steps.length} refused (${failed.join("; ")})` : undefined;
+          }
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);
             return;
@@ -26762,8 +27040,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           }
           case "lootContainer": {
-            // Same shape as lootWreck — the server applies no ownership check to
-            // a container, so nothing here needs to either.
+            // Same shape as lootWreck. The server DOES judge a container's
+            // loot rights (spaceLootEntitlement: a take without them is theft,
+            // a suspect flag in empire space); the deciders choose only cans the
+            // pilot may take (nav/lootableContainers.ts), and the claim here is
+            // the haulers' lease on a can, not a right to it.
             if (!claimRunID) throw new Error("Container ownership was not confirmed.");
             await lootFrom(action.containerID, claimRunID);
             return;
@@ -26856,6 +27137,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetApplication = { fleetID: action.fleetID, outcome, ...(action.supportOrder ? { supportOrder: action.supportOrder } : {}) };
             return;
           }
+          case "stopRoute":
+            autopilot?.abort();
+            return;
           case "startSystemRoute":
             // The SHARED autopilot again — resolveDestination answers a system id
             // with kind "system", so the plan carries no final dock and the ride
@@ -26986,8 +27270,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return; // a newer start / a stop / a panic superseded us during the read
     }
     // Resolve "starting station" from a FRESH flight read. If the bot starts in
-    // space there is no station to bind, and emergency travel will pause with an
-    // honest refusal instead of claiming the exposed ship is safely docked.
+    // space there is no station it started from, so it stands for the bot's own
+    // home when that names a station, else the character's home station
+    // (charMgr.GetHomeStation): a run that starts out in space docks there to
+    // board, delivers there and comes back there. Only when neither is known
+    // does emergency travel pause with an honest refusal instead of claiming
+    // the exposed ship is safely docked.
     let startStatus = store.flight.get().status;
     try {
       startStatus = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
@@ -26998,7 +27286,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (gen !== customBotGeneration) {
       return;
     }
-    const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
+    let startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
+    if (startingStationID === null && startStatus !== null) {
+      startingStationID = resolveStationRef(doc.home, null);
+      if (startingStationID === null) {
+        try {
+          // The character sheet's own read of it (bridge/characterSheetReads.ts).
+          startingStationID = decodeHomeStationID(await bridgeAsk("charMgr", "GetHomeStationRow", []));
+        } catch {
+          // Unread stays null: the honest pause below, never a guessed station.
+        }
+      }
+      if (gen !== customBotGeneration) {
+        return;
+      }
+    }
     // Which conditions this doc actually tests — decided ONCE, so observe pays only
     // for the per-tick reads a bot really needs (the wallet, the local roster, the
     // cargo hold). See scriptWatchedConditionKinds.
@@ -28031,6 +28333,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      void loadRedeemTokens().catch(() => {});
+      void loadLoginRewards().catch(() => {});
       // The mission tracker's registration as the client's info panels start (RegisterMissionTracking).
       void registerMissionTracking().catch(() => {});
       await refreshStationPanel();
@@ -29349,6 +29653,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWallet,
     pilotWealth,
     giveMoney,
+    loadRedeemTokens,
+    redeemHomeStation,
+    redeemTokens,
+    loadLoginRewards,
+    claimLoginReward,
+    claimSeasonalReward,
     giveIskFromWallet,
 
     loadStandings,
@@ -29803,6 +30113,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return active.bookmarks
         .filter((bm) => bm.memo.length > 0)
         .map((bm) => ({ bookmarkID: bm.bookmarkID, name: bm.memo }));
+    },
+
+    async listBookmarkFolders() {
+      const [active, administered] = await Promise.all([readMyActiveBookmarks(bridgeAsk), readFoldersWithAdminAccess(bridgeAsk)]);
+      const byID = new Map<number, string>();
+      for (const folder of [...active.folders, ...administered]) byID.set(folder.folderID, folder.folderName);
+      return [...byID].map(([folderID, name]) => ({ folderID, name })).sort((a, b) => a.name.localeCompare(b.name) || a.folderID - b.folderID);
     },
 
     pauseRoute() {
