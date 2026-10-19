@@ -8,6 +8,10 @@
   import { resolvedName } from "../store/names.ts";
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
+  import Contacts from "./Contacts.svelte";
+  import type { NamedAddressBook } from "../bridge/contacts.ts";
+  import type { ContactAction } from "./contactAction.ts";
+  import { isNpcOwner } from "../bridge/mail.ts";
 
   let { store, flow, openMail }: { store: ClientStore; flow: AppFlow; openMail?: () => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -28,6 +32,8 @@
     logon: "UI/Common/Online", logoff: "UI/Common/Offline", none: "UI/Generic/None", unknown: "UI/Generic/Unknown",
     empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo", mail: "UI/EVEMail/SendPilotEVEMail",
     viewMember: "UI/Corporations/Common/ViewCorpMemberDetails", editMember: "UI/Corporations/Common/EditCorpMember",
+    addContact: "UI/PeopleAndPlaces/AddContact", editContact: "UI/PeopleAndPlaces/EditContact", removeContact: "UI/PeopleAndPlaces/RemoveContact",
+    block: "UI/PeopleAndPlaces/BlockContact", unblock: "UI/PeopleAndPlaces/UnblockContact",
   };
   const ONLINE = "UI/Corporations/CorpMemberTracking/";
   const lastLabels = ["MoreThanAMonth", "Online", "LessThanAnHour", "Hours", "LastWeek", "LastMonth"];
@@ -56,6 +62,16 @@
   let chosen = $state<number[]>([]);
   let anchor: number | null = null;
   let menuFor = $state<number | null>(null);
+  let contactBook = $state<NamedAddressBook | null>(null);
+  let contactError = $state("");
+  let contactAction = $state<ContactAction | undefined>(undefined);
+  let contactDialog = $state<HTMLDialogElement | undefined>(undefined);
+  let contactMenuSerial = 0;
+  let contactBusy = $state(false);
+  const personalContactTarget = $derived(selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID && !isNpcOwner(selected[0]!.member.characterID) ? selected[0]! : null);
+  const targetIsContact = $derived(contactBook?.contacts.some(each => each.contactID === personalContactTarget?.member.characterID) ?? false);
+  const targetIsBlocked = $derived(contactBook?.blocked.some(each => each.ownerID === personalContactTarget?.member.characterID) ?? false);
+  $effect(() => { if (contactAction) contactDialog?.showModal(); });
   const onlineKey = () => `evejs.corpMembersOnline.${store.station.get().online?.characterID}`;
   async function load(): Promise<void> {
     const request = ++serial;
@@ -130,10 +146,43 @@
     else chosen = [id];
     anchor = at;
   }
-  function openMenu(event: MouseEvent, id: number): void {
+  function openMenu(event: MouseEvent | KeyboardEvent, id: number): void {
     event.preventDefault();
     if (!chosen.includes(id)) select(event, id);
-    menuFor = menuFor === id ? null : id;
+    // A keyboard context-menu key can also dispatch contextmenu on the row.
+    // Opening is idempotent, as User.GetMenu is, rather than toggling it shut.
+    menuFor = id;
+    contactBook = null;
+    contactError = "";
+    const request = ++contactMenuSerial;
+    // CharacterChecker's personal contact actions exclude self and multi-selection.
+    if (menuFor !== null && chosen.length === 1 && id !== $station.online?.characterID && !isNpcOwner(id)) {
+      void flow.addressBook().then(book => { if (!disposed && request === contactMenuSerial && menuFor === id) contactBook = book; }, cause => {
+        if (!disposed && request === contactMenuSerial) contactError = cause instanceof Error ? cause.message : String(cause);
+      });
+    }
+  }
+  function contactManage(kind: ContactAction["kind"]): void {
+    const target = personalContactTarget;
+    if (!target || !contactBook) return;
+    contactAction = { kind, ownerID: target.member.characterID, name: target.text.name!, book: contactBook };
+    menuFor = null;
+  }
+  async function contactBlock(blocked: boolean): Promise<void> {
+    const target = personalContactTarget;
+    const id = target?.member.characterID;
+    const book = contactBook;
+    if (!id || !book) return;
+    contactBusy = true;
+    contactError = "";
+    try {
+      if (blocked) await flow.blockOwners([id]);
+      else await flow.unblockOwners([id]);
+      if (disposed || personalContactTarget?.member.characterID !== id) return;
+      contactBook = { ...book, blocked: blocked ? [...book.blocked, { ownerID: id, name: target?.text.name ?? "" }] : book.blocked.filter(each => each.ownerID !== id) };
+      menuFor = null;
+    } catch (cause) { contactError = cause instanceof Error ? cause.message : String(cause); }
+    finally { contactBusy = false; }
   }
   function infoSelected(): void {
     menuFor = null;
@@ -152,7 +201,7 @@
     flow.requestWords([...Object.values(LABELS), ...lastLabels.map(key => ONLINE + key), DATE_LABELS.ln!, DATE_LABELS.ls!]);
     try { onlineOnly = JSON.parse(localStorage.getItem(onlineKey()) ?? "false") === true; } catch { onlineOnly = false; }
     void flow.corporationMemberRoleOptions().then(result => { if (!disposed) { roles = result; ready = true; } }, cause => { error = cause instanceof Error ? cause.message : String(cause); });
-    return () => { disposed = true; serial++; if (filterTimer !== null) clearTimeout(filterTimer); };
+    return () => { disposed = true; serial++; contactMenuSerial++; if (filterTimer !== null) clearTimeout(filterTimer); };
   });
   $effect(() => { const isDirector = director; if (ready) untrack(() => { void isDirector; void load(); }); });
 </script>
@@ -168,6 +217,7 @@
     <input type="search" aria-label="Filter members" placeholder="Filter members" maxlength="37" bind:value={filterText} oninput={filterTyped} onblur={filterNow} onkeydown={(event) => { if (event.key === "Enter") filterNow(); }} />
   </div>
   {#if error}<p role="alert" class="note">{error}</p>{/if}
+  {#if contactError}<p role="alert" class="note">{contactError}</p>{/if}
   {#if held === null}{#if !error}<p class="note">{busy || !ready ? "Reading members…" : word(LABELS.empty, "No data available")}</p>{/if}
   {:else if rows.length === 0}<p class="note">{word(LABELS.empty, "No data available")}</p>
   {:else}
@@ -177,6 +227,15 @@
         <button type="button" class="minor" onclick={infoSelected}>{word(LABELS.info, "Show Info")}</button>
         {#if selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID}
           <button type="button" class="minor" onclick={mailSelected}>{word(LABELS.mail, "Send Pilot EVEMail")}</button>
+        {/if}
+        {#if personalContactTarget && contactBook}
+          {#if targetIsContact}
+            <button type="button" class="minor" onclick={() => contactManage("manage")}>{word("UI/PeopleAndPlaces/EditContact", "Edit Contact")}</button>
+            <button type="button" class="minor" onclick={() => contactManage("remove")}>{word("UI/PeopleAndPlaces/RemoveContact", "Remove Contact")}</button>
+          {:else}
+            <button type="button" class="minor" onclick={() => contactManage("manage")}>{word("UI/PeopleAndPlaces/AddContact", "Add Contact")}</button>
+          {/if}
+          <button type="button" class="minor" disabled={contactBusy} onclick={() => void contactBlock(!targetIsBlocked)}>{word(targetIsBlocked ? "UI/PeopleAndPlaces/UnblockContact" : "UI/PeopleAndPlaces/BlockContact", targetIsBlocked ? "Unblock" : "Block")}</button>
         {/if}
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
@@ -192,7 +251,7 @@
           {#if key === "name"}
             <span class="member-entry">
               <input type="checkbox" aria-label={`Select ${row.text.name}`} checked={chosen.includes(row.member.characterID)} onchange={() => { chosen = chosen.includes(row.member.characterID) ? chosen.filter(id => id !== row.member.characterID) : [...chosen, row.member.characterID]; anchor = rows.indexOf(row); menuFor = null; }} />
-              <button type="button" class="minor member-name" aria-pressed={chosen.includes(row.member.characterID)} onclick={(event) => select(event, row.member.characterID)} onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); chosen = rows.map(row => row.member.characterID); menuFor = null; } else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") { event.preventDefault(); if (!chosen.includes(row.member.characterID)) select(event, row.member.characterID); menuFor = row.member.characterID; } }}>{row.text.name}</button>
+              <button type="button" class="minor member-name" aria-pressed={chosen.includes(row.member.characterID)} onclick={(event) => select(event, row.member.characterID)} onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); chosen = rows.map(row => row.member.characterID); menuFor = null; } else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") { event.preventDefault(); openMenu(event, row.member.characterID); } }}>{row.text.name}</button>
               <button type="button" class="minor" aria-label={`${word(LABELS.info, "Show Info")}: ${row.text.name}`} onclick={() => showInfo({ kind: "character", characterID: row.member.characterID })}>i</button>
               <button type="button" class="minor" aria-label={`Menu: ${row.text.name}`} aria-expanded={menuFor === row.member.characterID} onclick={(event) => openMenu(event, row.member.characterID)}>⋯</button>
             </span>
@@ -203,8 +262,16 @@
   {/if}
 </section>
 
+{#if contactAction}
+  <dialog bind:this={contactDialog} class="member-contact-dialog" aria-label="Contact action" oncancel={() => (contactAction = undefined)}>
+    <Contacts {store} {flow} {contactAction} onActionDone={book => { contactBook = book; contactAction = undefined; }} />
+  </dialog>
+{/if}
+
 <style>
   .member-tracking { min-width: 0; }
+  .member-contact-dialog { position: fixed; inset: 0; margin: auto; width: min(32rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; padding: 0.5rem; color: var(--color-text); background: var(--color-bg, #0b1119); border: 1px solid var(--color-accent); }
+  .member-contact-dialog::backdrop { background: #0009; }
   .member-table { overflow-x: auto; }
   td:nth-child(4), td:nth-child(7) { min-width: 12rem; }
   td:nth-child(5), td:nth-child(n+8) { white-space: nowrap; }

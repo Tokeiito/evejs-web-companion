@@ -14905,18 +14905,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await contactWrite(edit ? "EditContact" : "AddContact", [
       contact.contactID, contact.relationshipID, contact.inWatchlist, contact.sendNotification, mailMarkupOfTyped(contact.message),
     ]);
-    const online = store.addressBook.get().online;
-    if (contact.inWatchlist && contact.isCharacter && online !== null && online[contact.contactID] === undefined) {
-      const answer = await bridgeAsk("onlineStatus", "GetOnlineStatus", [contact.contactID]).catch(() => null);
-      if (typeof answer === "boolean") {
-        store.apply({ type: "address-book/online-changed", contactID: contact.contactID, online: answer });
+    if (contact.inWatchlist && contact.isCharacter) {
+      // onlineStatus.GetOnlineStatus(fetch=True) primes first, even when a
+      // contact was added from a menu without opening the Contacts window.
+      await primeContactsOnline();
+      const online = store.addressBook.get().online;
+      if (online !== null && online[contact.contactID] === undefined) {
+        const answer = await bridgeAsk("onlineStatus", "GetOnlineStatus", [contact.contactID]).catch(() => null);
+        if (typeof answer === "boolean") {
+          store.apply({ type: "address-book/online-changed", contactID: contact.contactID, online: answer });
+        }
       }
     }
   }
 
   // RemoveFromAddressBook (817 to 869), after its question: DeleteContacts with the contacts, a list.
   async function deleteContacts(contactIDs: readonly number[], contactType: ContactScope = "contact"): Promise<void> {
+    // The native service is primed on character selection. Hydrate that held
+    // initial state before clearing it when no Contacts window has opened.
+    if (contactType === "contact") await primeContactsOnline();
     await contactWrite(contactType === "corpcontact" ? "RemoveCorporateContacts" : "DeleteContacts", [[...contactIDs]], contactType);
+    // RemoveFromAddressBook calls onlineStatus.ClearOnlineStatus for removed
+    // character contacts; a later buddy addition must fetch its status again.
+    if (contactType === "contact") store.apply({ type: "address-book/online-forgotten", contactIDs });
   }
 
   // BlockOwner (645 to 664) and UnblockOwner (666 to 677): BlockOwners([ownerID]), UnblockOwners(blocked), lists.

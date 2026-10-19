@@ -101,8 +101,9 @@
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
+  import type { ContactAction } from "./contactAction.ts";
 
-  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact" }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
   const corporate = $derived(contactType === "corpcontact");
   // svelte-ignore state_referenced_locally
   const live = store.live;
@@ -1041,6 +1042,7 @@
     error = "";
     try {
       await action();
+      if (contactAction) onActionDone?.(book);
     } catch (cause) {
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -1109,6 +1111,7 @@
     const held = managing;
     managing = null;
     held?.afterAdd?.(false);
+    if (contactAction) onActionDone?.(book);
   }
 
   /**
@@ -1177,7 +1180,7 @@
       body: filledWord(`dialog:${dialog}/body`, "Take {names} off your contacts?", { names: owners.map((owner) => owner.name).join(", ") }),
       answer: (yes) => {
         question = null;
-        if (!yes) return;
+        if (!yes) { if (contactAction) onActionDone?.(book); return; }
         void run(async () => {
           await flow.deleteContacts(ownerIDs, contactType);
           if (book !== null) {
@@ -2129,10 +2132,14 @@
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
       ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
-    void load();
-    if (!corporate) void flow.primeContactsOnline().catch(() => {});
+    if (contactAction) {
+      book = contactAction.book;
+      if (contactAction.kind === "manage") manage(contactAction.ownerID, contactAction.name);
+      else removeContacts([{ id: contactAction.ownerID, name: contactAction.name }]);
+    } else void load();
+    if (!contactAction && !corporate) void flow.primeContactsOnline().catch(() => {});
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
-    if (!corporate && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
+    if (!contactAction && !corporate && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
     return () => {
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
@@ -2140,9 +2147,11 @@
 </script>
 
 <section class="panel">
+  {#if !contactAction}
   <header class="panel-head">
     <h2 class="panel-title">{word(WORDS.title, "Contacts")}</h2>
   </header>
+  {/if}
 
   {#if error}
     <p class="error">{error}</p>
@@ -2339,6 +2348,7 @@
   {/if}
 
   <!-- The window's tabs (ConstructTabs, 85 to 92): Contacts and Agents. -->
+  {#if !contactAction}
   {#if !corporate}
   <nav class="tabs">
     <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
@@ -2830,6 +2840,7 @@
       {/if}
     </div>
   </div>
+  {/if}
   {/if}
 </section>
 

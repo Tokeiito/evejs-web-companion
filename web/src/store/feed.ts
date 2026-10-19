@@ -152,6 +152,7 @@ export type FeedEvent =
   // (OnContactLoggedOn, OnContactLoggedOff).
   | { readonly type: "address-book/online-primed"; readonly online: Readonly<Record<number, boolean>> }
   | { readonly type: "address-book/online-changed"; readonly contactID: number; readonly online: boolean }
+  | { readonly type: "address-book/online-forgotten"; readonly contactIDs: readonly number[] }
   // The session's corporation, alliance or corporation roles changed (OnSessionChanged: corpid, allianceid,
   // corprole), each given where it changed, as the client's session takes them.
   | {

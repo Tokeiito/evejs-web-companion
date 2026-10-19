@@ -1892,6 +1892,19 @@ send 1, so the server always answers in full. (What comes back is handled; see b
 
 ## Reading the server's answers in the browser
 
+Member List's personal contact actions follow compiled `User.GetMenu`, `CharacterChecker` and `menusvc`:
+a single other player offers Add Contact or Edit/Remove Contact, plus Block or Unblock. Self and multiple selected
+members offer none of those personal actions; the Contacts window's own multi-edit menu is a different path.
+The existing Contact Management and removal question are reused without opening the Contacts list. Add/Edit keep
+the five positional `charMgr` arguments, removal passes the ID list, and BlockOwners/UnblockOwners each pass a list.
+Buddy additions prime the held online state before a missing status lookup; removing personal contacts clears
+their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
+in the recursive Tranquility corpus search. Corporate/alliance row contact actions are separate work.
+
+The BFF currently drops its held personal address-book reply after own writes, so reopening a member menu sends
+another `GetContactList`. Native addressbookService amends its held contacts instead. This cache difference is the
+next unit before the organization row actions.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

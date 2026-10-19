@@ -1959,6 +1959,15 @@ export function createClientStore(): ClientStore {
         addressBook.set({ ...current, online: { ...(current.online ?? {}), [event.contactID]: event.online } });
         break;
       }
+      case "address-book/online-forgotten": {
+        const current = addressBook.get();
+        if (current.online !== null) {
+          const online = { ...current.online };
+          for (const id of event.contactIDs) delete online[id];
+          addressBook.set({ ...current, online });
+        }
+        break;
+      }
       // R50 wallet. The two halves land together but keep their own errors, so a
       // failed corp read never blanks the personal balance. `corpDivisions`
       // stays NULL on a failed corp read (carried in `corpError`); a successful
