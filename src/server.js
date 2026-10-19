@@ -1140,7 +1140,9 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // is answered as any call here is, once the pilot is usable in its new place.
   const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (objectKind === "corporationExpected") {
-    if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
+    if (body.service === "account") await dispatchCorporationCashWrite(req, res, next, body);
+    else if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
+    else if (["UpdateApplicationOffer", "InsertInvitation"].includes(body.method)) await dispatchCorporationRecruitmentWrite(req, res, next, body);
     else await dispatchCorporationMemberWrite(req, res, next, body);
     return;
   }
@@ -6774,6 +6776,53 @@ async function dispatchCorporationAwardWrite(req, res, next, body) {
     if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This award belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
     const outcome = await heldTopLevelCall(held, req.webSessionID, body.service, body.method, args, null, corporationID, context.version);
     res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: [...notifications, ...(outcome.notifications ?? [])], ...pilotClock(held) });
+  } catch (error) { next(error); }
+}
+
+// transferMoneyWnd150: the source corporation is the session's, so retain the
+// original corporation through the final dispatch without changing the RPC.
+async function dispatchCorporationCashWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res); if (!held) return;
+  const args = body.args, origin = strictPositiveID(body.of), kwargs = body.kwargs;
+  // Shared character-recipient TransferMoneyWnd. The origin is private metadata;
+  // only its three original arguments and two keywords reach the native service.
+  if (!origin || !Array.isArray(args) || args.length !== 3 || strictPositiveID(args[0]) === null ||
+      !Number.isFinite(args[1]) || !(args[1] > 0) || !(args[2] === null || Number.isInteger(args[2]) && args[2] >= 1000 && args[2] <= 1006) ||
+      !kwargs || kwargs.toAccountKey !== null || typeof kwargs.reason !== "string" || Object.keys(kwargs).some(key => !["toAccountKey", "reason"].includes(key))) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A corporation cash transfer names one character, amount and source division." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation cash transfers require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
+    const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This cash transfer belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "account", "GiveCashFromCorpAccount", args, kwargs, origin, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: outcome.notifications ?? [], ...pilotClock(held) });
+  } catch (error) { next(error); }
+}
+
+// base_corporation1145-1149 / CorpApplicationEntry746-770: the recipient's target
+// corporation argument does not select its originating current registry.
+async function dispatchCorporationRecruitmentWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const args = body.args, origin = strictPositiveID(body.of);
+  const text = args?.[3];
+  const sender = body.method === "InsertInvitation";
+  const validArguments = Array.isArray(args) && (sender ? args.length === 1 && strictPositiveID(args[0]) !== null :
+    args.length === 7 && strictPositiveID(args[0]) !== null && args[1] === held.characterID && strictPositiveID(args[2]) !== null &&
+    (typeof text === "string" || text?.type === "wstring" && typeof text.value === "string") &&
+    [2, 3, 7].includes(args[4]) && args[5] === "" && args[6] === null);
+  if (!validArguments || !origin || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: sender ? "An invitation names one character." : "A recipient decision names its own application and the original seven arguments." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation recruitment actions require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
+    const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This action belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, origin, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: outcome.notifications ?? [], ...pilotClock(held) });
   } catch (error) { next(error); }
 }
 

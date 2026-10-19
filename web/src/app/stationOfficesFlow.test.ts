@@ -192,7 +192,9 @@ test("a read that fails leaves what was shown, and one that answers after the pi
 
 test("told twice of one office, of the station and of the corporation, the page lists the offices once", async () => {
   // Tranquility's recordings of an office rented and of one given up have the notice twice, and the lobby's two
-  // reads once: the client's panel does not load again while it is loading (offices.py, _load).
+  // reads once. This case preserves the page's duplicate-rental coalescing.
+  // Current compiled OfficesPanel._load58-72 also has LOAD_PENDING/reload;
+  // applicant changes (base_corporation_ui204-209) use that pending path.
   const { flow, state, pushTogether, push, shown, reads } = await docked();
   await flow.loadStationOffices();
   state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [98000003], freeOffices: 18 };

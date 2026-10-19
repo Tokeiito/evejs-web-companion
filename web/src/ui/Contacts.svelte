@@ -70,6 +70,8 @@
   import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
   import OwnerCEOMenu from "./OwnerCEOMenu.svelte";
   import OwnerDecorationMenu from "./OwnerDecorationMenu.svelte";
+  import OwnerCorporationInviteMenu from "./OwnerCorporationInviteMenu.svelte";
+  import OwnerCorporationCashMenu from "./OwnerCorporationCashMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -100,7 +102,6 @@
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import { notify } from "./notices.ts";
-  import { TRANSFER_REASON_MAX, transferAmount, transferReason } from "../bridge/giveMoney.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
@@ -192,12 +193,6 @@
     inviteToFleet: "UI/Fleet/InvitePilotToFleet",
     squadMember: "UI/Fleet/Ranks/SquadMember",
     formFleetWith: "UI/Fleet/FormFleetWith",
-    transferMoney: "UI/Wallet/WalletWindow/TransferMoney",
-    fromCharacter: "UI/Wallet/WalletWindow/FromCharacter",
-    toCharacter: "UI/Wallet/WalletWindow/ToCharacter",
-    amount: "UI/Wallet/WalletWindow/ColHeaderAmount",
-    reason: "UI/Wallet/WalletWindow/Reason",
-    transferSuccessful: "UI/Wallet/WalletWindow/TransferSuccessful",
     editContact: "UI/PeopleAndPlaces/EditContact",
     removeContact: "UI/PeopleAndPlaces/RemoveContact",
     blockContact: "UI/PeopleAndPlaces/BlockContact",
@@ -778,47 +773,10 @@
     return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
   }
 
-  /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
-  let transferring = $state<{ readonly toID: number; readonly toName: string; amount: string; reason: string; wealth: number | null } | null>(null);
-
-  /** A word of the transfer window's with its character's name (FromCharacter, ToCharacter). */
-  function transferWord(label: string, own: string, characterID: number | null, name: string): string {
-    return plainText(formatTemplate(word(label, own), { charID: characterID }, { nameOf: () => name }));
-  }
-
-  /**
-   * Give Money from an owner's menu (menusvc.py 615 to 616; walletSvc.py TransferMoney, 142 to 151): the transfer
-   * window for the character, its amount the least (93), at most what the pilot has as the client keeps it.
-   */
-  function giveMoneyTo(ownerID: number, name: string): void {
-    menuFor = null;
-    searchMenuFor = null;
-    error = "";
-    transferring = { toID: ownerID, toName: name, amount: "0.1", reason: "", wealth: null };
-    void flow.pilotWealth().then((wealth) => {
-      if (transferring !== null && transferring.toID === ownerID) transferring.wealth = wealth;
-    }).catch(() => {});
-  }
-
-  /** The amount's field let go of: what it holds made what the client's float field would hold. */
-  function transferAmountLeft(): void {
-    if (transferring !== null) transferring.amount = String(transferAmount(transferring.amount, transferring.wealth));
-  }
-
-  /**
-   * OK (Confirm, 138 to 152): nothing where the amount is not above nought; otherwise GiveCash, the transfer said to
-   * have been made (message_player), and the window closed.
-   */
-  function confirmTransfer(): void {
-    const held = transferring;
-    if (held === null) return;
-    const amount = transferAmount(held.amount, held.wealth);
-    if (!(amount > 0)) return;
-    void run(async () => {
-      await flow.giveMoney(held.toID, amount, transferReason(held.reason));
-      notify({ kind: "good", title: word(WORDS.transferSuccessful, "ISK given"), key: `transfer:${held.toID}:${Date.now()}` });
-      transferring = null;
-    });
+  /** Owner-menu Give Money uses the shared native transfer window. */
+  function giveMoneyTo(ownerID: number, _name: string): void {
+    menuFor = null; searchMenuFor = null;
+    void run(() => flow.openMoneyTransfer(ownerID));
   }
 
   /** A write of the window's, its refusal said. */
@@ -2095,32 +2053,6 @@
     <BookmarkWindow {store} {flow} place={bookmarking} onDone={() => (bookmarking = null)} />
   {/if}
 
-  {#if transferring !== null}
-    <!-- The transfer window (TransferMoneyWnd, transferMoneyWnd.py 49 to 102): from whom and to whom, the amount and
-         the reason, OK and Cancel. -->
-    <section class="contacts-confirm" aria-label={word(WORDS.transferMoney, "Give ISK")}>
-      <h3>{word(WORDS.transferMoney, "Give ISK")}</h3>
-      <p>{transferWord(WORDS.fromCharacter, "Giver: {[character]charID.name}", myID, $station.online?.characterName ?? "")}</p>
-      <p>{transferWord(WORDS.toCharacter, "Receiver: {[character]charID.name}", transferring.toID, transferring.toName)}</p>
-      <p class="controls">
-        <label>
-          {word(WORDS.amount, "Amount")}
-          <input type="text" inputmode="decimal" bind:value={transferring.amount} onblur={transferAmountLeft} />
-        </label>
-      </p>
-      <p class="controls">
-        <label>
-          {word(WORDS.reason, "Reason")}
-          <input type="text" maxlength={TRANSFER_REASON_MAX} bind:value={transferring.reason} />
-        </label>
-      </p>
-      <p class="controls">
-        <button type="button" class="primary" disabled={busy} onclick={confirmTransfer}>{word(WORDS.ok, "OK")}</button>
-        <button type="button" class="minor" onclick={() => (transferring = null)}>{word(WORDS.cancel, "Cancel")}</button>
-      </p>
-    </section>
-  {/if}
-
   {#if folderNaming !== null}
     <!-- The name popup (utilWindows.NamePopup) of Create Folder or a folder's Change Label. -->
     <section class="contacts-confirm" aria-label={folderNaming.id === null ? word(AGENT_WORDS.typeName, "Folder name") : word(AGENT_WORDS.typeInNewName, "New name")}>
@@ -2396,6 +2328,7 @@
                       <OwnerExpelMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
                       <OwnerCEOMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
                       <OwnerDecorationMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      {#if isCharacterContact(owner.id)}<OwnerCorporationInviteMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} /><OwnerCorporationCashMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />{/if}
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id)}
                       {/if}
@@ -2606,6 +2539,7 @@
                     {#if selectedRows.length <= 1}<OwnerExpelMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if selectedRows.length <= 1}<OwnerCEOMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if selectedRows.length <= 1}<OwnerDecorationMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1 && isCharacterContact(row.id)}<OwnerCorporationInviteMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} /><OwnerCorporationCashMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id)}
                     {/if}

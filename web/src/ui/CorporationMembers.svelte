@@ -16,6 +16,8 @@
   import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
   import OwnerCEOMenu from "./OwnerCEOMenu.svelte";
   import OwnerDecorationMenu from "./OwnerDecorationMenu.svelte";
+  import OwnerCorporationInviteMenu from "./OwnerCorporationInviteMenu.svelte";
+  import OwnerCorporationCashMenu from "./OwnerCorporationCashMenu.svelte";
   import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
@@ -326,6 +328,8 @@
         <OwnerExpelMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         <OwnerCEOMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         <OwnerDecorationMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerCorporationInviteMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerCorporationCashMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
     {/if}

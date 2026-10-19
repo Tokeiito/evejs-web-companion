@@ -216,7 +216,7 @@ import {
   type AssetSearchOption,
 } from "../bridge/assetSearch.ts";
 import { shownSecurity } from "../bridge/systemSecurity.ts";
-import { failsTheReading, failureCode } from "../bridge/ask.ts";
+import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
@@ -268,6 +268,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
+import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
 import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
@@ -419,6 +420,8 @@ import { classifyDistributionAgentConversation, selectDistributionAgent } from "
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
+import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -728,7 +731,7 @@ import { readAllianceFittings, readCharacterFittings, readCorporationFittings } 
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
-import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall, transferValue, transferReason } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { REMOTE_MESSAGE, decodeRemoteMessage, serverMessageText, type ServerMessage } from "../bridge/serverMessages.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -2106,9 +2109,17 @@ export interface AppFlow {
   selectCorporationCEO(n: number, index: number): void;
   answerCorporationCEO(n: number, confirmed: boolean): void;
   corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null>;
+  corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null>;
   readonly corporationAwardAsk: ReadableSignal<CorporationAwardAsk | null>;
   selectCorporationAward(n: number, index: number): void;
   answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
+  readonly corporationApplicationsChanged: ReadableSignal<number>;
+  readonly corporationApplicationsRequested: ReadableSignal<number>;
+  requestCorporationApplications(): void;
+  serveCorporationApplicationsRequest(n: number): void;
+  corporationApplications(): Promise<readonly CorporationApplication[]>;
+  corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void>;
+  corporationApplicationsExpanded(applicationID?: number | null): number | null;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -2398,6 +2409,17 @@ export interface AppFlow {
   loadWallet(how?: { readonly fresh?: boolean }): Promise<void>;
   /** The pilot's own ISK as the client keeps it (walletSvc.py wealth); null where it could not be read. */
   pilotWealth(): Promise<number | null>;
+  /** walletSvc.GetCorpWealth: fresh, None for active division; native UserError becomes0. */
+  corporationWealth(accountKey?: number | null): Promise<number>;
+  /** walletSvc.GetCorpWealthCached1Min, keyed separately from fresh window reads. */
+  cachedCorporationWealth(accountKey: number): Promise<number>;
+  /** Native OnCorpAccountChangedClient, after the division's old-value read/cache update. */
+  readonly corporationWealthChanged: ReadableSignal<CorporationWealthChange | null>;
+  corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null>;
+  readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
+  openMoneyTransfer(toID: number, corporate?: boolean): Promise<void>;
+  confirmMoneyTransfer(n: number, amount: string, reason: string): Promise<void>;
+  closeMoneyTransfer(n?: number): void;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
   /**
@@ -3872,6 +3894,20 @@ function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | 
   return typeof value === "number" ? value : null;
 }
 
+export interface MoneyTransfer {
+  readonly n: number;
+  readonly corporate: boolean;
+  readonly fromID: number;
+  readonly toID: number;
+  readonly fromName: string;
+  readonly toName: string;
+  readonly fromAccountKey: number | null;
+  readonly divisionName: string | null;
+  readonly maximum: number;
+  readonly busy: boolean;
+  readonly error: string | null;
+}
+
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   let sessionCloseGeneration = 0;
   let requestGeneration = 0;
@@ -4686,6 +4722,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
+  const corporationWealthSignal = createSignal<CorporationWealthChange | null>(null);
+  const corporationWealthReads = createCorporationWealth({
+    capture: () => {
+      const scope = captureMemberOperation();
+      return { corporationID: scope.online.corporationID, ask: scope.ask, current: scope.current };
+    },
+    changed: change => { corporationWealthSignal.set(change); updateTransferWealth(change.balance, change.corporationID); },
+  });
   // Whether every training slot of the account is used, as the client's queue service reckons and keeps it
   // (bridge/trainingSlots.ts): what says whether a change of the queue may start it.
   const trainingSlots = createTrainingSlots(bridgeAsk);
@@ -5028,6 +5072,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
+      corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
+      // base_corporation_ui204-209: the docked station lobby reloads its
+      // offices for the applicant, including when accepting changes corpid.
+      if (store.station.get().online?.stationID) void loadStationOffices().catch(() => {});
+    }
     // ⚠ `"__MultiEvent"` UNWRAP — THIS IS A REAL FIX, NOT DEFENSIVE CODE. The
     // server has exactly one call site for it (`notifyFleetMultiEvent`,
     // fleetRuntime.js:786), and it fires ONLY when more than one
@@ -5245,6 +5295,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         characterID: online?.characterID ?? null,
         corporationID: online?.corporationID ?? null,
       });
+      if (args[0] === "cash" && Number(args[1]) === online?.characterID && args[2] !== null && args[2] !== undefined) {
+        const digits = toAmountString(args[2] as JsonValue), balance = digits === null ? Number.NaN : Number(digits);
+        if (Number.isFinite(balance)) updateTransferWealth(balance);
+      }
+      void corporationWealthReads.accountChanged(args[0], args[1], (args[2] ?? null) as JsonValue, {
+        corporationID: online?.corporationID ?? null,
+        corpRole: online?.corpRole,
+      }).catch(() => {});
       if (store.wallet.get().loaded) {
         void loadWallet().catch(() => {});
       }
@@ -5368,7 +5426,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); }
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -6606,19 +6664,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Offices tab is shown, and again at each office rented or given up. The
   // page lists them when the player asks, and from then on at each notice. A
   // read that answers after the pilot has gone elsewhere is not shown.
-  // The server says an office changed twice over, to the station and to the
-  // corporation, and the client's panel does not load again while it is
-  // loading (offices.py, _load): `listingStationOffices` is that.
+  // Duplicate rental notices are coalesced by their handler, as the recorded
+  // pair is. Applicant changes can queue another load through OfficesPanel's
+  // LOAD_PENDING loop, so a join does not lose its new corporation's buttons.
   let listingStationOffices = false;
+  let stationOfficesPending = false;
   async function loadStationOffices(): Promise<void> {
+    // OfficesPanel._load58-72 coalesces a notice during loading into another
+    // load, rather than losing a corporation change behind an older reply.
+    if (listingStationOffices) { stationOfficesPending = true; return; }
     const where = () => store.station.get().online?.stationID ?? store.station.get().online?.structureID ?? null;
     const askedAt = where();
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
     listingStationOffices = true;
     try {
-      const offices = await api.loadStationOffices(callOptions);
-      if (where() === askedAt) {
-        store.apply({ type: "station/offices", offices });
-      }
+      do {
+        stationOfficesPending = false;
+        const offices = await api.loadStationOffices(scoped);
+        current();
+        if (where() === askedAt) store.apply({ type: "station/offices", offices });
+      } while (stationOfficesPending && where() === askedAt);
     } finally {
       listingStationOffices = false;
     }
@@ -14896,6 +14962,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return roles;
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
+  const corporationApplicationsChangedSignal = createSignal(0);
+  const corporationApplicationsRequestedSignal = createSignal(0);
+  function personalApplicationSetting(name: string): string {
+    return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
+  }
+  function corporationApplicationsExpanded(applicationID?: number | null): number | null {
+    try {
+      const key = personalApplicationSetting("corporation_applications_expanded.true");
+      if (applicationID !== undefined) settingsStorage?.setItem(key, JSON.stringify(applicationID));
+      const value: unknown = JSON.parse(settingsStorage?.getItem(key) ?? "null");
+      return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+    } catch { return applicationID ?? null; }
+  }
+  async function corporationApplications(): Promise<readonly CorporationApplication[]> {
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
+    let old = false;
+    try { old = JSON.parse(settingsStorage?.getItem(personalApplicationSetting(`applicationsShowOld_${onlineCharacterID()}`)) ?? "false") === true; } catch { /* Native default. */ }
+    const answer = await api.bridgeAsk(scoped)("corpRegistry", old ? "GetMyOldApplications" : "GetMyApplications", []);
+    current();
+    const applications = corporationApplicationsOf(answer, old);
+    // GetCorpApplicationEntries126-151 primes the corporation names before
+    // constructing entries (whose CorpIcon subsequently asks for its logo).
+    await memberNames({ current, options: scoped }, [...new Set(applications.map(row => row.corporationID))].map(id => ({ kind: "owner" as const, id })));
+    current(); return applications;
+  }
+  let applicationWork = Promise.resolve();
+  async function corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void> {
+    const scope = captureMemberOperation(), pilotCurrent = callOptions.captureRequestGuard!();
+    if (application.characterID !== scope.online.characterID || applicationEnded(application.status) || status === 2 && !applicationAcceptable(application.status) || status === 3 && application.status !== 8) return;
+    if (status === 7) {
+      await wordsNow(["dialog:WithdrawApplication/title", "dialog:WithdrawApplication/body"]); scope.current();
+      if (!await askDialog("WithdrawApplication", null, "Withdraw this corporation application?")) return;
+    }
+    scope.current();
+    // bco_applications141 TempLock: serialize decisions; no session cooldown.
+    const previous = applicationWork;
+    let release!: () => void;
+    applicationWork = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous; scope.current();
+      let sent = false;
+      const send = callOptions.fetch ?? pageFetch();
+      const mutationOptions: api.ApiOptions = { ...scope.options,
+        captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+        fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+      };
+      await api.bridgeDo(mutationOptions)("corpRegistry", "UpdateApplicationOffer", [application.applicationID, application.characterID, application.corporationID, application.applicationText, status, "", null], null, scope.online.corporationID);
+      // An intended acceptance changes corpid before its None reply. The
+      // personal panel belongs to the pilot, and survives that successful join.
+      pilotCurrent();
+    } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    finally { release(); }
+  }
   const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
   let memberDetailsRequests = 0;
   function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
@@ -14926,7 +15046,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
-  async function memberNames(scope: MemberOperation, refs: readonly NameRef[]): Promise<void> {
+  async function memberNames(scope: Pick<MemberOperation, "current" | "options">, refs: readonly NameRef[]): Promise<void> {
     scope.current();
     const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
     if (!missing.length) return;
@@ -15074,6 +15194,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationAwardAnswer = answer => { corporationAwardAnswer = null; corporationAwardAskSignal.set(null); resolve(answer); };
       corporationAwardAskSignal.set({ ...value, n: ++dialogsSaidCount });
     });
+  }
+  async function corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null> {
+    const online = store.station.get().online, target = ownerIDs[0];
+    // CharacterChecker332-341: no multi, NPC target, missing Personnel Manager
+    // or own member. There is no separate NPC-corporation gate on the sender.
+    if (ownerIDs.length !== 1 || typeof target !== "number" || !Number.isSafeInteger(target) || target <= 0 || isNpcOwner(target) || !online || online.corporationID === null || (BigInt(online.corpRole ?? "0") & 128n) === 0n) return null;
+    const scope = captureMemberOperation();
+    // CharacterMenu callers supply a character. Contacts also has corporation
+    // and alliance owners: use the retained eveowners type to distinguish them.
+    await memberNames(scope, [{ kind: "ownerType", id: target }]);
+    if (!CHARACTER_TYPES.has(Number(nameCache.get(nameKey("ownerType", target))))) return null;
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its invitation menu was being read.", 0);
+    if (members.memberIDs.includes(target)) return null;
+    return { invite: async () => {
+      scope.current();
+      await memberNames(scope, [{ kind: "owner", id: target }]);
+      await wordsNow(["dialog:ConfirmSendInviteToJoinCorp/title", "dialog:ConfirmSendInviteToJoinCorp/body"]); scope.current();
+      if (!await askDialog("ConfirmSendInviteToJoinCorp", { type: "dict", entries: [["charID", target]] }, "Send this pilot an invitation to join your corporation?", "okcancel")) return;
+      scope.current();
+      try { await scope.write("corpRegistry", "InsertInvitation", [target], null, scope.online.corporationID); scope.current(); }
+      catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    }};
   }
   async function corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null> {
     const online = store.station.get().online;
@@ -17312,6 +17455,75 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (text === null) return;
     store.apply({ type: "server-messages/said", kind: message.kind, text: null });
     store.apply({ type: "server-messages/said", kind: message.kind, text });
+  }
+
+  const moneyTransferSignal = createSignal<MoneyTransfer | null>(null);
+  let moneyTransferGeneration = 0;
+  let moneyTransferCurrent: (() => void) | null = null;
+  let moneyTransferWrite: Ask | null = null;
+  function closeMoneyTransfer(n?: number): void {
+    if (n !== undefined && moneyTransferSignal.get()?.n !== n) return;
+    moneyTransferGeneration++; moneyTransferSignal.set(null); moneyTransferCurrent = null; moneyTransferWrite = null;
+  }
+  function updateTransferWealth(balance: number, corporationID?: number): void {
+    const held = moneyTransferSignal.get();
+    if (!held || held.corporate !== (corporationID !== undefined) || held.corporate && held.fromID !== corporationID) return;
+    moneyTransferSignal.set({ ...held, maximum: balance });
+  }
+  async function corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null> {
+    const target = ownerIDs[0], online = store.station.get().online;
+    // Original CharacterChecker292-300: self allowed; no Junior/take alternative.
+    if (ownerIDs.length !== 1 || !target || target <= 0 || !Number.isSafeInteger(target) || isNpcOwner(target) || !online || (BigInt(online.corpRole ?? "0") & 256n) === 0n) return null;
+    const scope = captureMemberOperation();
+    await memberNames(scope, [{ kind: "ownerType", id: target }]);
+    if (!CHARACTER_TYPES.has(Number(nameCache.get(nameKey("ownerType", target))))) return null;
+    return { transfer: async () => { scope.current(); await openMoneyTransfer(target, true); } };
+  }
+  async function openMoneyTransfer(toID: number, corporate = false): Promise<void> {
+    const online = store.station.get().online;
+    if (!online) throw new BridgeCallError("NO_LIVE_SESSION", "No character is online.", 409);
+    closeMoneyTransfer(); const n = moneyTransferGeneration;
+    const pilot = callOptions.captureRequestGuard!();
+    const scope = corporate ? captureMemberOperation() : { current: pilot, options: { ...callOptions, captureRequestGuard: () => pilot } };
+    const current = () => { scope.current(); if (moneyTransferGeneration !== n) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This transfer window was replaced.", 0); };
+    const fromID = corporate ? online.corporationID! : online.characterID;
+    // Native _InitVariables reads None BEFORE capturing the active source key.
+    const maximum = corporate ? await corporationWealthReads.fresh(null) : await pilotWealth(); current();
+    if (maximum === null) throw new Error("The wallet returned no balance.");
+    const fromAccountKey = corporate ? store.station.get().online?.corpAccountKey ?? null : null;
+    await memberNames(scope, [{ kind: "owner", id: fromID }, { kind: "owner", id: toID }]); current();
+    let divisionName: string | null = null;
+    if (corporate && fromAccountKey !== null) {
+      const row = await api.bridgeAsk(scope.options)("corpRegistry", "GetCorporation", []); current();
+      const ordinal = (fromAccountKey ?? 1000) - 999;
+      const suffix = ["MasterWallet", "WalletSecond", "WalletThird", "WalletFourth", "WalletFifth", "WalletSixth", "WalletSeventh"][ordinal - 1] ?? "MasterWallet";
+      const label = `UI/Corporations/Common/CorporateDivision${suffix}`;
+      await wordsNow([label]); current();
+      divisionName = divisionNamesOf(row)[String(ordinal)] ?? templateWords(label, {}, ordinal === 1 ? "Master Wallet" : `Wallet Division ${ordinal}`);
+    }
+    if (corporate) { requestCorpLogos([fromID]); loadOwnerLogos(); }
+    await wordsNow(["UI/Wallet/WalletWindow/TransferMoney", "UI/Wallet/WalletWindow/FromCharacter", "UI/Wallet/WalletWindow/FromCharacterAcct", "UI/Wallet/WalletWindow/ToCharacter", "UI/Wallet/WalletWindow/ColHeaderAmount", "UI/Wallet/WalletWindow/Reason", "UI/Wallet/WalletWindow/TransferSuccessful", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]); current();
+    void loadImageServer();
+    moneyTransferCurrent = current; moneyTransferWrite = api.bridgeDo({ ...scope.options, captureRequestGuard: () => current });
+    moneyTransferSignal.set({ n, corporate, fromID, toID, fromName: nameCache.get(nameKey("owner", fromID)) ?? "…", toName: nameCache.get(nameKey("owner", toID)) ?? "…", fromAccountKey, divisionName, maximum, busy: false, error: null });
+  }
+  async function confirmMoneyTransfer(n: number, typed: string, reason: string): Promise<void> {
+    const held = moneyTransferSignal.get(), current = moneyTransferCurrent, write = moneyTransferWrite;
+    if (!held || held.n !== n || held.busy || !current || !write) return;
+    current(); const amount = transferValue(typed); if (!(amount > 0)) return;
+    moneyTransferSignal.set({ ...held, busy: true, error: null });
+    try {
+      if (held.corporate) await write("account", "GiveCashFromCorpAccount", [held.toID, amount, held.fromAccountKey], { toAccountKey: null, reason: transferReason(reason) }, held.fromID);
+      else await giveMoneyCall(write, held.toID, amount, transferReason(reason));
+      current();
+      const text = templateWords("UI/Wallet/WalletWindow/TransferSuccessful", {}, "Transfer successful");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", text]] }, text);
+      closeMoneyTransfer(n);
+    } catch (error) {
+      if (moneyTransferSignal.get()?.n !== n) return;
+      moneyTransferSignal.set({ ...moneyTransferSignal.get()!, busy: false, error: sayRefusalDialog(error, errorWords(error)) ? null : errorWords(error) });
+      if (isSessionLost(error)) closeMoneyTransfer(n);
+    }
   }
 
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
@@ -27678,6 +27890,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const result = await api.selectCharacter(characterID, callOptions);
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      corporationWealthReads.forget();
+      corporationWealthSignal.set(null);
+      closeMoneyTransfer();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
@@ -28906,6 +29121,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationExpelMenu,
     corporationCEOMenu,
     corporationAwardMenu,
+    corporationInviteMenu,
     corporationAwardAsk: readonlySignal(corporationAwardAskSignal),
     selectCorporationAward,
     answerCorporationAward,
@@ -28913,6 +29129,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     selectCorporationCEO,
     answerCorporationCEO,
     corporationRoleAllowance,
+    corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
+    corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
+    requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
+    serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },
+    corporationApplications,
+    corporationApplicationDecision,
+    corporationApplicationsExpanded,
     openCorporationMemberDetails,
     memberDetailsPanel,
     corporationMemberDetails,
@@ -29059,6 +29282,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadWallet,
     pilotWealth,
+    corporationWealth: accountKey => corporationWealthReads.fresh(accountKey),
+    cachedCorporationWealth: accountKey => corporationWealthReads.cached(accountKey),
+    corporationWealthChanged: readonlySignal(corporationWealthSignal),
+    corporationCashMenu,
+    openMoneyTransfer,
+    confirmMoneyTransfer,
+    closeMoneyTransfer,
+    moneyTransfer: readonlySignal(moneyTransferSignal),
     giveMoney,
     giveIskFromWallet,
 
@@ -29623,6 +29854,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
+        closeMoneyTransfer();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29650,6 +29884,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
+        closeMoneyTransfer();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();

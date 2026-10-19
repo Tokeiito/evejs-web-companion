@@ -2709,7 +2709,12 @@ const RETAIL_CALLS = Object.freeze({
   "calendarProxy.GetEventDetails": judged(`${CALENDAR_SVC}:261`, ofAnOpenedEvent, "GetCalendarProxy().GetEventDetails(eventID, ownerID), kept by event"),
   "calendarMgr.GetResponsesForCharacter": same(`${CALENDAR_SVC}:252`, "RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept"),
   "calendarMgr.GetResponsesToEvent": judged(`${CALENDAR_SVC}:415`, ofAnOpenedEvent, "RemoteSvc('calendarMgr').GetResponsesToEvent(eventID, ownerID)"),
-  "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
+  "account.GetCashBalance": same(`${WALLET_SVC}:41,156-170`, "GetCashBalance(0) for personal wealth; corporate GetCorpWealth sends (1, accountKey=None/explicit key) freshly, separately from its one-minute per-key cache"),
+  "account.GiveCashFromCorpAccount": Object.freeze({
+    status: "same", source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:150",
+    note: "Corporate-source transfer: character, float amount, captured source key; destination None and original edit reason by keyword. TQ Corp Transfers1804 has this three-argument/keyword shape and None reply.",
+    shape: (args, kwargs) => ({ args: [args[0], asFloat(args[1]), args[2]], kwargs: { ...kwargs, reason: typedText(kwargs.reason) }, status: "reshaped" }),
+  }),
   "account.GiveCash": typing(Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
@@ -2780,6 +2785,9 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetEveOwners": judged(`${CORP_SVC}/bco_members.py:136`, sentWithNothing,
     "eveowners = self.GetCorpRegistry().GetEveOwners(), with nothing, on the corporation's moniker: recorded on Tranquility so. Asked when the session's corporation changes, for its members' names and their numbers, which the client keeps and changes as the server says a member changed (OnCorporationMemberChanged); a pilot is a member to the client where its number is among them (161). The native transport retains those IDs from the login/session prime for the page's atomic membership read. An explicit raw GetEveOwners RPC still asks the registry."),
   "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
+  "corpRegistry.GetMyOldApplications": same(`${CORP_SVC}/bco_applications.py:98`, "Personal history, no arguments on the current corporation moniker; requested each time, only when the retained showingOld setting is True."),
+  "corpRegistry.InsertInvitation": same(`${CORP_SVC}/base_corporation.py:1145`, "InviteToJoinCorp asks ConfirmSendInviteToJoinCorp(charID), OK/Cancel; only OK sends the single positional character ID on the current registry. No exact TQ direct-invitation packet was found."),
+  "corpRegistry.UpdateApplicationOffer": same(`${CORP_SVC}/bco_applications.py:141`, "TempLock UpdateApplicationOffer; seven positional args: applicationID, characterID, target corporationID, original typed applicationText, status, empty byte customMessage, None date. Archive/Applying and accepting a corp invite.txt1324 confirms Unicode text/status2/empty/None. No session-change cooldown."),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
   "corpRegistry.GetSharesByShareholder": same(`${CORP_SVC}/bco_shares.py:30`, "GetCorpRegistry().GetSharesByShareholder(corpShares) on the corporation's moniker: the wallet's Shares tab asks it each time it is chosen with IsCorpWallet(), False for the pilot's own (sharesPanel.py GetScrollList), and the client indexes the rows by corporationID"),
   "officeManager.GetCorporationsWithOffices": judged(`${CORP_SVC}/officeManager.py:34`, sentWithNothing, "Moniker('officeManager', stationID).GetCorporationsWithOffices(), no arguments, while it has none for where the session is docked; let go at any OnOfficeRentalChange (71) and out of the station or structure (58, 66); the transport keeps it so (pilots.js, stationOffices). Recorded on Tranquility after an office was rented and after one was given up."),

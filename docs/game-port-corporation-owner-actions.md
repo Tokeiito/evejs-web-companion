@@ -300,13 +300,207 @@ self, including when evaluating a merged selection.
      callback, including actual error values and suppressYes; the current server
      did not produce those errors, so no live fee/retry case is claimed. Full
      store/preferences restored. Other corporation and character panels remain.
-6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
+6. **D2p18c4f — recruitment invitations, implemented.** Native `InviteToJoinCorp` asks
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
-   Complete the actual acceptance/decline/session behavior and notices required by
-   its existing UI, using recordings and compiled code as available.
+   The recipient acceptance/decline/session behavior and required notices are
+   ported from the recorded applied path and compiled direct-invitation consumers.
+   Read/split: compiled `CharacterChecker.OfferSendCorpInvite:332-341` rejects
+   multiple selection, NPC targets, missing Personnel Manager and current members.
+   It has no separate NPC-pilot-corporation gate. `base_corporation:1145-1149`
+   asks OK/Cancel with charID and sends nothing on Cancel; OK calls the current
+   registry. No merged invitation action or extra warning is inferred.
+   The web app's My Applications panel is now ported. Native
+   `ApplicationsWindow:50-90,95-151,231-301` hides top filters and invite button
+   in myView, flattens all of `GetMyApplications`, primes corporation names,
+   sorts newest first and retains expanded application per myView. It receives
+   `OnCorporationApplicationChanged`. `bco_applications:22-95` keeps the personal
+   dictionary across corporation changes and updates application rows from those
+   notices. The BFF now retains the original login dictionary and native rows,
+   amends it behind in-flight reads, and clears it only with the character session.
+   Compiled `CorpApplicationEntry:594-644,686-778` offers Accept for statuses6/8;
+   ended statuses2/3/4/7 have only Show Info. The direct invitation's Decline
+   button calls status3 without a prompt. The context-menu item labelled Decline
+   calls WithdrawMyApplication instead: WithdrawApplication Yes/No, then status7.
+   This difference is in the original compiled method and must be preserved.
+   `bco_applications.UpdateApplicationOffer:141-143` uses a temporary named lock,
+   sends seven arguments including default empty customMessage and None date,
+   and has no PerformSessionChange cooldown. Preserve the row's applicationText
+   type; the recorded acceptance forwards Unicode (`0x2e` PyWStringUTF8), as
+   supplied by the native application row, rather than newly entered text.
+   The companion and raw `Archive/Applying and accepting a corp invite` capture
+   concern applied0 -> corporation-accepted6 -> applicant-accepted2, not direct8.
+   Historical gaps in its companion are not evidence against current handlers.
+   No direct InsertInvitation packet was found by the recursive corpus search.
+   - **c4f1: native contract audit, implemented.** Verified direct invitation8, button rejection3,
+     context withdrawal7 and acceptance2 on disposable native sessions, including
+     active/history reads, packed rows, persistent/live notices and post-join
+     membership/session effects. Compare the recorded acceptance path only where
+     applicable; fix/commit any proven server mismatch before UI work.
+     Actual direct decisions return None, remove the active row and retain ended
+     history. NPC acceptance sends sparse client member change, corpid/hqID
+     session change, full member changes and application2 before the None reply.
+     Applied0/accepted6/joined2 was also verified with accented text. Structured
+     TQ decoding and CCP blue DBRow Read/Get exposed an additional row mismatch:
+     status must be UI1/17, responseText STR129, and applicationText explicitly
+     Unicode. EveJS327cc6de3 fixes the shared builder. The same persisted native
+     application changed from bytes to Unicode after restart, with no data repair,
+     then completed0/6/2. Fresh direct8/3/7/2 rows use the corrected types too.
+     Native type139 invite receipts supply corpID consumed by the formatter;
+     notificationCenter356-362 opens My Applications for types139/18/17/142.
+     Direct notification bytes remain unrecorded. Full store restored byte-exact.
+   - **c4f2: complete recipient My Applications panel, implemented.** Recruitment
+     exposes it for NPC and player corporations. Entries show the native logo,
+     corporation, status/date and expandable label text, newest first; one entry
+     expands at a time, retained per character. Personal filters/Invite stay hidden.
+     The retained historical-view setting still reads GetMyOldApplications;
+     ordinary views use the native personal dictionary, including ended rows
+     received during this session. The Python27 strip character sets were measured
+     in the installed runtime (Unicode differs from JavaScript trim).
+     Accept6/8 sends2 immediately; the invitation button sends3; its menu's Decline
+     and other active rows' Withdraw ask WithdrawApplication then send7 on Yes.
+     Ended rows offer only Show Info. The temporary decision lock has no invented
+     session cooldown. All seven native arguments preserve the original row's
+     Unicode text, empty byte customMessage and None date. The private originating
+     registry fence is separate from the target corporation argument and never
+     goes on the wire. Native corporation/version and pilot dispatch checks fence
+     late requests; an intended own join keeps the personal panel alive.
+     Types139/18/17/142 open this panel from popups and Activity; served requests
+     are consumed. Self application notices reload the docked station's offices
+     (base_corporation_ui204-209 / OfficesPanel46-72), including a queued reload.
+     Cold-started live browser/390px checks saw8→3,8→7 with No/Yes,8→2 and0→6→2,
+     expanded Unicode text, NPC access, retained ended rows and actual joins.
+     An actual type139 popup opened the second recipient's panel; a persistent
+     type18 entry opened the first's. AppFlow verified cancelled/stale-pilot
+     withdrawals, history setting and wrong originating registry refusal.
+     The wire recording has one personal prime per selected BFF session and the
+     native seven arguments for every decision. The sender unit below completes
+     the shared invitation action.
+   - **c4f3: complete shared send action, implemented.** The character owner menu
+     exposes SendCorpInvite for a single non-NPC character outside retained
+     GetMemberIDs, with Personnel Manager bit128. There is no separate NPC-pilot
+     corporation gate and no merged action. Contacts/search distinguish character
+     owners by eveowners type; Member List omits the action for current members.
+     ConfirmSendInviteToJoinCorp receives charID and OK/Cancel; Cancel sends
+     nothing, OK sends bound InsertInvitation(charID), with the originating
+     registry/pilot fence through dispatch. Live role0 omitted the action and
+     Personnel-only128 offered it; stored Director1 expanded to an effective mask
+     containing Personnel128, so it also offered it by that same native bit check.
+     AppFlow verified the full target/multiple/membership gates, Cancel, replaced
+     pilot and wrong originating-registry refusal. Browser Corporation Contacts,
+     personal Contacts and search offered the action; Member List omitted it and
+     mixed ContactMultiple had only its native Edit/Remove. Desktop OK sent one
+     argument and the actual NPC recipient's browser showed Directly Invited,
+     then its Decline retained Invitation Rejected. Desktop/390px Cancel added
+     no RPC. Native recording contains exactly the two confirmed sends (AppFlow
+     and browser), both bound and scalar, plus the recipient row/139 notification.
+     No direct TQ invitation packet was found; only the companion mentions this
+     separate path. Full store/settings restoration is recorded in the journal.
 7. **D2p18c4g — corporation cash from the shared menu.** Reuse the existing wallet
    transfer machinery only after comparing its corporate-source, recipient,
    division and authority behavior with this exact native entry point.
+   Read/split complete: compiled CharacterChecker292-300 allows a single non-NPC
+   character, including self, only with Accountant256 (not Junior or a take bit).
+   menusvc652-653 opens TransferMoney(session.corpid, None, charID, None).
+   walletSvc142-151 closes the previous transfer window and opens the new one;
+   it adds no active-division chooser, authority read or confirmation here.
+   TransferMoneyWnd108-123 reads fresh GetCorpWealth(None) before capturing
+   session.corpAccountKey. The source division is a label, not a selector. This
+   character-recipient entry has no destination-division combo. Amount starts
+   at0.1, has two decimal places and a wealth maximum; reason has40 characters.
+   Confirm138-155 sends GiveCashFromCorpAccount(toID, float(amount), capturedKey,
+   toAccountKey=None, reason=originalEditValue). None is successful; an exception
+   leaves the window open. No second confirmation is present.
+
+   The original compiled methods executed in the installed Python27 runtime
+   confirm those gates/call arguments, the None-before-active-key read, and the
+   native quirk: OnCorpAccountChangedClient updates a corporate transfer's
+   maximum for any corporation division, without filtering its captured key.
+   The captured source key must not be silently rebound when the active division
+   changes. walletSvc80-119 first checks corporation wallet access and the
+   event division's take bit, obtains the previous one-minute cached wealth,
+   updates that cache, then emits the client event. That cache/event consumer
+   is missing from the current personal-only transfer machinery.
+
+   Recursive TQ search found the Archive/Open Wallet - Plex - Corp Wallet -
+   Corp Transfers capture. Its companion was read to the end before the raw
+   packets. Decoding1804-1824 shows (2124510715,100.0,1000), keyword None/empty
+   reason, corporation then personal OnAccountChange before a None reply.
+   GetCashBalance(1, accountKey=None) is also recorded, with active key1000.
+   No alternate-active-key default is established by that recording; the other
+   corpus accountKey1002 matches are membership notices, not wallet reads.
+   Historical companion claims of lighter role validation are not evidence
+   against the current source-division validator.
+
+   - **c4g1: native corporation cash contract audit/fix, implemented.** Actual
+     native sessions exposed two retail-client defects. With active1001 and
+     balance50.25 there, None read the empty master division; walletSvc156-164,
+     TransferMoneyWnd108-123 and CorpISKTab34/50 consume this as active-division
+     wealth. EveJS118c86baf resolves missing/None corporate keys from the session,
+     preserving explicit keys, personal reads and authority. A raced amount50
+     against source49 returned None without a debit, which compiled Confirm
+     falsely calls successful. EveJS780fa9f82 raises wrapped NotEnoughMoney with
+     amount50/balance49; the native re-check saw unchanged balances/no notices.
+     Both fixes are pushed. These default-key and exact error payloads are
+     inferred from native consumers/existing wallet error convention; they are
+     not captured from TQ for an alternate active division or a shortfall.
+     Live ordinary reads were denied, Junior/Accountant reads permitted,
+     Accountant without Take denied a debit, and Take2 permitted its own read.
+     Explicit captured1001 still debited after active changed to1000, including
+     a self transfer. Success remained None, corporation cash2 then personal
+     cash notices before the reply, matching the applicable recorded order.
+   - **c4g2: complete corporation wealth cache/event foundation, implemented.**
+     Fresh GetCashBalance(1, accountKey=None/explicit) never fills the one-minute
+     notice cache. Only native UserError becomes0; session/transport failures
+     propagate. The compiled methods confirm strict >MIN expiry and timestamp
+     after the read. Own corporation cash/cash2..cash7 notices pass wallet access
+     and the division's take bit, read the old cached wealth, update, then emit
+     local OnCorpAccountChangedClient balance/key/difference. Accountant/Junior
+     read authority alone does not pass this notice gate. Pending reads/events
+     keep the captured pilot/corporation; per-key cache survives ordinary corpid
+     changes as native WalletSvc does, and clears on character reset/logoff.
+     Actual AppFlow/native wire verified separate fresh/cached calls, cached
+     delta1.25 with no RPC, cold notice explicit read followed by delta0,
+     foreign-division omission, real elapsed-minute expiry, delayed old-read
+     retirement, reset on same-pilot replacement, native refusal-to0 and genuine
+     missing-session error propagation. No cash action is exposed yet.
+   - **c4g3: complete shared TransferMoney window and character menu action,
+     implemented.** Contacts/search and Member List offer native single-character
+     Accountant cash, including self. One window per pilot replaces the previous
+     transfer, displays the source corporation/division or personal owner and
+     recipient with64px pictures, and uses original labels/amount/reason/OK/Cancel.
+     The corporate fresh None read precedes active-key capture. The key remains
+     captured; any eligible division's client event updates its maximum. Personal
+     OnAccountChange updates only a personal transfer. Background pilots retain
+     hidden window edits; pilot replacement/logoff retires them, corporation
+     replacement retires a corporate source while leaving personal cash intact.
+
+     Native numeric-field compiled methods prove that SetMaxValue leaves old text
+     untouched and GetValue reads it without reclamping. Typing cuts decimal text
+     (2.559 ->2.55, preserving2.55); its upper bound is applied during input,
+     focus loss repairs only the lower bound. Confirm reads that field value,
+     so a raced/other-division maximum can still produce a genuine shortfall.
+     Reason is40 characters and < > entities, nonempty typed Unicode on the wire.
+     The corporate RPC has the native three arguments, float amount and None/
+     reason keywords. Private originating-corporation metadata is checked against
+     the native version through final BFF dispatch and is not a native argument.
+     None success says TransferSuccessful and closes; UserError retains the
+     window under the native refusal dialog. Cancel sends nothing; no extra
+     confirmation or division selector is inserted. Existing personal Give Money
+     now uses this same window and its original GiveCash three-argument call.
+
+     Actual AppFlow verified ordinary/Junior/take-only omission, Accountant offer
+     without take then native debit refusal, target/self/multiple gates, Cancel,
+     replacement, wrong origin, Unicode/2.55 and both success/refusal paths.
+     Browser Corporation Contacts, search and Member List opened the window;
+     Member List self was allowed and multiple omitted. Desktop other-division
+     notice allowed100 while captured1001 held47.45, which raised the real native
+     NotEnoughMoney and retained the window. Its subsequent2.55 succeeded. Phone
+     fields/buttons fit and2.559 became2.55; Cancel left wire count unchanged.
+     Personal browser Give Money succeeded. Final build retained5/reason edits
+     while switching to a second account's pilot, hid the background window, and
+     restored those edits on switching back. All pilots/settings/store restored
+     as recorded in the journal. Generic wallet deposit/destination-corporation
+     selection remains its own entry point.
 
 Configured double-click-to-chat and simultaneous information windows remain after
 these administration units. The rest of the Corporation window and Phases 5/6 are
