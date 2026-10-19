@@ -175,6 +175,7 @@ import {
 } from "../bridge/mail.ts";
 import { locationKind } from "../bridge/clientWords.ts";
 import { resolvedName } from "../store/names.ts";
+import { labelEscaped } from "../bridge/labelMarkup.ts";
 import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
 import { corporationMemberOf, memberField, memberInteger, memberTitleOf, MEMBER_ROLE_FIELDS, type CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
 import { memberRoleGroups, myGrantableRoles, memberTitlesOf, changeMemberTitles, type RoleMasks, type CorporationTitle } from "../bridge/corporationRoles.ts";
@@ -751,7 +752,7 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
-import { IntDict, hashedSetOrder, intDictOf, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
+import { IntDict, hashedSetOrder, intDictOf, intDictOrder, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
 import { hudSettingNow, setSlotOrder, slotOrderOf } from "../store/hudSettings.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
@@ -1368,7 +1369,16 @@ export interface SkillsRequiredRow {
   readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
 }
 
-/** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
+/** The character owner menu's fleet management actions (menusvc.FleetMenu). */
+export type FleetMenuAction =
+  | { readonly kind: "beacon"; readonly characterID: number; readonly how: "jump" | "bridge" | "group" }
+  | { readonly kind: "warp"; readonly characterID: number; readonly range: number; readonly group: boolean }
+  | { readonly kind: "leader" | "kick"; readonly characterID: number }
+  | { readonly kind: "move"; readonly characterID: number; readonly wingID: number | null; readonly squadID: number | null; readonly role: number }
+  | { readonly kind: "watch"; readonly characterID: number; readonly add: boolean }
+  | { readonly kind: "travelToMe" | "leave" };
+
+/** A dialog a refusal named (AppFlow.dialogsSaid): its name, values, and fallback words. */
 export interface SaidDialog {
   readonly n: number;
   readonly dialog: string;
@@ -1380,6 +1390,10 @@ export interface SaidDialog {
    * AppFlow.answerDialog (Yes and OK true); else OK alone.
    */
   readonly answers?: "yesno" | "okcancel";
+  /** An explicit native default (fleetSvc.MakeLeader uses ID_NO). */
+  readonly defaultAnswer?: "no";
+  /** An explicit prompt_player_fsd_dialog suppress argument, where the dialog is suppressable. */
+  readonly suppressAnswer?: "yes";
 }
 
 export interface AppFlow {
@@ -1873,7 +1887,9 @@ export interface AppFlow {
    */
   deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
-  loadFleet(): Promise<void>;
+  loadFleet(menuOnly?: boolean): Promise<void>;
+  /** Keep the fleet window's detail reads active only while that window is mounted. */
+  retainFleetDetails(): () => void;
   /** Form a fleet, then re-read membership before settling. */
   formFleet(): Promise<void>;
   /**
@@ -1886,6 +1902,8 @@ export interface AppFlow {
    * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
    */
   formFleetWith(characterID: number): Promise<void>;
+  /** Native member-menu callbacks: grouped Form targets, independent Invite callbacks. */
+  inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void>;
   /**
    * Accept a fleet invitation, then re-read membership before settling.
    *
@@ -1913,12 +1931,17 @@ export interface AppFlow {
   kickFleetMember(characterID: number): Promise<void>;
   /** Hand the fleet's boss on to a member, as the fleet's menu for a member does once asked; the fleet read again. */
   makeFleetLeader(characterID: number): Promise<void>;
+  /** The native owner menu's questions and local refusals, shared by Contacts and corporation members. */
+  fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null>;
   /** Give a member another place in the fleet, as the fleet's menu for a member does (Move Fleet Member); the fleet read again. */
   moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void>;
   /** Warp to a member of the pilot's fleet at a range, as the fleet's menu for a member does. */
   warpToFleetMember(characterID: number, range: number): Promise<void>;
   /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
   warpFleetToMember(characterID: number, range: number): Promise<void>;
+  /** defaultRangeUtils.FetchRangeSetting('WarpTo'): settings.char.ui.defaultTypeWarpToDist[0], default 0. */
+  readonly warpDistance: ReadableSignal<number>;
+  keepWarpDistance(metres: number): void;
   /**
    * The fleet menu's Jump To, Conduit Jump To and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember,
    * BridgeToMember): by the member's cyno the fleet told of, nothing where it told of none.
@@ -4124,6 +4147,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Storage refused: the choice lasts the page.
     }
   }
+
+  // defaultRangeUtils28-68/SetDefaultWarpToDist: WarpTo applies to every hull of this character.
+  // The old browser-wide distance cannot identify which character chose it, so it is not inherited.
+  const warpDistanceSignal = createSignal(0);
+  let warpDistanceFor: number | null | undefined;
+  function readWarpDistance(): number {
+    const characterID = onlineCharacterID();
+    if (characterID !== warpDistanceFor) {
+      warpDistanceFor = characterID;
+      let metres = 0;
+      try {
+        const kept: unknown = JSON.parse(charUiSetting("defaultTypeWarpToDist") ?? "{}");
+        if (kept && typeof kept === "object" && !Array.isArray(kept)) {
+          const value = (kept as Record<string, unknown>)["0"];
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0) metres = value;
+        }
+      } catch { /* Invalid local settings use the native default. */ }
+      warpDistanceSignal.set(metres);
+    }
+    return warpDistanceSignal.get();
+  }
+  const warpDistance: ReadableSignal<number> = {
+    get: readWarpDistance,
+    subscribe(listener) {
+      const stopPilot = store.station.subscribe(() => readWarpDistance());
+      const stopValue = warpDistanceSignal.subscribe(listener);
+      return () => { stopPilot(); stopValue(); };
+    },
+  };
+  function keepWarpDistance(metres: number): void {
+    if (!Number.isFinite(metres) || metres < 0) throw new Error("A warp distance must be a non-negative number.");
+    if (onlineCharacterID() === null) return;
+    readWarpDistance();
+    let kept: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(charUiSetting("defaultTypeWarpToDist") ?? "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) kept = parsed as Record<string, unknown>;
+    } catch { /* An invalid setting has no dictionary to amend. */ }
+    setCharUiSetting("defaultTypeWarpToDist", JSON.stringify({ ...kept, 0: metres }));
+    warpDistanceSignal.set(metres);
+  }
   /** settings.char.autoreload.Get(itemID, 1): on unless the pilot set it off. */
   const autoReloadOn = (moduleID: number): boolean => (charModuleSettings("autoreload")[moduleID] ?? 1) !== 0;
   /** shipmodulebutton GROUPS_THAT_ALWAYS_AUTO_REPEAT: mining lasers, strip miners, entosis links. */
@@ -5382,6 +5446,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           : null;
         store.apply({ type: "fleet/jump-beacon", characterID, beacon });
       }
+      return;
+    }
+    if (method === "OnGroupJumpAnchorActivated" || method === "OnGroupJumpedPassenger") {
+      // cynoTravelSvc22-28: the server's actual passenger count/anchor and destination in native FSD dialogs.
+      const first = wholeNumberOf(args[0]);
+      const second = wholeNumberOf(args[1]);
+      if (first === null || second === null) return;
+      const entries: [string, JsonValue][] = method === "OnGroupJumpAnchorActivated"
+        ? [["toSolarsystemID", first], ["numPassengers", second]]
+        : [["anchorCharID", first], ["toSolarsystemID", second]];
+      sayDialog(method.slice(2), { type: "dict", entries }, "Conduit jump completed.");
       return;
     }
     if (method === "OnFleetLeave") {
@@ -9013,6 +9088,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // notification burst into one initial read.
   let fleetRefreshPromise: Promise<void> | null = null;
   let fleetRefreshDirty = false;
+  // A character menu consumes the held roster, options and wings. Only an
+  // explicit fleet-details reader opens the composition/join-request views.
+  let fleetMenuOnly = true;
+  let fleetReadingMenuOnly = true;
+  let fleetDetailViews = 0;
+  function retainFleetDetails(): () => void {
+    fleetDetailViews++;
+    let kept = true;
+    return () => { if (kept) { kept = false; fleetDetailViews--; } };
+  }
   let fleetRefreshScheduled = false;
 
   /**
@@ -9062,16 +9147,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     fleetRefreshScheduled = true;
     queueMicrotask(() => {
       fleetRefreshScheduled = false;
-      void loadFleet().catch(() => undefined);
+      void loadFleet(fleetDetailViews === 0).catch(() => undefined);
     });
   }
 
-  async function loadFleetSnapshotOnce(): Promise<void> {
+  async function loadFleetSnapshotOnce(menuOnly: boolean): Promise<void> {
     store.apply({ type: "fleet/loading" });
     let snapshot: ReturnType<typeof decodeFleetCenter>;
     let readError: string | null = null;
     try {
-      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions));
+      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions, menuOnly));
       if (
         snapshot.availability === "ready" &&
         [
@@ -9142,7 +9227,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       while (fleetRefreshDirty) {
         fleetRefreshDirty = false;
-        await loadFleetSnapshotOnce();
+        fleetReadingMenuOnly = fleetMenuOnly && fleetDetailViews === 0;
+        fleetMenuOnly = true;
+        await loadFleetSnapshotOnce(fleetReadingMenuOnly);
       }
     } finally {
       // No callback can interleave between the loop condition and this reset,
@@ -9151,10 +9238,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  function loadFleet(): Promise<void> {
+  function loadFleet(menuOnly = false): Promise<void> {
+    const rosterOnly = menuOnly && fleetDetailViews === 0;
     if (fleetRefreshPromise !== null) {
+      if (!rosterOnly && fleetReadingMenuOnly) { fleetMenuOnly = false; fleetRefreshDirty = true; }
       return fleetRefreshPromise;
     }
+    fleetMenuOnly = rosterOnly;
     fleetRefreshDirty = true;
     fleetRefreshPromise = drainFleetRefreshes();
     return fleetRefreshPromise;
@@ -9240,15 +9330,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
   // answer; true on Yes. With uiconst.OKCANCEL (answers "okcancel"): OK and Cancel, true on OK.
   const dialogAnswers = new Map<number, (yes: boolean) => void>();
-  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno"): Promise<boolean> {
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno", prompt: Pick<SaidDialog, "defaultAnswer" | "suppressAnswer"> = {}): Promise<boolean> {
     const kept = dialogAnswerKept(dialog);
     // A question's kept answer: Yes, or OK where the question is OK and Cancel (suppress=uiconst.ID_OK).
-    if (kept !== null) return Promise.resolve(kept === "yes" || kept === "ok");
+    // dialog_handler59-64: an explicit suppress argument overrides the saved result.
+    if (kept !== null) return Promise.resolve(prompt.suppressAnswer === "yes" || kept === "yes" || kept === "ok");
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
     return new Promise((resolve) => {
       dialogAnswers.set(n, resolve);
-      putDialog({ n, dialog, values, fallback, answers });
+      putDialog({ n, dialog, values, fallback, answers, ...prompt });
     });
   }
 
@@ -13156,12 +13247,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     mutate: () => Promise<void>,
     expected: "ready" | "not-in-fleet",
   ): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
     store.apply({ type: "fleet/action-started", action });
     let failure: string | null = null;
     let said = false;
     try {
       await mutate();
+      assertCurrent();
     } catch (error) {
+      throwIfRequestRetired(error);
+      assertCurrent();
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -13177,11 +13272,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       // The write acknowledgement is not treated as world state. Always read
       // the session's own bound fleet again, even after a refusal.
-      await loadFleet();
+      await loadFleet(fleetDetailViews === 0);
+      assertCurrent();
       if (failure === null && store.fleet.get().availability !== expected) {
         failure = fleetActionFailure(action);
       }
     } finally {
+      assertCurrent();
       store.apply({ type: "fleet/action-finished", error: failure, said });
     }
   }
@@ -13218,6 +13315,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (characterID === onlineCharacterID()) return;
     await inviteFleetMember(characterID);
+  }
+
+  async function inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
+    if (!form) {
+      for (const id of characterIDs) {
+        assertCurrent();
+        await inviteFleetMember(id, assertCurrent, undefined, place);
+        assertCurrent();
+        const state = store.fleet.get();
+        if (state.actionError && !state.actionErrorSaid) throw new Error(state.actionError);
+      }
+      return;
+    }
+    const act = fencedDo(assertCurrent);
+    // menusvc.InviteToFleet2707-2730 catches UserError per owner and reports
+    // one original error, or FleetInviteMultipleErrors after trying them all.
+    await runFleetAction("invite", async () => {
+      const refused: { id: number; error: unknown }[] = [];
+      for (const id of characterIDs) {
+        assertCurrent();
+        try {
+          if (store.fleet.get().availability !== "ready") {
+            await formFleetCall(act, false);
+            await loadFleet(fleetDetailViews === 0);
+            assertCurrent();
+          }
+          if (id !== onlineCharacterID()) await inviteToFleetCall(act, id, onlineCharacterID());
+        } catch (error) {
+          throwIfRequestRetired(error);
+          if (!(error instanceof BridgeCallError) || error.code !== "CALL_REFUSED") throw error;
+          refused.push({ id, error });
+        }
+      }
+      if (refused.length === 1) throw refused[0]!.error;
+      if (refused.length > 1) {
+        await resolveNamesNow(refused.map(({ id }) => ({ kind: "owner" as const, id })));
+        const namelist = intDictOrder(refused.map(({ id }) => id)).map(id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot")).join(", ");
+        throw new BridgeCallError("CALL_REFUSED", "FleetInviteMultipleErrors", 0, null, null, { key: "FleetInviteMultipleErrors", values: { type: "dict", entries: [["namelist", namelist]] } });
+      }
+    }, "ready");
   }
 
   async function acceptFleetInvite(fleetID?: number): Promise<void> {
@@ -13321,6 +13459,67 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await runFleetAction("leader", () => makeFleetLeaderCall(bridgeDo, characterID), "ready");
   }
 
+  // fleetSvc.MakeLeader601, CheckIfIsOKWithDemotion505, AddFavorite640 and SendBroadcast_TravelTo1034.
+  // Keep questions outside the ephemeral owner menu, and fence the answer to the pilot that asked it.
+  async function fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null> {
+    const current = callOptions.captureRequestGuard!();
+    try {
+      if (action.kind === "warp" || action.kind === "beacon") {
+        if (action.kind === "beacon") {
+          // menusvc.*ToMember: a beacon gone before the callback is a no-op, with no old flight error resurfaced.
+          if (!store.fleet.get().jumpBeacons?.[String(action.characterID)]) return null;
+          await toFleetMemberBeacon(action.characterID, action.how);
+        } else if (action.group) await warpFleetToMember(action.characterID, action.range);
+        else await warpToFleetMember(action.characterID, action.range);
+        current();
+        const flight = store.flight.get();
+        if (flight.actionError && !flight.actionErrorSaid) throw new Error(flight.actionError);
+        return null;
+      } else if (action.kind === "leader") {
+        // fleetSvc.MakeLeader601: evelink.character_link uses cfg.eveowners' own type and name, not UE_OWNERID text.
+        const identity = await api.resolveNames([{ kind: "owner", id: action.characterID }, { kind: "ownerType", id: action.characterID }], callOptions);
+        current();
+        const name = identity.names[`owner:${action.characterID}`];
+        const typeID = Number(identity.names[`ownerType:${action.characterID}`]);
+        if (!name || !Number.isSafeInteger(typeID) || typeID <= 0) throw new Error("That pilot's identity could not be read.");
+        const link = `<a href="showinfo:${typeID}//${action.characterID}">${labelEscaped(name)}</a>`;
+        if (!(await askDialog("ConfirmMakeFleetBoss", { type: "dict", entries: [["charName", link]] }, "Make this pilot the fleet's boss?", "yesno", { defaultAnswer: "no", suppressAnswer: "yes" }))) return null;
+        current();
+        await makeFleetLeader(action.characterID);
+      } else if (action.kind === "move") {
+        const me = onlineCharacterID();
+        const mine = store.fleet.get().fleet?.initState.value.members.find(member => Number(member.charID) === me);
+        if (action.characterID === me && mine && !(mine.job & 2) && mine.role < 3 && action.role > mine.role) {
+          if (!(await askDialog("FleetConfirmDemoteSelf", { type: "dict", entries: [] }, "This gives up the command you hold. Continue?"))) return null;
+          current();
+        }
+        await moveFleetMember(action.characterID, action.wingID, action.squadID, action.role);
+      } else if (action.kind === "watch") {
+        const outcome = action.add ? await addToFleetWatchlist([action.characterID]) : await removeFromFleetWatchlist(action.characterID);
+        current();
+        if (outcome === "not-in-fleet") sayDialog("FleetNotInFleet", null, "That needs a fleet.");
+        if (outcome === "too-many") sayDialog("FleetTooManyFavorites", { type: "dict", entries: [["num", MAX_WATCHLIST]] }, `The watchlist holds ${MAX_WATCHLIST} pilots at most.`);
+        return outcome === "added" ? "watchlist" : null;
+      } else if (action.kind === "travelToMe") {
+        const outcome = await broadcastTravelToMe();
+        current();
+        const refusal = outcome === "not-in-fleet" ? "FleetNotInFleetInSpace" : outcome === "in-station" ? "FleetCannotDoInStation" : outcome === "in-structure" ? "FleetCannotDoInStructure" : null;
+        if (refusal) sayDialog(refusal, null, "That needs a fleet and a ship in space.");
+        return null;
+      } else if (action.kind === "kick") await kickFleetMember(action.characterID);
+      else await leaveFleet();
+      current();
+      const state = store.fleet.get();
+      if (state.actionError && !state.actionErrorSaid) throw new Error(state.actionError);
+      return null;
+    } catch (error) {
+      throwIfRequestRetired(error);
+      current();
+      if (sayRefusalDialog(error, errorWords(error))) return null;
+      throw error;
+    }
+  }
+
   // fleetSvc.MoveMember (513 to 520): self.fleet.MoveMember(charID, wingID, squadID, role); the asking of a pilot who
   // moves itself down (CheckIfIsOKWithDemotion) is the menu's, before this.
   async function moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
@@ -13330,31 +13529,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // menusvc.WarpToMember (2748): CmdWarpToStuff('char', charID, minRange=warpRange), from the fleet's menu for a member
   // at the pilot's default distance or one of its submenu's seven.
   async function warpToFleetMember(characterID: number, range: number): Promise<void> {
-    await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(bridgeDo, flightNow, characterID, range)));
+    const current = callOptions.captureRequestGuard!();
+    cancelSystemNavigation();
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(fencedDo(current), flightNow, characterID, range)));
   }
 
   // menusvc.WarpFleetToMember (2753): CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True), with the pilot's
   // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
   async function warpFleetToMember(characterID: number, range: number): Promise<void> {
-    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
+    const current = callOptions.captureRequestGuard!();
+    cancelSystemNavigation();
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(fencedDo(current), flightNow, characterID, range)));
   }
 
   // menusvc.JumpToMember, GroupJumpToMember and BridgeToMember (2614 to 2681): the member's cyno as fleetSvc keeps it
   // (GetActiveBeaconForChar; none, nothing asked), then cynoTravelSvc's call on the park (bridge/movementWrites.ts).
   async function toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void> {
+    const current = callOptions.captureRequestGuard!();
     const beacon = store.fleet.get().jumpBeacons?.[String(characterID)] ?? null;
     if (beacon === null) return;
-    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(bridgeDo, flightNow, characterID, beacon, how)));
+    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(fencedDo(current), flightNow, characterID, beacon, how)));
   }
 
   // fleetSvc.SendBroadcast_TravelTo (1034): SendGlobalBroadcast('TravelTo', session.solarsystemid2), from the fleet's
   // menu for the pilot's own (menusvc.FleetMenu, Broadcast Travel To Me). CheckIsInFleet(inSpace=True) first (848 to
   // 858: no fleet's object, then no solar system, then docked in a structure), then the wait (fleetWrites.ts).
   async function broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure"> {
+    const current = callOptions.captureRequestGuard!();
     if (store.fleet.get().availability !== "ready") {
       return "not-in-fleet";
     }
     const now = await readFlightNow();
+    current();
     if (!now.inSpace) {
       return now.structureID !== null && now.structureID !== undefined ? "in-structure" : "in-station";
     }
@@ -14097,11 +14303,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
+    const current = callOptions.captureRequestGuard!();
     const before = await api.getFlightStatus(callOptions);
-    await order(async () => decodeFlightStatus(before.flight));
+    current();
+    await order(async () => { current(); return decodeFlightStatus(before.flight); });
+    current();
     try {
-      return await api.getFlightStatus(callOptions);
+      const after = await api.getFlightStatus(callOptions);
+      current();
+      return after;
     } catch (error) {
+      throwIfRequestRetired(error);
+      current();
       if (isSessionLost(error)) throw error;
       return before;
     }
@@ -18692,10 +18905,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     step: () => Promise<FlightStepResult>,
   ): Promise<void> {
     if (label !== "Stop") requireAutomationReady();
+    const current = callOptions.captureRequestGuard!();
     let result: FlightStepResult;
     try {
       result = await step();
+      current();
     } catch (error) {
+      throwIfRequestRetired(error);
+      current();
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -18708,8 +18925,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {
-        await applyFlight(await api.getFlightStatus(callOptions));
-      } catch {
+        const unchanged = await api.getFlightStatus(callOptions);
+        current();
+        await applyFlight(unchanged);
+      } catch (refreshError) {
+        throwIfRequestRetired(refreshError);
+        current();
         // The refusal reason is already surfaced; a failed re-read changes nothing.
       }
       return;
@@ -18718,6 +18939,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // Await the docked-context reconcile so a step that changes the docked
     // station (dock) doesn't resolve before the new station's panels refresh.
     await applyFlight(result);
+    current();
   }
 
   // --- R28: skills ----------------------------------------------------------
@@ -28183,17 +28405,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssShipTypeLists,
     deployAbyssalFilament,
     loadFleet,
+    retainFleetDetails,
     formFleet,
     inviteFleetMember,
     formFleetWith,
+    inviteFleetSelection,
     acceptFleetInvite,
     declineFleetInvite,
     leaveFleet,
     kickFleetMember,
     makeFleetLeader,
+    fleetMenuAction,
     moveFleetMember,
     warpToFleetMember,
     warpFleetToMember,
+    warpDistance,
+    keepWarpDistance,
     toFleetMemberBeacon,
     broadcastTravelToMe,
     addToFleetWatchlist,

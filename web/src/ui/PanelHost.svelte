@@ -190,7 +190,7 @@
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
 {:else if tab === "corporation"}
-  <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} />
+  <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "memberDetails"}
   <CorporationMemberDetails {store} {flow} {onClose} />
 {:else if tab === "watchlist"}

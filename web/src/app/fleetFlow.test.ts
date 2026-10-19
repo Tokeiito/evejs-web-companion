@@ -1,3 +1,6 @@
+// Fleet request paths below ignore only the menu view selector. Native fleetSvc
+// GetMembers/GetWings/GetOptions do not open composition/join-request windows;
+// that read scope is checked against real game-port frames, not these HTTP fixtures.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -141,7 +144,7 @@ async function onlineFleetFlow(
   const { factory, sources } = makeFakeEventSource();
   const state = { fleetReads: 0, activeFleetReads: 0, peakFleetReads: 0 };
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     if (url === "/api/bridge/select") {
       return json({
         ok: true,
@@ -200,7 +203,7 @@ test("loadFleet preserves the verified FleetNotFound state", async () => {
 test("formFleet confirms through a follow-up bound-fleet read", async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push({
       url,
       body: init?.body ? JSON.parse(String(init.body)) : null,
@@ -228,7 +231,7 @@ test("formFleet confirms through a follow-up bound-fleet read", async () => {
 test("formFleet from within a fleet asks nothing of the forming, says so, and reads the fleet again", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push(url);
     if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
     throw new Error(`unexpected fetch ${url}`);
@@ -249,7 +252,7 @@ test("formFleet from within a fleet asks nothing of the forming, says so, and re
 test("a forming the server refuses is said in the page's words for that refusal, and the fleet is read again all the same", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push(url);
     if (url.endsWith("/api/bridge/call")) return json({ ok: false, error: "CALL_REFUSED", message: "FleetError" }, 409);
     if (url.endsWith("/api/bridge/bound-fleet")) return json(noFleet());
@@ -264,7 +267,7 @@ test("a forming the server refuses is said in the page's words for that refusal,
 test("acceptFleetInvite uses the fleetID from OnFleetInvite and re-reads", async () => {
   let acceptedBody: Record<string, unknown> | null = null;
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     if (url.endsWith("/api/bridge/call")) {
       acceptedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return json({ ok: true, service: "fleetObjectHandler", method: "AcceptInvite", result: null, notifications: [] });
@@ -289,7 +292,7 @@ test("acceptFleetInvite uses the fleetID from OnFleetInvite and re-reads", async
 test("acceptFleetInvite from within a fleet asks nothing of the accepting, says so, and reads the fleet again", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push(url);
     if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
     throw new Error(`unexpected fetch ${url}`);
@@ -316,7 +319,7 @@ test("an acceptance the server refuses is said in the page's words for each refu
   ] as const) {
     const calls: string[] = [];
     const fetch: typeof globalThis.fetch = async (input) => {
-      const url = String(input);
+      const url = String(input).replace(/\?view=menu$/, "");
       calls.push(url);
       if (url.endsWith("/api/bridge/call")) return json({ ok: false, error: "CALL_REFUSED", message: key }, 409);
       if (url.endsWith("/api/bridge/bound-fleet")) return json(noFleet());
@@ -332,7 +335,7 @@ test("an acceptance the server refuses is said in the page's words for each refu
 test("leaveFleet makes the page's own call on the fleet's object, does not trust its answer, and lands the no-fleet reread", async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetch: typeof globalThis.fetch = async (input, init = {}) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
     if (url.endsWith("/api/bridge/call")) return json({ ok: true, service: "fleetObjectHandler", method: "LeaveFleet", result: true, notifications: [] });
     if (url.endsWith("/api/bridge/bound-fleet")) return json(noFleet());
@@ -352,7 +355,7 @@ test("leaveFleet makes the page's own call on the fleet's object, does not trust
 test("a leaving the server refuses is said, in the page's words for that refusal, and the fleet is read again all the same", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push(url);
     if (url.endsWith("/api/bridge/call")) return json({ ok: false, error: "CALL_REFUSED", message: "FleetNotInFleet" }, 409);
     if (url.endsWith("/api/bridge/bound-fleet")) return json(noFleet());
@@ -685,7 +688,7 @@ test("the names a fleet's roster needs are asked for by the composition's word f
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: async (input: unknown, init?: { body?: unknown }) => {
-      if (String(input) === "/api/names") {
+      if (String(input).replace(/\?view=menu$/, "") === "/api/names") {
         const body = JSON.parse(String(init?.body)) as { items?: { kind: string; id: number }[] };
         for (const ref of body.items ?? []) asked.push(`${ref.kind}:${ref.id}`);
         return json({ ok: true, names: {} });
@@ -718,11 +721,13 @@ test("a fleet whose composition has not caught up with its roster is read once m
     const flow = createAppFlow(store, {
       fleetCompositionRereadMs: 25,
       fetch: async (input: unknown) => {
-        if (String(input) === "/api/names") return json({ ok: true, names: {} });
+        if (String(input).replace(/\?view=menu$/, "") === "/api/names") return json({ ok: true, names: {} });
         state.reads += 1;
         return json(answers[Math.min(state.reads, answers.length) - 1]);
       },
     });
+    // fleetCompositionWnd is open in this native composition-cache case.
+    flow.retainFleetDetails();
     return { flow, state, store };
   };
   const settled = () => new Promise((resolve) => setTimeout(resolve, 150));
@@ -788,7 +793,7 @@ test("a fleet whose composition has not caught up with its roster is read once m
 function invitingFlow(characterID: number, answer: { status: number; body: unknown } = { status: 200, body: { ok: true, service: "fleetObjectHandler", method: "Invite", result: true, notifications: [] } }) {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetch: typeof globalThis.fetch = async (input, init = {}) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
     if (url.endsWith("/api/bridge/call")) return json(answer.body, answer.status);
     if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
@@ -838,7 +843,7 @@ async function invitedFlow(fleetRead: () => unknown, call: { status: number; bod
   const { factory, sources } = makeFakeEventSource();
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetch: typeof globalThis.fetch = async (input, init = {}) => {
-    const url = String(input);
+    const url = String(input).replace(/\?view=menu$/, "");
     calls.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
     if (url === "/api/bridge/select") {
       return json({ ok: true, character: { characterID: 140000005, characterName: "Fleet Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000001 }, station: null, notifications: [] });

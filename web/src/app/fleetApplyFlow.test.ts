@@ -1,3 +1,6 @@
+// Fleet request paths below ignore only the menu view selector. Native fleetSvc
+// GetMembers/GetWings/GetOptions do not open composition/join-request windows;
+// that read scope is checked against real game-port frames, not these HTTP fixtures.
 // A fleet applied to from the page, through the real flow over a faked BFF.
 //
 // The join-by-name block's deciding (nav/scriptMacros.test.ts) is tested with stand-ins for what it reads. What
@@ -64,7 +67,7 @@ function harness(answer: boolean) {
   const finderReads: Record<string, unknown>[] = [];
   let joined = false;
   const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     let result: unknown = { ok: true };
     if (path === "/api/bridge/flight/status") result = flightBody(false);

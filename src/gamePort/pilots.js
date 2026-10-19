@@ -5712,7 +5712,7 @@ function createGamePortPilots({
    * neither, and has none. Each in the gateway's form, under the name of the read it stands for. Null where no
    * object is held or no state could be read: then nothing is kept, as the client keeps nothing.
    */
-  async function fleetKept(sessionFields = {}, bridgeSessionID = undefined) {
+  async function fleetKept(sessionFields = {}, bridgeSessionID = undefined, { details = true } = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     // What the client is asking of its own accord comes first.
     await entry.fleetWork;
@@ -5720,17 +5720,17 @@ function createGamePortPilots({
     const object = entry.fleet;
     if (object && !entry.fleetKept.inited) await fleetDoes(entry, () => initFleet(entry, object));
     if (!entry.fleetKept.inited) return null;
-    if (entry.fleetKept.motd() === null) {
+    if (details && entry.fleetKept.motd() === null) {
       await fleetDoes(entry, async () => entry.fleetKept.setMotd(await ownFleetCall(entry, object, "GetMotd")));
     }
-    if (entry.fleetKept.isBoss() && entry.fleetKept.openJoinRequests()) {
+    if (details && entry.fleetKept.isBoss() && entry.fleetKept.openJoinRequests()) {
       await fleetDoes(entry, async () => {
         const requests = await ownFleetCall(entry, object, "GetJoinRequests");
         if (entry.fleet === object) entry.fleetKept.setJoinRequests(requests);
       });
     }
     const commands = () => entry.fleetKept.isBoss() || FLEET_COMMANDER_ROLES.has(attribute(entry, "fleetrole"));
-    if (commands() && entry.fleetKept.compositionDue(now())) {
+    if (details && commands() && entry.fleetKept.compositionDue(now())) {
       await fleetDoes(entry, async () => {
         const composition = await ownFleetCall(entry, object, "GetFleetComposition");
         if (entry.fleet === object) entry.fleetKept.setComposition(composition, now());

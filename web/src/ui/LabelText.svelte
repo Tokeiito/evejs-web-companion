@@ -2,20 +2,24 @@
   A text in the client's label markup, drawn as the client's label draws it (bridge/labelMarkup.ts: trinity's
   ParseLabelText and carbonui's label walking its tags). Each line its own block, aligned as its tags say; its tab
   cells side by side; each run bold, italic, underlined, coloured, sized or spaced as marked; a link drawn as a link
-  (not followed: the page has no link handler for the client's urls); a hint shown on the pointer. An empty line keeps
+  followed where the caller supplies the client's link registry; a hint shown on the pointer. An empty line keeps
   its height, as the label pushes a space for it.
 -->
 <script lang="ts">
-  import { labelColorCss, labelLines } from "../bridge/labelMarkup.ts";
+  import { labelColorCss, labelLines, type LabelRun } from "../bridge/labelMarkup.ts";
+  import { startLinkDrag, type LinkFollower } from "./linkFollowers.ts";
 
-  let { markup }: { markup: string } = $props();
+  let { markup, followerOf }: { markup: string; followerOf?: (url: string, text: string) => LinkFollower | null } = $props();
   const lines = $derived(labelLines(markup));
 </script>
 
 <!-- No whitespace between the tags inside a line: under pre-wrap it would be drawn as text. -->
 {#each lines as line, n (n)}
   <div class="label-line" style:text-align={line.align}>{#each line.tabs as cell, c (c)}<span
-        class="label-cell" class:tabbed={line.tabs.length > 1}>{#each cell as run, r (r)}<span
+        class="label-cell" class:tabbed={line.tabs.length > 1}>{#each cell as run, r (r)}{@const follower = run.link === null ? null : followerOf?.(run.link, run.text)}{#if follower}<button type="button" class="evelink {follower.kind}" title={run.hint ?? follower.hint} draggable="true" ondragstart={event => startLinkDrag(event, run.link ?? "", run.text)} onclick={follower.follow}>{@render styledRun(run)}</button>{:else}{@render styledRun(run)}{/if}{/each}</span>{/each}{#if line.tabs.every((cell) => cell.length === 0)}&nbsp;{/if}</div>
+{/each}
+
+{#snippet styledRun(run: LabelRun)}<span
             class:label-bold={run.bold}
             class:label-italic={run.italic}
             class:label-underline={run.underline}
@@ -23,8 +27,7 @@
             style:color={run.color === null ? undefined : labelColorCss(run.color)}
             style:font-size={run.fontSize === null ? undefined : `${run.fontSize}px`}
             style:letter-spacing={run.letterSpace === null ? undefined : `${run.letterSpace}px`}
-            title={run.hint ?? undefined}>{run.text}</span>{/each}</span>{/each}{#if line.tabs.every((cell) => cell.length === 0)}&nbsp;{/if}</div>
-{/each}
+            title={run.hint ?? undefined}>{run.text}</span>{/snippet}
 
 <style>
   .label-line { white-space: pre-wrap; overflow-wrap: anywhere; }

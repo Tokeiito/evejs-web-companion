@@ -39,7 +39,9 @@ const ORE_TYPE_ID = 1230;
 const RAT_TYPE_ID = 1232;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // Native defaultRangeUtils.FetchRangeSetting('WarpTo'): this fixture has no character override.
+  const warpDistance = { get: () => 0, subscribe: (run: (value: number) => void) => { run(0); return () => {}; } };
+  return new Proxy({}, { get: (_target, key) => key === "warpDistance" ? warpDistance : async () => {} });
 }
 
 function entity(over: Record<string, unknown>): Record<string, unknown> {

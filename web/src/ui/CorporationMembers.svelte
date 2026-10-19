@@ -9,11 +9,13 @@
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import ContactActionDialog from "./ContactActionDialog.svelte";
+  import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
+  import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
 
-  let { store, flow, openMail }: { store: ClientStore; flow: AppFlow; openMail?: () => void } = $props();
+  let { store, flow, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; openMail?: () => void; openWatchlist?: () => void } = $props();
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // svelte-ignore state_referenced_locally
@@ -308,6 +310,10 @@
             <button type="button" class="minor" onclick={() => corporateManage("remove", "alliancecontact")}>{word(LABELS.removeAllianceContact, "Remove Alliance Contact")}</button>
             <button type="button" class="minor" onclick={() => corporateManage("edit", "alliancecontact")}>{word(LABELS.editAllianceContact, "Edit Alliance Contact")}</button>
           {/if}
+        {/if}
+        <MemberFleetInvites {store} {flow} targets={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        {#if selected.length === 1}
+          <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => menuFor = null} />
         {/if}
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>

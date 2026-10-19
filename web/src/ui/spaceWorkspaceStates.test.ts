@@ -48,7 +48,9 @@ function fakeFlow(): unknown {
   // portrait) none.
   const droneRecovery = { subscribe: (run: (value: unknown) => void) => (run({ phase: "ready", reason: null }), () => {}) };
   const imageServer = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
-  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : key === "imageServer" ? imageServer : async () => {} });
+  // Native defaultRangeUtils: no character-specific WarpTo override in this scene.
+  const warpDistance = { get: () => 0, subscribe: (run: (value: number) => void) => { run(0); return () => {}; } };
+  return new Proxy({}, { get: (_target, key) => key === "warpDistance" ? warpDistance : key === "droneRecovery" ? droneRecovery : key === "imageServer" ? imageServer : async () => {} });
 }
 
 const STATION_ID = 60003760;

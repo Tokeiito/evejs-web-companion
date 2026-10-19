@@ -73,7 +73,7 @@
   } from "../bridge/locationsList.ts";
   import { fmtDist } from "../space/overview.ts";
   import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
-  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
+  import { WARP_RANGES } from "./flyingDistances.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
   import type { JournalMission, MissionSpot } from "../store/types.ts";
@@ -90,6 +90,8 @@
   import type { ClientStore } from "../store/clientStore.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -519,7 +521,7 @@
   });
 
   /** The pilot's own warp distance (defaultRangeUtils' WarpTo), which Warp to Within warps at. */
-  const defaultWarp = $derived(Number($flyingDistances.warp));
+  const defaultWarp = $derived($warpDistance);
   const say = $derived(distanceSay($words.templates));
 
   /** Show Info (_BookmarkMenu, 1446 to 1450): the thing as the ballpark holds it, a map place as itself, else the bookmark's type. */
@@ -589,7 +591,7 @@
 
   /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
   function setDefaultWarp(metres: number): void {
-    setDistance("warp", String(metres));
+    flow.keepWarpDistance(metres);
     defaultOpen = false;
   }
 
