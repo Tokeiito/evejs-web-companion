@@ -284,10 +284,22 @@ normal caption/history completion and clears loading in finally, retaining the
 failed registered scope. Original compiled window/monolith/UpdateDataCorp
 execution confirms the header precedes those reads and the main tabs are not
 constructed after either failure. The browser no longer reports a missing
-corporation record for that unfinished body. Retaining the complete native header
-across those failures, and exposing it during held attribute reads, is the next
-content boundary to port. None/malformed attribute answers need their own native
+corporation record for that unfinished body. None/malformed attribute answers need their own native
 consumer checks; propagating RPC exceptions does not establish those cases.
+
+The controller now publishes a distinct corporation header stage before those
+attribute reads. It contains only the identified public record; the completed
+stage adds aggression, enlistments and its read time. A later failure retains
+the header stage. The view can therefore keep the corporation's existing header
+fields visible while loading or after failure, without showing Description,
+Attributes or Standings before the main tabs would be constructed. Caption and
+history completion still wait for the coroutine's successful end. Scope/pilot
+retirement guards publication as well as dispatch. Original compiled layout,
+reconstruction and primitive visibility methods confirm that topParent is visible
+while the new scroll and edit remain hidden before and after an attribute error.
+This ports the existing header presentation's lifetime; complete native header
+widgets, ancillary read order/caches and failures during later caption work
+remain separate.
 
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close

@@ -691,7 +691,7 @@ import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl,
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
 import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
-import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationPublicInfo, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
 import { toNumOrNull as corporationShareNumber } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
@@ -2990,7 +2990,7 @@ export interface AppFlow {
    * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
    * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
    */
-  corporationShowInfo(corporationID: number, reads?: InfoReadScope): Promise<CorporationShowInfo | null>;
+  corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): Promise<CorporationShowInfo | null>;
   /**
    * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
    * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
@@ -12375,7 +12375,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /** CorporationInfoWindow.reconstruct_info_window49-51 and infosvc.UpdateDataCorp's attributes. */
-  async function corporationShowInfo(corporationID: number, reads?: InfoReadScope): ReturnType<AppFlow["corporationShowInfo"]> {
+  async function corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): ReturnType<AppFlow["corporationShowInfo"]> {
     const finish = reads?.begin();
     // Fence dispatch in the shared lane, but keep the pilot's notification sink:
     // retiring one window must not discard notices accompanying an in-flight RPC.
@@ -12402,6 +12402,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       let info = corporationPublicInfoOf(answer);
       if (info === null) throw Object.assign(new Error("The corporation public record has no corporationID."), { code: "INFO_CORPORATION_PUBLIC_INVALID" });
       if (retried) info = { ...info, shares: typeof shares === "string" ? shares : corporationShareNumber(shares) };
+      // InfoWindowMonolith1102-1114 constructs the header before UpdateWindowData;
+      // the hidden scroll/edit do not become main tabs if an attribute read fails.
+      header?.(info);
       reads?.construct();
       // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
       // Neither read catches RPC exceptions: construction and caption/history
@@ -12411,7 +12414,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const enlistmentFactions = isNpcCorporation(corporationID) ? null
         : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf);
       reads?.complete();
-      return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+      return { stage: "complete", info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
     } finally {
       finish?.();
       // An expected retirement is not an empty or partially successful read.

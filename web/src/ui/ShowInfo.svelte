@@ -37,7 +37,7 @@
     isCharacterOwner,
     isNpcCorporation,
     warPermitLabel,
-    type CorporationShowInfo,
+    type CorporationInfoRead,
   } from "../bridge/ownerInfo.ts";
   import type { AllianceInfoExtra } from "../bridge/allianceInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
@@ -53,7 +53,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
-  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, corporationResult: windowCorporationResult }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; corporationResult?: ReadableSignal<CorporationShowInfo | null | undefined> | null } = $props();
+  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, corporationResult: windowCorporationResult }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; corporationResult?: ReadableSignal<CorporationInfoRead | null | undefined> | null } = $props();
   // A component belongs to one native window for its lifetime. Capture these
   // handles so chrome/focus changes cannot become dependencies of its reads.
   // The captured subject signal itself changes only on reconstruction.
@@ -64,7 +64,7 @@
   // svelte-ignore state_referenced_locally
   const subject = windowSubject;
   // svelte-ignore state_referenced_locally
-  const corporationResult = windowCorporationResult ?? createSignal<CorporationShowInfo | null | undefined>(undefined);
+  const corporationResult = windowCorporationResult ?? createSignal<CorporationInfoRead | null | undefined>(undefined);
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -250,7 +250,7 @@
   // What the client's window reads of the owner, read again each time the subject changes (reconstruct_info_window
   // reads it on every opening). Nothing is shown of a record not had.
 
-  let corporationRead = $state<CorporationShowInfo | null>(null);
+  let corporationRead = $state<CorporationInfoRead | null>(null);
   /** A map place's read (infosvc.UpdateDataCelestial for a region, a constellation or a solar system). */
   let mapLocationRead = $state<MapLocationInfo | null>(null);
   /** A faction's read (infosvc.UpdateDataFaction). */
@@ -948,7 +948,7 @@
   /** infosvc.UpdateDataCorp: the Attributes tab of a corporation. */
   const corporationRows = $derived.by<readonly OwnerRow[]>(() => {
     const read = corporationRead;
-    if (read === null) return [];
+    if (read === null || read.stage !== "complete") return [];
     const { info } = read;
     const npc = isNpcCorporation(info.corporationID);
     const rows: OwnerRow[] = [];
@@ -1114,7 +1114,9 @@
       }
       if (corporation.allianceID !== null && corporation.allianceID > 0) refs.push({ kind: "alliance", id: corporation.allianceID });
       if (corporation.stationID !== null && corporation.stationID > 0) refs.push({ kind: "station", id: corporation.stationID });
-      for (const id of corporationRead?.enlistmentFactions ?? []) refs.push({ kind: "faction", id });
+      if (corporationRead?.stage === "complete") {
+        for (const id of corporationRead.enlistmentFactions ?? []) refs.push({ kind: "faction", id });
+      }
     }
     const alliance = allianceRead;
     if (alliance !== null) {

@@ -200,9 +200,16 @@ export const OWNER_INFO_WORDS: Readonly<Record<string, string>> = {
 
 /** What Show Info on a corporation reads (flow.corporationShowInfo), with the server's time it was read at. */
 export interface CorporationShowInfo {
+  readonly stage: "complete";
   readonly info: CorporationPublicInfo;
   readonly aggression: AggressionSettings | null;
   /** Null for an NPC corporation, whose window has no such row, or where the read failed. */
   readonly enlistmentFactions: readonly number[] | null;
   readonly readAt: bigint;
 }
+
+/** The native header exists before UpdateDataCorp and the main tabs complete. */
+export type CorporationInfoRead = CorporationShowInfo | {
+  readonly stage: "header";
+  readonly info: CorporationPublicInfo;
+};

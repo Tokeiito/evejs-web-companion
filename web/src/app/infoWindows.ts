@@ -1,13 +1,13 @@
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
 import type { InfoIdentity, InfoOpenOptions, InfoSubject } from "../bridge/infoWindow.ts";
 import { createInfoReadScope, type InfoReadScope } from "./infoReadScope.ts";
-import type { CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import type { CorporationInfoRead, CorporationPublicInfo, CorporationShowInfo } from "../bridge/ownerInfo.ts";
 
 interface Entry { readonly request: InfoSubject; readonly subject: InfoSubject; readonly identity: InfoIdentity }
 /** Empty native dict while reconstructing; null is the recorded None identity tuple. */
 const pendingHistory = { pending: true } as const;
 type HistoryEntry = Entry | null | typeof pendingHistory;
-type CorporationResult = CorporationShowInfo | null | undefined;
+type CorporationResult = CorporationInfoRead | null | undefined;
 const isPending = (entry: HistoryEntry): entry is typeof pendingHistory => entry !== null && "pending" in entry;
 export interface InfoWindowState {
   readonly id: number;
@@ -36,7 +36,7 @@ export interface InfoWindowState {
  * Windows stay in registration order; focus must never reorder that list. */
 export function createInfoWindows(deps: {
   resolve(subject: InfoSubject): Promise<InfoIdentity | null>;
-  readCorporation(corporationID: number, reads: InfoReadScope): Promise<CorporationShowInfo | null>;
+  readCorporation(corporationID: number, reads: InfoReadScope, header: (info: CorporationPublicInfo) => void): Promise<CorporationShowInfo | null>;
   reportError(error: unknown): boolean;
   reuse(): boolean;
   shift(): boolean;
@@ -108,8 +108,12 @@ export function createInfoWindows(deps: {
     if (!signal || entry.identity.itemID === null) return;
     // One controller-owned coroutine feeds the view. A remount/focus must not
     // issue another copy, and an unregistered history read can outlive its view.
-    void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), error => {
-      signal.set(null);
+    void deps.readCorporation(entry.identity.itemID, reads, info => {
+      reads.assertCurrent(); signal.set({ stage: "header", info });
+    }).then(value => signal.set(value), error => {
+      // The native header survives a later attribute failure. Main tabs have
+      // not been constructed, so retain that stage rather than clearing it.
+      if (signal.get() === undefined) signal.set(null);
       // Native eve_exception_handler logs ordinary exceptions by default.
       if (error?.code !== "INFO_RECONSTRUCTION_RETIRED" && error?.code !== "SESSION_REQUEST_RETIRED" && !deps.reportError(error)) console.error(error);
     });
