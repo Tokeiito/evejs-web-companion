@@ -5514,7 +5514,17 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
   const lockTriesRaw = (mem["lockTries"] as Record<string, number> | undefined) ?? {};
   const lockTries: Record<string, number> = {};
   for (const [id, n] of Object.entries(lockTriesRaw)) if (!locked.has(Number(id))) lockTries[id] = n;
+  // ⚠ THE RUNNER'S LOCK STREAK IS ONE PER STEP, NOT ONE PER WRECK. A lock's refusals are booked under the step's
+  // `lock` key with the wreck as the record's target (scriptRunner, ledger.note), so a lookup by the wreck's own key
+  // never finds them; and a refused tick's memory is thrown away by the runner, so a count kept here alone never grows
+  // past a refusal. Seen live 2026-10-19: one wreck's lock refused twelve times running, every can beside it left,
+  // and the run stopped and went home. The streak is read where the runner keeps it, and a wreck it names three times
+  // is remembered as given up on the next tick that does something else (and so is kept).
+  const lockStreak = refusalFor(obs.refusals, step.id, "lock", null);
+  const lockGaveUp = new Set<number>(Array.isArray(mem["lockGaveUp"]) ? (mem["lockGaveUp"] as number[]) : []);
+  if (lockStreak !== null && lockStreak.targetID !== undefined && lockStreak.count >= LOCK_TRIES) lockGaveUp.add(lockStreak.targetID);
   const setAside = (id: number) =>
+    lockGaveUp.has(id) ||
     (lockTries[String(id)] ?? 0) >= LOCK_TRIES ||
     (triedRaw[String(id)] ?? 0) >= BATCH_TRIES ||
     shouldSetAside(obs.refusals, step.id, "lootWreck", id, MAX_BLOCK_ATTEMPTS) ||
@@ -5581,7 +5591,7 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     stalledTractorIDs,
   };
   const plan = planSalvageTick(planInput);
-  next = { ...next, pending, lockTries };
+  next = { ...next, pending, lockTries, lockGaveUp: [...lockGaveUp] };
   // ⚠ ALL AT ONCE, AS A PILOT DOES IT. Module work is gathered for the whole tick: each step the planner gives is
   // taken as done (the beam on its wreck, the salvager on its, the lock asked for) and the planner asked again,
   // until it wants something that is not module work (a loot, a move) or nothing. Seen live 2026-10-14: one step a
