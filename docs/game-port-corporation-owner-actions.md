@@ -71,12 +71,26 @@ self, including when evaluating a merged selection.
 1. **D2p18c4a — retained membership, implemented.** The native prime, membership
    notices, role-only stability, pilot/corporation scopes and real delayed-reply
    retirement have been verified live. The page API is ready for the shared menu.
-2. **D2p18c4b — shared View/Edit Member Details.** Add the shared owner action to
-   Contacts/search and Member List, reusing the existing complete member dialog.
+2. **D2p18c4b — shared View/Edit Member Details, implemented.** Contacts/search
+   and Member List share the retained-membership and session-Director gate,
+   reusing the complete member dialog on desktop and phone.
    `memberDetails.OpenMemberDetails:9-16` maximizes an existing window for the same
    character; for another character it closes that window and opens the new one.
    The installed compiled function confirmed all three cases. Preserve its
-   General/Roles/Titles/Summary/Give Shares behavior and save permissions.
+   General/Roles/Titles/Summary/Give Shares behavior and save permissions remain.
+   `TabGroup._FindAutoSelectTabIDx:649-673` remembers the enabled panel between
+   windows; its original compiled function confirmed named/index selection and
+   fallback to General. The same target retains its unsaved state without another
+   native read; another target replaces it and loads the remembered panel.
+   Member reads, titles, summary, Apply reloads and share quantities retain the
+   originating pilot, corporation and window lifetime. Caches also distinguish
+   pilot/corporation generations. Completed real replies held across replacement
+   retire before continuing the old read chain or publishing its cache; a saved
+   old model cannot write as another pilot. Live browser evidence includes
+   ordinary/self/outsider/multiple gates, corporate Contacts and Member List,
+   all panels, actual title/base Apply, window reuse/replacement, phone opening
+   and the server's actual Give Shares role refusal. Native retained-ID probes
+   also confirmed ordinary self in an NPC corporation remains eligible.
 3. **D2p18c4c — roles and leaving/expulsion.** Complete both native submenus and
    their callbacks. `base_corporation.RemoveAllRoles:482-487` asks its dialog and
    sends all eight role masks zero, `titleMask=0`, `blockRoles=1`. Allow sends the

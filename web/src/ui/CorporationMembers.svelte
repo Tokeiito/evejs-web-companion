@@ -11,6 +11,7 @@
   import ContactActionDialog from "./ContactActionDialog.svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
+  import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
   import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
@@ -37,7 +38,6 @@
     location: "UI/Common/Location", faction: "UI/Corporations/CorporationWindow/Members/FactionEnlistment",
     logon: "UI/Common/Online", logoff: "UI/Common/Offline", none: "UI/Generic/None", unknown: "UI/Generic/Unknown",
     empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo", mail: "UI/EVEMail/SendPilotEVEMail",
-    viewMember: "UI/Corporations/Common/ViewCorpMemberDetails", editMember: "UI/Corporations/Common/EditCorpMember",
     addContact: "UI/PeopleAndPlaces/AddContact", editContact: "UI/PeopleAndPlaces/EditContact", removeContact: "UI/PeopleAndPlaces/RemoveContact",
     block: "UI/PeopleAndPlaces/BlockContact", unblock: "UI/PeopleAndPlaces/UnblockContact",
     addCorpContact: "UI/PeopleAndPlaces/AddCorpContact", editCorpContact: "UI/PeopleAndPlaces/EditCorpContact", removeCorpContact: "UI/PeopleAndPlaces/RemoveCorpContact",
@@ -317,7 +317,7 @@
           <OwnerChatMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />
           <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => menuFor = null} />
         {/if}
-        {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
+        {#if selected.length === 1}<OwnerMemberMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
     {/if}
