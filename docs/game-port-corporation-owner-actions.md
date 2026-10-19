@@ -253,14 +253,25 @@ self, including when evaluating a merged selection.
    recipient count in a Yes/No prompt with suppressYes; only Yes retries with
    fourth argument True. `NotEnoughMoney` is shown; other errors propagate.
    No fixed price or unconditional confirmation is inferred from that wrapper.
-   - **c4e1: native award contract and server audit.** Decode the recorded
+   - **c4e1: native award contract and server audit, implemented.** Decoded the recorded
      GetAllCorpMedals cached-object read and verify current native catalogue,
      recipient-list write and received-medal readback with disposable fixtures.
      Examine cache invalidation and recipient live updates against
      `medals.OnMedalIssued:139-145` and DecorationsPanel's update consumer;
      fix/commit any actual native mismatch before exposing the action. Exact
      award/confirmation/notice bytes are not in the current recording corpus.
-     Current handlers and older assertions are inputs to audit, not authority.
+     Actual native Python-list recipients previously became recipient0; Unicode
+     title/description/reason became `[object Object]`. EveJS now decodes both
+     native values and sends successful-write creation and recipient refreshes.
+     Fresh native single/both-member awards preserved accented text, reached the
+     intended recipients, and refreshed the cached catalogue through the existing
+     native-consumer invalidation helper. The browser read is not exposed yet;
+     its allowlist correctly refused the first BFF probe. No live browser refresh
+     is claimed here. Exact notice arguments/masks/fanout remain unrecorded;
+     implementation uses the minimum consumed by the original handlers, not a
+     claim of captured Tranquility bytes. Full disposable store was restored.
+     Existing server assertions and harness inputs now name native list/Unicode
+     values and the original refresh consumers; they were updated, not run.
    - **c4e2: complete shared award UI.** Implement the gates/merge, no-medals
      refusal, ordered single-choice medal picker, recipient hint, reason prompt,
      all cancellations, conditional confirmation/retry and errors together.
