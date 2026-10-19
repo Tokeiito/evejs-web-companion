@@ -102,7 +102,7 @@ still required; this contract does not declare them complete.
 
 Recursive recording searches include the corporation creation, role-receipt and
 CEO-disband captures. `GetEveOwners()` is recorded with no arguments on the bound
-corporation object in seven corpus cases. A recording of an unrelated login does
+corporation object in multiple corpus captures. A recording of an unrelated login does
 not prove a particular menu click or all administration flows. Search again for
 each newly discovered call/notice before its source implementation.
 
