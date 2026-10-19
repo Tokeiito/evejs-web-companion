@@ -759,6 +759,18 @@ export interface FleetCompanionObservation extends ScriptObservation {
    */
   readonly fleetCommanderCharacterIDs?: readonly number[] | null;
   /**
+   * Where each commander in `fleetCommanderCharacterIDs` is, as the same roster
+   * read says: its solar system, and the station it is docked in (null in space).
+   * Read off the rows this tick already fetched (`fleetCommanderWhereabouts`,
+   * bridge/fleetCenter.ts), so it costs no call.
+   *
+   * ⚠ ABSENT OR NULL IS "NOT KNOWN", NEVER "NOWHERE". The rejoin warp
+   * (`decideRejoinCommander`) only stands down on a POSITIVE reading -- another
+   * system, or a station -- and otherwise tries the warp and lets the server's
+   * answer decide, so an older BFF that sends nothing keeps a working return leg.
+   */
+  readonly fleetCommanderWhereabouts?: readonly CompanionMemberWhereabouts[] | null;
+  /**
    * Cans and wrecks the `loot` order is finished with -- emptied, or tried
    * enough times without emptying.
    *
@@ -939,6 +951,15 @@ export interface CompanionCargoCharge {
   readonly typeID: number;
   readonly groupID: number | null;
   readonly quantity: number;
+}
+
+/** Where one fleet member is, as the roster says. See `fleetCommanderWhereabouts`. */
+export interface CompanionMemberWhereabouts {
+  readonly characterID: number;
+  /** Null when the roster did not say. */
+  readonly solarSystemID: number | null;
+  /** The station the member is docked in; null is in space. */
+  readonly stationID: number | null;
 }
 
 /** A pending fleet invite, narrowed to the two ids the rejoin gate needs. */
@@ -1935,6 +1956,15 @@ export interface CompanionLadderMemory {
     readonly cooldown?: number;
   } | null;
   /**
+   * The rejoin warp's record (`decideRejoinCommander`): which commander it went
+   * to, how the server answered, and what has been spent. Null when no rejoin is
+   * under way. The same shape and the same limits as `followOrder` above, plus
+   * the two things a warp has and a formation order does not: whether the ship
+   * was SEEN in warp after it went out, and how many warps have already landed
+   * without finding the commander.
+   */
+  readonly rejoin: CompanionRejoin | null;
+  /**
    * The solar system a `destination` order is taking this pilot to, or null.
    *
    * ⚠ A LATCH, AND A LONGER-LIVED ONE THAN `areaJob`. A multi-jump trip outlasts
@@ -2095,6 +2125,24 @@ export interface CompanionLadderMemory {
   readonly ammo: CompanionAmmoMemory;
 }
 
+/** See `CompanionLadderMemory.rejoin`. */
+export interface CompanionRejoin {
+  readonly characterID: number;
+  readonly status: "pending" | "issued" | "refused" | "deferred" | "uncertain";
+  /** Definite refusals, warps that never started, and landings without the commander. */
+  readonly tries: number;
+  readonly deferrals: number;
+  readonly deferralWait: boolean;
+  /** Ticks out of warp since the warp was taken, waiting to see it start. */
+  readonly waited: number;
+  /** A mid-warp tick has seen the ship in warp since this warp went out. */
+  readonly seen: boolean;
+  /** Why the last try failed, in player words, for the give-up readout. */
+  readonly reason: string | null;
+  /** Ticks left before the attempts start over. See `COMPANION_RETRY_BACKOFF_TICKS`. */
+  readonly cooldown?: number;
+}
+
 /** A job's launch in flight: which bay items it sent out, and when. */
 export interface DroneLaunch {
   readonly droneItemIDs: readonly number[];
@@ -2175,6 +2223,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     followAnchorID: null,
     followRangeIssuedM: null,
     followOrder: null,
+    rejoin: null,
     destinationSystemID: null,
     destinationRoutedFor: null,
     stopHeardAtMs: null,
@@ -2502,7 +2551,7 @@ function decideAndClear(
   memory: CompanionLadderMemory,
   nowMs: number,
 ): CompanionDecision {
-  const decision = decideCompanionStep(request, obs,
+  const decision = withoutStaleRejoin(decideCompanionStep(request, obs,
     obs.inWarp === true || obs.docked === true
       ? {
           ...clearMovementLatches(memory, null, obs.docked === true ? "docked" : "in-warp"),
@@ -2510,7 +2559,7 @@ function decideAndClear(
           // Docked, every module stopped; a warp took the targets (rung 8a).
           utilities: obs.docked === true ? FRESH_COMPANION_UTILITIES : utilitiesAfterWarp(memory.utilities),
         }
-      : memory, nowMs);
+      : memory, nowMs));
   // These movements replace keep-at-range. Once requested, a lost response
   // cannot prove the previous formation is still in force. Keep the new
   // movement's own pending latch, but let formation resume when its job ends.
@@ -2579,6 +2628,18 @@ function withoutStaleCloseIn(action: FleetCompanionAction, memory: CompanionLadd
     : { ...memory, closingOn: null, closingOnAtMs: null };
 }
 
+// The rejoin record stands for the rejoin warp and nothing else. Any other
+// movement -- a fleet order, a flee, the formation order on landing -- means
+// something else is flying the ship now, so the record and its spent tries go.
+function withoutStaleRejoin(decision: CompanionDecision): CompanionDecision {
+  const action = decision.action;
+  if (decision.memory.rejoin === null || !changesShipMovement(action) ||
+    (action.kind === "warpToFleetMember" && decision.phase === REJOIN_PHASE)) {
+    return decision;
+  }
+  return { ...decision, memory: { ...decision.memory, rejoin: null } };
+}
+
 /**
  * The loot and salvage approach latches, unless `action` is that approach
  * itself (see `clearMovementLatches`). `null` is a warp or a dock, which ends both.
@@ -2644,6 +2705,12 @@ function decideCompanionStep(
     }
     if (fleeing !== null && sawIt(fleeing)) {
       next = { ...next, flee: { ...fleeing, safeSpotWarpSeen: true } };
+    }
+    // And the rejoin warp's, for the same reason: the tick after this one is the
+    // landing, and only this tick can say there was a warp to land from.
+    const rejoining = memory.rejoin;
+    if (rejoining !== null && !rejoining.seen && rejoining.status !== "refused" && rejoining.status !== "deferred") {
+      next = { ...next, rejoin: { ...rejoining, seen: true } };
     }
     // ⚠ AND THE ONE THING A WARP UNLEARNS. "This ship cannot lock that ship" is
     // a fact about where this ship is STANDING, and a warp moves it somewhere
@@ -2763,6 +2830,9 @@ function decideCompanionStep(
     followAnchorID: memory.followAnchorID,
     followRangeIssuedM: memory.followRangeIssuedM,
     followOrder: memory.followOrder,
+    // Carried, and dropped the moment the commander is on this grid: the rejoin
+    // has done its job, so its spent tries must not count against the next one.
+    rejoin: memory.rejoin === null || COMBAT_POSITION_LADDER.commanderShip(obs) === null ? memory.rejoin : null,
     destinationSystemID: memory.destinationSystemID,
     destinationRoutedFor: memory.destinationRoutedFor,
     stopHeardAtMs: memory.stopHeardAtMs,
@@ -3054,6 +3124,18 @@ function decideCompanionStep(
   if (following !== null) {
     return following;
   }
+  // Rung 9b: the commander is in the fleet but not on this grid, and nothing
+  // above had anything to do, so go to it. See `decideRejoinCommander` for the
+  // live sighting this ends -- the flee's return leg stopping at the undock.
+  //
+  // ⚠ ITS "STANDING BY" READOUTS SIT BENEATH THE DRY-GUNS ONE. They issue
+  // nothing, so they may only say why a pilot is idle when nothing truer is
+  // already being said; their memory (a back-off counting down) still flows.
+  const rejoining = decideRejoinCommander(request, obs, lowerMemory, nowMs);
+  const rejoinIsReadout = rejoining !== null && rejoining.action.kind === "wait" && rejoining.phase === "Standing by";
+  if (rejoining !== null && !rejoinIsReadout) {
+    return rejoining;
+  }
   // ⚠ THE DRY-GUNS READOUT COMES LAST, BENEATH EVEN THE FOLLOW, THOUGH ITS RUNG
   // SITS HIGH. It is a sentence and never a call, so anything above it here
   // would be a readout SUPPRESSING a rung that has something real to issue --
@@ -3062,7 +3144,10 @@ function decideCompanionStep(
   // "Standing by", which is exactly what it is for: a pilot standing there doing
   // nothing should say why.
   if (reloading.decision !== null) {
-    return { ...reloading.decision, memory: lowerMemory };
+    return { ...reloading.decision, memory: rejoining?.memory ?? lowerMemory };
+  }
+  if (rejoining !== null) {
+    return rejoining;
   }
   return waiting(
     "Standing by",
@@ -5785,6 +5870,8 @@ function decideFlee(
     // everything this ship controls before it commits to a warp, whichever rung
     // launched it.
     droneRotation: emptyDroneRotationMemory(),
+    // A rejoin under way is over: the return leg after this flee starts its own.
+    rejoin: null,
   };
   return flyTheFlee(request, obs, started, latched, nowMs);
 }
@@ -6109,6 +6196,9 @@ function recoverAndReturn(
   // ends the flee; holding the latch across it would leave this rung driving a
   // pilot that is already back out, and a ship that undocks hurt would then be
   // steered by a flee that thinks it is still going the other way.
+  //
+  // ⚠ THE UNDOCK IS NOT THE END OF THE WAY BACK. Once out, rung 9b
+  // (`decideRejoinCommander`) warps to the commander if it is not on this grid.
   const done: CompanionLadderMemory = { ...mem, flee: null, fleeRecoverySinceMs: null };
 
   if (obs.docked === true) {
@@ -7573,6 +7663,208 @@ function decideFollow(
         deferrals: previous?.deferrals ?? 0, deferralWait: false },
     },
   };
+}
+
+/** The phase the rejoin warp reports, and the mark `withoutStaleRejoin` knows it by. */
+const REJOIN_PHASE = "Rejoining the fleet";
+/** The rejoin readout while the warp is out. */
+const REJOIN_WHY = "Rejoining the fleet: warping to the commander.";
+/**
+ * Tries before the rejoin backs off: refusals, lost answers, warps that never
+ * started and landings without the commander all count. The formation order's
+ * own limit (`MAX_COMPANION_FOLLOW_REFUSALS`, declared below this), for the same
+ * reason.
+ */
+const MAX_COMPANION_REJOIN_TRIES = 3;
+/**
+ * Ticks out of warp a taken warp is waited on before it counts as one that never
+ * started. A warp aligns first and the align is not `inWarp`, so this has to
+ * cover the slowest hull's align (about 20 s) at the measured ~2-4 s tick.
+ */
+const REJOIN_WARP_START_WAIT_TICKS = 15;
+
+/**
+ * Rung 9b: a companion whose commander is in the fleet but not on its grid warps
+ * to the commander, and rung 9 holds station on landing.
+ *
+ * ⚠ THE RETURN LEG ENDED AT THE UNDOCK. `recoverAndReturn` drops the flee latch
+ * and undocks, and nothing after that moved the ship: rung 9 anchors only on a
+ * commander ON THIS GRID, so a repaired pilot sat outside the station it fled to
+ * reading "Standing by: no commander on this grid" for as long as the fight went
+ * on. Seen live 2026-10-13 with three pilots, each the same: "Going back: Fixed
+ * up ... undocking to rejoin the fleet", then minutes of standing by, with the
+ * commander at the site in the same system. One of them flickered between
+ * "Following" and "Standing by" as the commander passed its grid. None of them
+ * went back. This rung is the rest of that leg, and it serves any companion left
+ * on the wrong grid with nothing to do, not only one coming home from a flee.
+ *
+ * ⚠ THE SERVER'S OWN FLEET-MEMBER WARP, `CmdWarpToStuff("char", ...)`, which
+ * resolves where the member is itself -- the same call a `WarpTo` order on a
+ * fleet-mate sends. Nothing here needs to know the commander's grid.
+ *
+ * ⚠ IT SITS BENEATH RUNG 9 AND EVERYTHING ELSE, so every reason to stay wins
+ * first: the flee (still below the return mark, docked for repairs, out of
+ * round trips), the supervision gate, a fleet order, a `destination` trip, a
+ * `stop`, a fight on this grid, and the warp yield. It then checks the flee's
+ * own bounds again, because a pilot the flee has finished with is not
+ * necessarily one it would send back: a ship below its return mark, or one out
+ * of round trips, stays where it is and says so.
+ *
+ * ⚠ ONLY ON A POSITIVE READING DOES IT STAND DOWN FOR WHERE THE COMMANDER IS.
+ * The roster says each member's system and station (`fleetCommanderWhereabouts`);
+ * a commander docked, or in another system, is not warped to. When the roster
+ * does not say, the warp is tried and the server's answer decides.
+ *
+ * ⚠ BOUNDED LIKE THE FORMATION ORDER. One warp per landing: a warp the server
+ * took is waited on until the ship is seen in warp (or `REJOIN_WARP_START_WAIT_TICKS`
+ * pass), and a landing that did not find the commander is a try spent. After
+ * `MAX_COMPANION_REJOIN_TRIES` it reads "Standing by" with the reason for
+ * `COMPANION_RETRY_BACKOFF_TICKS` and starts over -- back off, not give up, as
+ * the formation order does. A lost answer waits `COMPANION_RESEND_WAIT_TICKS`.
+ */
+function decideRejoinCommander(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): CompanionDecision | null {
+  // The gates `decideFollow` keeps, for its reasons.
+  if (memory.followHeld || obs.inWarp === true || obs.inSpace !== true || (obs.snapshot ?? null) === null ||
+    (obs.fleetMemberCharacterIDs ?? null) === null) {
+    return null;
+  }
+  // Drones out fighting something on this grid are work this pilot is doing.
+  if (obs.hostileOnGrid === true && (obs.myDroneIDs ?? []).length > 0) {
+    return null;
+  }
+  const target = rejoinTarget(obs);
+  if (target.characterID === null) {
+    return target.why === null ? null : waiting("Standing by", target.why, memory);
+  }
+  if (memory.fleeTripsSpent >= request.maxFleeAttempts) {
+    return waiting("Standing by",
+      "The commander is not on this grid, and this pilot has used all its flee round trips, so it is staying put.", memory);
+  }
+  if (!healthClearOfTheMark(request, obs)) {
+    return waiting("Standing by",
+      "The commander is not on this grid, and this ship is not well enough yet to go back to the fight.", memory);
+  }
+  const characterID = target.characterID;
+  let previous = memory.rejoin?.characterID === characterID ? memory.rejoin : null;
+  const backOff = (rejoin: CompanionRejoin): CompanionDecision => waiting("Standing by",
+    `Cannot warp to the commander: ${rejoin.reason ?? "the warp did not work"}. Trying again shortly.`,
+    { ...memory, rejoin: { ...rejoin, cooldown: COMPANION_RETRY_BACKOFF_TICKS } });
+
+  // Landed: the warp the last tick saw is over, and the commander is not here
+  // (rung 9 above would have anchored, and the step drops this record when the
+  // commander is on grid). That landing is a try spent; the next one may go.
+  if (previous !== null && previous.seen) {
+    previous = { ...previous, status: "issued", seen: false, waited: 0, cooldown: undefined,
+      tries: previous.tries + 1, reason: "the warp landed where the commander was not" };
+    if (previous.tries >= MAX_COMPANION_REJOIN_TRIES) {
+      return backOff(previous);
+    }
+  } else if (previous !== null && previous.cooldown !== undefined) {
+    const givenUp = previous.tries >= MAX_COMPANION_REJOIN_TRIES;
+    if (previous.cooldown > 1) {
+      return waiting(givenUp ? "Standing by" : REJOIN_PHASE, givenUp
+        ? `Cannot warp to the commander: ${previous.reason ?? "the warp did not work"}. Trying again shortly.`
+        : "The warp to the commander got no answer. Sending it again in a moment.",
+      { ...memory, rejoin: { ...previous, cooldown: previous.cooldown - 1 } });
+    }
+    // The wait is over: a back-off starts the tries over, a resend keeps them.
+    // Either way the warp goes out on this tick.
+    if (givenUp) {
+      previous = null;
+    }
+  } else if (previous !== null && previous.deferrals >= MAX_COMPANION_SESSION_DEFERRALS) {
+    return backOff({ ...previous, reason: "a session change kept blocking it" });
+  } else if (previous?.deferralWait) {
+    return waiting(REJOIN_PHASE, "Waiting for the session change to clear before warping to the commander.", {
+      ...memory, rejoin: { ...previous, deferralWait: false },
+    });
+  } else if (previous !== null && previous.status === "uncertain") {
+    // ⚠ A LOST ANSWER IS A TRY, unlike the formation order's. A warp that took
+    // is seen on the next mid-warp tick and never gets here; one that keeps
+    // coming back unanswered must not be resent every few seconds for ever.
+    const lost: CompanionRejoin = { ...previous, tries: previous.tries + 1, reason: "the server did not answer" };
+    if (lost.tries >= MAX_COMPANION_REJOIN_TRIES) {
+      return backOff(lost);
+    }
+    return waiting(REJOIN_PHASE, "The warp to the commander got no answer. Sending it again in a moment.", {
+      ...memory, rejoin: { ...lost, cooldown: COMPANION_RESEND_WAIT_TICKS },
+    });
+  } else if (previous !== null && previous.status === "refused") {
+    if (previous.tries >= MAX_COMPANION_REJOIN_TRIES) {
+      return backOff(previous);
+    }
+  } else if (previous !== null && previous.status !== "deferred") {
+    // Taken (or still pending), and not yet seen in warp: the ship is aligning.
+    // ONE WARP PER LANDING, so nothing is sent until it is seen or the wait ends.
+    if (previous.waited + 1 < REJOIN_WARP_START_WAIT_TICKS) {
+      return waiting(REJOIN_PHASE, REJOIN_WHY, { ...memory, rejoin: { ...previous, waited: previous.waited + 1 } });
+    }
+    previous = { ...previous, tries: previous.tries + 1, reason: "the warp never started" };
+    if (previous.tries >= MAX_COMPANION_REJOIN_TRIES) {
+      return backOff(previous);
+    }
+  }
+  const sent: CompanionRejoin = {
+    characterID, status: "pending", tries: previous?.tries ?? 0, deferrals: previous?.deferrals ?? 0,
+    deferralWait: false, waited: 0, seen: false, reason: previous?.reason ?? null,
+  };
+  const warp: CompanionDecision = {
+    action: { kind: "warpToFleetMember", characterID },
+    phase: REJOIN_PHASE,
+    why: REJOIN_WHY,
+    memory: { ...memory, rejoin: sent },
+  };
+  // The drones come home first, on the rules a fleet order to leave keeps.
+  const held = recallBeforeLeavingOnOrder(warp, request, obs, memory, nowMs);
+  if (held === null || held.action.kind === "warpToFleetMember") {
+    return held;
+  }
+  return {
+    ...held,
+    phase: REJOIN_PHASE,
+    why: held.action.kind === "recallDrones"
+      ? "Rejoining the fleet: calling the drones home before warping to the commander."
+      : "Rejoining the fleet: waiting for the drones to come home before warping to the commander.",
+  };
+}
+
+/**
+ * The commander a rejoin warps to: the first the roster names that is not this
+ * pilot and is not positively docked or in another system. `why` says, when
+ * there is none, whether that is worth a readout.
+ */
+function rejoinTarget(obs: FleetCompanionObservation): { readonly characterID: number | null; readonly why: string | null } {
+  const roster = obs.fleetMemberCharacterIDs ?? [];
+  const here = obs.flightStatus?.solarSystemID ?? null;
+  const where = obs.fleetCommanderWhereabouts ?? null;
+  let why: string | null = null;
+  for (const commanderID of commandersFor(obs)) {
+    if (commanderID === obs.myCharacterID || !roster.includes(commanderID)) {
+      continue;
+    }
+    const at = where?.find((entry) => entry.characterID === commanderID) ?? null;
+    if (at !== null && at.solarSystemID !== null && here !== null && at.solarSystemID !== here) {
+      why ??= "The commander is in another solar system, so there is nothing to warp to.";
+      continue;
+    }
+    if (at !== null && at.stationID !== null) {
+      why ??= "The commander is docked, so there is nothing to warp to.";
+      continue;
+    }
+    return { characterID: commanderID, why: null };
+  }
+  return { characterID: null, why };
+}
+
+/** A refused rejoin warp's reason, as the give-up readout's tail. */
+function rejoinRefusalReason(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return /^The server refused that: (.*)\.$/.exec(refusalWords(raw))?.[1] ?? "the server refused the warp";
 }
 
 /**
@@ -9338,6 +9630,21 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     } };
   }
 
+  // The rejoin warp, settled on the `settleFollow` terms, plus the refusal's
+  // reason for the give-up readout. A lost answer is counted by the ladder.
+  function settleRejoin(decision: CompanionDecision, succeeded: boolean, error?: unknown): void {
+    const pending = decision.memory.rejoin;
+    if (decision.action.kind !== "warpToFleetMember" || decision.phase !== REJOIN_PHASE ||
+      pending?.status !== "pending" || mem.ladder.rejoin !== pending) return;
+    const status = succeeded ? "issued" : isSessionChangeDeferral(error) ? "deferred"
+      : isDefiniteCompanionRefusal(error) ? "refused" : "uncertain";
+    mem.ladder = { ...mem.ladder, rejoin: { ...pending, status,
+      tries: pending.tries + (status === "refused" ? 1 : 0),
+      reason: status === "refused" ? rejoinRefusalReason(error) : pending.reason,
+      deferrals: status === "deferred" ? pending.deferrals + 1 : 0, deferralWait: status === "deferred",
+    } };
+  }
+
   // Rung 8's positioning order, settled on the `settleFollow` terms (`settleCombatHold`).
   function settleCombatPosition(decision: CompanionDecision, succeeded: boolean, error?: unknown): void {
     mem.ladder = settleCombatHold(decision, mem.ladder, succeeded ? "issued" : isSessionChangeDeferral(error)
@@ -9500,6 +9807,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         recorder.result(true, undefined, { seq: tickSeq });
         settleAlignment(decision, "issued");
         settleFollow(decision, true);
+        settleRejoin(decision, true);
         settleCombatPosition(decision, true);
         settleDroneEngagement(decision, true);
       } catch (error) {
@@ -9524,6 +9832,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         // rather than prose.
         settleAlignment(decision, isDefiniteCompanionRefusal(error) ? "refused" : "uncertain");
         settleFollow(decision, false, error);
+        settleRejoin(decision, false, error);
         settleCombatPosition(decision, false, error);
         settleDroneEngagement(decision, false, error);
         forgetFailedJobOverRecall(decision);
@@ -9694,6 +10003,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           followAnchorID: null,
           followRangeIssuedM: null,
           followOrder: null,
+          // No rejoin warp went out from this run.
+          rejoin: null,
           destinationSystemID: null,
           destinationRoutedFor: null,
           stopHeardAtMs: null,
