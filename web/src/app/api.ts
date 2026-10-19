@@ -8,6 +8,7 @@
 
 import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
 import type { Ask } from "../bridge/ask.ts";
+import type { CorporationRoleData, CorporationRoleGroupSpec } from "../bridge/corporationRoles.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
 import { decodeBeyonceWriteAck, type BeyonceWriteAck } from "../bridge/boundBeyonceWrites.ts";
@@ -4541,6 +4542,18 @@ export async function getConfigEnabledValues(options: ApiOptions = {}): Promise<
 }
 
 /** The client's corporation role/group tables, read in place by its compiled loaders. */
+export async function getCorporationRoleData(options: ApiOptions = {}): Promise<CorporationRoleData> {
+  const data = await getJson("/api/client-data/corporation-roles", options);
+  if (data.available !== true) throw new Error("The client's corporation role data could not be read.");
+  const groups = data.groups as unknown as Record<string, CorporationRoleGroupSpec> & { "#order": number[] };
+  return {
+    roles: data.roles as unknown as CorporationRoleData["roles"],
+    groups: Object.fromEntries(Object.entries(groups).filter(([key]) => /^\d+$/.test(key))) as CorporationRoleData["groups"],
+    order: groups["#order"],
+    locationalRoles: data.locationalRoles as string[],
+  };
+}
+
 export async function getCorporationRoleOptions(options: ApiOptions = {}): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
   const data = await getJson("/api/client-data/corporation-roles", options);
   if (data.available !== true) throw new Error("The client's corporation role data could not be read.");

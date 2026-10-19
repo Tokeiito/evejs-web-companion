@@ -30,6 +30,17 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  corporationRoleLocations: Object.freeze({
+    module: "eve/common/lib/appConst.pyj",
+    given: Object.freeze([
+      Object.freeze(["carbon.common.lib.const", "carbon/common/lib/const.pyj"]),
+      Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"]),
+      Object.freeze(["dogma.const", "dogma/const.pyj"]),
+    ]),
+    stubs: Object.freeze(["collections", "eveuniverse.security"]),
+    empty: Object.freeze(["eve.common.lib.infoEventConst", "crimewatch.const", "eveexceptions.const", "probescanning.const", "eve.common.script.util.notificationconst", "evefleet.const", "marketutil.const"]),
+    names: Object.freeze(["locationalCorpRoles"]),
+  }),
   configSynonyms: Object.freeze({ module: "monolithconfig/synonyms.pyj", names: Object.freeze(["ENABLED"]) }),
   packagedVolumes: Object.freeze({
     module: "inventorycommon/const.pyj",
@@ -177,6 +188,10 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
 
   return {
     available,
+    corporationRoleLocations: () => read("corporationRoleLocations", (values) => {
+      if (!Array.isArray(values.locationalCorpRoles) || !values.locationalCorpRoles.every(Number.isSafeInteger)) throw new Error("The client's locational corporation roles could not be read.");
+      return Object.freeze(values.locationalCorpRoles.map(String));
+    }),
     packagedVolumes: () => read("packagedVolumes", (values) => {
       if (!Number.isSafeInteger(values.typePlasticWrap) || values.typePlasticWrap <= 0) throw new Error("The client's typePlasticWrap is not a type.");
       return Object.freeze({

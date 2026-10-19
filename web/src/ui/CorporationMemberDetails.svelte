@@ -1,9 +1,11 @@
 <script lang="ts">
-  // EditMemberDialog: General (corp_dlg_edit_member.py LoadChar, OnTabGeneral, DDXTabGeneral, UpdateMember).
+  // EditMemberDialog: General and Roles, with shared unsaved profile/role state.
   import { onMount, untrack } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
+  import { memberTitleOf } from "../bridge/corporationMemberDetails.ts";
+  import { canEditCorporationRole, changeCorporationRole, type CorporationRole, type RoleMasks } from "../bridge/corporationRoles.ts";
   import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
@@ -28,6 +30,8 @@
     born: "UI/Corporations/EditMemberDialog/DateOfBirth", security: "UI/Corporations/EditMemberDialog/SecurityStatus",
     noBase: "UI/Corporations/EditMemberDialog/NoBase", baseName: "UI/Corporations/EditMemberDialog/CorpMemberBase",
     ok: "UI/Common/Buttons/OK", cancel: "UI/Common/Buttons/Cancel", apply: "UI/Corporations/EditMemberDialog/Apply",
+    roles: "UI/Corporations/Common/Roles", grantable: "UI/Corporations/Common/GrantableRoles",
+    view: "UI/Common/View", group: "UI/Corporations/Common/GroupType", yes: "UI/Common/Yes", no: "UI/Common/No",
   };
   const word = (label: string, fallback: string) => plainText($words.templates[label] ?? fallback);
   const fill = (label: string, args: Record<string, string | number | { type: "long"; value: string }>, fallback = "") => plainText(formatTemplate($words.templates[label] ?? fallback, args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
@@ -35,11 +39,46 @@
   let held = $state<CorporationMemberDetails | null>(null);
   let title = $state("");
   let base = $state("");
+  let masks = $state<RoleMasks | null>(null);
+  let active = $state<"general" | "roles">("general");
+  let grantable = $state("0");
+  let groupID = $state("1");
+  let rolesLoading = $state(false);
+  let roleSerial = 0;
+  const group = $derived(held?.roleGroups.find(group => group.groupID === Number(groupID)));
+  const roleField = $derived(group ? grantable === "1" ? group.appliesToGrantable : group.appliesTo : "roles");
+  const targetIsDirector = $derived(masks !== null && (masks.roles & 1n) !== 0n);
   let busy = $state(false);
   let error = $state("");
   let serial = 0;
   let disposed = false;
-  function keep(value: CorporationMemberDetails): void { held = value; title = value.member.title; base = value.member.baseID?.toString() ?? ""; }
+  function keep(value: CorporationMemberDetails): void { held = value; title = value.member.title; base = value.member.baseID?.toString() ?? ""; masks = { ...value.member.masks }; }
+  function selectPanel(panel: "general" | "roles"): void {
+    // Load runs the previous tab's DDX before switching, without submitting it.
+    if (active === "general" && held?.canEditTitle) title = memberTitleOf(title);
+    active = panel;
+    if (panel === "roles") void refreshRoleBase();
+  }
+  async function refreshRoleBase(): Promise<void> {
+    if (!held) return;
+    const request = ++roleSerial, targetRequest = serial;
+    rolesLoading = true;
+    try {
+      const myBaseID = await flow.corporationMemberRoleBase();
+      if (!disposed && request === roleSerial && targetRequest === serial && held) held = { ...held, myBaseID };
+    } catch (cause) { if (!disposed && request === roleSerial && targetRequest === serial) error = cause instanceof Error ? cause.message : String(cause); }
+    finally { if (!disposed && request === roleSerial) rolesLoading = false; }
+  }
+  function editable(role: CorporationRole): boolean {
+    return Boolean(held && group && canEditCorporationRole(role.roleID, grantable === "1", held.targetIsCEO, targetIsDirector, held.viewerIsCEO, held.viewerIsDirector, group.appliesTo, held.myBaseID, base ? Number(base) : null, held.grants));
+  }
+  function hasRole(role: CorporationRole): boolean {
+    return Boolean(held && masks && (held.targetIsCEO || (targetIsDirector && !(grantable === "1" && role.roleID === 1n)) || (masks[roleField] & role.roleID) === role.roleID));
+  }
+  function changeRole(role: CorporationRole, checked: boolean): void {
+    if (masks && editable(role)) masks = changeCorporationRole(masks, roleField, role.roleID, checked);
+    if (roleField === "roles" && role.roleID === 1n) void refreshRoleBase();
+  }
   async function load(id: number): Promise<void> {
     const request = ++serial;
     held = null; error = ""; busy = true;
@@ -48,12 +87,17 @@
     finally { if (!disposed && request === serial) busy = false; }
   }
   async function apply(close: boolean): Promise<void> {
-    if (!held || busy) return;
+    if (!held || !masks || busy) return;
     const request = serial;
     busy = true; error = "";
     try {
-      const value = await flow.saveMemberGeneral(held, title, base ? Number(base) : null);
-      if (!disposed && request === serial) { keep(value); if (close) onClose?.(); }
+      const before = held;
+      const value = await flow.saveCorporationMember(before, title, base ? Number(base) : null, masks);
+      if (!disposed && request === serial) {
+        keep(value);
+        if (value !== before && active === "roles") await refreshRoleBase();
+        if (!disposed && request === serial && close) onClose?.();
+      }
     } catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed && request === serial) busy = false; }
   }
@@ -74,7 +118,11 @@
       <OwnerPicture name={held.name} urls={portrait ? [portrait, clientTexture(portraitDefaultPath(128))] : [clientTexture(portraitDefaultPath(128))]} size={128} />
       <div><h3>{held.name}</h3>{#if held.member.title}<p>{held.member.title}</p>{/if}</div>
     </div>
-    <h3>{word(LABELS.general, "General")}</h3>
+    <div class="member-tabs" role="tablist" aria-label="Member details panels">
+      <button type="button" role="tab" aria-selected={active === "general"} onclick={() => selectPanel("general")}>{word(LABELS.general, "General")}</button>
+      <button type="button" role="tab" aria-selected={active === "roles"} onclick={() => selectPanel("roles")}>{word(LABELS.roles, "Roles")}</button>
+    </div>
+    {#if active === "general"}
     {#if held.canEditTitle}
       <label>{word(LABELS.title, "Title")}<input aria-label={word(LABELS.title, "Title")} maxlength="100" bind:value={title} disabled={busy} /></label>
     {:else if !held.canEditBase}<p>{word(LABELS.title, "Title")}: {held.member.title}</p>{/if}
@@ -93,6 +141,32 @@
       <dt>{word(LABELS.born, "Date of birth")}</dt><dd>{date(held.createDateTime)}</dd>
       <dt>{word(LABELS.security, "Security status")}</dt><dd>{held.security.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</dd>
     </dl>
+    {:else}
+      <div class="role-views">
+        <label>{word(LABELS.view, "View")}<select aria-label={word(LABELS.view, "View")} bind:value={grantable} onchange={() => void refreshRoleBase()}>
+          <option value="0">{word(LABELS.roles, "Roles")}</option><option value="1">{word(LABELS.grantable, "Grantable roles")}</option>
+        </select></label>
+        <label>{word(LABELS.group, "Group type")}<select aria-label={word(LABELS.group, "Group type")} bind:value={groupID} onchange={() => void refreshRoleBase()}>
+          {#each held.roleGroups as roleGroup (roleGroup.groupID)}<option value={String(roleGroup.groupID)}>{word(`#${roleGroup.roleGroupNameID}`, "")}</option>{/each}
+        </select></label>
+      </div>
+      {#if rolesLoading}<p>Reading roles…</p>{:else if group}
+        <ul class="role-list">
+          {#each group.roles as role (role.roleID)}
+            <li>
+              <div class="role-name">
+                {#if editable(role)}
+                  <label><input type="checkbox" aria-label={word(`#${role.nameID}`, "")} checked={hasRole(role)} disabled={busy} onchange={event => changeRole(role, event.currentTarget.checked)} />{word(`#${role.nameID}`, "")}</label>
+                {:else}
+                  <span role="img" aria-label={`${word(`#${role.nameID}`, "")}: ${word(hasRole(role) ? LABELS.yes : LABELS.no, hasRole(role) ? "Yes" : "No")}`}>{hasRole(role) ? "✓" : "—"}</span><span>{word(`#${role.nameID}`, "")}</span>
+                {/if}
+              </div>
+              <p>{word(`#${role.descriptionID}`, "")}</p>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
     <div class="controls">
       <button type="button" disabled={busy} onclick={() => void apply(true)}>{word(LABELS.ok, "OK")}</button>
       <button type="button" onclick={() => onClose?.()}>{word(LABELS.cancel, "Cancel")}</button>
@@ -109,4 +183,14 @@
   dl { display: grid; grid-template-columns: minmax(7rem, auto) minmax(0, 1fr); gap: 0.5rem; }
   dt { color: var(--color-muted); }
   dd { margin: 0; overflow-wrap: anywhere; }
+  .member-tabs { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .member-tabs [aria-selected="true"] { border-color: var(--color-accent); }
+  .role-views { display: flex; flex-wrap: wrap; gap: 1rem; }
+  .role-views label { flex: 1; min-width: 10rem; }
+  .role-list { list-style: none; padding: 0; }
+  .role-list li { padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); }
+  .role-name, .role-name label { display: flex; align-items: center; gap: 0.5rem; }
+  .role-name label { margin: 0; }
+  .role-name input { display: inline; width: auto; }
+  .role-list p { margin: 0.25rem 0 0 1.5rem; color: var(--color-muted); }
 </style>

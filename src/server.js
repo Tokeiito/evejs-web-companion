@@ -13540,11 +13540,11 @@ app.get("/api/client-data/config-enabled-values", requireAuth, async (req, res, 
   } catch (error) { next(error); }
 });
 
-// CorpMemberTracking._GetRoleOptions: groups 1/2 of the installed client's role table, not server calls.
+// CorpMemberTracking._GetRoleOptions / GetRoleGroupings: installed role data; bco_members also uses appConst's locational set.
 app.get("/api/client-data/corporation-roles", requireAuth, async (req, res, next) => {
   try {
-    const [roles, groups] = await Promise.all([clientBuiltData.table("corporationRoles"), clientBuiltData.table("corporationRoleGroups")]);
-    res.json({ ok: true, available: roles !== null && groups !== null, roles, groups });
+    const [roles, groups, locationalRoles] = await Promise.all([clientBuiltData.table("corporationRoles"), clientBuiltData.table("corporationRoleGroups"), clientConstants.corporationRoleLocations()]);
+    res.json({ ok: true, available: roles !== null && groups !== null && locationalRoles !== null, roles, groups, locationalRoles });
   } catch (error) { next(error); }
 });
 

@@ -1,5 +1,6 @@
 // EditMemberDialog.LoadChar and OnTabGeneral: the registry member and charMgr's private row.
 import { isListValue, readDictEntry, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import type { CorporationRoleGroup, GrantMasks } from "./corporationRoles.ts";
 
 export const MEMBER_ROLE_FIELDS = ["roles", "grantableRoles", "rolesAtHQ", "grantableRolesAtHQ", "rolesAtBase", "grantableRolesAtBase", "rolesAtOther", "grantableRolesAtOther"] as const;
 export interface CorporationMember {
@@ -20,6 +21,10 @@ export interface CorporationMemberDetails {
   readonly targetIsCEO: boolean;
   readonly canEditBase: boolean;
   readonly canEditTitle: boolean;
+  readonly viewerIsDirector: boolean;
+  readonly myBaseID: number | null;
+  readonly grants: GrantMasks;
+  readonly roleGroups: readonly CorporationRoleGroup[];
   readonly raceNameID: number;
   readonly gender: number;
   readonly createDateTime: bigint;
