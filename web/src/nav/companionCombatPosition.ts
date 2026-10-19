@@ -477,6 +477,30 @@ function pastTheLeash(
   return wasLeashed ? apart >= lockRangeM - RANGE_HYSTERESIS_M : apart > lockRangeM;
 }
 
+/** The readout when guns on the target override the leash. Plain ASCII: player-facing. */
+const LEASH_OVERRIDDEN_WORDS = "Guns on the target: staying on it although it is past my leash.";
+
+/**
+ * Is at least one of this pilot's guns MEASURED in reach of the engaged target
+ * right now? The range gate's own test (`gunsInReach`: the loaded charge's reach,
+ * the sticky per-gun margin), read and not stored.
+ *
+ * ⚠ ONLY A MEASUREMENT COUNTS. `gunsInReach` lets a gun with an unknown reach (or
+ * an unmeasurable distance) through so it may start; that is the gate failing
+ * open, and it is not "hitting". Those are `assumed`, and are left out here, so
+ * the leash is only overridden by a gun known to reach. A drone boat has no guns
+ * and so never overrides: its drones have their own leash.
+ */
+function gunsHitting(
+  targetID: number,
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  measurement: SpaceMeasurement | null,
+): boolean {
+  return gunsInReach(targetID, request, obs, memory, measurement).trace.inReach.length > 0;
+}
+
 /**
  * The grid, read into `wantedHold`'s inputs (less the closing budget, which the
  * caller adds).
@@ -718,6 +742,18 @@ function holdBetweenTargets(
  * this pilot can lock, the pilot stays in formation (rung 9) and fights with
  * whatever reaches from there. Sticky: see `pastTheLeash`.
  *
+ * ⚠ THE LEASH ONLY STOPS A CHASE; IT NEVER PULLS A SHIP OFF A TARGET IT IS HITTING.
+ * Seen live: a pilot orbiting a rat with all four guns in reach (`guns 4/0a/0o`)
+ * tripped the leash because the commander had moved away, and turned from a
+ * target it was hitting to fly back to the commander. Operator decision: a
+ * companion whose guns already reach its engaged target keeps it until the target
+ * dies or leaves gun reach. So when the leash would trip but at least one gun is
+ * MEASURED in reach (`gunsHitting`: the range gate's sticky test; an unknown
+ * reach does not count), the leash is not applied and not recorded as tripped,
+ * the rung holds as normal, and the trace says so (`leashOverridden`). Once no
+ * gun reaches any more the leash applies again, fresh. A drone boat has no guns,
+ * so for it nothing changes.
+ *
  * ⚠ A GUN BOAT WITH NO KNOWN REACH IS NOT POSITIONED (`wantedHold` null): it
  * stays in formation until a reach is readable.
  *
@@ -814,14 +850,21 @@ export function decideCombatPosition(
   const lockRangeM = obs.maxTargetRangeM ?? null;
   const commander = ladder.commanderShip(obs);
   const leashApartM = commander === null ? null : ladder.metresBetween(commander, target);
+  // ⚠ THE ONE MEASUREMENT THIS RUNG MAKES. The leash's override and everything
+  // below read it.
+  const measurement = measureSpace(snapshot);
+  let leashOverridden = false;
   if (pastTheLeash(commander, target, lockRangeM, state?.leashed === true, ladder)) {
-    const leashed: CombatTargetState = { targetID, farTicks: 0, spentAtM: null, closing: false, leashed: true };
-    return toFormation(standDown(leashed), true, "leashed", "leash", { ...dropped, leashed: true, leashApartM });
+    if (!gunsHitting(targetID, request, obs, memory, measurement)) {
+      const leashed: CombatTargetState = { targetID, farTicks: 0, spentAtM: null, closing: false, leashed: true };
+      return toFormation(standDown(leashed), true, "leashed", "leash", { ...dropped, leashed: true, leashApartM });
+    }
+    leashOverridden = true;
   }
+  // The readout sentence in front of whatever this tick says, when the leash was overridden.
+  const withLeashWords = (why: string): string => leashOverridden ? `${LEASH_OVERRIDDEN_WORDS} ${why}` : why;
 
   // ─── Where to be ──────────────────────────────────────────────────────────
-  // ⚠ THE ONE MEASUREMENT THIS RUNG MAKES. Everything below reads it.
-  const measurement = measureSpace(snapshot);
   const inputs = holdInputs(request, obs, snapshot, target, measurement, lockRangeM, ladder);
   const distanceM = inputs.targetDistanceM;
   // ⚠ NULL ONLY FOR AN UNREAD HOSTILE: an empty grid reads 0. See `holdInputs`.
@@ -873,6 +916,7 @@ export function decideCombatPosition(
       leashed: false,
       leashApartM,
       ratFactsMissing,
+      ...(leashOverridden ? { leashOverridden: true } : {}),
       ...fields,
     });
   const readout = (why: string, next: CompanionLadderMemory, trace: CombatTrace): CombatPositionStep => ({
@@ -886,7 +930,7 @@ export function decideCombatPosition(
   const step = stepLatch(current?.targetID === targetID ? current : null, ladder.limits);
   if (step.kind === "wait") {
     return readout(
-      `${engaged.why} ${LATCH_WORDS[step.reason]}`,
+      withLeashWords(`${engaged.why} ${LATCH_WORDS[step.reason]}`),
       withPosition(memory, { hold: step.latch }),
       decided({ standingRangeM: standingRangeM(step.latch), latch: latchTrace(step.latch, step.reason) }),
     );
@@ -898,7 +942,7 @@ export function decideCombatPosition(
     // 8 km" must not name a range nobody ordered.
     const sentence = holdSentence(hold, { rangeM: previous.rangeM, clamp, ratFactsMissing });
     return readout(
-      `${engaged.why} ${far ? "Closing in." : "In position."} ${sentence}`,
+      withLeashWords(`${engaged.why} ${far ? "Closing in." : "In position."} ${sentence}`),
       memory,
       decided({ standingRangeM: previous.rangeM, reissueSuppressed: true, latch: latchTrace(previous, null) }),
     );
@@ -908,7 +952,7 @@ export function decideCombatPosition(
     decision: {
       action: { kind: hold.order, targetID, range: rangeM },
       phase: engaged.phase,
-      why: holdSentence(hold, { rangeM: hold.rangeM, clamp, ratFactsMissing }),
+      why: withLeashWords(holdSentence(hold, { rangeM: hold.rangeM, clamp, ratFactsMissing })),
       memory: next,
       holdsNavigation: true,
       ...authorityOf(engaged),

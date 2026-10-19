@@ -329,6 +329,118 @@ test("the leash survives a movement rung 8 did not send; the budget does not", (
   assert.equal(withoutCombatHold(leashed.memory).combatPosition.target?.leashed, true);
 });
 
+// ─── Guns on the target keep it past the leash ──────────────────────────────
+
+// Reach 58 km: a rat at 56 km is past the leash (the FC is 5 km behind, 61 km apart,
+// lock range 60 km) and still inside both guns' reach.
+const FAR_GUNS = [gun(FIGHT_GUN_1, 58_000, 45_000), gun(FIGHT_GUN_2, 58_000, 45_000)];
+
+test("leash: a target past it but with a gun measured in reach is kept; rung 9 is not asked", () => {
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const first = position(fightObs(FAR_GUNS, ratAt(56_000)), flyingAuto(), ladder);
+  assert.equal(first.trace.leashOverridden, true);
+  assert.equal(first.trace.leashed, false);
+  assert.notEqual(first.trace.outcome, "leashed");
+  assert.notEqual(first.trace.outcome, "reform");
+  assert.equal(first.trace.leashApartM, 61_000, "the leash WOULD have tripped");
+  assert.deepEqual(sent(first), { kind: "keepAtRange", targetID: RAT, range: 35_000 });
+  assert.match(first.decision!.why, /^Guns on the target: staying on it although it is past my leash\./);
+  assert.equal(first.memory.combatPosition.target?.leashed, false);
+  assert.equal(first.memory.combatPosition.reform, false);
+
+  // The next tick: the hold stands, a readout, and still no trip to formation.
+  const again = position(fightObs(FAR_GUNS, ratAt(56_000)), first.memory, ladder);
+  assert.equal(sent(again), null);
+  assert.equal(again.decision?.holdsNavigation, true);
+  assert.equal(again.trace.leashOverridden, true);
+  assert.match(again.decision!.why, /staying on it although it is past my leash/);
+  assert.equal(again.memory.combatPosition.hold?.targetID, RAT);
+  assert.equal(ladder.calls(), 0, "the leash did not send the pilot back to the commander");
+});
+
+test("leash: one gun in reach is enough, the other being out of it", () => {
+  const mixed = [gun(FIGHT_GUN_1, 58_000, 45_000), gun(FIGHT_GUN_2, 40_000, 30_000)];
+  const step = position(fightObs(mixed, ratAt(56_000)), flyingAuto());
+  assert.equal(step.trace.leashOverridden, true);
+  assert.notEqual(step.trace.outcome, "leashed");
+});
+
+test("leash: a target past it with every gun out of reach still re-forms", () => {
+  const step = position(fightObs(LONG_GUNS, ratAt(56_000)), flyingAuto());
+  assert.equal(step.trace.outcome, "leashed");
+  assert.equal(step.trace.leashed, true);
+  assert.equal(step.trace.leashOverridden, undefined);
+  const sending = stubLadder((_obs, memory) => formationOrder(memory));
+  const reform = position(fightObs(LONG_GUNS, ratAt(56_000)), flyingAuto(), sending);
+  assert.equal(reform.trace.outcome, "reform");
+  assert.match(reform.decision!.why, /past my leash from the commander: holding station/i);
+});
+
+test("leash: a gun whose reach is unknown is not hitting, so the leash applies", () => {
+  const blind = [gun(FIGHT_GUN_1, null, null), gun(FIGHT_GUN_2, null, null)];
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const step = position(fightObs(blind, ratAt(56_000)), flyingAuto(), ladder);
+  assert.equal(step.trace.outcome, "reform");
+  assert.equal(step.trace.leashed, true);
+  assert.equal(step.trace.leashOverridden, undefined);
+  // One unread gun and one measured out of reach: still nothing hitting.
+  const half = [gun(FIGHT_GUN_1, null, null), gun(FIGHT_GUN_2, 40_000, 30_000)];
+  assert.equal(position(fightObs(half, ratAt(56_000)), flyingAuto()).trace.outcome, "leashed");
+  // No gun facts read at all: the same.
+  assert.equal(position(fightObs(null, ratAt(56_000)), flyingAuto()).trace.outcome, "leashed");
+});
+
+test("leash: the guns in reach, then the target moves out of reach: the leash applies again", () => {
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory));
+  const kept = position(fightObs(FAR_GUNS, ratAt(56_000)), flyingAuto(), ladder);
+  assert.equal(kept.trace.leashOverridden, true);
+  assert.equal(ladder.calls(), 0);
+  // 62 km: past the 58 km reach (and its margin), and 67 km from the commander.
+  const lost = position(fightObs(FAR_GUNS, ratAt(62_000)), kept.memory, ladder);
+  assert.equal(lost.trace.outcome, "reform");
+  assert.equal(lost.trace.leashed, true);
+  assert.equal(lost.trace.leashOverridden, undefined);
+  assert.equal(lost.memory.combatPosition.target?.leashed, true);
+  assert.equal(lost.memory.combatPosition.hold, null, "our orbit is dropped");
+});
+
+test("leash: the sticky margin keeps a gun in reach through a wobble, end to end", () => {
+  // Rung 7 records which guns reach (weaponReach); rung 8 reads it. Guns already
+  // cycling, the target at 56 km: past the leash, inside the 58 km reach.
+  const firing = { activeModuleIDs: [FIGHT_GUN_1, FIGHT_GUN_2] };
+  const at = (x: number): FleetCompanionObservation => fightObs(FAR_GUNS, ratAt(x, undefined, firing));
+  // The first ticks are rung 7's (it opens fire); rung 8 answers once the fight stands.
+  let first = decideCompanionAction(TWO_GUNS, at(56_000), inFormation(flyingAuto()).memory);
+  for (let n = 0; n < 5 && first.trace?.combat === undefined; n += 1) {
+    first = decideCompanionAction(TWO_GUNS, at(56_000), first.memory);
+  }
+  assert.equal(first.trace?.combat?.leashOverridden, true, JSON.stringify(first.trace));
+  assert.equal(first.memory.weaponReach?.inReach.length, 2);
+  // 58.5 km is outside the reach but inside its sticky margin: the target is kept.
+  const wobble = decideCompanionAction(TWO_GUNS, at(58_500), first.memory);
+  assert.equal(wobble.trace?.combat?.leashOverridden, true);
+  assert.notEqual(wobble.trace?.combat?.outcome, "leashed");
+  // Well past it: out of reach, and the leash is back.
+  const gone = decideCompanionAction(TWO_GUNS, at(66_000), wobble.memory);
+  assert.equal(gone.trace?.combat?.leashed, true);
+  assert.equal(gone.trace?.combat?.leashOverridden, undefined);
+});
+
+test("leash: a drone boat past it re-forms as before, whatever its drones reach", () => {
+  const drones = { ...TWO_GUNS, weaponModuleIDs: [] };
+  const observation = fightObs(null, ratAt(56_000), RAT, { droneControlRangeM: 40_000 });
+  const ladder = stubLadder((_obs, memory) => formationOrder(memory), true);
+  const step = decideCombatPosition(drones, observation, engagedOn(), flyingAuto(), ladder);
+  assert.equal(step.trace.outcome, "reform");
+  assert.equal(step.trace.leashed, true);
+  assert.equal(step.trace.leashOverridden, undefined);
+  // Even with gun facts on the ship, a request that picked no guns has none hitting.
+  const withFacts = decideCombatPosition(
+    drones, fightObs(FAR_GUNS, ratAt(56_000), RAT, { droneControlRangeM: 40_000 }), engagedOn(), flyingAuto(), ladder,
+  );
+  assert.equal(withFacts.trace.outcome, "reform");
+});
+
 // ─── Back to formation ───────────────────────────────────────────────────────
 
 test("`flight follow` with our orbit standing: rung 9 is asked every tick until formation is confirmed", () => {
