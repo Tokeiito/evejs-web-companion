@@ -589,6 +589,7 @@ import {
   type FleetCompanionRequest,
   type CompanionAbandonmentRecord,
   type CompanionCargoCharge,
+  type CompanionLoadedCharge,
   type CompanionPropulsionModule,
   type CompanionTankLayer,
 } from "../nav/fleetCompanionLoop.ts";
@@ -20625,7 +20626,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     emptyWeaponModuleIDs: readonly number[] | null;
     cargoCharges: readonly CompanionCargoCharge[] | null;
     weaponChargeGroups: Readonly<Record<number, readonly number[]>> | null;
-  } = { emptyWeaponModuleIDs: null, cargoCharges: null, weaponChargeGroups: null };
+    loadedCharges: readonly CompanionLoadedCharge[] | null;
+  } = { emptyWeaponModuleIDs: null, cargoCharges: null, weaponChargeGroups: null, loadedCharges: null };
   /**
    * The hull's lock count and lock range, off the fit `readCompanionFitFacts`
    * reads at start. The lock-ahead needs the count (unreadable means it never
@@ -21189,6 +21191,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // here, and a companion polls no extra route for it.
           pendingFleetInvite: companionPendingInvite(),
           chatMessages,
+          // Who this pilot is, so a `status` or `repair` line naming pilots can
+          // be told apart from one naming somebody else.
+          selfCharacterID: ownCharacterID,
+          selfCharacterName: store.station.get().online?.characterName ?? null,
           // Rung 4, "tackle → tag". Narrowed to the two tackle jam types and
           // freshness-filtered HERE, at observation build, for the same reason
           // `fleetBroadcast` is: the slice keeps every jam the wire carried
@@ -21263,6 +21269,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 emptyWeaponModuleIDs: null,
                 cargoCharges: null,
                 weaponChargeGroups: null,
+                loadedCharges: null,
               }
             : await readCompanionAmmoFacts(
                 liveCompanionRequest,
@@ -21280,6 +21287,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           chargeFactsByTypeID: companionChargeFacts.chargeFactsByTypeID,
           weaponCycleByTypeID: companionChargeFacts.weaponCycleByTypeID,
         };
+      },
+      // ⚠ STRAIGHT TO THE WRAPPER, NEVER THROUGH `sendChatMessage`. That one
+      // re-reads the channel into the store, which would repaint the Chat panel
+      // of whichever pilot the player is looking at; a background companion must
+      // not move the furniture in front of a human (see `readCompanionAmmoFacts`).
+      // Local, for the reason the chat READ is local: fleet chat is not reachable.
+      say: async (text) => {
+        await api.sendChat("local", text, callOptions);
       },
       issue: async (action) => {
         // Straight to the `api.*` wrapper, the way `makeMiningBotDeps` does —
@@ -22439,6 +22454,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     let emptyWeaponModuleIDs: readonly number[] | null = null;
     let weaponChargeGroups: Readonly<Record<number, readonly number[]>> | null = null;
+    let loadedCharges: CompanionLoadedCharge[] | null = null;
     let fitReads: Awaited<ReturnType<typeof api.loadFitting>> | null = null;
     try {
       const reads = await api.loadFitting(callOptions);
@@ -22449,6 +22465,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const guns = new Set(request.weaponModuleIDs);
         const empty: number[] = [];
         const groups: Record<number, readonly number[]> = {};
+        const loaded: CompanionLoadedCharge[] = [];
         for (const slot of slots) {
           const module = slot.module;
           if (module === null || !module.online || !guns.has(module.itemID)) {
@@ -22466,9 +22483,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           if (module.charge === null && (fitment?.groups.length ?? 0) > 0) {
             empty.push(module.itemID);
           }
+          // What is in it, for the `status` answer and the low-ammo warning.
+          if (module.charge !== null && module.charge.quantity > 0) {
+            loaded.push({ moduleID: module.itemID, typeID: module.charge.typeID, quantity: module.charge.quantity });
+          }
         }
         emptyWeaponModuleIDs = empty;
         weaponChargeGroups = groups;
+        loadedCharges = loaded;
       }
     } catch {
       // Left null on purpose. See the three-state note above.
@@ -22498,7 +22520,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Left null on purpose. See the three-state note above.
     }
 
-    companionAmmoFacts = { emptyWeaponModuleIDs, cargoCharges, weaponChargeGroups };
+    companionAmmoFacts = { emptyWeaponModuleIDs, cargoCharges, weaponChargeGroups, loadedCharges };
     companionCombatWeapons = await readCompanionCombatWeapons(request, fitReads);
     companionChargeFacts = await readCompanionChargeFacts(cargoCharges, companionCombatWeapons);
     return companionAmmoFacts;
