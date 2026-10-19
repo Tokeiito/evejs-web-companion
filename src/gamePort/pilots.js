@@ -5874,7 +5874,19 @@ function createGamePortPilots({
   // Transport identity only: observing it neither asks nor drains native notices.
   function corporationContext(sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
-    return { characterID: entry.characterID, corporationID: attribute(entry, "corpid"), version: entry.corporationVersion };
+    return { characterID: entry.characterID, corporationID: attribute(entry, "corpid"), allianceID: attribute(entry, "allianceid"), version: entry.corporationVersion };
+  }
+
+  // base_corporation.__ResignFromCEO780-783 reads len(GetMembers()) inside the
+  // session mutation. Reuse native retained IDs without draining pending notices.
+  async function corporationResignationContext(sessionFields = {}, bridgeSessionID = undefined) {
+    const before = corporationContext(sessionFields, bridgeSessionID), entry = held(bridgeSessionID, sessionFields);
+    await entry.corpWork;
+    const memberIDs = await corporationMemberIDsRead(entry), after = corporationContext(sessionFields, bridgeSessionID);
+    if (before.version !== after.version || before.corporationID !== after.corporationID) {
+      throw fail("SESSION_REQUEST_RETIRED", "This resignation belongs to the pilot's previous corporation.");
+    }
+    return { ...after, memberCount: memberIDs.length };
   }
 
   /**
@@ -6275,6 +6287,7 @@ function createGamePortPilots({
     standingsKept,
     corporationMemberIDs,
     corporationContext,
+    corporationResignationContext,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,

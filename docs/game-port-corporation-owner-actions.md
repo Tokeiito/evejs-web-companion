@@ -194,15 +194,21 @@ self, including when evaluating a merged selection.
    `ResignFromCEO(None)` and a None response; it records no candidate-list case.
    Current server code already implements one-member liquidation and successor
    changes; the companion Markdown's missing-liquidation list is historical.
-   - **c4d1: transport prerequisite.** Add the typed originating-registry CEO
-     mutation, retaining pilot/corporation generation across binding and response.
-     Preserve the native RPC lock/cooldown/refusal rollback, candidate-list return,
-     completed None, and the timer reset for the selected-candidate retry. Keep
-     the alliance/sole-member local refusal inside the guarded operation before
-     dispatch. Retain any candidate/retry state only for its original operation;
-     expose no general-purpose timer-reset shortcut. Verify actual successor and
-     disband paths on disposable fixtures and native wire, restoring the full store.
-     No menu is exposed until c4d2 supplies the complete callback.
+   - **c4d1: transport prerequisite, implemented.** The typed CEO mutation names
+     its originating registry while sending native `ResignFromCEO(None or ID)`.
+     It retains the pilot/corporation generation, locks until the actual RPC
+     returns, starts the native ten-second cooldown, and restores the timer on
+     refusal. Returned successor IDs authorize only their original operation's
+     explicit timer reset and retry; another pilot in the same corporation cannot
+     use that choice. The sole-member alliance refusal runs inside the guarded
+     mutation before RPC, using retained native member IDs without draining notices.
+     Actual native and gateway successor handoffs, concurrent-write refusal while
+     a native reply was held, cooldown/reset and refusal rollback were verified.
+     Funded disposable solo liquidation returned None, paid the exact two-division
+     balance and changed the pilot to its NPC corporation. Its native recording
+     also exposed wallet shapes and lifecycle ordering fixed in EveJS; the
+     original full store is restored after the live walk. No menu is exposed
+     until c4d2 supplies the complete callback.
    - **c4d2: complete shared submenu and flow.** Preserve self/CEO gates and the
      contact-multiple caller distinction. Use the native retained member IDs for
      `len(GetMembers())`; request `GetNumberOfPotentialCEOs` only on the many-member
