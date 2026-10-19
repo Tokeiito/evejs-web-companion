@@ -431,12 +431,23 @@ self, including when evaluating a merged selection.
    Historical companion claims of lighter role validation are not evidence
    against the current source-division validator.
 
-   - **c4g1: native corporation cash contract audit/fix.** Before UI, verify fresh
-     and explicit division reads, native authority failures, real success and
-     notice/reply order against the compiled consumer and recorded packets.
-     Investigate missing-key selection and refused-transfer None without calling
-     an unrecorded behavior a proven defect. Stop and back up the whole store
-     before fixtures; fix proven retail-client defects in this or the next unit.
+   - **c4g1: native corporation cash contract audit/fix, implemented.** Actual
+     native sessions exposed two retail-client defects. With active1001 and
+     balance50.25 there, None read the empty master division; walletSvc156-164,
+     TransferMoneyWnd108-123 and CorpISKTab34/50 consume this as active-division
+     wealth. EveJS118c86baf resolves missing/None corporate keys from the session,
+     preserving explicit keys, personal reads and authority. A raced amount50
+     against source49 returned None without a debit, which compiled Confirm
+     falsely calls successful. EveJS780fa9f82 raises wrapped NotEnoughMoney with
+     amount50/balance49; the native re-check saw unchanged balances/no notices.
+     Both fixes are pushed. These default-key and exact error payloads are
+     inferred from native consumers/existing wallet error convention; they are
+     not captured from TQ for an alternate active division or a shortfall.
+     Live ordinary reads were denied, Junior/Accountant reads permitted,
+     Accountant without Take denied a debit, and Take2 permitted its own read.
+     Explicit captured1001 still debited after active changed to1000, including
+     a self transfer. Success remained None, corporation cash2 then personal
+     cash notices before the reply, matching the applicable recorded order.
    - **c4g2: complete corporation wealth cache/event foundation.** Port fresh
      reads separately from the one-minute cache, native notice authority and
      read-before-update/event order. Fence pilot/corporation replacement while
