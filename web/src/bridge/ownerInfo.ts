@@ -147,8 +147,30 @@ export function warPermitLabel(allowWar: boolean | null): string {
   return allowWar ? "UI/WarPermit/CorpStatusWarAllowed" : "UI/WarPermit/CorpStatusWarNotAllowed";
 }
 
-/** fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions: the factions' numbers; null for anything else. */
-export function enlistmentFactionsOf(result: JsonValue | null | undefined): readonly number[] | null {
+/** Recordset.Get's int(key), within the owner IDs this transport represents. */
+function enlistmentOwnerKey(value: JsonValue): number {
+  let key: number;
+  const text = typeof value === "string" ? value
+    : isRecord(value) && value.type === "wstring" && typeof value.value === "string" ? value.value : null;
+  if (text !== null) {
+    if (!/^[ \t\n\r\f\v]*[+-]?[0-9]+[ \t\n\r\f\v]*$/.test(text)) {
+      throw Object.assign(new Error("Invalid enlistment owner key for int()."), { name: "ValueError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_KEY" });
+    }
+    key = Number(text);
+  } else if (typeof value === "number") key = Math.trunc(value);
+  else if (typeof value === "boolean") key = value ? 1 : 0;
+  else if (isRecord(value) && value.type === "long" && longToDecimalString(value) !== null) key = Number(longToDecimalString(value));
+  else {
+    throw Object.assign(new TypeError("int() requires a string or number for an enlistment owner key."), { code: "INFO_CORPORATION_ENLISTMENT_OWNER_KEY" });
+  }
+  // Do not send a rounded identifier. Lossless larger keys and non-ASCII
+  // Unicode int parsing need a wider owner-key representation.
+  if (!Number.isSafeInteger(key)) throw Object.assign(new RangeError("The enlistment owner key exceeds this transport's integer range."), { code: "INFO_CORPORATION_ENLISTMENT_OWNER_RANGE" });
+  return key === 0 ? 0 : key;
+}
+
+/** Native enlistment iteration: convert each key only when its owner is read. */
+export function enlistmentFactionsOf(result: JsonValue | null | undefined): Iterable<number> | null {
   // Native UpdateDataCorp iterates these too. No owner lookup occurs for an
   // empty dict/str/unicode, but the "No factions permitted" row is still built.
   if (result === "" || (isRecord(result)
@@ -168,7 +190,7 @@ export function enlistmentFactionsOf(result: JsonValue | null | undefined): read
       ? result.items
       : null;
   if (items === null) return null;
-  return items.map((item) => toNumOrNull(item)).filter((id): id is number => id !== null);
+  return (function* () { for (const item of items) yield enlistmentOwnerKey(item); })();
 }
 
 /** The labels the two windows word their rows with (the page's own words stand in where the install's are not had). */
@@ -229,6 +251,9 @@ export interface CorporationShowInfo {
   readonly aggression: AggressionSettings | null;
   /** Null for an NPC corporation, whose window has no such row, or where the read failed. */
   readonly enlistmentFactions: readonly number[] | null;
+  /** Sorted cfg.eveowners names, read before completion; None is a row value. */
+  readonly enlistmentFactionNames: readonly (string | null)[] | null;
+  /** Friendly-fire status time, before the later enlistment/owner reads. */
   readonly readAt: bigint;
 }
 

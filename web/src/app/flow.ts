@@ -12418,15 +12418,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
       const aggression = aggressionSettingsOf(aggressionAnswer);
       reads?.assertCurrent();
+      // GetCorpFriendlyFireStatus captures its time before enlistment/owners.
+      const readAt = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
       let enlistmentFactions: readonly number[] | null = null;
+      let enlistmentFactionNames: readonly (string | null)[] | null = null;
       if (!isNpcCorporation(corporationID)) {
         const answer = await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]);
         // UpdateDataCorp iterates this answer directly, without a None fallback.
         if (answer === null) throw Object.assign(new TypeError("'NoneType' object is not iterable"), { code: "INFO_CORPORATION_ENLISTMENT_NONE" });
-        enlistmentFactions = enlistmentFactionsOf(answer);
+        const keys = enlistmentFactionsOf(answer);
+        if (keys !== null) {
+          const ids: number[] = [], names: (string | null)[] = [];
+          for (const id of keys) {
+            // UpdateDataCorp's list comprehension performs Get/int/Prime for
+            // one owner before converting the next key. Never filter failures
+            // or batch later owners ahead of a bad key or missing record.
+            reads?.assertCurrent();
+            const records = await api.readEveOwners([id], reads ? { ...callOptions, fetch: (input, init) => {
+              reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
+            } } : callOptions);
+            reads?.assertCurrent();
+            const row = records[String(id)];
+            if (row === null) throw Object.assign(new Error(`('RecordNotFound', ${id})`), { name: "KeyError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_MISSING", args: ["RecordNotFound", id] });
+            ids.push(id); names.push(row!.name);
+          }
+          enlistmentFactions = ids;
+          // Native sorted: None precedes strings; an empty/None name remains
+          // a row, whereas only an empty iterable gets the no-factions label.
+          enlistmentFactionNames = names.sort((a, b) => a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1);
+        }
       }
       reads?.complete();
-      return { stage: "complete", info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+      return { stage: "complete", info, aggression, enlistmentFactions, enlistmentFactionNames, readAt };
     } finally {
       finish?.();
       // An expected retirement is not an empty or partially successful read.

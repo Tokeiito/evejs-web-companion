@@ -1000,12 +1000,12 @@
       });
     }
     if (!npc) {
-      if (read.enlistmentFactions !== null) {
-        const factionNames = read.enlistmentFactions.map((id) => resolvedName($names.resolved, "faction", id, "Unknown faction")).sort();
+      if (read.enlistmentFactionNames !== null) {
+        const factionNames = read.enlistmentFactionNames;
         rows.push({
           key: "factions",
           label: word("UI/Corporations/CorpUIHome/PermittedFwFactions"),
-          text: factionNames.length > 0 ? factionNames.join("\n") : word("UI/Corporations/CorpUIHome/NoFwFactionsPermitted"),
+          text: factionNames.length > 0 ? factionNames.map(name => name ?? "").join("\n") : word("UI/Corporations/CorpUIHome/NoFwFactionsPermitted"),
         });
       }
       rows.push({ key: "war", label: word("UI/WarPermit/WarPermitStatus"), text: word(warPermitLabel(info.allowWar)), hint: plainText(word("UI/WarPermit/WarPermitExplanation")) });
@@ -1114,9 +1114,6 @@
       }
       if (corporation.allianceID !== null && corporation.allianceID > 0) refs.push({ kind: "alliance", id: corporation.allianceID });
       if (corporation.stationID !== null && corporation.stationID > 0) refs.push({ kind: "station", id: corporation.stationID });
-      if (corporationRead?.stage === "complete") {
-        for (const id of corporationRead.enlistmentFactions ?? []) refs.push({ kind: "faction", id });
-      }
     }
     const alliance = allianceRead;
     if (alliance !== null) {

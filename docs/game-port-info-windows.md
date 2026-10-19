@@ -401,6 +401,34 @@ dialog metadata, and a captured guard rejects a retired late result. This layer
 is not yet connected to the enlistment row; conversion and sequential owner
 lookup must follow before claiming that window's completion order is ported.
 
+The enlistment row now converts each list/tuple key lazily with int(key), then
+awaits that one owner record before advancing to the next key. Floats truncate,
+ASCII signed/whitespace integer strings and booleans work, and invalid keys or
+missing records stop construction instead of being filtered out. The complete
+result retains sorted owner names; the view no longer performs a later
+faction-only name lookup. A None name remains a blank row value. Original
+Recordset.Get/Prime/_Prime and UpdateDataCorp establish the order, conversion
+exceptions and cached row/miss behavior; original LabelCore and font methods
+confirm None/empty text returns without glyph layout and has zero text height.
+
+Friendly-fire status also retains its time before enlistment and owner reads.
+Original compiled status plus UpdateDataCorp keeps the earlier LegalWithChangeTime
+label when the owner RPC advances past the pending disable time; recomputing
+afterward would incorrectly produce Illegal. Live controlled replies and a
+script-local clock advance verify the same distinction here.
+
+Browser verification holds an actual successful owner delivery with the header
+visible and main content pending, then completes with the sorted returned names.
+A later invalid key retains the header without main content; a real permission
+refusal via controlled read redirection opens the native dialog. A None-name
+delivery produces a blank value and an unmodified retry restores None permitted.
+Closing after an already successful owner read prevents a late view revival.
+Cancellation during the native priming operation, shared owner-cache publication,
+other iterable ordering, non-ASCII int parsing, larger-than-safe-integer keys and
+complete ancillary header priming remain separate audits. Numeric range limits
+fail explicitly rather than sending a rounded identifier; error diagnostics do
+not claim native wording where the bridge lost Python type information.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/
