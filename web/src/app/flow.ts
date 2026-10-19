@@ -414,7 +414,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
@@ -474,7 +474,7 @@ import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
 import { issueCombatUtility, issueUtilityReload } from "../nav/combatUtilityIssue.ts";
-import { nameKey, type NameRef } from "../store/names.ts";
+import { nameKey, type NameKind, type NameRef } from "../store/names.ts";
 import {
   companionFitWarnings,
   requestForFit,
@@ -730,6 +730,7 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
+import { REMOTE_MESSAGE, decodeRemoteMessage, serverMessageText, type ServerMessage } from "../bridge/serverMessages.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -5243,6 +5244,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "standings/char", char: after });
         }
       }
+      return;
+    }
+    // gameui.OnRemoteMessage (347 to 356): the server tells the player something, as a dialog of the client's, and the
+    // page says it on the notice board, in the client's words where it has them.
+    if (method === REMOTE_MESSAGE) {
+      const message = decodeRemoteMessage(args);
+      if (message !== null) void sayServerMessage(message).catch(() => {});
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -16868,6 +16876,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const cash = decodeWalletCash(await walletReads.wealth());
     const value = cash === null ? Number.NaN : Number(cash);
     return Number.isFinite(value) ? value : null;
+  }
+
+  /** How long a server's message waits for the client's dialog and names before it is said with what there is. */
+  const SERVER_MESSAGE_WORDS_WAIT_MS = 1500;
+
+  /** Resolves once `ready()` holds, re-checked as `signal` changes, or after `ms` whatever it says. */
+  function until(signal: { subscribe(run: () => void): () => void }, ready: () => boolean, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (ready()) {
+        resolve();
+        return;
+      }
+      let stop: () => void = () => {};
+      const timer = setTimeout(() => { stop(); resolve(); }, ms);
+      stop = signal.subscribe(() => {
+        if (!ready()) return;
+        clearTimeout(timer);
+        queueMicrotask(() => stop());
+        resolve();
+      });
+    });
+  }
+
+  // A server's message (bridge/serverMessages.ts): the client's dialog and the names in it are asked for, and given a
+  // moment to come, as the client's own text takes none; then it is said with what the page has.
+  async function sayServerMessage(message: ServerMessage): Promise<void> {
+    const client = (): ClientWording => ({ templates: store.words.get().templates, playerID: store.station.get().online?.characterID ?? null });
+    const keys = wordsLabels([message.words]);
+    requestWords(keys);
+    // (An answer without the client's words keeps each key too, as none: either way the keys are there when it comes.)
+    await until(store.words, () => keys.every((key) => key in store.words.get().templates), SERVER_MESSAGE_WORDS_WAIT_MS);
+    const refs = wordsNameRefs([message.words], client());
+    requestNames(refs);
+    await until(store.names, () => refs.every((ref) => nameKey(ref.kind, ref.id) in store.names.get().resolved), SERVER_MESSAGE_WORDS_WAIT_MS);
+    const nameOf = (kind: NameKind, id: number): string => resolvedName(store.names.get().resolved, kind, id, `${kind} ${id}`);
+    const text = serverMessageText(message, nameOf, client());
+    if (text === null) return;
+    store.apply({ type: "server-messages/said", kind: message.kind, text: null });
+    store.apply({ type: "server-messages/said", kind: message.kind, text });
   }
 
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
