@@ -2194,7 +2194,7 @@
     } else void load();
     if (!contactAction && !organization) void flow.primeContactsOnline().catch(() => {});
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
-    if (!contactAction && !organization && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
+    if (!contactAction && !organization && store.fleet.get().availability === "unknown") void flow.loadFleet(true).catch(() => {});
     return () => {
       disposed = true;
       ++readGeneration;

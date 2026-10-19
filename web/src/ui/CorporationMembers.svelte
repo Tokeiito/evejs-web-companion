@@ -9,6 +9,7 @@
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import ContactActionDialog from "./ContactActionDialog.svelte";
+  import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
@@ -309,6 +310,7 @@
             <button type="button" class="minor" onclick={() => corporateManage("edit", "alliancecontact")}>{word(LABELS.editAllianceContact, "Edit Alliance Contact")}</button>
           {/if}
         {/if}
+        <MemberFleetInvites {store} {flow} targets={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>

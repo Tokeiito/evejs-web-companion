@@ -1219,8 +1219,8 @@ export interface MarketChangeResult {
 // a null fleetID after decode is authoritative, not a blanking failure.
 
 /** Raw /api/bridge/bound-fleet envelope; decode with bridge/boundFleet.decodeBoundFleet. */
-export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<string, JsonValue>> {
-  return getJson("/api/bridge/bound-fleet", options);
+export async function loadBoundFleet(options: ApiOptions = {}, menuOnly = false): Promise<Record<string, JsonValue>> {
+  return getJson(`/api/bridge/bound-fleet${menuOnly ? "?view=menu" : ""}`, options);
 }
 
 // A pilot is invited to the fleet by the page itself, with the client's own

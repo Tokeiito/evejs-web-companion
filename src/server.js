@@ -2705,6 +2705,9 @@ app.get("/api/pi/planet-richness", requireAuth, async (req, res, next) => {
 const FLEET_READ_METHODS = Object.freeze(["GetInitState", "GetWings", "GetMotd", "GetJoinRequests", "GetFleetComposition"]);
 
 app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
+  // CharacterMenu reads members/options/wings, without opening either of the
+  // fleet's separate composition/join-request windows (fleetSvc, menusvc736).
+  const menuOnly = req.query.view === "menu";
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
@@ -2757,7 +2760,7 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   let kept = null;
   if (own) {
     try {
-      kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
+      kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID, { details: !menuOnly });
     } catch (error) {
       if (error && error.code === "SESSION_NOT_FOUND") {
         forgetBridgeSession(req.webSessionID, held);
@@ -2787,6 +2790,7 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
     const settled = await Promise.allSettled(
       FLEET_READS.map(([method, args]) => (kept && Object.hasOwn(kept, method)
         ? { result: kept[method] }
+        : menuOnly && method !== "GetInitState" && method !== "GetWings" ? { result: null }
         : boundCall(held, req.webSessionID, spec, method, args, null, notifications))),
     );
     // A lost live session cannot be recovered by any read; surface it so the page

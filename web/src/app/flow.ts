@@ -748,7 +748,7 @@ import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, j
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
-import { IntDict, hashedSetOrder, intDictOf, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
+import { IntDict, hashedSetOrder, intDictOf, intDictOrder, strDictOrder, tupleHashOf, wholeHashOf } from "../bridge/py27DictOrder.ts";
 import { hudSettingNow, setSlotOrder, slotOrderOf } from "../store/hudSettings.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
@@ -1870,7 +1870,9 @@ export interface AppFlow {
    */
   deployAbyssalFilament(itemID: number, gameModeID: GameModeID): Promise<{ readonly deployed: boolean; readonly errors: readonly AbyssErrorEntry[] }>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
-  loadFleet(): Promise<void>;
+  loadFleet(menuOnly?: boolean): Promise<void>;
+  /** Keep the fleet window's detail reads active only while that window is mounted. */
+  retainFleetDetails(): () => void;
   /** Form a fleet, then re-read membership before settling. */
   formFleet(): Promise<void>;
   /**
@@ -1883,6 +1885,8 @@ export interface AppFlow {
    * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
    */
   formFleetWith(characterID: number): Promise<void>;
+  /** Native member-menu callbacks: grouped Form targets, independent Invite callbacks. */
+  inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void>;
   /**
    * Accept a fleet invitation, then re-read membership before settling.
    *
@@ -8995,6 +8999,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // notification burst into one initial read.
   let fleetRefreshPromise: Promise<void> | null = null;
   let fleetRefreshDirty = false;
+  // A character menu consumes the held roster, options and wings. Only an
+  // explicit fleet-details reader opens the composition/join-request views.
+  let fleetMenuOnly = true;
+  let fleetReadingMenuOnly = true;
+  let fleetDetailViews = 0;
+  function retainFleetDetails(): () => void {
+    fleetDetailViews++;
+    let kept = true;
+    return () => { if (kept) { kept = false; fleetDetailViews--; } };
+  }
   let fleetRefreshScheduled = false;
 
   /**
@@ -9044,16 +9058,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     fleetRefreshScheduled = true;
     queueMicrotask(() => {
       fleetRefreshScheduled = false;
-      void loadFleet().catch(() => undefined);
+      void loadFleet(fleetDetailViews === 0).catch(() => undefined);
     });
   }
 
-  async function loadFleetSnapshotOnce(): Promise<void> {
+  async function loadFleetSnapshotOnce(menuOnly: boolean): Promise<void> {
     store.apply({ type: "fleet/loading" });
     let snapshot: ReturnType<typeof decodeFleetCenter>;
     let readError: string | null = null;
     try {
-      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions));
+      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions, menuOnly));
       if (
         snapshot.availability === "ready" &&
         [
@@ -9124,7 +9138,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       while (fleetRefreshDirty) {
         fleetRefreshDirty = false;
-        await loadFleetSnapshotOnce();
+        fleetReadingMenuOnly = fleetMenuOnly && fleetDetailViews === 0;
+        fleetMenuOnly = true;
+        await loadFleetSnapshotOnce(fleetReadingMenuOnly);
       }
     } finally {
       // No callback can interleave between the loop condition and this reset,
@@ -9133,10 +9149,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  function loadFleet(): Promise<void> {
+  function loadFleet(menuOnly = false): Promise<void> {
+    const rosterOnly = menuOnly && fleetDetailViews === 0;
     if (fleetRefreshPromise !== null) {
+      if (!rosterOnly && fleetReadingMenuOnly) { fleetMenuOnly = false; fleetRefreshDirty = true; }
       return fleetRefreshPromise;
     }
+    fleetMenuOnly = rosterOnly;
     fleetRefreshDirty = true;
     fleetRefreshPromise = drainFleetRefreshes();
     return fleetRefreshPromise;
@@ -13138,12 +13157,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     mutate: () => Promise<void>,
     expected: "ready" | "not-in-fleet",
   ): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
     store.apply({ type: "fleet/action-started", action });
     let failure: string | null = null;
     let said = false;
     try {
       await mutate();
+      assertCurrent();
     } catch (error) {
+      throwIfRequestRetired(error);
+      assertCurrent();
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -13159,11 +13182,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       // The write acknowledgement is not treated as world state. Always read
       // the session's own bound fleet again, even after a refusal.
-      await loadFleet();
+      await loadFleet(fleetDetailViews === 0);
+      assertCurrent();
       if (failure === null && store.fleet.get().availability !== expected) {
         failure = fleetActionFailure(action);
       }
     } finally {
+      assertCurrent();
       store.apply({ type: "fleet/action-finished", error: failure, said });
     }
   }
@@ -13200,6 +13225,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (characterID === onlineCharacterID()) return;
     await inviteFleetMember(characterID);
+  }
+
+  async function inviteFleetSelection(characterIDs: readonly number[], form: boolean, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
+    const assertCurrent = callOptions.captureRequestGuard!();
+    if (!form) {
+      for (const id of characterIDs) {
+        assertCurrent();
+        await inviteFleetMember(id, assertCurrent, undefined, place);
+        assertCurrent();
+        const state = store.fleet.get();
+        if (state.actionError && !state.actionErrorSaid) throw new Error(state.actionError);
+      }
+      return;
+    }
+    const act = fencedDo(assertCurrent);
+    // menusvc.InviteToFleet2707-2730 catches UserError per owner and reports
+    // one original error, or FleetInviteMultipleErrors after trying them all.
+    await runFleetAction("invite", async () => {
+      const refused: { id: number; error: unknown }[] = [];
+      for (const id of characterIDs) {
+        assertCurrent();
+        try {
+          if (store.fleet.get().availability !== "ready") {
+            await formFleetCall(act, false);
+            await loadFleet(fleetDetailViews === 0);
+            assertCurrent();
+          }
+          if (id !== onlineCharacterID()) await inviteToFleetCall(act, id, onlineCharacterID());
+        } catch (error) {
+          throwIfRequestRetired(error);
+          if (!(error instanceof BridgeCallError) || error.code !== "CALL_REFUSED") throw error;
+          refused.push({ id, error });
+        }
+      }
+      if (refused.length === 1) throw refused[0]!.error;
+      if (refused.length > 1) {
+        await resolveNamesNow(refused.map(({ id }) => ({ kind: "owner" as const, id })));
+        const namelist = intDictOrder(refused.map(({ id }) => id)).map(id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot")).join(", ");
+        throw new BridgeCallError("CALL_REFUSED", "FleetInviteMultipleErrors", 0, null, null, { key: "FleetInviteMultipleErrors", values: { type: "dict", entries: [["namelist", namelist]] } });
+      }
+    }, "ready");
   }
 
   async function acceptFleetInvite(fleetID?: number): Promise<void> {
@@ -28120,9 +28186,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     abyssShipTypeLists,
     deployAbyssalFilament,
     loadFleet,
+    retainFleetDetails,
     formFleet,
     inviteFleetMember,
     formFleetWith,
+    inviteFleetSelection,
     acceptFleetInvite,
     declineFleetInvite,
     leaveFleet,
