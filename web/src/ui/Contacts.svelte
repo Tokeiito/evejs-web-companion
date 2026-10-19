@@ -379,24 +379,58 @@
   /** The notification whose menu is open. */
   let notificationMenuFor = $state<number | null>(null);
 
+  let readGeneration = 0;
+  let disposed = false;
   async function load(): Promise<void> {
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
     busy = true;
     error = "";
     try {
       const [read, notifications] = await Promise.all([flow.addressBook(contactType), corporate ? Promise.resolve(null) : flow.contactNotifications().catch(() => null)]);
+      if (disposed || characterID !== store.station.get().online?.characterID) return;
+      notificationsHeld = notifications;
+      if (generation !== readGeneration) return;
       book = read;
       applyOrganizationNotices(store.live.get().notifications);
-      notificationsHeld = notifications;
     } catch (cause) {
+      if (disposed || generation !== readGeneration) return;
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
-      busy = false;
+      if (!disposed && generation === readGeneration) busy = false;
     }
   }
 
   // The held answer already includes old notices. Only apply updates arriving after this form was mounted;
   // updates received during its read are applied once the answer arrives too.
   const seenOrganizationNotices = new WeakSet<object>(live.get().notifications);
+  const seenPersonalNotices = new WeakSet<object>(live.get().notifications);
+  // addressbookService's own ScatterEvents (contactsForm 611-635). Read the
+  // amended held answer, without reloading notifications or disturbing a draft.
+  function applyPersonalNotices(notices: typeof $live.notifications): void {
+    if (corporate || contactAction || disposed) return;
+    let changed = false;
+    for (const notice of notices) {
+      if (seenPersonalNotices.has(notice)) continue;
+      seenPersonalNotices.add(notice);
+      if ((notice.method === "OnContactChange" || notice.method === "OnEditLabel") && notice.args[1] === "contact"
+        || notice.method === "OnMyLabelsChanged" && notice.args[0] === "contact"
+        || notice.method === "OnBlockContacts" || notice.method === "OnUnblockContacts") changed = true;
+    }
+    if (!changed) return;
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
+    void flow.addressBook().then(read => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      book = read;
+      busy = false;
+      drawnAgain();
+    }).catch(cause => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      busy = false;
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
+    });
+  }
   function applyOrganizationNotices(notices: typeof $live.notifications): void {
     if (!corporate || book === null) return;
     const values = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : value && typeof value === "object" && "items" in value && Array.isArray(value.items) ? value.items : [];
@@ -422,6 +456,7 @@
   $effect(() => {
     const notices = $live.notifications;
     untrack(() => applyOrganizationNotices(notices));
+    untrack(() => applyPersonalNotices(notices));
   });
 
   /** The labels by name in lower case (GetLabelsSubContent, 197 to 204). */
@@ -2141,6 +2176,8 @@
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
     if (!contactAction && !corporate && store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
     return () => {
+      disposed = true;
+      ++readGeneration;
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
   });

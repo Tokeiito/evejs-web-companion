@@ -1901,9 +1901,18 @@ Buddy additions prime the held online state before a missing status lookup; remo
 their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
 in the recursive Tranquility corpus search. Corporate/alliance row contact actions are separate work.
 
-The BFF currently drops its held personal address-book reply after own writes, so reopening a member menu sends
-another `GetContactList`. Native addressbookService amends its held contacts instead. This cache difference is the
-next unit before the organization row actions.
+Successful personal contact writes now amend the held native `GetContactList` and `GetLabels` answers
+(`addressbookService.py` 617-869, 1001-1147). Existing row descriptors, row order, unrelated fields and full-width
+label masks survive; refused writes and replies belonging to retired sessions publish no local change. Label
+deletion clears its bit on contacts and retires only the labels table, which native immediately reads again.
+The client's local contact/label/block events refresh already-open personal Contacts views from those held answers;
+these are local events, not server packets. A view discards superseded or unmounted reads.
+Live browser captures show one `GetContactList` per selected session through Add/Edit/Delete/Block/Unblock,
+label create/rename/assign/remove/delete and repeated member menus. Label deletion adds one `GetLabels` read.
+Live TCP instrumentation also preserved bit 60 through low-bit removal and multi-edit, retained the previous answer
+after an injected server refusal, and published no local event for a real reply held until after session release.
+The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
+this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
 
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then

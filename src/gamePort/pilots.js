@@ -69,6 +69,7 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const personalContacts = require("./personalContacts");
 const { createPilotStation } = require("./pilotStation");
 const { createPilotStructureGuests } = require("./pilotStructureGuests");
 const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
@@ -546,15 +547,12 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   // the character is chosen and kept for the session. The client works the server's word of a contact added,
   // changed or taken away into what it keeps (OnContactSlashCommand, OnPersonalContactsUpdated, 106 to 155;
   // OnContactNoLongerContact, 326 to 330; OnPersonalContactsAdded and Deleted, 585 to 616), and its own writes of
-  // a contact, a block or a contact's label (658 to 842, 1073 to 1134); here what is kept is let go at each, and
-  // asked for when it is next wanted. Its contact labels (GetContactLabels, 1022 to 1044) are kept beside them, from
-  // their first asking, and let go with them and at the pilot's own making and renaming of one (1001 to 1021).
+  // a contact, a block or a contact's label (658 to 842, 1073 to 1134). Successful own writes amend the held
+  // reply (afterPersonalContactCall); a refusal keeps it. Only label deletion retires the labels table.
   [CHAR_MGR]: Object.freeze({
     keptAs: contactsKeptAs,
     notices: new Set(["OnContactSlashCommand", "OnPersonalContactsUpdated", "OnContactNoLongerContact", "OnPersonalContactsAdded", "OnPersonalContactsDeleted"]),
-    writes: Object.freeze({
-      [CHAR_MGR]: new Set(["AddContact", "EditContact", "EditContactsRelationshipID", "DeleteContacts", "BlockOwners", "UnblockOwners", "AssignLabels", "RemoveLabels", "CreateLabel", "EditLabel", "DeleteLabel"]),
-    }),
+    writes: Object.freeze({}),
   }),
   // onlineStatus (comtool/onlineStatus.py, Prime, 74 to 82): the watched contacts' online state, asked as the
   // character is chosen and kept; the client works the server's word of one logging on or off into it
@@ -2684,6 +2682,7 @@ function createGamePortPilots({
       if (facilityID !== null) facilitiesAskedAfresh(entry, [facilityID]);
       throw error;
     });
+    await afterPersonalContactCall(entry, service, method, form, result);
     // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60): each row the server answers is made the client's
     // job, and a job whose row names a facility is given it afresh (_JobInstance, 196 to 197), before the jobs
     // are anyone's to read.
@@ -3721,6 +3720,25 @@ function createGamePortPilots({
       ledger.note(service, method, form);
       return byName(entry.session, service, method, form);
     });
+  }
+
+  async function afterPersonalContactCall(entry, service, method, form, result) {
+    if (service !== CHAR_MGR || !personalContacts.OWN_WRITES.has(method)) return;
+    const current = () => !entry.ended && sessions.get(entry.handle) === entry && attribute(entry, "charid") === entry.characterID;
+    if (!current()) return;
+    if (form.status === "differs" || form.kwargs !== null) {
+      entry.kept[CHAR_MGR].forget();
+      return;
+    }
+    const args = argumentsToWire(form.args);
+    await Promise.all([
+      entry.kept[CHAR_MGR].amend("contacts", answer => current() ? personalContacts.amendContacts(answer, method, args) : answer),
+      entry.kept[CHAR_MGR].amend("labels", answer => current() ? personalContacts.amendLabels(answer, method, args, result) : answer),
+    ]);
+    if (!current()) return;
+    const [event, eventArgs] = personalContacts.localEvent(method, args, result);
+    // These are the client's own ScatterEvents, not packets from EveJS.
+    record(entry, { kind: "client", service: null, method: event, idType: null, args: wireToBridgeJson(eventArgs), kwargs: null });
   }
 
   /**
@@ -6050,6 +6068,7 @@ function createGamePortPilots({
     if (mayChangeContents(service, method)) entry.listings.forget();
     forgetKeptAfter(entry, service, method);
     if (changesAColony(service, method)) forgetColonies(entry);
+    await afterPersonalContactCall(entry, service, method, form, result);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

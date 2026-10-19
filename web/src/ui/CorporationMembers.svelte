@@ -68,9 +68,6 @@
   let contactDialog = $state<HTMLDialogElement | undefined>(undefined);
   let contactMenuSerial = 0;
   let contactBusy = $state(false);
-  const personalContactTarget = $derived(selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID && !isNpcOwner(selected[0]!.member.characterID) ? selected[0]! : null);
-  const targetIsContact = $derived(contactBook?.contacts.some(each => each.contactID === personalContactTarget?.member.characterID) ?? false);
-  const targetIsBlocked = $derived(contactBook?.blocked.some(each => each.ownerID === personalContactTarget?.member.characterID) ?? false);
   $effect(() => { if (contactAction) contactDialog?.showModal(); });
   const onlineKey = () => `evejs.corpMembersOnline.${store.station.get().online?.characterID}`;
   async function load(): Promise<void> {
@@ -133,6 +130,9 @@
     return descending ? -result : result;
   }));
   const selected = $derived(rows.filter(row => chosen.includes(row.member.characterID)));
+  const personalContactTarget = $derived(selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID && !isNpcOwner(selected[0]!.member.characterID) ? selected[0]! : null);
+  const targetIsContact = $derived(contactBook?.contacts.some(each => each.contactID === personalContactTarget?.member.characterID) ?? false);
+  const targetIsBlocked = $derived(contactBook?.blocked.some(each => each.ownerID === personalContactTarget?.member.characterID) ?? false);
   // User.OnClick -> Scroll.SelectNode 550-600: plain replaces, Ctrl toggles, Shift ranges from the last anchor.
   function select(event: MouseEvent | KeyboardEvent, id: number): void {
     menuFor = null;
