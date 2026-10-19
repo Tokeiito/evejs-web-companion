@@ -304,6 +304,49 @@ self, including when evaluating a merged selection.
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
    Complete the actual acceptance/decline/session behavior and notices required by
    its existing UI, using recordings and compiled code as available.
+   Read/split: compiled `CharacterChecker.OfferSendCorpInvite:332-341` rejects
+   multiple selection, NPC targets, missing Personnel Manager and current members.
+   It has no separate NPC-pilot-corporation gate. `base_corporation:1145-1149`
+   asks OK/Cancel with charID and sends nothing on Cancel; OK calls the current
+   registry. No merged invitation action or extra warning is inferred.
+   The web app currently has no My Applications panel. Native
+   `ApplicationsWindow:50-90,95-151,231-301` hides top filters and invite button
+   in myView, flattens all of `GetMyApplications`, primes corporation names,
+   sorts newest first and retains expanded application per myView. It receives
+   `OnCorporationApplicationChanged`. `bco_applications:22-95` keeps the personal
+   dictionary across corporation changes and updates application rows from those
+   notices; the current BFF discards the login read and rereads this method.
+   Its retention must be ported before the recipient panel is exposed.
+   Compiled `CorpApplicationEntry:594-644,686-778` offers Accept for statuses6/8;
+   ended statuses2/3/4/7 have only Show Info. The direct invitation's Decline
+   button calls status3 without a prompt. The context-menu item labelled Decline
+   calls WithdrawMyApplication instead: WithdrawApplication Yes/No, then status7.
+   This difference is in the original compiled method and must be preserved.
+   `bco_applications.UpdateApplicationOffer:141-143` uses a temporary named lock,
+   sends seven arguments including default empty customMessage and None date,
+   and has no PerformSessionChange cooldown. Preserve the row's applicationText
+   type; the recorded acceptance forwards a byte string, not a newly typed value.
+   The companion and raw `Archive/Applying and accepting a corp invite` capture
+   concern applied0 -> corporation-accepted6 -> applicant-accepted2, not direct8.
+   Historical gaps in its companion are not evidence against current handlers.
+   No direct InsertInvitation packet was found by the recursive corpus search.
+   - **c4f1: native contract audit.** Verify direct invitation8, button rejection3,
+     context withdrawal7 and acceptance2 on disposable native sessions, including
+     active/history reads, packed rows, persistent/live notices and post-join
+     membership/session effects. Compare the recorded acceptance path only where
+     applicable; fix/commit any proven server mismatch before UI work.
+   - **c4f2: complete recipient My Applications panel.** Port native personal
+     application retention/notice updates, full entry read/display/expand/menu,
+     Accept/Decline/Withdraw/cancel behavior and original seven-argument writes.
+     Keep the personal panel across its intended own corporation change while
+     fencing stale pilot/action dispatch. Include NPC-corporation access, live
+     notices and existing notification links as required by the native callers.
+     Verify desktop/phone, native wire, receipt while open, all decisions, pilot
+     replacement and store/settings restoration. No send menu is exposed yet.
+   - **c4f3: complete shared send action.** Once the receiver flow works, expose
+     single-target SendCorpInvite on the original gates, OK/Cancel and originating
+     registry fence. Verify sender/recipient effects live, cancellation, authority
+     changes and retirement in browser/phone, then restore/commit/push.
 7. **D2p18c4g — corporation cash from the shared menu.** Reuse the existing wallet
    transfer machinery only after comparing its corporate-source, recipient,
    division and authority behavior with this exact native entry point.
