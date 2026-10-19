@@ -186,6 +186,13 @@ const gamePortPilots = options.gamePortPilots !== undefined
     ? createGamePortPilots({
       // "Released" is said once the server itself has the character offline.
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
+      // A login closes the account's other clients, so before one the server is asked which of its characters are in game.
+      onlineOnAccount: async (accountID) => {
+        const characters = await accountGateway.listCharacters(accountID);
+        const ids = characters.map((character) => Number(character && character.characterID)).filter((id) => id > 0);
+        const statuses = await Promise.all(ids.map((id) => accountGateway.getCharacterStatus(accountID, id)));
+        return ids.filter((id, index) => statuses[index]?.online === true);
+      },
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
       // The server asked the client something. Say what, and what it was told.
