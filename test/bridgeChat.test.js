@@ -667,9 +667,11 @@ test("a chat server that is not there FAILS the read rather than answering 'nobo
   assert.notEqual(after.payload.error, "NO_LIVE_SESSION");
 });
 
+// xmppchatsvc.GetWindowNameForGroup (895-907) and SESSION_CHANGE_CATEGORIES
+// include alliance/fleet/faction. Those are native channel keys, not unknown input.
 test("an unknown channel is rejected (400 INVALID_CHANNEL)", async () => {
   const { baseUrl } = await startChatWorld();
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/chat/alliance");
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/chat/unknown");
   assert.equal(response.status, 400);
   assert.equal(payload.error, "INVALID_CHANNEL");
 });

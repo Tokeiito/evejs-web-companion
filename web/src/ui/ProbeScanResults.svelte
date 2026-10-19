@@ -27,7 +27,7 @@
     type Vec3,
   } from "../bridge/probeResults.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import { flyingDistances, WARP_RANGES } from "./flyingDistances.ts";
+  import { WARP_RANGES } from "./flyingDistances.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import { fmtDist } from "../space/overview.ts";
   import { nameKey, type NameKind } from "../store/names.ts";
@@ -35,6 +35,8 @@
   import type { AppFlow } from "../app/flow.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
   // svelte-ignore state_referenced_locally
   const scanner = store.scanner;
   // svelte-ignore state_referenced_locally
@@ -152,7 +154,7 @@
   // distance (michelle.IsPositionWithinWarpDistance); Warp To at the pilot's own warp distance (the Settings' "Warp to
   // within"), and Warp to Within at one of the seven (movementFunctions.GetWarpToRanges, 334 to 343).
   const accurateIDs = $derived(new Set((held?.results ?? []).filter(isAccurate).map((result) => result.id)));
-  const defaultWarp = $derived(Number($flyingDistances.warp) || 0);
+  const defaultWarp = $derived($warpDistance || 0);
   let warpListFor = $state<string | null>(null);
   // Bookmark Location (GetScannedDownMenu): the bookmark window for the result, its default name "id name"
   // (bookmarkData.name, '%s %s' % (targetID, scanResultName)).

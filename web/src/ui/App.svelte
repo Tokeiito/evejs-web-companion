@@ -12,6 +12,7 @@
   // elsewhere; this file is pure orchestration.
   import CharacterBar from "./CharacterBar.svelte";
   import FleetInvitation from "./FleetInvitation.svelte";
+  import ChatInvitations from "./ChatInvitations.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
   import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
   import AbyssJumpHost from "./AbyssJumpHost.svelte";
@@ -726,6 +727,7 @@
   </ErrorBoundary>
   <!-- A refusal the server names a dialog for, put up as the client puts up a UserError: each pilot's, whichever is in
        front, as the invitations are. -->
+  <ErrorBoundary name="Chat invitations"><div class="chat-invitation-stack">{#each sessions as session (session.id)}<ChatInvitations {session} inFront={session.id === activeId} />{/each}</div></ErrorBoundary>
   <ErrorBoundary name="Client dialogs">
     {#each sessions as session (session.id)}
       <ClientDialogs {session} inFront={session.id === activeId} />

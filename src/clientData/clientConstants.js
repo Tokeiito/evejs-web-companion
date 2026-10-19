@@ -30,6 +30,8 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  chatRoles: Object.freeze({ module: "carbon/common/script/sys/serviceConst.pyj", names: Object.freeze(["ROLE_CHTADMINISTRATOR", "ROLE_GML", "ROLE_LEGIONEER"]) }),
+  chatOwnerGroup: Object.freeze({ module: "inventorycommon/const.pyj", names: Object.freeze(["groupCharacter"]) }),
   corporationRoleLocations: Object.freeze({
     module: "eve/common/lib/appConst.pyj",
     given: Object.freeze([
@@ -188,6 +190,21 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
 
   return {
     available,
+    chatRules: async () => {
+      const [roles, owner] = await Promise.all([
+        read("chatRoles", values => {
+          const result = {};
+          for (const name of ["ROLE_CHTADMINISTRATOR", "ROLE_GML", "ROLE_LEGIONEER"]) {
+            const value = values[name];
+            if (!Number.isInteger(value) || value <= 0 || (BigInt(value) & (BigInt(value) - 1n)) !== 0n) throw Error("The client's chat role is not a role bit.");
+            result[name] = BigInt(value).toString();
+          }
+          return result;
+        }),
+        read("chatOwnerGroup", values => Number.isSafeInteger(values.groupCharacter) ? values.groupCharacter : null),
+      ]);
+      return roles && owner ? { ...roles, groupCharacter: owner } : null;
+    },
     corporationRoleLocations: () => read("corporationRoleLocations", (values) => {
       if (!Array.isArray(values.locationalCorpRoles) || !values.locationalCorpRoles.every(Number.isSafeInteger)) throw new Error("The client's locational corporation roles could not be read.");
       return Object.freeze(values.locationalCorpRoles.map(String));

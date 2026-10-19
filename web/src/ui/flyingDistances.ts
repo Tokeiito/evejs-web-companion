@@ -1,5 +1,6 @@
-// Flying-distance preferences — the warp / orbit / keep-at-range distances,
-// shared between the Settings panel (where you pick them) and the Overview
+// Orbit and keep-at-range preferences. WarpTo is held per character by AppFlow's
+// warpDistance, as defaultRangeUtils.FetchRangeSetting/SetDefaultWarpToDist keep it.
+// These two browser preferences are shared between the Settings panel (where you pick them) and the Overview
 // command bar (where they are used on the thing you have selected). A plain
 // Svelte store so both read it reactively, persisted locally per browser.
 import { writable } from "svelte/store";
@@ -32,7 +33,6 @@ export const HOLD_RANGES: readonly RangeChoice[] = [
 ];
 
 export interface FlyingDistances {
-  readonly warp: string;
   readonly orbit: string;
   readonly hold: string;
 }
@@ -48,7 +48,7 @@ export interface FlyingDistances {
  *
  * It only affects somebody who has never chosen — a stored value always wins.
  */
-const DEFAULTS: FlyingDistances = { warp: "0", orbit: "5000", hold: "10000" };
+const DEFAULTS: FlyingDistances = { orbit: "5000", hold: "10000" };
 const STORAGE_KEY = "evejs-web-flying-distances";
 
 /**
@@ -68,10 +68,6 @@ export function rangeLabel(
   return choices.find((choice) => String(choice.metres) === metres)?.label ?? fallback(metres);
 }
 
-function isChoice(choices: readonly RangeChoice[], value: unknown): value is string {
-  return typeof value === "string" && choices.some((choice) => String(choice.metres) === value);
-}
-
 /**
  * A stored orbit / keep-at-range distance that is not on the ladder.
  *
@@ -81,7 +77,7 @@ function isChoice(choices: readonly RangeChoice[], value: unknown): value is str
  * next reload and then silently drop it back to 1 km — the worst kind of
  * setting, one that works until you stop watching it.
  *
- * Warp is deliberately left on its menu: nothing offers a custom warp range.
+ * Warp is kept per character by AppFlow, and its UI still offers the native fixed ladder.
  */
 function isRangeMetres(value: unknown): value is string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -98,7 +94,6 @@ function load(): FlyingDistances {
     if (!raw) return DEFAULTS;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
-      warp: isChoice(WARP_RANGES, parsed.warp) ? parsed.warp : DEFAULTS.warp,
       orbit: isRangeMetres(parsed.orbit) ? parsed.orbit : DEFAULTS.orbit,
       hold: isRangeMetres(parsed.hold) ? parsed.hold : DEFAULTS.hold,
     };
@@ -114,7 +109,13 @@ export const flyingDistances = writable<FlyingDistances>(load());
 flyingDistances.subscribe((value) => {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+    // Preserve the legacy shared WarpTo value for recovery without assigning it to any character.
+    let previous: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) previous = parsed as Record<string, unknown>;
+    } catch { /* A malformed old value has no settings to preserve. */ }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...previous, ...value }));
   } catch {
     // A full or blocked store costs persistence across reloads, not the setting.
   }

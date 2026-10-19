@@ -46,7 +46,9 @@ const ORE_TYPE_ID = 1230;
 const LASER_TYPE_ID = 483;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // Native defaultRangeUtils.FetchRangeSetting('WarpTo'): this fixture has no character override.
+  const warpDistance = { get: () => 0, subscribe: (run: (value: number) => void) => { run(0); return () => {}; } };
+  return new Proxy({}, { get: (_target, key) => key === "warpDistance" ? warpDistance : async () => {} });
 }
 
 /** Everything visible to a player, with markup and image sources stripped. */

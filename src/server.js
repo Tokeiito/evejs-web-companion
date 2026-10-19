@@ -7693,6 +7693,24 @@ async function answerCorpAssets(held, call, req, res, next) {
 }
 
 // --- R80 plumbing sweep: corpRegistry batch A (member / info core; no UI) -------
+// bco_members.GetMemberIDs: the IDs retained from the native login prime and
+// changed by membership notices. This is not a synthesized GetEveOwners reply.
+app.get("/api/bridge/corporation/member-ids", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    let membership;
+    if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+      membership = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corporationMemberIDs({ userid: held.accountID }, held.bridgeSessionID));
+    } else {
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetEveOwners", [], null);
+      const { corporationMemberIDsOf } = require("./gamePort/pilotCorporationMembers");
+      membership = { corporationID: Number(held.corporationID), memberIDs: corporationMemberIDsOf(answer.result), notifications: answer.notifications ?? [] };
+    }
+    res.json({ ok: true, ...membership });
+  } catch (error) { next(error); }
+});
+
 // PLUMBING ONLY: three routes make the corpRegistry MEMBER + REGISTRY-META READS
 // reachable + decodable so a later goal builds UI cheaply. No panel/tab/store slice
 // ships. corpRegistry is retail-bound per corp (eveMoniker.GetCorpRegistry(corpID)),
@@ -8483,7 +8501,7 @@ app.get("/api/dockable-structures/:id/services", requireAuth, async (req, res, n
 //     empty until somebody speaks. The old store-backed read could answer with
 //     lines from before the browser existed.
 
-const CHAT_CHANNELS = new Set(["local", "corp"]);
+const CHAT_CHANNELS = new Set(["local", "corp", "alliance", "fleet", "faction"]);
 
 /**
  * The held session's chat connection, opened on first use.
@@ -8625,28 +8643,94 @@ function chatContext(held, req) {
     // computes a room name. See ensureChannel in src/evejsXmppChat.js.
     solarSystemID: Number(held.solarSystemID) || 0,
     limit: Number(req.query?.limit) || undefined,
+    assertCurrent: () => {
+      assertHeldRequestGeneration(req, held);
+      assertCurrentHeldSession(held, req.webSessionID);
+    },
   };
 }
 
-function normalizeChatChannel(res, value) {
+function normalizeChatChannel(res, value, session = null) {
   const channel = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (!CHAT_CHANNELS.has(channel)) {
+  if (!CHAT_CHANNELS.has(channel) && !/^[a-z0-9]+_[a-z0-9_-]+$/.test(channel) && !session?.rooms?.has(channel)) {
     res.status(400).json({
       ok: false,
       error: "INVALID_CHANNEL",
-      message: "channel must be 'local' or 'corp'.",
+      message: "channel must name a session channel or a full chat room.",
     });
     return null;
   }
   return channel;
 }
 
+// Atomic XMPP operations only. Native conversation/acceptance policy runs in the page.
+app.get("/api/bridge/chat", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const session = heldChatSession(held);
+  if (!session) return chatUnavailable(res);
+  try {
+    const chat = await session.overview(chatContext(held, req));
+    res.json({ ok: true, chat, notifications: [] });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/bridge/chat/:roomName/info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const session = heldChatSession(held);
+  if (!session) return chatUnavailable(res);
+  try {
+    const chat = await session.roomInfo(req.params.roomName, chatContext(held, req));
+    res.json({ ok: true, chat, notifications: [] });
+  } catch (error) { next(error); }
+});
+
+for (const operation of ["join", "leave", "invite", "prepare"]) {
+  app.post(`/api/bridge/chat/:channel/${operation}`, requireAuth, async (req, res, next) => {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const session = heldChatSession(held);
+    if (!session) return chatUnavailable(res);
+    const channel = normalizeChatChannel(res, req.params.channel, session);
+    if (!channel) return;
+    try {
+      const context = chatContext(held, req);
+      const chat = operation === "join"
+        ? await session.joinRoom(channel, { ...context, password: typeof req.body?.password === "string" ? req.body.password : "" })
+        : operation === "leave"
+          ? session.leave(channel, context)
+          : operation === "prepare"
+            ? await session.prepare(channel, req.body?.message, context)
+          : await session.invite(channel, Number(req.body?.characterID), typeof req.body?.reason === "string" ? req.body.reason : "", context);
+      res.json({ ok: true, chat, notifications: [] });
+    } catch (error) { next(error); }
+  });
+}
+
+for (const operation of ["reject", "acknowledge"]) {
+  app.post(`/api/bridge/chat/invitations/:id/${operation}`, requireAuth, async (req, res, next) => {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const session = heldChatSession(held);
+    if (!session) return chatUnavailable(res);
+    try {
+      const context = chatContext(held, req);
+      const chat = operation === "reject"
+        ? await session.rejectInvitation(String(req.params.id), req.body?.reason, context)
+        : { acknowledged: session.forgetInvitation(String(req.params.id), context) };
+      res.json({ ok: true, chat, notifications: [] });
+    } catch (error) { next(error); }
+  });
+}
+
+
 app.get("/api/bridge/chat/:channel", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
   }
-  const channel = normalizeChatChannel(res, req.params.channel);
+  const channel = normalizeChatChannel(res, req.params.channel, held.chat);
   if (!channel) {
     return;
   }
@@ -8668,7 +8752,7 @@ app.post("/api/bridge/chat/:channel/send", requireAuth, async (req, res, next) =
   if (!held) {
     return;
   }
-  const channel = normalizeChatChannel(res, req.params.channel);
+  const channel = normalizeChatChannel(res, req.params.channel, held.chat);
   if (!channel) {
     return;
   }
@@ -13055,6 +13139,8 @@ const OWNER_NAME_KINDS = Object.freeze({
   alliance: (typeID) => typeID === OWNER_TYPE.alliance,
   character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
   owner: (typeID) => typeID > 0,
+  // cfg.eveowners.typeID for evelink.character_link: retain the native owner's actual character type.
+  ownerType: (typeID) => typeID > 0,
   // An owner's group, by name (a mailing list's access lists): any owner's row, its type's group named.
   ownerGroup: (typeID) => typeID > 0,
 });
@@ -13533,6 +13619,14 @@ app.get("/api/client-data/race-name-ids", requireAuth, async (req, res, next) =>
   try {
     const names = await clientBuiltData.table("raceNameIDs");
     res.json({ ok: true, available: names !== null, names });
+  } catch (error) { next(error); }
+});
+
+// Native chat role gates and cfg owner classification, from the installed modules.
+app.get("/api/client-data/chat-rules", requireAuth, async (req, res, next) => {
+  try {
+    const rules = await clientConstants.chatRules();
+    res.json({ ok: true, available: rules !== null, rules });
   } catch (error) { next(error); }
 });
 
@@ -14291,7 +14385,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
     // here, from the install, where the static tables have it not and there is an install to read.
     for (const [key, value] of Object.entries(names)) {
       const separator = key.indexOf(":");
-      if (value === null && Number(key.slice(separator + 1)) === OWNER_SYSTEM_ID && Object.hasOwn(OWNER_NAME_KINDS, key.slice(0, separator)) && key.slice(0, separator) !== "ownerGroup") {
+      if (value === null && Number(key.slice(separator + 1)) === OWNER_SYSTEM_ID && Object.hasOwn(OWNER_NAME_KINDS, key.slice(0, separator)) && !["ownerGroup", "ownerType"].includes(key.slice(0, separator))) {
         const word = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
         if (typeof word === "string" && word !== "") names[key] = word;
       }
@@ -14390,7 +14484,8 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
           for (const owner of owners) {
             const row = named.get(owner.id);
             if (row && row.name && OWNER_NAME_KINDS[owner.kind](row.typeID)) {
-              names[owner.key] = owner.kind === "ownerGroup" ? staticData.getKnownTypeGroupName(row.typeID) : row.name;
+              names[owner.key] = owner.kind === "ownerType" ? String(row.typeID)
+                : owner.kind === "ownerGroup" ? staticData.getKnownTypeGroupName(row.typeID) : row.name;
             }
           }
         } catch (_error) {

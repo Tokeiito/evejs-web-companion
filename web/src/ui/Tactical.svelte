@@ -56,6 +56,8 @@
   import type { AppFlow } from "../app/flow.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -511,7 +513,7 @@
         action.id,
         { itemID: row.itemID, gateLink: gateLinkFor($space.gateLinks, row.itemID) },
         {
-          warp: Number($flyingDistances.warp),
+          warp: $warpDistance,
           orbit: Number($flyingDistances.orbit),
           hold: Number($flyingDistances.hold),
         },
