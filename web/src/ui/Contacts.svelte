@@ -1439,7 +1439,7 @@
 
   /**
    * Show Info of several (menuMerge._ExecMulti: not one of menu/__init__.py's MULTI_FUNCTIONS, so each agent's own is
-   * run): the page has one information window, which is left on the last.
+   * run): each request follows infosvc's reuse/new-window policy, in order.
    */
   function severalInfo(): void {
     agentMenuFor = null;

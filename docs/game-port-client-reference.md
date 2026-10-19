@@ -1606,8 +1606,24 @@ retain the native GetMultiOwnersEx read. Original compiled User.ShowInfo, actual
 AppFlow types and desktop/phone typed corporation/faction windows verified this.
 Recorded owner-type reads contain player owners only, no NPC/faction lookup and
 no private-chat creation. The compiled ShowInfo window selection policy and the
-remaining complete multiple-window unit are recorded in
+window-manager port and remaining asynchronous reconstruction unit are recorded in
 [game-port-info-windows.md](game-port-info-windows.md).
+
+Independent info windows (c6b1,2026-10-19). Original compiled ShowInfo412-454,
+its bucket/registration helpers, HistoryBuffer and InfoWindow.NavigateHistory
+confirm newest-created reuse, duplicate modern no-op, legacy reconstruction,
+new/addNewWindow/Shift/user preference, modal decisions and history routing.
+Original idCheckers and installed type/group data determine ship/ordinary and
+character/corporation/legacy content; generic type0 has group0 and is valid.
+The browser now keeps per-pilot windows, components, history and geometry, with
+desktop focus and phone instance selectors. It snapshots asynchronous owner
+gestures and dispatches every synchronous multi-owner request. Captured stable
+component handles prevent focus/layout changes from rereading info. Live native
+counts were unchanged through minimize/restore, desktop/phone changes and pilot
+switching. Actual native account replacement cleared the old pilot's windows.
+The old global-target and contextual-tab assertions were retired, not skipped.
+Native loading guards, thread cancellation and ship pendingLoadData behavior
+remain required c6b2 work; the window manager does not claim those complete.
 
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to

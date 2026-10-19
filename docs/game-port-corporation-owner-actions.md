@@ -534,7 +534,13 @@ corporation/faction information. The actual AppFlow returned character1380,
 corporation2, faction30, alliance16159 and preloaded NPC character1373; no private
 chat or NPC/faction type lookup RPC was sent. The compiled window policy and
 complete remaining unit are in [game-port-info-windows.md](game-port-info-windows.md).
-Simultaneous information windows remain next (c6b).
+Simultaneous windows are implemented in c6b1: each pilot owns independent
+contents/history/geometry, native reuse versus new/Shift selection, account
+settings, desktop focus and phone selectors. Browser checks covered native
+newest-created reuse, duplicate minimized no-op, multi-member requests, history
+and retained background contents with no repeated info RPCs. Native account
+replacement cleared the windows. The remaining c6b2 unit ports asynchronous
+reconstruction/loading/cancellation; c6b as a whole is not complete yet.
 The rest of the Corporation window and Phases 5/6 are
 still required; this contract does not declare them complete.
 

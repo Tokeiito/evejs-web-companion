@@ -32,6 +32,8 @@
   const userSession = store?.session ?? null;
   // svelte-ignore state_referenced_locally
   const ownerDoubleClick = flow?.ownerDoubleClickPreference ?? readable<0 | 1>(0);
+  // svelte-ignore state_referenced_locally
+  const reuseInfoWindows = flow?.infoWindowReusePreference ?? readable(true);
 
   // --- Chat ------------------------------------------------------------------
   //
@@ -47,6 +49,7 @@
   } as const;
   $effect(() => {
     flow?.requestWords(Object.values(CHAT_WORDS));
+    flow?.requestWords(["UI/SystemMenu/GeneralSettings/Windows/TryUseExistingInfoWin"]);
   });
   // svelte-ignore state_referenced_locally
   const words = store?.words ?? null;
@@ -258,6 +261,16 @@
         onchange={(e) => setAutoRejectInvitations(e.currentTarget.checked)}
       />
     </div>
+  </section>
+
+  <section class="settings-group">
+    <h3>Windows</h3>
+    {#if flow && $userSession?.accountID}
+    <div class="settings-field">
+      <label for="reuse-info-windows">{chatWord("UI/SystemMenu/GeneralSettings/Windows/TryUseExistingInfoWin", "Try to use existing info window")}</label>
+      <input id="reuse-info-windows" type="checkbox" checked={$reuseInfoWindows} onchange={event => flow?.setInfoWindowReusePreference(event.currentTarget.checked)} />
+    </div>
+    {/if}
   </section>
 
   <section class="settings-group">

@@ -270,6 +270,9 @@ import {
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
 import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
+import { infoWindowSetting } from "./infoWindowSetting.ts";
+import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
+import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
 import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
@@ -2418,6 +2421,9 @@ export interface AppFlow {
   corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null>;
   readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
   readonly ownerDoubleClickPreference: ReadableSignal<0 | 1>;
+  readonly infoWindows: InfoWindows;
+  readonly infoWindowReusePreference: ReadableSignal<boolean>;
+  setInfoWindowReusePreference(value: boolean): void;
   setOwnerDoubleClickPreference(value: 0 | 1): void;
   ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
   ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
@@ -4009,6 +4015,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const baseCycleTimesOfTypes = keptByType((typeIDs: readonly number[]) => api.loadBaseCycleTimes(typeIDs, callOptions).then((answered) => answered.baseCycleMs));
   // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
+  const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
+  const infoWindows = createInfoWindows({
+    reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
+    shift: () => false, // UI snapshots the live modifier into each command.
+    resolve: async (subject: InfoSubject): Promise<InfoIdentity | null> => {
+      const current = callOptions.captureRequestGuard!(); current();
+      let typeID: number | null = null, itemID: number | null = null;
+      if (subject.kind === "character") {
+        await ownerEntryInfo(subject.characterID, (type, item) => { typeID = type; itemID = item; });
+      } else if (subject.kind === "corporation") { typeID = 2; itemID = subject.corporationID; }
+      else if (subject.kind === "alliance") { typeID = 16159; itemID = subject.allianceID; }
+      else if (subject.kind === "faction") { typeID = 30; itemID = subject.factionID; }
+      else { typeID = subject.typeID; if (subject.kind !== "type") itemID = subject.itemID; }
+      current();
+      if (typeID === null || typeID <= 0) return null;
+      if (itemID === 500021) { sayDialog("KillerOfUnknownFaction", null, "The killer belongs to an unknown faction."); return null; }
+      const facts = await infoTypeFacts([typeID]); current();
+      const fact = facts[typeID];
+      if (!fact || fact.categoryID === null) throw new Error("The information type's category could not be read.");
+      // Original GetInfoWindowContentClass196-203: category first, then
+      // idCheckers.IsCharacter/IsCorporation. Dynamic old item IDs consult
+      // cfg.eveowners; a type-only window has no owner ID to classify.
+      if (fact.categoryID === 6) return { typeID, itemID, content: "ship" };
+      if (itemID !== null) {
+        if ((itemID >= 3_000_000 && itemID <= 3_999_999) ||
+            (itemID >= 90_000_000 && itemID <= 97_999_999) ||
+            (itemID >= 2_100_000_000 && itemID <= 2_129_999_999)) return { typeID, itemID, content: "character" };
+        if (itemID >= 100_000_000 && itemID <= 2_099_999_999) {
+          const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+          await memberNames(scope, [{ kind: "ownerType", id: itemID }]); current();
+          const ownerType = nameCache.get(nameKey("ownerType", itemID));
+          if (ownerType !== null && ownerType !== undefined) {
+            // The installed client's types.fsdbinary contains type0/group0.
+            // EveJS's generic non-owner row is valid and is no character/corp.
+            if (Number(ownerType) === 0) return { typeID, itemID, content: "legacy" };
+            const owners = await infoTypeFacts([Number(ownerType)]); current();
+            const owner = owners[Number(ownerType)];
+            if (!owner) throw new Error("The owner's type could not be read from the client data.");
+            if (owner.groupID === 1) return { typeID, itemID, content: "character" };
+            if (owner.groupID === 2) return { typeID, itemID, content: "corporation" };
+          }
+        } else if ((itemID >= 1_000_000 && itemID <= 1_999_999) ||
+                   (itemID >= 98_000_000 && itemID <= 98_999_999)) return { typeID, itemID, content: "corporation" };
+      }
+      return { typeID, itemID, content: "legacy" };
+    },
+  });
   const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
@@ -4824,6 +4877,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
+        infoWindows.reset();
         store.apply({ type: "character/offline" });
       }
     }
@@ -5423,6 +5477,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("charid") && sessionChangeValue(method, args, "charid") === null) infoWindows.reset();
     if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
@@ -27865,6 +27920,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationWealthReads.forget();
       corporationWealthSignal.set(null);
       closeMoneyTransfer();
+      infoWindows.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
@@ -29259,6 +29315,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationWealthChanged: readonlySignal(corporationWealthSignal),
     corporationCashMenu,
     get ownerDoubleClickPreference() { return ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value; },
+    infoWindows,
+    get infoWindowReusePreference() { return infoWindowSetting(store.session.get().accountID, settingsStorage).value; },
+    setInfoWindowReusePreference: value => infoWindowSetting(store.session.get().accountID, settingsStorage).set(value),
     setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
     ownerEntryDoubleClick,
     ownerEntryInfo,
@@ -29833,6 +29892,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
+        infoWindows.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29863,6 +29923,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
+        infoWindows.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();

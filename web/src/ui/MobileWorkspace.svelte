@@ -31,6 +31,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { Session } from "../app/sessions.ts";
+  import type { InfoWindowHost } from "./infoWindowHost.ts";
 
   let {
     store,
@@ -38,6 +39,7 @@
     isDocked,
     sessions,
     openRequest,
+    onInfoHost,
   }: {
     store: ClientStore;
     flow: AppFlow;
@@ -54,7 +56,18 @@
      * is what makes asking twice for the same panel work.
      */
     openRequest?: { readonly id: TabID; readonly n: number } | null;
+    onInfoHost?: (host: InfoWindowHost | null) => void;
   } = $props();
+  let infoSurface = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (!infoSurface) return;
+    onInfoHost?.({ element: infoSurface, mobile: true,
+      topZ: () => Math.max(0, ...flow.infoWindows.state.get().map(w => w.z)), reveal: () => { if (infoSurface) infoSurface.scrollTop = 0; } });
+    return () => onInfoHost?.(null);
+  });
+  function putInfoAway(): void {
+    for (const w of flow.infoWindows.state.get()) if (!w.minimized && !w.modal) flow.infoWindows.minimize(w.id);
+  }
 
   // svelte-ignore state_referenced_locally
   const fitting = store.fitting;
@@ -156,7 +169,7 @@
        action bar — so for that ONE case the host stops padding and scrolling and
        hands it the whole box. Every other panel, in space included, keeps the
        scrolling padded column it has always had. -->
-  <main class="mobile-main" class:mobile-main-station={effective === null && isDocked}>
+  <main class="mobile-main" style:position="relative" bind:this={infoSurface} class:mobile-main-station={effective === null && isDocked}>
     {#if effective !== null}
       <PanelHost {store} {flow} tab={effective} onOpen={(id) => (selected = id)} onClose={() => selected = null} {sessions} />
     {:else if isDocked}
@@ -232,14 +245,14 @@
       type="button"
       class="mobile-nav-item mobile-nav-home"
       class:active={effective === null}
-      onclick={() => (selected = null)}
+      onclick={() => { putInfoAway(); selected = null; }}
     >{isDocked ? "Station" : "Ship"}</button>
     {#each tabs as tab (tab.id)}
       <button
         type="button"
         class="mobile-nav-item"
         class:active={effective === tab.id}
-        onclick={() => (selected = tab.id)}
+        onclick={() => { putInfoAway(); selected = tab.id; }}
       >{tab.label}</button>
     {/each}
   </nav>

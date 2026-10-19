@@ -49,7 +49,6 @@ export type TabID =
   | "corpWallet"
   | "characterSheet"
   | "corporation"
-  | "showInfo"
   | "memberDetails"
   | "routeWindow"
   | "missionTracker"
@@ -205,7 +204,6 @@ export const TABS: readonly TabDef[] = [
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.
-  { id: "showInfo", label: "Show Info", where: "both", launchable: false },
   { id: "memberDetails", label: "Member Details", where: "both", launchable: false },
   // The client's route window (autopilotSettings.py AutopilotSettings): the waypoints in their order and the avoidance
   // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does

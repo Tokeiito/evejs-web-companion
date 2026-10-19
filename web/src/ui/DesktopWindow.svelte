@@ -19,7 +19,7 @@
     onResize,
     children,
   }: {
-    win: WinState;
+    win: Pick<WinState, "x" | "y" | "w" | "h" | "z" | "minimized"> & { readonly id?: string | number };
     title: string;
     focused: boolean;
     onFocus: () => void;

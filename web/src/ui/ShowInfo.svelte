@@ -19,7 +19,8 @@
   import type { MapRouteStep } from "../app/flow.ts";
   import type { ContactStandings, NpcNpcStanding } from "../bridge/standingsReads.ts";
   import { applyStandingBonus, standingBonusSkill } from "../bridge/effectiveStanding.ts";
-  import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
+  import { showInfo, subjectTypeID, type InfoSubject } from "./showInfo.ts";
+  import type { ReadableSignal } from "../store/signals.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
@@ -52,7 +53,16 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store: pilotStore, flow: pilotFlow, subject: windowSubject }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null> } = $props();
+  // A component belongs to one native window for its lifetime. Capture these
+  // handles so chrome/focus changes cannot become dependencies of its reads.
+  // The captured subject signal itself changes only on reconstruction.
+  // svelte-ignore state_referenced_locally
+  const store = pilotStore;
+  // svelte-ignore state_referenced_locally
+  const flow = pilotFlow;
+  // svelte-ignore state_referenced_locally
+  const subject = windowSubject;
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -105,7 +115,6 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const skills = store.skills;
-  const subject = showInfoTarget.subject;
 
   const typeID = $derived(subjectTypeID($subject));
 

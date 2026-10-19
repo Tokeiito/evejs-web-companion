@@ -14,6 +14,11 @@
   import FleetInvitation from "./FleetInvitation.svelte";
   import ChatInvitations from "./ChatInvitations.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
+  import InfoWindows from "./InfoWindows.svelte";
+  import type { InfoWindowHost } from "./infoWindowHost.ts";
+  import { showInfoRequests, setInfoShiftPressed } from "./showInfo.ts";
+  import { untrack } from "svelte";
+  import { notify } from "./notices.ts";
   import ShipRestrictionsWindow from "./ShipRestrictionsWindow.svelte";
   import AbyssJumpHost from "./AbyssJumpHost.svelte";
   import Onboarding from "./Onboarding.svelte";
@@ -83,6 +88,29 @@
   let onboarding = $state<Session | null>(null);
 
   const active = $derived(sessions.find((s) => s.id === activeId) ?? null);
+  let infoHost = $state<{ sessionID: string; host: InfoWindowHost } | null>(null);
+  function setInfoHost(sessionID: string, host: InfoWindowHost | null): void {
+    if (host) infoHost = { sessionID, host };
+    else if (infoHost?.sessionID === sessionID) infoHost = null;
+  }
+  let servedInfoRequest = showInfoRequests.get()?.n ?? 0;
+  $effect(() => showInfoRequests.subscribe(request => {
+    if (!request || request.n <= servedInfoRequest) return;
+    servedInfoRequest = request.n;
+    const pilot = untrack(() => active);
+    if (!pilot) return;
+    const modal = request.options.modal ?? document.querySelector('[aria-modal="true"]') !== null;
+    void pilot.flow.infoWindows.show(request.subject, { ...request.options, modal }).catch(error => {
+      if (error?.code !== "SESSION_REQUEST_RETIRED") notify({ kind: "danger", title: "Show Info", detail: error instanceof Error ? error.message : String(error) });
+    });
+  }));
+  $effect(() => {
+    const key = (event: KeyboardEvent | MouseEvent): void => setInfoShiftPressed(event.shiftKey);
+    const clear = (): void => setInfoShiftPressed(false);
+    window.addEventListener("keydown", key, true); window.addEventListener("keyup", key, true);
+    window.addEventListener("pointerdown", key, true); window.addEventListener("blur", clear);
+    return () => { window.removeEventListener("keydown", key, true); window.removeEventListener("keyup", key, true); window.removeEventListener("pointerdown", key, true); window.removeEventListener("blur", clear); clear(); };
+  });
 
   // Restore-on-refresh: bring each retained pilot back online by re-signing in
   // (any password) and re-selecting — the same tested path as a manual add, so
@@ -713,6 +741,7 @@
         sessionID={active.id}
         onOpenRequestServed={() => (openRequest = null)}
         onOpenGlobal={openGlobalTab}
+        onInfoHost={setInfoHost}
       />
     </ErrorBoundary>
   {/key}
@@ -731,6 +760,11 @@
   <ErrorBoundary name="Client dialogs">
     {#each sessions as session (session.id)}
       <ClientDialogs {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
+  <ErrorBoundary name="Information windows">
+    {#each sessions as session (session.id)}
+      <InfoWindows {session} inFront={session.id === activeId} host={infoHost?.sessionID === session.id ? infoHost.host : null} />
     {/each}
   </ErrorBoundary>
   <!-- The Ship Restrictions window an acceleration gate's refusal opens (ShipRestrictionsWindow.svelte), the pilot in

@@ -13347,8 +13347,8 @@ const OWNER_NAME_KINDS = Object.freeze({
   alliance: (typeID) => typeID === OWNER_TYPE.alliance,
   character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
   owner: (typeID) => typeID > 0,
-  // cfg.eveowners.typeID for evelink.character_link: retain the native owner's actual character type.
-  ownerType: (typeID) => typeID > 0,
+  // cfg.eveowners' actual type, including valid generic type0/group0 rows.
+  ownerType: (typeID) => Number.isSafeInteger(typeID) && typeID >= 0,
   // An owner's group, by name (a mailing list's access lists): any owner's row, its type's group named.
   ownerGroup: (typeID) => typeID > 0,
 });

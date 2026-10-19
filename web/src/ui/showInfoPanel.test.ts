@@ -14,7 +14,11 @@ register("./svelteSsrHook.ts", import.meta.url);
 const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const ShowInfo = (await import("./ShowInfo.svelte")).default;
-const { createShowInfoTarget, showInfoTarget } = await import("./showInfo.ts");
+// Each native info window owns its subject (infosvc231-236); this is a local
+// render fixture, not the retired global window model.
+const { createSignal } = await import("../store/signals.ts");
+const subject = createSignal<import("./showInfo.ts").InfoSubject | null>(null);
+const showInfoTarget = { show: subject.set, clear: () => subject.set(null) };
 
 const ROCK_ID = 50001248;
 const ORE_TYPE_ID = 1230;
@@ -104,7 +108,7 @@ function spaceStore(rockX = 12_000): unknown {
 
 function renderInfo(store: unknown): string {
   return render(ShowInfo as never, {
-    props: { store: store as never, flow: fakeFlow() as never },
+    props: { store: store as never, flow: fakeFlow() as never, subject },
   } as never).body;
 }
 
@@ -204,12 +208,4 @@ test("an unresolved name degrades to words, never to an id", () => {
   const body = renderInfo(createClientStore());
   assert.match(body, /Unknown object/);
   assert.equal(/>34</.test(body), false);
-});
-
-test("the shared target and a private one are independent", () => {
-  // Guards the module-singleton: a test that set the shared target must not be
-  // able to leak into an unrelated one that built its own.
-  const own = createShowInfoTarget();
-  showInfoTarget.show({ kind: "type", typeID: 34 });
-  assert.equal(own.subject.get(), null);
 });
