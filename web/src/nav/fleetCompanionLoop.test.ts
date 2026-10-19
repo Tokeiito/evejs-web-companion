@@ -12360,6 +12360,26 @@ test("a refused call reads refused, and a call the server never confirmed does n
   assert.doesNotMatch(lost, /refused/);
 });
 
+test("a drone engage on a target that just died reads no longer there, not refused", async () => {
+  // Seen live 2026-10-14: the server answers "That target cannot be engaged by
+  // drones." only when the target is gone or has no health left.
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => rejoinObs(),
+    issue: async (action) => {
+      if (action.kind === "warpToFleetMember") {
+        throw Object.assign(
+          new Error("The server refused drone engagement: That target cannot be engaged by drones."),
+          { code: "CALL_REFUSED" });
+      }
+    },
+  }).deps);
+  companion.start(REQUEST);
+  await companion.tick();
+  const why = companion.snapshot().why ?? "";
+  assert.match(why, /The server refused that: it is no longer there\.$/);
+  assert.doesNotMatch(why, /refused that call/);
+});
+
 test("a not-here refusal is asked again once the roster puts the commander somewhere else", async () => {
   const state = { where: COMMANDER_AT_HOME as FleetCompanionObservation["fleetCommanderWhereabouts"], now: 1_000_000 };
   const { companion, counter } = notHereCompanion(NOT_HERE_WORDS, state);

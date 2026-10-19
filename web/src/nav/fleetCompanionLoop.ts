@@ -10787,7 +10787,12 @@ function refusalWords(raw: string, refused = true): string {
   if (/Warping/i.test(text)) {
     return "The server refused that: something is in warp.";
   }
-  if (/NotPresent|NotFound|Cancelled/i.test(text)) {
+  // ⚠ "That target cannot be engaged by drones." IS THE SERVER SAYING THE TARGET
+  // IS GONE. `commandEngage` (server/src/services/drone/droneRuntime.js, ~5250)
+  // sends it only when the target entity no longer exists or has no health left.
+  // Seen live 2026-10-14, many times per fight, each at the target's kill payout,
+  // and the readout said "refused that call" as if the drones were being blocked.
+  if (/NotPresent|NotFound|Cancelled|cannot be engaged by drones/i.test(text)) {
     return "The server refused that: it is no longer there.";
   }
   // ⚠ ONLY A DEFINITE REFUSAL IS "REFUSED". A call that came back uncertain
