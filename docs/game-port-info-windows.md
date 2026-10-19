@@ -342,6 +342,22 @@ object-state and iterable behavior needs its own original-client consumer audit.
 Controlled None deliveries after actual successful replies establish these
 boundaries, not a naturally recorded server failure.
 
+For the canonical crimewatch.corp_aggression.settings.AggressionSettings object,
+missing state fields also stop construction. Original compiled settings methods
+and GetCorpFriendlyFireStatus raise AttributeError for _disableAfter first, then
+_enableAfter, including an enable field missing beside a future disable time.
+blue/src/Marshal.cpp ReadInstance explains the state boundary: __new__ followed
+by a dict update, without __init__ supplying missing fields. The consumer probe
+installs that state explicitly; it does not execute the native unmarshalling.
+The browser now preserves these errors after caching the raw reply. Repeated
+constructions stop before enlistment, retain the header and old caption, clear
+loading, and use ordinary exception logging. Controlled field removal after real
+200 replies proved the failure and cached repeat in the browser, with exactly
+PublicInfo, Aggression, PublicInfo on the wire; an unmodified reply after pilot
+cache reset completes PublicInfo, Aggression, Enlistment and all existing rows.
+Tranquility's recorded canonical states have both keys. These missing-field
+checks do not establish other classes, non-dict states, or malformed time values.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/

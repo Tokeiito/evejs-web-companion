@@ -101,6 +101,17 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
   const args = result.args;
   const entries = isRecord(args) && Array.isArray(args.entries) ? args.entries : null;
   if (entries === null) return null;
+  // The compiled settings methods read disable first, then enable. Instance
+  // unmarshalling installs the state without __init__; an absent field is not
+  // None. Preserve the native consumer failure after the raw reply is cached.
+  // Other classes/state shapes still need their own native consumer audit.
+  if (result.name === "crimewatch.corp_aggression.settings.AggressionSettings") {
+    for (const key of ["_disableAfter", "_enableAfter"]) {
+      if (!entries.some((candidate) => Array.isArray(candidate) && candidate[0] === key)) {
+        throw Object.assign(new Error(`'AggressionSettings' object has no attribute '${key}'`), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_MISSING_FIELD" });
+      }
+    }
+  }
   const time = (key: string): bigint | null => {
     const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === key);
     const text = Array.isArray(entry) ? longToDecimalString(entry[1]) : null;
