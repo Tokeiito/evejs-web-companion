@@ -325,7 +325,8 @@ self, including when evaluating a merged selection.
    `bco_applications.UpdateApplicationOffer:141-143` uses a temporary named lock,
    sends seven arguments including default empty customMessage and None date,
    and has no PerformSessionChange cooldown. Preserve the row's applicationText
-   type; the recorded acceptance forwards a byte string, not a newly typed value.
+   type; the recorded acceptance forwards Unicode (`0x2e` PyWStringUTF8), as
+   supplied by the native application row, rather than newly entered text.
    The companion and raw `Archive/Applying and accepting a corp invite` capture
    concern applied0 -> corporation-accepted6 -> applicant-accepted2, not direct8.
    Historical gaps in its companion are not evidence against current handlers.
