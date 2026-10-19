@@ -154,19 +154,30 @@ while later attributes are loading. Retired replies cannot assign a new scope.
 Original compiled ShowInfo confirms unset/mismatched identity reconstructs and
 matching type/item does not, including an original requested type34.
 
-Required c6b2b2b2 work remains: native history placeholders and completion timing,
-other ordinary headers' loading/complete boundaries, pending-load semantics and
-retirement of other content-owned continuations. The corporation timing
-authority: original InfoContentBase.__init__ sets type and item to None;
-CorporationInfoWindow.reconstruct_info_window49-51 waits for
-GetPublicInfo before its parent assigns identity. Original compiled constructors
-and method confirm that None identity at the public-info boundary. The page
-retains requested identity for its current rendering subject, while
-assigned identity now controls duplicates. History still records the requested
-entry early: original _stop_reconstruct_thread can replace an empty history dict
-with a None identity tuple before killing the tasklet. Execute that full history
-transition and navigation before porting placeholders; it remains required. Read
-each native content class's order and spawned/shared work first. Do not impose
+c6b2b2b2a records the ported corporation chain's history at native lifecycle
+boundaries. A new slot is an empty-dict placeholder until normal completion.
+Replacing registered work snapshots its assigned identity into that slot before
+appending the next one; before assignment this records a None identity tuple.
+Close uses with_history=False. Back/Forward snapshot actual assigned content,
+advance the history index, and only then attempt reconstruction. The original
+compiled stop/HistoryBuffer/ordinary navigation/type lookup confirm that Back
+to the None tuple raises TypeNotFoundException locally, leaves displayed content
+unchanged, and sends no server call. The compiled default exception handler
+logs it with showExceptions=0, without a dialog. The page likewise logs this
+specific local error; Forward repairs the old slot from current content before
+reconstructing. Branching after Back trims the forward entries.
+
+Required c6b2b2b2b work remains: retain old visible corporation content during
+same-class history's public-info read (the native parent flush occurs after that
+reply), complete window-level loading/pending behavior, other ordinary headers'
+loading/completion and content-owned continuations. Current same-class history
+still rebuilds visible content too early. Current scopes also do not implement
+the native window-level pending request when an unregistered history read is
+still busy and ShowInfo replaces its content. Read/execute that whole transition
+before code. RPC/error completion and retained dead tasklet pointers need their
+own content/error reading; the current corporation coroutine still has its
+existing per-field fallback handling. This unit covers normal/replaced reads.
+Read each native content class's order and spawned/shared work first. Do not impose
 ordinary loading on ships or an automatic pending drain unsupported by the
 compiled methods. Existing tickets alone drop displayed stale results; actual
 held native replies must verify every continuation newly placed under a scope.

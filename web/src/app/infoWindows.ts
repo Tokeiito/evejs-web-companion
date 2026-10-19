@@ -3,11 +3,15 @@ import type { InfoIdentity, InfoOpenOptions, InfoSubject } from "../bridge/infoW
 import { createInfoReadScope, type InfoReadScope } from "./infoReadScope.ts";
 
 interface Entry { readonly request: InfoSubject; readonly subject: InfoSubject; readonly identity: InfoIdentity }
+/** Empty native dict while reconstructing; null is the recorded None identity tuple. */
+const pendingHistory = { pending: true } as const;
+type HistoryEntry = Entry | null | typeof pendingHistory;
+const isPending = (entry: HistoryEntry): entry is typeof pendingHistory => entry !== null && "pending" in entry;
 export interface InfoWindowState {
   readonly id: number;
   readonly entry: Entry;
   readonly subject: ReadableSignal<InfoSubject | null>;
-  readonly history: readonly Entry[];
+  readonly history: readonly HistoryEntry[];
   readonly index: number;
   /** Ordinary content: ConstructLayout/ReconstructSubContainer flush old controls. */
   readonly reconstruction: number;
@@ -26,21 +30,42 @@ export function createInfoWindows(deps: {
   const state = createSignal<readonly InfoWindowState[]>([]);
   const raised = createSignal<{ readonly n: number; readonly id: number } | null>(null);
   const subjects = new Map<number, ReturnType<typeof createSignal<InfoSubject | null>>>();
+  const assignedEntries = new WeakMap<InfoReadScope, Entry | null>();
   let serial = 0, raisedSerial = 0, generation = 0;
   let queue: Promise<unknown> = Promise.resolve();
   const update = (id: number, change: (w: InfoWindowState) => InfoWindowState): void => {
     state.update(windows => windows.map(w => w.id === id ? change(w) : w));
   };
   const requestRaise = (id: number): void => { raised.set({ n: ++raisedSerial, id }); };
+  const snapshot = (w: InfoWindowState): Entry | null => w.entry.identity.content === "corporation" ? assignedEntries.get(w.reads) ?? null : w.entry;
+  function makeReads(id: number, entry: Entry, branch: boolean, directHistory = false, previous?: InfoReadScope): InfoReadScope {
+    const epoch = generation;
+    const initial = entry.identity.content === "corporation" ? directHistory && previous ? assignedEntries.get(previous) ?? null : null : entry;
+    const current = (): InfoWindowState | undefined => state.get().find(w => w.id === id && w.reads === reads);
+    const reads = createInfoReadScope(() => epoch === generation, {
+      requested: entry.identity, registered: !directHistory, initialIdentity: initial?.identity ?? null,
+      onIdentify: () => { assignedEntries.set(reads, entry); },
+      onComplete: () => {
+        const w = current(); if (!w || !branch || !w.history.length) return;
+        update(id, w => ({ ...w, history: w.history.map((old, i) => i === w.index ? snapshot(w) : old) }));
+      },
+      onRetire: withHistory => {
+        const w = current(); if (!withHistory || !w || !w.history.length || !isPending(w.history[w.index]!)) return;
+        update(id, w => ({ ...w, history: w.history.map((old, i) => i === w.index ? snapshot(w) : old) }));
+      },
+    });
+    assignedEntries.set(reads, initial);
+    return reads;
+  }
   function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {
+    // Ordinary ShowInfo stops the old tasklet before replacing its content.
+    // That stop records an unfinished history slot before the new one is appended.
+    w.reads.retireRegistered();
+    w = state.get().find(current => current.id === w.id)!;
     let history = w.history;
     let index = w.index;
-    if (branch) { history = [...history.slice(0, index + 1), entry]; index = history.length - 1; }
-    else { history = history.map((e, i) => i === index ? entry : e); }
-    w.reads.retireRegistered();
-    const epoch = generation;
-    const reads = createInfoReadScope(() => epoch === generation, entry.identity, !directHistory,
-      directHistory && entry.identity.content === "corporation" ? w.reads.identity.get() : undefined);
+    if (branch) { history = [...history.slice(0, index + 1), entry.identity.content === "corporation" ? pendingHistory : entry]; index = history.length - 1; }
+    const reads = makeReads(w.id, entry, branch, directHistory, w.reads);
     subjects.get(w.id)?.set({ ...entry.subject });
     update(w.id, current => ({ ...current, entry, history, index, reads,
       reconstruction: current.reconstruction + (entry.identity.content === "ship" ? 0 : 1), minimized: false }));
@@ -72,8 +97,8 @@ export function createInfoWindows(deps: {
         const id = ++serial, signal = createSignal<InfoSubject | null>({ ...normalized });
         subjects.set(id, signal);
         const offset = (windows.length % 8) * 24;
-        const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [entry], index: 0, reconstruction: 1,
-          reads: createInfoReadScope(() => epoch === generation, identity),
+        const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [identity.content === "corporation" ? pendingHistory : entry], index: 0, reconstruction: 1,
+          reads: makeReads(id, entry, true),
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
@@ -97,7 +122,7 @@ export function createInfoWindows(deps: {
       const z = top ?? Math.max(0, ...state.get().map(w => w.z)) + 1;
       update(id, w => ({ ...w, z }));
     },
-    close(id: number): void { state.get().find(w => w.id === id)?.reads.retireRegistered(); subjects.delete(id); state.update(windows => windows.filter(w => w.id !== id)); },
+    close(id: number): void { state.get().find(w => w.id === id)?.reads.retireRegistered(false); subjects.delete(id); state.update(windows => windows.filter(w => w.id !== id)); },
     minimize(id: number): void {
       const w = state.get().find(w => w.id === id); if (!w) return;
       update(id, current => ({ ...current, minimized: !current.minimized }));
@@ -112,9 +137,15 @@ export function createInfoWindows(deps: {
       // InfoWindow.OnBack/OnForward ignore input during ordinary reconstruction.
       // Ship history has no such guard. Only content-owned reads mark this flag.
       if (w.entry.identity.content !== "ship" && w.reads.loading.get()) return;
-      const history = w.history.map((e, i) => i === w.index ? w.entry : e);
-      const index = w.index + direction, entry = history[index]; if (!entry) return;
+      const history = w.history.map((e, i) => i === w.index ? snapshot(w) : e);
+      const index = w.index + direction; if (index < 0 || index >= history.length) return;
+      const entry = history[index]!;
       update(id, current => ({ ...current, history, index }));
+      if (entry === null || isPending(entry)) {
+        // NavigateHistory reaches the original local type/key error after GoBack
+        // has advanced the index. No content reconstruction or server call follows.
+        throw Object.assign(new Error(entry === null ? "TypeNotFoundException: None" : "KeyError: 0"), { code: "INFO_HISTORY_UNASSIGNED" });
+      }
       const current = state.get().find(w => w.id === id)!;
       if (w.entry.identity.content === entry.identity.content) reconstruct(current, entry, false, entry.identity.content !== "ship");
       else await show(entry.request, { traversingHistory: true, shift });

@@ -12382,6 +12382,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       reads?.assertCurrent();
       const enlistmentFactions = isNpcCorporation(corporationID) ? null
         : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null);
+      reads?.complete();
       return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
     } finally {
       finish?.();

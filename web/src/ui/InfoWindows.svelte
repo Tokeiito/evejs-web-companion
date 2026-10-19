@@ -48,7 +48,11 @@
   function focus(w: InfoWindowState): void { model.focus(w.id, (host?.topZ() ?? Math.max(0, ...windows.get().map(w => w.z))) + 1); }
   function resize(w: InfoWindowState, width: number, height: number): void { model.geometry(w.id, { x: w.x, y: w.y, w: Math.max(260, width), h: Math.max(120, height) }); fit(); }
   function navigate(w: InfoWindowState, direction: -1 | 1): void {
-    void model.navigate(w.id, direction, infoShiftPressed()).catch(error => { if (error?.code !== "SESSION_REQUEST_RETIRED") notify({ kind: "danger", title: "Show Info", detail: error instanceof Error ? error.message : String(error) }); });
+    void model.navigate(w.id, direction, infoShiftPressed()).catch(error => {
+      // eve_exception_handler uses showExceptions=0 for this local type/key error.
+      if (error?.code === "INFO_HISTORY_UNASSIGNED") console.error(error);
+      else if (error?.code !== "SESSION_REQUEST_RETIRED") notify({ kind: "danger", title: "Show Info", detail: error instanceof Error ? error.message : String(error) });
+    });
   }
   function reconstructed(node: HTMLElement): void {
     // ConstructLayout/ReconstructSubContainer replace ordinary content's scroll.

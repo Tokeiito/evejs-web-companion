@@ -7,14 +7,24 @@ export interface InfoReadScope {
   readonly loading: ReadableSignal<boolean>;
   readonly identity: ReadableSignal<InfoIdentity | null>;
   identify(): void;
+  complete(): void;
   begin(): () => void;
   assertCurrent(): void;
-  retireRegistered(): void;
+  retireRegistered(withHistory?: boolean): void;
 }
 
-export function createInfoReadScope(pilotCurrent: () => boolean, requested: InfoIdentity, registered = true,
-  initialIdentity: InfoIdentity | null = requested.content === "corporation" ? null : requested): InfoReadScope {
+export function createInfoReadScope(pilotCurrent: () => boolean, options: {
+  requested: InfoIdentity;
+  registered?: boolean;
+  initialIdentity?: InfoIdentity | null;
+  onIdentify?(): void;
+  onComplete?(): void;
+  onRetire?(withHistory: boolean): void;
+}): InfoReadScope {
+  const { requested, registered = true } = options;
+  const initialIdentity = options.initialIdentity !== undefined ? options.initialIdentity : requested.content === "corporation" ? null : requested;
   let retired = false;
+  let completed = false;
   let pending = 0;
   const loading = createSignal(false);
   const identity = createSignal<InfoIdentity | null>(initialIdentity);
@@ -24,12 +34,15 @@ export function createInfoReadScope(pilotCurrent: () => boolean, requested: Info
   };
   return {
     loading: readonlySignal(loading), identity: readonlySignal(identity), assertCurrent,
-    identify(): void { assertCurrent(); identity.set(requested); },
+    identify(): void { assertCurrent(); identity.set(requested); options.onIdentify?.(); },
+    complete(): void { assertCurrent(); if (!completed) { completed = true; options.onComplete?.(); } },
     begin(): () => void {
       assertCurrent(); pending++; loading.set(true);
       let finished = false;
       return () => { if (finished) return; finished = true; if (--pending === 0) loading.set(false); };
     },
-    retireRegistered(): void { if (registered) { retired = true; loading.set(false); } },
+    retireRegistered(withHistory = true): void {
+      if (registered && !retired) { options.onRetire?.(withHistory); retired = true; loading.set(false); }
+    },
   };
 }
