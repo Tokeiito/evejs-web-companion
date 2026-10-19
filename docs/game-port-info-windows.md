@@ -241,6 +241,25 @@ construction rather than completing a null result. The visible-construction
 scope event is separate from identity assignment. These boundaries cover the
 ported coroutine; full native partial widgets and ancillary calls remain below.
 
+c3a routes propagated native UserError refusals through the existing per-pilot
+dialog handler, preserving the message key and dict. Ordinary propagated errors
+keep the existing log, and expected scope/pilot retirement stays
+quiet. The game-port adapter now promotes only the original UserError guid
+exceptions.UserError and its eveexceptions.UserError package alias; ordinary
+decoded remote exception classes remain CALL_FAILED without dialog metadata.
+Previously any decoded exception with a reason was promoted. The original
+compiled UserError constructor, window method and exception handler distinguish
+the dialog from ordinary logging. A propagated refusal leaves the failed
+registered scope/history uncompleted; loading still clears in finally.
+
+Native BadArgs is a separate caught path: compiled framework execution calls
+ShowError, skips base/history completion, clears loading and then clears the
+tasklet pointer/focuses. Its inline panel and the corporation module's BadArgs
+name binding need further reading; do not treat every public RPC refusal as
+that class or infer a visible panel from the decompiled show_error alone.
+Native missing-message and destroyed-window exception suppression also remain
+with that error/widget work; this is not the complete native exception handler.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. The current corporation coroutine retains

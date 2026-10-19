@@ -37,6 +37,7 @@ export interface InfoWindowState {
 export function createInfoWindows(deps: {
   resolve(subject: InfoSubject): Promise<InfoIdentity | null>;
   readCorporation(corporationID: number, reads: InfoReadScope): Promise<CorporationShowInfo | null>;
+  reportError(error: unknown): boolean;
   reuse(): boolean;
   shift(): boolean;
 }) {
@@ -110,7 +111,7 @@ export function createInfoWindows(deps: {
     void deps.readCorporation(entry.identity.itemID, reads).then(value => signal.set(value), error => {
       signal.set(null);
       // Native eve_exception_handler logs ordinary exceptions by default.
-      if (error?.code !== "INFO_RECONSTRUCTION_RETIRED" && error?.code !== "SESSION_REQUEST_RETIRED") console.error(error);
+      if (error?.code !== "INFO_RECONSTRUCTION_RETIRED" && error?.code !== "SESSION_REQUEST_RETIRED" && !deps.reportError(error)) console.error(error);
     });
   }
   function reconstruct(w: InfoWindowState, entry: Entry, branch: boolean, directHistory = false): void {

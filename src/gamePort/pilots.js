@@ -1299,7 +1299,11 @@ function createGamePortPilots({
     if (error instanceof GamePortPilotError) return error;
     const code = error && error.code;
     const detail = String((error && error.message) || error).slice(0, 300);
-    if (code === "GAME_CALL_REFUSED" && error.refusal && error.refusal.reason) {
+    // eveexceptions.UserError's native __guid__ is exceptions.UserError.
+    // eve_exception_handler prompts only that class; other remote exceptions
+    // must stay failures even when their first argument resembles a dialog key.
+    const userError = error?.refusal?.className === "exceptions.UserError" || error?.refusal?.className === "eveexceptions.UserError";
+    if (code === "GAME_CALL_REFUSED" && userError && error.refusal.reason) {
       // What the server refused with, by name and with its values: the client acts on some of them
       // (ShipContrabandWarningUndock is a question, not a failure), and the words alone do not say which.
       return Object.assign(fail("CALL_REFUSED", String(error.refusal.reason)), {

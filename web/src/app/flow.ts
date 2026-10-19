@@ -4022,6 +4022,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const corporationRecords = createCorporationRecords(() => store.station.get().online?.corporationID ?? null);
   const infoWindows = createInfoWindows({
     readCorporation: corporationShowInfo,
+    // eve_exception_handler handles a native UserError by its dialog and dict.
+    // The structured bridge refusal preserves that exception identity.
+    reportError: error => error instanceof BridgeCallError && error.refusal !== null && sayRefusalDialog(error, errorWords(error)),
     reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
     shift: () => false, // UI snapshots the live modifier into each command.
     resolve: async (subject: InfoSubject): Promise<InfoIdentity | null> => {
