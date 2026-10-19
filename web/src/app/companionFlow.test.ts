@@ -1875,6 +1875,109 @@ test("a push with nothing for the ladder to do leaves the cadence alone", async 
   flow.stopFleetCompanion();
   assert.equal(wokeAfterMs, null, "a push the ladder cannot act on must not buy a tick");
 });
+// --- waking on a hit drone ---------------------------------------------------
+//
+// ⚠ NO LIVE STREAM HERE, ON PURPOSE. The pilots this is for are the ones NOT on
+// screen, and only the pilot on screen holds a stream (sessions.ts). The wake
+// must come from the companion's own read of its snapshot while it sleeps.
+
+const FIGHT_RAT_ID = 9101;
+const FIGHT_DRONE_ID = 9201;
+
+/** A fight: one rat, one of this pilot's drones out. `hurt()` says whether the drone has lost shield. */
+async function companionInDroneFight(hurt: () => boolean) {
+  const readsAtMs: number[] = [];
+  const snapshotReadsAtMs: number[] = [];
+  const fakeFetch = (async (input: unknown, init?: { body?: unknown }) => {
+    const path = String(input);
+    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    if (path === "/api/bridge/flight/status") readsAtMs.push(Date.now());
+    if (path === "/api/bridge/space/snapshot") snapshotReadsAtMs.push(Date.now());
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        if (path === "/api/bridge/flight/status") return flightBody(false);
+        if (path === "/api/bridge/space/snapshot") {
+          const base = spaceBody() as { space: { entities: unknown[] } };
+          return {
+            ...base,
+            space: {
+              ...base.space,
+              entities: [
+                ...base.space.entities,
+                {
+                  itemID: FIGHT_RAT_ID, kind: "ship", typeID: 23707, radius: 30,
+                  position: { x: 20_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 },
+                  shieldRatio: 1, armorRatio: 1, hullRatio: 1,
+                  isNpc: true, npcEntityType: "npc", isSelf: false, targetEntityID: null,
+                },
+                {
+                  itemID: FIGHT_DRONE_ID, kind: "drone", typeID: 2185, radius: 5,
+                  position: { x: 19_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 },
+                  shieldRatio: hurt() ? 0.6 : 1, armorRatio: 1, hullRatio: 1,
+                  isNpc: false, isSelf: false, ownerID: OWN_CHARACTER_ID, controllerID: SHIP_ID,
+                  droneActivity: "idle", targetEntityID: null,
+                },
+              ],
+            },
+          };
+        }
+        if (path === "/api/bridge/fitting") return fittingBody({});
+        if (path === "/api/names") return namesBody(body as Record<string, unknown>);
+        if (path === "/api/bridge/targets") return { ok: true, targetIDs: [], notifications: [] };
+        if (path === "/api/bridge/bound-fleet") {
+          return readyFleet({
+            members: [
+              { charID: OWN_CHARACTER_ID, role: 4, job: 0 },
+              { charID: ALLOWED_CHAT_SENDER, role: 1 },
+            ],
+          });
+        }
+        if (path === "/api/bots/active") return { ok: true, characterIDs: [], bots: [] };
+        return { ok: true };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  const store = createClientStore();
+  seatOnlineCharacter(store, OWN_CHARACTER_ID);
+  const flow = createAppFlow(store, { fetch: fakeFetch, livePush: false });
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+  assert.equal(
+    store.get().companion.status,
+    "running",
+    `the companion must actually be flying: ${String(store.get().companion.why)}`,
+  );
+  // Let the tick that just ran finish and its sleep begin.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return { flow, readsAtMs, snapshotReadsAtMs, ticksBefore: readsAtMs.length };
+}
+
+test("a drone losing shield while the companion sleeps wakes it, with no live stream", async () => {
+  let hurt = false;
+  const { flow, readsAtMs, ticksBefore } = await companionInDroneFight(() => hurt);
+  hurt = true;
+  const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 1_500);
+  flow.stopFleetCompanion();
+  assert.notEqual(wokeAfterMs, null, "the hit drone never woke the loop");
+  assert.ok(
+    wokeAfterMs !== null && wokeAfterMs < FLEET_COMPANION_CADENCE_MS - 300,
+    `a hit drone must not wait out the cadence, took ${String(wokeAfterMs)} ms`,
+  );
+});
+
+test("whole drones in a fight are watched, but do not wake the loop", async () => {
+  const { flow, readsAtMs, snapshotReadsAtMs, ticksBefore } = await companionInDroneFight(() => false);
+  const snapshotsBefore = snapshotReadsAtMs.length;
+  const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 1_200);
+  const watched = snapshotReadsAtMs.length - snapshotsBefore;
+  flow.stopFleetCompanion();
+  assert.equal(wokeAfterMs, null, "nothing was hit, so the cadence stands");
+  assert.ok(watched >= 1 && watched <= 4, `the sleep reads the snapshot a few times, read ${watched}`);
+});
+
 
 test("a blind scene (inSpace, no ship, no entities) is unknown: the pilot says it cannot see and decides nothing", async () => {
   // ⚠ SEEN LIVE 2026-10-14 12:00:11 UTC: a dead ballpark answered this with a 200.

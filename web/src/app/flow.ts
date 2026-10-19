@@ -20936,8 +20936,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function companionSleep(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
       const startedAtMs = Date.now();
+      let asleep = true;
       let timer: ReturnType<typeof setTimeout> = setTimeout(finish, ms);
       function finish(): void {
+        asleep = false;
         clearTimeout(timer);
         companionWake = null;
         resolve();
@@ -20961,7 +20963,63 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         clearTimeout(timer);
         timer = setTimeout(finish, Math.min(COMPANION_WAKE_FLOOR_MS, ms) - waited);
       };
+      void watchDronesWhileAsleep(() => asleep);
     });
+  }
+
+  // --- waking the companion when one of its drones is hit ------------------
+  //
+  // ⚠ A POLL, BECAUSE THE PUSH DOES NOT REACH THE PILOTS THAT NEED IT. A drone's
+  // damage arrives inside the ballpark's DoDestinyUpdate, which the BFF applies
+  // to its own park and never forwards (pilots.js, SUPPRESSED_NOTIFICATIONS);
+  // and only the pilot on screen holds a live stream at all (sessions.ts:
+  // `livePush` is off for the rest, which share the browser's connection pool).
+  // A companion is almost always one of the rest. So while it sleeps through a
+  // fight it reads its own space snapshot -- the read the overview already
+  // makes every second for the pilot on screen -- and wakes the moment a drone
+  // that was whole on its last tick is not.
+  //
+  // ⚠ WHY IT MATTERS: the ladder recalls a drone on the first point of shield it
+  // loses, but only when it looks. The recorder put every recall 2-4 s after the
+  // tick before it (2026-10-16, 2026-10-19): the idle sleep, with the drone being
+  // shot all the way through it.
+  //
+  // ⚠ BOUNDED THREE WAYS. Armed only on a tick that saw hostiles AND had whole
+  // drones out (`companionDroneWatch`); one read in flight at a time, every
+  // `DRONE_WATCH_POLL_MS`; and gone the moment the sleep ends, which a burst
+  // sleep does before the first read is due. A failed read ends the watch: the
+  // tick reads again anyway.
+  const DRONE_WATCH_POLL_MS = 400;
+  /** This companion's own drones that were at full shield on the last tick of a fight. Empty: no watch. */
+  let companionDroneWatch: readonly number[] = [];
+
+  async function watchDronesWhileAsleep(asleep: () => boolean): Promise<void> {
+    const watched = companionDroneWatch;
+    const shipID = companionShipID;
+    if (watched.length === 0 || shipID === null) {
+      return;
+    }
+    while (asleep()) {
+      await new Promise<void>((resolve) => setTimeout(resolve, DRONE_WATCH_POLL_MS));
+      if (!asleep()) {
+        return;
+      }
+      let hit = false;
+      try {
+        const snapshot = decodeSpaceSnapshot((await api.getSpaceSnapshot(callOptions)).space);
+        hit = (snapshot?.entities ?? []).some((entity) =>
+          watched.includes(entity.itemID) &&
+          canMyShipOrderDrone(entity, shipID) === true &&
+          entity.shieldRatio !== null &&
+          entity.shieldRatio < 1);
+      } catch {
+        return;
+      }
+      if (hit) {
+        wakeFleetCompanion();
+        return;
+      }
+    }
   }
 
   function makeFleetCompanionDeps(): FleetCompanionDeps {
@@ -21317,6 +21375,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           isFleetBroadcastFresh(fleetSlice.lastBroadcast, Date.now())
             ? fleetSlice.lastBroadcast
             : null;
+        // What the sleep after this tick watches (`watchDronesWhileAsleep`):
+        // the whole drones, and only in a fight. A drone already below full is
+        // the ladder's to decide on this tick, not the watch's to wake for.
+        companionDroneWatch =
+          snapshot !== null && !sceneBlind && hostileRows(snapshot, origin).length > 0
+            ? myDrones.filter((drone) => drone.shieldRatio !== null && drone.shieldRatio >= 1).map((drone) => drone.itemID)
+            : [];
         return {
           inSpace: status.inSpace,
           docked: status.docked,
