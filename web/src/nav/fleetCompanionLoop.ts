@@ -640,6 +640,11 @@ export interface CompanionFlee {
   readonly safeSpotWarpAttempts: number;
   readonly safeSpotWarpWaited: number;
   readonly droneRecallWaited: number | null;
+  /**
+   * Ticks left before the escape warp is tried again after it was refused
+   * repeatedly, or absent. See `COMPANION_ESCAPE_RETRY_BACKOFF_TICKS`.
+   */
+  readonly safeSpotWarpBackoff?: number;
 }
 
 /**
@@ -1335,8 +1340,9 @@ export interface CompanionAbandonment extends CompanionAbandonmentRecord {
    * grid" — the POST returns before `shipMode` flips — and treating it as such
    * would drop fleet while the ship still sat where it was, which is the one
    * ordering mistake decision 5 calls out. Safety is confirmed by a READING,
-   * never by elapsed time. An unconfirmed warp's wait limit pauses the run;
-   * it never authorizes leaving fleet.
+   * never by elapsed time. An unconfirmed warp's wait limit sends the warp
+   * again; it never authorizes leaving fleet. (Arriving at the sun is also a
+   * reading -- see `atTheSun` -- for the warp a stall hid from every tick.)
    */
   readonly safeSpotWarpSeen: boolean;
   /**
@@ -1358,6 +1364,11 @@ export interface CompanionAbandonment extends CompanionAbandonmentRecord {
    * worth the ship.
    */
   readonly droneRecallWaited: number | null;
+  /**
+   * Ticks left before the escape warp is tried again after it was refused
+   * repeatedly, or absent. See `COMPANION_ESCAPE_RETRY_BACKOFF_TICKS`.
+   */
+  readonly safeSpotWarpBackoff?: number;
 }
 
 /**
@@ -2792,7 +2803,32 @@ function reachedSafety(obs: FleetCompanionObservation, running: SafetyRun): bool
   if (obs.docked === true) {
     return true;
   }
-  return running.safeSpotWarpIssued && running.safeSpotWarpSeen;
+  if (running.safeSpotWarpIssued && running.safeSpotWarpSeen) {
+    return true;
+  }
+  // ⚠ THE WARP NOBODY SAW. `safeSpotWarpSeen` is set only by a tick that lands
+  // mid-warp, and a server stall can swallow every tick of a short warp: the
+  // ship arrives at the sun and the latch never flips. Where the ship now IS
+  // is a reading too, and the one that cannot be stale in that direction.
+  return running.safeSpotWarpIssued && atTheSun(obs);
+}
+
+/**
+ * How far from the sun's SURFACE a ship that warped to it can be and still be
+ * "there". The server lands a sun warp at its radius plus 5,000 km
+ * (`getWarpStopDistanceForTarget`, warpState.js), so this is that landing
+ * distance with room for drift. A ship that started anywhere it could have
+ * needed rescuing from is astronomical units away, so the margin cannot be
+ * mistaken for a ship that never left.
+ */
+const SUN_ARRIVAL_SURFACE_M = 10_000_000;
+
+/** Is the ship sitting where a warp to this system's sun lands? */
+function atTheSun(obs: FleetCompanionObservation): boolean {
+  const sun = sunOnGrid(obs);
+  if (sun === null) return false;
+  const distance = measureSpace(obs.snapshot ?? null)?.distances.get(sun);
+  return distance !== undefined && distance <= SUN_ARRIVAL_SURFACE_M;
 }
 
 /**
@@ -2813,6 +2849,11 @@ interface SafetyRun {
   readonly safeSpotWarpAttempts: number;
   readonly safeSpotWarpWaited: number;
   readonly droneRecallWaited: number | null;
+  /**
+   * Ticks left before the escape warp is tried again after it was refused
+   * repeatedly, or absent. See `COMPANION_ESCAPE_RETRY_BACKOFF_TICKS`.
+   */
+  readonly safeSpotWarpBackoff?: number;
 }
 
 /**
@@ -2845,8 +2886,20 @@ interface SafetyLeg {
 const MAX_GET_SAFE_RECALL_WAIT_TICKS = 8;
 const MAX_GET_SAFE_WARP_ATTEMPTS = 3;
 // At the idle cadence this allows two minutes for a slow-aligning hull.
-// Expiry pauses; elapsed time is never evidence that the ship got safe.
+// Expiry sends the warp again; elapsed time is never evidence that the ship got
+// safe, and it is not evidence that the ship is stuck either.
 const MAX_GET_SAFE_WARP_WAIT_TICKS = 60;
+/**
+ * Ticks to wait after the escape warp was refused `MAX_GET_SAFE_WARP_ATTEMPTS`
+ * times before the attempts start over.
+ *
+ * ⚠ SHORT, BECAUSE THIS IS THE ESCAPE. It used to pause "for the operator",
+ * which left a hurt or abandoned ship sitting exactly where the danger was
+ * until a human noticed. A warp refused for a reason that passes -- a scram
+ * that drops, a session change that settles -- is worth trying again within
+ * seconds; one that never passes costs one call every few seconds.
+ */
+export const COMPANION_ESCAPE_RETRY_BACKOFF_TICKS = 5;
 
 /**
  * How long a fleet order to leave the grid waits for the drones it called home
@@ -3135,9 +3188,20 @@ function runToSafety(
     return null;
   }
   if (!leg.run.safeSpotWarpIssued) {
-    if (leg.run.safeSpotWarpAttempts >= MAX_GET_SAFE_WARP_ATTEMPTS) {
-      return { ...waiting(leg.phase, "The escape warp kept being refused. This pilot needs the operator to take over.", mem),
-        pause: "The escape warp was refused three times." };
+    const backoff = leg.run.safeSpotWarpBackoff;
+    if (backoff !== undefined && backoff > 1) {
+      return waiting(leg.phase, "The escape warp kept being refused. Trying again in a moment.",
+        leg.write(mem, { ...leg.run, safeSpotWarpBackoff: backoff - 1 }));
+    }
+    if (backoff === undefined && leg.run.safeSpotWarpAttempts >= MAX_GET_SAFE_WARP_ATTEMPTS) {
+      return waiting(leg.phase, "The escape warp kept being refused. Trying again in a moment.",
+        leg.write(mem, { ...leg.run, safeSpotWarpBackoff: COMPANION_ESCAPE_RETRY_BACKOFF_TICKS }));
+    }
+    if (backoff !== undefined) {
+      // The back-off is spent: the attempts start over.
+      const { safeSpotWarpBackoff: _spent, ...rest } = leg.run;
+      leg = { ...leg, run: { ...rest, safeSpotWarpAttempts: 0 } };
+      mem = leg.write(mem, leg.run);
     }
     return {
       action: { kind: "warp", targetID: sun },
@@ -3148,8 +3212,10 @@ function runToSafety(
     };
   }
   if (leg.run.safeSpotWarpWaited >= MAX_GET_SAFE_WARP_WAIT_TICKS) {
-    return { ...waiting(leg.phase, "The escape warp's outcome could not be confirmed. This pilot needs the operator to check the ship.", mem),
-      pause: "The escape warp could not be confirmed. Check the ship before resuming." };
+    // Not seen leaving, and (reachedSafety already asked) not at the sun: the
+    // warp did not happen. Send it again; the attempt bound above still holds.
+    return waiting(leg.phase, "The escape warp never started. Sending it again.",
+      leg.write(mem, { ...leg.run, safeSpotWarpIssued: false, safeSpotWarpWaited: 0 }));
   }
   return waiting(leg.phase, "Waiting for the warp to the sun to start.",
     leg.write(mem, { ...leg.run, safeSpotWarpWaited: leg.run.safeSpotWarpWaited + 1 }));
