@@ -1140,7 +1140,8 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // is answered as any call here is, once the pilot is usable in its new place.
   const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (objectKind === "corporationExpected") {
-    await dispatchCorporationMemberWrite(req, res, next, body);
+    if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
+    else await dispatchCorporationMemberWrite(req, res, next, body);
     return;
   }
   if (placeChange !== null) {
@@ -6747,6 +6748,33 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
     }
     next(error);
   }
+}
+
+// medals.py108/116 uses a top-level RemoteSvc. `of` is only our original-dialog
+// fence; it must never turn this into a corpRegistry call or another RPC argument.
+async function dispatchCorporationAwardWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const args = body.args, corporationID = strictPositiveID(body.of);
+  if (!Array.isArray(args) || ![3, 4].includes(args.length) || strictPositiveID(args[0]) === null || !Array.isArray(args[1]) || !args[1].length || args[1].some(id => strictPositiveID(id) === null) || typeof args[2] !== "string" || (args.length === 4 && args[3] !== true) || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    const native = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    let context, notifications = [];
+    if (native) context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    else {
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null);
+      notifications = answer.notifications ?? [];
+      const header = mailListItems(readMailKeyVal(answer.result, "header")), line = mailListItems(readMailKeyVal(answer.result, "line"));
+      context = { corporationID: answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")] };
+    }
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This award belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, body.service, body.method, args, null, corporationID, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: [...notifications, ...(outcome.notifications ?? [])], ...pilotClock(held) });
+  } catch (error) { next(error); }
 }
 
 async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs, expectedCorporationID, expectedCorporationVersion) {

@@ -209,21 +209,97 @@ self, including when evaluating a merged selection.
      also exposed wallet shapes and lifecycle ordering fixed in EveJS; the
      original full store is restored after the live walk. No menu is exposed
      until c4d2 supplies the complete callback.
-   - **c4d2: complete shared submenu and flow.** Preserve self/CEO gates and the
-     contact-multiple caller distinction. Use the native retained member IDs for
-     `len(GetMembers())`; request `GetNumberOfPotentialCEOs` only on the many-member
-     branch and use the actual returned list's length. Implement every warning,
-     refusal, cancellation, both mutations and the successor picker together.
-     Compiled `ListWindow:109-204` sorts case-insensitively and stably when ordered1,
-     starts with no selection and the one-choice error, keeps OK open without a
-     choice, and confirms on double-click. Owner priming deduplicates IDs while
-     candidate rows retain the returned entries. Hold the original pilot/corporation
-     across all dialogs, sorting/naming and dispatch; accept intended own changes.
-     Verify desktop/phone, candidate cancel/choice, native session-busy behavior,
-     alliance/space refusal and actual disband/role/session effects, with full
-     store/settings restoration. Keep every later administration unit in scope.
+   - **c4d2: complete shared submenu and flow, implemented.** Contacts/search and
+     Member List share the self/CEO submenu. Contact-list multiple selection omits
+     it; Member List self-plus-peer offers it once. The callback checks space
+     before CEO authority, reads retained member IDs, and asks the potential-CEO
+     query only for multiple members, using the actual list length. All three
+     warnings default to No. None completes; a candidate list, including empty,
+     opens the single-choice picker. Unique owner priming preserves duplicate
+     rows; stable lowercased ordering follows compiled ListWindow109-204. There
+     is no initial choice, OK without a choice stays open with its native error,
+     and double-click selects then confirms. Cancel and Escape finish without a
+     successor write. The selected retry uses c4d1's operation-specific reset.
+     Original pilot/corporation guards survive reads, warnings, naming and both
+     mutations; pilot/corporation replacement clears a pending picker, while the
+     intended own disband session change is accepted.
+     Live desktop/390px phone verified the menu, default-No prompt, initial error,
+     empty-selection OK, Cancel and double-click handoff. Native AppFlow walks
+     covered merged gates, stale authority, held replies, destruction warnings,
+     pilot replacement, alliance no-RPC refusal, cooldown dialog and actual solo
+     disband/NPC session. Store and settings are restored after staging. Hidden
+     browser screenshots were unavailable; rendered accessibility states and
+     measured bounds establish the UI checks. Zero-potential and empty-candidate
+     branches follow the original compiled callback, not a captured live EveJS
+     case; the server's current fixtures do not produce those lists. Later
+     administration units remain required.
 5. **D2p18c4e — decorations.** Read the complete award window, menu merge, available
    decorations and write before exposing either single or multiple award actions.
+   Read/split: compiled `CharacterChecker.OfferAwardCorpMemberDecoration:95-102`
+   excludes NPC targets, an NPC pilot corporation and nonmembers, then uses
+   `SessionChecker.IsPersonnelManager:92-93` (the Personnel Manager bit, without
+   a separate Director alternative). Self is allowed. Compiled menu merge treats
+   the award caption as a multi-function and passes one list of eligible IDs.
+   Contact-list multiple selection still has its separate userentry branch.
+   `menuFunctions.AwardDecoration:54-73` reads `GetAllCorpMedals(session.corpid)`,
+   raises `MedalCreateToAward` for no options, primes recipient names, and opens
+   ordered1 generic ListWnd with the medal titles/IDs, Name header and a hint of
+   the first five recipients followed by `, ...` where longer. Picker Cancel
+   stops; a choice calls `medals.GiveMedalToCharacters`.
+   Compiled `medals.GiveMedalToCharacters:93-124` checks Director OR Personnel
+   Manager, asks NamePopup for an empty reason (maximum200), stops on empty/Cancel,
+   and calls `corporationSvc.GiveMedalToCharacters(medalID, recipientIDs, reason)`.
+   A server `ConfirmGivingMedal*` error uses its actual cost, amount and localized
+   recipient count in a Yes/No prompt with suppressYes; only Yes retries with
+   fourth argument True. `NotEnoughMoney` is shown; other errors propagate.
+   No fixed price or unconditional confirmation is inferred from that wrapper.
+   - **c4e1: native award contract and server audit, implemented.** Decoded the recorded
+     GetAllCorpMedals cached-object read and verify current native catalogue,
+     recipient-list write and received-medal readback with disposable fixtures.
+     Examine cache invalidation and recipient live updates against
+     `medals.OnMedalIssued:139-145` and DecorationsPanel's update consumer;
+     fix/commit any actual native mismatch before exposing the action. Exact
+     award/confirmation/notice bytes are not in the current recording corpus.
+     Actual native Python-list recipients previously became recipient0; Unicode
+     title/description/reason became `[object Object]`. EveJS now decodes both
+     native values and sends successful-write creation and recipient refreshes.
+     Fresh native single/both-member awards preserved accented text, reached the
+     intended recipients, and refreshed the cached catalogue through the existing
+     native-consumer invalidation helper. The browser read is not exposed yet;
+     its allowlist correctly refused the first BFF probe. No live browser refresh
+     is claimed here. Exact notice arguments/masks/fanout remain unrecorded;
+     implementation uses the minimum consumed by the original handlers, not a
+     claim of captured Tranquility bytes. Full disposable store was restored.
+     Existing server assertions and harness inputs now name native list/Unicode
+     values and the original refresh consumers; they were updated, not run.
+   - **c4e2: complete shared award UI, implemented.** Includes the gates/merge, no-medals
+     refusal, ordered single-choice medal picker, recipient hint, reason prompt,
+     all cancellations, conditional confirmation/retry and errors together.
+     Preserve originating pilot/corporation through reads, dialogs and dispatch;
+     update the recipient's live view from native notices. Verify single/self/
+     multiple targets, Director-versus-personnel gates, each cancellation and
+     actual award/recipient effects on desktop/phone, with native wire and full
+     store/settings restoration. No partial menu or placeholder is exposed.
+     Contacts/search offer the single action; Member List merges eligible IDs
+     into one call, including self. Contact-list multiple selection omits it.
+     The ordered picker starts unselected, retains the native selection error,
+     accepts double-click and cancels with Cancel/Escape. NamePopup requires a
+     reason and limits it to200 UTF-16 units, as the installed Python27 runtime
+     confirms. A top-level corporationSvc write carries only the native scalar
+     medal ID, Python recipient list and Unicode reason (optional fourth True
+     after server-requested confirmation). The originating corporation is private
+     BFF context, checked again at the actual send; it never becomes a native
+     argument or changes this RemoteSvc into a moniker call.
+     Actual empty-catalogue refusal, single/self/merged awards, role128 award,
+     revoked-role refusal, cancellations, held-read/pilot replacement, wrong-origin
+     no-RPC refusal and recipient cache invalidation were verified. Desktop and
+     390px phone screenshots/AX/bounds verify both prompts and merged menu. The
+     existing BFF notice consumer refreshes a recipient's GetMedalsReceived cache;
+     this owner action does not add a Character Sheet decorations panel.
+     ConfirmGivingMedal*/NotEnoughMoney branches follow the original compiled
+     callback, including actual error values and suppressYes; the current server
+     did not produce those errors, so no live fee/retry case is claimed. Full
+     store/preferences restored. Other corporation and character panels remain.
 6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
    Complete the actual acceptance/decline/session behavior and notices required by
