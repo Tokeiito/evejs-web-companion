@@ -463,14 +463,44 @@ self, including when evaluating a merged selection.
      foreign-division omission, real elapsed-minute expiry, delayed old-read
      retirement, reset on same-pilot replacement, native refusal-to0 and genuine
      missing-session error propagation. No cash action is exposed yet.
-   - **c4g3: complete shared TransferMoney window and character menu action.**
-     Reuse the same complete window for Contacts/search and Member List, with
-     captured source, names/logos, native amount/reason bounds, correct typed
-     RPC, failure/success behavior, original lifetime and live wealth events.
-     Keep existing personal transfers correct. Verify actual browser/phone and
-     native wire, including self, authority and replacement cases. Generic
-     wallet deposit/destination-corporation selection is a separate entry point;
-     it is not needed to complete this shared character-recipient action.
+   - **c4g3: complete shared TransferMoney window and character menu action,
+     implemented.** Contacts/search and Member List offer native single-character
+     Accountant cash, including self. One window per pilot replaces the previous
+     transfer, displays the source corporation/division or personal owner and
+     recipient with64px pictures, and uses original labels/amount/reason/OK/Cancel.
+     The corporate fresh None read precedes active-key capture. The key remains
+     captured; any eligible division's client event updates its maximum. Personal
+     OnAccountChange updates only a personal transfer. Background pilots retain
+     hidden window edits; pilot replacement/logoff retires them, corporation
+     replacement retires a corporate source while leaving personal cash intact.
+
+     Native numeric-field compiled methods prove that SetMaxValue leaves old text
+     untouched and GetValue reads it without reclamping. Typing cuts decimal text
+     (2.559 ->2.55, preserving2.55); its upper bound is applied during input,
+     focus loss repairs only the lower bound. Confirm reads that field value,
+     so a raced/other-division maximum can still produce a genuine shortfall.
+     Reason is40 characters and < > entities, nonempty typed Unicode on the wire.
+     The corporate RPC has the native three arguments, float amount and None/
+     reason keywords. Private originating-corporation metadata is checked against
+     the native version through final BFF dispatch and is not a native argument.
+     None success says TransferSuccessful and closes; UserError retains the
+     window under the native refusal dialog. Cancel sends nothing; no extra
+     confirmation or division selector is inserted. Existing personal Give Money
+     now uses this same window and its original GiveCash three-argument call.
+
+     Actual AppFlow verified ordinary/Junior/take-only omission, Accountant offer
+     without take then native debit refusal, target/self/multiple gates, Cancel,
+     replacement, wrong origin, Unicode/2.55 and both success/refusal paths.
+     Browser Corporation Contacts, search and Member List opened the window;
+     Member List self was allowed and multiple omitted. Desktop other-division
+     notice allowed100 while captured1001 held47.45, which raised the real native
+     NotEnoughMoney and retained the window. Its subsequent2.55 succeeded. Phone
+     fields/buttons fit and2.559 became2.55; Cancel left wire count unchanged.
+     Personal browser Give Money succeeded. Final build retained5/reason edits
+     while switching to a second account's pilot, hid the background window, and
+     restored those edits on switching back. All pilots/settings/store restored
+     as recorded in the journal. Generic wallet deposit/destination-corporation
+     selection remains its own entry point.
 
 Configured double-click-to-chat and simultaneous information windows remain after
 these administration units. The rest of the Corporation window and Phases 5/6 are

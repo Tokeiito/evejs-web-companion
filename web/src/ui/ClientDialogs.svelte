@@ -69,6 +69,7 @@
   import { portal } from "./portal.ts";
   import { startFittingDrag } from "./fittingDrag.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
+  import MoneyTransferWindow from "./MoneyTransferWindow.svelte";
   import { portraitUrl, portraitDefaultPath } from "./ownerImages.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
@@ -103,6 +104,7 @@
   // svelte-ignore state_referenced_locally
   const corporationCEOChoice = flow.corporationCEOChoice;
   const corporationAwardAsk = flow.corporationAwardAsk;
+  const moneyTransfer = flow.moneyTransfer;
   // svelte-ignore state_referenced_locally
   const imageServer = flow.imageServer;
   $effect(() => { if ($corporationCEOChoice !== null) flow.loadImageServer(); });
@@ -1010,6 +1012,10 @@
   if ($corporationAwardAsk !== null) { event.preventDefault(); flow.answerCorporationAward($corporationAwardAsk.n, false); }
   else if ($corporationCEOChoice !== null) { event.preventDefault(); flow.answerCorporationCEO($corporationCEOChoice.n, false); }
 }} />
+
+{#if $moneyTransfer !== null}
+  {#key $moneyTransfer.n}<MoneyTransferWindow store={session.store} {flow} request={$moneyTransfer} {inFront} />{/key}
+{/if}
 
 {#if $corporationAwardAsk !== null}
   {@const ask = $corporationAwardAsk}
