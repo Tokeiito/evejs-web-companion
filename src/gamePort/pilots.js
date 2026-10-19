@@ -2241,9 +2241,10 @@ function createGamePortPilots({
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // What the account may redeem is the redeem service's to answer, where it is asked as the client asks it: with
-    // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is).
+    // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is). A fetch under way (at the server's
+    // notice, or after a claim) is waited for: what it brings is what is kept.
     if (keptRedeemTokens(service, method, form)) {
-      const kept = await run(entry, service, method, () => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens));
+      const kept = await run(entry, service, method, () => entry.redeemTokensWork.then(() => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens)));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // Whether Project Discovery is enabled is its client service's to answer, where it is asked as the client asks
