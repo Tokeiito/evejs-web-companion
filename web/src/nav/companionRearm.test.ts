@@ -328,13 +328,22 @@ test("a bare 'rearm' rearms a docked pilot where it is, and asks where of one in
   assert.equal(inSpace.memory.rearm, null);
 });
 
-test("a route the autopilot cannot fly ends the trip out loud", () => {
-  const routed = decideCompanionAction(REQUEST, obs({ chatMessages: [chat(`rearm at ${STATION_LINK}`)] }), freshLadderMemory(), 2_000);
-  const failed = obs({
-    travel: { status: "error", destinationStationID: STATION, destinationSystemID: OTHER_SYSTEM, remainingJumps: 0, failureReason: "No route." },
+test("a paused route is sent again, and only the last route's failure ends the trip out loud", () => {
+  const failed = (at: number) => obs({
+    travel: { status: "error", destinationStationID: STATION, destinationSystemID: OTHER_SYSTEM, remainingJumps: 0, failureReason: "Approach refused: CHARACTER_IN_USE" },
+    chatMessages: [chat(`rearm at ${STATION_LINK}`)],
   } as Partial<FleetCompanionObservation>);
-  const decision = decideCompanionAction(REQUEST, failed, routed.memory, 4_000);
-  assert.deepEqual(decision.say, ["Cannot get to that station to rearm: No route."]);
+  let memory = decideCompanionAction(REQUEST, obs({ chatMessages: [chat(`rearm at ${STATION_LINK}`)] }), freshLadderMemory(), 2_000).memory;
+  // Seen live: the approach to dock met the ladder's own call and the autopilot paused.
+  for (const at of [100_000, 200_000]) {
+    const again = decideCompanionAction(REQUEST, failed(at), memory, at);
+    assert.deepEqual(again.action, { kind: "routeToStation", stationID: STATION }, `re-route at ${at}`);
+    assert.deepEqual(again.say ?? [], []);
+    memory = again.memory;
+  }
+  assert.equal(memory.rearm?.routes, 3);
+  const decision = decideCompanionAction(REQUEST, failed(300_000), memory, 300_000);
+  assert.deepEqual(decision.say, ["Cannot get to that station to rearm: Approach refused: CHARACTER_IN_USE"]);
   assert.equal(decision.memory.rearm, null);
 });
 
