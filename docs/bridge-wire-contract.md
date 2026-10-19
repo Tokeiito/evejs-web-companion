@@ -2458,6 +2458,12 @@ These atomic routes use the existing HTTP/socket request carriage and held pilot
   `{id, roomName, senderCharacterID, reason, password}` and remain until handled.
   Repeated pending invitations from the same sender/room keep their ID. Declines
   contain `{id, roomName, senderCharacterID, reason}`; the last 200 remain available.
+- `GET /api/bridge/chat/:roomName/info` returns `{roomName,result,name,occupants}` from
+  the native disco#info reply without joining. Private names query the room directly;
+  player names query the conference service with that room as node. Concurrent IQs
+  correlate by request ID. The native thirty-second request deadline applies; close
+  rejects pending readers. This is raw metadata: private captions use native labels
+  and member names, not the generic identity name.
 - `POST /api/bridge/chat/:roomName/join`, body `{password?:string}`, joins that
   full room name with the native presence and returns its channel snapshot.
 - `POST /api/bridge/chat/:channel/leave`, body `{}`, leaves that room and returns

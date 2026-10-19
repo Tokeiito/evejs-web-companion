@@ -783,6 +783,7 @@ import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
+import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
 import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
@@ -2082,6 +2083,7 @@ export interface AppFlow {
   showMemberDetails(characterID: number): void;
   corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(): Promise<number | null>;
+  corporationMemberIDs(): Promise<readonly number[]>;
   corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
@@ -3534,6 +3536,7 @@ export interface AppFlow {
    * poll). A lost session unwinds to offline; any other failure surfaces through
    * the chat slice.
    */
+  readonly conversations: ChatConversations;
   loadChat(channel: ChatChannel): Promise<void>;
   /** R7 — send a message to a chat channel, then refresh its backlog. */
   sendChatMessage(channel: ChatChannel, message: string): Promise<void>;
@@ -3851,6 +3854,7 @@ function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | 
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   let sessionCloseGeneration = 0;
   let requestGeneration = 0;
+  let corporationMembershipGeneration = 0;
   let sessionClosing = false;
   // An OK / Cancel question of this client's own. With no browser there is
   // nobody to ask, and the answer is Cancel.
@@ -3922,6 +3926,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   });
   /** The pilot's own character, as the page has it. Null with none chosen. */
   const onlineCharacterID = (): number | null => store.station.get().online?.characterID ?? null;
+  const conversations = createChatConversations({
+    capture: () => {
+      const online = store.station.get().online;
+      if (!online) throw new BridgeCallError("NO_LIVE_SESSION", "No character is online.", 409);
+      const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
+      const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => current, captureNotificationSink: () => sink };
+      return { me: online.characterID, role: BigInt(online.role ?? "0"), options: scoped, current };
+    },
+    word: (label, values, fallback) => templateWords(label, values, fallback),
+    say: (dialog, args, fallback) => sayDialog(dialog, { type: "dict", entries: Object.entries(args) }, fallback),
+  });
   // The pilot's broadcasts to its fleet, with the wait the client keeps between them (bridge/fleetWrites.ts).
   const fleetBroadcasts = createFleetBroadcasts(bridgeDo);
   // What a module type's overload effect is: the client's own static data, asked of the BFF's copy once for a type.
@@ -4933,6 +4948,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       const row = entry as Record<string, JsonValue>;
       const method = typeof row.method === "string" ? row.method : null;
+      if (method && ["OnContactChange", "OnContactNoLongerContact", "OnBlockContacts", "OnUnblockContacts"].includes(method)) conversations.invalidateContacts();
       if (method === null) {
         continue;
       }
@@ -5330,6 +5346,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("corpid")) corporationMembershipGeneration++;
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -14912,6 +14929,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const value = await bridgeAsk("corpRegistry", "GetMember", [characterID]);
     memberReads.set(key, { value, savedAt: Date.now() });
     return value;
+  }
+  async function corporationMemberIDs(): Promise<readonly number[]> {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    const generation = corporationMembershipGeneration, held = callOptions.captureRequestGuard!();
+    const current = () => {
+      held();
+      if (generation !== corporationMembershipGeneration || corporationID !== (store.station.get().online?.corporationID ?? null)) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "These members belong to the pilot's previous corporation.", 0);
+    };
+    const answer = await api.readCorporationMemberIDs({ ...callOptions, captureRequestGuard: () => current });
+    current();
+    if (answer.corporationID !== corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
+    return answer.memberIDs;
   }
   async function corporationMemberRoleBase(): Promise<number | null> {
     const online = store.station.get().online;
@@ -27281,6 +27310,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       probesInFormation = new Set();
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
+      conversations.reset();
       requestGeneration++;
       recoveryGeneration++;
       recoveryTask = null;
@@ -28490,6 +28520,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showMemberDetails,
     corporationMemberDetails,
     corporationMemberRoleBase,
+    corporationMemberIDs,
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
@@ -29107,11 +29138,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       autopilot?.abort();
     },
 
+    conversations,
     loadChat,
 
     sendChatMessage,
 
     setChatChannel(channel) {
+      conversations.select(null);
       store.apply({ type: "chat/active", channel });
     },
 
@@ -29195,6 +29228,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       beginSessionClose();
       try {
         await api.releaseSession(callOptions);
+        conversations.reset();
         requestGeneration++;
         recoveryGeneration++;
         recoveryTask = null;
@@ -29219,6 +29253,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // An unopened onboarding slot has no login to release. In particular it
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
+        conversations.reset();
         requestGeneration++;
         recoveryGeneration++;
         recoveryTask = null;

@@ -6,9 +6,9 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow, action, contactType = "contact", done }: {
+  let { store, flow, action, contactType = "contact", done, current }: {
     store: ClientStore; flow: AppFlow; action: ContactAction; contactType?: ContactScope;
-    done: (book: NamedAddressBook | null) => void;
+    done: (book: NamedAddressBook | null) => void; current?: () => void;
   } = $props();
   let dialog = $state<HTMLDialogElement | undefined>(undefined);
   // menuMerge._ExecMulti starts each owner's callback separately. Each native
@@ -17,7 +17,7 @@
 </script>
 
 <dialog bind:this={dialog} class="member-contact-dialog" aria-label="Contact action" oncancel={() => done(null)}>
-  <Contacts {store} {flow} {contactType} contactAction={action} onActionDone={done} />
+  <Contacts {store} {flow} {contactType} contactAction={action} onActionDone={done} assertActionCurrent={current} />
 </dialog>
 
 <style>

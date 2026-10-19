@@ -75,6 +75,7 @@
 const net = require("net");
 const tls = require("tls");
 const { withoutCategoryC } = require("./gamePort/py27");
+const { PythonIntKeys } = require("./gamePort/pythonIntKeys");
 const { isSpam, normalizeForSpam } = require("./gamePort/chatSpam");
 
 class XmppChatError extends Error {
@@ -391,11 +392,13 @@ class XmppChatSession {
     this.rooms = new Map();
     // roomName -> Map(characterID -> { name, corporationID, allianceID })
     this.rosters = new Map();
+    this.memberOrder = new Map();
     // roomName -> [{ characterID, characterName, message, createdAtMs }]
     this.messages = new Map();
     this.invitations = new Map();
     this.declines = [];
     this.controlCounter = 0;
+    this.infoRequests = new Map();
   }
 
   nextID(prefix) {
@@ -484,6 +487,17 @@ class XmppChatSession {
         `<message from='${escapeXml(username)}' to='${escapeXml(roomJid)}'><x xmlns='http://jabber.org/protocol/muc#user'><invite to='${target}@${escapeXml(this.domain)}'><reason>${escapeXml(reason)}</reason></invite></x></message>`,
       decline: (roomJid, target, reason) =>
         `<message from='${escapeXml(username)}' to='${escapeXml(roomJid)}'><x xmlns='http://jabber.org/protocol/muc#user'><decline to='${target}@${escapeXml(this.domain)}'><reason>${escapeXml(reason)}</reason></decline></x></message>`,
+      // GetDisplayName: private room target, player conference target + node.
+      // xmpphandler.issue_request (283-294) owns the shared request counter.
+      roomInfo: (roomName) => {
+        const id = requestID();
+        const player = roomName.startsWith("player_");
+        const target = player ? this.conferenceDomain : `${roomName}@${this.conferenceDomain}`;
+        const query = player
+          ? `<query xmlns='http://jabber.org/protocol/disco#info' node='${escapeXml(roomName)}'/>`
+          : "<query xmlns='http://jabber.org/protocol/disco#info'/>";
+        return { id, xml: `<iq id='${id}' type='get' from='${escapeXml(jid())}' to='${escapeXml(target)}'>${query}</iq>` };
+      },
       // _handle_ping (168 to 175): the server's ping answered, its `to` for
       // this answer's `from` and its `from` for the `to`.
       pong: (id, to, from) => `<iq id='${escapeXml(id)}' type='result' from='${escapeXml(to)}' to='${escapeXml(from)}'/>`,
@@ -844,6 +858,7 @@ class XmppChatSession {
   }
 
   onSocketGone() {
+    this.rejectRoomInfoRequests();
     // A connection that was up and is lost is made again no sooner than five
     // seconds on, for a pilot logged in the retail client's way: the client
     // waits that long before it connects again (xmpp/xmppConnection.py 450 to
@@ -880,6 +895,7 @@ class XmppChatSession {
   }
 
   teardownSocket() {
+    this.rejectRoomInfoRequests();
     this.stopPing();
     this.stopWatchingChannels();
     this.ready = false;
@@ -906,13 +922,14 @@ class XmppChatSession {
         this.onPresence(xml);
       } else if (/^<message\b/i.test(xml)) {
         this.onMessage(xml);
+      } else if (/^<iq\b[^>]*\btype=['"](?:result|error)['"]/i.test(xml)) {
+        this.takeRoomInfo(xml);
       } else if (this.login && /^<iq\b[^>]*\btype=['"]get['"]/i.test(xml) && /<ping\b/i.test(xml)) {
         // process_single_queue_item (148 to 166): an iq of type get whose
         // child is a ping is answered, as the client answers it.
         this.write(this.retailStanzas().pong(attr(xml, "id"), attr(xml, "to"), attr(xml, "from")));
       }
-      // Everything else (iq results, ping answers, disco) needs no reaction:
-      // this client asks no questions whose answers it acts on.
+      // Other IQ results (bind/session/ping) have no pending room-info reader.
     }
   }
 
@@ -953,10 +970,14 @@ class XmppChatSession {
     }
     if (!this.rosters.has(roomName)) {
       this.rosters.set(roomName, new Map());
+      this.memberOrder.set(roomName, new PythonIntKeys());
     }
     const roster = this.rosters.get(roomName);
-    if (/\btype=['"]unavailable['"]/i.test(xml)) {
+    const heldRoom = this.rooms.get(this.channelOf(roomName));
+    if (roomName.startsWith("private_") && heldRoom?.seenMembers) heldRoom.seenMembers.add(characterID);
+    if (/\btype=['"](?:unavailable|leave)['"]/i.test(xml)) {
       roster.delete(characterID);
+      this.memberOrder.get(roomName)?.delete(characterID);
       return;
     }
     let name = "";
@@ -972,6 +993,7 @@ class XmppChatSession {
         // the part every caller keys on.
       }
     }
+    this.memberOrder.get(roomName)?.set(characterID);
     roster.set(characterID, {
       name: name || `Character ${characterID}`,
       corporationID: positiveInt(attr(xml, "corpid")) || null,
@@ -1322,6 +1344,7 @@ class XmppChatSession {
         this.rooms.delete(channel);
         this.messages.delete(room.roomName);
         this.rosters.delete(room.roomName);
+        this.memberOrder.delete(room.roomName);
       }
       // Coming back to what was left is a new channel again.
       const now = Array.isArray(change) ? positiveInt(change[1]) : 0;
@@ -1553,6 +1576,7 @@ class XmppChatSession {
       joinedAtMs: 0,
       joinedFor: solarSystemID,
       pending: { promise, resolve, reject, joinID },
+      seenMembers: new Set(),
     };
     this.rooms.set(channel, room);
     const history =
@@ -1610,6 +1634,7 @@ class XmppChatSession {
     // pilot's chat any more.
     this.messages.delete(room.roomName);
     this.rosters.delete(room.roomName);
+    this.memberOrder.delete(room.roomName);
   }
 
   /**
@@ -1629,15 +1654,16 @@ class XmppChatSession {
     return {
       channel,
       roomName,
+      seenMembers: [...(room?.seenMembers || [])],
       solarSystemID: channel === "local" ? suffix || null : null,
       corporationID: channel === "corp" ? suffix || null : null,
-      roster: [...roster.entries()].map(([characterID, member]) => ({
+      roster: (this.memberOrder.get(roomName)?.keys() || [...roster.keys()]).filter(id => roster.has(id)).map(characterID => { const member = roster.get(characterID); return ({
         characterID,
         name: member.name,
         corporationID: member.corporationID,
         allianceID: member.allianceID,
         solarSystemID: channel === "local" ? suffix || null : null,
-      })),
+      }); }),
       messages: log.slice(-capped),
     };
   }
@@ -1652,6 +1678,59 @@ class XmppChatSession {
     }
     context.assertCurrent?.();
   }
+
+  /** Native GetDisplayName uses disco#info before deciding a private/player caption. */
+  async roomInfo(roomName, context = {}) {
+    if (typeof roomName !== "string" || !/^(private|player)_[a-z0-9_-]+$/.test(roomName)) {
+      throw new XmppChatError("A private or player room name is required.", { code: "INVALID_CHANNEL", statusCode: 400 });
+    }
+    await this.ensureReady();
+    this.assertChatCurrent(context);
+    const request = this.retailStanzas().roomInfo(roomName);
+    const response = await new Promise((resolve, reject) => {
+      // xmppConnection.IssueRequest (203-234) waits thirty seconds.
+      const timer = setTimeout(() => {
+        this.infoRequests.delete(request.id);
+        reject(new XmppChatError("The chat server did not answer the room information request.", { code: "CHAT_INFO_TIMEOUT", statusCode: 504 }));
+      }, 30_000);
+      timer.unref?.();
+      this.infoRequests.set(request.id, { resolve, reject, timer });
+      this.write(request.xml);
+    });
+    this.assertChatCurrent(context);
+    const identity = /<identity\b[^>]*>/i.exec(response);
+    const field = /<field\b[^>]*\bvar=['"]muc#roominfo_occupants['"][^>]*>([\s\S]*?)<\/field>/i.exec(response);
+    const value = field && /<value>([\s\S]*?)<\/value>/i.exec(field[1]);
+    const written = value ? decodeXml(value[1]).trim() : "";
+    const occupants = /^[+-]?\d+$/.test(written) ? Number(written) : 0;
+    return {
+      roomName,
+      result: attr(response.match(/^<iq\b[^>]*>/i)?.[0] || "", "type") === "result",
+      name: identity ? attr(identity[0], "name") || null : null,
+      occupants: Number.isFinite(occupants) ? occupants : 0,
+    };
+  }
+
+  takeRoomInfo(xml) {
+    const id = attr(xml.match(/^<iq\b[^>]*>/i)?.[0] || "", "id");
+    const pending = this.infoRequests.get(id);
+    if (!pending) return;
+    this.infoRequests.delete(id);
+    clearTimeout(pending.timer);
+    pending.resolve(xml);
+  }
+
+  rejectRoomInfoRequests() {
+    const error = new XmppChatError("This chat connection ended before its room information arrived.", {
+      code: this.closed ? "CHAT_SESSION_CLOSED" : "CHAT_TRANSPORT_UNAVAILABLE", statusCode: 409,
+    });
+    for (const pending of this.infoRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.infoRequests.clear();
+  }
+
 
   /** Native JoinChannel (1013-1059): join the returned room, not a category alias. */
   async joinRoom(roomName, context = {}) {
@@ -1668,10 +1747,9 @@ class XmppChatSession {
       const room = await existing.pending.promise;
       this.assertChatCurrent(context);
       if (room.roomName === roomName) return this.snapshot(channel, context.limit);
-    } else if (existing?.roomName === roomName) {
-      return this.snapshot(channel, context.limit);
     }
-    if (existing) this.leaveRoom(existing);
+    // Native JoinChannel also sends a presence for an already joined room.
+    if (existing && existing.roomName !== roomName) this.leaveRoom(existing);
     await this.joinChannel(channel, 0, roomName, context);
     this.assertChatCurrent(context);
     return this.snapshot(channel, context.limit);
@@ -1765,6 +1843,16 @@ class XmppChatSession {
     return this.snapshot(channel, context.limit);
   }
 
+  async prepare(channel, message, context = {}) {
+    await this.ensureChannel(channel, context);
+    const typed = String(message || "").trim();
+    const spam = this.login && typed && isSpam(typed, await this.taboosKnown());
+    this.assertChatCurrent(context);
+    if (spam) throw new XmppChatError("The line has in it a site that is banned in chat, and was not sent.", { code: "CHAT_LINE_REFUSED", statusCode: 409 });
+    if (!typed) throw new XmppChatError("A chat message cannot be empty.", { code: "CHAT_EMPTY_MESSAGE", statusCode: 400 });
+    return { channel, sendable: true };
+  }
+
   async send(channel, message, context = {}) {
     const room = await this.ensureChannel(channel, context);
     const typed = String(message || "").trim();
@@ -1825,6 +1913,7 @@ class XmppChatSession {
 
   close() {
     this.closed = true;
+    this.rejectRoomInfoRequests();
     for (const room of this.rooms.values()) {
       if (room.pending) {
         room.pending.reject(new XmppChatError("This chat session has been released.", { code: "CHAT_SESSION_CLOSED", statusCode: 409 }));
@@ -1880,6 +1969,7 @@ class XmppChatSession {
     this.teardownSocket();
     this.messages.clear();
     this.rosters.clear();
+    this.memberOrder.clear();
   }
 }
 

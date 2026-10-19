@@ -458,6 +458,15 @@
       open(id);
     }
   };
+  // Native chat windows open for the pilot whose conversation was accepted/started.
+  // svelte-ignore state_referenced_locally
+  const conversations = flow.conversations.state;
+  let servedChatRequest = 0;
+  $effect(() => {
+    const request = $conversations.openSerial;
+    if (!request || request === servedChatRequest) return;
+    servedChatRequest = request; openFromPopup("chat");
+  });
   // A can or a wreck opened by Open Cargo (flow.openCargo): the inventory window opened or raised for it, as the
   // client's Inventory.OpenOrShow opens its primary window. Each one asked after this desktop was drawn.
   // svelte-ignore state_referenced_locally

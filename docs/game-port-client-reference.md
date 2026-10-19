@@ -1549,8 +1549,30 @@ writes use the existing confirmed pilot-call boundary. Three live BFF pilots hel
 rooms, exchanged messages, added a third participant, exercised all decline reasons and kept one room working
 after closing the other. A real successful preflight held across logout/reselection was retired without a late
 invitation request; closing a native session during its actual spam-list read prevented the late line.
-The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Page orchestration,
-acceptance dialogs and member actions remain next; the visible page still exposes Local/Corp only.
+The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Native private
+GetDisplayName asks disco#info at the full room JID; a player room asks the conference service with its
+room name as node (1327 to 1342). The adapter now correlates these IQ replies, returns the actual identity
+name and occupant count, and rejects pending requests when the connection closes, using IssueRequest
+203 to 234's thirty-second deadline. Original compiled GetDisplayName and xmpphandler.issue_request
+confirmed both stanzas: private counts below two choose PrivateChatAlone; without a window, two or more
+choose PrivateChat with the count. GetPrivateChannelDisplayName uses other member names, a pending
+target fallback, and GroupChat for multiple others. GetMembers is the native member dict's keys (window459),
+so names follow its Python dict order. Live room counts changed 0/1/2/1/0, concurrent private/player IQs
+kept distinct replies, and queries never implicitly joined. A real successful response held across pilot
+replacement retired; closing an actual pending IQ rejected it and ignored the held late reply.
+The page now owns this private-conversation sequence in `chatConversations.ts`. Shared single-owner
+Contacts and Member List menus offer Start Conversation and the native eligible-room submenu. Private
+rooms retain independent histories, rosters and drafts alongside Local/Corp on desktop and phone.
+The nonmodal invitation window is keyed by sender and offers the native four choices, default Accept;
+Accept and Add opens the existing Contact Management form rather than writing a default contact.
+Blocked, auto-reject, personal-contact and already-joined decisions run in native order. Each awaited
+operation keeps its captured pilot, including the spam preflight before the first invitation.
+The mutable member-key table follows CPython 2.7 deletion and resize order; thirty operations matched
+the installed client's compiled `GetMembers`. Live browser checks covered first-send order, rejection
+cleanup, all four choices, duplicate invitations, pending-close cleanup, two independent rooms and a
+third participant. A real successful preflight held across a change of pilot retired without an invite
+or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
+verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
 
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
@@ -1934,6 +1956,10 @@ the five positional `charMgr` arguments, removal passes the ID list, and BlockOw
 Buddy additions prime the held online state before a missing status lookup; removing personal contacts clears
 their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
 in the recursive Tranquility corpus search. Alliance row contact actions are separate work.
+
+The remaining corporation owner-menu administration flows and their native membership prerequisite are
+sized in [Corporation owner actions](game-port-corporation-owner-actions.md). Membership is retained from
+`GetEveOwners` and changed by notices; it is not a target's public corporation read.
 
 Corporation member-row contacts follow compiled `CharacterChecker` 55-60/314-321 and
 `SessionChecker.IsDiplomat`: director or diplomat, non-NPC targets, including self and multiple selections.

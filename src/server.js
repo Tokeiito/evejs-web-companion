@@ -7693,6 +7693,24 @@ async function answerCorpAssets(held, call, req, res, next) {
 }
 
 // --- R80 plumbing sweep: corpRegistry batch A (member / info core; no UI) -------
+// bco_members.GetMemberIDs: the IDs retained from the native login prime and
+// changed by membership notices. This is not a synthesized GetEveOwners reply.
+app.get("/api/bridge/corporation/member-ids", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    let membership;
+    if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+      membership = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corporationMemberIDs({ userid: held.accountID }, held.bridgeSessionID));
+    } else {
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetEveOwners", [], null);
+      const { corporationMemberIDsOf } = require("./gamePort/pilotCorporationMembers");
+      membership = { corporationID: Number(held.corporationID), memberIDs: corporationMemberIDsOf(answer.result), notifications: answer.notifications ?? [] };
+    }
+    res.json({ ok: true, ...membership });
+  } catch (error) { next(error); }
+});
+
 // PLUMBING ONLY: three routes make the corpRegistry MEMBER + REGISTRY-META READS
 // reachable + decodable so a later goal builds UI cheaply. No panel/tab/store slice
 // ships. corpRegistry is retail-bound per corp (eveMoniker.GetCorpRegistry(corpID)),
@@ -8657,7 +8675,18 @@ app.get("/api/bridge/chat", requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-for (const operation of ["join", "leave", "invite"]) {
+app.get("/api/bridge/chat/:roomName/info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const session = heldChatSession(held);
+  if (!session) return chatUnavailable(res);
+  try {
+    const chat = await session.roomInfo(req.params.roomName, chatContext(held, req));
+    res.json({ ok: true, chat, notifications: [] });
+  } catch (error) { next(error); }
+});
+
+for (const operation of ["join", "leave", "invite", "prepare"]) {
   app.post(`/api/bridge/chat/:channel/${operation}`, requireAuth, async (req, res, next) => {
     const held = requireHeldBridgeSession(req, res);
     if (!held) return;
@@ -8671,6 +8700,8 @@ for (const operation of ["join", "leave", "invite"]) {
         ? await session.joinRoom(channel, { ...context, password: typeof req.body?.password === "string" ? req.body.password : "" })
         : operation === "leave"
           ? session.leave(channel, context)
+          : operation === "prepare"
+            ? await session.prepare(channel, req.body?.message, context)
           : await session.invite(channel, Number(req.body?.characterID), typeof req.body?.reason === "string" ? req.body.reason : "", context);
       res.json({ ok: true, chat, notifications: [] });
     } catch (error) { next(error); }
@@ -13588,6 +13619,14 @@ app.get("/api/client-data/race-name-ids", requireAuth, async (req, res, next) =>
   try {
     const names = await clientBuiltData.table("raceNameIDs");
     res.json({ ok: true, available: names !== null, names });
+  } catch (error) { next(error); }
+});
+
+// Native chat role gates and cfg owner classification, from the installed modules.
+app.get("/api/client-data/chat-rules", requireAuth, async (req, res, next) => {
+  try {
+    const rules = await clientConstants.chatRules();
+    res.json({ ok: true, available: rules !== null, rules });
   } catch (error) { next(error); }
 });
 

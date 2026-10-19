@@ -125,6 +125,14 @@
     selected = request.id;
   });
 
+  // svelte-ignore state_referenced_locally
+  const conversations = flow.conversations.state;
+  let servedChatRequest = 0;
+  $effect(() => {
+    const request = $conversations.openSerial;
+    if (!request || request === servedChatRequest) return;
+    servedChatRequest = request; selected = "chat";
+  });
   const effective = $derived(
     selected !== null && isTabVisible(selected, isDocked) && isWindowTab(selected) ? selected : null,
   );

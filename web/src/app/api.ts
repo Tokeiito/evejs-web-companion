@@ -1959,9 +1959,27 @@ export async function sendChat(
   return data.chat ?? null;
 }
 
+/** bco_members.GetMemberIDs: IDs retained by the native connection's membership service. */
+export async function readCorporationMemberIDs(options: ApiOptions = {}): Promise<{ readonly corporationID: number; readonly memberIDs: readonly number[] }> {
+  const data = await getJson("/api/bridge/corporation/member-ids", options);
+  if (typeof data.corporationID !== "number" || !Array.isArray(data.memberIDs) || !data.memberIDs.every(id => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) throw new Error("Your corporation's retained members could not be read.");
+  return { corporationID: data.corporationID, memberIDs: data.memberIDs as number[] };
+}
+
 /** Native room transport primitives; the page owns invitation and conversation policy. */
 export async function readChatRooms(options: ApiOptions = {}): Promise<JsonValue> {
   return (await getJson("/api/bridge/chat", options)).chat ?? null;
+}
+
+export async function readChatRules(options: ApiOptions = {}): Promise<{ readonly groupCharacter: number; readonly elevated: bigint }> {
+  const data = await getJson("/api/client-data/chat-rules", options);
+  const rules = data.rules as Record<string, JsonValue> | null;
+  if (!data.available || !rules || typeof rules.groupCharacter !== "number") throw new Error("The installed client's chat constants are unavailable.");
+  return { groupCharacter: rules.groupCharacter, elevated: BigInt(String(rules.ROLE_CHTADMINISTRATOR)) | BigInt(String(rules.ROLE_GML)) | BigInt(String(rules.ROLE_LEGIONEER)) };
+}
+
+export async function readChatRoomInfo(roomName: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await getJson(`/api/bridge/chat/${encodeURIComponent(roomName)}/info`, options)).chat ?? null;
 }
 
 export async function joinChatRoom(roomName: string, password = "", options: ApiOptions = {}): Promise<JsonValue> {
@@ -1970,6 +1988,10 @@ export async function joinChatRoom(roomName: string, password = "", options: Api
 
 export async function leaveChatRoom(channel: string, options: ApiOptions = {}): Promise<JsonValue> {
   return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/leave`, {}, options)).chat ?? null;
+}
+
+export async function prepareChatMessage(channel: string, message: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/prepare`, { message }, options)).chat ?? null;
 }
 
 export async function inviteToChatRoom(channel: string, characterID: number, reason: string, options: ApiOptions = {}): Promise<JsonValue> {
