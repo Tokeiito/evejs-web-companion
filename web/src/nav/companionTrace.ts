@@ -87,6 +87,12 @@ export interface GunsTrace {
   /** Let through because reach or distance was unknown (fail open). */
   readonly assumed: readonly number[];
   readonly outOfReach: readonly number[];
+  /**
+   * Guns still cycling on the ship the call moved off, which rung 7 has stopped
+   * (once each) to turn onto this one. Absent when there are none. A gun that is
+   * cycling is never re-activated: this server refuses it (`EffectAlreadyActive2`).
+   */
+  readonly switching?: readonly number[];
 }
 
 export type PropsBecause =
@@ -211,7 +217,9 @@ export function coarseTraceKey(trace: CompanionTrace | null | undefined): string
   }
   const g = trace.guns;
   if (g !== undefined) {
-    parts.push(`g:${g.targetID ?? "-"}/${g.inReach.length}/${g.assumed.length}/${g.outOfReach.length}`);
+    // The switch count only when there is one, so a key without it is unchanged.
+    const switching = g.switching === undefined || g.switching.length === 0 ? "" : `/s${g.switching.length}`;
+    parts.push(`g:${g.targetID ?? "-"}/${g.inReach.length}/${g.assumed.length}/${g.outOfReach.length}${switching}`);
   }
   const p = trace.props;
   if (p !== undefined) {
