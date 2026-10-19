@@ -87,6 +87,9 @@ export const NOTICE_SOURCES: readonly NoticeSource[] = [
   { slice: "agents", field: "actionError", kind: "danger", title: "Agents", saidBy: "actionErrorSaid" },
   { slice: "skills", field: "actionError", kind: "danger", title: "Skills", saidBy: "actionErrorSaid" },
   { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet", saidBy: "actionErrorSaid" },
+  // What the server told the player unasked (OnRemoteMessage): its notices, and its errors.
+  { slice: "serverMessages", field: "notice", kind: "info", title: "Server" },
+  { slice: "serverMessages", field: "error", kind: "danger", title: "Server" },
 ];
 
 /**
