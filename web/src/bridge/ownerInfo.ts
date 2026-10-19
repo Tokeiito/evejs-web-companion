@@ -149,6 +149,11 @@ export function warPermitLabel(allowWar: boolean | null): string {
 
 /** fwCharacterEnlistmentMgr.GetCorpAllowedEnlistmentFactions: the factions' numbers; null for anything else. */
 export function enlistmentFactionsOf(result: JsonValue | null | undefined): readonly number[] | null {
+  // Native UpdateDataCorp iterates these too. No owner lookup occurs for an
+  // empty dict/str/unicode, but the "No factions permitted" row is still built.
+  if (result === "" || (isRecord(result)
+    && ((result.type === "dict" && Array.isArray(result.entries) && result.entries.length === 0)
+      || (result.type === "wstring" && result.value === "")))) return [];
   // UpdateDataCorp iterates the answer directly. Numeric/bool scalars cannot
   // become an omitted row; native iteration raises TypeError before owner reads.
   // The bridge collapses some int/long/integral-float types, so do not invent

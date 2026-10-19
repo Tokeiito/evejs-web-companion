@@ -371,6 +371,16 @@ some int/long/integral-float distinctions. Native exception type and completion
 order are preserved; numeric diagnostic identity needs transport type retention.
 Other iterable answers and their owner lookups remain separate port work.
 
+Empty dictionaries, byte strings and Unicode strings now produce an empty
+faction list, retaining the NoFwFactionsPermitted row. Original UpdateDataCorp
+with compiled Recordset.Get confirms these empty iterables perform no faction
+owner lookup and still build the same row as empty list/tuple/set. Controlled
+replacement after actual successful replies verifies all six empty forms;
+the browser displays Permitted Faction Enlistments: None for the empty dict,
+with normal public/aggression/enlistment order and no console errors. Nonempty
+iterables still need the native int(key), owner-cache/Prime failure and ordering
+port; no general dict or string iteration behavior is claimed by this change.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/
