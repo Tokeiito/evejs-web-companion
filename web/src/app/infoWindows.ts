@@ -39,7 +39,8 @@ export function createInfoWindows(deps: {
     else { history = history.map((e, i) => i === index ? entry : e); }
     w.reads.retireRegistered();
     const epoch = generation;
-    const reads = createInfoReadScope(() => epoch === generation, !directHistory);
+    const reads = createInfoReadScope(() => epoch === generation, entry.identity, !directHistory,
+      directHistory && entry.identity.content === "corporation" ? w.reads.identity.get() : undefined);
     subjects.get(w.id)?.set({ ...entry.subject });
     update(w.id, current => ({ ...current, entry, history, index, reads,
       reconstruction: current.reconstruction + (entry.identity.content === "ship" ? 0 : 1), minimized: false }));
@@ -72,13 +73,16 @@ export function createInfoWindows(deps: {
         subjects.set(id, signal);
         const offset = (windows.length % 8) * 24;
         const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [entry], index: 0, reconstruction: 1,
-          reads: createInfoReadScope(() => epoch === generation),
+          reads: createInfoReadScope(() => epoch === generation, identity),
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
         state.set([...windows, w]); requestRaise(id); return id;
       }
-      const duplicate = existing.entry.identity.typeID === identity.typeID && existing.entry.identity.itemID === identity.itemID;
+      // Corporation content waits for GetPublicInfo before its parent assigns
+      // type/item. Requested identity alone cannot decide a native duplicate.
+      const applied = existing.reads.identity.get();
+      const duplicate = applied !== null && applied.typeID === identity.typeID && applied.itemID === identity.itemID;
       // A duplicate modern window does not reconstruct OR maximize here.
       if (duplicate && identity.content !== "legacy") return existing.id;
       reconstruct(existing, entry, !options.traversingHistory && !duplicate);

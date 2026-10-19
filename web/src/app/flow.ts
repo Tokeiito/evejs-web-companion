@@ -12369,8 +12369,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); }) : bridgeAsk;
     try {
       reads?.assertCurrent();
-      const info = corporationPublicInfoOf(await ask("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
-      reads?.assertCurrent();
+      let answer: JsonValue;
+      try { answer = await ask("corpmgr", "GetPublicInfo", [corporationID]); }
+      catch { reads?.assertCurrent(); return null; }
+      // CorporationInfoWindow49-51 calls its parent only after a successful
+      // public-info reply; that parent assigns even if the returned record is None.
+      reads?.identify();
+      const info = corporationPublicInfoOf(answer);
       if (info === null) return null;
       // infosvc.UpdateDataCorp1226-1233 reads friendly fire before enlistments.
       const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null);
