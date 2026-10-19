@@ -501,11 +501,6 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
   error: null,
 });
 
-// R50 wallet (extended R54). Every list starts NULL, not 0/[]: a balance not yet
-// read must not render as 0 ISK, and an unread corp wallet / ledger must not look
-// like a corporation with no divisions or a wallet with no history. An empty
-// `corpDivisions`/`journal`/`transactions` list becomes a real answer only from a
-// SUCCESSFUL read that carried no rows.
 /**
  * What the account may redeem (redeemsvc.py): null until read, and where the pilot's transport does not carry the
  * read; an empty list is a real "nothing to redeem". A failed re-read keeps what was had, with its error.
@@ -517,6 +512,11 @@ export interface RedeemState {
 
 const INITIAL_REDEEM: RedeemState = Object.freeze({ tokens: null, error: null });
 
+// R50 wallet (extended R54). Every list starts NULL, not 0/[]: a balance not yet
+// read must not render as 0 ISK, and an unread corp wallet / ledger must not look
+// like a corporation with no divisions or a wallet with no history. An empty
+// `corpDivisions`/`journal`/`transactions` list becomes a real answer only from a
+// SUCCESSFUL read that carried no rows.
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
   cashError: null,
