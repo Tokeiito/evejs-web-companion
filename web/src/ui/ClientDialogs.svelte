@@ -25,6 +25,11 @@
   // (is_modal) for a pilot not in front.
   import { onDestroy, tick, untrack } from "svelte";
   import { DO_NOT_ASK_AGAIN_LABEL, DO_NOT_SHOW_AGAIN_LABEL, answerKept, suppressKey } from "../bridge/dialogSuppression.ts";
+
+  function focusDefault(node: HTMLButtonElement, question: number | null) {
+    if (question !== null) node.focus();
+    return { update(next: number | null) { if (next !== null) node.focus(); } };
+  }
   import type { Session } from "../app/sessions.ts";
   import type { MultiBuyAsk, MultiBuyRow, SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
@@ -709,7 +714,7 @@
     const title = own || (typeof typeWords === "string" && typeWords !== "" ? typeWords : OWN_TITLES[typeTitle] ?? "Information");
     const body = first.type === null ? first.said.fallback : questionText(partOf(first.said, "body"), nameOf, client) || first.said.fallback;
     const suppress = $words.templates[suppressKey(first.said.dialog)];
-    return { said: first.said, title, body, markup: bodyMarkup(first.said, first.type !== null), suppress: typeof suppress === "string" ? suppress : null };
+    return { said: first.said, title, body, markup: bodyMarkup(first.said, first.type !== null), suppress: typeof suppress === "string" ? first.said.suppressAnswer ?? suppress : null };
   });
   // The box's checkbox, unticked for each box put up.
   let keepTicked = $state(false);
@@ -1623,7 +1628,7 @@
       <span class="answers">
         {#if box.said.answers === "yesno"}
           <button type="button" onclick={() => answerBox("yes")}>{wordOf("UI/Common/Buttons/Yes", "Yes")}</button>
-          <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+          <button type="button" use:focusDefault={inFront && box.said.defaultAnswer === "no" ? box.said.n : null} onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
         {:else if box.said.answers === "okcancel"}
           <!-- uiconst.OKCANCEL: OK the question's yes, Cancel its no. -->
           <button type="button" onclick={() => answerBox("ok")}>{wordOf("UI/Common/Buttons/OK", "OK")}</button>

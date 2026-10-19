@@ -1365,7 +1365,14 @@ export interface SkillsRequiredRow {
   readonly boxes: readonly { readonly box: SkillLevelBox; readonly partial: boolean }[];
 }
 
-/** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
+/** The character owner menu's fleet management actions (menusvc.FleetMenu). */
+export type FleetMenuAction =
+  | { readonly kind: "leader" | "kick"; readonly characterID: number }
+  | { readonly kind: "move"; readonly characterID: number; readonly wingID: number | null; readonly squadID: number | null; readonly role: number }
+  | { readonly kind: "watch"; readonly characterID: number; readonly add: boolean }
+  | { readonly kind: "travelToMe" | "leave" };
+
+/** A dialog a refusal named (AppFlow.dialogsSaid): its name, values, and fallback words. */
 export interface SaidDialog {
   readonly n: number;
   readonly dialog: string;
@@ -1377,6 +1384,10 @@ export interface SaidDialog {
    * AppFlow.answerDialog (Yes and OK true); else OK alone.
    */
   readonly answers?: "yesno" | "okcancel";
+  /** An explicit native default (fleetSvc.MakeLeader uses ID_NO). */
+  readonly defaultAnswer?: "no";
+  /** An explicit prompt_player_fsd_dialog suppress argument, where the dialog is suppressable. */
+  readonly suppressAnswer?: "yes";
 }
 
 export interface AppFlow {
@@ -1914,6 +1925,8 @@ export interface AppFlow {
   kickFleetMember(characterID: number): Promise<void>;
   /** Hand the fleet's boss on to a member, as the fleet's menu for a member does once asked; the fleet read again. */
   makeFleetLeader(characterID: number): Promise<void>;
+  /** The native owner menu's questions and local refusals, shared by Contacts and corporation members. */
+  fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null>;
   /** Give a member another place in the fleet, as the fleet's menu for a member does (Move Fleet Member); the fleet read again. */
   moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void>;
   /** Warp to a member of the pilot's fleet at a range, as the fleet's menu for a member does. */
@@ -9241,15 +9254,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
   // answer; true on Yes. With uiconst.OKCANCEL (answers "okcancel"): OK and Cancel, true on OK.
   const dialogAnswers = new Map<number, (yes: boolean) => void>();
-  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno"): Promise<boolean> {
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string, answers: "yesno" | "okcancel" = "yesno", prompt: Pick<SaidDialog, "defaultAnswer" | "suppressAnswer"> = {}): Promise<boolean> {
     const kept = dialogAnswerKept(dialog);
     // A question's kept answer: Yes, or OK where the question is OK and Cancel (suppress=uiconst.ID_OK).
-    if (kept !== null) return Promise.resolve(kept === "yes" || kept === "ok");
+    // dialog_handler59-64: an explicit suppress argument overrides the saved result.
+    if (kept !== null) return Promise.resolve(prompt.suppressAnswer === "yes" || kept === "yes" || kept === "ok");
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
     return new Promise((resolve) => {
       dialogAnswers.set(n, resolve);
-      putDialog({ n, dialog, values, fallback, answers });
+      putDialog({ n, dialog, values, fallback, answers, ...prompt });
     });
   }
 
@@ -13369,6 +13383,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await runFleetAction("leader", () => makeFleetLeaderCall(bridgeDo, characterID), "ready");
   }
 
+  // fleetSvc.MakeLeader601, CheckIfIsOKWithDemotion505, AddFavorite640 and SendBroadcast_TravelTo1034.
+  // Keep questions outside the ephemeral owner menu, and fence the answer to the pilot that asked it.
+  async function fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null> {
+    const current = callOptions.captureRequestGuard!();
+    try {
+      if (action.kind === "leader") {
+        if (!(await askDialog("ConfirmMakeFleetBoss", { type: "dict", entries: [["charName", [2, action.characterID]]] }, "Make this pilot the fleet's boss?", "yesno", { defaultAnswer: "no", suppressAnswer: "yes" }))) return null;
+        current();
+        await makeFleetLeader(action.characterID);
+      } else if (action.kind === "move") {
+        const me = onlineCharacterID();
+        const mine = store.fleet.get().fleet?.initState.value.members.find(member => Number(member.charID) === me);
+        if (action.characterID === me && mine && !(mine.job & 2) && mine.role < 3 && action.role > mine.role) {
+          if (!(await askDialog("FleetConfirmDemoteSelf", { type: "dict", entries: [] }, "This gives up the command you hold. Continue?"))) return null;
+          current();
+        }
+        await moveFleetMember(action.characterID, action.wingID, action.squadID, action.role);
+      } else if (action.kind === "watch") {
+        const outcome = action.add ? await addToFleetWatchlist([action.characterID]) : await removeFromFleetWatchlist(action.characterID);
+        current();
+        if (outcome === "not-in-fleet") sayDialog("FleetNotInFleet", null, "That needs a fleet.");
+        if (outcome === "too-many") sayDialog("FleetTooManyFavorites", { type: "dict", entries: [["num", MAX_WATCHLIST]] }, `The watchlist holds ${MAX_WATCHLIST} pilots at most.`);
+        return outcome === "added" ? "watchlist" : null;
+      } else if (action.kind === "travelToMe") {
+        const outcome = await broadcastTravelToMe();
+        current();
+        const refusal = outcome === "not-in-fleet" ? "FleetNotInFleetInSpace" : outcome === "in-station" ? "FleetCannotDoInStation" : outcome === "in-structure" ? "FleetCannotDoInStructure" : null;
+        if (refusal) sayDialog(refusal, null, "That needs a fleet and a ship in space.");
+        return null;
+      } else if (action.kind === "kick") await kickFleetMember(action.characterID);
+      else await leaveFleet();
+      current();
+      const state = store.fleet.get();
+      if (state.actionError && !state.actionErrorSaid) throw new Error(state.actionError);
+      return null;
+    } catch (error) {
+      throwIfRequestRetired(error);
+      current();
+      if (sayRefusalDialog(error, errorWords(error))) return null;
+      throw error;
+    }
+  }
+
   // fleetSvc.MoveMember (513 to 520): self.fleet.MoveMember(charID, wingID, squadID, role); the asking of a pilot who
   // moves itself down (CheckIfIsOKWithDemotion) is the menu's, before this.
   async function moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
@@ -13399,10 +13456,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // menu for the pilot's own (menusvc.FleetMenu, Broadcast Travel To Me). CheckIsInFleet(inSpace=True) first (848 to
   // 858: no fleet's object, then no solar system, then docked in a structure), then the wait (fleetWrites.ts).
   async function broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure"> {
+    const current = callOptions.captureRequestGuard!();
     if (store.fleet.get().availability !== "ready") {
       return "not-in-fleet";
     }
     const now = await readFlightNow();
+    current();
     if (!now.inSpace) {
       return now.structureID !== null && now.structureID !== undefined ? "in-structure" : "in-station";
     }
@@ -28196,6 +28255,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     leaveFleet,
     kickFleetMember,
     makeFleetLeader,
+    fleetMenuAction,
     moveFleetMember,
     warpToFleetMember,
     warpFleetToMember,
