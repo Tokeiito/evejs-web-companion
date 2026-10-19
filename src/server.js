@@ -8483,7 +8483,7 @@ app.get("/api/dockable-structures/:id/services", requireAuth, async (req, res, n
 //     empty until somebody speaks. The old store-backed read could answer with
 //     lines from before the browser existed.
 
-const CHAT_CHANNELS = new Set(["local", "corp"]);
+const CHAT_CHANNELS = new Set(["local", "corp", "alliance", "fleet", "faction"]);
 
 /**
  * The held session's chat connection, opened on first use.
@@ -8625,28 +8625,81 @@ function chatContext(held, req) {
     // computes a room name. See ensureChannel in src/evejsXmppChat.js.
     solarSystemID: Number(held.solarSystemID) || 0,
     limit: Number(req.query?.limit) || undefined,
+    assertCurrent: () => {
+      assertHeldRequestGeneration(req, held);
+      assertCurrentHeldSession(held, req.webSessionID);
+    },
   };
 }
 
-function normalizeChatChannel(res, value) {
+function normalizeChatChannel(res, value, session = null) {
   const channel = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (!CHAT_CHANNELS.has(channel)) {
+  if (!CHAT_CHANNELS.has(channel) && !/^[a-z0-9]+_[a-z0-9_-]+$/.test(channel) && !session?.rooms?.has(channel)) {
     res.status(400).json({
       ok: false,
       error: "INVALID_CHANNEL",
-      message: "channel must be 'local' or 'corp'.",
+      message: "channel must name a session channel or a full chat room.",
     });
     return null;
   }
   return channel;
 }
 
+// Atomic XMPP operations only. Native conversation/acceptance policy runs in the page.
+app.get("/api/bridge/chat", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const session = heldChatSession(held);
+  if (!session) return chatUnavailable(res);
+  try {
+    const chat = await session.overview(chatContext(held, req));
+    res.json({ ok: true, chat, notifications: [] });
+  } catch (error) { next(error); }
+});
+
+for (const operation of ["join", "leave", "invite"]) {
+  app.post(`/api/bridge/chat/:channel/${operation}`, requireAuth, async (req, res, next) => {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const session = heldChatSession(held);
+    if (!session) return chatUnavailable(res);
+    const channel = normalizeChatChannel(res, req.params.channel, session);
+    if (!channel) return;
+    try {
+      const context = chatContext(held, req);
+      const chat = operation === "join"
+        ? await session.joinRoom(channel, { ...context, password: typeof req.body?.password === "string" ? req.body.password : "" })
+        : operation === "leave"
+          ? session.leave(channel, context)
+          : await session.invite(channel, Number(req.body?.characterID), typeof req.body?.reason === "string" ? req.body.reason : "", context);
+      res.json({ ok: true, chat, notifications: [] });
+    } catch (error) { next(error); }
+  });
+}
+
+for (const operation of ["reject", "acknowledge"]) {
+  app.post(`/api/bridge/chat/invitations/:id/${operation}`, requireAuth, async (req, res, next) => {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) return;
+    const session = heldChatSession(held);
+    if (!session) return chatUnavailable(res);
+    try {
+      const context = chatContext(held, req);
+      const chat = operation === "reject"
+        ? await session.rejectInvitation(String(req.params.id), req.body?.reason, context)
+        : { acknowledged: session.forgetInvitation(String(req.params.id), context) };
+      res.json({ ok: true, chat, notifications: [] });
+    } catch (error) { next(error); }
+  });
+}
+
+
 app.get("/api/bridge/chat/:channel", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
   }
-  const channel = normalizeChatChannel(res, req.params.channel);
+  const channel = normalizeChatChannel(res, req.params.channel, held.chat);
   if (!channel) {
     return;
   }
@@ -8668,7 +8721,7 @@ app.post("/api/bridge/chat/:channel/send", requireAuth, async (req, res, next) =
   if (!held) {
     return;
   }
-  const channel = normalizeChatChannel(res, req.params.channel);
+  const channel = normalizeChatChannel(res, req.params.channel, held.chat);
   if (!channel) {
     return;
   }

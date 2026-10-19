@@ -1542,8 +1542,15 @@ Three actual game-port/XMPP sessions reproduced EveJS dropping declines and refu
 third player. EveJS `4dce363ec` relays each decline from the room with the authenticated rejecting character;
 `f35c0cfe9` admits an explicitly invited additional participant without adding moderation rights. After a cold
 start, all three reasons arrived, an uninvited third player was refused, then its invitation, join, reply and
-three-member rosters succeeded. Creation alone still sent zero invitations. Browser private-room orchestration
-and invitation UI remain the next work; the page still exposes Local/Corp only.
+three-member rosters succeeded. Creation alone still sent zero invitations. The production XMPP adapter now
+keeps full private/player/bot/system identities, retains optional invitations and declines, and exposes atomic
+room join/read/send/leave/invite/reject/acknowledge through the BFF and typed page API. The two native proxy
+writes use the existing confirmed pilot-call boundary. Three live BFF pilots held two independent private
+rooms, exchanged messages, added a third participant, exercised all decline reasons and kept one room working
+after closing the other. A real successful preflight held across logout/reselection was retired without a late
+invitation request; closing a native session during its actual spam-list read prevented the late line.
+The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Page orchestration,
+acceptance dialogs and member actions remain next; the visible page still exposes Local/Corp only.
 
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to

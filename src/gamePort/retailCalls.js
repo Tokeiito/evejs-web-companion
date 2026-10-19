@@ -637,6 +637,8 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  // xmppchatsvc.py 1197-1208 / 1257-1261: private allocation and elevated addition, both on the proxy.
+  "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
   "charMgr.GetPrivateInfo",
   "bannedwords.check_search_words_allowed",
   "facWarMgr.GetCorporationWarFactionID",

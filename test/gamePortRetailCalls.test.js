@@ -1726,6 +1726,8 @@ test("what goes up into a customs office, and comes down from one, goes as the c
 
 test("the game port carries the customs office's transfer, the station's offices and the clone's grade, which the web gateway's list has not got", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // Original build-3396210 xmppchatsvc.py 1197-1208 / 1257-1261: proxy writes.
+    "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
     // EditMemberDialog.LoadChar 148: the private character row for Member Details.
     "charMgr.GetPrivateInfo",
     // bannedwords_client.py 80-82: config-gated positional search validation.

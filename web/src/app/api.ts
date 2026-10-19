@@ -1942,21 +1942,46 @@ function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | un
 
 /** Read a chat channel's roster + recent backlog (raw; decoded in the flow). */
 export async function readChat(
-  channel: "local" | "corp",
+  channel: string,
   options: ApiOptions = {},
 ): Promise<JsonValue> {
-  const data = await getJson(`/api/bridge/chat/${channel}`, options);
+  const data = await getJson(`/api/bridge/chat/${encodeURIComponent(channel)}`, options);
   return data.chat ?? null;
 }
 
 /** Send a message to a chat channel; returns the raw send echo. */
 export async function sendChat(
-  channel: "local" | "corp",
+  channel: string,
   message: string,
   options: ApiOptions = {},
 ): Promise<JsonValue> {
-  const data = await postJson(`/api/bridge/chat/${channel}/send`, { message }, options);
+  const data = await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/send`, { message }, options);
   return data.chat ?? null;
+}
+
+/** Native room transport primitives; the page owns invitation and conversation policy. */
+export async function readChatRooms(options: ApiOptions = {}): Promise<JsonValue> {
+  return (await getJson("/api/bridge/chat", options)).chat ?? null;
+}
+
+export async function joinChatRoom(roomName: string, password = "", options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/${encodeURIComponent(roomName)}/join`, { password }, options)).chat ?? null;
+}
+
+export async function leaveChatRoom(channel: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/leave`, {}, options)).chat ?? null;
+}
+
+export async function inviteToChatRoom(channel: string, characterID: number, reason: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/invite`, { characterID, reason }, options)).chat ?? null;
+}
+
+export async function rejectChatInvitation(id: string, reason: "rejected" | "blocked" | "rejected_and_blocked", options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/invitations/${encodeURIComponent(id)}/reject`, { reason }, options)).chat ?? null;
+}
+
+export async function acknowledgeChatInvitation(id: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/invitations/${encodeURIComponent(id)}/acknowledge`, {}, options)).chat ?? null;
 }
 
 // --- R10 Live event channel (SSE) ------------------------------------------

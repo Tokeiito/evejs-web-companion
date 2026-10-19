@@ -2442,6 +2442,50 @@ including us, and that echo is what a later read returns.
 Empty message → `400 EMPTY_MESSAGE`; unknown channel → `400 INVALID_CHANNEL`; no
 character online → `409 NO_LIVE_SESSION`.
 
+### Private rooms and invitation transport (2026-10-19)
+
+Game-port chat connects at character selection and uses the native proxy hostname,
+authentication and system-channel resync. The older lazy-connection/alias description
+above describes the gateway fallback. Native `GetWindowNameForGroup` keeps each
+private/player/bot/system room under its full name; Local variants share `local`.
+Other joined room categories retain their native category key. Use the `channel`
+key returned by the overview for reads, sends, invitations and leaves.
+
+These atomic routes use the existing HTTP/socket request carriage and held pilot:
+
+- `GET /api/bridge/chat` returns `{ok:true, chat:{channels, invitations, declines}, notifications:[]}`.
+  Channels contain the existing roster/message snapshots. Invitations contain
+  `{id, roomName, senderCharacterID, reason, password}` and remain until handled.
+  Repeated pending invitations from the same sender/room keep their ID. Declines
+  contain `{id, roomName, senderCharacterID, reason}`; the last 200 remain available.
+- `POST /api/bridge/chat/:roomName/join`, body `{password?:string}`, joins that
+  full room name with the native presence and returns its channel snapshot.
+- `POST /api/bridge/chat/:channel/leave`, body `{}`, leaves that room and returns
+  `{channel,left}`. Other conversations remain joined.
+- `POST /api/bridge/chat/:channel/invite`, body `{characterID,reason}`, sends the
+  native mediated MUC invitation to a different character in a private/player
+  room. It returns `{channel,roomName,invited:true}` after dispatch.
+- `POST /api/bridge/chat/invitations/:id/reject`, body
+  `{reason:"rejected"|"blocked"|"rejected_and_blocked"}`, sends the native decline
+  before joining and forgets that invitation. It returns `{declined:boolean}`.
+- `POST /api/bridge/chat/invitations/:id/acknowledge`, body `{}`, forgets the
+  invitation after the page accepts or ignores it, sending no XMPP stanza.
+
+Existing `GET /chat/:channel` and `POST /chat/:channel/send` also accept dynamic
+room keys. An unjoined dynamic room returns `409 CHAT_NO_CHANNEL` without a system
+resync or an implicit join. Invitations to Local/Corp are refused. Pending joins
+reject when their chat session closes. Every awaited action rechecks the captured
+held pilot immediately before writing; sends also recheck after the spam-list read.
+
+The generic confirmed pilot-write boundary now carries the proxy calls
+`XmppChatMgr.CreatePrivateChannel(characterID)` and
+`XmppChatMgr.AddCharacterToChannel(roomName,characterID,reason)`.
+These are the original client's calls, not a BFF conversation workflow.
+The page still must port first-send invitation timing, personal-contact/blocked/
+auto-rejection acceptance ordering, dialogs and pending conversation cleanup.
+No new member menu caption is exposed until that complete page flow works.
+
+
 ## Live event channel — the push path (R10 / roadmap G6)
 
 Everything above is **pull**: handler notifications are captured into a
