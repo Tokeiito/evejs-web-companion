@@ -120,6 +120,18 @@ import {
   utilitiesAfterWarp,
   type CompanionUtilityMemory,
 } from "./companionUtilities.ts";
+// Ammo by target (plan §5.2): the reload rung's ranking and the swap step live
+// in their own file; this ladder keeps the two call sites and the memory.
+import {
+  decideAmmoSwap,
+  emptyGunAmmo,
+  FRESH_COMPANION_AMMO,
+  type AmmoLadder,
+  type CompanionAmmoMemory,
+  type RatResonances,
+  type WeaponCycleFacts,
+} from "./companionAmmo.ts";
+import type { ChargeFacts } from "./ammoReach.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -891,6 +903,17 @@ export interface FleetCompanionObservation extends ScriptObservation {
    * combatPosition.ts). `null` or absent is the same thing said about every type.
    */
   readonly ratCombatByTypeID?: Readonly<Record<number, RatCombatFacts>> | null;
+  /**
+   * Each hostile TYPE's shield / armour / hull resonances, for ranking ammo
+   * against the layer being hit (companionAmmo.ts). Same fetch and same rule as
+   * `ratCombatByTypeID`: a type missing is unread, and its ammo ranks on raw
+   * damage.
+   */
+  readonly ratResonancesByTypeID?: Readonly<Record<number, RatResonances>> | null;
+  /** Each charge TYPE aboard or loaded: damage split, range factors, size, name (ammoReach.ts). */
+  readonly chargeFactsByTypeID?: Readonly<Record<number, ChargeFacts>> | null;
+  /** Each weapon module TYPE's base rate of fire, damage multiplier and reload time. */
+  readonly weaponCycleByTypeID?: Readonly<Record<number, WeaponCycleFacts>> | null;
 }
 
 /**
@@ -2042,6 +2065,12 @@ export interface CompanionLadderMemory {
    * a flee and a resume forget it; a warp forgets the targeted half.
    */
   readonly utilities: CompanionUtilityMemory;
+  /**
+   * Ammo by target: the swap gate's memory per firing unit, the target rung 7
+   * last stood on, and each gun's last measured loaded reach. See
+   * companionAmmo.ts. Carried like the other combat memory; fresh on resume.
+   */
+  readonly ammo: CompanionAmmoMemory;
 }
 
 /** A job's launch in flight: which bay items it sent out, and when. */
@@ -2137,6 +2166,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     weaponReach: null,
     reloadAttempts: {},
     utilities: FRESH_COMPANION_UTILITIES,
+    ammo: FRESH_COMPANION_AMMO,
   };
 }
 
@@ -2619,6 +2649,7 @@ function decideCompanionStep(
     reloadAttempts: memory.reloadAttempts,
     // Carried: a human arriving switches nothing off.
     utilities: memory.utilities,
+    ammo: memory.ammo,
   };
 
   // Rung 3: tank up. Threaded even when it has nothing to do this tick —
@@ -2786,6 +2817,21 @@ function decideCompanionStep(
         preLock: true,
       };
     }
+    // Rung 7c: ammo by target for the LOADED guns, here because the engaged
+    // target is rung 7's answer and the reload rung sits above it. See
+    // companionAmmo.ts.
+    const ammo = decideAmmoSwap(request, obs, obeying.memory, obeying.engagedTargetID, nowMs, AMMO_LADDER);
+    if (ammo.swap !== null) {
+      return {
+        action: { kind: "loadAmmo", moduleIDs: ammo.swap.moduleIDs, chargeItemID: ammo.swap.chargeItemID },
+        phase: obeying.phase,
+        why: ammo.swap.why,
+        memory: ammo.memory,
+        ...(obeying.followingOrderFrom === undefined ? {} : { followingOrderFrom: obeying.followingOrderFrom }),
+        ...(obeying.lastOrderHeard === undefined ? {} : { lastOrderHeard: obeying.lastOrderHeard }),
+      };
+    }
+    obeying = { ...obeying, memory: ammo.memory };
   }
 
   // Rung 8b: the `loot` order.
@@ -7059,7 +7105,10 @@ function decideReload(
   if (empty === null) {
     return nothing;
   }
-  const mem = withReloadAttemptsPruned(memory, empty);
+  // Ammo by target (companionAmmo.ts): records each loaded gun's reach, and
+  // ranks the stack for an empty gun when the target is known.
+  const ammo = emptyGunAmmo(obs, withReloadAttemptsPruned(memory, empty));
+  const mem = ammo.memory;
   if (empty.length === 0) {
     return { decision: null, memory: mem };
   }
@@ -7094,6 +7143,9 @@ function decideReload(
   }
 
   const groups = obs.weaponChargeGroups ?? null;
+  // The ranked stack when there is one, else the largest-stack rule below.
+  const pick = (moduleID: number): CompanionCargoCharge | null =>
+    ammo.pick(moduleID, charges) ?? pickChargeFor(moduleID, charges, groups);
   const spent = (moduleID: number): boolean =>
     (mem.reloadAttempts[moduleID] ?? 0) >= MAX_COMPANION_RELOAD_ATTEMPTS;
 
@@ -7106,7 +7158,7 @@ function decideReload(
     if (spent(moduleID)) {
       continue;
     }
-    const charge = pickChargeFor(moduleID, charges, groups);
+    const charge = pick(moduleID);
     if (charge === null) {
       continue;
     }
@@ -7128,7 +7180,7 @@ function decideReload(
   // stack wait for their own tick rather than being loaded with the wrong round.
   const bank = empty.filter(
     (moduleID) =>
-      !spent(moduleID) && pickChargeFor(moduleID, charges, groups)?.itemID === chosen.itemID,
+      !spent(moduleID) && pick(moduleID)?.itemID === chosen.itemID,
   );
   const attempts: Record<number, number> = { ...mem.reloadAttempts };
   for (const moduleID of bank) {
@@ -8264,6 +8316,32 @@ const COMBAT_POSITION_LADDER: CombatPositionLadder = Object.freeze({
   },
 });
 
+/**
+ * What the ammo swap step needs from this ladder. `nextTarget` is the
+ * lock-ahead's own order over what it has already locked: tags first, then the
+ * kill order (`decideLockAhead`), so the gun is loaded for the ship the
+ * lock-ahead expects to fight next.
+ */
+const AMMO_LADDER: AmmoLadder = Object.freeze({
+  nextTarget: (obs: FleetCompanionObservation, engagedID: number): SpaceEntity | null => {
+    const locked = obs.lockedTargetIDs ?? null;
+    const snapshot = obs.snapshot ?? null;
+    if (locked === null || snapshot === null) {
+      return null;
+    }
+    const candidates = snapshot.entities.filter((entity) =>
+      entity.itemID !== engagedID && isHostile(entity) && locked.includes(entity.itemID));
+    if (candidates.length === 0) {
+      return null;
+    }
+    const measurement = measureSpace(snapshot);
+    const tags = obs.fleetTargetTags ?? null;
+    return (tags === null ? null : bestTaggedEntity(tags, candidates, measurement)) ??
+      rankByKillOrder(obs, candidates, measurement);
+  },
+  remainingHitPoints,
+});
+
 function decideDroneEngagement(
   memory: CompanionLadderMemory, role: "combat" | "repair", flightIDs: readonly number[], targetID: number, why: string,
 ): CompanionDecision | null {
@@ -9375,6 +9453,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           reloadAttempts: {},
           // A resumed run switched nothing on: whatever is running is not its own.
           utilities: FRESH_COMPANION_UTILITIES,
+          // No swap is in flight in a run that has issued none.
+          ammo: FRESH_COMPANION_AMMO,
         };
       }
       runToken += 1;
