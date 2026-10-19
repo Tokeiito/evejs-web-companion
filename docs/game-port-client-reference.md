@@ -1560,8 +1560,19 @@ target fallback, and GroupChat for multiple others. GetMembers is the native mem
 so names follow its Python dict order. Live room counts changed 0/1/2/1/0, concurrent private/player IQs
 kept distinct replies, and queries never implicitly joined. A real successful response held across pilot
 replacement retired; closing an actual pending IQ rejected it and ignored the held late reply.
-Page orchestration, acceptance dialogs and member actions remain next; the visible page still exposes
-Local/Corp only.
+The page now owns this private-conversation sequence in `chatConversations.ts`. Shared single-owner
+Contacts and Member List menus offer Start Conversation and the native eligible-room submenu. Private
+rooms retain independent histories, rosters and drafts alongside Local/Corp on desktop and phone.
+The nonmodal invitation window is keyed by sender and offers the native four choices, default Accept;
+Accept and Add opens the existing Contact Management form rather than writing a default contact.
+Blocked, auto-reject, personal-contact and already-joined decisions run in native order. Each awaited
+operation keeps its captured pilot, including the spam preflight before the first invitation.
+The mutable member-key table follows CPython 2.7 deletion and resize order; thirty operations matched
+the installed client's compiled `GetMembers`. Live browser checks covered first-send order, rejection
+cleanup, all four choices, duplicate invitations, pending-close cleanup, two independent rooms and a
+third participant. A real successful preflight held across a change of pilot retired without an invite
+or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
+verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
 
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to

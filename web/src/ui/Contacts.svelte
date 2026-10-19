@@ -61,9 +61,10 @@
   // merged CharacterMenu) has Show Info, Remove from Addressbook over all of them (one question, then each one's
   // DeleteContacts), and where none is under "All Agents" their removal from their folders; a drag carries them all.
   //
-  // Not here yet: Capture Portrait, and the rest of an owner's menu (chat).
+  // Not here yet: Capture Portrait and the remaining owner actions.
   import { onMount, untrack } from "svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
+  import OwnerChatMenu from "./OwnerChatMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -100,7 +101,7 @@
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import type { ContactAction } from "./contactAction.ts";
 
-  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone, assertActionCurrent }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void; assertActionCurrent?: () => void } = $props();
   const organization = $derived(contactType !== "contact");
   const alliance = $derived(contactType === "alliancecontact");
   // svelte-ignore state_referenced_locally
@@ -820,7 +821,9 @@
     busy = true;
     error = "";
     try {
+      assertActionCurrent?.();
       await action();
+      assertActionCurrent?.();
       if (contactAction) onActionDone?.(book);
     } catch (cause) {
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
@@ -2382,6 +2385,7 @@
                         <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                         {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
                       {/if}
+                      <OwnerChatMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id)}
                       {/if}
@@ -2586,6 +2590,7 @@
                       <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                       {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
                     {/if}
+                    {#if selectedRows.length <= 1}<OwnerChatMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id)}
                     {/if}

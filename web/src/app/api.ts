@@ -1964,6 +1964,13 @@ export async function readChatRooms(options: ApiOptions = {}): Promise<JsonValue
   return (await getJson("/api/bridge/chat", options)).chat ?? null;
 }
 
+export async function readChatRules(options: ApiOptions = {}): Promise<{ readonly groupCharacter: number; readonly elevated: bigint }> {
+  const data = await getJson("/api/client-data/chat-rules", options);
+  const rules = data.rules as Record<string, JsonValue> | null;
+  if (!data.available || !rules || typeof rules.groupCharacter !== "number") throw new Error("The installed client's chat constants are unavailable.");
+  return { groupCharacter: rules.groupCharacter, elevated: BigInt(String(rules.ROLE_CHTADMINISTRATOR)) | BigInt(String(rules.ROLE_GML)) | BigInt(String(rules.ROLE_LEGIONEER)) };
+}
+
 export async function readChatRoomInfo(roomName: string, options: ApiOptions = {}): Promise<JsonValue> {
   return (await getJson(`/api/bridge/chat/${encodeURIComponent(roomName)}/info`, options)).chat ?? null;
 }
@@ -1974,6 +1981,10 @@ export async function joinChatRoom(roomName: string, password = "", options: Api
 
 export async function leaveChatRoom(channel: string, options: ApiOptions = {}): Promise<JsonValue> {
   return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/leave`, {}, options)).chat ?? null;
+}
+
+export async function prepareChatMessage(channel: string, message: string, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson(`/api/bridge/chat/${encodeURIComponent(channel)}/prepare`, { message }, options)).chat ?? null;
 }
 
 export async function inviteToChatRoom(channel: string, characterID: number, reason: string, options: ApiOptions = {}): Promise<JsonValue> {

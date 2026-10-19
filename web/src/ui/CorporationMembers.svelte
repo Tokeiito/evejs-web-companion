@@ -10,6 +10,7 @@
   import { focusMail } from "./mailFocus.ts";
   import ContactActionDialog from "./ContactActionDialog.svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
+  import OwnerChatMenu from "./OwnerChatMenu.svelte";
   import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
@@ -313,6 +314,7 @@
         {/if}
         <MemberFleetInvites {store} {flow} targets={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         {#if selected.length === 1}
+          <OwnerChatMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />
           <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => menuFor = null} />
         {/if}
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}

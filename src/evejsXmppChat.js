@@ -75,6 +75,7 @@
 const net = require("net");
 const tls = require("tls");
 const { withoutCategoryC } = require("./gamePort/py27");
+const { PythonIntKeys } = require("./gamePort/pythonIntKeys");
 const { isSpam, normalizeForSpam } = require("./gamePort/chatSpam");
 
 class XmppChatError extends Error {
@@ -391,6 +392,7 @@ class XmppChatSession {
     this.rooms = new Map();
     // roomName -> Map(characterID -> { name, corporationID, allianceID })
     this.rosters = new Map();
+    this.memberOrder = new Map();
     // roomName -> [{ characterID, characterName, message, createdAtMs }]
     this.messages = new Map();
     this.invitations = new Map();
@@ -968,10 +970,14 @@ class XmppChatSession {
     }
     if (!this.rosters.has(roomName)) {
       this.rosters.set(roomName, new Map());
+      this.memberOrder.set(roomName, new PythonIntKeys());
     }
     const roster = this.rosters.get(roomName);
-    if (/\btype=['"]unavailable['"]/i.test(xml)) {
+    const heldRoom = this.rooms.get(this.channelOf(roomName));
+    if (roomName.startsWith("private_") && heldRoom?.seenMembers) heldRoom.seenMembers.add(characterID);
+    if (/\btype=['"](?:unavailable|leave)['"]/i.test(xml)) {
       roster.delete(characterID);
+      this.memberOrder.get(roomName)?.delete(characterID);
       return;
     }
     let name = "";
@@ -987,6 +993,7 @@ class XmppChatSession {
         // the part every caller keys on.
       }
     }
+    this.memberOrder.get(roomName)?.set(characterID);
     roster.set(characterID, {
       name: name || `Character ${characterID}`,
       corporationID: positiveInt(attr(xml, "corpid")) || null,
@@ -1337,6 +1344,7 @@ class XmppChatSession {
         this.rooms.delete(channel);
         this.messages.delete(room.roomName);
         this.rosters.delete(room.roomName);
+        this.memberOrder.delete(room.roomName);
       }
       // Coming back to what was left is a new channel again.
       const now = Array.isArray(change) ? positiveInt(change[1]) : 0;
@@ -1568,6 +1576,7 @@ class XmppChatSession {
       joinedAtMs: 0,
       joinedFor: solarSystemID,
       pending: { promise, resolve, reject, joinID },
+      seenMembers: new Set(),
     };
     this.rooms.set(channel, room);
     const history =
@@ -1625,6 +1634,7 @@ class XmppChatSession {
     // pilot's chat any more.
     this.messages.delete(room.roomName);
     this.rosters.delete(room.roomName);
+    this.memberOrder.delete(room.roomName);
   }
 
   /**
@@ -1644,15 +1654,16 @@ class XmppChatSession {
     return {
       channel,
       roomName,
+      seenMembers: [...(room?.seenMembers || [])],
       solarSystemID: channel === "local" ? suffix || null : null,
       corporationID: channel === "corp" ? suffix || null : null,
-      roster: [...roster.entries()].map(([characterID, member]) => ({
+      roster: (this.memberOrder.get(roomName)?.keys() || [...roster.keys()]).filter(id => roster.has(id)).map(characterID => { const member = roster.get(characterID); return ({
         characterID,
         name: member.name,
         corporationID: member.corporationID,
         allianceID: member.allianceID,
         solarSystemID: channel === "local" ? suffix || null : null,
-      })),
+      }); }),
       messages: log.slice(-capped),
     };
   }
@@ -1736,10 +1747,9 @@ class XmppChatSession {
       const room = await existing.pending.promise;
       this.assertChatCurrent(context);
       if (room.roomName === roomName) return this.snapshot(channel, context.limit);
-    } else if (existing?.roomName === roomName) {
-      return this.snapshot(channel, context.limit);
     }
-    if (existing) this.leaveRoom(existing);
+    // Native JoinChannel also sends a presence for an already joined room.
+    if (existing && existing.roomName !== roomName) this.leaveRoom(existing);
     await this.joinChannel(channel, 0, roomName, context);
     this.assertChatCurrent(context);
     return this.snapshot(channel, context.limit);
@@ -1831,6 +1841,16 @@ class XmppChatSession {
     await this.ensureChannel(channel, context);
     this.assertChatCurrent(context);
     return this.snapshot(channel, context.limit);
+  }
+
+  async prepare(channel, message, context = {}) {
+    await this.ensureChannel(channel, context);
+    const typed = String(message || "").trim();
+    const spam = this.login && typed && isSpam(typed, await this.taboosKnown());
+    this.assertChatCurrent(context);
+    if (spam) throw new XmppChatError("The line has in it a site that is banned in chat, and was not sent.", { code: "CHAT_LINE_REFUSED", statusCode: 409 });
+    if (!typed) throw new XmppChatError("A chat message cannot be empty.", { code: "CHAT_EMPTY_MESSAGE", statusCode: 400 });
+    return { channel, sendable: true };
   }
 
   async send(channel, message, context = {}) {
@@ -1949,6 +1969,7 @@ class XmppChatSession {
     this.teardownSocket();
     this.messages.clear();
     this.rosters.clear();
+    this.memberOrder.clear();
   }
 }
 
