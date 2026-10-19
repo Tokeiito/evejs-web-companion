@@ -143,7 +143,7 @@
   {/if}
 
   {#if $redeem.tokens === null}
-    <p class="empty">{$redeem.error ? "" : busy ? "Reading what you may redeem…" : "Redeeming is not available for this pilot."}</p>
+    <p class="empty">{$redeem.error ? "" : busy ? "Reading what you may redeem..." : "Redeeming is not available for this pilot."}</p>
   {:else if tokens.length === 0}
     <p class="empty">Nothing to redeem. Rewards and gifts for this account show up here.</p>
   {:else}
