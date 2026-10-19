@@ -242,7 +242,8 @@ export type ChatCommandKind =
   | "targets"
   | "flight"
   | "status"
-  | "repair";
+  | "repair"
+  | "rearm";
 
 /**
  * Which pilots a `status` or `repair` line is addressed to.
@@ -343,7 +344,15 @@ export type ChatCommand =
    * in this system, pays the station to repair the ship and comes back to the
    * fleet commander.
    */
-  | { readonly kind: "repair"; readonly who: PilotSelector };
+  | { readonly kind: "repair"; readonly who: PilotSelector }
+  /**
+   * `rearm [at] <station link> [pilots]` -- each named pilot (every pilot when
+   * none is named) flies to that station, tops its hold and drone bay up to its
+   * saved fitting from its hangar and the corporation's, and comes back to the
+   * fleet commander. `stationID` is null when no station was linked: a pilot
+   * already docked rearms where it is.
+   */
+  | { readonly kind: "rearm"; readonly stationID: number | null; readonly who: PilotSelector };
 
 /**
  * Verb -> command kind, each with its own anchored, case-insensitive
@@ -660,6 +669,32 @@ const VALUE_COMMAND_VERBS: ReadonlyArray<{
     pattern: /^repair\b/i,
     read: (remainder) => ({ kind: "repair", who: pilotSelectorFrom(remainder) }),
   },
+  // ─── `rearm`: A PLACE, THEN WHO ───────────────────────────────────────────
+  //
+  // ⚠ THE STATION IS THE LINK AFTER `at`, OR THE FIRST LINK WHEN NOBODY WROTE
+  // `at`. A link carries an id and no kind this parser can trust, and a pilot
+  // dragged into the same line is a link too: "rearm Test Two at <station>" and
+  // "rearm <pilot> at <station>" both say which is which with the word. Every
+  // other link and word is who, exactly as for `repair`. No link at all is still
+  // the order -- a docked pilot rearms where it is -- so a bare `rearm` parses.
+  // `^rearm\b` keeps "rearmed" and "rearming" out.
+  {
+    verb: "rearm",
+    pattern: /^rearm\b/i,
+    read: (remainder) => {
+      const at = /(^|\s)at\s+(?=<)/i.exec(remainder);
+      const from = at === null ? 0 : at.index + at[0].length;
+      const link = SHOWINFO_LINK.exec(remainder.slice(from));
+      if (link === null) {
+        return { kind: "rearm", stationID: null, who: pilotSelectorFrom(remainder) };
+      }
+      const digits = link[1] ?? link[2];
+      const stationID = digits === undefined ? null : parseItemID(digits);
+      const start = from + link.index;
+      const rest = remainder.slice(0, at === null ? start : at.index) + " " + remainder.slice(start + link[0].length);
+      return { kind: "rearm", stationID, who: pilotSelectorFrom(rest) };
+    },
+  },
 ];
 
 /** Every showinfo link in a line, either tag form, for stripping and reading ids. */
@@ -758,8 +793,9 @@ export const CHAT_COMMAND_HELP: readonly { readonly usage: string; readonly does
     // Addressed to pilots: none named is everyone.
     { usage: "status [names]", does: "Say ammo and drones left in local" },
     { usage: "repair [names]", does: "Dock in this system, repair, come back to the FC" },
+    { usage: "rearm [at <station>] [names]", does: "Top up ammo and drones to the saved fit there, come back" },
     // Cancel.
-    { usage: "stop", does: "Cancel orders, a repair trip included, and halt the ship" },
+    { usage: "stop", does: "Cancel orders, repair or rearm trips too, and halt the ship" },
   ]);
 
 /**
