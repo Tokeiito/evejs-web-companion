@@ -637,6 +637,7 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "bannedwords.check_search_words_allowed",
   "facWarMgr.GetCorporationWarFactionID",
   "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
   // The lobby's buttons, on the station's own office object. (The BFF's list of writes names the renting; the
@@ -2738,6 +2739,7 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetMemberTrackingInfo": same(`${CORP_SVC}/base_corporation.py:865`, "GetCorpRegistry().GetMemberTrackingInfo(), no arguments, for a Director. Recorded bound in Archive/Opening all corp admin panels and assets search.txt:1033; cached for five minutes."),
   "corpRegistry.GetMemberTrackingInfoSimple": same(`${CORP_SVC}/base_corporation.py:867`, "GetCorpRegistry().GetMemberTrackingInfoSimple(), no arguments, for other members. CorpMemberTracking.ShowMemberTracking asks again as filters change."),
   "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
+  "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),
   "corpRegistry.GetLabels": same(`${CORP_SVC}/base_corporation.py:1011`, "GetCorpRegistry().GetLabels(), no arguments; the corporation contact labels, read on first showing the form."),
   "corpRegistry.AddCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:995`, corporationContactStanding, "AddCorporateContact(contactID, relationshipID), positional on the corporation moniker; the slider rounds to one decimal (corpAllianceContactManagementWindow.py 117-118), a float even at whole standings. In no recording."),
   "corpRegistry.EditCorporateContact": reshaped(`${CORP_SVC}/base_corporation.py:999`, corporationContactStanding, "EditCorporateContact(contactID, relationshipID), the same corporation editor's float, positional on the corporation moniker. In no recording."),

@@ -30,6 +30,7 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  configSynonyms: Object.freeze({ module: "monolithconfig/synonyms.pyj", names: Object.freeze(["ENABLED"]) }),
   packagedVolumes: Object.freeze({
     module: "inventorycommon/const.pyj",
     names: Object.freeze(["packagedVolumeOverridesPerGroup", "packagedVolumeOverridesPerType", "typePlasticWrap"]),
@@ -250,6 +251,10 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
         blends: Object.freeze({ blend: whole("CORPLOGO_BLEND"), solid: whole("CORPLOGO_SOLID"), gradient: whole("CORPLOGO_GRADIENT") }),
         defaultColor: colorOf(values.CORPLOGO_DEFAULT_COLOR, "CORPLOGO_DEFAULT_COLOR"),
       });
+    }),
+    configEnabledValues: () => read("configSynonyms", (values) => {
+      if (!Array.isArray(values.ENABLED) || !values.ENABLED.every((value) => typeof value === "string")) throw new Error("The client's enabled config values are not text.");
+      return Object.freeze([...values.ENABLED]);
     }),
     status() {
       const out = { available: available(), python };

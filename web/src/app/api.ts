@@ -4526,6 +4526,13 @@ export async function getEffectDisplayNameIDs(
   return { available: data.available === true, displayNameIDs };
 }
 
+/** monolithconfig.enabled's accepted text, from its installed compiled synonyms module. */
+export async function getConfigEnabledValues(options: ApiOptions = {}): Promise<readonly string[]> {
+  const data = await getJson("/api/client-data/config-enabled-values", options);
+  if (data.available !== true || !Array.isArray(data.values)) throw new Error("The client's config flag definitions could not be read.");
+  return data.values.filter((value): value is string => typeof value === "string");
+}
+
 /** The client's corporation role/group tables, read in place by its compiled loaders. */
 export async function getCorporationRoleOptions(options: ApiOptions = {}): Promise<readonly { roleID: string; nameID: number; groupID: number }[]> {
   const data = await getJson("/api/client-data/corporation-roles", options);

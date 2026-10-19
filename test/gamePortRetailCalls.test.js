@@ -1726,6 +1726,8 @@ test("what goes up into a customs office, and comes down from one, goes as the c
 
 test("the game port carries the customs office's transfer, the station's offices and the clone's grade, which the web gateway's list has not got", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // bannedwords_client.py 80-82: config-gated positional search validation.
+    "bannedwords.check_search_words_allowed",
     // facWarSvc.py 92; the member panel and recorded corporate invite read this militia affiliation.
     "facWarMgr.GetCorporationWarFactionID",
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",

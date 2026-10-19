@@ -184,7 +184,7 @@
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
 {:else if tab === "corporation"}
-  <CorporationWindow {store} {flow} />
+  <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} />
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}

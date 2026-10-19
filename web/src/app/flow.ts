@@ -174,6 +174,7 @@ import {
   type DecodedMailbox,
 } from "../bridge/mail.ts";
 import { locationKind } from "../bridge/clientWords.ts";
+import { resolvedName } from "../store/names.ts";
 import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
 import { addressBookOf, corporateAddressBookOf, type ContactScope, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
@@ -2047,7 +2048,7 @@ export interface AppFlow {
   /** The pilot's contacts and blocked owners, each named, as the Contacts window shows them (charMgr.GetContactList). */
   addressBook(contactType?: ContactScope): Promise<NamedAddressBook>;
   /** Corporation member tracking, full for Directors, simple for other members (base_corporation.py 863-867). */
-  corporationMemberTracking(): Promise<CorporationTracking>;
+  corporationMemberTracking(filter?: string): Promise<CorporationTracking>;
   corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
@@ -14580,15 +14581,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await wordsNow(roles.map(role => `#${role.nameID}`));
     return roles;
   }
-  async function corporationMemberTracking(): Promise<CorporationTracking> {
+  let configEnabledValues: Promise<readonly string[]> | null = null;
+  async function checkSearchWordsAllowed(value: string): Promise<boolean> {
+    if (value.length === 0) return true;
+    // bannedwords_client.py 80-82; monolithconfig.enabled 245-252 uses its synonyms, without stripping whitespace.
+    const config = await api.getGlobalConfig(["banned_words_search_enabled"], callOptions);
+    const flag = config.values.banned_words_search_enabled;
+    if (flag === null || flag === undefined || flag === "") return true;
+    const enabled = await (configEnabledValues ??= api.getConfigEnabledValues(callOptions).catch(error => { configEnabledValues = null; throw error; }));
+    if (enabled.includes(String(flag).toLowerCase())) {
+      try { await bridgeAsk("bannedwords", "check_search_words_allowed", [value]); }
+      catch (error) {
+        if (sayRefusalDialog(error, "Those search words are not allowed.")) return false;
+        throw error;
+      }
+    }
+    return true;
+  }
+  async function corporationMemberTracking(filter = ""): Promise<CorporationTracking> {
     const online = store.station.get().online;
     if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
     const director = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
-    const members = corporationTrackingOf(await bridgeAsk("corpRegistry", director ? "GetMemberTrackingInfo" : "GetMemberTrackingInfoSimple", []));
+    const tracking = corporationTrackingOf(await bridgeAsk("corpRegistry", director ? "GetMemberTrackingInfo" : "GetMemberTrackingInfoSimple", []));
+    await resolveNamesNow(tracking.map(row => ({ kind: "owner" as const, id: row.characterID })));
+    if (!(await checkSearchWordsAllowed(filter))) return { members: [], factionID: null };
+    const names = store.names.get().resolved;
+    const members = filter ? tracking.filter(row => resolvedName(names, "owner", row.characterID, "").toLowerCase().includes(filter.toLowerCase())) : tracking;
     const faction = await bridgeAsk("facWarMgr", "GetCorporationWarFactionID", [online.corporationID]);
     const factionID = typeof faction === "number" && faction > 0 ? faction : null;
     await resolveNamesNow([
-      ...members.map(row => ({ kind: "owner" as const, id: row.characterID })),
       ...members.flatMap(row => [row.baseID, ...(director ? [row.locationID] : [])].filter((id): id is number => id !== null && id > 0).map(id => ({ kind: locationKind(id), id }))),
       ...(director ? members.flatMap(row => [
         ...(row.shipTypeID ? [{ kind: "type" as const, id: row.shipTypeID }] : []),

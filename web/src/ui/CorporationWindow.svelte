@@ -12,7 +12,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openMail }: { store: ClientStore; flow: AppFlow; openMail?: () => void } = $props();
 
   let panel = $state<"contacts" | "npc" | "members">("contacts");
   let membersOpened = $state(false);
@@ -55,7 +55,7 @@
     </nav>
     <div class="corp-panel">
       {#key $station.online?.corporationID}
-      {#if membersOpened}<div hidden={panel !== "members"}><CorporationMembers {store} {flow} /></div>{/if}
+      {#if membersOpened}<div hidden={panel !== "members"}><CorporationMembers {store} {flow} {openMail} /></div>{/if}
       {#if panel === "contacts"}
         <Contacts {store} {flow} contactType="corpcontact" />
       {:else if panel === "npc"}

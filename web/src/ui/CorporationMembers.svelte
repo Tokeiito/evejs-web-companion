@@ -7,8 +7,9 @@
   import { DATE_LABELS, formatTemplate, plainText, locationKind } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import { showInfo } from "./showInfo.ts";
+  import { focusMail } from "./mailFocus.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openMail }: { store: ClientStore; flow: AppFlow; openMail?: () => void } = $props();
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // svelte-ignore state_referenced_locally
@@ -25,7 +26,7 @@
     joined: "UI/Corporations/CorporationWindow/Members/Tracking/JoinedColumnHeader", ship: "UI/Common/Ship",
     location: "UI/Common/Location", faction: "UI/Corporations/CorporationWindow/Members/FactionEnlistment",
     logon: "UI/Common/Online", logoff: "UI/Common/Offline", none: "UI/Generic/None", unknown: "UI/Generic/Unknown",
-    empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo",
+    empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo", mail: "UI/EVEMail/SendPilotEVEMail",
   };
   const ONLINE = "UI/Corporations/CorpMemberTracking/";
   const lastLabels = ["MoreThanAMonth", "Online", "LessThanAnHour", "Hours", "LastWeek", "LastMonth"];
@@ -51,16 +52,20 @@
   let filterTimer: ReturnType<typeof setTimeout> | null = null;
   let serial = 0;
   let disposed = false;
+  let chosen = $state<number[]>([]);
+  let anchor: number | null = null;
+  let menuFor = $state<number | null>(null);
   const onlineKey = () => `evejs.corpMembersOnline.${store.station.get().online?.characterID}`;
   async function load(): Promise<void> {
     const request = ++serial;
     busy = true;
     error = "";
     try {
-      const result = await flow.corporationMemberTracking();
-      if (!disposed && request === serial) held = result;
+      const result = await flow.corporationMemberTracking(filter);
+      if (!disposed && request === serial) { held = result; chosen = []; anchor = null; menuFor = null; }
     } catch (cause) {
-      if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause);
+      // ShowMemberTracking's finally loads its empty scroll even when the search-word check refuses.
+      if (!disposed && request === serial) { held = null; chosen = []; anchor = null; menuFor = null; error = cause instanceof Error ? cause.message : String(cause); }
     } finally {
       if (!disposed && request === serial) busy = false;
     }
@@ -70,8 +75,10 @@
     void load();
   }
   function filterNow(): void {
-    if (filter === filterText) return;
-    filter = filterText;
+    // SingleLineEditText.GetValue 39-46 escapes angle brackets before QuickFilter reads the text.
+    const value = filterText.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    if (filter === value) return;
+    filter = value;
     void load();
   }
   function filterTyped(): void {
@@ -108,6 +115,38 @@
     const result = x === y ? 0 : x === null ? -1 : y === null ? 1 : x < y ? -1 : 1;
     return descending ? -result : result;
   }));
+  const selected = $derived(rows.filter(row => chosen.includes(row.member.characterID)));
+  // User.OnClick -> Scroll.SelectNode 550-600: plain replaces, Ctrl toggles, Shift ranges from the last anchor.
+  function select(event: MouseEvent | KeyboardEvent, id: number): void {
+    menuFor = null;
+    const at = rows.findIndex(row => row.member.characterID === id);
+    const control = event.ctrlKey || event.metaKey;
+    const ranged = anchor !== null && anchor !== at && anchor < rows.length;
+    const range = ranged ? rows.slice(Math.min(anchor!, at), Math.max(anchor!, at) + 1).map(row => row.member.characterID) : [];
+    if (event.shiftKey && control) { if (ranged) chosen = [...new Set([...chosen, ...range])]; }
+    else if (event.shiftKey && ranged) { chosen = range; return; }
+    else if (control) chosen = chosen.includes(id) ? chosen.filter(each => each !== id) : [...chosen, id];
+    else chosen = [id];
+    anchor = at;
+  }
+  function openMenu(event: MouseEvent, id: number): void {
+    event.preventDefault();
+    if (!chosen.includes(id)) select(event, id);
+    menuFor = menuFor === id ? null : id;
+  }
+  function infoSelected(): void {
+    menuFor = null;
+    // User._GetMultiMenu -> CharacterMenu -> menuMerge._ExecMulti: ShowInfo runs for each selected row.
+    for (const row of selected) showInfo({ kind: "character", characterID: row.member.characterID });
+  }
+  function mailSelected(): void {
+    // CharacterChecker excludes self. Compiled menuMerge drops the multi-row mail entry's unsupported tuple args.
+    const row = selected.length === 1 ? selected[0] : null;
+    if (!row || row.member.characterID === $station.online?.characterID) return;
+    menuFor = null;
+    openMail?.();
+    focusMail({ kind: "compose", characterID: row.member.characterID, name: row.text.name! });
+  }
   onMount(() => {
     flow.requestWords([...Object.values(LABELS), ...lastLabels.map(key => ONLINE + key), DATE_LABELS.ln!, DATE_LABELS.ls!]);
     try { onlineOnly = JSON.parse(localStorage.getItem(onlineKey()) ?? "false") === true; } catch { onlineOnly = false; }
@@ -131,11 +170,30 @@
   {#if held === null}{#if !error}<p class="note">{busy || !ready ? "Reading members…" : word(LABELS.empty, "No data available")}</p>{/if}
   {:else if rows.length === 0}<p class="note">{word(LABELS.empty, "No data available")}</p>
   {:else}
+    {#if menuFor !== null && selected.length > 0}
+      <div class="controls member-menu" aria-label="Member actions">
+        <span>{selected.length} selected</span>
+        <button type="button" class="minor" onclick={infoSelected}>{word(LABELS.info, "Show Info")}</button>
+        {#if selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID}
+          <button type="button" class="minor" onclick={mailSelected}>{word(LABELS.mail, "Send Pilot EVEMail")}</button>
+        {/if}
+        <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
+      </div>
+    {/if}
     <div class="table-wrap member-table" aria-busy={busy}>
       <table class="guests reflow">
         <thead><tr>{#each columns as [key, label, fallback]}<th aria-sort={sort === key ? descending ? "descending" : "ascending" : "none"}><button type="button" class="minor" onclick={() => { descending = sort === key ? !descending : false; sort = key!; }}>{word(label!, fallback!)}</button></th>{/each}</tr></thead>
-        <tbody>{#each rows as row (row.member.characterID)}<tr>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
-          {#if key === "name"}<button type="button" class="minor member-name" title={word(LABELS.info, "Show Info")} onclick={() => showInfo({ kind: "character", characterID: row.member.characterID })}>{row.text.name}</button>
+        <tbody>{#each rows as row (row.member.characterID)}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions (native table row; its name button provides keyboard selection) -->
+        <!-- svelte-ignore a11y_click_events_have_key_events (keyboard selection and context menu are on the row's name button) -->
+        <tr class:selected={chosen.includes(row.member.characterID)} onclick={(event) => { if (!(event.target as Element).closest("button,input")) select(event, row.member.characterID); }} ondblclick={() => showInfo({ kind: "character", characterID: row.member.characterID })} oncontextmenu={(event) => openMenu(event, row.member.characterID)}>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
+          {#if key === "name"}
+            <span class="member-entry">
+              <input type="checkbox" aria-label={`Select ${row.text.name}`} checked={chosen.includes(row.member.characterID)} onchange={() => { chosen = chosen.includes(row.member.characterID) ? chosen.filter(id => id !== row.member.characterID) : [...chosen, row.member.characterID]; anchor = rows.indexOf(row); menuFor = null; }} />
+              <button type="button" class="minor member-name" aria-pressed={chosen.includes(row.member.characterID)} onclick={(event) => select(event, row.member.characterID)} onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); chosen = rows.map(row => row.member.characterID); menuFor = null; } else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") { event.preventDefault(); if (!chosen.includes(row.member.characterID)) select(event, row.member.characterID); menuFor = row.member.characterID; } }}>{row.text.name}</button>
+              <button type="button" class="minor" aria-label={`${word(LABELS.info, "Show Info")}: ${row.text.name}`} onclick={() => showInfo({ kind: "character", characterID: row.member.characterID })}>i</button>
+              <button type="button" class="minor" aria-label={`Menu: ${row.text.name}`} aria-expanded={menuFor === row.member.characterID} onclick={(event) => openMenu(event, row.member.characterID)}>⋯</button>
+            </span>
           {:else}{row.text[key!] ?? ""}{/if}
         </td>{/each}</tr>{/each}</tbody>
       </table>
@@ -155,5 +213,11 @@
     td:nth-child(5), td:nth-child(n+8) { white-space: normal; }
   }
   .member-name { text-align: left; }
+  .member-entry { display: flex; align-items: center; gap: 0.25rem; }
+  .member-entry input { width: auto; }
+  .member-entry .member-name { flex: 1; }
+  .member-menu { padding: 0.5rem 0; }
+  tr.selected { outline: 1px solid var(--color-accent); outline-offset: -1px; }
+  @container (max-width: 640px) { .member-entry button { width: auto; } }
   th button { white-space: nowrap; }
 </style>

@@ -13524,6 +13524,14 @@ app.post("/api/client-data/fitting-import", requireAuth, (req, res, next) => {
   }
 });
 
+// monolithconfig.enabled: the accepted enabled spellings from the installed compiled module.
+app.get("/api/client-data/config-enabled-values", requireAuth, async (req, res, next) => {
+  try {
+    const values = await clientConstants.configEnabledValues();
+    res.json({ ok: true, available: values !== null, values });
+  } catch (error) { next(error); }
+});
+
 // CorpMemberTracking._GetRoleOptions: groups 1/2 of the installed client's role table, not server calls.
 app.get("/api/client-data/corporation-roles", requireAuth, async (req, res, next) => {
   try {
