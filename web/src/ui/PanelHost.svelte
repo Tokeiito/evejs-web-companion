@@ -36,6 +36,7 @@
   import Wallet from "./Wallet.svelte";
   import CorpWallet from "./CorpWallet.svelte";
   import RedeemItems from "./RedeemItems.svelte";
+  import LoginRewards from "./LoginRewards.svelte";
   import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
   import Settings from "./Settings.svelte";
@@ -172,6 +173,8 @@
   <CorpWallet {store} {flow} />
 {:else if tab === "redeem"}
   <RedeemItems {store} {flow} />
+{:else if tab === "loginRewards"}
+  <LoginRewards {store} {flow} />
 {:else if tab === "standings"}
   <Standings {store} {flow} />
 {:else if tab === "characterSheet"}

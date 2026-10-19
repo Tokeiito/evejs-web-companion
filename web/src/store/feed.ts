@@ -107,6 +107,7 @@ import type { ShipStats } from "../bridge/shipStats.ts";
 import type { CrimewatchReading } from "../space/crimewatch.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
 import type { RedeemToken } from "../bridge/redeem.ts";
+import type { LoginCampaign } from "../bridge/loginRewards.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
@@ -568,6 +569,11 @@ export type FeedEvent =
   // What the account may redeem (bridge/redeem.ts): as the server last answered it, or the read's failure, with
   // what was had kept. null tokens where the pilot's transport does not carry the read.
   | { readonly type: "redeem/tokens"; readonly tokens: readonly RedeemToken[] | null; readonly error: string | null }
+  // The account's daily login campaign (bridge/loginRewards.ts) as the server last answered it, or the read's failure,
+  // with what was had kept. null where the account is in none or the transport does not carry the read.
+  | { readonly type: "login-rewards/state"; readonly campaign: LoginCampaign | null; readonly error: string | null }
+  // The day's reward claimed: the campaign after the claim, and what was given.
+  | { readonly type: "login-rewards/claimed"; readonly campaign: LoginCampaign; readonly reward: { readonly typeID: number; readonly quantity: number } | null }
   // Goal R55 — the Standings page. One BFF pull carries the character's own
   // standings (standingMgr.GetCharStandings) and the corporation's standings
   // (standingMgr.GetCorpStandings). Each keeps its own error; a list is null when
