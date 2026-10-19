@@ -282,7 +282,9 @@ export function decideCompanionDroneRotation(inputs: RotationInputs): RotationSt
     const here = inSpace.has(row.itemID);
     const home = inBay.has(row.itemID);
     if (home) {
-      aboard.push({ itemID: row.itemID, typeID: row.typeID, aboardAtMs: nowMs, attackers: row.attackers, spareTried: false });
+      if (!aboard.some((held) => held.itemID === row.itemID)) {
+        aboard.push({ itemID: row.itemID, typeID: row.typeID, aboardAtMs: nowMs, attackers: row.attackers, spareTried: false });
+      }
       continue;
     }
     if (spaceReadable && bayReadable && !here) {
@@ -336,12 +338,23 @@ export function decideCompanionDroneRotation(inputs: RotationInputs): RotationSt
       memory: { homeward, aboard, launching, rotations, recalledAtMs },
     };
   }
-  const flying = new Set(homeward.map((row) => row.itemID));
+  // ⚠ THE BAY IS AHEAD OF THE SNAPSHOT AFTER A SCOOP. For a second or so a
+  // scooped drone is in the bay read AND still in the space snapshot, shield
+  // still short. Seen live 2026-10-19 09:24-09:29, every rotation: read as a
+  // fresh hit, it was recalled two or three times more -- each booking a
+  // rotation, so one hit spent a drone's whole cap -- and landed aboard once per
+  // recall, so one hit sent out two spares, or a spare and the drone itself.
+  // A drone in the bay, held aboard, or flying home is never a new hit.
+  const settled = new Set<number>([
+    ...homeward.map((row) => row.itemID),
+    ...aboard.map((row) => row.itemID),
+    ...inBay,
+  ]);
   const hurt: RotationDroneRow[] = [];
   let capped = false;
   for (const row of drones) {
     const shield = ratio(row.shieldRatio);
-    if (shield === null || shield >= 1 || flying.has(row.itemID)) continue;
+    if (shield === null || shield >= 1 || settled.has(row.itemID)) continue;
     if ((rotations[String(row.itemID)] ?? 0) >= MAX_DRONE_ROTATIONS) {
       capped = true;
       continue;
@@ -404,7 +417,7 @@ export function decideCompanionDroneRotation(inputs: RotationInputs): RotationSt
       held.push(row);
       continue;
     }
-    ids.push(row.itemID);
+    if (!ids.includes(row.itemID)) ids.push(row.itemID);
     quantities[row.itemID] = 1;
     sent.push({ hurtID: row.itemID, typeID: row.typeID, via: "same", stackID: row.itemID, sentAtMs: nowMs, stackQuantityAtSend: stackSize(row.itemID) ?? 1 });
     same += 1;

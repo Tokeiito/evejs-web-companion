@@ -9962,7 +9962,8 @@ function dronesTrace(
   const two = (ratio: number | null | undefined): number | null =>
     typeof ratio === "number" && Number.isFinite(ratio) ? Math.round(ratio * 100) / 100 : null;
   const homeward = homewardIDs(step.memory);
-  const rows: DroneRowTrace[] = (inputs.drones ?? []).map((drone) => {
+  const aboard = new Set(step.memory.aboard.map((row) => row.itemID));
+  const rows: DroneRowTrace[] = (inputs.drones ?? []).filter((drone) => !aboard.has(drone.itemID)).map((drone) => {
     const own = obs.myDrones?.find((row) => row.itemID === drone.itemID);
     return {
       id: drone.itemID,
