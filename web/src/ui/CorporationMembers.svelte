@@ -12,6 +12,7 @@
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
   import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
+  import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
   import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
@@ -318,6 +319,7 @@
           <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => menuFor = null} />
         {/if}
         {#if selected.length === 1}<OwnerMemberMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />{/if}
+        <OwnerQuitMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
     {/if}

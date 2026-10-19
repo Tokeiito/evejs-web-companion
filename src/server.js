@@ -97,6 +97,7 @@ const {
   resolveFailedTransition,
   waitForTransitionReady,
 } = require("./transitionBarrier");
+const { corporationSessionRefusal } = require("./corporationSessionReason");
 
 // Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
 const BOTSCRIPT_STATUS = {
@@ -902,6 +903,10 @@ app.use((req, res, next) => {
     next();
     return;
   }
+  if (req.path === "/api/bridge/call" && req.body?.service === "corpRegistry" && req.body?.method === "KickOutMember" && Number(req.body?.args?.[0]) === Number(held.characterID)) {
+    res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
+    return;
+  }
   res.status(409).json({
     ok: false,
     error: "SESSION_CHANGE_IN_PROGRESS",
@@ -1638,6 +1643,7 @@ function makeHeldCharacter(account, characterID, outcome) {
     transition: null,
     transitionReservation: null,
     cooldownUntilMs: 0,
+    nativeSessionChangeReason: "charsel",
     stream: null,
     streamSubscribers: new Set(),
     streamCursor: null,
@@ -4627,6 +4633,7 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
     const expected = {
       shipID: Number(targetShipID) || null,
       fromShipID: Number(before.flight && before.flight.shipID) || Number(held.activeShipID) || null,
+      nativeReason: method === "Eject" ? "eject" : method === "StoreVessel" ? "storeVessel" : ["Board", "BoardStoredShip"].includes(method) ? "board" : null,
     };
     if (!await acquireRouteTransition(res, held, "board", expected)) {
       return;
@@ -4815,6 +4822,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
     // system, the park bound again there.)
     const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind;
+    expected.nativeReason = kind === "abyss" || kind === "abyssEntrance" ? "JumpToAbyss" : kind === "abyssExit" ? "abyssToKnownJump" : keeping === "stargate" ? "jump" : keeping;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -6670,10 +6678,10 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       // Native PerformSessionChange(wait=0): an active cooldown refuses rather
       // than queueing a quit that could later target a different corporation.
       if (Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
-        res.status(409).json({ ok: false, error: "SESSION_CHANGE_IN_PROGRESS", message: "The session-change cooldown is still running.", transition: publicTransition(held) });
+        res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
         return;
       }
-      if (!beginRouteTransition(res, held, "other-session", {})) return;
+      if (!beginRouteTransition(res, held, "other-session", { nativeReason: "corp.kickself" })) return;
       mutation = held.transition;
     }
     const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, corporationID, expectedCorporationVersion);
@@ -9167,6 +9175,8 @@ function routeTransitionNow() {
 function beginRouteTransition(res, held, kind, expected) {
   const begun = beginHeldTransition(held, kind, expected, routeTransitionNow());
   if (begun.ok) {
+    const reason = expected?.nativeReason === undefined ? ({ undock: "undock", dock: "dock", stargate: "jump", board: "board", clone: "clonejump" }[kind] ?? null) : expected.nativeReason;
+    if (reason !== null) held.nativeSessionChangeReason = reason;
     return true;
   }
   res.status(409).json({

@@ -2080,6 +2080,7 @@ export interface AppFlow {
   showMemberDetails(characterID: number): void;
   corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null>;
   corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
+  corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null>;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -14932,6 +14933,77 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         scope.current();
       } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
     } };
+  }
+  let resignation: { readonly pilot: number } | null = null;
+  async function corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null> {
+    // CharacterChecker.OfferQuitCorp245-252 has no multiple-selection gate.
+    // userentry._GetMultiMenu omits CharacterMenu for contact-list multiple selection; the caller handles that.
+    const online = store.station.get().online;
+    if (!online || !ownerIDs.includes(online.characterID) || online.corporationID === null || isNpcCorporation(online.corporationID)) return null;
+    const scope = captureMemberOperation(), self = scope.online.characterID;
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const ceoID = memberInteger(corporation, "ceoID");
+    if (ceoID === null) throw new Error("The corporation's CEO could not be read.");
+    if (ceoID === BigInt(self)) return null;
+    return {
+      removeRoles: async () => {
+        scope.current();
+        const confirmed = await askDialog("ConfirmRemoveAllRoles", { type: "dict", entries: [] }, "Remove all your corporation roles?", "okcancel");
+        scope.current();
+        if (!confirmed) return;
+        try {
+          // base_corporation.RemoveAllRoles482-487: eight masks, unchanged base, titleMask0, blockRoles1.
+          await scope.write("corpRegistry", "UpdateMember", [self, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, null, 0, 1]);
+          scope.current();
+        } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+      },
+      quit: async () => {
+        scope.current();
+        try {
+          // base_corporation.KickOut397-431: eligibility, wars, confirmation, then the session mutation.
+          const eligible = await scope.ask("corpRegistry", "CanBeKickedOut", [self]); scope.current();
+          if (!(typeof eligible === "boolean" ? eligible : (unwrapLong(eligible) ?? 0n) !== 0n)) {
+            sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/BaseCorporationUI/CannotKickMember"]]] }, "You cannot leave the corporation yet.");
+            return;
+          }
+          const wars = await scope.ask("warRegistry", "GetWars", [scope.online.allianceID || scope.online.corporationID]); scope.current();
+          if (!wars || typeof wars !== "object" || Array.isArray(wars) || !("type" in wars) || wars.type !== "dict") throw new Error("The corporation's wars could not be read.");
+          let active = 0;
+          for (const [, war] of readDictPairs(wars)) {
+            const mutual = memberField(war, "mutual"), finished = memberField(war, "timeFinished");
+            const mutualNumber = typeof mutual === "boolean" ? (mutual ? 1n : 0n) : unwrapLong(mutual);
+            if (mutualNumber === null || finished === undefined) throw new Error("A corporation war could not be read.");
+            // Native counts future declarations too: there is no timeStarted comparison.
+            if (mutualNumber === 0n && finished === null) active++;
+          }
+          if (active) {
+            const confirmed = await askDialog("CorpMemberKickActiveWarConfirm", { type: "dict", entries: [["noOfWars", active]] }, `Leave while the corporation has ${active} active wars?`);
+            scope.current();
+            if (!confirmed) return;
+          }
+          // ConfirmKickMembers433-458 guards only the final prompt, and releases even on cancellation.
+          const pilot = requestGeneration;
+          if (resignation?.pilot === pilot) return;
+          const lease = { pilot }; resignation = lease;
+          let confirmed = false;
+          try { confirmed = await askDialog("ConfirmQuitCorporation", { type: "dict", entries: [] }, "Quit your corporation?", "okcancel"); }
+          finally { if (resignation === lease) resignation = null; }
+          scope.current();
+          if (!confirmed) return;
+          // Keep the originating corporation until actual dispatch. The intended successful reply
+          // may change it; notification delivery and the response still belong to this same pilot.
+          const pilotCurrent = callOptions.captureRequestGuard!(), send = callOptions.fetch ?? pageFetch();
+          let sent = false;
+          const quitOptions: api.ApiOptions = { ...scope.options,
+            captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+            fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+          };
+          scope.current();
+          await api.quitCorporation(self, scope.online.corporationID, quitOptions);
+          pilotCurrent();
+        } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+      },
+    };
   }
   // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
   const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
@@ -28540,6 +28612,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     memberDetailsShown: readonlySignal(memberDetailsSignal),
     showMemberDetails,
     corporationMemberMenu,
+    corporationQuitMenu,
     corporationRoleAllowance,
     openCorporationMemberDetails,
     memberDetailsPanel,
