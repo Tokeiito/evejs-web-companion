@@ -9,6 +9,7 @@ import type { FlightStatus } from "../store/types.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
 import type { MacroMemory, ScriptBoard } from "./scriptDecide.ts";
 import { SCRIPT_MACROS } from "./scriptMacros.ts";
+import { refusalKey } from "./refusalLedger.ts";
 
 const NB: ScriptBoard = {};
 const salvager = SCRIPT_MACROS["salvage-bookmarked-sites"]!;
@@ -305,6 +306,28 @@ test("on site: a beam whose can never comes nearer is switched off and taken aga
   assert.deepEqual(second.t.action, { kind: "deactivate", moduleID: TRACTOR });
   const after = run(false);
   assert.equal(after.action.kind, "gotoPoint");
+});
+
+test("on site: a wreck the runner's lock streak names three times is left for good, and the cans beside it are looted", () => {
+  // Seen live 2026-10-19: one wreck's lock refused twelve times running (the runner books a lock's refusals under the
+  // step's one lock key, the wreck on the record, and throws a refused tick's memory away), every can beside it left,
+  // and the run stopped and went home.
+  const wreck = { itemID: 4701, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x: 1_200, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const can = { itemID: 4702, kind: "container", ownerID: 90000001, corporationID: null, position: { x: 1_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const streak = (count: number) => [{ key: refusalKey(step.id, "lock", null), targetID: 4701, count, firstAt: 0, lastAt: 0, words: "Refused.", kind: "refused" as const }];
+  const grid = (refusals: unknown[]) => obs({
+    myCharacterID: 90000001, salvageModuleIDs: [602], tractorModuleIDs: [], maxLockedTargets: 10, maxTargetRangeM: 30_000, lockedTargetIDs: [],
+    refusals: refusals as never, snapshot: { ship: SHIP, entities: [wreck, can] } as never,
+  });
+  const onSite: MacroMemory = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
+  // Twice refused: still tried.
+  assert.deepEqual(salvager(step, grid(streak(2)), onSite, NB).action, { kind: "lock", targetID: 4701 });
+  // Three times: left, and the can looted instead.
+  const t = salvager(step, grid(streak(3)), onSite, NB);
+  assert.deepEqual(t.action, { kind: "lootWreck", wreckID: 4702 });
+  // The runner forgets its streak (a hold change does that); the wreck stays left.
+  const later = salvager(step, grid([]), { ...t.nextMem, work: { ...(t.nextMem["work"] as MacroMemory), looted: [4702] } }, NB);
+  assert.notDeepEqual(later.action, { kind: "lock", targetID: 4701 });
 });
 
 test("on site: a tractor beam whose wreck has arrived is switched off, so it can take the next", () => {
