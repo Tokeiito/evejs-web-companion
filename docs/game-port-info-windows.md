@@ -301,6 +301,24 @@ This ports the existing header presentation's lifetime; complete native header
 widgets, ancillary read order/caches and failures during later caption work
 remain separate.
 
+The corporation service's scalar aggression read now shares its native raw-reply
+cache across information windows. base_corporation256-261 and ExpiringDict use
+100000 entries and 600 seconds of client wall time. A hit does not renew its age;
+an age of exactly 600 seconds expires it. Completed None replies are cached,
+RPC failures are not, and overlapping misses issue separate reads. At capacity
+the native dictionary removes its oldest slot before every assignment, including
+an overwrite; a live surviving key keeps its position. Contains/get also retain
+their separate age checks, including the native KeyError at a crossed boundary.
+
+The cache is per pilot here and clears with character/session teardown, with a
+generation guard before storing late replies. A registered tasklet's retirement
+prevents cache publication; an unregistered history continuation may fill it after
+its view closes. Corporation membership changes do not clear it. The crimewatch
+service's own corporation-registry settings and notices are separate: no extra
+invalidation is inferred from them. The bulk aggression caller and complete
+service lifetime remain separate port work. Caching None is established here;
+the information window's native consumer failure for that value is still next.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. Complete native content tabs, ancillary header/

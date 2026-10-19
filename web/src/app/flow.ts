@@ -274,6 +274,7 @@ import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
 import type { InfoReadScope } from "./infoReadScope.ts";
 import { createCorporationRecords } from "../bridge/corporationRecords.ts";
+import { createCorporationAggression } from "../bridge/corporationAggression.ts";
 import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
 import { characterCorporationOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
@@ -4020,6 +4021,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
   const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
   const corporationRecords = createCorporationRecords(() => store.station.get().online?.corporationID ?? null);
+  const corporationAggression = createCorporationAggression();
   const infoWindows = createInfoWindows({
     readCorporation: corporationShowInfo,
     // eve_exception_handler handles a native UserError by its dialog and dict.
@@ -4887,6 +4889,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         stopLiveStream();
         infoWindows.reset();
         corporationRecords.reset();
+        corporationAggression.reset();
         store.apply({ type: "character/offline" });
       }
     }
@@ -5488,7 +5491,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("charid")) corporationRecords.reset();
+    if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
     if (sessionNames?.includes("corpid")) {
       const value = sessionChangeValue(method, args, "corpid");
       corporationRecords.membershipChanged(value === null ? null : Number(unwrapLong(value)));
@@ -12409,7 +12412,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
       // Neither read catches RPC exceptions: construction and caption/history
       // completion stop, and the window's exception handler receives the error.
-      const aggression = await ask("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf);
+      const aggression = aggressionSettingsOf(await corporationAggression.get(ask, corporationID, () => reads?.assertCurrent()));
       reads?.assertCurrent();
       const enlistmentFactions = isNpcCorporation(corporationID) ? null
         : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf);
@@ -27972,6 +27975,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       closeMoneyTransfer();
       infoWindows.reset();
       corporationRecords.reset();
+      corporationAggression.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
@@ -29945,6 +29949,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         closeMoneyTransfer();
         infoWindows.reset();
         corporationRecords.reset();
+        corporationAggression.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29978,6 +29983,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         infoWindows.reset();
         requestGeneration++;
         corporationRecords.reset();
+        corporationAggression.reset();
         cancelCorporationCEOChoice();
         cancelCorporationAward();
         recoveryGeneration++;
