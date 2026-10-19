@@ -7921,8 +7921,13 @@ const MAX_COMPANION_REJOIN_TRIES = 3;
  * cover the slowest hull's align (about 20 s) at the measured ~2-4 s tick.
  */
 const REJOIN_WARP_START_WAIT_TICKS = 15;
-/** The readout while a "the commander is not here" refusal is being waited out. */
-const REJOIN_NOT_HERE_WHY = "The commander is not in this system: waiting for the fleet.";
+/**
+ * The readout while a "the commander is not here" refusal is being waited out.
+ * It says only what the server said and what the pilot does next, never where
+ * the commander is: the same sentence covers a commander who is a few km away.
+ */
+const REJOIN_REFUSED_WAIT_WHY =
+  "The warp to the commander was refused (too close, cloaked, or not where the roster says): waiting for the commander to show.";
 /**
  * How long a "the commander is not here" refusal stands when the roster never
  * reports the commander anywhere new. The roster is the way out; this is the
@@ -7981,6 +7986,16 @@ const REJOIN_NOT_HERE_RECHECK_MS = 60_000;
  * passed (the roster may never update). The server gives that unnamed reason
  * the same words as every other it has no sentence for (`isCommanderNotHereRefusal`),
  * so a named blocker (scrambled, bubble, cloak...) keeps the three tries.
+ *
+ * ⚠ THAT SENTENCE DOES NOT SAY THE COMMANDER IS ELSEWHERE, AND THE READOUT MUST
+ * NOT EITHER. It first read "The commander is not in this system", and was
+ * false: seen live 2026-10-14 just after a gate jump, the commander sat
+ * jump-cloaked at the gate, invisible to the companions, in the same system as
+ * the roster said; the server log named WARP_DISTANCE_TOO_CLOSE for the very
+ * refusal that readout blamed on TARGET_NOT_FOUND. The companion only ever sees
+ * the generic sentence and cannot tell the two apart, so the readout says the
+ * warp was refused and what the pilot waits for (`REJOIN_REFUSED_WAIT_WHY`).
+ * Rung 9 follows the commander the moment it shows on grid.
  */
 function decideRejoinCommander(
   request: FleetCompanionRequest,
@@ -8021,7 +8036,7 @@ function decideRejoinCommander(
   if (previous !== null && previous.notHere === true) {
     const quiet = nowMs - (previous.sentAtMs ?? nowMs) < REJOIN_NOT_HERE_RECHECK_MS;
     if (previous.sentAt === place && quiet) {
-      return waiting("Standing by", REJOIN_NOT_HERE_WHY, { ...memory, rejoin: previous });
+      return waiting("Standing by", REJOIN_REFUSED_WAIT_WHY, { ...memory, rejoin: previous });
     }
     previous = null;
   }
@@ -10152,7 +10167,7 @@ function abandonmentRecord(ladder: CompanionLadderMemory): CompanionAbandonmentR
  * for a reason it will not name is the thing this whole readout exists to stop --
  * but guessing WHICH reason would put a confident falsehood on screen.
  */
-function refusalWords(raw: string): string {
+function refusalWords(raw: string, refused = true): string {
   const text = String(raw ?? "");
   if (/NotWithinRange|OutOfRange|TooFar/i.test(text)) {
     return "The server refused that: it is out of reach from here.";
@@ -10163,7 +10178,10 @@ function refusalWords(raw: string): string {
   if (/NotPresent|NotFound|Cancelled/i.test(text)) {
     return "The server refused that: it is no longer there.";
   }
-  return "The server refused that call.";
+  // ⚠ ONLY A DEFINITE REFUSAL IS "REFUSED". A call that came back uncertain
+  // (`engageDrones`: "Could not confirm every drone engagement order.") was
+  // not answered no, so saying so was false. Seen live 2026-10-14.
+  return refused ? "The server refused that call." : "The server did not confirm that call.";
 }
 
 export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionController {
@@ -10452,7 +10470,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         }
         const raw = error instanceof Error ? error.message : String(error);
         mem.failureReason = raw;
-        mem.why = `${decision.why} ${refusalWords(raw)}`;
+        mem.why = `${decision.why} ${refusalWords(raw, isDefiniteCompanionRefusal(error))}`;
         // ⚠ NO PAUSE HERE ANY MORE FOR AN UNCONFIRMED FOLLOW, DRONE OR ALIGN
         // ORDER. The settle calls above have already recorded the outcome as
         // "uncertain"; the ladder reads that on its next tick and resends the
