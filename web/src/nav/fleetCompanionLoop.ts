@@ -8305,8 +8305,16 @@ function decideRearmTrip(
 
   const travel = obs.travel ?? null;
   const toThis = travel !== null && travel.destinationStationID === stationID;
-  if (trip.routedAtMs !== null && toThis && travel.failureReason !== null && travel.failureReason !== undefined) {
-    return ended(`Cannot get to that station to rearm: ${travel.failureReason}`);
+  // ⚠ A ROUTE THE AUTOPILOT PAUSED IS SENT AGAIN, UP TO THE BOUND. The autopilot
+  // pauses on any refused step, and the commonest refusal is not about the trip
+  // at all: the BFF runs one write per pilot, so a step that lands while this
+  // ladder's own call is out is refused CHARACTER_IN_USE (seen live 2026-10-19:
+  // three pilots landed at the station, the approach to dock met the prop mod's
+  // activation, and every trip ended there). Only the last route's failure is
+  // the trip's.
+  const failure = trip.routedAtMs !== null && toThis ? travel.failureReason ?? null : null;
+  if (failure !== null && trip.routes >= MAX_REARM_ROUTES) {
+    return ended(`Cannot get to that station to rearm: ${failure}`);
   }
   if (toThis && travel.status === "running") {
     return {
