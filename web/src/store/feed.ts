@@ -109,6 +109,7 @@ import type { FleetAvailability, FleetPendingInvite } from "../bridge/fleetCente
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { CrimewatchReading } from "../space/crimewatch.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
+import type { RedeemToken } from "../bridge/redeem.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
@@ -628,6 +629,9 @@ export type FeedEvent =
     }
   // Drop the wallet readout (character offline / logged out).
   | { readonly type: "wallet/cleared" }
+  // What the account may redeem (bridge/redeem.ts): as the server last answered it, or the read's failure, with
+  // what was had kept. null tokens where the pilot's transport does not carry the read.
+  | { readonly type: "redeem/tokens"; readonly tokens: readonly RedeemToken[] | null; readonly error: string | null }
   // Goal R55 — the Standings page. One BFF pull carries the character's own
   // standings (standingMgr.GetCharStandings) and the corporation's standings
   // (standingMgr.GetCorpStandings). Each keeps its own error; a list is null when
