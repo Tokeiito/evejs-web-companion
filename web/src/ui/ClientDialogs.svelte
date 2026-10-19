@@ -68,6 +68,8 @@
   import { openFittingWindow } from "./fittingWindowTarget.ts";
   import { portal } from "./portal.ts";
   import { startFittingDrag } from "./fittingDrag.ts";
+  import OwnerPicture from "./OwnerPicture.svelte";
+  import { portraitUrl, portraitDefaultPath } from "./ownerImages.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -98,6 +100,11 @@
   const multiFitAsked = flow.multiFitAsked;
   // svelte-ignore state_referenced_locally
   const progressWnd = flow.progressWnd;
+  // svelte-ignore state_referenced_locally
+  const corporationCEOChoice = flow.corporationCEOChoice;
+  // svelte-ignore state_referenced_locally
+  const imageServer = flow.imageServer;
+  $effect(() => { if ($corporationCEOChoice !== null) flow.loadImageServer(); });
   // svelte-ignore state_referenced_locally
   const useFittingNameForShips = flow.useFittingNameForShips;
   // svelte-ignore state_referenced_locally
@@ -997,6 +1004,34 @@
   }
 </script>
 
+<svelte:window onkeydown={event => { if (event.key === "Escape" && inFront && $corporationCEOChoice !== null) { event.preventDefault(); flow.answerCorporationCEO($corporationCEOChoice.n, false); } }} />
+
+{#if $corporationCEOChoice !== null}
+  {@const choice = $corporationCEOChoice}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog ceo-choice" role="dialog" aria-modal={inFront} aria-label={wordOf("UI/Corporations/BaseCorporationUI/SelectReplacementCEO", "Select Replacement CEO")} data-dialog="SelectReplacementCEO" data-in-front={inFront}>
+      <form class="quantity" onsubmit={event => { event.preventDefault(); flow.answerCorporationCEO(choice.n, true); }}>
+        <strong>{wordOf("UI/Corporations/BaseCorporationUI/SelectReplacementCEO", "Select Replacement CEO")}</strong>
+        <p class="body">{wordOf("UI/Corporations/BaseCorporationUI/SelectReplacementCEOText", "Select a corporation member to replace you as CEO.")}</p>
+        <div class="ceo-choices" role="listbox" aria-label={wordOf("UI/Corporations/BaseCorporationUI/SelectReplacementCEO", "Select Replacement CEO")}>
+          {#each choice.rows as row, index (index)}
+            {@const portrait = portraitUrl($imageServer, row.characterID, 32)}
+            <button type="button" role="option" aria-selected={choice.selectedIndex === index} class:selected={choice.selectedIndex === index} onclick={() => flow.selectCorporationCEO(choice.n, index)} ondblclick={() => { flow.selectCorporationCEO(choice.n, index); flow.answerCorporationCEO(choice.n, true); }}>
+              <OwnerPicture name={row.name} urls={[...(portrait === null ? [] : [portrait]), clientTexture(portraitDefaultPath(32))]} size={32} />
+              <span>{row.name}</span>
+            </button>
+          {/each}
+        </div>
+        {#if choice.selectionError}<span class="ceo-choice-error" role="status">{choice.selectionError}</span>{/if}
+        <span class="answers">
+          <button type="submit">{wordOf("UI/Common/Buttons/OK", "OK")}</button>
+          <button type="button" onclick={() => flow.answerCorporationCEO(choice.n, false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
+        </span>
+      </form>
+    </div>
+  </div>
+{/if}
+
 {#if $asked !== null}
   <div class="client-dialog-shade" class:modal={inFront}>
     <div class="client-dialog" role="dialog" aria-label={captionText} data-dialog="setQuantityPopup" data-in-front={inFront}>
@@ -1650,6 +1685,10 @@
 {/if}
 
 <style>
+  .ceo-choices { display: flex; flex-direction: column; min-height: 8rem; max-height: 45vh; overflow: auto; }
+  .ceo-choices button { display: flex; align-items: center; gap: 0.5rem; text-align: left; border-color: transparent; padding: 0.2rem; }
+  .ceo-choices button.selected { background: #315a7d; border-color: #86b4d6; }
+  .ceo-choice-error { color: #ff5050; font-size: 0.85rem; text-align: center; }
   .skill-type { font-size: 1.05rem; }
   .ship-name-field { display: flex; flex-direction: column; gap: 0.25rem; }
   .ship-name-count { align-self: flex-end; font-size: 0.8rem; opacity: 0.7; }

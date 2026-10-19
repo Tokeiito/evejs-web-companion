@@ -209,19 +209,30 @@ self, including when evaluating a merged selection.
      also exposed wallet shapes and lifecycle ordering fixed in EveJS; the
      original full store is restored after the live walk. No menu is exposed
      until c4d2 supplies the complete callback.
-   - **c4d2: complete shared submenu and flow.** Preserve self/CEO gates and the
-     contact-multiple caller distinction. Use the native retained member IDs for
-     `len(GetMembers())`; request `GetNumberOfPotentialCEOs` only on the many-member
-     branch and use the actual returned list's length. Implement every warning,
-     refusal, cancellation, both mutations and the successor picker together.
-     Compiled `ListWindow:109-204` sorts case-insensitively and stably when ordered1,
-     starts with no selection and the one-choice error, keeps OK open without a
-     choice, and confirms on double-click. Owner priming deduplicates IDs while
-     candidate rows retain the returned entries. Hold the original pilot/corporation
-     across all dialogs, sorting/naming and dispatch; accept intended own changes.
-     Verify desktop/phone, candidate cancel/choice, native session-busy behavior,
-     alliance/space refusal and actual disband/role/session effects, with full
-     store/settings restoration. Keep every later administration unit in scope.
+   - **c4d2: complete shared submenu and flow, implemented.** Contacts/search and
+     Member List share the self/CEO submenu. Contact-list multiple selection omits
+     it; Member List self-plus-peer offers it once. The callback checks space
+     before CEO authority, reads retained member IDs, and asks the potential-CEO
+     query only for multiple members, using the actual list length. All three
+     warnings default to No. None completes; a candidate list, including empty,
+     opens the single-choice picker. Unique owner priming preserves duplicate
+     rows; stable lowercased ordering follows compiled ListWindow109-204. There
+     is no initial choice, OK without a choice stays open with its native error,
+     and double-click selects then confirms. Cancel and Escape finish without a
+     successor write. The selected retry uses c4d1's operation-specific reset.
+     Original pilot/corporation guards survive reads, warnings, naming and both
+     mutations; pilot/corporation replacement clears a pending picker, while the
+     intended own disband session change is accepted.
+     Live desktop/390px phone verified the menu, default-No prompt, initial error,
+     empty-selection OK, Cancel and double-click handoff. Native AppFlow walks
+     covered merged gates, stale authority, held replies, destruction warnings,
+     pilot replacement, alliance no-RPC refusal, cooldown dialog and actual solo
+     disband/NPC session. Store and settings are restored after staging. Hidden
+     browser screenshots were unavailable; rendered accessibility states and
+     measured bounds establish the UI checks. Zero-potential and empty-candidate
+     branches follow the original compiled callback, not a captured live EveJS
+     case; the server's current fixtures do not produce those lists. Later
+     administration units remain required.
 5. **D2p18c4e — decorations.** Read the complete award window, menu merge, available
    decorations and write before exposing either single or multiple award actions.
 6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks

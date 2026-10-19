@@ -1100,6 +1100,14 @@ export interface QuantityAsk {
   readonly label?: string;
 }
 
+/** The native CEO ListWnd, with a stable row index so duplicate candidates stay separate. */
+export interface CorporationCEOChoice {
+  readonly n: number;
+  readonly rows: readonly { readonly characterID: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+}
+
 /** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
 export interface ShipNameAsk {
   readonly n: number;
@@ -2082,6 +2090,10 @@ export interface AppFlow {
   corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
   corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null>;
   corporationExpelMenu(ownerIDs: readonly number[]): Promise<{ readonly multiple: boolean; readonly confirm: () => Promise<void> } | null>;
+  corporationCEOMenu(ownerIDs: readonly number[]): Promise<{ readonly confirm: () => Promise<void> } | null>;
+  readonly corporationCEOChoice: ReadableSignal<CorporationCEOChoice | null>;
+  selectCorporationCEO(n: number, index: number): void;
+  answerCorporationCEO(n: number, confirmed: boolean): void;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -5334,7 +5346,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) corporationMembershipGeneration++;
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -14932,6 +14944,86 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // menusvc._CharacterMenu648-652: Confirm is the submenu action; no extra modal or cache clear.
         await scope.write("corpRegistry", "UpdateMember", [characterID, null, null, null, null, null, null, null, null, null, null, null, null, null, 0]);
         scope.current();
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
+  const corporationCEOChoiceSignal = createSignal<CorporationCEOChoice | null>(null);
+  let corporationCEOAnswer: ((id: number | null) => void) | null = null;
+  function cancelCorporationCEOChoice(): void { corporationCEOAnswer?.(null); }
+  function selectCorporationCEO(n: number, index: number): void {
+    const choice = corporationCEOChoiceSignal.get();
+    if (choice?.n !== n || !Number.isInteger(index) || !choice.rows[index]) return;
+    corporationCEOChoiceSignal.set({ ...choice, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationCEO(n: number, confirmed: boolean): void {
+    const choice = corporationCEOChoiceSignal.get();
+    if (choice?.n !== n || !corporationCEOAnswer) return;
+    if (!confirmed) { corporationCEOAnswer(null); return; }
+    if (choice.selectedIndex === null) return;
+    corporationCEOAnswer(choice.rows[choice.selectedIndex]!.characterID);
+  }
+  async function askCorporationCEO(scope: MemberOperation, candidateIDs: readonly number[]): Promise<number | null> {
+    // base_corporation808-820 primes unique owners but retains every candidate row.
+    await memberNames(scope, [...new Set(candidateIDs)].map(id => ({ kind: "owner" as const, id })));
+    await wordsNow(["UI/Corporations/BaseCorporationUI/SelectReplacementCEO", "UI/Corporations/BaseCorporationUI/SelectReplacementCEOText", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]);
+    scope.current();
+    const rows = candidateIDs.map(characterID => ({ characterID, name: resolvedName(store.names.get().resolved, "owner", characterID, String(characterID)) }));
+    // ListWindow.GenerateList ordered1 compares lowercased strings, stably.
+    rows.sort((a, b) => { const left = a.name.toLowerCase(), right = b.name.toLowerCase(); return left < right ? -1 : left > right ? 1 : 0; });
+    const missing = plainText(formatTemplate(store.words.get().templates["UI/Control/ListWindow/MustSelectError"] ?? "Select {num} item.", { num: 1 }, { nameOf: () => "" }));
+    const selectionError = plainText(formatTemplate(store.words.get().templates["UI/Control/ListWindow/DisplayError"] ?? "{errorMessage}", { errorMessage: missing }, { nameOf: () => "" }));
+    cancelCorporationCEOChoice();
+    return new Promise(resolve => {
+      corporationCEOAnswer = id => { corporationCEOAnswer = null; corporationCEOChoiceSignal.set(null); resolve(id); };
+      corporationCEOChoiceSignal.set({ n: ++dialogsSaidCount, rows, selectedIndex: null, selectionError });
+    });
+  }
+  async function corporationCEOMenu(ownerIDs: readonly number[]): Promise<{ readonly confirm: () => Promise<void> } | null> {
+    // OfferResignAsCEO276-279: self and CEO, with no explicit multiple gate.
+    const online = store.station.get().online;
+    if (!online || !ownerIDs.includes(online.characterID)) return null;
+    const scope = captureMemberOperation();
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    if (memberInteger(corporation, "ceoID") !== BigInt(scope.online.characterID)) return null;
+    return { confirm: async () => {
+      scope.current();
+      try {
+        // base_corporation785-804 checks space before CEO authority and any warning.
+        const current = store.station.get().online!, flight = store.flight.get().status;
+        if (flight?.inSpace ?? (current.stationID === null && current.structureID == null && current.solarSystemID !== null)) {
+          sayDialog("CrpCanNotChangeCorpInSpace", null, "You cannot change corporation while in space."); return;
+        }
+        const now = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+        if (memberInteger(now, "ceoID") !== BigInt(scope.online.characterID)) { sayDialog("OnlyCEOCanResign", null, "Only the CEO can resign."); return; }
+        const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+        if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
+        let dialog = "CrpDestroyCorpWarning", values: JsonValue = { type: "dict", entries: [] };
+        if (members.memberIDs.length > 1) {
+          const potential = await scope.ask("corpRegistry", "GetNumberOfPotentialCEOs", []); scope.current();
+          if (!isListValue(potential)) throw new Error("The corporation's potential CEOs could not be read.");
+          dialog = potential.items.length > 0 ? "AskResignAsCEO" : "CrpDestroyNonEmptyCorpWarning";
+          if (potential.items.length > 0) values = { type: "dict", entries: [["memberCount", potential.items.length]] };
+        }
+        if (!await askDialog(dialog, values, "Resign as CEO? The corporation may be closed if there is no successor.", "yesno", { defaultAnswer: "no" })) return;
+        scope.current();
+        const mutate = async (successor: number | null): Promise<JsonValue> => {
+          const pilotCurrent = callOptions.captureRequestGuard!(), send = callOptions.fetch ?? pageFetch();
+          let sent = false;
+          const mutationOptions: api.ApiOptions = { ...scope.options,
+            captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+            fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+          };
+          scope.current();
+          const result = await api.resignCorporationCEO(successor, scope.online.corporationID, mutationOptions);
+          pilotCurrent(); return result;
+        };
+        const result = await mutate(null);
+        if (result === null) return;
+        scope.current();
+        if (!isListValue(result)) throw new Error("The corporation's replacement CEOs could not be read.");
+        const ids = result.items.map(value => { const id = Number(unwrapLong(value)); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A replacement CEO could not be read."); return id; });
+        const choice = await askCorporationCEO(scope, ids); scope.current();
+        if (choice !== null) await mutate(choice);
       } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
     } };
   }
@@ -27465,6 +27557,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       trainingSlots.forget();
       conversations.reset();
       requestGeneration++;
+      cancelCorporationCEOChoice();
       recoveryGeneration++;
       recoveryTask = null;
       recoveryIDs.clear();
@@ -28673,6 +28766,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberMenu,
     corporationQuitMenu,
     corporationExpelMenu,
+    corporationCEOMenu,
+    corporationCEOChoice: readonlySignal(corporationCEOChoiceSignal),
+    selectCorporationCEO,
+    answerCorporationCEO,
     corporationRoleAllowance,
     openCorporationMemberDetails,
     memberDetailsPanel,
@@ -29385,6 +29482,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.releaseSession(callOptions);
         conversations.reset();
         requestGeneration++;
+        cancelCorporationCEOChoice();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();
@@ -29410,6 +29508,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
         requestGeneration++;
+        cancelCorporationCEOChoice();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();
