@@ -4886,6 +4886,75 @@ test("a quiet grid launches nothing", () => {
   assert.notEqual(decision.action.kind, "launchDrones");
 });
 
+// ⚠ ONCE, THEN WAIT FOR THEM TO SHOW (seen live 2026-10-12: five drones out
+// with no state in the pilot's park, and a launch of the rest of the bay sent
+// on every tick for 5.5 minutes, each one refused silently for want of a free
+// control slot, while the pilot followed, locked and engaged nothing).
+test("a job's launch is sent once and waited on while no drone of that kind shows", () => {
+  const T0 = 1_000_000;
+  const first = decideCompanionAction(WITH_DRONES, droneObs(), undefined, T0);
+  assert.equal(first.action.kind, "launchDrones");
+  assert.deepEqual(first.memory.droneLaunch, { droneItemIDs: [DRONE_BAY_STACK], sinceMs: T0 });
+  let memory = first.memory;
+  for (const nowMs of [T0 + 350, T0 + 3_500, T0 + 29_999]) {
+    const next = decideCompanionAction(WITH_DRONES, droneObs(), memory, nowMs);
+    assert.notEqual(next.action.kind, "launchDrones", String(nowMs));
+    memory = next.memory;
+  }
+  const again = decideCompanionAction(WITH_DRONES, droneObs(), memory, T0 + 30_000);
+  assert.deepEqual(again.action, { kind: "launchDrones", droneItemIDs: [DRONE_BAY_STACK] });
+});
+
+test("a bay holding something the last launch did not send launches at once", () => {
+  const T0 = 1_000_000;
+  const first = decideCompanionAction(WITH_DRONES, droneObs(), undefined, T0);
+  const more = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ droneBayItemIDs: [DRONE_BAY_STACK, DRONE_BAY_STACK + 1] }),
+    first.memory,
+    T0 + 350,
+  );
+  assert.deepEqual(more.action, { kind: "launchDrones", droneItemIDs: [DRONE_BAY_STACK, DRONE_BAY_STACK + 1] });
+});
+
+test("the launch is forgotten once its drones show or the job is over", () => {
+  const T0 = 1_000_000;
+  const first = decideCompanionAction(WITH_DRONES, droneObs(), undefined, T0);
+  const shown = decideCompanionAction(WITH_DRONES, droneObs({ myDroneIDs: [DRONE_A] }), first.memory, T0 + 2_000);
+  assert.equal(shown.memory.droneLaunch, null);
+  const quiet = decideCompanionAction(WITH_DRONES, droneObs({ hostileOnGrid: false }), first.memory, T0 + 2_000);
+  assert.equal(quiet.memory.droneLaunch, null);
+  // Back to a fight with nothing out: a new launch, at once.
+  const back = decideCompanionAction(WITH_DRONES, droneObs(), quiet.memory, T0 + 4_000);
+  assert.equal(back.action.kind, "launchDrones");
+});
+
+test("a job's launch the server refused is sent again on the next tick", async () => {
+  const attempted: FleetCompanionAction[] = [];
+  const controller = createFleetCompanion({
+    observe: async () => droneObs(),
+    issue: async (action) => {
+      attempted.push(action);
+      if (attempted.length === 1) {
+        throw Object.assign(new Error("CHARACTER_IN_USE"), { code: "CALL_REFUSED" });
+      }
+    },
+    sleep: async () => {},
+    now: () => 1_000_000,
+  });
+  controller.start(WITH_DRONES);
+  for (let tick = 0; tick < 4; tick += 1) {
+    await controller.tick();
+  }
+  assert.deepEqual(
+    attempted.filter((action) => action.kind === "launchDrones"),
+    [
+      { kind: "launchDrones", droneItemIDs: [DRONE_BAY_STACK] },
+      { kind: "launchDrones", droneItemIDs: [DRONE_BAY_STACK] },
+    ],
+  );
+});
+
 // A null bay is "did not look" and an empty one is "nothing aboard". Neither
 // launches, and neither is an error - a pilot with no drones fights without.
 test("no bay listing and an empty bay both launch nothing", () => {

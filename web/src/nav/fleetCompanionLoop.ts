@@ -1574,6 +1574,18 @@ export interface CompanionLadderMemory {
    */
   readonly jobOverRecall: JobOverRecall | null;
   /**
+   * The launch rung 6 last sent to put drones out for a job, or null.
+   *
+   * ⚠ WITHOUT THIS A PILOT THAT CANNOT SEE ITS DRONES DOES NOTHING ELSE. Seen
+   * live 2026-10-12: five drones launched on landing never got a state in the
+   * pilot's park, so it read none of that kind as out and sent a launch for the
+   * five left in the bay on every tick for 5.5 minutes. The server refused each
+   * one silently, since every control slot was taken by a drone the pilot could
+   * not see, and each one spent the tick's one action, so the pilot never
+   * followed, locked or engaged.
+   */
+  readonly droneLaunch: DroneLaunch | null;
+  /**
    * The ship this pilot's repair drones were last sent to.
    *
    * ⚠ WITHOUT THIS THE RUNG RE-ISSUES ITS ORDER EVERY TICK. Drones already
@@ -1899,6 +1911,12 @@ export interface CompanionLadderMemory {
   readonly reloadAttempts: Readonly<Record<number, number>>;
 }
 
+/** A job's launch in flight: which bay items it sent out, and when. */
+export interface DroneLaunch {
+  readonly droneItemIDs: readonly number[];
+  readonly sinceMs: number;
+}
+
 /** A job-over recall in flight: which drones it named, and when. */
 export interface JobOverRecall {
   /**
@@ -1938,6 +1956,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     droneSizeRecalledIDs: [],
     droneAssistLit: [],
     jobOverRecall: null,
+    droneLaunch: null,
     lastDroneRepairTargetID: null,
     lastDroneRepairIDs: [],
     lastDroneEngageTargetID: null,
@@ -2380,6 +2399,7 @@ function decideCompanionStep(
     droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
     droneAssistLit: memory.droneAssistLit,
     jobOverRecall: memory.jobOverRecall,
+    droneLaunch: memory.droneLaunch,
     // ⚠ CARRIED, NOT CLEARED, and the difference from `abandonment` above is
     // the whole point. That one is cleared because a human coming back is
     // exactly the thing it was waiting for. A flee is about the ship's health
@@ -5707,6 +5727,19 @@ function decideLeaveTheStation(
  */
 const DRONE_RECALL_GIVE_UP_MS = 30_000;
 
+/**
+ * How long a job's launch that the server took is waited on before the same
+ * drones are sent again, while none of that kind reads as out.
+ *
+ * ⚠ ONLY A LAUNCH THE SERVER SAID YES TO WAITS. One that failed is forgotten
+ * by the loop and sent again on the next tick. A launch that was taken lands
+ * in a tick or two; one still not seen after it is a launch the pilot cannot
+ * see the result of (its drones have no state in the park), or one the server
+ * refused without saying (every control slot full), and sending it again every
+ * burst tick changes neither.
+ */
+const DRONE_LAUNCH_WAIT_MS = 30_000;
+
 
 // ─── The `loot` order ────────────────────────────────────────────────────────
 
@@ -7493,6 +7526,12 @@ function decideDrones(
     memory = { ...memory, jobOverRecall: null };
     nothing = { decision: null, memory };
   }
+  // A job's launch is over once drones of that kind read as out, or once there
+  // is no job: the next launch is a new one and goes at once.
+  if (memory.droneLaunch !== null && (role === null || droneIDsOutFor(obs, role).length > 0)) {
+    memory = { ...memory, droneLaunch: null };
+    nothing = { decision: null, memory };
+  }
 
   // --- never two kinds at once --------------------------------------------
   //
@@ -7614,8 +7653,26 @@ function decideDrones(
       return nothing;
     }
     const launch = roleLaunch(request, obs, memory, role, bay, DRONE_LAUNCH_WHY[role]);
+    // ⚠ ONCE, THEN WAIT FOR THEM TO SHOW. See `droneLaunch`: a launch the
+    // server took and that still reads as nothing out is not mended by sending
+    // it again on every tick, and doing so starves every rung below this one.
+    // Sent again at once if this launch names something the last one did not.
+    const sent = launch.action.kind === "launchDrones" ? launch.action.droneItemIDs : bay;
+    const held = memory.droneLaunch;
+    if (
+      held !== null &&
+      sent.every((itemID) => held.droneItemIDs.includes(itemID)) &&
+      nowMs - held.sinceMs < DRONE_LAUNCH_WAIT_MS
+    ) {
+      return nothing;
+    }
     return {
-      decision: { action: launch.action, phase: "Drones", why: launch.why, memory },
+      decision: {
+        action: launch.action,
+        phase: "Drones",
+        why: launch.why,
+        memory: { ...memory, droneLaunch: { droneItemIDs: [...sent], sinceMs: nowMs } },
+      },
       memory,
     };
   }
@@ -8452,6 +8509,14 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     }
   }
 
+  // A job's launch that failed is not one to wait on, for the same reason.
+  function forgetFailedDroneLaunch(decision: CompanionDecision): void {
+    const held = decision.memory.droneLaunch;
+    if (decision.action.kind === "launchDrones" && held !== null && mem.ladder.droneLaunch === held) {
+      mem.ladder = { ...mem.ladder, droneLaunch: null };
+    }
+  }
+
   async function tickBody(): Promise<FleetCompanionAction> {
     if (mem.status !== "running") {
       return { kind: "wait" };
@@ -8577,6 +8642,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         settleFollow(decision, false, error);
         settleDroneEngagement(decision, false, error);
         forgetFailedJobOverRecall(decision);
+        forgetFailedDroneLaunch(decision);
         if (token !== runToken || mem.status !== "running") {
           return { kind: "wait" };
         }
@@ -8714,6 +8780,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           droneSizeRecalledIDs: [],
           droneAssistLit: [],
           jobOverRecall: null,
+          droneLaunch: null,
       // Run-local, both of them. See `CompanionFlee`'s header for why a flee is
       // not persisted the way an abandonment is: a companion coming back up
       // reads its own health on the first tick and leaves again within one tick
