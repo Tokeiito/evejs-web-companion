@@ -331,7 +331,7 @@ test("a bare 'rearm' rearms a docked pilot where it is, and asks where of one in
 test("a route the autopilot cannot fly ends the trip out loud", () => {
   const routed = decideCompanionAction(REQUEST, obs({ chatMessages: [chat(`rearm at ${STATION_LINK}`)] }), freshLadderMemory(), 2_000);
   const failed = obs({
-    travel: { status: "failed", destinationStationID: STATION, destinationSystemID: OTHER_SYSTEM, remainingJumps: 0, failureReason: "No route." },
+    travel: { status: "error", destinationStationID: STATION, destinationSystemID: OTHER_SYSTEM, remainingJumps: 0, failureReason: "No route." },
   } as Partial<FleetCompanionObservation>);
   const decision = decideCompanionAction(REQUEST, failed, routed.memory, 4_000);
   assert.deepEqual(decision.say, ["Cannot get to that station to rearm: No route."]);
