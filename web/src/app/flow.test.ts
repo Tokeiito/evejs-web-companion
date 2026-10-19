@@ -246,10 +246,12 @@ test("selectCharacter brings the character online and runs the three docked read
   // its station service sets up, station/base.py 185, and the game port's transport asks them so); and beside them
   // what the choosing reads of the pilot itself, each by the page's own call since 2026-10-10 where it was a route's:
   // its crimewatch states and its clone's grade; and the account's daily login campaign, as the client's login
-  // campaign service asks it as its neocom button is set up (loginCampaignService.py 111).
+  // campaign service asks it as its neocom button is set up (loginCampaignService.py 111), and the seasonal
+  // campaign on, as the client's seasonal campaign service asks it as it starts (seasonalLoginCampaignService.py 44).
   assert.deepEqual(dockedReads.slice(1).sort(), [
     "crimewatch.GetClientStates",
     "loginCampaignManager.get_client_campaign_state",
+    "seasonalLoginCampaignManager.get_active_campaign",
     "station.GetGuests",
     "stationSvc.GetStationItemBits",
     "subscriptionMgr.GetCloneGrade",
