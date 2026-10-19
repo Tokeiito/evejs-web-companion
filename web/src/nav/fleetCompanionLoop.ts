@@ -48,6 +48,7 @@ import {
 // re-derived for the same reason the get-safe helpers above are: one answer to
 // "where does this tag rank", shared with the combat priority list.
 import { fleetTagRank, pickPrimary } from "./targetPriority.ts";
+import { isTransitionTimeout, isTransportTransient, panelErrorWords } from "../bridge/refusals.ts";
 // The prop-mod policy (rung 3b), imported for the third time the same reason
 // holds: the drone-boat block wants the identical answer to "light it, stop it,
 // or leave the rack alone", and a scram rule that lived in two files would be
@@ -1235,6 +1236,19 @@ export interface FleetCompanionController {
 
 /** The cadence the other loops use. Two seconds is a lower bound, never exact. */
 export const FLEET_COMPANION_CADENCE_MS = 2000;
+
+/**
+ * How long a companion keeps re-reading through a dropped connection before
+ * it gives up on the ship.
+ *
+ * ⚠ A TIME, NOT A COUNT, because the failures it rides out come in seconds,
+ * not in ticks. The game server stalls for ten to fifteen seconds under load,
+ * and every read inside the stall fails at once with the gateway unreachable --
+ * so a count of five, at a two-second cadence, ends the run inside the very
+ * stall it was meant to survive. A stopped companion stays stopped until a
+ * player notices, which on a fleet alt is the rest of the fight.
+ */
+export const FLEET_COMPANION_READ_GRACE_MS = 60_000;
 
 /**
  * The gap after a tick that ISSUED A CALL, rather than after one that waited.
@@ -8153,6 +8167,12 @@ interface CompanionMemory {
   lastOrderHeard: string | null;
   canTag: boolean | null;
   failureReason: string | null;
+  /**
+   * When the current streak of unanswered reads began, and which run it
+   * belongs to. Null while reads are answering. See
+   * `FLEET_COMPANION_READ_GRACE_MS`.
+   */
+  readFailing: { readonly sinceMs: number; readonly token: number } | null;
   /** The live request. Null until `start()`; the ladder needs it every tick. */
   request: FleetCompanionRequest | null;
   /** The ladder's own threaded memory — see `CompanionLadderMemory`. */
@@ -8170,6 +8190,7 @@ function freshMemory(): CompanionMemory {
     lastOrderHeard: null,
     canTag: null,
     failureReason: null,
+    readFailing: null,
     request: null,
     ladder: freshLadderMemory(),
   };
@@ -8312,17 +8333,39 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       if (token !== runToken || mem.status !== "running") {
         return { kind: "wait" };
       }
-      // A read that fails is not a licence to act on the last one. Pause with
-      // the reason rather than deciding against stale state.
+      // A read that fails is not a licence to act on the last one: nothing is
+      // decided against stale state. But a connection that dropped says
+      // nothing about the ship, so that kind waits and reads again, and only a
+      // streak longer than the grace -- or a failure that is not the
+      // connection -- stops the run.
+      const nowMs = deps.now?.() ?? Date.now();
+      if (mem.readFailing === null || mem.readFailing.token !== token) {
+        mem.readFailing = { sinceMs: nowMs, token };
+      }
+      const transient = isTransportTransient(error) || isTransitionTimeout(error);
+      if (transient && nowMs - mem.readFailing.sinceMs < FLEET_COMPANION_READ_GRACE_MS) {
+        mem.phase = "Reconnecting";
+        mem.action = null;
+        mem.why = "The game server is not answering. Reading the ship again.";
+        report();
+        return { kind: "wait" };
+      }
+      // ⚠ THE SENTENCE IS THE ONE THE PANEL SHOWS, so it is player language
+      // (R9a): the raw message named the gateway, which a player cannot act on.
       mem.status = "error";
-      mem.failureReason = error instanceof Error ? error.message : String(error);
+      mem.failureReason = transient
+        ? `The game server did not answer for a minute, so this pilot stopped: ${panelErrorWords(error)}`
+        : `This pilot stopped because its ship could not be read: ${panelErrorWords(error)}`;
       mem.why = "Could not read the ship.";
+      mem.action = null;
+      mem.readFailing = null;
       report();
       return { kind: "wait" };
     }
     if (token !== runToken || mem.status !== "running") {
       return { kind: "wait" };
     }
+    mem.readFailing = null;
     // The readout fields the observation already answers. Cheap, and it keeps
     // the badge honest without a second read.
     mem.inFleet = obs.inFleet ?? null;

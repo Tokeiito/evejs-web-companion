@@ -7,6 +7,7 @@ import {
   FLEET_COMPANION_ABANDONMENT_WAIT_MS,
   FLEET_COMPANION_BURST_MS,
   FLEET_COMPANION_CADENCE_MS,
+  FLEET_COMPANION_READ_GRACE_MS,
   TANK_LAYER_HURT_THRESHOLD,
   createFleetCompanion,
   decideCompanionAction,
@@ -392,7 +393,85 @@ test("a read that throws pauses with the reason rather than acting on stale stat
   const action = await controller.tick();
   assert.equal(action.kind, "wait");
   assert.equal(controller.snapshot().status, "error");
-  assert.equal(controller.snapshot().failureReason, "space read failed");
+  assert.match(controller.snapshot().failureReason ?? "", /could not be read: space read failed$/);
+});
+
+test("a dropped connection waits and reads again instead of stopping the run", async () => {
+  // The live failure: the game server stalled for about thirteen seconds, every
+  // read inside it came back EVE_GATEWAY_UNREACHABLE, and the very first one
+  // ended a companion in the middle of a fight.
+  let nowMs = 1_000_000;
+  let down = true;
+  const controller = createFleetCompanion({
+    observe: async () => {
+      if (down) throw Object.assign(new Error("EveJS gateway is unreachable."), { code: "EVE_GATEWAY_UNREACHABLE" });
+      return obs();
+    },
+    issue: async () => {},
+    sleep: async () => {},
+    now: () => nowMs,
+  });
+  controller.start(DEFAULT_FLEET_COMPANION_REQUEST);
+  for (let i = 0; i < 7; i += 1) {
+    assert.equal((await controller.tick()).kind, "wait");
+    assert.equal(controller.snapshot().status, "running");
+    assert.equal(controller.snapshot().phase, "Reconnecting");
+    nowMs += FLEET_COMPANION_CADENCE_MS;
+  }
+  down = false;
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running");
+  assert.notEqual(controller.snapshot().phase, "Reconnecting");
+  assert.equal(controller.snapshot().failureReason, null);
+
+  // A later blip gets the whole grace again: the clock restarted on the answer.
+  down = true;
+  nowMs += FLEET_COMPANION_READ_GRACE_MS * 2;
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running");
+});
+
+test("a connection down for longer than the grace stops the run in player language", async () => {
+  let nowMs = 1_000_000;
+  const controller = createFleetCompanion({
+    observe: async () => {
+      throw Object.assign(new Error("EveJS gateway is unreachable."), { code: "EVE_GATEWAY_UNREACHABLE" });
+    },
+    issue: async () => {},
+    sleep: async () => {},
+    now: () => nowMs,
+  });
+  controller.start(DEFAULT_FLEET_COMPANION_REQUEST);
+  await controller.tick();
+  nowMs += FLEET_COMPANION_READ_GRACE_MS - 1;
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running");
+  nowMs += 1;
+  await controller.tick();
+  const reason = controller.snapshot().failureReason ?? "";
+  assert.equal(controller.snapshot().status, "error");
+  assert.match(reason, /did not answer for a minute/);
+  assert.match(reason, /The game server could not be reached\./);
+  assert.doesNotMatch(reason, /gateway/i);
+});
+
+test("a restarted run does not inherit the old run's failing clock", async () => {
+  let nowMs = 1_000_000;
+  const controller = createFleetCompanion({
+    observe: async () => {
+      throw Object.assign(new Error("EveJS gateway is unreachable."), { code: "EVE_GATEWAY_UNREACHABLE" });
+    },
+    issue: async () => {},
+    sleep: async () => {},
+    now: () => nowMs,
+  });
+  controller.start(DEFAULT_FLEET_COMPANION_REQUEST);
+  await controller.tick();
+  controller.pause();
+  nowMs += FLEET_COMPANION_READ_GRACE_MS * 2;
+  controller.resume();
+  await controller.tick();
+  assert.equal(controller.snapshot().status, "running");
 });
 
 test("a retired observation failure cannot stop a replacement companion run", async () => {

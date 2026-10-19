@@ -893,6 +893,13 @@
                 </td>
                 <td data-label="Companion">
                   {companionStatusWords(state?.status ?? null)}
+                  <!-- ⚠ THE REASON RIDES WITH THE WORD. "Stopped after a
+                       problem" alone sends the player into the panel and down
+                       past the start checklist to find which problem; the row
+                       is where they are already looking. -->
+                  {#if state?.status === "error" && state.failureReason}
+                    <span class="note"> - {state.failureReason}</span>
+                  {/if}
                   <!-- ⚠ SAID OUT LOUD, THOUGH A BOT IS NOT THIS WINDOW'S
                        BUSINESS. Starting a companion on a hull a bot is flying
                        takes the ship off that bot; a roster that showed only
