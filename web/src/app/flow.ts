@@ -751,6 +751,9 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
+import { REDEEM_NOTICE, decodeRedeemTokens, type RedeemOutcome, type RedeemToken } from "../bridge/redeem.ts";
+import { readRedeemTokens } from "../bridge/redeemReads.ts";
+import { claimRedeemTokens } from "../bridge/redeemWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -2387,6 +2390,15 @@ export interface AppFlow {
   pilotWealth(): Promise<number | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
+  /** Redeem Items (redeemsvc.py): what the account may redeem, read again of what the pilot's transport keeps. */
+  loadRedeemTokens(): Promise<void>;
+  /** The pilot's home station, where Redeem to Home Station delivers (homestation/client/service.py 67); null where it cannot be read. */
+  redeemHomeStation(): Promise<number | null>;
+  /**
+   * Redeem Items' Redeem to Current Station or Redeem to Home Station (redeemItemsContainer.py redeem, 343 to 356): the
+   * tokens for the pilot, and then what is left read again. Fails as the call fails.
+   */
+  redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome>;
   /**
    * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK): AskAreYouSure with the tab's words, then
    * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
@@ -5302,6 +5314,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "standings/char", char: after });
         }
       }
+      return;
+    }
+    // redeem.OnRedeemingQueueUpdated (redeemsvc.py 162 to 169): what the account may redeem has changed, and is read
+    // again.
+    if (method === REDEEM_NOTICE) {
+      void loadRedeemTokens().catch(() => {});
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -16916,6 +16934,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return Number.isFinite(value) ? value : null;
   }
 
+  // redeem.FetchRedeemTokens (redeemsvc.py 63 to 65): the page reads the tokens as the pilot comes online and at the
+  // server's OnRedeemingQueueUpdated, and after a claim; the transport answers from what it keeps, fetched as the
+  // client fetches (bridge/redeemReads.ts). A transport that does not carry the call has none to give.
+  async function loadRedeemTokens(): Promise<void> {
+    let answer: JsonValue;
+    try {
+      answer = await readRedeemTokens(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      store.apply({ type: "redeem/tokens", tokens: null, error: "What you may redeem could not be read just now." });
+      return;
+    }
+    if (answer === null) {
+      store.apply({ type: "redeem/tokens", tokens: null, error: null });
+      return;
+    }
+    const tokens = decodeRedeemTokens(answer);
+    store.apply(tokens === null
+      ? { type: "redeem/tokens", tokens: null, error: "What you may redeem could not be read just now." }
+      : { type: "redeem/tokens", tokens, error: null });
+    if (tokens !== null) requestNames(tokens.map((token) => ({ kind: "type", id: token.typeID })));
+  }
+
+  async function redeemHomeStation(): Promise<number | null> {
+    try {
+      const stationID = decodeHomeStationID(await bridgeAsk("home_station", "get_home_station", []));
+      if (stationID !== null) requestNames([{ kind: "station", id: stationID }]);
+      return stationID;
+    } catch {
+      return null;
+    }
+  }
+
+  async function redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) throw new Error("There is no pilot online to redeem for.");
+    try {
+      return await claimRedeemTokens(bridgeDo, tokens, characterID, useHomeStation);
+    } finally {
+      // redeemsvc.py 127: the claim, answered or refused, is followed by the tokens' fetch.
+      await loadRedeemTokens().catch(() => {});
+    }
+  }
+
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
     // (The page's own call, bridge/giveMoney.ts; the pilot's ISK is put right by the OnAccountChange that follows.)
     await giveMoneyCall(bridgeDo, toID, amount, reason);
@@ -27927,6 +27989,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      void loadRedeemTokens().catch(() => {});
       // The mission tracker's registration as the client's info panels start (RegisterMissionTracking).
       void registerMissionTracking().catch(() => {});
       await refreshStationPanel();
@@ -29244,6 +29307,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWallet,
     pilotWealth,
     giveMoney,
+    loadRedeemTokens,
+    redeemHomeStation,
+    redeemTokens,
     giveIskFromWallet,
 
     loadStandings,
