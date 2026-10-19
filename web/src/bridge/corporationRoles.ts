@@ -19,13 +19,13 @@ export interface CorporationRoleData {
   readonly order: readonly number[];
   readonly locationalRoles: readonly string[];
 }
-export interface CorporationRole extends CorporationRoleSpec { readonly roleID: bigint }
+export interface CorporationRole extends CorporationRoleSpec { readonly roleID: bigint; readonly summaryName: string }
 export interface CorporationRoleGroup extends CorporationRoleGroupSpec { readonly groupID: number; readonly roles: readonly CorporationRole[] }
 export type GrantMasks = Readonly<Record<RoleField, bigint>>;
 export type CorporationTitle = RoleMasks & { readonly titleID: number; readonly titleName: string };
 
-export function memberRoleGroups(data: CorporationRoleData, name: (id: number) => string, query: string, take: string): readonly CorporationRoleGroup[] {
-  const roles = Object.entries(data.roles).map(([bit, role]) => ({ ...role, roleID: 1n << BigInt(bit) }));
+export function memberRoleGroups(data: CorporationRoleData, name: (id: number) => string, query: string, take: string, divisionName: (division: number) => string, combineName: (role: string, name: string) => string): readonly CorporationRoleGroup[] {
+  const roles = Object.entries(data.roles).map(([bit, role]) => ({ ...role, roleID: 1n << BigInt(bit), summaryName: name(role.nameID) }));
   const cmp = (a: string, b: string) => a.toUpperCase() < b.toUpperCase() ? -1 : a.toUpperCase() > b.toUpperCase() ? 1 : 0;
   return intDictOrder(data.order).map(groupID => {
     const group = data.groups[groupID]!;
@@ -34,8 +34,38 @@ export function memberRoleGroups(data: CorporationRoleData, name: (id: number) =
       const division = (role: CorporationRole) => Number(role.roleName.slice(-1));
       const desc = (role: CorporationRole) => role.roleName.startsWith("roleAccount") ? "" : role.roleName.includes("CanTake") ? take : role.roleName.includes("CanQuery") ? query : "";
       included.sort((a, b) => division(a) - division(b) || cmp(desc(a), desc(b)));
+      for (let i = 0; i < included.length; i++) {
+        const role = included[i]!, column = divisionName(division(role) + (role.roleName.startsWith("roleAccount") ? 7 : 0)), subcolumn = desc(role);
+        included[i] = { ...role, summaryName: subcolumn ? combineName(column, subcolumn) : column };
+      }
     } else included.sort((a, b) => cmp(name(a.nameID), name(b.nameID)));
     return { ...group, groupID, roles: included };
+  });
+}
+
+export interface CorporationRoleSummaryRow {
+  readonly name: string;
+  readonly role: boolean;
+  readonly grantable: boolean;
+  readonly byTitle: boolean;
+  readonly titles: readonly string[];
+}
+export interface CorporationRoleSummaryGroup { readonly groupID: number; readonly nameID: number; readonly rows: readonly CorporationRoleSummaryRow[] }
+
+/** Compiled OnTabRolesSummary: current direct draft, but the loaded member's titleMask. */
+export function memberRolesSummary(groups: readonly CorporationRoleGroup[], draft: RoleMasks, memberTitleMask: number, targetIsCEO: boolean, titles: readonly CorporationTitle[], showTitleNames: boolean): readonly CorporationRoleSummaryGroup[] {
+  const director = (draft.roles & 1n) !== 0n;
+  return groups.flatMap(group => {
+    const selected = titles.filter(title => (memberTitleMask & title.titleID) === title.titleID && (title[group.appliesTo] & BigInt(group.roleMask)) !== 0n);
+    const rows = group.roles.flatMap(role => {
+      const sources = selected.filter(title => (title[group.appliesTo] & role.roleID) !== 0n);
+      const direct = targetIsCEO || director || (draft[group.appliesTo] & role.roleID) === role.roleID;
+      const grantable = targetIsCEO || (director ? role.roleID !== 1n : (draft[group.appliesToGrantable] & role.roleID) === role.roleID);
+      if (!direct && !grantable && !sources.length) return [];
+      return [{ name: role.summaryName, role: direct, grantable, byTitle: sources.length > 0, titles: showTitleNames ? sources.map(title => title.titleName) : [] }];
+    });
+    rows.sort((a, b) => a.name.toUpperCase() < b.name.toUpperCase() ? -1 : a.name.toUpperCase() > b.name.toUpperCase() ? 1 : 0);
+    return rows.length ? [{ groupID: group.groupID, nameID: group.roleGroupNameID, rows }] : [];
   });
 }
 

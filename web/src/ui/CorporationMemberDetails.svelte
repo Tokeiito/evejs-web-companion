@@ -1,12 +1,12 @@
 <script lang="ts">
-  // EditMemberDialog: General, Roles and Titles share one unsaved member state.
+  // EditMemberDialog: all panels share one unsaved member state.
   import { onMount, untrack } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
   import { memberTitleOf } from "../bridge/corporationMemberDetails.ts";
-  import { canEditCorporationRole, changeCorporationRole, type CorporationRole, type RoleMasks, type CorporationTitle } from "../bridge/corporationRoles.ts";
-  import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { canEditCorporationRole, changeCorporationRole, memberRolesSummary, type CorporationRole, type RoleMasks, type CorporationTitle, type CorporationRoleSummaryGroup, type CorporationRoleSummaryRow } from "../bridge/corporationRoles.ts";
+  import { DATE_LABELS, LIST_DELIMITER, formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import OwnerPicture from "./OwnerPicture.svelte";
   import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
@@ -33,6 +33,9 @@
     roles: "UI/Corporations/Common/Roles", grantable: "UI/Corporations/Common/GrantableRoles",
     view: "UI/Common/View", group: "UI/Corporations/Common/GroupType", yes: "UI/Common/Yes", no: "UI/Common/No",
     titles: "UI/Corporations/Common/Titles",
+    summary: "UI/Corporations/EditMemberDialog/RolesSummary", role: "UI/Corporations/Common/Role",
+    grantableRole: "UI/Corporations/EditMemberDialog/GrantableRole", byTitle: "UI/Corporations/EditMemberDialog/RoleByTitle",
+    roleCount: "UI/Corporations/EditMemberDialog/RoleAndNumber", nothing: "UI/Common/NothingFound", delimiter: LIST_DELIMITER,
   };
   const word = (label: string, fallback: string) => plainText($words.templates[label] ?? fallback);
   const fill = (label: string, args: Record<string, string | number | { type: "long"; value: string }>, fallback = "") => plainText(formatTemplate($words.templates[label] ?? fallback, args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
@@ -41,11 +44,15 @@
   let title = $state("");
   let base = $state("");
   let masks = $state<RoleMasks | null>(null);
-  let active = $state<"general" | "roles" | "titles">("general");
+  let active = $state<"general" | "roles" | "titles" | "summary">("general");
   let titleMask = $state(0);
   let titles = $state<readonly CorporationTitle[] | null>(null);
   let titlesLoading = $state(false);
   let titleSerial = 0;
+  let summary = $state<readonly CorporationRoleSummaryGroup[] | null>(null);
+  let summaryLoading = $state(false);
+  let summarySerial = 0;
+  let summaryOpen = $state<Record<number, boolean>>({});
   let grantable = $state("0");
   let groupID = $state("1");
   let rolesLoading = $state(false);
@@ -59,12 +66,38 @@
   let serial = 0;
   let disposed = false;
   function keep(value: CorporationMemberDetails): void { held = value; title = value.member.title; base = value.member.baseID?.toString() ?? ""; masks = { ...value.member.masks }; titleMask = value.member.titleMask; }
-  function selectPanel(panel: "general" | "roles" | "titles"): void {
+  function selectPanel(panel: "general" | "roles" | "titles" | "summary"): void {
     // Load runs the previous tab's DDX before switching, without submitting it.
     if (active === "general" && held?.canEditTitle) title = memberTitleOf(title);
     active = panel;
     if (panel === "roles") void refreshRoleBase();
     if (panel === "titles") void refreshTitles();
+    if (panel === "summary") void refreshSummary();
+  }
+  async function refreshSummary(): Promise<void> {
+    if (!held || !masks) return;
+    const request = ++summarySerial, targetRequest = serial;
+    summaryLoading = true;
+    try {
+      const authority = await flow.corporationMemberSummary(held);
+      if (!disposed && request === summarySerial && targetRequest === serial && held && masks) {
+        summary = memberRolesSummary(held.roleGroups, masks, held.member.titleMask, held.targetIsCEO, authority.titles, authority.showTitleNames);
+        summaryOpen = Object.fromEntries(summary.map(group => [group.groupID, flow.corporationSummaryGroupOpen(group.groupID)]));
+      }
+    } catch (cause) { if (!disposed && request === summarySerial && targetRequest === serial) error = cause instanceof Error ? cause.message : String(cause); }
+    finally { if (!disposed && request === summarySerial) summaryLoading = false; }
+  }
+  function summaryRoleName(name: string): string {
+    // GetSubContentRoleSummary shortens the division name before the label's line break.
+    if (name.length > 25 && name.includes("-<br>")) {
+      const [division, type] = name.split("-<br>");
+      name = `${division!.slice(0, 25)}... -<br>${type}`;
+    }
+    return plainText(name);
+  }
+  function summaryParts(row: CorporationRoleSummaryRow): readonly { label: string; titles?: string }[] {
+    return [...(row.role ? [{ label: word(LABELS.role, "Role") }] : []), ...(row.grantable ? [{ label: word(LABELS.grantableRole, "Grantable role").trim() }] : []),
+      ...(row.byTitle ? [{ label: word(LABELS.byTitle, "Role by title"), titles: row.titles.map(plainText).join(word(LABELS.delimiter, ", ")) }] : [])];
   }
   async function refreshTitles(): Promise<void> {
     const request = ++titleSerial, targetRequest = serial;
@@ -105,6 +138,7 @@
         keep(value);
         if (active === "titles") await refreshTitles();
         else if (active === "roles") await refreshRoleBase();
+        else if (active === "summary") await refreshSummary();
       }
     }
     catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
@@ -121,6 +155,7 @@
         keep(value);
         if (value !== before && active === "roles") await refreshRoleBase();
         else if (value !== before && active === "titles") await refreshTitles();
+        else if (value !== before && active === "summary") await refreshSummary();
         if (!disposed && request === serial && close) onClose?.();
       }
     } catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
@@ -147,6 +182,7 @@
       <button type="button" role="tab" aria-selected={active === "general"} onclick={() => selectPanel("general")}>{word(LABELS.general, "General")}</button>
       <button type="button" role="tab" aria-selected={active === "roles"} onclick={() => selectPanel("roles")}>{word(LABELS.roles, "Roles")}</button>
       <button type="button" role="tab" aria-selected={active === "titles"} onclick={() => selectPanel("titles")}>{word(LABELS.titles, "Titles")}</button>
+      <button type="button" role="tab" aria-selected={active === "summary"} onclick={() => selectPanel("summary")}>{word(LABELS.summary, "Roles summary")}</button>
     </div>
     {#if active === "general"}
     {#if held.canEditTitle}
@@ -192,7 +228,7 @@
           {/each}
         </ul>
       {/if}
-    {:else}
+    {:else if active === "titles"}
       {#if titlesLoading}<p>Reading titles…</p>{:else if titles}
         <ul class="role-list">
           {#each titles as assigned (assigned.titleID)}
@@ -205,6 +241,19 @@
             </li>
           {/each}
         </ul>
+      {/if}
+    {:else}
+      {#if summaryLoading}<p>Reading roles summary…</p>{:else if summary}
+        {#each summary as section (section.groupID)}
+          <details class="summary-group" open={summaryOpen[section.groupID] ?? false} ontoggle={event => { summaryOpen[section.groupID] = flow.corporationSummaryGroupOpen(section.groupID, event.currentTarget.open); }}>
+            <summary>{fill(LABELS.roleCount, { role: word(`#${section.nameID}`, ""), numRoles: section.rows.length })}</summary>
+            <dl class="summary-rows">
+              {#each section.rows as row}
+                <dt>{summaryRoleName(row.name)}</dt><dd>{#each summaryParts(row) as part, i}{i ? word(LABELS.delimiter, ", ") : ""}{part.label}{#if part.titles}{" ("}<span class="title-sources">{part.titles}</span>){/if}{/each}</dd>
+              {/each}
+            </dl>
+          </details>
+        {:else}<p>{word(LABELS.nothing, "Nothing found")}</p>{/each}
       {/if}
     {/if}
     <div class="controls">
@@ -223,7 +272,7 @@
   dl { display: grid; grid-template-columns: minmax(7rem, auto) minmax(0, 1fr); gap: 0.5rem; }
   dt { color: var(--color-muted); }
   dd { margin: 0; overflow-wrap: anywhere; }
-  .member-tabs { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .member-tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
   .member-tabs [aria-selected="true"] { border-color: var(--color-accent); }
   .role-views { display: flex; flex-wrap: wrap; gap: 1rem; }
   .role-views label { flex: 1; min-width: 10rem; }
@@ -233,4 +282,10 @@
   .role-name label { margin: 0; }
   .role-name input { display: inline; width: auto; }
   .role-list p { margin: 0.25rem 0 0 1.5rem; color: var(--color-muted); }
+  .summary-group { margin: 0.75rem 0; }
+  .summary-group summary { cursor: pointer; padding: 0.5rem; border-bottom: 1px solid var(--color-border); }
+  .summary-rows { grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); }
+  .summary-rows dt { white-space: pre-line; }
+  .title-sources { color: var(--color-muted); }
+  @media (max-width: 480px) { .summary-rows { grid-template-columns: minmax(0, 1fr); } }
 </style>
