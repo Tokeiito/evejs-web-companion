@@ -1915,6 +1915,12 @@ The corporation wallet's Shares / Owned by Corp view follows compiled `CorpISKPa
 holdings are kept separately. Hiding either Shares view stops its notification-triggered reads. The Shareholders
 subtab and the remaining share menus are separate work.
 
+Compiled `corpvotes.ApplySanctionedAction` calls `voteManager.ActivateSanctionedAction(voteCaseID)`.
+Share-creation activation now sends the corporate holder's `OnShareChange` after recording the action as applied;
+an already applied activation changes neither issued shares nor the holding and sends no duplicate notice.
+The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
+The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
