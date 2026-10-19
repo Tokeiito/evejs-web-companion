@@ -108,7 +108,7 @@ import {
   propsStopWhy,
   propsWanted,
 } from "./companionPropulsion.ts";
-import type { CompanionTrace, HealthCode, HealthTrace, PropsTrace, PropsWithheld } from "./companionTrace.ts";
+import type { CompanionTrace, DroneRowTrace, DronesTrace, HealthCode, HealthTrace, PropsTrace, PropsWithheld } from "./companionTrace.ts";
 import {
   closingOnTheHold,
   decideCombatPosition,
@@ -9917,7 +9917,9 @@ function rotateHurtDrone(
   if (obs.hostileOnGrid !== true && !rotationBusy(record)) {
     return { decision: null, memory };
   }
-  const step = decideCompanionDroneRotation(rotationInputs(obs, record, role, nowMs));
+  const inputs = rotationInputs(obs, record, role, nowMs);
+  const step = decideCompanionDroneRotation(inputs);
+  noteTrace("drones", dronesTrace(obs, inputs, step, nowMs));
   const next: CompanionLadderMemory = { ...memory, droneRotation: step.memory };
   const action = step.action;
   if (action.kind === "recall") {
@@ -9948,6 +9950,41 @@ function rotateHurtDrone(
     };
   }
   return { decision: null, memory: next };
+}
+
+/** The tick's drones for the recorder: every drone of the role, and what the rotation made of them. */
+function dronesTrace(
+  obs: FleetCompanionObservation,
+  inputs: Parameters<typeof decideCompanionDroneRotation>[0],
+  step: ReturnType<typeof decideCompanionDroneRotation>,
+  nowMs: number,
+): DronesTrace {
+  const two = (ratio: number | null | undefined): number | null =>
+    typeof ratio === "number" && Number.isFinite(ratio) ? Math.round(ratio * 100) / 100 : null;
+  const homeward = homewardIDs(step.memory);
+  const rows: DroneRowTrace[] = (inputs.drones ?? []).map((drone) => {
+    const own = obs.myDrones?.find((row) => row.itemID === drone.itemID);
+    return {
+      id: drone.itemID,
+      typeID: drone.typeID,
+      state: homeward.includes(drone.itemID) ? "homeward" : "out",
+      shield: two(drone.shieldRatio),
+      armor: two(own?.armorRatio),
+      hull: two(own?.hullRatio),
+      attackers: [...drone.attackers],
+    };
+  });
+  for (const row of step.memory.aboard) {
+    rows.push({
+      id: row.itemID, typeID: row.typeID, state: "aboard", shield: null, armor: null, hull: null,
+      attackers: [...row.attackers], heldMs: nowMs - row.aboardAtMs,
+    });
+  }
+  return {
+    rotation: step.reason,
+    rows,
+    launching: step.memory.launching.map((row) => ({ hurtID: row.hurtID, via: row.via, stackID: row.stackID })),
+  };
 }
 
 /**

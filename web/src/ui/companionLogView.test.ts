@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 
 import { buildLogView, clockOf, matchesFilter, parseLogLines, traceSummary } from "./companionLogView.ts";
 import type { BotLogEntry } from "../nav/botLog.ts";
-import type { CompanionTrace } from "../nav/companionTrace.ts";
+import { coarseTraceKey, type CompanionTrace, type DronesTrace } from "../nav/companionTrace.ts";
 
 function line(over: Partial<BotLogEntry> & Pick<BotLogEntry, "kind">): BotLogEntry {
   return { t: "2026-10-13T12:34:56.789Z", run: "r1", characterID: 90000001, ...over };
@@ -66,6 +66,36 @@ test("traceSummary says how hurt a health hold was, against what, and whether an
     traceSummary({ health: { code: "rejoin-under-mark", tank: 0.42, layer: "armor", floor: 0.3, mark: 0.5, repairer: "fitted" } }),
     "health: rejoin-under-mark armor 42% (floor 30%, mark 50%), repairer fitted",
   );
+});
+
+const DRONES: DronesTrace = {
+  rotation: "recalling",
+  rows: [
+    { id: 701, typeID: 2185, state: "homeward", shield: 0.62, armor: 1, hull: 1, attackers: [9101, 9102] },
+    { id: 702, typeID: 2185, state: "out", shield: 1, armor: 0.8, hull: 1, attackers: [] },
+    { id: 703, typeID: 2185, state: "aboard", shield: null, armor: null, hull: null, attackers: [9103], heldMs: 4200 },
+  ],
+  launching: [],
+};
+
+test("traceSummary names each drone: how hurt, how many rats on it, and how long one is held", () => {
+  assert.equal(
+    traceSummary({ drones: DRONES }),
+    "drones: recalling 701 home 62% x2, 702 100%, 703 aboard 4s",
+  );
+});
+
+test("the drone key moves on a tenth of shield or a rat, never on the hundredths", () => {
+  const key = coarseTraceKey({ drones: DRONES });
+  const bled = (shield: number): string => coarseTraceKey({
+    drones: { ...DRONES, rows: DRONES.rows.map((row) => row.id === 701 ? { ...row, shield } : row) },
+  });
+  assert.equal(bled(0.61), key, "a hundredth is noise");
+  assert.notEqual(bled(0.55), key, "a tenth gone is an event");
+  const ratAdded = coarseTraceKey({
+    drones: { ...DRONES, rows: DRONES.rows.map((row) => row.id === 702 ? { ...row, attackers: [9104] } : row) },
+  });
+  assert.notEqual(ratAdded, key, "a rat taking a drone on is an event");
 });
 
 test("traceSummary covers skipped ammo, gave-up utilities, short distances and cleared latches", () => {
