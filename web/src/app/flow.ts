@@ -273,8 +273,9 @@ import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
 import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
 import type { InfoReadScope } from "./infoReadScope.ts";
+import { createCorporationRecords } from "../bridge/corporationRecords.ts";
 import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
-import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
+import { characterCorporationOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -2878,7 +2879,7 @@ export interface AppFlow {
   npcCorporationHeadquarters(corporationID: number): Promise<{ readonly itemID: number; readonly typeID: number } | null>;
   /** A character's corporation (charMgr.GetPublicInfo), or null. */
   characterCorporation(characterID: number): Promise<number | null>;
-  /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
+  /** A corporation's alliance from corp.GetCorporation's shared record cache, or null. */
   corporationAlliance(corporationID: number): Promise<number | null>;
   /** A character's Show Info header's reads (construct_header_character): its Bio, bloodline, start, militia, corporation, titles and security status. */
   characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
@@ -4017,6 +4018,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
   const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
+  const corporationRecords = createCorporationRecords(() => store.station.get().online?.corporationID ?? null);
   const infoWindows = createInfoWindows({
     readCorporation: corporationShowInfo,
     reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
@@ -4880,6 +4882,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (isSessionLost(error)) {
         stopLiveStream();
         infoWindows.reset();
+        corporationRecords.reset();
         store.apply({ type: "character/offline" });
       }
     }
@@ -5381,6 +5384,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
     if (method === "OnCorporationChanged") {
+      try { corporationRecords.changed(Number(unwrapLong(args[0] as JsonValue)), args[1] as JsonValue); }
+      catch (error) { console.error(error); }
       walletReads.corporationChanged();
     }
     // standingsvc keeps the pilot's standings as the server changes them (OnStandingSet, OnStandingsModified),
@@ -5479,6 +5484,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("charid")) corporationRecords.reset();
+    if (sessionNames?.includes("corpid")) {
+      const value = sessionChangeValue(method, args, "corpid");
+      corporationRecords.membershipChanged(value === null ? null : Number(unwrapLong(value)));
+    }
     if (sessionNames?.includes("charid") && sessionChangeValue(method, args, "charid") === null) infoWindows.reset();
     if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
@@ -27673,7 +27683,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return characterCorporationOf(bridgeAsk, characterID);
     },
     corporationAlliance(corporationID) {
-      return corporationAllianceOf(bridgeAsk, corporationID);
+      return corporationRecords.get(bridgeAsk, corporationID).then(row => {
+        const allianceID = Number(unwrapLong(row.fields.allianceID));
+        return allianceID > 0 ? allianceID : null;
+      });
     },
     characterInfoHeader(characterID) {
       return readCharacterInfoHeader(bridgeAsk, characterID);
@@ -27936,6 +27949,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationWealthSignal.set(null);
       closeMoneyTransfer();
       infoWindows.reset();
+      corporationRecords.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
@@ -29908,6 +29922,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
         infoWindows.reset();
+        corporationRecords.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29940,6 +29955,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         closeMoneyTransfer();
         infoWindows.reset();
         requestGeneration++;
+        corporationRecords.reset();
         cancelCorporationCEOChoice();
         cancelCorporationAward();
         recoveryGeneration++;

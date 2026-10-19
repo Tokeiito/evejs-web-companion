@@ -211,6 +211,27 @@ window/base/corporation methods confirm both exception paths. Native UserError
 dialogs and BadArgs, None public replies (including the second public read and
 corporation shares lookup), and failures after identification remain separate.
 
+c6b2b2b2c2a first ports the corporation-record prerequisite. The page's
+corp.GetCorporation facade keeps completed rows per pilot, reads its own
+corporation from corpRegistry.GetCorporation and others from scalar
+corpmgr.GetCorporations, and returns cache hits without another request.
+Concurrent misses remain separate native reads. Character reset clears rows;
+membership changes discard the new corporation's row. OnCorporationChanged
+applies the native add/remove classification and updates cached columns only,
+including the full-header gate for new rows. Ticker/UI work following that row
+update remains outside this helper. Show Info's standings alliance lookup now
+uses this shared record source. Other direct registry consumers retain their
+existing explicit reads; this is not a claim of complete native service caches.
+
+The original compiled None continuation confirms why this precedes c2b:
+the parent assigns identity and constructs a fresh scroll, then the description
+builder retries public info and obtains corporation shares through that cache.
+Two None replies still perform the shares lookup before AttributeError on the
+None record; loading clears, caption/history do not complete, tasklet remains.
+A valid second record continues after replacing its shares with the row value.
+These UI/service recorder boundaries do not establish all ancillary reads.
+The page's existing first-None return is still to be replaced in c2b.
+
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close
 and retained dead tasklet pointers. The current corporation coroutine retains
