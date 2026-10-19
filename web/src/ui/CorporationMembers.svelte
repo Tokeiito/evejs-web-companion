@@ -8,8 +8,8 @@
   import { resolvedName } from "../store/names.ts";
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
-  import Contacts from "./Contacts.svelte";
-  import type { NamedAddressBook } from "../bridge/contacts.ts";
+  import ContactActionDialog from "./ContactActionDialog.svelte";
+  import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
 
@@ -21,6 +21,9 @@
   // svelte-ignore state_referenced_locally
   const names = store.names;
   const director = $derived((BigInt($station.online?.corpRole ?? "0") & 1n) !== 0n);
+  // SessionChecker.IsDiplomat: director or diplomat. CharacterChecker's
+  // corporation actions permit self and multi-selection (55-60, 314-321).
+  const diplomat = $derived((BigInt($station.online?.corpRole ?? "0") & (1n | 17179869184n)) !== 0n);
   const LABELS = {
     title: "UI/Corporations/BaseCorporationUI/MemberList", role: "UI/Corporations/Common/Role", all: "UI/Common/All",
     onlineOnly: "UI/Corporations/CorporationWindow/Members/Tracking/OnlineOnly",
@@ -34,6 +37,7 @@
     viewMember: "UI/Corporations/Common/ViewCorpMemberDetails", editMember: "UI/Corporations/Common/EditCorpMember",
     addContact: "UI/PeopleAndPlaces/AddContact", editContact: "UI/PeopleAndPlaces/EditContact", removeContact: "UI/PeopleAndPlaces/RemoveContact",
     block: "UI/PeopleAndPlaces/BlockContact", unblock: "UI/PeopleAndPlaces/UnblockContact",
+    addCorpContact: "UI/PeopleAndPlaces/AddCorpContact", editCorpContact: "UI/PeopleAndPlaces/EditCorpContact", removeCorpContact: "UI/PeopleAndPlaces/RemoveCorpContact",
   };
   const ONLINE = "UI/Corporations/CorpMemberTracking/";
   const lastLabels = ["MoreThanAMonth", "Online", "LessThanAnHour", "Hours", "LastWeek", "LastMonth"];
@@ -64,11 +68,11 @@
   let menuFor = $state<number | null>(null);
   let contactBook = $state<NamedAddressBook | null>(null);
   let contactError = $state("");
-  let contactAction = $state<ContactAction | undefined>(undefined);
-  let contactDialog = $state<HTMLDialogElement | undefined>(undefined);
+  let corporateContactBook = $state<NamedAddressBook | null>(null);
+  type ScopedAction = ContactAction & { readonly scope: ContactScope };
+  let contactActions = $state<readonly ScopedAction[]>([]);
   let contactMenuSerial = 0;
   let contactBusy = $state(false);
-  $effect(() => { if (contactAction) contactDialog?.showModal(); });
   const onlineKey = () => `evejs.corpMembersOnline.${store.station.get().online?.characterID}`;
   async function load(): Promise<void> {
     const request = ++serial;
@@ -133,6 +137,10 @@
   const personalContactTarget = $derived(selected.length === 1 && selected[0]!.member.characterID !== $station.online?.characterID && !isNpcOwner(selected[0]!.member.characterID) ? selected[0]! : null);
   const targetIsContact = $derived(contactBook?.contacts.some(each => each.contactID === personalContactTarget?.member.characterID) ?? false);
   const targetIsBlocked = $derived(contactBook?.blocked.some(each => each.ownerID === personalContactTarget?.member.characterID) ?? false);
+  const corporateTargets = $derived(diplomat ? selected.filter(row => !isNpcOwner(row.member.characterID)) : []);
+  const corporateExisting = $derived(new Set(corporateContactBook?.contacts.map(each => each.contactID) ?? []));
+  const corporateAddTargets = $derived(corporateTargets.filter(row => !corporateExisting.has(row.member.characterID)));
+  const corporateEditTargets = $derived(corporateTargets.filter(row => corporateExisting.has(row.member.characterID)));
   // User.OnClick -> Scroll.SelectNode 550-600: plain replaces, Ctrl toggles, Shift ranges from the last anchor.
   function select(event: MouseEvent | KeyboardEvent, id: number): void {
     menuFor = null;
@@ -153,6 +161,7 @@
     // Opening is idempotent, as User.GetMenu is, rather than toggling it shut.
     menuFor = id;
     contactBook = null;
+    corporateContactBook = null;
     contactError = "";
     const request = ++contactMenuSerial;
     // CharacterChecker's personal contact actions exclude self and multi-selection.
@@ -161,12 +170,34 @@
         if (!disposed && request === contactMenuSerial) contactError = cause instanceof Error ? cause.message : String(cause);
       });
     }
+    if (diplomat && chosen.some(ownerID => !isNpcOwner(ownerID))) {
+      void flow.addressBook("corpcontact").then(book => { if (!disposed && request === contactMenuSerial && menuFor === id) corporateContactBook = book; }, cause => {
+        if (!disposed && request === contactMenuSerial) contactError = cause instanceof Error ? cause.message : String(cause);
+      });
+    }
   }
   function contactManage(kind: ContactAction["kind"]): void {
     const target = personalContactTarget;
     if (!target || !contactBook) return;
-    contactAction = { kind, ownerID: target.member.characterID, name: target.text.name!, book: contactBook };
+    contactActions = [{ kind, ownerID: target.member.characterID, name: target.text.name!, book: contactBook, scope: "contact" }];
     menuFor = null;
+  }
+  function corporateManage(kind: "add" | "edit" | "remove"): void {
+    const book = corporateContactBook;
+    if (!diplomat || !book) return;
+    // menusvc 604-609 + compiled menuMerge: separate callbacks for the
+    // eligible owners, including mixed selections; no bulk standing editor.
+    const targets = kind === "add" ? corporateAddTargets : corporateEditTargets;
+    contactActions = targets.map(row => ({ kind: kind === "remove" ? "remove" : "manage", ownerID: row.member.characterID,
+      name: row.text.name!, book, scope: "corpcontact" }));
+    menuFor = null;
+  }
+  function contactDone(action: ScopedAction, book: NamedAddressBook | null): void {
+    if (action.scope === "contact" && book) contactBook = book;
+    // Each native dialog owns one target's draft. A future menu reads the
+    // service's current held book, which includes all independently completed writes.
+    if (action.scope === "corpcontact") corporateContactBook = null;
+    contactActions = contactActions.filter(each => each !== action);
   }
   async function contactBlock(blocked: boolean): Promise<void> {
     const target = personalContactTarget;
@@ -237,6 +268,13 @@
           {/if}
           <button type="button" class="minor" disabled={contactBusy} onclick={() => void contactBlock(!targetIsBlocked)}>{word(targetIsBlocked ? "UI/PeopleAndPlaces/UnblockContact" : "UI/PeopleAndPlaces/BlockContact", targetIsBlocked ? "Unblock" : "Block")}</button>
         {/if}
+        {#if diplomat && corporateContactBook}
+          {#if corporateAddTargets.length > 0}<button type="button" class="minor" onclick={() => corporateManage("add")}>{word(LABELS.addCorpContact, "Add Corporation Contact")}</button>{/if}
+          {#if corporateEditTargets.length > 0}
+            <button type="button" class="minor" onclick={() => corporateManage("remove")}>{word(LABELS.removeCorpContact, "Remove Corporation Contact")}</button>
+            <button type="button" class="minor" onclick={() => corporateManage("edit")}>{word(LABELS.editCorpContact, "Edit Corporation Contact")}</button>
+          {/if}
+        {/if}
         {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
@@ -262,16 +300,12 @@
   {/if}
 </section>
 
-{#if contactAction}
-  <dialog bind:this={contactDialog} class="member-contact-dialog" aria-label="Contact action" oncancel={() => (contactAction = undefined)}>
-    <Contacts {store} {flow} {contactAction} onActionDone={book => { contactBook = book; contactAction = undefined; }} />
-  </dialog>
-{/if}
+{#each contactActions as action (`${action.scope}:${action.ownerID}`)}
+  <ContactActionDialog {store} {flow} {action} contactType={action.scope} done={book => contactDone(action, book)} />
+{/each}
 
 <style>
   .member-tracking { min-width: 0; }
-  .member-contact-dialog { position: fixed; inset: 0; margin: auto; width: min(32rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; padding: 0.5rem; color: var(--color-text); background: var(--color-bg, #0b1119); border: 1px solid var(--color-accent); }
-  .member-contact-dialog::backdrop { background: #0009; }
   .member-table { overflow-x: auto; }
   td:nth-child(4), td:nth-child(7) { min-width: 12rem; }
   td:nth-child(5), td:nth-child(n+8) { white-space: nowrap; }
