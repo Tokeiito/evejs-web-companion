@@ -353,6 +353,28 @@ const givingCash = (args, kwargs) => {
     ? { args, kwargs }
     : { args: clients, kwargs: { toAccountKey: kwargs.toAccountKey ?? null }, status: "reshaped" };
 };
+/** A redeem token's key as the redeem window keys it (redeemItemsContainer.py token_key, 401 to 402): its token ID and its mass token ID, which may be None. */
+const isRedeemTokenKey = (key) => Array.isArray(key) && key.length === 2 && Number.isSafeInteger(key[0]) && key[0] > 0
+  && (key[1] === null || (Number.isSafeInteger(key[1]) && key[1] > 0));
+/**
+ * redeemsvc.py ClaimRedeemTokens (103): sm.RemoteSvc('userSvc').ClaimRedeemTokens(tokens, charID,
+ * useHomeStation=useHomeStation): the tokens a list of (tokenID, massTokenID) tuples (_HandleMctTokens, 198 to 205),
+ * one at least; the character the session's own; and the home station by keyword every time, a bool.
+ */
+const claimingRedeemTokens = (args, kwargs, context) => {
+  const [tokens, charID] = args;
+  const said = Object.keys(kwargs);
+  const keys = Array.isArray(tokens) ? tokens : tokens && tokens.type === "list" && Array.isArray(tokens.items) ? tokens.items : null;
+  if (args.length !== 2 || keys === null || keys.length === 0 || !keys.every(isRedeemTokenKey)
+    || !(Number.isSafeInteger(charID) && charID > 0) || (context && context.characterID && charID !== context.characterID)
+    || said.some((name) => name !== "useHomeStation") || (said.length === 1 && typeof kwargs.useHomeStation !== "boolean")) {
+    return { args, kwargs, status: "differs", note: "The client claims a list of (tokenID, massTokenID) for the session's own character, with useHomeStation by keyword. This is not that." };
+  }
+  const clients = [list(keys.map((key) => [key[0], key[1]])), charID];
+  return Array.isArray(tokens) || said.length === 0
+    ? { args: clients, kwargs: { useHomeStation: kwargs.useHomeStation === true }, status: "reshaped" }
+    : { args: clients, kwargs };
+};
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** A judge for a call the client sends with one bool and nothing else. */
 const oneBoolAlone = (args, kwargs) => (args.length === 1 && typeof args[0] === "boolean" && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends one bool with this call, and nothing else." });
@@ -645,6 +667,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // What the account may redeem, which the client's redeem service fetches as the neocom is set up. The gateway's
   // list has nothing of the user service's.
   "userSvc.GetRedeemTokens",
+  // The redeem window's claim of those tokens, to the session's station or the home station. The page makes it by
+  // name; the gateway's list has nothing of the user service's.
+  "userSvc.ClaimRedeemTokens",
   // Whether the character has done Project Discovery's tutorial, and whether Project Discovery is enabled, which
   // the client's Project Discovery service asks as a character comes onto the session and as the neocom's button
   // for it is looked at. The gateway's list has nothing of Project Discovery's.
@@ -2237,6 +2262,12 @@ const RETAIL_CALLS = Object.freeze({
   "ProjectDiscovery.is_enabled": judged("projectdiscovery/client/baseservice.py:41", sentWithNothing, "self.remote_service.is_enabled(), nothing sent: whether Project Discovery is enabled, a bool, asked while none is kept and kept as long as the client runs (39 to 42). The neocom asks, of its button for Project Discovery (eve/client/script/ui/shared/neocom/neocom/btnData/btnDataNode.py 485). Tranquility's recordings of a login have it once, answered True."),
   "localizationServer.UpdateLocalizationQAWrap": judged("carbon/client/script/localization/localizationClient.py:27", oneBoolAlone, "sm.RemoteSvc('localizationServer').UpdateLocalizationQAWrap(LocWrapSettingsActive()), the one bool: whether any of the client's QA settings of its texts is on (localization/settings/qaSettings.py 53 to 65). Told as a first character comes onto a session whose role has ROLE_QA (24 to 27), and as those settings are saved (qaSettings.py 49). Tranquility's recordings, which are of players, have none."),
   "userSvc.GetRedeemTokens": judged("eve/client/script/ui/services/redeemsvc.py:64", sentWithNothing, "sm.RemoteSvc('userSvc').GetRedeemTokens(), nothing sent: what the account may redeem, a rowset of tokens (the token, its type and quantity, its label and description, when it came, runs out and is to be had, where, and whether it is bound). The redeem service fetches it as its neocom extension is set up (37 to 46), at the server's OnRedeemingQueueUpdated (162 to 169) and after a claim, and keeps it (51 to 54). Tranquility's recordings of a login have it once from the choosing on."),
+  "userSvc.ClaimRedeemTokens": Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/services/redeemsvc.py:103",
+    note: "sm.RemoteSvc('userSvc').ClaimRedeemTokens(tokens, charID, useHomeStation=useHomeStation): the redeem window's Redeem to Current Station or Redeem to Home Station (redeemItemsContainer.py redeem, 343 to 356), the selected tokens as a list of (tokenID, massTokenID) and the session's character. Answered a dict of errors (tokenID, error), itemsCreated, stationID and what was given otherwise; the redeem service fetches the tokens afresh after it (127).",
+    shape: claimingRedeemTokens,
+  }),
   "insurgencySolarsystem.GetAllVisibleCampaigns": judged("eve/client/script/ui/services/insurgencyCampaignSvc.py:93", sentWithNothing, "sm.RemoteSvc('insurgencySolarsystem').GetAllVisibleCampaigns(), nothing sent: the insurgency campaigns a client may see, a list of snapshots. insurgencyCampaignSvc keeps it half a minute (96 to 98) and lets it go at the server's notices of a campaign where the client is (59 to 90). The insurgency's info panel asks for it as the info panels are looked over (infoPanelInsurgency.py 287 to 290), the dashboard, the agency and the map when they are opened. Tranquility's recordings have it once at each login and once after each change of solar system."),
   "operationsManager.can_character_play_the_tutorial": judged("operations/common/util.py:99", ownCharacterAlone, "sm.RemoteSvc('operationsManager').can_character_play_the_tutorial(character_id), the session's own character alone: whether the tutorial is open to it, a bool. is_npe_enabled_for_character asks it once for a character and keeps the answer (93 to 101); its askers go by are_operations_active of the session's character (operations/client/util.py 12 to 13). Tranquility's recordings of a login have it once, answered True."),
   "milestoneMgr.ProcessCharacterLogon": judged("milestones/client/milestoneSvc.py:22", sentWithNothing, "sm.RemoteSvc('milestoneMgr').ProcessCharacterLogon(), nothing sent, answering nothing: the character has logged on, at which the server starts the login milestone's timer and says when it runs out (OnMilestoneTimerStarted). The milestone service calls it at every change of the session's character (20 to 23). Tranquility's recordings of a login each have the one call."),
