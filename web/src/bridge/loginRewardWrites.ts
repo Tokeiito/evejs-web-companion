@@ -13,3 +13,12 @@ import { decodeLoginClaim, type LoginClaim } from "./loginRewards.ts";
 export async function claimLoginReward(act: Ask): Promise<LoginClaim | null> {
   return decodeLoginClaim(await act("loginCampaignManager", "claim_reward", []));
 }
+
+/**
+ * The day's claim of the account's seasonal campaign (seasonalLoginCampaignService.py claim_reward, 80 to 88):
+ * seasonalLoginCampaignManager.claim_reward(), with nothing. Whether the server gave the day's rewards (the alpha one,
+ * and for an omega clone the omega one and any it is owed), into the account's redeem queue.
+ */
+export async function claimSeasonalReward(act: Ask): Promise<boolean> {
+  return (await act("seasonalLoginCampaignManager", "claim_reward", [])) === true;
+}

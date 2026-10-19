@@ -30,8 +30,12 @@ const campaignAnswer = (next: number, claimed: number, at: number) => keyVal([
 ]);
 
 /** A pilot online with its live channel open; `state` is what the server holds of the campaign. */
-async function online(carried = true) {
+const TODAY = Math.floor((Date.now() - 11 * 3_600_000) / 86_400_000) + 719163;
+
+async function online(carried = true, seasonalOn = false) {
   const store = createClientStore();
+  const seasonal = { on: seasonalOn, endOrdinal: TODAY + 20, today: TODAY, history: [TODAY - 2, TODAY - 1] as number[] };
+  const seasonalCalls: string[] = [];
   const state = { next: 4, claimed: 3, at: RESET - 1000, claimedToday: false };
   const reads: unknown[] = [];
   const claims: Record<string, unknown>[] = [];
@@ -57,6 +61,14 @@ async function online(carried = true) {
         result = [keyVal([["typeID", 34], ["quantity", 100 + state.next - 1]]), progress(state.next + 1, state.claimed + 1, RESET + 86_400_000), null, keyVal([])];
         Object.assign(state, { next: state.next + 1, claimed: state.claimed + 1, at: RESET + 86_400_000, claimedToday: true });
       }
+      answer = { ok: true, service: body.service, method: body.method, result, notifications: [] };
+    } else if (path === "/api/bridge/call" && body.service === "seasonalLoginCampaignManager") {
+      // This server's Gallente Election, on: its ID, its end, the turnover, and the rewards left.
+      seasonalCalls.push(body.method);
+      const result = !seasonal.on ? [null, null, null, null]
+        : body.method === "get_active_campaign" ? [2356, seasonal.endOrdinal, "11:00:00", 28 - seasonal.history.length]
+        : body.method === "get_claim_history" ? { type: "dict", entries: seasonal.history.map((ordinal) => [ordinal, 0]) }
+        : (() => { const claimed = !seasonal.history.includes(seasonal.today); if (claimed) seasonal.history.push(seasonal.today); return claimed; })();
       answer = { ok: true, service: body.service, method: body.method, result, notifications: [] };
     } else if (path === "/api/bridge/call") {
       answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
@@ -84,7 +96,7 @@ async function online(carried = true) {
     }) });
     await new Promise((resolve) => setTimeout(resolve, 25));
   };
-  return { store, flow, state, push, reads, claims };
+  return { store, flow, state, push, reads, claims, seasonal, seasonalCalls };
 }
 
 test("a pilot that comes online has the account's campaign read, by the client's call, and again when the server says it is another", async () => {
@@ -115,4 +127,21 @@ test("a pilot whose transport does not carry the read has no campaign, and no er
   const pilot = await online(false);
   const held = pilot.store.loginRewards.get();
   assert.deepEqual([held.campaign, held.error, held.loaded], [null, null, true]);
+});
+
+test("a seasonal campaign on is read with the days claimed, named and laid out from the client's data, and claimed", async () => {
+  const pilot = await online(true, true);
+  const held = pilot.store.loginRewards.get().seasonal;
+  assert.deepEqual([held?.active.campaignID, held?.active.remaining, held?.history.length, held?.definition?.name, held?.definition?.alpha.length], [2356, 26, 2, "Gallente Election YC128", 28]);
+  assert.deepEqual(pilot.seasonalCalls, ["get_active_campaign", "get_claim_history"]);
+  await pilot.flow.claimSeasonalReward();
+  assert.deepEqual(pilot.seasonalCalls.slice(2), ["claim_reward", "get_active_campaign", "get_claim_history"]);
+  assert.equal(pilot.store.loginRewards.get().seasonal?.history.length, 3);
+  // The same day again: the server gives nothing, and the page says so.
+  await assert.rejects(pilot.flow.claimSeasonalReward(), /nothing to claim yet/);
+});
+
+test("with no seasonal campaign on, only the first of its calls is made, and there is none", async () => {
+  const pilot = await online(true, false);
+  assert.deepEqual([pilot.store.loginRewards.get().seasonal, pilot.seasonalCalls], [null, ["get_active_campaign"]]);
 });

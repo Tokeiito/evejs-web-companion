@@ -110,6 +110,7 @@ import type { ShipStats } from "../bridge/shipStats.ts";
 import type { CrimewatchReading } from "../space/crimewatch.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
 import type { LoginCampaign } from "../bridge/loginRewards.ts";
+import type { ActiveSeasonalCampaign, SeasonalCampaignDefinition, SeasonalClaim } from "../bridge/seasonalCampaigns.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
@@ -632,6 +633,10 @@ export type FeedEvent =
   // The account's daily login campaign (bridge/loginRewards.ts) as the server last answered it, or the read's failure,
   // with what was had kept. null where the account is in none or the transport does not carry the read.
   | { readonly type: "login-rewards/state"; readonly campaign: LoginCampaign | null; readonly error: string | null }
+  // The account's seasonal campaign (bridge/seasonalCampaigns.ts): the one on, the days claimed of it, and what each day
+  // gives as the client's own data has it (null where its data has not the campaign); null where none is on or the
+  // transport does not carry the reads.
+  | { readonly type: "login-rewards/seasonal"; readonly seasonal: { readonly active: ActiveSeasonalCampaign; readonly history: readonly SeasonalClaim[]; readonly definition: SeasonalCampaignDefinition | null } | null }
   // The day's reward claimed: the campaign after the claim, and what was given.
   | { readonly type: "login-rewards/claimed"; readonly campaign: LoginCampaign; readonly reward: { readonly typeID: number; readonly quantity: number } | null }
   // Goal R55 — the Standings page. One BFF pull carries the character's own

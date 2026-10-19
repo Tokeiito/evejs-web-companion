@@ -731,8 +731,8 @@ import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolde
 import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { LOGIN_CAMPAIGN_NOTICE, campaignAfterClaim, decodeLoginCampaign, type LoginClaim } from "../bridge/loginRewards.ts";
-import { readLoginCampaign } from "../bridge/loginRewardReads.ts";
-import { claimLoginReward as claimLoginRewardCall } from "../bridge/loginRewardWrites.ts";
+import { readLoginCampaign, readSeasonalCampaign } from "../bridge/loginRewardReads.ts";
+import { claimLoginReward as claimLoginRewardCall, claimSeasonalReward as claimSeasonalRewardCall } from "../bridge/loginRewardWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -2380,6 +2380,11 @@ export interface AppFlow {
    * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
    */
   giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean>;
+  /**
+   * The seasonal tab's Claim (seasonalLoginCampaignService.py claim_reward, 80 to 88): the day's rewards, into the
+   * account's redeem queue; the campaign is read again after. Fails where the server gave nothing.
+   */
+  claimSeasonalReward(): Promise<void>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -16860,6 +16865,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // online and at the server's OnCampaignEnrollmentChanged (84 to 88), by the service's own call
   // (bridge/loginRewardReads.ts). A transport that does not carry the call has none to give.
   async function loadLoginRewards(): Promise<void> {
+    await Promise.all([loadDailyLoginCampaign(), loadSeasonalCampaign()]);
+  }
+
+  // seasonalLoginCampaignService.prime_campaign_data and get_claim_history (39 to 51, 90 to 97): the seasonal campaign
+  // on, and the days the account has claimed of it. What each day gives is the client's own data, by the campaign's
+  // ID (bridge/seasonalCampaignTable.ts), which the window reads.
+  async function loadSeasonalCampaign(): Promise<void> {
+    let seasonal: Awaited<ReturnType<typeof readSeasonalCampaign>>;
+    try {
+      seasonal = await readSeasonalCampaign(bridgeAsk);
+    } catch (error) {
+      if (failsTheReading(error)) throw error;
+      return;
+    }
+    if (seasonal === null) {
+      store.apply({ type: "login-rewards/seasonal", seasonal: null });
+      return;
+    }
+    // SeasonalCampaignsStaticData().get_campaign(id): the table is the client's data, read only where a campaign is on.
+    const { SEASONAL_CAMPAIGNS } = await import("../bridge/seasonalCampaignTable.ts");
+    const definition = SEASONAL_CAMPAIGNS[seasonal.active.campaignID] ?? null;
+    store.apply({ type: "login-rewards/seasonal", seasonal: { ...seasonal, definition } });
+    if (definition !== null) {
+      requestNames([...definition.alpha, ...definition.omega].map(([, typeID]) => ({ kind: "type", id: typeID })));
+    }
+  }
+
+  async function claimSeasonalReward(): Promise<void> {
+    let given = false;
+    try {
+      given = await claimSeasonalRewardCall(bridgeDo);
+    } finally {
+      // The client keeps its own history after a claim (_add_rewards_to_history); the page reads the server's.
+      await loadSeasonalCampaign().catch(() => {});
+    }
+    if (!given) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+  }
+
+  async function loadDailyLoginCampaign(): Promise<void> {
     let answer: JsonValue;
     try {
       answer = await readLoginCampaign(bridgeAsk);
@@ -16878,7 +16922,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const campaign = store.loginRewards.get().campaign;
     if (claim === null || campaign === null) {
       // claim_reward answers None where nothing may be claimed: what the server holds is read again.
-      await loadLoginRewards().catch(() => {});
+      await loadDailyLoginCampaign().catch(() => {});
       if (claim === null) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
       return claim;
     }
@@ -28618,6 +28662,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     giveMoney,
     loadLoginRewards,
     claimLoginReward,
+    claimSeasonalReward,
     giveIskFromWallet,
 
     loadStandings,
