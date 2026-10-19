@@ -138,15 +138,46 @@ self, including when evaluating a merged selection.
      delayed real bind across an actual join/departure retired the queued write,
      and returning to the same corporation ID did not revive its old generation.
      Old corporation bind replies cannot publish their object into the new cache.
-     **c4c2b remains:** the complete submenu, confirmations, eligibility/war
-     checks, native session-busy dialog wording and desktop/phone proof. The
-     original compiled merge kept Quit for a selection containing self and peer,
-     invoking each self callback once. No Quit UI is exposed by c4c2a alone.
+     **c4c2b implemented:** the shared submenu calls `UpdateMember` with
+     `[self,None,None,None,0,0,0,0,0,0,0,0,None,0,1]` after
+     `ConfirmRemoveAllRoles`. Confirm Quit reads `CanBeKickedOut(self)`, then
+     the native retained `GetWars(allianceid or corpid)`, counting nonmutual
+     wars whose `timeFinished` is None, including future declarations. The
+     active-war Yes/No warning precedes the final OK/Cancel confirmation;
+     the native resignation guard covers only that final prompt.
+     Pilot/corporation guards survive menus and dialogs. Dispatch retains the
+     originating corporation; the successful reply may apply its intended
+     corporation change while still rejecting pilot replacement. Session-busy
+     refusals use the installed `PerformSessionChangeInProgress` dialog and
+     typed `eveSessions.GetReason:170-285` labels, with the native rounded seconds.
+     Desktop/390px phone, each Cancel, actual role removal/24-hour stasis refusal,
+     a two-war warning from active/future/mutual/finished fixtures, and successful
+     native departure were verified. Held actual replies and old confirmations
+     retire without subsequent requests after pilot/corporation replacement.
+     The compiled merge keeps Quit once for member-list self-plus-peer selection.
+     However `userentry._GetMultiMenu:460-541` omits `CharacterMenu` for contact-list
+     multiple selection; Contacts therefore omits Quit there. Single contact and
+     search menus share it with Member List. Peer, CEO and NPC-self gates remain.
    - **c4c3: Expel Corporation Member(s).** Complete the single and merged
      multiple callbacks together, including authority/eligibility differences,
      war warning, confirmation, self refusal and kicked/notKicked result dialog.
      Multiple expulsion calls `KickOutMembers` directly after the confirmations;
      it does not perform the single-target eligibility read per selected ID.
+     **Implemented:** Contacts/search and Member List share the single-target
+     submenu; contact-list multiple selection retains its separate contact menu.
+     Member List merges eligible nonself member targets, retaining the plural
+     callback even when only one target survives. That case uses the single
+     named confirmation followed by `KickOutMembers([target])` and its result
+     dialog. Quit and Expel share the native war and final-confirmation guard.
+     Both kick writes retain their originating corporation through dispatch;
+     only single self departure creates a session mutation/cooldown.
+     Compiled gates, merge classification/arguments, callback order, self refusal
+     and partial-result formatting were checked in the installed Python runtime.
+     Live desktop/phone covered single refusal and success, cancellation, merged
+     self exclusion, partial/all-failed results, an online expelled recipient's
+     corporation change, and read/dialog/result retirement after pilot replacement.
+     Actual plural packets contained one ID list and no per-member eligibility
+     calls. The native result's kicked/notKicked lists drive the displayed names.
 4. **D2p18c4d — CEO resignation.** Read the complete candidate, warning, picker and
    session-change flow (`base_corporation:785+`). It distinguishes a successful
    `None` from a replacement-candidate list. Its default confirmation is No.
