@@ -5,7 +5,7 @@
 // adding a second). loadLayout is the one entry point that does not go through
 // them — it parses whatever is in localStorage, which may have been written by
 // any past build. A duplicate that survives that read reaches Desktop.svelte's
-// keyed `{#each shown as win (win.id)}`, which throws instead of rendering; the
+// keyed `{#each mounted as win (win.id)}`, which throws instead of rendering; the
 // throw aborts the render flush, and since the bad layout is saved straight back
 // it happens again on every reload. That is a frozen page that survives a
 // refresh, so this read must be the thing that cleans it.

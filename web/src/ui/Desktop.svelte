@@ -88,6 +88,8 @@
   const globalChips = $derived(globalWins ?? []);
   // Only the ones actually on the surface get drawn.
   const shown = $derived(openHere.filter((w) => !w.minimized));
+  // OpenMemberDetails maximizes the existing dialog, preserving its unsubmitted edits.
+  const mounted = $derived(openHere.filter((w) => !w.minimized || w.id === "memberDetails"));
 
   let deskEl = $state<HTMLElement | null>(null);
   /** The desktop's size now, in whole pixels, or null before it is laid out (a window's place is registered with it). */
@@ -147,7 +149,7 @@
       lose sight of what you were doing.
     </p>
   {/if}
-  {#each shown as win (win.id)}
+  {#each mounted as win (win.id)}
     <DesktopWindow
       {win}
       title={tabLabel(win.id)}
