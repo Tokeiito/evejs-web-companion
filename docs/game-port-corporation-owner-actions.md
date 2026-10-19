@@ -235,6 +235,40 @@ self, including when evaluating a merged selection.
      administration units remain required.
 5. **D2p18c4e — decorations.** Read the complete award window, menu merge, available
    decorations and write before exposing either single or multiple award actions.
+   Read/split: compiled `CharacterChecker.OfferAwardCorpMemberDecoration:95-102`
+   excludes NPC targets, an NPC pilot corporation and nonmembers, then uses
+   `SessionChecker.IsPersonnelManager:92-93` (the Personnel Manager bit, without
+   a separate Director alternative). Self is allowed. Compiled menu merge treats
+   the award caption as a multi-function and passes one list of eligible IDs.
+   Contact-list multiple selection still has its separate userentry branch.
+   `menuFunctions.AwardDecoration:54-73` reads `GetAllCorpMedals(session.corpid)`,
+   raises `MedalCreateToAward` for no options, primes recipient names, and opens
+   ordered1 generic ListWnd with the medal titles/IDs, Name header and a hint of
+   the first five recipients followed by `, ...` where longer. Picker Cancel
+   stops; a choice calls `medals.GiveMedalToCharacters`.
+   Compiled `medals.GiveMedalToCharacters:93-124` checks Director OR Personnel
+   Manager, asks NamePopup for an empty reason (maximum200), stops on empty/Cancel,
+   and calls `corporationSvc.GiveMedalToCharacters(medalID, recipientIDs, reason)`.
+   A server `ConfirmGivingMedal*` error uses its actual cost, amount and localized
+   recipient count in a Yes/No prompt with suppressYes; only Yes retries with
+   fourth argument True. `NotEnoughMoney` is shown; other errors propagate.
+   No fixed price or unconditional confirmation is inferred from that wrapper.
+   - **c4e1: native award contract and server audit.** Decode the recorded
+     GetAllCorpMedals cached-object read and verify current native catalogue,
+     recipient-list write and received-medal readback with disposable fixtures.
+     Examine cache invalidation and recipient live updates against
+     `medals.OnMedalIssued:139-145` and DecorationsPanel's update consumer;
+     fix/commit any actual native mismatch before exposing the action. Exact
+     award/confirmation/notice bytes are not in the current recording corpus.
+     Current handlers and older assertions are inputs to audit, not authority.
+   - **c4e2: complete shared award UI.** Implement the gates/merge, no-medals
+     refusal, ordered single-choice medal picker, recipient hint, reason prompt,
+     all cancellations, conditional confirmation/retry and errors together.
+     Preserve originating pilot/corporation through reads, dialogs and dispatch;
+     update the recipient's live view from native notices. Verify single/self/
+     multiple targets, Director-versus-personnel gates, each cancellation and
+     actual award/recipient effects on desktop/phone, with native wire and full
+     store/settings restoration. No partial menu or placeholder is exposed.
 6. **D2p18c4f — recruitment invitations.** Native `InviteToJoinCorp` asks
    `ConfirmSendInviteToJoinCorp`, then calls bound `InsertInvitation(charID)`.
    Complete the actual acceptance/decline/session behavior and notices required by
