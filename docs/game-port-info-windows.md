@@ -316,8 +316,19 @@ prevents cache publication; an unregistered history continuation may fill it aft
 its view closes. Corporation membership changes do not clear it. The crimewatch
 service's own corporation-registry settings and notices are separate: no extra
 invalidation is inferred from them. The bulk aggression caller and complete
-service lifetime remain separate port work. Caching None is established here;
-the information window's native consumer failure for that value is still next.
+service lifetime remain separate port work.
+
+The information window now stops on explicit None attribute answers. The original
+GetCorpFriendlyFireStatus calls IsFriendlyFireLegalAtTime on its raw argument:
+None raises AttributeError, including repeated attempts served from the raw
+aggression cache. UpdateDataCorp iterates the enlistment answer directly: None
+raises TypeError, and its uncached helper reads again on the next construction.
+Both leave the header visible, main content hidden, loading cleared and caption/
+history uncompleted. They use ordinary exception logging, without a UserError
+dialog. The checks distinguish actual None from other malformed values; remaining
+object-state and iterable behavior needs its own original-client consumer audit.
+Controlled None deliveries after actual successful replies establish these
+boundaries, not a naturally recorded server failure.
 
 Required work remains: other ordinary headers' loading/completion and content-
 owned continuations, complete RPC/error handling, widget lifetime after close

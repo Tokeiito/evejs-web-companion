@@ -12412,10 +12412,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
       // Neither read catches RPC exceptions: construction and caption/history
       // completion stop, and the window's exception handler receives the error.
-      const aggression = aggressionSettingsOf(await corporationAggression.get(ask, corporationID, () => reads?.assertCurrent()));
+      const aggressionAnswer = await corporationAggression.get(ask, corporationID, () => reads?.assertCurrent());
+      // The native status consumer calls methods on the cached raw object.
+      // A cached None fails there on every attempt; it is not an omitted row.
+      if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
+      const aggression = aggressionSettingsOf(aggressionAnswer);
       reads?.assertCurrent();
-      const enlistmentFactions = isNpcCorporation(corporationID) ? null
-        : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf);
+      let enlistmentFactions: readonly number[] | null = null;
+      if (!isNpcCorporation(corporationID)) {
+        const answer = await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]);
+        // UpdateDataCorp iterates this answer directly, without a None fallback.
+        if (answer === null) throw Object.assign(new TypeError("'NoneType' object is not iterable"), { code: "INFO_CORPORATION_ENLISTMENT_NONE" });
+        enlistmentFactions = enlistmentFactionsOf(answer);
+      }
       reads?.complete();
       return { stage: "complete", info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
     } finally {
