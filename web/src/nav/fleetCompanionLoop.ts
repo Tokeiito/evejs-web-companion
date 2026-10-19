@@ -112,6 +112,14 @@ import {
   type CombatPositionMemory,
   type WeaponReachState,
 } from "./companionCombatPosition.ts";
+// Rung 8a, the combat utility modules: the rule and its memory live in their own
+// file; this ladder keeps the call site.
+import {
+  decideUtilityRung,
+  FRESH_COMPANION_UTILITIES,
+  utilitiesAfterWarp,
+  type CompanionUtilityMemory,
+} from "./companionUtilities.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -2027,6 +2035,13 @@ export interface CompanionLadderMemory {
    * evidence a gun was loaded.
    */
   readonly reloadAttempts: Readonly<Record<number, number>>;
+  /**
+   * Rung 8a's record: the utility modules it switched on (and only those may it
+   * switch off), its deactivates in flight, its activation budget and its sticky
+   * reach verdicts. See `CompanionUtilityMemory` (companionUtilities.ts). A dock,
+   * a flee and a resume forget it; a warp forgets the targeted half.
+   */
+  readonly utilities: CompanionUtilityMemory;
 }
 
 /** A job's launch in flight: which bay items it sent out, and when. */
@@ -2121,6 +2136,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     combatPosition: FRESH_COMBAT_POSITION,
     weaponReach: null,
     reloadAttempts: {},
+    utilities: FRESH_COMPANION_UTILITIES,
   };
 }
 
@@ -2368,7 +2384,13 @@ export function decideCompanionAction(
 ): CompanionDecision {
   const decision = decideCompanionStep(request, obs,
     obs.inWarp === true || obs.docked === true
-      ? { ...clearMovementLatches(memory, null), alignmentOrder: null } : memory, nowMs);
+      ? {
+          ...clearMovementLatches(memory, null),
+          alignmentOrder: null,
+          // Docked, every module stopped; a warp took the targets (rung 8a).
+          utilities: obs.docked === true ? FRESH_COMPANION_UTILITIES : utilitiesAfterWarp(memory.utilities),
+        }
+      : memory, nowMs);
   // These movements replace keep-at-range. Once requested, a lost response
   // cannot prove the previous formation is still in force. Keep the new
   // movement's own pending latch, but let formation resume when its job ends.
@@ -2595,6 +2617,8 @@ function decideCompanionStep(
     // back in says nothing about which of this ship's guns are empty or how
     // many loads have already been spent on them.
     reloadAttempts: memory.reloadAttempts,
+    // Carried: a human arriving switches nothing off.
+    utilities: memory.utilities,
   };
 
   // Rung 3: tank up. Threaded even when it has nothing to do this tick —
@@ -2788,12 +2812,33 @@ function decideCompanionStep(
   // where the ship is but may not move it. A fight that has ended drops its
   // record, which is why its memory flows on even when it decides nothing.
   let lowerMemory = obeying?.memory ?? reloading.memory;
+  const engagedID = obeying?.engagedTargetID ?? null;
   const positioned = decideCombatPosition(request, obs, obeying, lowerMemory, COMBAT_POSITION_LADDER);
   lowerMemory = positioned.memory;
   if (positioned.decision !== null && positioned.decision.standing !== true) {
     return positioned.decision;
   }
-  obeying = positioned.decision ?? (obeying === null ? null : { ...obeying, memory: lowerMemory });
+  obeying = positioned.decision ?? obeying;
+
+  // Rung 8a: the combat utility modules (companionUtilities.ts). Webs and
+  // painters on the engaged target, the self-buffs while a fight is on, each off
+  // again when its job ends -- one call, no movement, so below the positioning
+  // order (which may need to bring the target into optimal first) and above the
+  // wreck work. Threaded: settling a stopped module issues nothing. The flee and
+  // the abandonment protocol return above, so a pilot leaving never gets here.
+  const utility = decideUtilityRung(request, obs, engagedID, lowerMemory, nowMs);
+  lowerMemory = utility.memory;
+  if (utility.call !== null) {
+    return {
+      action: utility.call,
+      phase: obeying?.phase ?? "Combat utilities",
+      why: utility.why,
+      memory: lowerMemory,
+      ...(obeying?.followingOrderFrom === undefined ? {} : { followingOrderFrom: obeying.followingOrderFrom }),
+      ...(obeying?.lastOrderHeard === undefined ? {} : { lastOrderHeard: obeying.lastOrderHeard }),
+    };
+  }
+  obeying = obeying === null ? null : { ...obeying, memory: lowerMemory };
 
   const salvaging = decideSalvaging(request, obs, lowerMemory);
   if (salvaging !== null && !(obeying?.holdsNavigation === true && changesShipMovement(salvaging.action))) {
@@ -9328,6 +9373,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // If they did not, this run gets its own full budget rather than
           // inheriting a give-up it never measured.
           reloadAttempts: {},
+          // A resumed run switched nothing on: whatever is running is not its own.
+          utilities: FRESH_COMPANION_UTILITIES,
         };
       }
       runToken += 1;
@@ -9347,6 +9394,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       if (mem.status === "paused") {
         mem.status = "running";
         mem.selfPaused = false;
+        // Rung 8a owns nothing across a pause: the operator may have taken the
+        // rack in hand meanwhile, and what is running now is theirs.
+        mem.ladder = { ...mem.ladder, utilities: FRESH_COMPANION_UTILITIES };
         report();
       }
     },

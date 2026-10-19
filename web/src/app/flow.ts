@@ -474,6 +474,7 @@ import { RAT_COMBAT_ATTRIBUTE_IDS, ratCombatFromAttributes, type RatCombatFacts 
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
+import { AUTOMATIC_UTILITY_FAMILIES } from "../nav/combatUtilityPolicy.ts";
 import { issueCombatUtility, issueUtilityReload } from "../nav/combatUtilityIssue.ts";
 import { nameKey, type NameRef } from "../store/names.ts";
 import {
@@ -20624,6 +20625,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   let companionCombatWeapons: CombatWeapons | null = null;
   let companionCombatChargeKey: string | null = null;
+  /**
+   * The fitted combat utilities (`combatUtilityFit`) for rung 8a, built from the
+   * SAME fit and the SAME bound dogma read as `companionCombatWeapons`, under the
+   * same key (widened with each utility module's item, online and charge state).
+   * Their `active` flags are stale by design: the rung reads what is running off
+   * the snapshot every tick. `null` until read and whenever the read fails.
+   */
+  let companionCombatUtilities: CombatUtilities | null = null;
 
   // --- waking the companion on a push ---------------------------------------
   //
@@ -21208,6 +21217,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // evaluates in order, so above it this was always one read stale and
           // `null` on the first tick in space.
           combatWeapons: companionCombatWeapons,
+          // Rung 8a's fit facts, filled by the same read (and the same order rule).
+          combatUtilities: companionCombatUtilities,
         };
       },
       issue: async (action) => {
@@ -22438,39 +22449,73 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * `companionCombatChargeKey` changes: the key is every gun's loaded charge
    * type plus the hull, which is everything reach depends on that can change
    * mid-run. Any failure answers `null`, which the range gate reads as "fire".
+   *
+   * It also fills `companionCombatUtilities` (rung 8a) off the same two reads:
+   * the key carries the utility modules' state too, so a ship with no guns but a
+   * web still reads its dogma once, and again only when that module changes.
    */
   async function readCompanionCombatWeapons(
     request: FleetCompanionRequest,
     reads: Awaited<ReturnType<typeof api.loadFitting>> | null,
   ): Promise<CombatWeapons | null> {
     const shipID = companionShipID;
-    if (request.weaponModuleIDs.length === 0 || shipID === null || reads === null ||
+    if (shipID === null || reads === null ||
       reads.activeShipID !== shipID || reads.errors.slots || reads.errors.online || reads.errors.shipInfo) {
       companionCombatChargeKey = null;
+      companionCombatUtilities = null;
       return null;
     }
     const slots = buildSlots(reads.slots, reads.shipInfo, reads.online);
     const guns = new Set(request.weaponModuleIDs);
-    const key = `${shipID}|` + slots
-      .flatMap((slot) => slot.module !== null && guns.has(slot.module.itemID)
+    // Rung 8a's modules, told apart by the static data's group (kept per type, so
+    // a call only the first time a type is seen). A read that stumbles finds no
+    // utility this time; the next interval asks again.
+    let types: Awaited<ReturnType<typeof combatUtilityOfTypes>> = {};
+    try {
+      types = await combatUtilityOfTypes([...new Set(slots.flatMap((slot) => slot.module === null ? []
+        : [slot.module.typeID, ...(slot.module.charge === null ? [] : [slot.module.charge.typeID])]))]);
+    } catch {
+      types = {};
+    }
+    const utilityIDs = new Set(slots.flatMap((slot) => slot.module !== null &&
+      AUTOMATIC_UTILITY_FAMILIES[types[slot.module.typeID]?.groupID ?? -1] !== undefined ? [slot.module.itemID] : []));
+    if (request.weaponModuleIDs.length === 0 && utilityIDs.size === 0) {
+      companionCombatChargeKey = null;
+      companionCombatUtilities = null;
+      return null;
+    }
+    const stateOf = (ids: ReadonlySet<number>): string => slots
+      .flatMap((slot) => slot.module !== null && ids.has(slot.module.itemID)
         ? [`${slot.module.itemID}:${slot.module.online ? 1 : 0}:${slot.module.charge?.typeID ?? "-"}`] : [])
       .join(",");
-    if (key === companionCombatChargeKey && companionCombatWeapons !== null) {
+    // ⚠ WIDENED, NOT A SECOND KEY: one dogma read serves both the guns and the
+    // utilities, and it is re-read only when either's item, online or loaded
+    // charge state moved.
+    const key = `${shipID}|${stateOf(guns)}|${stateOf(utilityIDs)}`;
+    if (key === companionCombatChargeKey) {
       return companionCombatWeapons;
     }
     try {
       const bound = await api.boundDogma(callOptions);
       if (bound.allInfo.error || Number(bound.allInfo.value?.activeShipID) !== shipID) {
         companionCombatChargeKey = null;
+        companionCombatUtilities = null;
         return null;
       }
       companionCombatChargeKey = key;
-      // No cargo: the reload rung reads its own (`cargoCharges`), and reach does
-      // not depend on what is in the hold.
-      return combatFit(shipID, slots, request.weaponModuleIDs, decodeChargeFits(reads.chargeFits),
-        bound.allInfo.value, null);
+      // No cargo for either: the reload rung reads its own (`cargoCharges`), reach
+      // does not depend on what is in the hold, and the capacitor booster (the one
+      // utility that loads from it) is not run by the companion. The ratio only
+      // scales the capacity back out (`companionUtilities.ts`), so the page's own
+      // last snapshot is enough.
+      const seen = store.space.get().snapshot?.ship ?? null;
+      companionCombatUtilities = utilityIDs.size === 0 ? null : combatUtilityFit(shipID, slots, bound.allInfo.value,
+        types, null, seen !== null && seen.itemID === shipID ? seen.capacitorRatio : null);
+      return request.weaponModuleIDs.length === 0 ? null
+        : combatFit(shipID, slots, request.weaponModuleIDs, decodeChargeFits(reads.chargeFits), bound.allInfo.value, null);
     } catch {
       companionCombatChargeKey = null;
+      companionCombatUtilities = null;
       return null;
     }
   }
