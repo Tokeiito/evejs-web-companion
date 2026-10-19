@@ -7,6 +7,7 @@
   import { DATE_LABELS, formatTemplate, plainText, locationKind } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import { showInfo } from "./showInfo.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
   import { focusMail } from "./mailFocus.ts";
   import ContactActionDialog from "./ContactActionDialog.svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
@@ -339,7 +340,7 @@
         <tbody>{#each rows as row (row.member.characterID)}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions (native table row; its name button provides keyboard selection) -->
         <!-- svelte-ignore a11y_click_events_have_key_events (keyboard selection and context menu are on the row's name button) -->
-        <tr class:selected={chosen.includes(row.member.characterID)} onclick={(event) => { if (!(event.target as Element).closest("button,input")) select(event, row.member.characterID); }} ondblclick={() => showInfo({ kind: "character", characterID: row.member.characterID })} oncontextmenu={(event) => openMenu(event, row.member.characterID)}>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
+        <tr class:selected={chosen.includes(row.member.characterID)} onclick={(event) => { if (!(event.target as Element).closest("button,input")) select(event, row.member.characterID); }} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) void doubleClickOwner(flow, row.member.characterID).catch(cause => { if (cause?.code !== "SESSION_REQUEST_RETIRED") error = cause instanceof Error ? cause.message : String(cause); }); }} oncontextmenu={(event) => openMenu(event, row.member.characterID)}>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
           {#if key === "name"}
             <span class="member-entry">
               <input type="checkbox" aria-label={`Select ${row.text.name}`} checked={chosen.includes(row.member.characterID)} onchange={() => { chosen = chosen.includes(row.member.characterID) ? chosen.filter(id => id !== row.member.characterID) : [...chosen, row.member.characterID]; anchor = rows.indexOf(row); menuFor = null; }} />

@@ -25,6 +25,7 @@
   import type { DroppedLink } from "../app/flow.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
 
   let { store, flow, openSkillPlanLink = null }: {
     store: ClientStore;
@@ -291,7 +292,7 @@
         {:else}
           <ul class="roster-list">
             {#each active.roster as member (member.characterID)}
-              <li>{member.name}</li>
+              <li ondblclick={() => void run(() => doubleClickOwner(flow, member.characterID))}>{member.name}</li>
             {/each}
           </ul>
         {/if}

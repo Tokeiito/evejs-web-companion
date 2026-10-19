@@ -1574,6 +1574,28 @@ third participant. A real successful preflight held across a change of pilot ret
 or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
 verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
 
+Owner double-click (read 2026-10-19). `userentry.User.OnDblClick` (565-588),
+`chat/client/member_list_entry` (343-355) and `xmppchatuserentry2` (335-347) honor a
+custom node callback first. Ordinary rows read `settings.user.ui.dblClickUser`,
+default0: ShowInfo takes cfg.eveowners' actual typeID and ownerID; choice1 enters
+the chat Invite path above without the character menu's self/NPC gate. The chat
+service supplies the corresponding native refusals. `ConstructChatSettings`
+(systemmenu1197-1206) offers Show Info0/Start Conversation1; SettingsSvc keys the
+user section by userid, separately from character settings. Contacts and member
+tracking supply ordinary User entries. Search selects User for owner categories,
+but AgentEntry for agents. Its OnDblClick966-978 retains the agent conversation
+callback while docked and ignores this choice.
+
+The original compiled three owner methods confirmed both choices, actual owner
+type arguments, custom overrides and destroyed entries. The browser now shares
+the setting between one account's pilots, separately from other accounts, and
+uses it for contact/search/member/chat roster rows. Actual AppFlow and browser
+sessions verified these scopes, persistence, info versus chat dispatch and agent
+callback precedence. Native recorded traffic contained the expected private
+channel creations and elevated AddCharacterToChannel calls, with NPC DoAction
+separate. Recursive corpus searches found no dblClickUser or CreatePrivateChannel
+capture; unrelated space-double-click telemetry is not evidence of this gesture.
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config

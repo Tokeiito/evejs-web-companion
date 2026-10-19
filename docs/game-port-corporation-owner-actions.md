@@ -502,8 +502,31 @@ self, including when evaluating a merged selection.
      as recorded in the journal. Generic wallet deposit/destination-corporation
      selection remains its own entry point.
 
-Configured double-click-to-chat and simultaneous information windows remain after
-these administration units. The rest of the Corporation window and Phases 5/6 are
+Configured owner double-click is implemented. The native per-account `user.ui`
+`dblClickUser` choice defaults to Show Info (0); Start Conversation (1) uses the
+existing native chat sequence. Settings exposes both choices and retains the
+choice across reloads and between the account's pilots. Corporation/personal
+contacts, owner search, Member List and chat rosters use it. Show Info resolves
+the owner's actual type; the conversation path preserves the native self and
+non-player refusals rather than applying the character menu's eligibility gate.
+Agent search keeps AgentEntry's own double-click callback and opens the agent
+conversation while docked, regardless of this setting.
+
+Authority: original `User.OnDblClick` (userentry.py565-588), the two chat member
+entry implementations, `AgentEntry.OnDblClick` (966-978), the search entry class
+selection, and `systemmenu.ConstructChatSettings` (1197-1206). Original compiled
+owner methods confirmed both choices, actual type arguments and custom callback
+precedence. Actual AppFlow sessions confirmed shared-account versus independent
+account preferences and the native create-channel dispatch. Live desktop and
+390px browser checks covered default info, configured conversations from contact
+and member rows, self/non-player refusals, reload persistence, phone settings and
+the agent conversation callback. Recorded frames showed four private creations
+(one AppFlow, three browser), the native elevated AddCharacterToChannel branch,
+and a separate NPC DoAction, with no corporate transfer from the repeated Cancel
+checks. No exact double-click/private-chat Tranquility capture was found.
+
+Simultaneous information windows remain next, including typed owner menu callers.
+The rest of the Corporation window and Phases 5/6 are
 still required; this contract does not declare them complete.
 
 ## Evidence and limits

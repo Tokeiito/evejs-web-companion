@@ -100,6 +100,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import { showInfo } from "./showInfo.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
   import { focusMail } from "./mailFocus.ts";
   import { notify } from "./notices.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
@@ -683,7 +684,10 @@
     };
   }
 
-  /** Show Info from an owner's menu (menusvc.py 579 to 580): the character's information window. */
+  function ownerSearchResult(resultType: number): boolean {
+    return resultType === RESULT_TYPE.character || resultType === RESULT_TYPE.corporation || resultType === RESULT_TYPE.alliance || resultType === RESULT_TYPE.faction;
+  }
+  /** Show Info from an owner's menu (menusvc.py 579 to 580). */
   function ownerInfo(ownerID: number): void {
     menuFor = null;
     searchMenuFor = null;
@@ -2238,7 +2242,7 @@
                 {#if group.resultType === RESULT_TYPE.agent}
                   {@const line = agentLineOf(owner.id, owner.name)}
                   <!-- An agent's entry (AgentEntry), as in the Agents tab. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={line.nameLine} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) agentDoubleClick(owner.id); }}>
                     <div>
                       <strong>{line.nameLine}</strong>
                       {#if line.missionState !== null}
@@ -2285,7 +2289,7 @@
                 {:else}
                   {@const offers = offersOf(owner.id)}
                   <!-- An owner's entry (User): its name, and the address book's part of its menu. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={owner.name} ondblclick={event => { if (ownerSearchResult(group.resultType) && !(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, owner.id)); }}>
                     <div>
                       {owner.name}
                       {#if blockedIDs.has(owner.id)}<span class="badge">{word(WORDS.blocked, "Blocked")}</span>{/if}
@@ -2449,7 +2453,7 @@
           </thead>
           <tbody>
             {#each shown.rows as row (row.id)}
-              <tr class:selected={selectedIDs.includes(row.id)}>
+              <tr class:selected={selectedIDs.includes(row.id)} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, row.id)); }}>
                 <td>
                   <!-- The entry selected or not (the scroll's multiSelect), which the page has as a box. -->
                   <input type="checkbox" aria-label={`Select ${row.name}`} checked={selectedIDs.includes(row.id)} onchange={() => toggleSelected(row.id)} />

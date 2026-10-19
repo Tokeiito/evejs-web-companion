@@ -269,6 +269,7 @@ import {
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
+import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
 import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
@@ -2416,6 +2417,9 @@ export interface AppFlow {
   readonly corporationWealthChanged: ReadableSignal<CorporationWealthChange | null>;
   corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null>;
   readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
+  readonly ownerDoubleClickPreference: ReadableSignal<0 | 1>;
+  setOwnerDoubleClickPreference(value: 0 | 1): void;
+  ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
   openMoneyTransfer(toID: number, corporate?: boolean): Promise<void>;
   confirmMoneyTransfer(n: number, amount: string, reason: string): Promise<void>;
   closeMoneyTransfer(n?: number): void;
@@ -15038,6 +15042,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
+    const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
+    // Compiled User.OnDblClick: this path has no menu IsMe/IsNPC gate. Invite
+    // itself supplies ChtCannotInviteSelf/ErrorNotAPlayerCharacter as native.
+    if (preference === 1) { await conversations.start(ownerID); return; }
+    const current = callOptions.captureRequestGuard!();
+    const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+    await memberNames(scope, [{ kind: "ownerType", id: ownerID }]); current();
+    const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)));
+    if (Number.isSafeInteger(typeID) && typeID > 0) onInfo(typeID, ownerID);
+  }
   async function memberNames(scope: Pick<MemberOperation, "current" | "options">, refs: readonly NameRef[]): Promise<void> {
     scope.current();
     const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
@@ -29239,6 +29254,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     cachedCorporationWealth: accountKey => corporationWealthReads.cached(accountKey),
     corporationWealthChanged: readonlySignal(corporationWealthSignal),
     corporationCashMenu,
+    get ownerDoubleClickPreference() { return ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value; },
+    setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
+    ownerEntryDoubleClick,
     openMoneyTransfer,
     confirmMoneyTransfer,
     closeMoneyTransfer,
