@@ -99,6 +99,26 @@ self, including when evaluating a merged selection.
    before the write. Multiple expulsion has its own self refusal, results and
    failed-member wording (`461-477`). Read compiled branches and wire recordings
    before implementing; retain exact session-change behavior for leaving.
+   Implement this in three reviewable units, in order:
+   - **c4c1: Allow Corporation Roles.** Its single self-target submenu has one
+     Confirm action (`menusvc:648-652`), which calls the fifteen-position
+     `UpdateMember` with all optional values `None` except final `blockRoles=0`.
+     `BaseChecker.GetBlockedRoles:61-62` uses `corp.UserBlocksRoles`, then
+     `bco_members.MemberBlocksRoles:262-269` reads the pilot's memoized member.
+     Preserve the existing six-second cache and native absence/None-to-zero rule;
+     do not infer blocking from a role mask. There is no separate modal or NPC
+     corporation exclusion in this action's native gate.
+   - **c4c2: Quit Corporation.** Complete both submenu entries together:
+     Remove All Roles, including its native confirmation and exact eight-zero
+     mask/title/block tuple; and Confirm Quit, including `CanBeKickedOut`, the
+     active-war warning, self confirmation and session-change handling. The
+     native gate is self, player corporation, non-CEO; it has no explicit
+     multi-selection check. Read actual menu merge before choosing UI behavior.
+   - **c4c3: Expel Corporation Member(s).** Complete the single and merged
+     multiple callbacks together, including authority/eligibility differences,
+     war warning, confirmation, self refusal and kicked/notKicked result dialog.
+     Multiple expulsion calls `KickOutMembers` directly after the confirmations;
+     it does not perform the single-target eligibility read per selected ID.
 4. **D2p18c4d — CEO resignation.** Read the complete candidate, warning, picker and
    session-change flow (`base_corporation:785+`). It distinguishes a successful
    `None` from a replacement-candidate list. Its default confirmation is No.
