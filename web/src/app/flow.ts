@@ -1367,6 +1367,7 @@ export interface SkillsRequiredRow {
 
 /** The character owner menu's fleet management actions (menusvc.FleetMenu). */
 export type FleetMenuAction =
+  | { readonly kind: "warp"; readonly characterID: number; readonly range: number; readonly group: boolean }
   | { readonly kind: "leader" | "kick"; readonly characterID: number }
   | { readonly kind: "move"; readonly characterID: number; readonly wingID: number | null; readonly squadID: number | null; readonly role: number }
   | { readonly kind: "watch"; readonly characterID: number; readonly add: boolean }
@@ -13432,7 +13433,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null> {
     const current = callOptions.captureRequestGuard!();
     try {
-      if (action.kind === "leader") {
+      if (action.kind === "warp") {
+        if (action.group) await warpFleetToMember(action.characterID, action.range);
+        else await warpToFleetMember(action.characterID, action.range);
+        current();
+        const flight = store.flight.get();
+        if (flight.actionError && !flight.actionErrorSaid) throw new Error(flight.actionError);
+        return null;
+      } else if (action.kind === "leader") {
         if (!(await askDialog("ConfirmMakeFleetBoss", { type: "dict", entries: [["charName", [2, action.characterID]]] }, "Make this pilot the fleet's boss?", "yesno", { defaultAnswer: "no", suppressAnswer: "yes" }))) return null;
         current();
         await makeFleetLeader(action.characterID);
@@ -13479,13 +13487,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // menusvc.WarpToMember (2748): CmdWarpToStuff('char', charID, minRange=warpRange), from the fleet's menu for a member
   // at the pilot's default distance or one of its submenu's seven.
   async function warpToFleetMember(characterID: number, range: number): Promise<void> {
-    await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(bridgeDo, flightNow, characterID, range)));
+    const current = callOptions.captureRequestGuard!();
+    cancelSystemNavigation();
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(fencedDo(current), flightNow, characterID, range)));
   }
 
   // menusvc.WarpFleetToMember (2753): CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True), with the pilot's
   // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
   async function warpFleetToMember(characterID: number, range: number): Promise<void> {
-    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
+    const current = callOptions.captureRequestGuard!();
+    cancelSystemNavigation();
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(fencedDo(current), flightNow, characterID, range)));
   }
 
   // menusvc.JumpToMember, GroupJumpToMember and BridgeToMember (2614 to 2681): the member's cyno as fleetSvc keeps it
@@ -14248,11 +14260,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
+    const current = callOptions.captureRequestGuard!();
     const before = await api.getFlightStatus(callOptions);
-    await order(async () => decodeFlightStatus(before.flight));
+    current();
+    await order(async () => { current(); return decodeFlightStatus(before.flight); });
+    current();
     try {
-      return await api.getFlightStatus(callOptions);
+      const after = await api.getFlightStatus(callOptions);
+      current();
+      return after;
     } catch (error) {
+      throwIfRequestRetired(error);
+      current();
       if (isSessionLost(error)) throw error;
       return before;
     }
@@ -18799,10 +18818,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     step: () => Promise<FlightStepResult>,
   ): Promise<void> {
     if (label !== "Stop") requireAutomationReady();
+    const current = callOptions.captureRequestGuard!();
     let result: FlightStepResult;
     try {
       result = await step();
+      current();
     } catch (error) {
+      throwIfRequestRetired(error);
+      current();
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -18815,8 +18838,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {
-        await applyFlight(await api.getFlightStatus(callOptions));
-      } catch {
+        const unchanged = await api.getFlightStatus(callOptions);
+        current();
+        await applyFlight(unchanged);
+      } catch (refreshError) {
+        throwIfRequestRetired(refreshError);
+        current();
         // The refusal reason is already surfaced; a failed re-read changes nothing.
       }
       return;
@@ -18825,6 +18852,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // Await the docked-context reconcile so a step that changes the docked
     // station (dock) doesn't resolve before the new station's panels refresh.
     await applyFlight(result);
+    current();
   }
 
   // --- R28: skills ----------------------------------------------------------

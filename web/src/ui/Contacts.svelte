@@ -86,9 +86,6 @@
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
-  import { fmtDist } from "../space/overview.ts";
-  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
-  import { WARP_RANGES } from "./flyingDistances.ts";
   import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -104,8 +101,6 @@
   import type { ContactAction } from "./contactAction.ts";
 
   let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void } = $props();
-  // svelte-ignore state_referenced_locally
-  const warpDistance = flow.warpDistance;
   const organization = $derived(contactType !== "contact");
   const alliance = $derived(contactType === "alliancecontact");
   // svelte-ignore state_referenced_locally
@@ -738,23 +733,8 @@
 
   // ── The fleet's own menu for a member (menusvc.py FleetMenu; characterCheckers.py FleetMemberChecker) ─────────
 
-  const FLEET_ROLE = Object.freeze({ leader: 1, wingCmdr: 2, squadCmdr: 3 });
-  /** appConst.minWarpDistance: no warp to what is nearer (sessionChecker.py isInWarpRange, 83 to 84). */
-  const MIN_WARP_DISTANCE_M = 150_000;
   /** The fleet menu's words (menusvc.py FleetMenu; WarpToMenu, 2254 to 2274; ConfirmMenu, 2250). */
   const FLEET_WORDS = {
-    warpToMember: "UI/Fleet/WarpToMember",
-    warpToMemberWithin: "UI/Fleet/WarpToMemberSubmenuOption",
-    within: "UI/Inflight/WarpToWithin",
-    setDefault: "UI/Inflight/Submenus/SetDefaultWarpRange",
-    warpFleet: "UI/Fleet/WarpFleetToMember",
-    warpFleetWithin: "UI/Fleet/FleetSubmenus/WarpFleetToMember",
-    warpWing: "UI/Fleet/WarpWingToMember",
-    warpWingWithin: "UI/Fleet/FleetSubmenus/WarpWingToMember",
-    warpSquad: "UI/Fleet/WarpSquadToMember",
-    warpSquadWithin: "UI/Fleet/FleetSubmenus/WarpSquadToMember",
-    /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
-    formationPoint: "UI/Fleet/FleetFormations/Point",
     wingX: "UI/Fleet/FleetSubmenus/WingX",
     squadX: "UI/Fleet/FleetSubmenus/SquadX",
     squadWithCount: "UI/Fleet/FleetSubmenus/SquadNameWithNumMembers",
@@ -776,16 +756,6 @@
   const ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED = 3321;
   /** A wormhole system's number (sessionChecker.IsInWormholeSystem): no jump drive works there. */
   const isWormholeSystem = (solarSystemID: number | null): boolean => solarSystemID !== null && solarSystemID >= 31_000_000 && solarSystemID < 32_000_000;
-  /**
-   * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
-   * for its leader, a wing's for a wing's commander, a squad's for a squad's; the labels for each, the page's words
-   * where the client's are not to hand, the formation's name in them.
-   */
-  const GROUP_WARP_WORDS = {
-    fleet: { now: FLEET_WORDS.warpFleet, within: FLEET_WORDS.warpFleetWithin, own: "Take the fleet there ({fleetFormation})", ownWithin: "Take the fleet there, short ({fleetFormation})" },
-    wing: { now: FLEET_WORDS.warpWing, within: FLEET_WORDS.warpWingWithin, own: "Take the wing there ({fleetFormation})", ownWithin: "Take the wing there, short ({fleetFormation})" },
-    squad: { now: FLEET_WORDS.warpSquad, within: FLEET_WORDS.warpSquadWithin, own: "Take the squad there ({fleetFormation})", ownWithin: "Take the squad there, short ({fleetFormation})" },
-  } as const;
   // svelte-ignore state_referenced_locally
   const space = store.space;
   // svelte-ignore state_referenced_locally
@@ -799,13 +769,6 @@
     const value = module.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
     return typeof value === "number" ? value !== 0 : value === true;
   });
-  /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
-  const defaultWarp = $derived($warpDistance);
-  const say = $derived(distanceSay($words.templates));
-  /** The fleet menu open, by where it is and whose, and which of its parts is open. */
-  let fleetPart = $state<"warp" | "default" | "groupWarp" | "groupDefault" | null>(null);
-  const myFleetMember = $derived(fleetMembers.find((member) => Number(member.charID) === myID) ?? null);
-
   /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
   function fleetMenuOffered(ownerID: number): boolean {
     return isCharacterContact(ownerID) && !isNpcOwner(ownerID) && $fleetState.availability === "ready" && fleetMemberIDs.has(ownerID);
@@ -827,12 +790,10 @@
     return Math.max(0, Math.hypot(dx, dy, dz) - ball.radius - ship.radius);
   }
 
-  /** Space navigation remains here until D2p18c2b; member management is OwnerFleetMenu's. */
-  function fleetOffersOf(ownerID: number): { readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean } {
+  /** Beacon navigation remains here until D2p18c2b2; management and warps are shared. */
+  function fleetOffersOf(ownerID: number): { readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean } {
     const mine = ownerID === myID;
-    const role = myFleetMember?.role ?? null;
     const distance = memberDistance(ownerID);
-    const warp = !mine && $flightState.status?.inSpace === true && (distance === null || distance > MIN_WARP_DISTANCE_M);
     // OfferJumpToFleetMember, OfferBridgeToMember and OfferGroupJumpToFleetMember (characterCheckers.py 470 to 510):
     // another, the pilot in a ship in space, the member's own ship not where the pilot sees it, the member's cyno lit
     // (HasActiveBeacon), and the ship able (sessionChecker 229 to 255: a jump drive, out of wormhole space; with a
@@ -842,20 +803,15 @@
     const jumpCapable = toBeacon && !isWormholeSystem($flightState.status?.solarSystemID ?? null)
       && (shipAttribute(ATTRIBUTE_CAN_JUMP) ?? 0) !== 0;
     return {
-      warp,
-      // session.IsPilotFleetLeader, IsPilotWingCommander, IsPilotSquadCommander: the pilot's own role in the fleet.
-      groupWarp: !warp ? null : role === FLEET_ROLE.leader ? "fleet" : role === FLEET_ROLE.wingCmdr ? "wing" : role === FLEET_ROLE.squadCmdr ? "squad" : null,
       jumpTo: jumpCapable,
       bridgeTo: jumpCapable && anyModuleHas(ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED),
       conduitTo: jumpCapable && (shipAttribute(ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED) ?? 0) !== 0,
     };
   }
 
-  /** The fleet menu opened or shut; the space read again for it where the pilot is in space, as the client's menu reads its ballpark. */
+  /** The beacon gates read the active ship's held dogma when the menu opens. */
   function openFleetMenu(): void {
-    fleetPart = null;
     if ($flightState.status?.inSpace === true) {
-      void flow.loadSpaceSnapshot().catch(() => {});
       // (And the ship's dogma, by which the jumps to a member's cyno are offered, where it is not read yet.)
       if ($dogma.allInfo === null) void flow.loadDogma().catch(() => {});
     }
@@ -868,16 +824,9 @@
   }
 
   function fleetDone(): void {
-    fleetPart = null;
     menuFor = null;
     searchMenuFor = null;
     notes = [];
-  }
-
-  /** Warp to Member at the pilot's default distance, or Warp to Member Within at one of the seven (menusvc.WarpToMember). */
-  function warpToMember(ownerID: number, range: number): void {
-    fleetDone();
-    void run(() => flow.warpToFleetMember(ownerID, range));
   }
 
   /** A rank's word (RANK_LABELS), the page's own where the client's is not to hand. */
@@ -896,24 +845,6 @@
   function squadWord(squad: MemberMenuSquad): string {
     const squadName = squad.name !== "" ? squad.name : filledWord(FLEET_WORDS.squadX, "Squad {squadNumber}", { squadNumber: String(squad.squadNumber) });
     return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
-  }
-
-  /** Warp Fleet, Wing or Squad to Member, and their Within (menusvc.WarpFleetToMember): the one call, the commander's. */
-  function warpGroupToMember(ownerID: number, range: number): void {
-    fleetDone();
-    void run(() => flow.warpFleetToMember(ownerID, range));
-  }
-
-  /** A commander's warp's label, the formation's name in it (menusvc.FleetMenu: {'fleetFormation': GetSelectedFormationName()}). */
-  function groupWarpWord(group: keyof typeof GROUP_WARP_WORDS, within: boolean): string {
-    const words = GROUP_WARP_WORDS[group];
-    return filledWord(within ? words.within : words.now, within ? words.ownWithin : words.own, { fleetFormation: word(FLEET_WORDS.formationPoint, "Point") });
-  }
-
-  /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
-  function setDefaultWarp(metres: number): void {
-    flow.keepWarpDistance(metres);
-    fleetPart = "warp";
   }
 
   /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
@@ -2050,7 +1981,6 @@
       "UI/PeopleAndPlaces/NoAllianceContacts", "UI/PeopleAndPlaces/NoAllianceContactsStanding",
       ...Object.values(AGENT_WORDS),
       ...Object.values(FLEET_WORDS),
-      ...DISTANCE_WORD_LABELS,
       ...Object.values(SEARCH_WORDS),
       "UI/PeopleAndPlaces/AlreadyAContact",
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
@@ -2798,37 +2728,6 @@
   <OwnerFleetMenu {store} {flow} {ownerID} {openWatchlist} onOpen={openFleetMenu} onDone={fleetDone}>
     {#snippet navigation()}
       {@const fleetOffers = fleetOffersOf(ownerID)}
-      {#if fleetOffers.warp}
-        <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, defaultWarp)}>{word(FLEET_WORDS.warpToMember, "Warp there")}</button>
-        <button type="button" class="minor" aria-expanded={fleetPart === "warp" || fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "warp" || fleetPart === "default" ? null : "warp")}>{word(FLEET_WORDS.warpToMemberWithin, "Warp there, short")} {fleetPart === "warp" || fleetPart === "default" ? "▾" : "▸"}</button>
-        {#if fleetPart === "warp" || fleetPart === "default"}
-          {#each WARP_RANGES as choice (choice.metres)}
-            <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
-          {/each}
-          <button type="button" class="minor" aria-expanded={fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "default" ? "warp" : "default")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "default" ? "▾" : "▸"}</button>
-          {#if fleetPart === "default"}
-            {#each WARP_RANGES as choice (choice.metres)}
-              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
-            {/each}
-          {/if}
-        {/if}
-      {/if}
-      {#if fleetOffers.groupWarp !== null}
-        {@const group = fleetOffers.groupWarp}
-        <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, defaultWarp)}>{groupWarpWord(group, false)}</button>
-        <button type="button" class="minor" aria-expanded={fleetPart === "groupWarp" || fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupWarp" || fleetPart === "groupDefault" ? null : "groupWarp")}>{groupWarpWord(group, true)} {fleetPart === "groupWarp" || fleetPart === "groupDefault" ? "▾" : "▸"}</button>
-        {#if fleetPart === "groupWarp" || fleetPart === "groupDefault"}
-          {#each WARP_RANGES as choice (choice.metres)}
-            <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
-          {/each}
-          <button type="button" class="minor" aria-expanded={fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupDefault" ? "groupWarp" : "groupDefault")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "groupDefault" ? "▾" : "▸"}</button>
-          {#if fleetPart === "groupDefault"}
-            {#each WARP_RANGES as choice (choice.metres)}
-              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
-            {/each}
-          {/if}
-        {/if}
-      {/if}
       {#if fleetOffers.jumpTo}
         <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "jump")}>{word(FLEET_WORDS.jumpTo, "Jump to their cyno")}</button>
       {/if}

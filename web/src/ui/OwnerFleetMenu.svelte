@@ -8,6 +8,7 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { showInfo } from "./showInfo.ts";
   import { notify } from "./notices.ts";
+  import FleetWarpMenu from "./FleetWarpMenu.svelte";
 
   let { store, flow, ownerID, onDone, onOpen, openWatchlist, navigation }: {
     store: ClientStore; flow: AppFlow; ownerID: number; onDone: () => void;
@@ -92,6 +93,7 @@
       {#if !self && boss}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "leader", characterID: ownerID })}>{word(LABELS.leader, "Make Fleet Leader")}</button>{/if}
       {#if !self}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "watch", characterID: ownerID, add: !favorite })}>{word(favorite ? LABELS.removeWatch : LABELS.addWatch, favorite ? "Remove Pilot from Watchlist" : "Add Pilot to Watchlist")}</button>{/if}
       {#if self && (boss || mine && [1, 2, 3].includes(mine.role))}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "travelToMe" })}>{word(LABELS.travel, "Broadcast: Travel To Me")}</button>{/if}
+      <FleetWarpMenu {store} {flow} {ownerID} {blocked} warp={(range, group) => act({ kind: "warp", characterID: ownerID, range, group })} onDone={() => { expandedFor = null; onDone(); }} />
       {@render navigation?.()}
       {#if self}
         <button type="button" class="minor" aria-expanded={part === "leave"} onclick={() => part = part === "leave" ? null : "leave"}>{word(LABELS.leave, "Leave My Fleet")} {part === "leave" ? "▾" : "▸"}</button>
