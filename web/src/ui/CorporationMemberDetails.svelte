@@ -30,6 +30,7 @@
     born: "UI/Corporations/EditMemberDialog/DateOfBirth", security: "UI/Corporations/EditMemberDialog/SecurityStatus",
     noBase: "UI/Corporations/EditMemberDialog/NoBase", baseName: "UI/Corporations/EditMemberDialog/CorpMemberBase",
     ok: "UI/Common/Buttons/OK", cancel: "UI/Common/Buttons/Cancel", apply: "UI/Corporations/EditMemberDialog/Apply",
+    shares: "UI/Corporations/EditMemberDialog/GiveShares",
     roles: "UI/Corporations/Common/Roles", grantable: "UI/Corporations/Common/GrantableRoles",
     view: "UI/Common/View", group: "UI/Corporations/Common/GroupType", yes: "UI/Common/Yes", no: "UI/Common/No",
     titles: "UI/Corporations/Common/Titles",
@@ -161,6 +162,14 @@
     } catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed && request === serial) busy = false; }
   }
+  async function giveShares(): Promise<void> {
+    if (!held || busy) return;
+    const request = serial, id = held.member.characterID;
+    busy = true; error = "";
+    try { await flow.giveCorporationShares(id); }
+    catch (cause) { if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause); }
+    finally { if (!disposed && request === serial) busy = false; }
+  }
   const portrait = $derived(characterID === null ? null : portraitUrl($imageServer, characterID, 128));
   onMount(() => {
     flow.requestWords([...Object.values(LABELS), DATE_LABELS.ls!]);
@@ -257,6 +266,7 @@
       {/if}
     {/if}
     <div class="controls">
+      <button type="button" disabled={busy} onclick={() => void giveShares()}>{word(LABELS.shares, "Give Shares")}</button>
       <button type="button" disabled={busy} onclick={() => void apply(true)}>{word(LABELS.ok, "OK")}</button>
       <button type="button" onclick={() => onClose?.()}>{word(LABELS.cancel, "Cancel")}</button>
       <button type="button" disabled={busy} onclick={() => void apply(false)}>{word(LABELS.apply, "Apply")}</button>

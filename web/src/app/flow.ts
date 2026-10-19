@@ -2060,6 +2060,7 @@ export interface AppFlow {
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
   saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
+  giveCorporationShares(characterID: number): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -14708,6 +14709,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       raceNameID, gender: Number(memberInteger(info, "gender") ?? 0n), createDateTime: memberInteger(info, "createDateTime") ?? 0n,
       security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
       bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
+  }
+  async function giveCorporationShares(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const caption = "UI/Corporations/EditMemberDialog/GiveShares", hint = "UI/Corporations/EditMemberDialog/HowManySharesToGive";
+    await wordsNow([caption, hint]);
+    await resolveNamesNow([{ kind: "owner", id: characterID }]);
+    // Compiled EditMemberDialog.OnGiveShares and uix.QtyPopup: no role gate,
+    // no profile Apply, no balance preflight; Cancel sends no call.
+    const amount = await askQuantity({ min: 1, max: 2_147_483_647, value: 1,
+      hintLabel: hint, hint: null, hintArgs: { player: characterID }, captionLabel: caption, caption: "Give Shares" });
+    if (amount === null) return;
+    const current = store.station.get().online;
+    if (current?.characterID !== online.characterID || current.corporationID !== online.corporationID) return;
+    try { await bridgeDo("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); }
+    catch (error) {
+      // OnGiveShares leaves UserError to the client's normal FSD dialog handler.
+      if (!sayRefusalDialog(error, errorWords(error))) throw error;
+    }
   }
   async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks, titleDraft: number): Promise<CorporationMemberDetails> {
     const member = details.member;
@@ -28125,6 +28145,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberSummary,
     corporationSummaryGroupOpen,
     saveCorporationMember,
+    giveCorporationShares,
     primeContactsOnline,
     addOrEditContact,
     deleteContacts,

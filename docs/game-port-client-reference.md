@@ -1892,6 +1892,13 @@ send 1, so the server always answers in full. (What comes back is handled; see b
 
 ## Reading the server's answers in the browser
 
+Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
+`bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
+`corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
+has no client role gate; Cancel makes no call, and the action neither applies nor clears the member-profile
+draft. Server UserErrors go through the ordinary client dialog handler. No transfer recording was found in the
+recursive Tranquility corpus search; this contract comes from the compiled native methods (2026-10-19).
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
