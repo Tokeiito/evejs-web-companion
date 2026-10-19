@@ -2005,14 +2005,14 @@ export interface SpaceEntity {
   readonly characterID: number | null;
   readonly corporationID: number | null;
   readonly allianceID: number | null;
+  /** The militia it is in, its slim item's warFactionID; none where there is none (the game port's rows). */
+  readonly warFactionID?: number | null;
   /**
    * A wreck's or a container's loot rights, the slim item's (ownerID, corpID,
    * fleetID, abandoned) that the client's HaveLootRight reads. Optional: only
    * the game port reports it, and only for wrecks and containers.
    */
   readonly lootRights?: { readonly ownerID: number | null; readonly corpID: number | null; readonly fleetID: number | null; readonly abandoned: boolean } | null;
-  /** The militia it is in, its slim item's warFactionID; none where there is none (the game port's rows). */
-  readonly warFactionID?: number | null;
   readonly securityStatus: number | null;
   readonly maxVelocity: number | null;
   readonly mode: string | null;

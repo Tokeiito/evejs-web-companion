@@ -1090,6 +1090,18 @@ test("what is in the character is the character's: an implant godma holds outliv
   assert.deepEqual([dogma.item(8001).typeID, dogma.item(8001).locationID, dogma.attribute(8001, 4), dogma.item(5003)], [9899, PILOT, 1, null]);
 });
 
+test("a running module's target is said beside it: what a tractor beam or a salvager is cycling on", () => {
+  const dogma = createPilotDogma({ characterID: PILOT, effectCategory });
+  dogma.loadAllInfo(answers(flight).find((answer) => answer.during === "GetAllInfo in space" && answer.value && answer.value.type === "object").value);
+  const WRECK = 9000000123;
+  // OnGodmaShipEffect(itemID, effectID, when, ?, active, environment, startTime, duration, repeat): environment[3] is the target.
+  assert.equal(dogma.feed({ method: "OnGodmaShipEffect", args: [MODULE, AFTERBURNER, 0n, null, 1, [MODULE, PILOT, SHIP, WRECK], 0n, 10000, 1000] }), true);
+  assert.deepEqual(dogma.shipReadings(SHIP).activeModuleTargets, [[MODULE, WRECK]]);
+  // Stopped: no longer said.
+  dogma.feed({ method: "OnGodmaShipEffect", args: [MODULE, AFTERBURNER, 0n, null, 0, [MODULE, PILOT, SHIP, WRECK], 0n, 10000, 0] });
+  assert.deepEqual(dogma.shipReadings(SHIP).activeModuleTargets, []);
+});
+
 // What the ship changes of its pilot (godma.ProcessAllInfo, 2446). Tranquility says it at every priming of a ship
 // that changes something, and None of every other: in its recordings one ship has it, a Caracal with three
 // ballistic controls, {212: 1.1804337950307635}, in space and docked, at primings of the ship alone.
@@ -1116,16 +1128,4 @@ test("what the ship changes of its pilot is laid over the character at a priming
   const late = createPilotDogma({ characterID: P_PILOT });
   late.loadAllInfo(answer);
   assert.deepEqual([late.attribute(P_PILOT, MISSILE_DAMAGE), late.attributesOf(P_PILOT).length, late.holdsCharacter()], [1.07, 1, false]);
-});
-
-test("a running module's target is said beside it: what a tractor beam or a salvager is cycling on", () => {
-  const dogma = createPilotDogma({ characterID: PILOT, effectCategory });
-  dogma.loadAllInfo(answers(flight).find((answer) => answer.during === "GetAllInfo in space" && answer.value && answer.value.type === "object").value);
-  const WRECK = 9000000123;
-  // OnGodmaShipEffect(itemID, effectID, when, ?, active, environment, startTime, duration, repeat): environment[3] is the target.
-  assert.equal(dogma.feed({ method: "OnGodmaShipEffect", args: [MODULE, AFTERBURNER, 0n, null, 1, [MODULE, PILOT, SHIP, WRECK], 0n, 10000, 1000] }), true);
-  assert.deepEqual(dogma.shipReadings(SHIP).activeModuleTargets, [[MODULE, WRECK]]);
-  // Stopped: no longer said.
-  dogma.feed({ method: "OnGodmaShipEffect", args: [MODULE, AFTERBURNER, 0n, null, 0, [MODULE, PILOT, SHIP, WRECK], 0n, 10000, 0] });
-  assert.deepEqual(dogma.shipReadings(SHIP).activeModuleTargets, []);
 });

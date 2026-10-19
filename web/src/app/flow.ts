@@ -687,7 +687,6 @@ import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailab
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import { classifySalvageModules } from "../nav/salvageModules.ts";
 import { splitNeverFits } from "../bridge/bayRouting.ts";
-import { addToKnownFolders, moveBookmarks as fileBookmarksCall, updateKnownFolderState } from "../bridge/bookmarkFolders.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import {
@@ -25970,13 +25969,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await warpToSpot(action.bookmarkID);
             return;
           case "addKnownFolder":
-            await addToKnownFolders(bridgeDo, action.folderID, true);
+            await addToKnownFoldersCall(bridgeDo, action.folderID, true);
             return;
           case "setFolderActive":
-            await updateKnownFolderState(bridgeDo, action.folderID, action.active);
+            await setFolderActiveCall(bridgeDo, action.folderID, action.active);
             return;
           case "moveBookmarks":
-            await fileBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, action.bookmarkIDs);
+            await moveBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, null, action.bookmarkIDs);
             return;
           case "salvageBatch": {
             // A salvager's module work for the tick, as a pilot clicks it: each step by itself, the same calls the

@@ -224,8 +224,7 @@ function projectEntity(park, ball, slim, ego, placed) {
     ...healthOf(park.damageState.get(ball.id), seen === undefined ? 0 : park.currentTime - seen),
   };
   if (kind === "wreck" || kind === "container") {
-    // Whose it is to loot: the corporation it was left under and the loot rights the client judges by.
-    row.corporationID = positive(slim.get("corpID"));
+    // Whose it is to loot: the loot rights the client judges by.
     row.lootRights = lootRightsOf(slim.get("lootRights"));
   }
   if (kind === "ship" || kind === "structure") {

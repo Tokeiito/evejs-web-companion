@@ -15,7 +15,9 @@
 //   self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs)
 //                                                                         (bookmarkSvc.py 691)
 //
-// by the manager's name. The search is how the client's panel finds a folder to add by its name
+// by the manager's name, made by the Locations window's own reads and writes (bookmarkReads.ts
+// readFoldersWithAdminAccess and readMyActiveBookmarks; bookmarkWrites.ts addToKnownFolders, setFolderActive and
+// moveBookmarks), which the salvager's blocks call too; this file keeps the limits alone. The search is how the client's panel finds a folder to add by its name
 // (bookmarksPanel.py 638): it answers the pilot's personal folders and every shared folder the pilot administers.
 // Adding a folder is linkedBookmarkFolderWindow.py 173.
 //
@@ -26,36 +28,9 @@
 // adds the folder not active and says nothing (bookmarkRuntimeState.js, addKnownFolder), so the caller reads the
 // folders again rather than trust the ask.
 
-import type { Ask } from "./ask.ts";
-import { moveBookmarks as moveBookmarksInto } from "./bookmarkWrites.ts";
-
 /** appConst.MAX_ACTIVE_SHARED_BOOKMARK_FOLDERS. */
 export const MAX_ACTIVE_SHARED_FOLDERS = 3;
 /** appConst.MAX_ACTIVE_PERSONAL_BOOKMARK_FOLDERS. */
 export const MAX_ACTIVE_PERSONAL_FOLDERS = 5;
 /** appConst.MAX_KNOWN_BOOKMARK_FOLDERS. */
 export const MAX_KNOWN_FOLDERS = 30;
-
-const anID = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
-
-/** The pilot's personal folders and the shared folders it administers, and a shared folder taken up: the Locations window's own read and write. */
-export { readFoldersWithAdminAccess } from "./bookmarkReads.ts";
-export { addToKnownFolders } from "./bookmarkWrites.ts";
-
-/**
- * Moves the bookmarks `bookmarkIDs`, all in the folder `fromFolderID`, into the folder `toFolderID` (no subfolder):
- * the client's own move (bookmarkSvc.MoveOrCopyBookmarks, 691), which needs the pilot able to manage both folders,
- * made as the Locations window makes it. Fails as the call fails.
- */
-export async function moveBookmarks(act: Ask, fromFolderID: number, toFolderID: number, bookmarkIDs: readonly number[]): Promise<void> {
-  if (!anID(fromFolderID) || !anID(toFolderID)) {
-    throw new Error("That is no bookmark folder.");
-  }
-  if (bookmarkIDs.length === 0 || !bookmarkIDs.every(anID)) {
-    throw new Error("There is no bookmark to move.");
-  }
-  await moveBookmarksInto(act, fromFolderID, toFolderID, null, bookmarkIDs);
-}
-
-/** Switches the known folder `folderID` on or off: the Locations window's own write. Fails as the call fails (TooManyActiveFolders past the limit). */
-export { setFolderActive as updateKnownFolderState } from "./bookmarkWrites.ts";
