@@ -20,16 +20,23 @@ corporation is the current one. A role-only change does not alter membership.
 The installed client's compiled methods confirmed one remote call across two
 reads, then a join and departure changed the IDs without another call. This is a
 prerequisite for sharing administration actions across Contacts and Member List.
-The present transport asks `GetEveOwners` at login and discards the result
-(`src/gamePort/pilots.js`, `corporationRead`). The existing page decoder
-`readCorporationMemberIDs` asks again on every invocation; it is not a retained
-membership service. A real Test Three login and decoder read produced two bound
-calls and the actual IDs `[140000002, 140000003]` for corporation 98000000.
+The transport now retains IDs from the existing login/corporation prime in
+`pilotCorporationMembers.js`. The page's `flow.corporationMemberIDs()` reads them
+through `/api/bridge/corporation/member-ids`. Neither repeated reads nor another
+member joining/leaving ask the registry again. A change of the pilot's own
+corporation clears the list and runs its native prime once. The explicit raw
+`GetEveOwners` RPC and its old decoder still return actual owner rows; IDs do not
+manufacture replacement rows with invented names or types. The gateway fallback
+reads its actual registry reply, while native connections use the retained state.
 
-Implement retention from that existing native prime, notice updates and retirement
-first. Retaining IDs must not manufacture a replacement `GetEveOwners` reply with
-invented names or types. The feature's membership gate must not add a registry read
-on every menu opening.
+Live production transports confirmed the initial `[140000002, 140000003]`, a
+notice-appended joining member, departure, and unchanged IDs/call counts for an
+actual Director-role notice. The other member's own connection primed each new
+corporation. Holding completed real prime replies across an entry replacement
+and across two corporation changes on one connection retired the old reads;
+fresh membership remained correct. The page also rejects a held HTTP 200 after
+changing pilot or after its same pilot changes corporation, before applying late
+notices. The compiled native membership methods supply the retention/update rule.
 
 ## Native menu gates and callbacks
 
@@ -61,9 +68,9 @@ self, including when evaluating a merged selection.
 
 ## Work order
 
-1. **D2p18c4a — retained membership.** Preserve the native prime, update IDs from
-   actual notices and scope them to the pilot/corporation. Verify repeat reads,
-   join/departure, role-only change and retirement with real native sessions.
+1. **D2p18c4a — retained membership, implemented.** The native prime, membership
+   notices, role-only stability, pilot/corporation scopes and real delayed-reply
+   retirement have been verified live. The page API is ready for the shared menu.
 2. **D2p18c4b — shared View/Edit Member Details.** Add the shared owner action to
    Contacts/search and Member List, reusing the existing complete member dialog.
    `memberDetails.OpenMemberDetails:9-16` maximizes an existing window for the same

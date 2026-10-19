@@ -1816,7 +1816,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charMgr.GetContactList": { same: 1 },
     "onlineStatus.GetInitialState": { same: 1 },
     "corpRegistry.GetAggressionSettings": { same: 1 },
-    "corpRegistry.GetEveOwners": { same: 1 },
+    // bco_members.__PrimeEveOwners: the native reply is a list of owner rows; an empty list is valid.
+    "corpRegistry.GetEveOwners": { type: "list", items: [] },
     "corpRegistry.GetMyApplications": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
@@ -3633,8 +3634,8 @@ test("the corporation's aggression settings are answered from what is kept, and 
   // Read at the choosing: answered as the server answered then, with nothing asked and nothing more in the ledger.
   assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(1), aggressionOf(1)]);
   assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetAggressionSettings")[0]], [[], [], { same: 1 }]);
-  // The members' names prime the client's names and are kept by nobody: asked each time, on the same object, and
-  // in the ledger as asked for by name.
+  // bco_members keeps IDs from the login reply (110-151), separately from raw owner rows.
+  // An explicit GetEveOwners RPC still asks the server; the new corporationMemberIDs seam reads retained IDs.
   await registryRead(pilots, handle, "GetEveOwners");
   await registryRead(pilots, handle, "GetEveOwners");
   assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetEveOwners")[0]], [["GetEveOwners", "GetEveOwners"], [], { same: 1, reshaped: 2 }]);

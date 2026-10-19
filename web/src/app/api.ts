@@ -1959,6 +1959,13 @@ export async function sendChat(
   return data.chat ?? null;
 }
 
+/** bco_members.GetMemberIDs: IDs retained by the native connection's membership service. */
+export async function readCorporationMemberIDs(options: ApiOptions = {}): Promise<{ readonly corporationID: number; readonly memberIDs: readonly number[] }> {
+  const data = await getJson("/api/bridge/corporation/member-ids", options);
+  if (typeof data.corporationID !== "number" || !Array.isArray(data.memberIDs) || !data.memberIDs.every(id => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) throw new Error("Your corporation's retained members could not be read.");
+  return { corporationID: data.corporationID, memberIDs: data.memberIDs as number[] };
+}
+
 /** Native room transport primitives; the page owns invitation and conversation policy. */
 export async function readChatRooms(options: ApiOptions = {}): Promise<JsonValue> {
   return (await getJson("/api/bridge/chat", options)).chat ?? null;

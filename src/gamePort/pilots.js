@@ -69,6 +69,7 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const { createPilotCorporationMembers } = require("./pilotCorporationMembers");
 const personalContacts = require("./personalContacts");
 const { createPilotStation } = require("./pilotStation");
 const { createPilotStructureGuests } = require("./pilotStructureGuests");
@@ -93,6 +94,7 @@ const STATUS = Object.freeze({
   CALL_REFUSED: 409,
   QUESTION_NOT_FOUND: 404,
   SESSION_NOT_FOUND: 404,
+  SESSION_REQUEST_RETIRED: 409,
   SESSION_SELECT_FAILED: 502,
   BOUND_HANDLE_NOT_FOUND: 404,
   BOUND_NO_OBJECT: 502,
@@ -1605,6 +1607,7 @@ function createGamePortPilots({
   function end(entry, reason, refusalStatus = 404) {
     if (entry.ended) return;
     entry.ended = true;
+    entry.corporationMembers.clear();
     // Nobody is left to answer: each question closes unanswered, as its window would with the client.
     for (const asked of [...entry.questions.values()]) asked.settle(undefined, "session_ended");
     if (entry.space) entry.space.release();
@@ -1919,6 +1922,7 @@ function createGamePortPilots({
       aggression: null,
       /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
       corporationRow: null,
+      corporationMembers: createPilotCorporationMembers(),
       /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
       corporateContacts: null,
       allianceContacts: null,
@@ -2162,6 +2166,7 @@ function createGamePortPilots({
         entry.aggression = null;
         // bco_corporations.Reset: another corporation's row is another's to ask for; and its contacts (addressbook).
         entry.corporationRow = null;
+        entry.corporationMembers.clear();
         entry.corporateContacts = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
@@ -5829,11 +5834,30 @@ function createGamePortPilots({
     });
   }
 
+  function corporationMemberIDsRead(entry) {
+    const corporationID = Number(attribute(entry, "corpid"));
+    const current = () => {
+      if (entry.ended || sessions.has(entry.handle) && sessions.get(entry.handle) !== entry) throw fail("SESSION_NOT_FOUND", SESSION_GONE);
+      if (Number(attribute(entry, "corpid")) !== corporationID) throw fail("SESSION_REQUEST_RETIRED", "This corporation membership belongs to the pilot's previous corporation.");
+    };
+    return entry.corporationMembers.read(async () => wireToBridgeJson(await corporationAsk(entry, "GetEveOwners")), current);
+  }
+
+  async function corporationMemberIDs(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields), corporationID = Number(attribute(entry, "corpid"));
+    await entry.corpWork;
+    if (held(bridgeSessionID, sessionFields) !== entry || Number(attribute(entry, "corpid")) !== corporationID) {
+      throw fail("SESSION_REQUEST_RETIRED", "The pilot's corporation changed while its members were being read.");
+    }
+    const memberIDs = await corporationMemberIDsRead(entry);
+    return { corporationID, memberIDs, notifications: drain(entry) };
+  }
+
   /**
    * What the client's services ask of the corporation's registry when the session's corporation changes, the
    * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
    * are kept, and its members' names (bco_members.OnSessionChanged, which primes the client's names with them
-   * and keeps nothing else). Each fails for itself.
+   * and retains their IDs). Each fails for itself.
    *
    * A character chosen is asked besides for its own applications, as the client asks for them once
    * (bco_applications), after the address book's reads as a recorded login has them. They are not kept here,
@@ -5844,7 +5868,7 @@ function createGamePortPilots({
   function corporationRead(entry) {
     return corporationDoes(entry, async () => {
       await aggressionRefreshed(entry).catch(() => {});
-      await corporationAsk(entry, "GetEveOwners").catch(() => {});
+      await corporationMemberIDsRead(entry).catch(() => {});
     });
   }
 
@@ -5903,6 +5927,7 @@ function createGamePortPilots({
 
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
+    entry.corporationMembers.feed(notification, Number(attribute(entry, "corpid")));
     // addressbook.OnOrganizationContactsUpdated(ownerID, updates): the corporation's or the alliance's contacts changed.
     if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
       const ownerID = Number(notification.args[0]);
@@ -6224,6 +6249,7 @@ function createGamePortPilots({
     fleet,
     fleetKept,
     standingsKept,
+    corporationMemberIDs,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,

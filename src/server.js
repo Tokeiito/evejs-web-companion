@@ -7693,6 +7693,24 @@ async function answerCorpAssets(held, call, req, res, next) {
 }
 
 // --- R80 plumbing sweep: corpRegistry batch A (member / info core; no UI) -------
+// bco_members.GetMemberIDs: the IDs retained from the native login prime and
+// changed by membership notices. This is not a synthesized GetEveOwners reply.
+app.get("/api/bridge/corporation/member-ids", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    let membership;
+    if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+      membership = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corporationMemberIDs({ userid: held.accountID }, held.bridgeSessionID));
+    } else {
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetEveOwners", [], null);
+      const { corporationMemberIDsOf } = require("./gamePort/pilotCorporationMembers");
+      membership = { corporationID: Number(held.corporationID), memberIDs: corporationMemberIDsOf(answer.result), notifications: answer.notifications ?? [] };
+    }
+    res.json({ ok: true, ...membership });
+  } catch (error) { next(error); }
+});
+
 // PLUMBING ONLY: three routes make the corpRegistry MEMBER + REGISTRY-META READS
 // reachable + decodable so a later goal builds UI cheaply. No panel/tab/store slice
 // ships. corpRegistry is retail-bound per corp (eveMoniker.GetCorpRegistry(corpID)),

@@ -17,8 +17,8 @@
 // has. The route asked for the row of whatever pilot was named, a call no client makes for a stranger.
 //
 // WHAT IS KEPT. The client asks once for a corporation and keeps the numbers, adding and removing as the server
-// says a member changed (OnCorporationMemberChanged, 229). The page keeps nothing: it asks each time it wants
-// them.
+// says a member changed (OnCorporationMemberChanged, 229). This function decodes an explicit raw RPC. The page's
+// AppFlow.corporationMemberIDs instead reads IDs retained from the native login prime, through the atomic API.
 //
 // THE SESSION'S CORPORATION, AND NO OTHER. The server answers for the corporation of the session that asks, and
 // reads nothing of what is sent.

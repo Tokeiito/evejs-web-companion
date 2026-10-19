@@ -2080,6 +2080,7 @@ export interface AppFlow {
   showMemberDetails(characterID: number): void;
   corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(): Promise<number | null>;
+  corporationMemberIDs(): Promise<readonly number[]>;
   corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
@@ -3841,6 +3842,7 @@ function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | 
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   let sessionCloseGeneration = 0;
   let requestGeneration = 0;
+  let corporationMembershipGeneration = 0;
   let sessionClosing = false;
   // An OK / Cancel question of this client's own. With no browser there is
   // nobody to ask, and the answer is Cancel.
@@ -5326,6 +5328,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("corpid")) corporationMembershipGeneration++;
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -14908,6 +14911,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const value = await bridgeAsk("corpRegistry", "GetMember", [characterID]);
     memberReads.set(key, { value, savedAt: Date.now() });
     return value;
+  }
+  async function corporationMemberIDs(): Promise<readonly number[]> {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    const generation = corporationMembershipGeneration, held = callOptions.captureRequestGuard!();
+    const current = () => {
+      held();
+      if (generation !== corporationMembershipGeneration || corporationID !== (store.station.get().online?.corporationID ?? null)) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "These members belong to the pilot's previous corporation.", 0);
+    };
+    const answer = await api.readCorporationMemberIDs({ ...callOptions, captureRequestGuard: () => current });
+    current();
+    if (answer.corporationID !== corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
+    return answer.memberIDs;
   }
   async function corporationMemberRoleBase(): Promise<number | null> {
     const online = store.station.get().online;
@@ -28442,6 +28457,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showMemberDetails,
     corporationMemberDetails,
     corporationMemberRoleBase,
+    corporationMemberIDs,
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
