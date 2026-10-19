@@ -105,6 +105,9 @@ export function createInfoWindows(deps: {
     },
     async navigate(id: number, direction: -1 | 1, shift = false): Promise<void> {
       const w = state.get().find(w => w.id === id); if (!w) return;
+      // InfoWindow.OnBack/OnForward ignore input during ordinary reconstruction.
+      // Ship history has no such guard. Only content-owned reads mark this flag.
+      if (w.entry.identity.content !== "ship" && w.reads.loading.get()) return;
       const history = w.history.map((e, i) => i === w.index ? w.entry : e);
       const index = w.index + direction, entry = history[index]; if (!entry) return;
       update(id, current => ({ ...current, history, index }));

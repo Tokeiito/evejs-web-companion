@@ -12361,6 +12361,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** CorporationInfoWindow.reconstruct_info_window49-51 and infosvc.UpdateDataCorp's attributes. */
   async function corporationShowInfo(corporationID: number, reads?: InfoReadScope): ReturnType<AppFlow["corporationShowInfo"]> {
+    const finish = reads?.begin();
     // Fence dispatch in the shared lane, but keep the pilot's notification sink:
     // retiring one window must not discard notices accompanying an in-flight RPC.
     const ask = reads ? api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
@@ -12378,6 +12379,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         : await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null);
       return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
     } finally {
+      finish?.();
       // An expected retirement is not an empty or partially successful read.
       reads?.assertCurrent();
     }

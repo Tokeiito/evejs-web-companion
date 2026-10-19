@@ -138,8 +138,22 @@ compiled attribute method confirms aggression before enlistments, with no later
 call after interruption. This does not claim the complete corporation header,
 service caches, native content tabs or all its data reads have been ported.
 
-Required c6b2b2 work remains: ordinary loading/history guards, full reconstruction
-completion boundaries and retirement of other content-owned continuations. Read
+c6b2b2a marks the ported corporation public-info/attribute coroutine busy until
+its finally, and ignores Previous/Next while that scope is busy, as ordinary
+OnBack/OnForward61-73 do. History controls retain their history-enabled state;
+the click is ignored. Completion and registered retirement clear the flag;
+other windows' work does not. Ship history has no ordinary loading guard.
+This boundary covers the currently scoped corporation chain only.
+
+Required c6b2b2b work remains: native content identity/history timing, other
+ordinary headers' loading and complete reconstruction boundaries, pending-load
+semantics, and retirement of other content-owned continuations. A newly found
+corporation timing detail matters: original InfoContentBase.__init__ sets type
+and item to None; CorporationInfoWindow.reconstruct_info_window49-51 waits for
+GetPublicInfo before its parent assigns identity. Original compiled constructors
+and method confirm that None identity at the public-info boundary. The page
+still records requested identity immediately. Audit duplicate ShowInfo and
+history placeholders during that interval before changing them. Read
 each native content class's order and spawned/shared work first. Do not impose
 ordinary loading on ships or an automatic pending drain unsupported by the
 compiled methods. Existing tickets alone drop displayed stale results; actual
