@@ -245,12 +245,14 @@ test("selectCharacter brings the character online and runs the three docked read
   // The two docked reads (the map's stations are not asked since 2026-10-14: the client asks them once in a session as
   // its station service sets up, station/base.py 185, and the game port's transport asks them so); and beside them
   // what the choosing reads of the pilot itself, each by the page's own call since 2026-10-10 where it was a route's:
-  // its crimewatch states and its clone's grade.
+  // its crimewatch states and its clone's grade; and the account's redeem tokens, as the client's redeem service
+  // fetches them as the neocom is set up (redeemsvc.py 37 to 46).
   assert.deepEqual(dockedReads.slice(1).sort(), [
     "crimewatch.GetClientStates",
     "station.GetGuests",
     "stationSvc.GetStationItemBits",
     "subscriptionMgr.GetCloneGrade",
+    "userSvc.GetRedeemTokens",
   ]);
   assert.deepEqual(requests.map((request) => request.path).filter((path) => path === "/api/bridge/crimewatch" || path === "/api/bridge/clone-grade"), []);
   // The browser never handles the bridgeSessionID: no request body carries one.

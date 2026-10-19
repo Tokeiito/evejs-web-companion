@@ -483,8 +483,9 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
     .filter((request) => !/^\/api\/(names|types\/dogma)/.test(request.path) || state.countsStatic !== false)
     .map((request) => (request.path === "/api/bridge/call" ? String(request.body.method) : `${request.method} ${request.path}`));
   /** What was asked to reckon the training slots, in order. */
+  // (The user service's GetRedeemTokens is the redeem service's, read as the pilot comes online: not the slots'.)
   const slotsAsked = () => made.requests
-    .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "userSvc" || request.body.service === "charUnboundMgr"))
+    .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "userSvc" || request.body.service === "charUnboundMgr") && request.body.method !== "GetRedeemTokens")
     .map((request) => `${String(request.body.service)}.${String(request.body.method)}`);
   return { fetch: made.fetch, asked, slotsAsked, requests: made.requests };
 }

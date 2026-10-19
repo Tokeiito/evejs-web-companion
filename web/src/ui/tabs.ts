@@ -44,6 +44,7 @@ export type TabID =
   | "chat"
   | "wallet"
   | "corpWallet"
+  | "redeem"
   | "standings"
   | "characterSheet"
   | "showInfo"
@@ -181,6 +182,8 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
+  // The client's Redeem Items (redeemsvc.py, the neocom's redeem button): what the account may redeem.
+  { id: "redeem", label: "Redeem Items", where: "both" },
   { id: "standings", label: "Standings", where: "both" },
   { id: "characterSheet", label: "Character Sheet", where: "both" },
   // R76 — Show Info. A window like any other (draggable, resizable, remembered),

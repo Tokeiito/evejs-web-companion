@@ -313,6 +313,8 @@ const USER_SVC = "userSvc";
 const REDEEM_TOKENS = "GetRedeemTokens";
 /** Whether a call is that fetch, asked as the client asks it: with nothing. */
 const keptRedeemTokens = (service, method, form) => service === USER_SVC && method === REDEEM_TOKENS && form.args.length === 0 && form.kwargs === null;
+/** The redeem service's claim (redeemsvc.py ClaimRedeemTokens, 99 to 131), after which it fetches the tokens afresh (127). */
+const CLAIM_REDEEM_TOKENS = "ClaimRedeemTokens";
 /** The Project Discovery client service's two askings of itself (projectdiscovery/client/projects/covid/service.py 25; projectdiscovery/client/baseservice.py 41). */
 const PROJECT_DISCOVERY = "ProjectDiscovery";
 const DISCOVERY_TUTORIAL_AT_LOGON = "initialize_tutorial_status";
@@ -2239,9 +2241,10 @@ function createGamePortPilots({
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // What the account may redeem is the redeem service's to answer, where it is asked as the client asks it: with
-    // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is).
+    // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is). A fetch under way (at the server's
+    // notice, or after a claim) is waited for: what it brings is what is kept.
     if (keptRedeemTokens(service, method, form)) {
-      const kept = await run(entry, service, method, () => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens));
+      const kept = await run(entry, service, method, () => entry.redeemTokensWork.then(() => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens)));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // Whether Project Discovery is enabled is its client service's to answer, where it is asked as the client asks
@@ -2351,6 +2354,8 @@ function createGamePortPilots({
       : byName(entry.session, service, method, form))).finally(() => {
       forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();
+      // redeem.ClaimRedeemTokens (127): what the account may redeem is fetched afresh once a claim is answered or refused.
+      if (service === USER_SVC && method === CLAIM_REDEEM_TOKENS) redeemTokensFetched(entry).catch(() => {});
     }).catch((error) => {
       // industrySvc.InstallJob (139 to 144): a job the server refuses has its facility asked for afresh
       // (facilitySvc.Reload), and the refusal stands.
@@ -2358,6 +2363,8 @@ function createGamePortPilots({
       if (facilityID !== null) facilitiesAskedAfresh(entry, [facilityID]);
       throw error;
     });
+    // The claim is answered once the fetch after it is in, so that the tokens read next are what is left.
+    if (service === USER_SVC && method === CLAIM_REDEEM_TOKENS) await entry.redeemTokensWork;
     // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60): each row the server answers is made the client's
     // job, and a job whose row names a facility is given it afresh (_JobInstance, 196 to 197), before the jobs
     // are anyone's to read.
@@ -2899,7 +2906,7 @@ function createGamePortPilots({
    * the server's OnRedeemingQueueUpdated (162 to 169), and after a claim; its GetRedeemTokens answers what is kept
    * (51 to 54). Tranquility's recordings of a login have the fetch once from the choosing on (and twice before it,
    * the character selection screen's own). The claiming (ClaimRedeemTokens(tokens, charID, useHomeStation), 99 to
-   * 131) is the player's, and is not made here. One fetch at a time.
+   * 131) is the player's: the page makes it, and the fetch follows it here. One fetch at a time.
    */
   function redeemTokensFetched(entry) {
     const fetching = entry.redeemTokensWork.then(async () => {
