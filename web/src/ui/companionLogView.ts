@@ -121,6 +121,16 @@ export function traceSummary(trace: CompanionTrace | null | undefined): string {
     parts.push(`health: ${h.code} ${h.layer ?? "tank"} ${pct(h.tank)} (floor ${pct(h.floor)}, mark ${pct(h.mark)}), repairer ${h.repairer}`);
   }
 
+  const d = trace.drones;
+  if (d !== undefined) {
+    const pct = (ratio: number | null | undefined): string => typeof ratio === "number" ? `${Math.round(ratio * 100)}%` : "?";
+    const rows = (d.rows ?? []).map((row) => row.state === "aboard"
+      ? `${row.id} aboard ${Math.round((row.heldMs ?? 0) / 1000)}s`
+      : `${row.id} ${row.state === "homeward" ? "home " : ""}${pct(row.shield)}${row.attackers.length > 0 ? ` x${row.attackers.length}` : ""}`);
+    // Five: a full flight, so the drone being shot is never the one cut off.
+    parts.push(`drones: ${d.rotation}${rows.length === 0 ? "" : ` ${capped(rows, 5)}`}`);
+  }
+
   return parts.join(" | ");
 }
 

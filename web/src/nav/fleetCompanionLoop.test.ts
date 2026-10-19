@@ -6420,6 +6420,19 @@ test("with no spare, a shot drone stays aboard until its rat has picked someone 
   assert.deepEqual(moved.action, { kind: "launchDrones", droneItemIDs: [DRONE_A], quantities: { [DRONE_A]: 1 } });
   assert.match(moved.why, /moved on/);
 });
+// The recorder's half: every tick of a fight writes each drone's shield and the
+// rats on it, so "it reacted too late" can be read off the log afterwards.
+test("a fight tick traces every drone: its shield, its state and the rats on it", () => {
+  const recall = decideCompanionAction(
+    WITH_DRONES, spareObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)], [], DRONE_A), freshLadderMemory(), 6_000_000);
+  assert.equal(recall.action.kind, "recallDrones");
+  assert.equal(recall.trace?.drones?.rotation, "recalling");
+  assert.deepEqual(recall.trace?.drones?.rows.map((row) => [row.id, row.state, row.shield, row.attackers]), [
+    [DRONE_A, "homeward", 0.5, [TACKLE]],
+    [DRONE_B, "out", 1, []],
+  ]);
+});
+
 
 
 // Rung 1 still outranks everything.
