@@ -3887,19 +3887,12 @@ test("THE STRAND: idle, grid clear, commander elsewhere, armour under the return
   assert.deepEqual(lit.action, { kind: "activate", moduleID: ARMOR_REPAIRER, targetID: 0 });
   assert.equal(lit.why, "The grid is clear: repairing the armour.");
 
-  // It runs, the armour climbs toward the mark, and nothing switches it off.
-  let memory = lit.memory;
-  let active: number[] = [ARMOR_REPAIRER];
-  for (const armor of [0.785, 0.79, 0.795]) {
-    const next = decideCompanionAction(request, stranded(armor, active), memory);
-    assert.notEqual(next.action.kind, "deactivate", `armour ${armor}: still repairing`);
-    assert.notEqual(next.action.kind, "warpToFleetMember", `armour ${armor}: still under the mark`);
-    active = applyModuleAction(active, next.action);
-    memory = next.memory;
-  }
-  // At the mark the pilot goes back to the fight, the repairer still cycling:
-  // it is not switched off to warp, and it runs on until the armour is whole.
-  const back = decideCompanionAction(request, stranded(0.8, active), memory);
+  // With the repairer running the pilot goes back to the fight at once, still
+  // under the mark: an idle pilot above its flee floor never waits for health
+  // (see decideRejoinCommander). The repairer is not switched off to warp, and
+  // it runs on until the armour is whole.
+  const active: number[] = [ARMOR_REPAIRER];
+  const back = decideCompanionAction(request, stranded(0.785, active), lit.memory);
   assert.deepEqual(back.action, { kind: "warpToFleetMember", characterID: HUMAN }, back.why);
   const whole = decideCompanionAction(request, stranded(1, active), back.memory);
   assert.deepEqual(whole.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
@@ -12485,9 +12478,13 @@ test("drones out come home before the rejoin warp", () => {
 test("the rejoin never fights the flee, a stop, a fleet order, a trip, the warp or an empty fleet", () => {
   const rejoined = (decision: CompanionDecision): boolean => decision.action.kind === "warpToFleetMember";
 
-  const notWell = decideCompanionAction(REQUEST, rejoinObs({ health: REQUEST.fleeHealthFloor + 0.1 }));
-  assert.ok(!rejoined(notWell), "below the return mark");
-  assert.match(notWell.why, /not well enough/);
+  // Below the FLOOR with nowhere to run (no station, no sun): the flee unwinds
+  // and the rejoin must not send it to the fight. Under the mark alone is no
+  // reason to stay -- see the 52-minute test below.
+  const notWell = decideCompanionAction(REQUEST, rejoinObs({ health: 0.1, snapshot: gridWithStation(null) }));
+  assert.ok(!rejoined(notWell), "below the flee floor");
+  assert.match(notWell.why, /below its flee floor/);
+  assert.equal(notWell.trace?.health?.code, "rejoin-below-floor");
 
   const repairing = decideCompanionAction(REQUEST, dockedAfterFleeing({ damagedItemIDs: [SHIP_ITEM] }), fleeing());
   assert.ok(!rejoined(repairing), "docked waiting for repairs");
@@ -12518,6 +12515,93 @@ test("the rejoin never fights the flee, a stop, a fleet order, a trip, the warp 
   const warping = decideCompanionAction(REQUEST, rejoinObs({ inWarp: true }));
   assert.deepEqual(warping.action, { kind: "wait" });
   assert.equal(warping.phase, "In warp");
+});
+
+// --- a health hold is never for ever -------------------------------------------
+//
+// Seen live 2026-10-14 09:13-10:05: a companion that never dropped through its
+// flee floor read "not well enough yet to go back to the fight" every tick for 52
+// minutes, its tank between the floor and the return mark, while the commander
+// fought on at the next site. The mark is for a return from a flee; an idle pilot
+// never waits for it, and the flee's own wait for it is bounded by progress.
+
+/** Armour-tanked, hurt between its floor and its return mark, repairer cycling. */
+function armourHurt(armorRatio: number, overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  const grid = gridWithStation(5_000);
+  return rejoinObs({
+    health: armorRatio,
+    shieldRatio: 1,
+    armorRatio,
+    hullRatio: 1,
+    snapshot: { ...grid, ship: { ...grid.ship, activeModuleIDs: [ARMOR_REPAIRER] } } as SpaceSnapshot,
+    ...overrides,
+  });
+}
+
+test("an idle pilot between its floor and its return mark rejoins its commander, and the trace says how hurt it went", () => {
+  const armoured: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const between = REQUEST.fleeHealthFloor + 0.1;
+  const decision = decideCompanionAction(armoured, armourHurt(between));
+  assert.deepEqual(decision.action, REJOIN_WARP);
+  assert.equal(decision.phase, "Rejoining the fleet");
+  assert.deepEqual(decision.trace?.health, {
+    code: "rejoin-under-mark",
+    tank: between,
+    layer: "armor",
+    floor: REQUEST.fleeHealthFloor,
+    mark: REQUEST.fleeHealthFloor + 0.2,
+    repairer: "running",
+  });
+});
+
+test("the flee's safe-spot hold waits for the mark while the tank rises, and not a moment past the stall", () => {
+  const atSafeSpot = fleeing({ safeSpotWarpIssued: true, safeSpotWarpSeen: true });
+  const hurt = REQUEST.fleeHealthFloor + 0.05;
+  const t0 = 1_000_000;
+
+  let tick = decideCompanionAction(REQUEST, fleeObs({ health: hurt }), atSafeSpot, t0);
+  assert.equal(tick.phase, "Safe");
+  assert.equal(tick.trace?.health?.code, "flee-recovering");
+  assert.equal(tick.trace?.health?.tank, hurt);
+  assert.equal(tick.trace?.health?.repairer, "none");
+
+  // Rising: the wait goes on past the stall window measured from arrival.
+  tick = decideCompanionAction(REQUEST, fleeObs({ health: hurt + 0.02 }), tick.memory, t0 + 100_000);
+  assert.equal(tick.phase, "Safe");
+  tick = decideCompanionAction(REQUEST, fleeObs({ health: hurt + 0.02 }), tick.memory, t0 + 200_000);
+  assert.equal(tick.phase, "Safe", "100 s since the last rise is inside the window");
+  assert.equal(tick.trace?.health?.stalledMs, 100_000);
+
+  // Flat for the whole window: no station opted into, so it goes back as it is.
+  tick = decideCompanionAction(REQUEST, fleeObs({ health: hurt + 0.02 }), tick.memory, t0 + 220_000);
+  assert.deepEqual(tick.action, REJOIN_WARP);
+  assert.equal(tick.memory.flee, null, "the hold is over");
+  assert.match(tick.why, /has not healed in 2 minute\(s\) out here, so it is going back as it is/i);
+  assert.equal(tick.trace?.health?.code, "flee-stalled-return", "the flee's reason outranks the rejoin's");
+});
+
+test("a stalled safe-spot hold below the floor stays out, and says why", () => {
+  const atSafeSpot = fleeing({ safeSpotWarpIssued: true, safeSpotWarpSeen: true });
+  const first = decideCompanionAction(REQUEST, fleeObs({ health: 0.1 }), atSafeSpot, 0);
+  const later = decideCompanionAction(REQUEST, fleeObs({ health: 0.1 }), first.memory, 120_000);
+  assert.deepEqual(later.action, { kind: "wait" });
+  assert.equal(later.phase, "Safe");
+  assert.match(later.why, /still below its flee floor/);
+  assert.equal(later.trace?.health?.code, "flee-stalled-floor");
+});
+
+test("a stalled safe-spot hold that pays for repairs and sees a station goes to dock there", () => {
+  const paying: FleetCompanionRequest = { ...REQUEST, repairsAtStation: true };
+  const atSafeSpot = fleeing({ safeSpotWarpIssued: true, safeSpotWarpSeen: true, arrivedSafe: true });
+  const hurt = REQUEST.fleeHealthFloor + 0.05;
+  const first = decideCompanionAction(paying, fleeObs({ health: hurt }), atSafeSpot, 0);
+  const later = decideCompanionAction(paying, fleeObs({ health: hurt }), first.memory, 120_000);
+  assert.deepEqual(later.action, { kind: "warp", targetID: 60000001 });
+  assert.equal(later.trace?.health?.code, "flee-stalled-dock");
+  assert.equal(later.memory.flee?.arrivedSafe, false, "the outbound leg flies again");
+  // The next tick keeps flying it: not mistaken for an operator's undock.
+  const next = decideCompanionAction(paying, fleeObs({ health: hurt }), later.memory, 122_000);
+  assert.notEqual(next.memory.flee, null);
 });
 
 // --- a module the server will not switch on is never asked again -------------

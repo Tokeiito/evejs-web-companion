@@ -104,7 +104,7 @@ import {
   propsStopWhy,
   propsWanted,
 } from "./companionPropulsion.ts";
-import type { CompanionTrace, PropsTrace, PropsWithheld } from "./companionTrace.ts";
+import type { CompanionTrace, HealthCode, HealthTrace, PropsTrace, PropsWithheld } from "./companionTrace.ts";
 import {
   closingOnTheHold,
   decideCombatPosition,
@@ -733,6 +733,13 @@ export interface CompanionFlee {
    * seconds, for ever. See `flyTheFlee`.
    */
   readonly arrivedSafe: boolean;
+  /**
+   * The best tank reading seen while waiting at a safe spot, and when it was
+   * last beaten. Absent until the first such tick. See `FLEE_RECOVERY_STALL_MS`:
+   * a hold whose tank has not risen in that long is a hold that would never end.
+   */
+  readonly recoverBest?: number;
+  readonly recoverBestAtMs?: number;
 
   // ── the `SafetyRun` contract ────────────────────────────────────────
   readonly safeSpotWarpIssued: boolean;
@@ -2668,6 +2675,17 @@ let collecting: TraceCollector | null = null;
 function noteTrace<K extends keyof CompanionTrace>(slot: K, fragment: TraceSlots[K]): void {
   if (collecting !== null) {
     collecting.slots[slot] = fragment;
+  }
+}
+
+/**
+ * The `health` slot, FIRST WRITER WINS. Two rungs write it on one tick only when
+ * the flee gives up its safe-spot hold and the rejoin beneath it then warps, and
+ * the flee's reason is the one that explains the move.
+ */
+function noteHealth(fragment: HealthTrace): void {
+  if (collecting !== null && collecting.slots.health === undefined) {
+    collecting.slots.health = fragment;
   }
 }
 
@@ -6394,6 +6412,29 @@ const FLEE_RECOVERY_HOLD_MS = 30_000;
 const MAX_FLEE_REPAIR_ATTEMPTS = 3;
 
 /**
+ * How long a flee waits at a safe spot with its tank not rising before it stops
+ * waiting for the return mark.
+ *
+ * ⚠ A HOLD THAT WAITS FOR HEALTH MUST NEVER BE FOR EVER. Seen live 2026-10-14
+ * 09:13-10:05: a companion read "not well enough yet to go back to the fight"
+ * every tick for 52 minutes, its tank between its floor and its return mark, in
+ * a layer nothing was repairing. That hold was the rejoin's, which no longer
+ * waits for the mark at all (see `decideRejoinCommander`), but the safe-spot
+ * hold below has the same shape: armour and hull do not heal on their own, so a
+ * ship with no repairer cycling for the gating layer stays exactly as hurt for
+ * as long as anybody cares to wait.
+ *
+ * Measured from the last time the tank ROSE (by more than `FLEE_RECOVERY_RISE`),
+ * not from arrival, so a shield regenerating or a repairer cycling keeps the
+ * wait going for as long as it is getting somewhere. Two minutes is many
+ * repairer cycles and a visible slice of any passive shield regeneration; a
+ * reading that has not moved in that long is not going to.
+ */
+const FLEE_RECOVERY_STALL_MS = 120_000;
+/** The rise that counts as progress for `FLEE_RECOVERY_STALL_MS`: half a percent, above read jitter. */
+const FLEE_RECOVERY_RISE = 0.005;
+
+/**
  * The health that decides whether this ship is in trouble: the worst of the
  * layers its TANK is actually made of, and nothing above them.
  *
@@ -6428,6 +6469,21 @@ const MAX_FLEE_REPAIR_ATTEMPTS = 3;
  * "dying" — the callers keep that three-state discipline themselves.
  */
 function tankHealth(request: FleetCompanionRequest, obs: FleetCompanionObservation): number | null {
+  return tankRead(request, obs).health;
+}
+
+/** The layer names `tankRead` reports, deepest last. */
+type HealthLayer = "shield" | "armor" | "hull";
+
+/**
+ * `tankHealth`, with the layer the reading came from: the counted layer that is
+ * lowest, which is the one any hold on that reading is waiting for. `layer` is
+ * null when the reading is the snapshot's own fold (no layer ratio arrived).
+ */
+function tankRead(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+): { readonly health: number | null; readonly layer: HealthLayer | null } {
   const layers = [
     {
       name: "shield",
@@ -6451,14 +6507,55 @@ function tankHealth(request: FleetCompanionRequest, obs: FleetCompanionObservati
         ? -1
         : layers.findIndex((layer) => layer.name === request.tankLayer);
   const counted = tank === -1 ? layers : layers.slice(tank);
-  const readable = counted
-    .map((layer) => layer.ratio)
-    .filter((ratio): ratio is number => ratio !== null && Number.isFinite(ratio));
+  let lowest: { readonly name: HealthLayer; readonly ratio: number } | null = null;
+  for (const layer of counted) {
+    const ratio = layer.ratio;
+    if (ratio !== null && ratio !== undefined && Number.isFinite(ratio) && (lowest === null || ratio < lowest.ratio)) {
+      lowest = { name: layer.name, ratio };
+    }
+  }
   // ⚠ THE SNAPSHOT'S OWN FOLD IS THE FALLBACK, not a zero and not a refusal. A
   // tick whose layer ratios did not arrive but whose `health` did is a tick that
   // still knows something, and on a hull with nothing to narrow by the two
   // numbers are the same number anyway.
-  return readable.length === 0 ? (obs.health ?? null) : Math.min(...readable);
+  return lowest === null ? { health: obs.health ?? null, layer: null } : { health: lowest.ratio, layer: lowest.name };
+}
+
+/**
+ * The trace a health hold writes (companionTrace.ts `HealthTrace`): the reading,
+ * the layer it came from, the two thresholds, and whether anything fitted is
+ * able to raise that layer -- a hold on a layer with no repairer running is a
+ * hold that only time, a station or nothing at all will end.
+ */
+function healthTrace(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  code: HealthCode,
+  stalledMs?: number,
+): HealthTrace {
+  const read = tankRead(request, obs);
+  const fitted = read.layer === "shield"
+    ? request.shieldBoosterModuleIDs
+    : read.layer === "armor"
+      ? request.armorRepairerModuleIDs
+      : read.layer === "hull"
+        ? request.hullRepairerModuleIDs
+        : [];
+  const active = obs.snapshot?.ship?.activeModuleIDs ?? null;
+  const repairer = fitted.length === 0
+    ? "none"
+    : active === null
+      ? "unread"
+      : fitted.some((moduleID) => active.includes(moduleID)) ? "running" : "fitted";
+  return {
+    code,
+    tank: read.health,
+    layer: read.layer,
+    floor: request.fleeHealthFloor,
+    mark: returnMark(request),
+    repairer,
+    ...(stalledMs === undefined ? {} : { stalledMs }),
+  };
 }
 
 /**
@@ -6581,18 +6678,22 @@ function recoverAndReturn(
   obs: FleetCompanionObservation,
   mem: CompanionLadderMemory,
   running: CompanionFlee,
+  nowMs: number,
 ): FleeStep {
   const hurtAt = Math.round(running.triggeredAtHealth * 100);
 
-  if (!wellEnoughToReturn(request, obs, running)) {
-    // Not docked: the safe-spot case. There is no shop out here, so the only
-    // thing to do is hold and let the layers come back on their own.
-    if (obs.docked !== true) {
-      return {
-        decision: waiting("Safe", `Left the fight at ${hurtAt}% and is waiting out here to recover.`, mem),
-        memory: mem,
-      };
+  // Not docked: the safe-spot case. There is no shop out here, so the thing to
+  // do is hold and let the layers come back -- for as long as they ARE coming
+  // back. `holdAtTheSafeSpot` is null only when the hold has stalled above the
+  // floor and is given up, and then the pilot goes back below, as it is.
+  const atSafeSpot = obs.docked !== true && !wellEnoughToReturn(request, obs, running);
+  if (atSafeSpot) {
+    const held = holdAtTheSafeSpot(request, obs, mem, running, hurtAt, nowMs);
+    if (held !== null) {
+      return held;
     }
+  }
+  if (!atSafeSpot && !wellEnoughToReturn(request, obs, running)) {
     // ⚠ THE SHOP'S OWN QUOTE DECIDES WHAT IS DAMAGED, never a guess at the ship
     // item id -- the same authority the DSL's `repair-ship` uses. Null is "we
     // could not say", which is a tick spent waiting for the quote and never a
@@ -6715,6 +6816,89 @@ function recoverAndReturn(
 }
 
 /**
+ * The safe-spot half of `recoverAndReturn`: a ship out in space, not yet clear
+ * of its return mark. Null when the hold is given up and the pilot goes back.
+ *
+ * ⚠ BOUNDED, AND THE BOUND IS PROGRESS, NOT A CLOCK FROM ARRIVAL. Seen live
+ * 2026-10-14 09:13-10:05 (on the rejoin, which had the same unbounded shape): a
+ * pilot sat 52 minutes under its mark in a layer nothing was repairing. A tank
+ * that keeps rising keeps the wait going however long it takes; one that has not
+ * risen in `FLEE_RECOVERY_STALL_MS` takes the next step, in this order:
+ *
+ *   1. Still below the flee FLOOR: stay out here, and say so. Going back would
+ *      re-trigger the flee on the first tick at the fight, spending a trip to
+ *      learn what this tick already knows.
+ *   2. Paying for repairs and a station on grid: dock there, and the docked
+ *      half of `recoverAndReturn` takes it from the quote. Rare -- a flee docks
+ *      first when it can, so a pilot at a safe spot is usually in a system with
+ *      no station in view -- but it is the honest answer when there is one.
+ *   3. Otherwise go back as it is, with a readout that says so. Above the floor
+ *      it is fit to fight by the operator's own number; the mark only exists to
+ *      stop a RETURN commuting, and a pilot that cannot climb any further is not
+ *      going to reach it by waiting.
+ *
+ * An unreadable tank never counts towards the stall: "unreadable is not well"
+ * holds here as everywhere, and a ship sent back on no information is the one
+ * thing worse than one kept waiting.
+ */
+function holdAtTheSafeSpot(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  mem: CompanionLadderMemory,
+  running: CompanionFlee,
+  hurtAt: number,
+  nowMs: number,
+): FleeStep | null {
+  const tank = tankHealth(request, obs);
+  if (tank === null) {
+    noteHealth(healthTrace(request, obs, "flee-unread"));
+    return {
+      decision: waiting("Safe", `Left the fight at ${hurtAt}% and is waiting out here to recover.`, mem),
+      memory: mem,
+    };
+  }
+  const rose = running.recoverBest === undefined || tank > running.recoverBest + FLEE_RECOVERY_RISE;
+  const tracked: CompanionFlee = rose ? { ...running, recoverBest: tank, recoverBestAtMs: nowMs } : running;
+  const kept: CompanionLadderMemory = rose ? { ...mem, flee: tracked } : mem;
+  const stalledMs = nowMs - (tracked.recoverBestAtMs ?? nowMs);
+  if (stalledMs < FLEE_RECOVERY_STALL_MS) {
+    noteHealth(healthTrace(request, obs, "flee-recovering", stalledMs));
+    return {
+      decision: waiting("Safe", `Left the fight at ${hurtAt}% and is waiting out here to recover.`, kept),
+      memory: kept,
+    };
+  }
+  const minutes = Math.round(stalledMs / 60_000);
+  if (tank < request.fleeHealthFloor) {
+    noteHealth(healthTrace(request, obs, "flee-stalled-floor", stalledMs));
+    return {
+      decision: waiting("Safe",
+        `Left the fight at ${hurtAt}%, has not healed in ${minutes} minute(s) and is still below its flee floor, so it is staying out here.`,
+        kept),
+      memory: kept,
+    };
+  }
+  const snapshot = obs.snapshot ?? null;
+  const measurement = snapshot === null ? null : measureSpace(snapshot);
+  const station = snapshot === null || measurement === null
+    ? null
+    : nearestOf(snapshot.entities.filter((entity) => DOCKABLE_KINDS.has(entity.kind ?? "")), measurement);
+  if (request.repairsAtStation && station !== null) {
+    noteHealth(healthTrace(request, obs, "flee-stalled-dock", stalledMs));
+    // The outbound leg flies again, this time to the station: `reachedSafety`
+    // reads these as "not there yet", and `runToSafety` docks before it ever
+    // looks at the sun.
+    const { safeSpotWarpBackoff: _backoff, ...rest } = tracked;
+    const rerouted: CompanionFlee = { ...rest, arrivedSafe: false, safeSpotWarpIssued: false,
+      safeSpotWarpSeen: false, safeSpotWarpAttempts: 0, safeSpotWarpWaited: 0, droneRecallWaited: null };
+    return flyTheFlee(request, obs, { ...mem, flee: rerouted }, rerouted, nowMs);
+  }
+  noteHealth(healthTrace(request, obs, "flee-stalled-return", stalledMs));
+  noteNotice(`Has not healed in ${minutes} minute(s) out here, so it is going back as it is.`);
+  return null;
+}
+
+/**
  * The leg itself, once a flee is latched.
  *
  * Split out so the latching tick and every tick after it fly the same code —
@@ -6734,9 +6918,9 @@ function flyTheFlee(
     // this ship back out".
     if (!running.arrivedSafe) {
       const arrived: CompanionFlee = { ...running, arrivedSafe: true };
-      return recoverAndReturn(request, obs, { ...mem, flee: arrived }, arrived);
+      return recoverAndReturn(request, obs, { ...mem, flee: arrived }, arrived, nowMs);
     }
-    return recoverAndReturn(request, obs, mem, running);
+    return recoverAndReturn(request, obs, mem, running, nowMs);
   }
 
   // ⚠ THE OPERATOR'S OWN UNDOCK WINS, AND BEFORE THIS IT COULD NOT. A flee that
@@ -8313,9 +8497,23 @@ const REJOIN_NOT_HERE_RECHECK_MS = 60_000;
  * first: the flee (still below the return mark, docked for repairs, out of
  * round trips), the supervision gate, a fleet order, a `destination` trip, a
  * `stop`, a fight on this grid, and the warp yield. It then checks the flee's
- * own bounds again, because a pilot the flee has finished with is not
- * necessarily one it would send back: a ship below its return mark, or one out
- * of round trips, stays where it is and says so.
+ * own bounds again: a ship out of round trips, or below its flee FLOOR (one the
+ * flee could not take anywhere), stays where it is and says so.
+ *
+ * ⚠ THE FLOOR, NOT THE RETURN MARK, AND THE MARK WAS A 52-MINUTE BUG. Seen live
+ * 2026-10-14 09:13-10:05: a companion finished a fight, the commander warped to
+ * the next site, and the pilot read "not well enough yet to go back to the
+ * fight" every tick for 52 minutes while two others followed. It had never
+ * dropped through its floor, so it never fled; it sat between the floor and the
+ * mark, in a layer nothing was repairing, and this rung waited for the mark for
+ * ever. The mark (`returnMark`) exists to stop a RETURN FROM A FLEE commuting
+ * -- back at the floor, gone again next tick -- and that question is answered
+ * inside the flee, before its latch drops (`wellEnoughToReturn`, bounded by
+ * `holdAtTheSafeSpot`). By the time this rung runs no flee is latched: a pilot
+ * the flee sent back has already cleared the mark or stalled short of it, and
+ * any other pilot is simply idle on the wrong grid, fit to fight by the
+ * operator's own number. Under the mark it goes anyway, and the trace says so
+ * (`rejoin-under-mark`, with the tank, the mark and the repairer's state).
  *
  * ⚠ ONLY ON A POSITIVE READING DOES IT STAND DOWN FOR WHERE THE COMMANDER IS.
  * The roster says each member's system and station (`fleetCommanderWhereabouts`);
@@ -8375,9 +8573,21 @@ function decideRejoinCommander(
     return waiting("Standing by",
       "The commander is not on this grid, and this pilot has used all its flee round trips, so it is staying put.", memory);
   }
-  if (!healthClearOfTheMark(request, obs)) {
+  // The FLOOR, never the return mark: see this function's header. Below it the
+  // flee owns the pilot, unless it has nowhere to run, and then it stays.
+  const tank = tankHealth(request, obs);
+  if (tank === null) {
+    noteHealth(healthTrace(request, obs, "rejoin-unread"));
     return waiting("Standing by",
-      "The commander is not on this grid, and this ship is not well enough yet to go back to the fight.", memory);
+      "The commander is not on this grid, and this ship's health could not be read, so it is not going back yet.", memory);
+  }
+  if (tank < request.fleeHealthFloor) {
+    noteHealth(healthTrace(request, obs, "rejoin-below-floor"));
+    return waiting("Standing by",
+      "The commander is not on this grid, and this ship is below its flee floor, so it is not going back to the fight.", memory);
+  }
+  if (tank < returnMark(request)) {
+    noteHealth(healthTrace(request, obs, "rejoin-under-mark"));
   }
   const characterID = target.characterID;
   let previous = memory.rejoin?.characterID === characterID ? memory.rejoin : null;
