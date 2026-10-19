@@ -11,6 +11,7 @@ const assert = require("node:assert/strict");
 const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots } = require("../src/gamePort/pilots");
 const { brokersFeeRate, brokersFeeRateInStructure } = require("../src/gamePort/brokerFee");
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
+const { list } = require("../src/gamePort/retailCalls");
 const { createPilotSpace } = require("../src/gamePort/pilotSpace");
 const undockRecording = require("./fixtures/destinyUndock.json");
 const { answers: recordedAnswers, notifications: recordedNotifications } = require("./helpers/destinyRecording");
@@ -10325,4 +10326,26 @@ test("a choosing does not fail for guests that could not be asked; an answer tha
   assert.equal(closed.asked.times, 1);
   await rejects(closed.pilots.callMethod("structureGuests", "GetGuests", [STRUCTURE], null, FIELDS, closed.handle), "CALL_NOT_ALLOWED");
   assert.equal(closed.asked.times, 1);
+});
+
+test("a claim of redeem tokens is the client's, and the tokens are fetched afresh before it is answered", async () => {
+  // redeemsvc.py ClaimRedeemTokens (99 to 131): the claim, then OnRedeemingQueueUpdated's fetch (127), whatever the claim made.
+  let left = { type: "list", items: ["two tokens"] };
+  const { pilots, session, handle } = await selected({ answers: {
+    "userSvc.GetRedeemTokens": () => left,
+    "userSvc.ClaimRedeemTokens": () => { left = { type: "list", items: [] }; return { type: "dict", entries: [["errors", { type: "list", items: [] }]] }; },
+  } }, { allowed: new Set(["userSvc.GetRedeemTokens", "userSvc.ClaimRedeemTokens"]) });
+  const asked = () => session.calls.filter((call) => call.service === "userSvc").map((call) => [call.method, call.args, call.kwargs]);
+  assert.deepEqual(asked(), [["GetRedeemTokens", [], null]]);
+  const claimed = await pilots.callMethod("userSvc", "ClaimRedeemTokens", [[[101, null]], PILOT], { useHomeStation: false }, WHO, handle);
+  assert.deepEqual(asked(), [
+    ["GetRedeemTokens", [], null],
+    ["ClaimRedeemTokens", [list([[101, null]]), PILOT], { useHomeStation: false }],
+    ["GetRedeemTokens", [], null],
+  ]);
+  assert.equal(claimed.method, "ClaimRedeemTokens");
+  // What is read next is what was fetched after the claim, from what is kept.
+  const read = await pilots.callMethod("userSvc", "GetRedeemTokens", [], null, WHO, handle);
+  assert.deepEqual(read.result, { type: "list", items: [] });
+  assert.equal(asked().length, 3);
 });
