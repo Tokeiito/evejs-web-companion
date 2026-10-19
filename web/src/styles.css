@@ -2520,14 +2520,16 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  /* A count on an entry (Redeem Items' tokens), in the corner so the strip's icons stay where they are. */
+  /* A count on an entry (Redeem Items' tokens): at the row's right end, centred on it; in the icon-only strip, in
+   * the corner, so the icons stay where they are. */
   .neocom-item:has(.neocom-badge) {
     position: relative;
   }
   .neocom-badge {
     position: absolute;
-    top: 2px;
-    right: 2px;
+    top: 50%;
+    right: 0.4rem;
+    transform: translateY(-50%);
     min-width: 1rem;
     padding: 0 0.2rem;
     background: var(--color-accent);
@@ -2543,6 +2545,7 @@
     .neocom-item-label { display: none; }
     .neocom-pilot { justify-content: center; }
     .neocom-pilot-name { display: none; }
+    .neocom-badge { top: 2px; right: 2px; transform: none; }
   }
 
   /* --- the readouts --- */
