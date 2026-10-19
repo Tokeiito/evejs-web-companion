@@ -49,6 +49,14 @@ import {
 // "where does this tag rank", shared with the combat priority list.
 import { fleetTagRank, pickPrimary } from "./targetPriority.ts";
 import { isTransitionTimeout, isTransportTransient, panelErrorWords } from "../bridge/refusals.ts";
+// Rung 6's hurt-drone rotation: the drone-boat block's own machine, one drone at
+// a time on its own shield, so the companion and the block judge a hurt drone the
+// same way.
+import {
+  decideDroneRotation,
+  emptyDroneRotationMemory,
+  type DroneRotationMemory,
+} from "./droneRotation.ts";
 // The prop-mod policy (rung 3b), imported for the third time the same reason
 // holds: the drone-boat block wants the identical answer to "light it, stop it,
 // or leave the rack alone", and a scram rule that lived in two files would be
@@ -62,6 +70,8 @@ import {
 } from "./propulsion.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import type { ChatMessage } from "../store/types.ts";
+import type { BotLogSink } from "./botLog.ts";
+import { createCompanionRecorder } from "./companionLog.ts";
 import { isHostile } from "../space/overview.ts";
 import {
   sizedLaunch,
@@ -78,8 +88,6 @@ export interface CompanionHitPoints {
   readonly armor: number | null;
   readonly hull: number | null;
 }
-import type { BotLogSink } from "./botLog.ts";
-import { createCompanionRecorder } from "./companionLog.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -351,30 +359,6 @@ export interface FleetCompanionRequest {
   /** Remaining fraction (0-1) of any health layer that starts a flee. */
   readonly fleeHealthFloor: number;
   /**
-   * Bring a drone home when its worst layer drops below this, 0..1.
-   *
-   * ⚠ A RECALL IS A FREE SHIELD REPAIR ON THIS SERVER, and that - not breaking
-   * anything's lock - is why this is worth doing. `buildDroneRecoveryItemPatch`
-   * (`droneRuntime.js:4060`) stamps `charge: 1, shieldCharge: 1` onto the item
-   * as it enters the bay, with the server's own comment saying that shields and
-   * capacitor recharge on their own and ONLY armour and hull damage survives
-   * being stowed. So a drone pulled while it is still losing shields comes back
-   * whole, and one chewed into armour comes back with full shields and the same
-   * armour hole.
-   *
-   * ⚠ IT IS NOT A LOCK-BREAK, WHATEVER THE ORIGINAL ASK SAID. This server has no
-   * target-loss memory and no drone cooldown: a recalled drone leaves the scene
-   * and the NPC simply re-scores every candidate by distance on its next think
-   * tick, 100-500 ms later. Do not describe this to a player as shaking
-   * anything off.
-   *
-   * The floor is on the WORST of the three layers, which in a fight is nearly
-   * always the shield - so a middling floor pulls a drone while the recall can
-   * still give everything back, and a very low one waits until the damage is
-   * the kind that does not.
-   */
-  readonly droneHealthFloor: number;
-  /**
    * Capacitor fraction below which no repairer may be STARTED, and a running
    * one is stopped even while a layer is still hurt.
    *
@@ -414,23 +398,6 @@ export interface FleetCompanionRequest {
    * what the DSL's own `repair-ship` and `dock-and-repair` already claim.
    */
   readonly repairsAtStation: boolean;
-  /**
-   * Seconds to hold drones in the bay before relaunching them.
-   *
-   * ⚠ THIS DOES NOT "BREAK THE NPC'S LOCK", WHICH IS WHAT IT WAS ASKED FOR.
-   * eve.js has no target-loss memory and no drone-specific cooldown: a recalled
-   * drone leaves the scene instantly, and on the NPC's next think tick
-   * (`thinkIntervalMs`, 100-500 ms, ~185 ms median) it simply re-scores every
-   * candidate by distance. Roughly 40% of behaviour profiles set no
-   * `allowTargetSwitching` at all, so they can relock the relaunched drone on
-   * the very next tick. Checked against the live profile table, 2026-09-10.
-   *
-   * What the recall DOES do is get a damaged drone out of danger, which is
-   * worth having on its own. The safe moment to relaunch is when something else
-   * is holding the rat's aggro — an OBSERVABLE condition, not a timer — so this
-   * value is a floor on the wait, never the thing that makes it safe.
-   */
-  readonly droneRedeployHoldOffSeconds: number;
 }
 
 /**
@@ -445,16 +412,15 @@ export interface FleetCompanionRequest {
  *
  * ⚠ THE TEST FOR MEMBERSHIP IS "CAN THIS BE READ OFF THE SHIP". If it can, it is
  * derived and does not belong here. Everything that survived the 2026-09-11
- * simplification failed that test: three thresholds nobody could derive, a
- * budget, a wait, and one setting that spends money.
+ * simplification failed that test: two thresholds nobody could derive, a
+ * budget and one setting that spends money. A drone-health floor and a drone
+ * hold-off were here too, until rung 6 stopped needing either (2026-10-12).
  */
 export const COMPANION_SETUP_KEYS = [
   "fleeHealthFloor",
   "capacitorFloor",
   "maxFleeAttempts",
   "repairsAtStation",
-  "droneHealthFloor",
-  "droneRedeployHoldOffSeconds",
 ] as const;
 
 export type CompanionSetupKey = (typeof COMPANION_SETUP_KEYS)[number];
@@ -471,8 +437,6 @@ export type CompanionSetup = Pick<FleetCompanionRequest, CompanionSetupKey>;
 /** Bounds. Stated together rather than scattered, so they can be read at once. */
 export const MIN_FLEE_HEALTH_FLOOR = 0.05;
 export const MAX_FLEE_HEALTH_FLOOR = 0.95;
-export const MIN_DRONE_HEALTH_FLOOR = 0.05;
-export const MAX_DRONE_HEALTH_FLOOR = 0.95;
 export const MIN_CAPACITOR_FLOOR = 0.05;
 export const MAX_CAPACITOR_FLOOR = 0.95;
 export const MIN_FLEE_ATTEMPTS = 1;
@@ -484,12 +448,10 @@ export const MIN_FLEE_ATTEMPTS = 1;
  * different things and the pairing was not: those two constants are 3
  * (`scriptDecide.ts:744`, `scriptMacros.ts:4793`) and so is this request's
  * DEFAULT, while this is the ceiling on what the panel will accept. The
- * reasoning moved to the default, where it applies. Same shape as the drone
- * hold-off below: a wide range, a sensible default inside it.
+ * reasoning moved to the default, where it applies: a wide range, a sensible
+ * default inside it.
  */
 export const MAX_FLEE_ATTEMPTS = 10;
-export const MIN_DRONE_HOLD_OFF_SECONDS = 1;
-export const MAX_DRONE_HOLD_OFF_SECONDS = 300;
 
 /**
  * The default request. Every field is a placeholder a UI overrides EXCEPT the
@@ -498,11 +460,6 @@ export const MAX_DRONE_HOLD_OFF_SECONDS = 300;
  */
 export const DEFAULT_COMPANION_SETUP: CompanionSetup = Object.freeze({
   fleeHealthFloor: 0.3,
-  // Half of the worst layer. In a fight that layer is the shield, and a recall
-  // gives a shield back whole - so pulling at a half shield costs one round
-  // trip and returns a fresh drone, while waiting for armour damage returns a
-  // drone that is still hurt.
-  droneHealthFloor: 0.5,
   // Not a guess and not a placeholder: the constant the script runner already
   // uses to switch a repairer off, with the same reasoning ("an empty capacitor
   // repairs nothing"). Reusing it means one answer to this question, not two.
@@ -513,8 +470,6 @@ export const DEFAULT_COMPANION_SETUP: CompanionSetup = Object.freeze({
   maxFleeAttempts: 3,
   // Off: nothing this loop does spends money unless an operator asks it to.
   repairsAtStation: false,
-  // A floor on the wait, not a safety guarantee — see the field's own comment.
-  droneRedeployHoldOffSeconds: 10,
 } satisfies CompanionSetup);
 
 /**
@@ -1574,23 +1529,20 @@ export interface CompanionLadderMemory {
    */
   readonly preLocked: readonly { readonly targetID: number; readonly atMs: number }[];
   /**
-   * Rung 6's recall-and-relaunch cycle, or null when none is running.
+   * Rung 6's hurt-drone rotation: the drone being pulled and relaunched, if
+   * any, and how many times each drone has been pulled IN THIS FIGHT.
    *
    * ⚠ A RECORD, BECAUSE THE TRIGGER EXTINGUISHES ITSELF. The instant the recall
-   * lands the drones are not in space, so `lowestDroneHealth` reads null and the
-   * condition that started the cycle is no longer true. A rung that re-derived
-   * its state from the observation each tick would fire once and forget it was
-   * ever in a cycle, orphaning the hold-off and the relaunch. This is the shape
-   * `standDownAfterFight` uses, for exactly that reason.
+   * lands the drone is not in space, so its shield cannot be read and the
+   * condition that started the rotation is no longer true. `droneRotation.ts`
+   * carries the rest of the reasoning.
+   *
+   * ⚠ THE COUNTS ARE PER FIGHT, NOT PER RUN. They are dropped when the grid is
+   * seen quiet (`hostileOnGrid === false`). A per-run budget is what this
+   * replaced: three pulls in the first fight and the drones were left to die
+   * in every fight after it, for the rest of the session.
    */
-  readonly droneCycle: DroneCycle | null;
-  /**
-   * How many cycles this run has spent. Never reset, deliberately - see
-   * `MAX_DRONE_REDEPLOY_CYCLES`: armour damage survives a recall, so the later
-   * cycles buy less and less, and the budget is a property of the RUN rather
-   * than of any one drone.
-   */
-  readonly droneCyclesSpent: number;
+  readonly droneRotation: DroneRotationMemory;
   /**
    * When this pilot last recalled its combat drones to swap them for a better
    * size, or null. `shouldSwitch`'s minimum interval reads it, so a commander
@@ -1759,8 +1711,8 @@ export interface CompanionLadderMemory {
    * reaches the reset, so its trips keep accumulating and it eventually stays
    * home -- which is the entire purpose of bounding them.
    *
-   * ⚠ A TIMESTAMP AND NOT A TICK COUNT, for the reason `DroneCycle.stageSinceMs`
-   * carries one. The count advanced on EVERY tick, including the ticks that
+   * ⚠ A TIMESTAMP AND NOT A TICK COUNT, for the reason
+   * `DRONE_RECALL_GIVE_UP_MS` carries one. The count advanced on EVERY tick, including the ticks that
    * issue an action and now come back at `FLEET_COMPANION_BURST_MS` -- so "back
    * on station with nothing wrong for a while" would have meant a different
    * length of time for a pilot that happened to be shooting than for one
@@ -1936,36 +1888,6 @@ export interface CompanionLadderMemory {
   readonly reloadAttempts: Readonly<Record<number, number>>;
 }
 
-/** One recall-and-relaunch cycle in flight. */
-export interface DroneCycle {
-  /**
-   * `recalling` until every drone that was out has left the grid, then
-   * `holding-off` until the operator's floor has passed.
-   */
-  readonly stage: "recalling" | "holding-off";
-  /**
-   * The drones that were out when the recall was issued, watched individually.
-   * ⚠ NOT a count, and not the coarse `dronesOut` flag: this ship may launch
-   * others mid-cycle, and a flag would call the recall finished the moment one
-   * unrelated drone came home.
-   */
-  readonly recalledIDs: readonly number[];
-  /**
-   * When the CURRENT stage began, on the ladder's injected clock. Both stages
-   * are bounded against it.
-   *
-   * ⚠ A TIMESTAMP, NOT A TICK COUNT, AND THE CHANGE WAS FORCED BY TWO THINGS.
-   * Both of this record's stages fall THROUGH to the rungs below rather than
-   * parking the tick, so the ticks they are counting are exactly the ones that
-   * may now come back at `FLEET_COMPANION_BURST_MS` instead of the cadence --
-   * a count would measure a different amount of time depending on whether the
-   * pilot happened to be shooting at the same moment. And the hold-off stage
-   * was never a count in the first place: it is the operator's own
-   * `droneRedeployHoldOffSeconds`, which is a duration.
-   */
-  readonly stageSinceMs: number;
-}
-
 export function freshLadderMemory(): CompanionLadderMemory {
   return {
     standingChatCursor: null,
@@ -1990,8 +1912,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockGaveUpOn: [],
     lockPending: null,
     preLocked: [],
-    droneCycle: null,
-    droneCyclesSpent: 0,
+    droneRotation: emptyDroneRotationMemory(),
     droneSizeSwitchAtMs: null,
     droneSizeRecalledIDs: [],
     droneAssistLit: [],
@@ -2432,8 +2353,7 @@ function decideCompanionStep(
     areaJob: memory.areaJob,
     lastWarpedToID: memory.lastWarpedToID,
     orderedLeaveRecall: memory.orderedLeaveRecall,
-    droneCycle: memory.droneCycle,
-    droneCyclesSpent: memory.droneCyclesSpent,
+    droneRotation: memory.droneRotation,
     droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
     droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
     droneAssistLit: memory.droneAssistLit,
@@ -5260,15 +5180,15 @@ function decideFlee(
     ...hurt,
     flee: latched,
     fleeTripsSpent: memory.fleeTripsSpent + 1,
-    // ⚠ THE DRONE CYCLE DIES HERE, and the phase 6 spec asked for exactly this:
-    // "flee outranks drone redeploy -- enforce it at runtime, not by authoring
-    // order". The rung already sits above the drone rung, so this is the belt
-    // to that braces: a redeploy record left standing would have rung 6 trying
-    // to put drones back out of a ship that is in the middle of leaving.
-    // Nothing is lost by dropping it -- the outbound leg recalls everything
-    // this ship controls before it commits to a warp, whichever rung launched
-    // it.
-    droneCycle: null,
+    // ⚠ THE DRONE ROTATION DIES HERE, and the phase 6 spec asked for exactly
+    // this: "flee outranks drone redeploy -- enforce it at runtime, not by
+    // authoring order". The rung already sits above the drone rung, so this is
+    // the belt to that braces: a rotation left standing would have rung 6
+    // trying to put a drone back out of a ship that is in the middle of
+    // leaving. Nothing is lost by dropping it -- the outbound leg recalls
+    // everything this ship controls before it commits to a warp, whichever rung
+    // launched it.
+    droneRotation: emptyDroneRotationMemory(),
   };
   return flyTheFlee(request, obs, started, latched);
 }
@@ -5764,37 +5684,6 @@ function decideLeaveTheStation(
  */
 const DRONE_RECALL_GIVE_UP_MS = 30_000;
 
-/**
- * How many recall-and-relaunch cycles one run will spend.
- *
- * ⚠ THE SECOND CYCLE IS WORTH LESS THAN THE FIRST AND THE FOURTH IS WORTH
- * NOTHING. A recall refills shields and capacitor but NOT armour or hull
- * (`buildDroneRecoveryItemPatch`, `droneRuntime.js:4060`). So the first cycle on
- * a shield-damaged drone returns it whole; once the damage is in armour, every
- * later cycle returns the same hurt drone, re-trips the floor immediately, and
- * spends two calls and a hold-off achieving nothing. Bounding the count is what
- * stops that becoming a loop that eats the run.
- */
-const MAX_DRONE_REDEPLOY_CYCLES = 3;
-
-/**
- * The hold-off the operator asked for, in milliseconds.
- *
- * ⚠ THIS USED TO BE A TICK COUNT AND THE CONVERSION WAS WRONG IN PRACTICE. It
- * divided the operator's seconds by `FLEET_COMPANION_CADENCE_MS`, on the stated
- * grounds that a tick is AT LEAST that long so N ticks is a safe lower bound.
- * The first half is true and the second half is the problem: the measured tick
- * is ~4 s, not 2 s, so a ten-second hold-off was waiting twenty. "At least what
- * you asked for" quietly meant "about double", every time.
- *
- * The ladder has had an injected clock all along -- `decideCompanionAction`
- * takes `nowMs` and hands it to the abandonment protocol -- so the "threading
- * one through would be cross-cutting" that justified the tick count is no
- * longer true either. The operator sets seconds and gets seconds.
- */
-function droneCycleHoldMs(request: FleetCompanionRequest): number {
-  return Math.max(0, request.droneRedeployHoldOffSeconds * 1000);
-}
 
 // ─── The `loot` order ────────────────────────────────────────────────────────
 
@@ -7056,24 +6945,6 @@ function decideSalvaging(
 type CompanionDroneRole = "combat" | "logistic" | "salvage";
 
 /**
- * Rung 6: keep the drones alive.
- *
- * Three states, driven by a record rather than by the condition that started
- * them - the shape `standDownAfterFight` uses, and for the same reason it does.
- *
- * ⚠ THE TRIGGER EXTINGUISHES ITSELF, WHICH IS WHY A RECORD IS THE ONLY WORKABLE
- * SHAPE. The instant the recall lands, the drones are not in space, so
- * `lowestDroneHealth` reads `null` and the condition that fired is no longer
- * true. A rung that re-derived its state from the observation every tick would
- * fire once and then forget it was ever in a cycle, orphaning the hold-off and
- * the relaunch.
- *
- * ⚠ HOLDING OFF ISSUES NOTHING AND RETURNS NOTHING, so the rungs below keep
- * their turn. The hold-off is a floor on a wait, not a reason to stop obeying
- * the fleet - a pilot that went quiet for ten seconds every time a drone got
- * shot would be worse than one with no drones at all.
- */
-/**
  * The ship the fleet is telling this pilot to shoot, with the words for saying
  * so — or null when nobody is calling anything.
  *
@@ -7263,8 +7134,13 @@ function withObservedDroneFlights(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
 ): CompanionLadderMemory {
-  const sameFlight = (observed: readonly number[], ordered: readonly number[]): boolean =>
-    observed.length === ordered.length && observed.every((id) => ordered.includes(id));
+  // The drone a rotation is bringing home is not part of the flight an order
+  // names (see the engage in `decideDrones`), so it is not a change of flight.
+  const homeward = memory.droneRotation.active?.phase === "recalling" ? memory.droneRotation.active.itemID : null;
+  const sameFlight = (observed: readonly number[], ordered: readonly number[]): boolean => {
+    const flying = homeward === null || ordered.includes(homeward) ? observed : observed.filter((id) => id !== homeward);
+    return flying.length === ordered.length && flying.every((id) => ordered.includes(id));
+  };
   if (
     memory.lastDroneEngageTargetID !== null &&
     obs.combatDroneIDs != null &&
@@ -7492,6 +7368,86 @@ function decideDroneSizeSwitch(
   };
 }
 
+/**
+ * Rung 6's hurt-drone rotation: pull the one drone that is being shot, send it
+ * back out when it is aboard. The machine is `decideDroneRotation`
+ * (`droneRotation.ts`), the drone-boat block's own; this is the companion's
+ * wiring of it.
+ *
+ * ⚠ THE TRIGGER IS THAT DRONE'S SHIELD BELOW FULL, NOT THE WORST LAYER OF THE
+ * FLIGHT AGAINST A FLOOR, and both halves of that were costing drones. A
+ * recall gives a drone its shield back and nothing else
+ * (`buildDroneRecoveryItemPatch`), so a drone whose ARMOUR was below the old
+ * floor came back out still below it and was recalled again at once; three of
+ * those spent the run's whole budget inside a minute and every drone after
+ * that was left to die. And a floor of half the worst layer fires late on a
+ * drone with a small shield: a recalled drone flies home at full speed and can
+ * be shot until it is 2,500 m from the ship, so the recall has to start while
+ * there is still shield to fly home on.
+ *
+ * ⚠ ONE DRONE, NOT THE FLIGHT. Recalling everything for one hurt drone took
+ * the pilot's whole damage off the field for the round trip, which only made
+ * the fight, and the rats' time on the next drone, longer.
+ *
+ * ⚠ PER FIGHT. The counts go when the grid is seen quiet. A drone that has
+ * been pulled `MAX_DRONE_ROTATIONS` times in one fight is left to fight on, and
+ * the others stay eligible.
+ */
+function rotateHurtDrone(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  role: CompanionDroneRole | null,
+): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+  const record = memory.droneRotation;
+  // A fight that is over takes the rotation with it: a drone coming home now
+  // is coming home for good, and the next fight starts with fresh counts.
+  // Only a confident `false` ends it -- `null` is a snapshot that stumbled.
+  if (obs.hostileOnGrid === false || role === null) {
+    const clean = record.active === null && Object.keys(record.rotations).length === 0;
+    return { decision: null, memory: clean ? memory : { ...memory, droneRotation: emptyDroneRotationMemory() } };
+  }
+  // A new rotation only on a grid we can see; one under way is seen through.
+  if (obs.hostileOnGrid !== true && record.active === null) {
+    return { decision: null, memory };
+  }
+  // This role's drones only: a drone of another kind is the wrong-role
+  // recall's business. The drone being rotated is always included, whatever
+  // the role lists say about it this tick.
+  const flight = new Set(droneIDsOutFor(obs, role));
+  const rotatingID = record.active?.itemID ?? null;
+  const step = decideDroneRotation({
+    dronesInSpace: obs.myDrones == null
+      ? null
+      : obs.myDrones.filter((drone) => flight.has(drone.itemID) || drone.itemID === rotatingID),
+    droneIDsInBay: obs.droneBayItemIDs ?? null,
+    memory: record,
+  });
+  const next: CompanionLadderMemory = { ...memory, droneRotation: step.memory };
+  if (step.action === "recall" && step.itemID !== null) {
+    return {
+      decision: {
+        action: { kind: "recallDrones", droneIDs: [step.itemID] },
+        phase: "Drones",
+        why: "A drone is being shot. Bringing that one home for its shield; the rest keep fighting.",
+        memory: next,
+      },
+      memory,
+    };
+  }
+  if (step.action === "relaunch" && step.itemID !== null) {
+    return {
+      decision: {
+        action: { kind: "launchDrones", droneItemIDs: [step.itemID] },
+        phase: "Drones",
+        why: "The drone is aboard with its shield back. Sending it out again.",
+        memory: next,
+      },
+      memory,
+    };
+  }
+  return { decision: null, memory: next };
+}
+
 function decideDrones(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
@@ -7506,74 +7462,7 @@ function decideDrones(
     return nothing;
   }
   const out = obs.myDroneIDs ?? [];
-  const cycle = memory.droneCycle;
   const role = wantedDroneRole(obs, memory);
-
-  // --- a cycle already under way ------------------------------------------
-
-  if (cycle !== null) {
-    if (cycle.stage === "recalling") {
-      // Observed PER RECORDED DRONE against the grid, never off a coarse
-      // "any drones out" flag: this ship may have launched others since, and a
-      // flag would call the recall finished the moment one unrelated drone
-      // came home - or never, while one stayed out.
-      const stillOut = cycle.recalledIDs.filter((droneID) => out.includes(droneID));
-      if (stillOut.length === 0) {
-        // Gone from the grid IS the confirmation the recall committed: the
-        // server only removes the ball once the item has actually moved into
-        // the bay (`recallDronesToShipBay`). It is not proof they are at the
-        // ship - the scoop happens at 2500 m, mid-flight - but "in the bay" is
-        // the fact the hold-off is about.
-        return {
-          decision: null,
-          memory: {
-            ...memory,
-            droneCycle: { ...cycle, stage: "holding-off", stageSinceMs: nowMs },
-          },
-        };
-      }
-      if (nowMs - cycle.stageSinceMs >= DRONE_RECALL_GIVE_UP_MS) {
-        // Given up on, not retried. See DRONE_RECALL_GIVE_UP_MS: the commonest
-        // reason a recall never completes is a full bay, which the server
-        // refuses SILENTLY, and re-issuing the same call cannot fix a bay that
-        // has no room in it.
-        return { decision: null, memory: { ...memory, droneCycle: null } };
-      }
-      // ⚠ THE MEMORY IS RETURNED UNTOUCHED, which a tick count could not do:
-      // the stamp is set once when the stage begins and read on every tick
-      // after it, so waiting costs no write at all.
-      return nothing;
-    }
-
-    // holding-off
-    if (nowMs - cycle.stageSinceMs < droneCycleHoldMs(request)) {
-      return nothing;
-    }
-    // The hold-off is over. Whether anything goes back out is the launch
-    // branch's decision, taken below on the NEXT tick against a fresh bay
-    // read - a relaunch that reached for the ids it recalled would be reaching
-    // for a listing a tick older than the one it is about to act on.
-    //
-    // ⚠ AND IT GOES BACK OUT BY ROLE, not as "whatever was in the bay". The
-    // relaunch used to send `droneBayItemIDs` -- the WHOLE bay -- which is how
-    // a hurt combat drone coming home could take a salvage drone back out with
-    // it. The role is re-decided here because the fight may have ended while
-    // the drones were in the bay.
-    const bay = role === null ? null : droneBayFor(obs, role);
-    if (role === null || bay === null || bay.length === 0) {
-      return { decision: null, memory: { ...memory, droneCycle: null } };
-    }
-    const relaunch = roleLaunch(request, obs, memory, role, bay, `Sending the ${DRONE_ROLE_WORDS[role]} back out.`);
-    return {
-      decision: {
-        action: relaunch.action,
-        phase: "Drones",
-        why: relaunch.why,
-        memory: { ...memory, droneCycle: null },
-      },
-      memory,
-    };
-  }
 
   // --- never two kinds at once --------------------------------------------
   //
@@ -7605,29 +7494,26 @@ function decideDrones(
     }
   }
 
-  // --- no cycle: should one start? ----------------------------------------
-
-  const hurt = obs.lowestDroneHealth ?? null;
-  if (
-    hurt !== null &&
-    hurt < request.droneHealthFloor &&
-    out.length > 0 &&
-    memory.droneCyclesSpent < MAX_DRONE_REDEPLOY_CYCLES
-  ) {
-    return {
-      decision: {
-        action: { kind: "recallDrones", droneIDs: out },
-        phase: "Drones",
-        why: "A drone is getting hurt. Bringing them home, which also gives it its shield back.",
-        memory: {
-          ...memory,
-          droneCyclesSpent: memory.droneCyclesSpent + 1,
-          droneCycle: { stage: "recalling", recalledIDs: [...out], stageSinceMs: nowMs },
-        },
-      },
-      memory,
-    };
+  // --- a drone being shot: pull that one home, and send it back ----------
+  //
+  // Above the job-over recall and the launch, so a rotation in flight is seen
+  // through before anything else decides what the drones do. A tick that
+  // issues nothing here falls through: the pilot keeps obeying its fleet while
+  // the drone flies home.
+  // ⚠ NOT WHILE A SIZE SWAP IS COMING HOME. The swap recalled the whole flight
+  // and the launch branch sizes the next one once it is aboard; a rotation
+  // started now would relaunch one of those drones into the middle of that.
+  const swapLanding =
+    memory.droneRotation.active === null &&
+    (memory.droneSizeRecalledIDs ?? []).some((id) => out.includes(id)) &&
+    nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS;
+  const rotation = swapLanding ? { decision: null, memory } : rotateHurtDrone(obs, memory, role);
+  if (rotation.decision !== null) {
+    return rotation;
   }
+  memory = rotation.memory;
+  nothing = { decision: null, memory };
+  const rotating = memory.droneRotation.active;
 
   // --- the job is over: bring them home -----------------------------------
   //
@@ -7666,6 +7552,11 @@ function decideDrones(
   // --- putting the right drones out, and giving them their job ------------
   const roleOut = droneIDsOutFor(obs, role);
   if (roleOut.length === 0) {
+    if (rotating !== null) {
+      // The one drone out is the one being rotated. It goes back out by
+      // itself; launching the bay now would put a whole flight out around it.
+      return nothing;
+    }
     const bay = droneBayFor(obs, role);
     if (bay === null || bay.length === 0) {
       // `null` is "did not look" and `[]` is "none of that kind aboard".
@@ -7702,6 +7593,19 @@ function decideDrones(
   // locking -- so on the tick the call first lands there is nothing to send
   // them onto yet, and the order belongs on the tick after it, when the lock is
   // a fact.
+  // ⚠ THE DRONE FLYING HOME IS LEFT OUT OF ANY NEW ORDER, NOT THE WHOLE FLIGHT
+  // HELD BACK. An engage is what cancels a recall, so naming the hurt drone
+  // would turn it round and send it back to the rat. This used to hold every
+  // order until it was aboard, and that cost the fight: seen 2026-10-12, a
+  // called target was locked at once but the four healthy drones waited 9 s
+  // for the fifth to land and relaunch. The rest take the new order now; the
+  // relaunched drone changes the flight, which `withObservedDroneFlights`
+  // reads as a new order to give, and it joins them.
+  const homewardID = rotating?.phase === "recalling" ? rotating.itemID : null;
+  const fighting = homewardID === null ? roleOut : roleOut.filter((id) => id !== homewardID);
+  if (fighting.length === 0) {
+    return nothing;
+  }
   if (role === "combat") {
     const called = calledCombatTargetID(request, obs, memory);
     if (called === null) {
@@ -7718,11 +7622,13 @@ function decideDrones(
     if (homeward.length > 0 && nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS) {
       return nothing;
     }
-    const swap = decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs);
+    // Never in the middle of a rotation: the swap would recall the flight
+    // around a drone that is about to be relaunched on its own.
+    const swap = rotating === null ? decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs) : null;
     if (swap !== null) {
       return { decision: swap, memory };
     }
-    const engage = decideDroneEngagement(memory, "combat", roleOut, called,
+    const engage = decideDroneEngagement(memory, "combat", fighting, called,
       "Putting the combat drones on the target the fleet called.");
     if (engage !== null) {
       return { decision: engage, memory };
@@ -7739,7 +7645,7 @@ function decideDrones(
   if (healTarget === null) {
     return nothing;
   }
-  return { decision: decideDroneEngagement(memory, "repair", roleOut, healTarget,
+  return { decision: decideDroneEngagement(memory, "repair", fighting, healTarget,
     "Sending the repair drones to the ship calling for reps."), memory };
 }
 
@@ -8736,13 +8642,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           lockGaveUpOn: [],
           lockPending: null,
           preLocked: [],
-          // A resumed run has launched and recalled nothing either, and a cycle
-          // it was mid-way through is gone with the process that held it. Its
-          // drones, if any, are already abandoned in space - that is the
-          // server's own doing on a session drop, not something a restart can
-          // undo - so the honest state is "no cycle", not a half-remembered one.
-          droneCycle: null,
-          droneCyclesSpent: 0,
+          // A resumed run has launched and recalled nothing either, and a
+          // rotation it was mid-way through is gone with the process that held
+          // it. Its drones, if any, are already abandoned in space - that is
+          // the server's own doing on a session drop, not something a restart
+          // can undo - so the honest state is "no rotation", not a
+          // half-remembered one.
+          droneRotation: emptyDroneRotationMemory(),
           droneSizeSwitchAtMs: null,
           droneSizeRecalledIDs: [],
           droneAssistLit: [],

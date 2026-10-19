@@ -20910,12 +20910,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const myShipID = ship?.itemID ?? null;
         companionShipID = myShipID;
         const myDroneIDs: number[] = [];
+        // Per drone, for the rotation in rung 6: it pulls the ONE drone that is
+        // being shot, so it needs that drone's own shield and not the fold.
+        const myDrones: { itemID: number; shieldRatio: number | null; armorRatio: number | null; hullRatio: number | null }[] = [];
         let lowestDroneHealth: number | null = null;
         for (const entity of snapshot?.entities ?? []) {
           if (canMyShipOrderDrone(entity, myShipID) !== true) {
             continue;
           }
           myDroneIDs.push(entity.itemID);
+          myDrones.push({
+            itemID: entity.itemID,
+            shieldRatio: entity.shieldRatio,
+            armorRatio: entity.armorRatio,
+            hullRatio: entity.hullRatio,
+          });
           // The worst of the three layers, per drone, then the worst across
           // them -- the same fold `makeScriptRunnerDeps` makes, so a companion
           // and a script bot judge an identical rack identically. A layer that
@@ -21120,6 +21129,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             : null,
           lowestDroneHealth,
           myDroneIDs,
+          // Absent, not empty, when there was no snapshot: "did not look".
+          myDrones: snapshot == null ? undefined : myDrones,
           droneBayItemIDs,
           // ⚠ WHAT THE LOOT CALLS ACTUALLY ACHIEVED, which the ladder cannot see
           // for itself: it issues one atomic call and never learns what came
