@@ -21428,6 +21428,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // it is the one loop for which sleeping out a fixed cadence means sitting
       // on an order it already has.
       sleep: companionSleep,
+      // The same per-character log the script runner writes; see nav/companionLog.ts.
+      log: botLogSink,
       onProgress: (progress) => {
         store.apply({
           type: "companion/progress",
