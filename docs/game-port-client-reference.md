@@ -1909,6 +1909,12 @@ owner's holdings, so the server publishes the grant's share changes after settle
 settlements keep the actual write's before/after allocations with their applied checkpoint; replay does not
 reapply or republish a completed grant. No Tranquility bulk-grant call or notice was found in the corpus.
 
+The corporation wallet's Shares / Owned by Corp view follows compiled `CorpISKPanel.GetMainTabs`,
+`CorpSharesPanel` and `SharesPanel`: accountant or junior-accountant roles, owner from `session.corpid`,
+`GetSharesByShareholder(True)` on tab selection and matching `OnShareChange` while visible. Corporate and personal
+holdings are kept separately. Hiding either Shares view stops its notification-triggered reads. The Shareholders
+subtab and the remaining share menus are separate work.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the

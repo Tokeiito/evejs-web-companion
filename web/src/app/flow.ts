@@ -705,7 +705,7 @@ import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
 import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
-import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
+import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
 
 /**
@@ -2470,7 +2470,9 @@ export interface AppFlow {
   readonly cargoShown: ReadableSignal<{ readonly n: number; readonly itemID: number } | null>;
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
-  loadWalletShares(): Promise<void>;
+  readonly corpWalletShares: ReadableSignal<WalletSharesRead>;
+  loadWalletShares(corporate?: boolean): Promise<void>;
+  setWalletSharesVisible(visible: boolean, corporate?: boolean): void;
   /** One of the character's settings kept at the server (characterSettingsSvc.Get); null for none. */
   readCharacterSetting(settingKey: string): Promise<string | null>;
   /** A character setting saved at the server (characterSettingsSvc.Save); an empty value deleted instead. */
@@ -5239,11 +5241,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
     // corporation, once the tab has been chosen.
-    if (method === "OnShareChange" && walletSharesWanted) {
-      const pilot = store.station.get().online?.characterID ?? null;
-      if (pilot !== null && (Number(args[0]) === pilot || Number(args[1]) === pilot)) void loadWalletShares().catch(() => undefined);
+    if (method === "OnShareChange") {
+      const online = store.station.get().online;
+      const ownerChanged = (owner: number | null | undefined): boolean => owner != null && (Number(args[0]) === owner || Number(args[1]) === owner);
+      if (walletSharesWanted && ownerChanged(online?.characterID)) void loadWalletShares().catch(() => undefined);
+      if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.includes("corpid")) {
+      corpWalletSharesGeneration++;
+      corpWalletSharesSignal.set(NO_WALLET_SHARES);
+    }
     // IncomingDbuffTracker.OnSessionChanged: another ship or place (shipid, locationid, structureid), and the buffs
     // known are let go until the server says them again.
     if (sessionNames?.some((name) => name === "shipid" || name === "locationid" || name === "structureid" || name === "stationid" || name === "solarsystemid") && buffBarSignal.get().incoming.size > 0) {
@@ -13939,18 +13947,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // or the corporation (OnShareChange) while the tab has been chosen.
   const NO_WALLET_SHARES: WalletSharesRead = { loaded: false, holdings: [], error: null };
   const walletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
+  const corpWalletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
   let walletSharesWanted = false;
+  let corpWalletSharesWanted = false;
+  let walletSharesGeneration = 0;
+  let corpWalletSharesGeneration = 0;
 
-  async function loadWalletShares(): Promise<void> {
-    walletSharesWanted = true;
-    const characterID = store.station.get().online?.characterID ?? null;
+  function setWalletSharesVisible(visible: boolean, corporate = false): void {
+    if (corporate) corpWalletSharesWanted = visible;
+    else walletSharesWanted = visible;
+  }
+
+  async function loadWalletShares(corporate = false): Promise<void> {
+    const online = store.station.get().online;
+    if (corporate && !canViewCorporateShares(online?.corpRole)) return;
+    const characterID = online?.characterID ?? null;
+    const corporationID = online?.corporationID ?? null;
+    const generation = corporate ? ++corpWalletSharesGeneration : ++walletSharesGeneration;
+    const signal = corporate ? corpWalletSharesSignal : walletSharesSignal;
+    const isCurrent = (): boolean => generation === (corporate ? corpWalletSharesGeneration : walletSharesGeneration)
+      && (store.station.get().online?.characterID ?? null) === characterID
+      && (!corporate || (store.station.get().online?.corporationID ?? null) === corporationID);
     try {
-      const holdings = await readMyShares(bridgeAsk);
-      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
-      walletSharesSignal.set({ loaded: true, holdings, error: null });
+      const holdings = await (corporate ? readCorpShares(bridgeAsk) : readMyShares(bridgeAsk));
+      if (!isCurrent()) return;
+      signal.set({ loaded: true, holdings, error: null });
     } catch (error) {
       if (isSessionLost(error)) throw error;
-      walletSharesSignal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
+      if (isCurrent()) signal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -26932,6 +26956,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
+      corpWalletSharesSignal.set(NO_WALLET_SHARES);
+      walletSharesGeneration++;
+      corpWalletSharesGeneration++;
       // scanSvc.OnSessionReset: the scan handlers, and their results, are the last character's; and so is the formation.
       probeResultsBySystem.clear();
       probeFormation = INITIAL_FORMATION;
@@ -28455,7 +28482,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     cargoShown: readonlySignal(cargoShownSignal),
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
+    corpWalletShares: readonlySignal(corpWalletSharesSignal),
     loadWalletShares,
+    setWalletSharesVisible,
     readCharacterSetting,
     saveCharacterSetting,
     requestOwnSecurityStatus,

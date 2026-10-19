@@ -14,9 +14,9 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, corporate = false }: { store: ClientStore; flow: AppFlow; corporate?: boolean } = $props();
   // svelte-ignore state_referenced_locally
-  const read = flow.walletShares;
+  const read = corporate ? flow.corpWalletShares : flow.walletShares;
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
@@ -24,7 +24,7 @@
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // PersonalSharesPanel.GetOwnerID returns session.charid; the holding row has no owner column.
-  const ownerID = $derived($station.online?.characterID ?? null);
+  const ownerID = $derived((corporate ? $station.online?.corporationID : $station.online?.characterID) ?? null);
 
   const W = "UI/Wallet/WalletWindow";
   const WORDS = {
@@ -32,6 +32,7 @@
     corporation: `${W}/ColHeaderCorporation`,
     shares: `${W}/ColHeaderShares`,
     none: `${W}/HintNoShares`,
+    noneCorp: `${W}/HintNoCorpShares`,
     menuOwner: `${W}/MenuOwner`,
   } as const;
   $effect(() => {
@@ -50,7 +51,9 @@
   let menuFor = $state<number | null>(null);
 
   onMount(() => {
-    void flow.loadWalletShares().catch(() => undefined);
+    flow.setWalletSharesVisible(true, corporate);
+    void flow.loadWalletShares(corporate).catch(() => undefined);
+    return () => flow.setWalletSharesVisible(false, corporate);
   });
 </script>
 
@@ -60,7 +63,7 @@
   {:else if !$read.loaded}
     <p class="empty">Reading…</p>
   {:else if $read.holdings.length === 0}
-    <p class="empty">{word(WORDS.none, "You hold no shares.")}</p>
+    <p class="empty">{word(corporate ? WORDS.noneCorp : WORDS.none, corporate ? "Your corporation holds no shares." : "You hold no shares.")}</p>
   {:else}
     <div class="table-wrap overflow-x-auto">
       <table class="guests reflow">
@@ -82,7 +85,7 @@
                 <button type="button" class="minor" aria-label="The holding's menu" aria-expanded={menuFor === holding.corporationID}
                   onclick={() => (menuFor = menuFor === holding.corporationID ? null : holding.corporationID)}>⋯</button>
                 {#if menuFor === holding.corporationID && ownerID !== null}
-                  <button type="button" class="minor" onclick={() => { menuFor = null; if (ownerID !== null) showInfo({ kind: "character", characterID: ownerID }); }}>{word(WORDS.menuOwner, "Owner")}</button>
+                  <button type="button" class="minor" onclick={() => { menuFor = null; if (ownerID !== null) showInfo(corporate ? { kind: "corporation", corporationID: ownerID } : { kind: "character", characterID: ownerID }); }}>{word(WORDS.menuOwner, "Owner")}</button>
                 {/if}
               </td>
             </tr>
