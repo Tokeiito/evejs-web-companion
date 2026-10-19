@@ -1912,6 +1912,11 @@ export function bridgeDo(options: ApiOptions = {}, clock?: (serverNowMs: number)
   return asking(options, clock, true);
 }
 
+/** Native corp.kickself mutation, held to the registry the confirmation belongs to. */
+export async function quitCorporation(characterID: number, corporationID: number, options: ApiOptions = {}): Promise<void> {
+  await bridgeDo(options)("corpRegistry", "KickOutMember", [characterID], null, corporationID);
+}
+
 function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | undefined, write: boolean): Ask {
   return async (service, method, args, kwargs = null, of) => {
     const notificationSink = options.captureNotificationSink?.();

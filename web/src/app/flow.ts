@@ -2081,14 +2081,18 @@ export interface AppFlow {
   corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
   readonly memberDetailsShown: ReadableSignal<{ readonly characterID: number; readonly n: number } | null>;
   showMemberDetails(characterID: number): void;
-  corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
-  corporationMemberRoleBase(): Promise<number | null>;
+  corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null>;
+  corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
+  openCorporationMemberDetails(characterID: number): Promise<void>;
+  memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
+  corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
+  corporationMemberRoleBase(current?: () => void): Promise<number | null>;
   corporationMemberIDs(): Promise<readonly number[]>;
-  corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
+  corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
   saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
-  giveCorporationShares(characterID: number): Promise<void>;
+  giveCorporationShares(characterID: number, current?: () => void): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -14879,40 +14883,114 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
   let memberDetailsRequests = 0;
   function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
+  function memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary" {
+    // TabGroup.Startup/AutoSelect: settings.user.tabgroups editmemberdialog remembers its selected panel.
+    const key = "evejs-web-user-ui:editmemberdialog";
+    try {
+      if (panel !== undefined) globalThis.localStorage?.setItem(key, panel);
+      const kept = panel ?? globalThis.localStorage?.getItem(key);
+      if (kept === "roles" || kept === "titles" || kept === "summary") return kept;
+    } catch { /* Use the first enabled native panel when settings cannot be read. */ }
+    return panel ?? "general";
+  }
+  const memberLifetimes = new WeakMap<() => void, (() => void) | undefined>();
+  function captureMemberOperation(lifetime?: () => void) {
+    lifetime?.();
+    const windowCurrent = lifetime && memberLifetimes.has(lifetime) ? memberLifetimes.get(lifetime) : lifetime;
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const generation = corporationMembershipGeneration, pilot = callOptions.captureRequestGuard!();
+    const current = () => {
+      pilot(); windowCurrent?.();
+      if (generation !== corporationMembershipGeneration || store.station.get().online?.corporationID !== online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This member window belongs to the pilot's previous corporation.", 0);
+    };
+    current();
+    memberLifetimes.set(current, windowCurrent);
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
+    return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
+  }
+  type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function memberNames(scope: MemberOperation, refs: readonly NameRef[]): Promise<void> {
+    scope.current();
+    const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
+    if (!missing.length) return;
+    const answer = await api.resolveNames(missing, scope.options); scope.current();
+    const unresolved = new Set(answer.unresolved), entries: Record<string, string | null> = {};
+    for (const ref of missing) {
+      const key = nameKey(ref.kind, ref.id);
+      if (!unresolved.has(key)) { entries[key] = answer.names[key] ?? null; nameCache.set(key, entries[key]!); }
+    }
+    store.apply({ type: "names/resolved", entries });
+  }
+  async function corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null> {
+    if (characterID <= 0 || isNpcOwner(characterID)) return null;
+    const scope = captureMemberOperation();
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its menu was being read.", 0);
+    return members.memberIDs.includes(characterID) ? (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n ? "edit" : "view" : null;
+  }
+  async function openCorporationMemberDetails(characterID: number): Promise<void> {
+    const scope = captureMemberOperation();
+    const offered = await corporationMemberMenu(characterID); scope.current();
+    if (offered !== null) showMemberDetails(characterID);
+  }
+  async function corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null> {
+    // CharacterChecker.OfferAllowCorpRoles: only single, non-NPC, same-corp self.
+    // The shared owner menu supplies the single-selection gate. NPC corporations are allowed.
+    if (isNpcOwner(characterID) || store.station.get().online?.characterID !== characterID) return null;
+    const scope = captureMemberOperation();
+    const member = await readCorporationMember(characterID, scope); scope.current();
+    // bco_members.MemberBlocksRoles: absent member/None means zero; use the memoized member row.
+    const raw = memberField(member, "blockRoles");
+    const blocked = typeof raw === "boolean" ? raw : (memberInteger(member, "blockRoles") ?? 0n) !== 0n;
+    if (!blocked) return null;
+    return { confirm: async () => {
+      scope.current();
+      try {
+        // menusvc._CharacterMenu648-652: Confirm is the submenu action; no extra modal or cache clear.
+        await scope.write("corpRegistry", "UpdateMember", [characterID, null, null, null, null, null, null, null, null, null, null, null, null, null, 0]);
+        scope.current();
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
   // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
   const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
   const memberTitleReads = new Map<number, Map<number, CorporationTitle>>();
   let memberDataCorpID: number | null = null;
+  let memberDataPilotGeneration = -1, memberDataCorporationGeneration = -1;
   function memberReadKey(characterID: number): string {
     const corporationID = store.station.get().online?.corporationID ?? null;
-    if (corporationID !== memberDataCorpID) { memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID; }
+    if (corporationID !== memberDataCorpID || memberDataPilotGeneration !== requestGeneration || memberDataCorporationGeneration !== corporationMembershipGeneration) {
+      memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID;
+      memberDataPilotGeneration = requestGeneration; memberDataCorporationGeneration = corporationMembershipGeneration;
+    }
     return `${corporationID}:${characterID}`;
   }
-  async function readMemberTitles(corporationID: number): Promise<ReadonlyMap<number, CorporationTitle>> {
+  async function readMemberTitles(corporationID: number, scope = captureMemberOperation()): Promise<ReadonlyMap<number, CorporationTitle>> {
+    scope.current();
     const held = memberTitleReads.get(corporationID);
     if (held) return held;
-    const answer = await bridgeAsk("corpRegistry", "GetTitles", []);
+    const answer = await scope.ask("corpRegistry", "GetTitles", []);
     const label = "UI/Corporations/Common/TitleUntitled";
     await wordsNow([label]);
+    scope.current();
     const template = store.words.get().templates[label] ?? "Untitled {index}";
     const rows = memberTitlesOf(answer, index => plainText(formatTemplate(template, { index }, { nameOf: () => "" })));
     memberTitleReads.set(corporationID, rows);
     return rows;
   }
-  async function corporationMemberTitles(): Promise<readonly CorporationTitle[]> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]> {
+    const scope = captureMemberOperation(current), online = scope.online;
     memberReadKey(online.characterID);
-    return [...(await readMemberTitles(online.corporationID)).values()].sort((a, b) => a.titleID - b.titleID);
+    return [...(await readMemberTitles(online.corporationID!, scope)).values()].sort((a, b) => a.titleID - b.titleID);
   }
   async function corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const scope = captureMemberOperation(details.assertCurrent), online = scope.online;
     memberReadKey(online.characterID);
     // OnTabRolesSummary asks GetTitles, then GetMyGrantableRoles; the latter reuses the six-second member cache.
-    const titles = await readMemberTitles(online.corporationID);
-    const mine = corporationMemberOf(await readCorporationMember(online.characterID));
-    const data = await api.getCorporationRoleData(callOptions), corpRole = BigInt(online.corpRole ?? "0");
+    const titles = await readMemberTitles(online.corporationID!, scope);
+    const mine = corporationMemberOf(await readCorporationMember(online.characterID, scope));
+    const data = await api.getCorporationRoleData(scope.options), corpRole = BigInt(online.corpRole ?? "0"); scope.current();
     const grants = myGrantableRoles(mine, details.viewerIsCEO, (corpRole & 1n) !== 0n, data, titles);
     const personnel = details.roleGroups.flatMap(group => group.roles).find(role => role.roleName === "rolePersonnelManager")?.roleID ?? 0n;
     // Keep the service's title iteration order for provenance lists, unlike the ID-sorted Titles tab.
@@ -14925,10 +15003,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (open !== undefined) { groups[String(groupID)] = open; setCharUiSetting("corpRolesSummaryGroups", JSON.stringify(groups)); }
     return groups[String(groupID)] === true;
   }
-  async function readCorporationMember(characterID: number): Promise<JsonValue> {
+  async function readCorporationMember(characterID: number, scope = captureMemberOperation()): Promise<JsonValue> {
+    scope.current();
     const key = memberReadKey(characterID), kept = memberReads.get(key);
     if (kept && kept.savedAt + 6_000 >= Date.now()) return kept.value;
-    const value = await bridgeAsk("corpRegistry", "GetMember", [characterID]);
+    const ids = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (ids.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The member belongs to a previous corporation.", 0);
+    if (!ids.memberIDs.includes(characterID)) return null;
+    const value = await scope.ask("corpRegistry", "GetMember", [characterID]); scope.current();
     memberReads.set(key, { value, savedAt: Date.now() });
     return value;
   }
@@ -14944,41 +15026,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (answer.corporationID !== corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
     return answer.memberIDs;
   }
-  async function corporationMemberRoleBase(): Promise<number | null> {
-    const online = store.station.get().online;
-    if (!online) throw new Error("No pilot is selected.");
-    return corporationMemberOf(await readCorporationMember(online.characterID)).baseID;
+  async function corporationMemberRoleBase(current?: () => void): Promise<number | null> {
+    const scope = captureMemberOperation(current);
+    return corporationMemberOf(await readCorporationMember(scope.online.characterID, scope)).baseID;
   }
-  async function corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails> {
+    const scope = captureMemberOperation(current), online = scope.online;
     // EditMemberDialog.LoadChar 144-190: security, private row, corporation, my grantable state, member, offices.
-    const security = await bridgeAsk("crimewatch", "GetCharacterSecurityStatus", [characterID]);
-    const info = await bridgeAsk("charMgr", "GetPrivateInfo", [characterID]);
-    const corporation = await bridgeAsk("corpRegistry", "GetCorporation", []);
-    const mine = await readCorporationMember(online.characterID);
+    const security = await scope.ask("crimewatch", "GetCharacterSecurityStatus", [characterID]);
+    const info = await scope.ask("charMgr", "GetPrivateInfo", [characterID]);
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []);
+    const mine = await readCorporationMember(online.characterID, scope);
     const myMember = corporationMemberOf(mine);
     const ceoID = Number(memberInteger(corporation, "ceoID") ?? 0n);
-    const viewerIsCEO = ceoID === online.characterID, viewerIsDirector = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
-    const titles = !viewerIsCEO && (myMember.masks.roles & 1n) === 0n && myMember.titleMask ? await readMemberTitles(online.corporationID) : new Map<number, RoleMasks>();
-    const member = corporationMemberOf(await readCorporationMember(characterID));
-    const offices = await bridgeAsk("officeManager", "GetMyCorporationsOffices", []);
+    const viewerIsCEO = ceoID === online.characterID, viewerIsDirector = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    const titles = !viewerIsCEO && (myMember.masks.roles & 1n) === 0n && myMember.titleMask ? await readMemberTitles(online.corporationID, scope) : new Map<number, RoleMasks>();
+    const rawMember = await readCorporationMember(characterID, scope);
+    if (rawMember === null) throw Object.assign(new Error("That character is no longer a member of this corporation."), { code: "CORPORATION_MEMBER_GONE" });
+    const member = corporationMemberOf(rawMember);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []);
     const officeRows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
     const stationIDs = officeRows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
     const raceID = Number(memberInteger(info, "raceID") ?? 0n);
-    const raceNames = await api.getRaceNameIDs(callOptions);
+    const raceNames = await api.getRaceNameIDs(scope.options); scope.current();
     const raceNameID = raceNames[raceID];
     if (!raceNameID) throw new Error("That race's name is missing from the installed client.");
     await wordsNow([`#${raceNameID}`]);
-    await resolveNamesNow([{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
+    scope.current();
+    await memberNames(scope, [{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
     const names = store.names.get().resolved;
     const targetIsCEO = ceoID === characterID;
-    const roleData = await api.getCorporationRoleData(callOptions);
+    const roleData = await api.getCorporationRoleData(scope.options); scope.current();
     const queryLabel = "UI/Corporations/BaseCorporationUI/Query", takeLabel = "UI/Corporations/BaseCorporationUI/Take", combinedLabel = "UI/Corporations/EditMemberDialog/RoleNameAndRole";
     const ordinals = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
     const divisionLabels = ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivision${ordinal}`).concat(["UI/Corporations/Common/CorporateDivisionMasterWallet"], ordinals.slice(1).map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`));
     const goalsHangar = "UI/Inventory/GoalDeliveriesHangar";
     await wordsNow([queryLabel, takeLabel, combinedLabel, goalsHangar, ...divisionLabels, ...Object.values(roleData.roles).flatMap(role => [`#${role.nameID}`, `#${role.descriptionID}`]), ...Object.values(roleData.groups).map(group => `#${group.roleGroupNameID}`)]);
+    scope.current();
     const templates = store.words.get().templates;
     const divisionName = (division: number): string => {
       if (division === 0 || division === 15) return templates[goalsHangar] ?? "";
@@ -14989,36 +15073,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const roleGroups = memberRoleGroups(roleData, id => plainText(templates[`#${id}`] ?? ""), plainText(templates[queryLabel] ?? ""), plainText(templates[takeLabel] ?? ""), divisionName,
       (role, name) => formatTemplate(templates[combinedLabel] ?? "", { role, name }, { nameOf: () => "" }));
     // Compiled corp_util.CanEditBase: only the CEO edits the CEO; a Director may edit other members.
-    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
-    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], callOptions);
+    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || viewerIsDirector;
+    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], scope.options); scope.current();
     const raw = config.values.content_compliance_control_system_enabled;
     const controlled = typeof raw === "number" ? Number.isFinite(raw) && Math.trunc(raw) !== 0 : typeof raw === "boolean" ? raw : typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim()) && BigInt(raw.trim()) !== 0n;
-    return { member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
+    return { assertCurrent: scope.current, member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
       viewerIsDirector, myBaseID: myMember.baseID, grants: myGrantableRoles(myMember, viewerIsCEO, viewerIsDirector, roleData, titles), roleGroups,
       raceNameID, gender: Number(memberInteger(info, "gender") ?? 0n), createDateTime: memberInteger(info, "createDateTime") ?? 0n,
       security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
       bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
   }
-  async function giveCorporationShares(characterID: number): Promise<void> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function giveCorporationShares(characterID: number, current?: () => void): Promise<void> {
+    const scope = captureMemberOperation(current), online = scope.online;
     const caption = "UI/Corporations/EditMemberDialog/GiveShares", hint = "UI/Corporations/EditMemberDialog/HowManySharesToGive";
     await wordsNow([caption, hint]);
-    await resolveNamesNow([{ kind: "owner", id: characterID }]);
+    scope.current();
+    await memberNames(scope, [{ kind: "owner", id: characterID }]);
     // Compiled EditMemberDialog.OnGiveShares and uix.QtyPopup: no role gate,
     // no profile Apply, no balance preflight; Cancel sends no call.
     const amount = await askQuantity({ min: 1, max: 2_147_483_647, value: 1,
       hintLabel: hint, hint: null, hintArgs: { player: characterID }, captionLabel: caption, caption: "Give Shares" });
+    scope.current();
     if (amount === null) return;
-    const current = store.station.get().online;
-    if (current?.characterID !== online.characterID || current.corporationID !== online.corporationID) return;
-    try { await bridgeDo("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); }
+    try { await scope.write("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); scope.current(); }
     catch (error) {
       // OnGiveShares leaves UserError to the client's normal FSD dialog handler.
       if (!sayRefusalDialog(error, errorWords(error))) throw error;
     }
   }
   async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks, titleDraft: number): Promise<CorporationMemberDetails> {
+    const scope = captureMemberOperation(details.assertCurrent);
     const member = details.member;
     if (details.targetIsCEO && !details.viewerIsCEO) return details;
     const nextTitle = details.canEditTitle ? memberTitleOf(title) : member.title;
@@ -15031,12 +15115,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const masks = MEMBER_ROLE_FIELDS.map(key => ({ type: "long", value: nextMasks[key].toString() } as const));
     // EditMemberDialog.UpdateMember 466-520 and bco_members.UpdateMember 243: all 15 positional arguments.
     if ((nextMasks.roles & 1n) !== 0n) for (let i = 1; i < masks.length; i++) masks[i] = { type: "long", value: "0" };
-    const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    const director = details.viewerIsDirector;
     const sentTitleMask = nextTitleMask === member.titleMask ? null : (nextMasks.roles & 1n) !== 0n ? 0 : nextTitleMask;
-    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]);
+    await scope.write("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]); scope.current();
     // base_corporation.ClearMemberCache clears this target's memoized GetMember before LoadChar.
     memberReads.delete(memberReadKey(member.characterID));
-    return corporationMemberDetails(member.characterID);
+    return corporationMemberDetails(member.characterID, scope.current);
   }
   async function checkSearchWordsAllowed(value: string): Promise<boolean> {
     if (value.length === 0) return true;
@@ -28546,6 +28630,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberRoleOptions,
     memberDetailsShown: readonlySignal(memberDetailsSignal),
     showMemberDetails,
+    corporationMemberMenu,
+    corporationRoleAllowance,
+    openCorporationMemberDetails,
+    memberDetailsPanel,
     corporationMemberDetails,
     corporationMemberRoleBase,
     corporationMemberIDs,

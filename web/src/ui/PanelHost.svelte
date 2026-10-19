@@ -92,6 +92,8 @@
   const flight = store.flight;
   // svelte-ignore state_referenced_locally
   const stationSlice = store.station;
+  // svelte-ignore state_referenced_locally
+  const memberDetails = flow.memberDetailsShown;
 
   /**
    * Whether the pilot is docked, from the AUTHORITATIVE flag.
@@ -192,7 +194,7 @@
 {:else if tab === "corporation"}
   <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "memberDetails"}
-  <CorporationMemberDetails {store} {flow} {onClose} />
+  {#key $memberDetails?.characterID}<CorporationMemberDetails {store} {flow} {onClose} />{/key}
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}

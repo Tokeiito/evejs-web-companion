@@ -71,12 +71,26 @@ self, including when evaluating a merged selection.
 1. **D2p18c4a — retained membership, implemented.** The native prime, membership
    notices, role-only stability, pilot/corporation scopes and real delayed-reply
    retirement have been verified live. The page API is ready for the shared menu.
-2. **D2p18c4b — shared View/Edit Member Details.** Add the shared owner action to
-   Contacts/search and Member List, reusing the existing complete member dialog.
+2. **D2p18c4b — shared View/Edit Member Details, implemented.** Contacts/search
+   and Member List share the retained-membership and session-Director gate,
+   reusing the complete member dialog on desktop and phone.
    `memberDetails.OpenMemberDetails:9-16` maximizes an existing window for the same
    character; for another character it closes that window and opens the new one.
-   The installed compiled function confirmed all three cases. Preserve its
-   General/Roles/Titles/Summary/Give Shares behavior and save permissions.
+   The installed compiled function confirmed all three cases. Its
+   General/Roles/Titles/Summary/Give Shares behavior and save permissions remain.
+   `TabGroup._FindAutoSelectTabIDx:649-673` remembers the enabled panel between
+   windows; its original compiled function confirmed named/index selection and
+   fallback to General. The same target retains its unsaved state without another
+   native read; another target replaces it and loads the remembered panel.
+   Member reads, titles, summary, Apply reloads and share quantities retain the
+   originating pilot, corporation and window lifetime. Caches also distinguish
+   pilot/corporation generations. Completed real replies held across replacement
+   retire before continuing the old read chain or publishing its cache; a saved
+   old model cannot write as another pilot. Live browser evidence includes
+   ordinary/self/outsider/multiple gates, corporate Contacts and Member List,
+   all panels, actual title/base Apply, window reuse/replacement, phone opening
+   and the server's actual Give Shares role refusal. Native retained-ID probes
+   also confirmed ordinary self in an NPC corporation remains eligible.
 3. **D2p18c4c — roles and leaving/expulsion.** Complete both native submenus and
    their callbacks. `base_corporation.RemoveAllRoles:482-487` asks its dialog and
    sends all eight role masks zero, `titleMask=0`, `blockRoles=1`. Allow sends the
@@ -85,6 +99,54 @@ self, including when evaluating a merged selection.
    before the write. Multiple expulsion has its own self refusal, results and
    failed-member wording (`461-477`). Read compiled branches and wire recordings
    before implementing; retain exact session-change behavior for leaving.
+   Implement this in three reviewable units, in order:
+   - **c4c1: Allow Corporation Roles, implemented.** Its single self-target submenu has one
+     Confirm action (`menusvc:648-652`), which calls the fifteen-position
+     `UpdateMember` with all optional values `None` except final `blockRoles=0`.
+     `BaseChecker.GetBlockedRoles:61-62` uses `corp.UserBlocksRoles`, then
+     `bco_members.MemberBlocksRoles:262-269` reads the pilot's memoized member.
+     Preserve the existing six-second cache and native absence/None-to-zero rule;
+     do not infer blocking from a role mask. There is no separate modal or NPC
+     corporation exclusion in this action's native gate.
+     The original compiled menu, gate, blocked-role reader and forwarding method
+     confirmed the submenu and tuple. Corporation Contacts, Contacts search and
+     Member List use the shared action. Live desktop/phone verification confirmed
+     peer/multiple exclusion, expansion without a write, phone confirmation,
+     actual unblock and disappearance after cache expiry. Production AppFlow
+     probes confirmed one native member read across repeated menus, no eager
+     cache clear, unchanged profile fields and six-second expiry. Old callbacks
+     cannot write after pilot/corporation replacement; held actual member and
+     successful Allow replies retire without continuing under another pilot.
+     No exact Allow callback was found in the recursive Tranquility corpus;
+     its compiled tuple and actual native wire establish the implementation.
+   - **c4c2: Quit Corporation.** Complete both submenu entries together:
+     Remove All Roles, including its native confirmation and exact eight-zero
+     mask/title/block tuple; and Confirm Quit, including `CanBeKickedOut`, the
+     active-war warning, self confirmation and session-change handling. The
+     native gate is self, player corporation, non-CEO; it has no explicit
+     multi-selection check. Read actual menu merge before choosing UI behavior.
+     **c4c2a, transport prerequisite implemented:** the typed native quit call
+     names its originating corporation in HTTP `of`, while its native RPC remains
+     `KickOutMember(charID)` on that corporation's registry. Self dispatch uses the
+     shared mutation lock and ten-second cooldown, ends the lock when the RPC
+     returns, and restores the prior timer on refusal. Original compiled
+     `carbon/common/script/sys/sessions.PerformSessionChange:418-501` confirmed
+     these rules, including `None` without a corporation change. Actual native
+     and gateway quits, a held real native reply, concurrent-write refusal,
+     cooldown and refusal rollback were verified. Native dispatch also retains
+     the originating corporation generation through asynchronous binding; a
+     delayed real bind across an actual join/departure retired the queued write,
+     and returning to the same corporation ID did not revive its old generation.
+     Old corporation bind replies cannot publish their object into the new cache.
+     **c4c2b remains:** the complete submenu, confirmations, eligibility/war
+     checks, native session-busy dialog wording and desktop/phone proof. The
+     original compiled merge kept Quit for a selection containing self and peer,
+     invoking each self callback once. No Quit UI is exposed by c4c2a alone.
+   - **c4c3: Expel Corporation Member(s).** Complete the single and merged
+     multiple callbacks together, including authority/eligibility differences,
+     war warning, confirmation, self refusal and kicked/notKicked result dialog.
+     Multiple expulsion calls `KickOutMembers` directly after the confirmations;
+     it does not perform the single-target eligibility read per selected ID.
 4. **D2p18c4d — CEO resignation.** Read the complete candidate, warning, picker and
    session-change flow (`base_corporation:785+`). It distinguishes a successful
    `None` from a replacement-candidate list. Its default confirmation is No.
