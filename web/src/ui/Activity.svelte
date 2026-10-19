@@ -9,6 +9,7 @@
     liveActivityTitle,
   } from "../bridge/activity.ts";
   import { isSessionLost } from "../app/flow.ts";
+  import { corporationApplicationNotification } from "../bridge/corporationApplications.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { CONTACT_NOTIFICATION_LABELS } from "../bridge/contactNotifications.ts";
   import { notificationSubjectWording, notificationWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -28,10 +29,12 @@
     store,
     flow,
     showMail,
+    openApplications,
   }: {
     store: ClientStore;
     flow: AppFlow;
     showMail?: () => void;
+    openApplications?: () => void;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -63,6 +66,7 @@
   /** A line of the recent notifications: the server's, or the skill history's, which have no sender and no seen. */
   interface ListedNotification {
     readonly key: string;
+    readonly applicationTarget?: boolean;
     readonly title: string;
     /** Its body as the client words it, as plain text; null where the page cannot be sure of it. */
     readonly body: string | null;
@@ -134,6 +138,8 @@
       for (const notification of $activity.notifications.value) {
         all.push({
           key: `n${notification.notificationID}`,
+          // notificationCenter.py356-362: these four open MY_APPLICATIONS.
+          applicationTarget: corporationApplicationNotification(notification.typeID ?? 0),
           title: subjectOf(notification) ?? notification.title,
           body: bodyOf(notification),
           // A sender of nought is none (the client's None: its new-mail notification of a list's own mail has none).
@@ -279,7 +285,7 @@
           {#each listed as notification (notification.key)}
             <li class:unread={notification.processed === false}>
               <div class="row-main">
-                <strong>{notification.title}</strong>
+                {#if notification.applicationTarget && openApplications}<button type="button" class="minor" onclick={openApplications}>{notification.title}</button>{:else}<strong>{notification.title}</strong>{/if}
                 <span class="meta">
                   {#if notification.senderID !== null}
                     From {ownerName(notification.senderID, "Notification sender")} ·

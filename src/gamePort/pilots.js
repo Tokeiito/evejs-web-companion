@@ -70,6 +70,7 @@ const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
 const { createPilotCorporationMembers } = require("./pilotCorporationMembers");
+const { createPilotCorporationApplications } = require("./pilotCorporationApplications");
 const personalContacts = require("./personalContacts");
 const { createPilotStation } = require("./pilotStation");
 const { createPilotStructureGuests } = require("./pilotStructureGuests");
@@ -1608,6 +1609,7 @@ function createGamePortPilots({
     if (entry.ended) return;
     entry.ended = true;
     entry.corporationMembers.clear();
+    entry.corporationApplications.clear();
     // Nobody is left to answer: each question closes unanswered, as its window would with the client.
     for (const asked of [...entry.questions.values()]) asked.settle(undefined, "session_ended");
     if (entry.space) entry.space.release();
@@ -1923,6 +1925,7 @@ function createGamePortPilots({
       /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
       corporationRow: null,
       corporationMembers: createPilotCorporationMembers(),
+      corporationApplications: createPilotCorporationApplications(),
       corporationVersion: 0,
       /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
       corporateContacts: null,
@@ -2320,7 +2323,7 @@ function createGamePortPilots({
       // the pilot's applications. A service that refuses fails no choosing.
       await redeemTokensFetched(entry).catch(() => {});
       // bco_applications: the pilot's own applications, which the client asks for once.
-      await corporationAsk(entry, "GetMyApplications").catch(() => {});
+      await personalApplicationsRead(entry).catch(() => {});
       // btnDataNode.IsButtonInScope (478 to 485): the neocom's button for Project Discovery is in scope where the
       // project is enabled, which its client service asks once. In the retail client's own login, behind the pilot's
       // applications as the neocom is set up. A service that refuses fails no choosing.
@@ -2669,6 +2672,7 @@ function createGamePortPilots({
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
       (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
+      (service === CORP_REGISTRY && method === "GetMyApplications" && form.args.length === 0 && form.kwargs === null) ||
       // The address book's organization contacts, noted where they are asked for (addressBookRead, monikerCall).
       (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
       (service === ALLIANCE_REGISTRY && (method === ALLIANCE_CONTACTS || method === "GetAlliance") && form.args.length === 0 && form.kwargs === null) ||
@@ -5147,6 +5151,7 @@ function createGamePortPilots({
     // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
     // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
     if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
+    if (service === CORP_REGISTRY && method === "GetMyApplications" && args.length === 0 && kwargs === null) return personalApplicationsRead(entry);
     // addressbook.GetContacts (193 to 250): the corporation's contacts and the alliance's as the address book keeps
     // them from the choosing of the character, asked where none are kept; corporate notices amend the held dict.
     if (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && args.length === 0 && kwargs === null) {
@@ -5899,10 +5904,9 @@ function createGamePortPilots({
    * and retains their IDs). Each fails for itself.
    *
    * A character chosen is asked besides for its own applications, as the client asks for them once
-   * (bco_applications), after the address book's reads as a recorded login has them. They are not kept here,
-   * though the client keeps them and works its list over at each OnCorporationApplicationChanged: the BFF's own
-   * flows read one pilot's applications straight after another pilot's change to them, on another connection,
-   * where a kept list could be a notice behind.
+   * (bco_applications), after the address book's reads as a recorded login has them. Personal applications are
+   * retained independently of corporation reads and amended from OnCorporationApplicationChanged, including
+   * after the pilot joins another corporation. Only ending the character session clears them.
    */
   function corporationRead(entry) {
     return corporationDoes(entry, async () => {
@@ -5966,6 +5970,7 @@ function createGamePortPilots({
 
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
+    entry.corporationApplications.feed(notification, entry.characterID, () => corporationAsk(entry, "GetMyApplications"));
     entry.corporationMembers.feed(notification, Number(attribute(entry, "corpid")));
     // addressbook.OnOrganizationContactsUpdated(ownerID, updates): the corporation's or the alliance's contacts changed.
     if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
@@ -5987,6 +5992,10 @@ function createGamePortPilots({
     if (notification.method === "OnCorporationChanged" && Array.isArray(notification.args) && Number(notification.args[0]) === Number(attribute(entry, "corpid"))) {
       entry.corporationRow = null;
     }
+  }
+
+  function personalApplicationsRead(entry) {
+    return entry.corporationApplications.read(() => corporationAsk(entry, "GetMyApplications"));
   }
 
   // ── the agents' table, and the agents' journal as it is kept ──────────────

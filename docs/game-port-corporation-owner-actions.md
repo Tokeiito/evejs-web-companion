@@ -309,14 +309,14 @@ self, including when evaluating a merged selection.
    It has no separate NPC-pilot-corporation gate. `base_corporation:1145-1149`
    asks OK/Cancel with charID and sends nothing on Cancel; OK calls the current
    registry. No merged invitation action or extra warning is inferred.
-   The web app currently has no My Applications panel. Native
+   The web app's My Applications panel is now ported. Native
    `ApplicationsWindow:50-90,95-151,231-301` hides top filters and invite button
    in myView, flattens all of `GetMyApplications`, primes corporation names,
    sorts newest first and retains expanded application per myView. It receives
    `OnCorporationApplicationChanged`. `bco_applications:22-95` keeps the personal
    dictionary across corporation changes and updates application rows from those
-   notices; the current BFF discards the login read and rereads this method.
-   Its retention must be ported before the recipient panel is exposed.
+   notices. The BFF now retains the original login dictionary and native rows,
+   amends it behind in-flight reads, and clears it only with the character session.
    Compiled `CorpApplicationEntry:594-644,686-778` offers Accept for statuses6/8;
    ended statuses2/3/4/7 have only Show Info. The direct invitation's Decline
    button calls status3 without a prompt. The context-menu item labelled Decline
@@ -348,14 +348,32 @@ self, including when evaluating a merged selection.
      Native type139 invite receipts supply corpID consumed by the formatter;
      notificationCenter356-362 opens My Applications for types139/18/17/142.
      Direct notification bytes remain unrecorded. Full store restored byte-exact.
-   - **c4f2: complete recipient My Applications panel.** Port native personal
-     application retention/notice updates, full entry read/display/expand/menu,
-     Accept/Decline/Withdraw/cancel behavior and original seven-argument writes.
-     Keep the personal panel across its intended own corporation change while
-     fencing stale pilot/action dispatch. Include NPC-corporation access, live
-     notices and existing notification links as required by the native callers.
-     Verify desktop/phone, native wire, receipt while open, all decisions, pilot
-     replacement and store/settings restoration. No send menu is exposed yet.
+   - **c4f2: complete recipient My Applications panel, implemented.** Recruitment
+     exposes it for NPC and player corporations. Entries show the native logo,
+     corporation, status/date and expandable label text, newest first; one entry
+     expands at a time, retained per character. Personal filters/Invite stay hidden.
+     The retained historical-view setting still reads GetMyOldApplications;
+     ordinary views use the native personal dictionary, including ended rows
+     received during this session. The Python27 strip character sets were measured
+     in the installed runtime (Unicode differs from JavaScript trim).
+     Accept6/8 sends2 immediately; the invitation button sends3; its menu's Decline
+     and other active rows' Withdraw ask WithdrawApplication then send7 on Yes.
+     Ended rows offer only Show Info. The temporary decision lock has no invented
+     session cooldown. All seven native arguments preserve the original row's
+     Unicode text, empty byte customMessage and None date. The private originating
+     registry fence is separate from the target corporation argument and never
+     goes on the wire. Native corporation/version and pilot dispatch checks fence
+     late requests; an intended own join keeps the personal panel alive.
+     Types139/18/17/142 open this panel from popups and Activity; served requests
+     are consumed. Self application notices reload the docked station's offices
+     (base_corporation_ui204-209 / OfficesPanel46-72), including a queued reload.
+     Cold-started live browser/390px checks saw8→3,8→7 with No/Yes,8→2 and0→6→2,
+     expanded Unicode text, NPC access, retained ended rows and actual joins.
+     An actual type139 popup opened the second recipient's panel; a persistent
+     type18 entry opened the first's. AppFlow verified cancelled/stale-pilot
+     withdrawals, history setting and wrong originating registry refusal.
+     The wire recording has one personal prime per selected BFF session and the
+     native seven arguments for every decision. No send menu is exposed yet.
    - **c4f3: complete shared send action.** Once the receiver flow works, expose
      single-target SendCorpInvite on the original gates, OK/Cancel and originating
      registry fence. Verify sender/recipient effects live, cancellation, authority

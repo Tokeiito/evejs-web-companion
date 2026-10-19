@@ -419,6 +419,7 @@ import { classifyDistributionAgentConversation, selectDistributionAgent } from "
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -2108,6 +2109,13 @@ export interface AppFlow {
   readonly corporationAwardAsk: ReadableSignal<CorporationAwardAsk | null>;
   selectCorporationAward(n: number, index: number): void;
   answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
+  readonly corporationApplicationsChanged: ReadableSignal<number>;
+  readonly corporationApplicationsRequested: ReadableSignal<number>;
+  requestCorporationApplications(): void;
+  serveCorporationApplicationsRequest(n: number): void;
+  corporationApplications(): Promise<readonly CorporationApplication[]>;
+  corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void>;
+  corporationApplicationsExpanded(applicationID?: number | null): number | null;
   openCorporationMemberDetails(characterID: number): Promise<void>;
   memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
@@ -5027,6 +5035,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
+      corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
+      // base_corporation_ui204-209: the docked station lobby reloads its
+      // offices for the applicant, including when accepting changes corpid.
+      if (store.station.get().online?.stationID) void loadStationOffices().catch(() => {});
+    }
     // ⚠ `"__MultiEvent"` UNWRAP — THIS IS A REAL FIX, NOT DEFENSIVE CODE. The
     // server has exactly one call site for it (`notifyFleetMultiEvent`,
     // fleetRuntime.js:786), and it fires ONLY when more than one
@@ -6598,19 +6612,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Offices tab is shown, and again at each office rented or given up. The
   // page lists them when the player asks, and from then on at each notice. A
   // read that answers after the pilot has gone elsewhere is not shown.
-  // The server says an office changed twice over, to the station and to the
-  // corporation, and the client's panel does not load again while it is
-  // loading (offices.py, _load): `listingStationOffices` is that.
+  // Duplicate rental notices are coalesced by their handler, as the recorded
+  // pair is. Applicant changes can queue another load through OfficesPanel's
+  // LOAD_PENDING loop, so a join does not lose its new corporation's buttons.
   let listingStationOffices = false;
+  let stationOfficesPending = false;
   async function loadStationOffices(): Promise<void> {
+    // OfficesPanel._load58-72 coalesces a notice during loading into another
+    // load, rather than losing a corporation change behind an older reply.
+    if (listingStationOffices) { stationOfficesPending = true; return; }
     const where = () => store.station.get().online?.stationID ?? store.station.get().online?.structureID ?? null;
     const askedAt = where();
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
     listingStationOffices = true;
     try {
-      const offices = await api.loadStationOffices(callOptions);
-      if (where() === askedAt) {
-        store.apply({ type: "station/offices", offices });
-      }
+      do {
+        stationOfficesPending = false;
+        const offices = await api.loadStationOffices(scoped);
+        current();
+        if (where() === askedAt) store.apply({ type: "station/offices", offices });
+      } while (stationOfficesPending && where() === askedAt);
     } finally {
       listingStationOffices = false;
     }
@@ -14888,6 +14910,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return roles;
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
+  const corporationApplicationsChangedSignal = createSignal(0);
+  const corporationApplicationsRequestedSignal = createSignal(0);
+  function personalApplicationSetting(name: string): string {
+    return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
+  }
+  function corporationApplicationsExpanded(applicationID?: number | null): number | null {
+    try {
+      const key = personalApplicationSetting("corporation_applications_expanded.true");
+      if (applicationID !== undefined) settingsStorage?.setItem(key, JSON.stringify(applicationID));
+      const value: unknown = JSON.parse(settingsStorage?.getItem(key) ?? "null");
+      return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+    } catch { return applicationID ?? null; }
+  }
+  async function corporationApplications(): Promise<readonly CorporationApplication[]> {
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
+    let old = false;
+    try { old = JSON.parse(settingsStorage?.getItem(personalApplicationSetting(`applicationsShowOld_${onlineCharacterID()}`)) ?? "false") === true; } catch { /* Native default. */ }
+    const answer = await api.bridgeAsk(scoped)("corpRegistry", old ? "GetMyOldApplications" : "GetMyApplications", []);
+    current();
+    const applications = corporationApplicationsOf(answer, old);
+    // GetCorpApplicationEntries126-151 primes the corporation names before
+    // constructing entries (whose CorpIcon subsequently asks for its logo).
+    await memberNames({ current, options: scoped }, [...new Set(applications.map(row => row.corporationID))].map(id => ({ kind: "owner" as const, id })));
+    current(); return applications;
+  }
+  let applicationWork = Promise.resolve();
+  async function corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void> {
+    const scope = captureMemberOperation(), pilotCurrent = callOptions.captureRequestGuard!();
+    if (application.characterID !== scope.online.characterID || applicationEnded(application.status) || status === 2 && !applicationAcceptable(application.status) || status === 3 && application.status !== 8) return;
+    if (status === 7) {
+      await wordsNow(["dialog:WithdrawApplication/title", "dialog:WithdrawApplication/body"]); scope.current();
+      if (!await askDialog("WithdrawApplication", null, "Withdraw this corporation application?")) return;
+    }
+    scope.current();
+    // bco_applications141 TempLock: serialize decisions; no session cooldown.
+    const previous = applicationWork;
+    let release!: () => void;
+    applicationWork = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous; scope.current();
+      let sent = false;
+      const send = callOptions.fetch ?? pageFetch();
+      const mutationOptions: api.ApiOptions = { ...scope.options,
+        captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+        fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+      };
+      await api.bridgeDo(mutationOptions)("corpRegistry", "UpdateApplicationOffer", [application.applicationID, application.characterID, application.corporationID, application.applicationText, status, "", null], null, scope.online.corporationID);
+      // An intended acceptance changes corpid before its None reply. The
+      // personal panel belongs to the pilot, and survives that successful join.
+      pilotCurrent();
+    } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    finally { release(); }
+  }
   const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
   let memberDetailsRequests = 0;
   function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
@@ -14918,7 +14994,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
-  async function memberNames(scope: MemberOperation, refs: readonly NameRef[]): Promise<void> {
+  async function memberNames(scope: Pick<MemberOperation, "current" | "options">, refs: readonly NameRef[]): Promise<void> {
     scope.current();
     const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
     if (!missing.length) return;
@@ -28866,6 +28942,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     selectCorporationCEO,
     answerCorporationCEO,
     corporationRoleAllowance,
+    corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
+    corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
+    requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
+    serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },
+    corporationApplications,
+    corporationApplicationDecision,
+    corporationApplicationsExpanded,
     openCorporationMemberDetails,
     memberDetailsPanel,
     corporationMemberDetails,
