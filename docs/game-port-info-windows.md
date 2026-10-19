@@ -95,20 +95,41 @@ and fit390px. Actual wire counts stayed unchanged through focus, minimize,
 viewport changes and background-pilot switching. A real native login replacing
 the account cleared both final-build info windows and returned the pilot offline.
 
-## Asynchronous reconstruction (c6b2, next; c6b is not complete)
+## Asynchronous reconstruction (c6b2, split; c6b is not complete)
 
-Read and execute the original InfoWindow.OnBack/OnForward61-73,
-InfoWindow.change_info_content37-40, BaseInfoWindow.ReconstructInfoWindow45-55
-and _stop_reconstruct_thread65-75. Ordinary history ignores input while loading;
-changing content or closing a window retires its reconstruction thread. Ship
-history uses the base reconstruction path and its pendingLoadData handling.
+Original compiled methods were executed in the installed Python27 runtime. The
+oracle controls tasklet entry/kill observations; that DLL lacks _stackless and
+cannot reproduce the Blue scheduler. The observed rules are:
 
-The page currently discards stale displayed results with per-component tickets,
-but that alone does not stop later RPCs inside an old asynchronous read. Port
-the per-window loading, cancellation and pending-reconstruction rules with real
-held native replies, without cancelling another window's reads or shared caches.
-Prove rapid reuse, close, history while loading, independent simultaneous reads,
-pilot retirement and the actual call order before advancing to other Members
-panels. This is required follow-up, not a declaration of complete info parity.
+- Ordinary InfoWindow._ReconstructInfoWindow95-122 sets isLoading through its
+  content reconstruction and clears it in finally. OnBack/OnForward61-73 ignore
+  input while loading. Base.ReconstructInfoWindow45-55 retains only the latest
+  pending request while that flag is true, without appending history or starting
+  another tasklet. The ordinary method invokes the base completion while still
+  loading: the retained request is requeued there and remains pending after the
+  outer finally. Do not invent an automatic drain after clearing the flag.
+- ShipInfoWindow's compiled reconstruction never accesses isLoading. Its history
+  uses Base.ReconstructInfoWindow without the ordinary history guard. Do not
+  infer an ordinary loading flag or busy queue for ships from the base alone.
+- Base.Close98-105 and change_info_content37-40 kill the registered reconstruction
+  tasklet. Same-content ordinary NavigateHistory75-86 instead invokes
+  _ReconstructInfoWindow directly, with no registered tasklet. A blanket policy
+  that cancels every read on close would overstate these native methods.
+- Ordinary ShowInfo reuse calls change_info_content +ConstructLayout45-49,
+  creating fresh content. Same-class history instead reconstructs the existing
+  content; InfoWindowMonolith.ReconstructSubContainer897-902 flushes the main
+  content and creates new Scroll/EditPlainText controls on every reconstruction.
+  InfoWindow.GetHistoryData132-138 retains identity, not a scroll offset.
+  Focus, minimize and pilot switching do not rebuild content. A duplicate modern
+  ShowInfo does not reconstruct. Ship controls require their separate reading.
+
+c6b2a ports ordinary content replacement and scroll reset on reconstruction. Each
+window's chrome and geometry remain retained. Native loading/history guards and
+scoped read retirement are required c6b2b work next. Current UI tickets only drop
+stale displayed results, not later RPCs within old reads. Use actual held native
+replies to prove call order, reuse, close, independent windows and pilot
+retirement, without cancelling shared service caches. Audit each native content
+class's read order before porting its reconstruction; the current sections are
+not a claim of complete native content or asynchronous parity.
 
 The Corporation window, the rest of its panels, and Phases5/6 remain unfinished.

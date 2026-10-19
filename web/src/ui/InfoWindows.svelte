@@ -50,6 +50,12 @@
   function navigate(w: InfoWindowState, direction: -1 | 1): void {
     void model.navigate(w.id, direction, infoShiftPressed()).catch(error => { if (error?.code !== "SESSION_REQUEST_RETIRED") notify({ kind: "danger", title: "Show Info", detail: error instanceof Error ? error.message : String(error) }); });
   }
+  function reconstructed(node: HTMLElement): void {
+    // ConstructLayout/ReconstructSubContainer replace ordinary content's scroll.
+    // This action runs only for a new content instance, never on chrome updates.
+    const body = node.closest<HTMLElement>(".win-body, .info-modal-body");
+    if (body) { body.scrollTop = 0; body.scrollLeft = 0; }
+  }
 </script>
 
 {#snippet contents(w: InfoWindowState)}
@@ -57,7 +63,9 @@
     <button type="button" class="minor" disabled={w.index === 0} onclick={() => navigate(w, -1)}>{word("UI/Control/EveWindow/Previous", "Previous")}</button>
     <button type="button" class="minor" disabled={w.index >= w.history.length - 1} onclick={() => navigate(w, 1)}>{word("UI/Control/EveWindow/Next", "Next")}</button>
   </nav>
-  <ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} /></ErrorBoundary>
+  {#key w.reconstruction}
+    <div use:reconstructed><ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} /></ErrorBoundary></div>
+  {/key}
 {/snippet}
 
 <div use:portal={host?.element ?? document.body} class="info-window-layer" class:info-phone={host?.mobile} style:display={visible ? undefined : "none"}>

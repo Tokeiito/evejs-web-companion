@@ -8,6 +8,8 @@ export interface InfoWindowState {
   readonly subject: ReadableSignal<InfoSubject | null>;
   readonly history: readonly Entry[];
   readonly index: number;
+  /** Ordinary content: ConstructLayout/ReconstructSubContainer flush old controls. */
+  readonly reconstruction: number;
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
   readonly z: number; readonly minimized: boolean; readonly modal: boolean;
 }
@@ -34,7 +36,8 @@ export function createInfoWindows(deps: {
     if (branch) { history = [...history.slice(0, index + 1), entry]; index = history.length - 1; }
     else { history = history.map((e, i) => i === index ? entry : e); }
     subjects.get(w.id)?.set({ ...entry.subject });
-    update(w.id, current => ({ ...current, entry, history, index, minimized: false }));
+    update(w.id, current => ({ ...current, entry, history, index,
+      reconstruction: current.reconstruction + (entry.identity.content === "ship" ? 0 : 1), minimized: false }));
     requestRaise(w.id);
   }
   function show(subject: InfoSubject, options: InfoOpenOptions = {}): Promise<number | null> {
@@ -63,7 +66,7 @@ export function createInfoWindows(deps: {
         const id = ++serial, signal = createSignal<InfoSubject | null>({ ...normalized });
         subjects.set(id, signal);
         const offset = (windows.length % 8) * 24;
-        const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [entry], index: 0,
+        const w: InfoWindowState = { id, entry, subject: readonlySignal(signal), history: [entry], index: 0, reconstruction: 1,
           x: 16 + offset, y: 16 + offset, w: 500, h: 600,
           z: Math.max(0, ...windows.map(w => w.z)) + 1, minimized: false,
           modal: modal && !options.progressModal };
