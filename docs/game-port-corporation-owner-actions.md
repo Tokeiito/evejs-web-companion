@@ -331,11 +331,23 @@ self, including when evaluating a merged selection.
    concern applied0 -> corporation-accepted6 -> applicant-accepted2, not direct8.
    Historical gaps in its companion are not evidence against current handlers.
    No direct InsertInvitation packet was found by the recursive corpus search.
-   - **c4f1: native contract audit.** Verify direct invitation8, button rejection3,
+   - **c4f1: native contract audit, implemented.** Verified direct invitation8, button rejection3,
      context withdrawal7 and acceptance2 on disposable native sessions, including
      active/history reads, packed rows, persistent/live notices and post-join
      membership/session effects. Compare the recorded acceptance path only where
      applicable; fix/commit any proven server mismatch before UI work.
+     Actual direct decisions return None, remove the active row and retain ended
+     history. NPC acceptance sends sparse client member change, corpid/hqID
+     session change, full member changes and application2 before the None reply.
+     Applied0/accepted6/joined2 was also verified with accented text. Structured
+     TQ decoding and CCP blue DBRow Read/Get exposed an additional row mismatch:
+     status must be UI1/17, responseText STR129, and applicationText explicitly
+     Unicode. EveJS327cc6de3 fixes the shared builder. The same persisted native
+     application changed from bytes to Unicode after restart, with no data repair,
+     then completed0/6/2. Fresh direct8/3/7/2 rows use the corrected types too.
+     Native type139 invite receipts supply corpID consumed by the formatter;
+     notificationCenter356-362 opens My Applications for types139/18/17/142.
+     Direct notification bytes remain unrecorded. Full store restored byte-exact.
    - **c4f2: complete recipient My Applications panel.** Port native personal
      application retention/notice updates, full entry read/display/expand/menu,
      Accept/Decline/Withdraw/cancel behavior and original seven-argument writes.
