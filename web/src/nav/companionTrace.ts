@@ -230,6 +230,35 @@ export interface HealthTrace {
   readonly stalledMs?: number;
 }
 
+/**
+ * Rung 6, one row per drone of the fighting role: how hurt it is, and which
+ * rats are on it (orbiting or following it). Written because "the companion
+ * reacted too late" could not be answered from the log: it said when a recall
+ * went out, never how long the drone had been bleeding or who was shooting it.
+ */
+export interface DroneRowTrace {
+  readonly id: number;
+  readonly typeID: number | null;
+  /** `out`: in space; `homeward`: recalled for its shield; `aboard`: held in the bay before going back out. */
+  readonly state: "out" | "homeward" | "aboard";
+  /** 0-1, two decimals; null when the layer did not read (always, aboard). */
+  readonly shield: number | null;
+  readonly armor: number | null;
+  readonly hull: number | null;
+  /** Hostiles orbiting or following it. */
+  readonly attackers: readonly number[];
+  /** Aboard only: how long it has been held, ms. */
+  readonly heldMs?: number;
+}
+
+export interface DronesTrace {
+  /** What the hurt-drone rotation decided: `RotationReason` (companionDroneRotation.ts). */
+  readonly rotation: string;
+  readonly rows: readonly DroneRowTrace[];
+  /** Launches the rotation is waiting to see land: a spare from a stack, or the drone itself. */
+  readonly launching: readonly { readonly hurtID: number; readonly via: "same" | "spare"; readonly stackID: number }[];
+}
+
 export interface CompanionTrace {
   readonly combat?: CombatTrace;
   readonly guns?: GunsTrace;
@@ -238,6 +267,7 @@ export interface CompanionTrace {
   readonly util?: UtilityTrace;
   readonly cleared?: ClearedTrace;
   readonly health?: HealthTrace;
+  readonly drones?: DronesTrace;
 }
 
 /**
@@ -278,6 +308,15 @@ export function coarseTraceKey(trace: CompanionTrace | null | undefined): string
   // The code and the repairer's state only: the tank moves every tick.
   if (trace.health !== undefined) {
     parts.push(`h:${trace.health.code}/${trace.health.repairer}`);
+  }
+  // Per drone its state, its shield in tenths, and how many rats are on it: a
+  // drone only ever loses shield in space, so a tenth gone is an event, not
+  // noise, and a line per tenth is what reconstructs how fast it was bleeding.
+  const d = trace.drones;
+  if (d !== undefined) {
+    const tenth = (ratio: number | null): string => ratio === null ? "-" : String(Math.floor(ratio * 10));
+    parts.push(`d:${d.rotation}|` + d.rows.map((row) => `${row.id}=${row.state[0]}${tenth(row.shield)}a${row.attackers.length}`).join(",") +
+      `|l${d.launching.length}`);
   }
   return parts.join(";");
 }
