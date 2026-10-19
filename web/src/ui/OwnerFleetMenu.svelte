@@ -1,6 +1,6 @@
 <script lang="ts">
   // menusvc.FleetMenu686-734; CharacterChecker.OfferFleetMenu; FleetMemberChecker465-535.
-  import { onMount, type Snippet } from "svelte";
+  import { onMount } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow, FleetMenuAction } from "../app/flow.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
@@ -9,10 +9,11 @@
   import { showInfo } from "./showInfo.ts";
   import { notify } from "./notices.ts";
   import FleetWarpMenu from "./FleetWarpMenu.svelte";
+  import FleetBeaconMenu from "./FleetBeaconMenu.svelte";
 
-  let { store, flow, ownerID, onDone, onOpen, openWatchlist, navigation }: {
+  let { store, flow, ownerID, onDone, openWatchlist }: {
     store: ClientStore; flow: AppFlow; ownerID: number; onDone: () => void;
-    onOpen?: () => void; openWatchlist?: () => void; navigation?: Snippet;
+    openWatchlist?: () => void;
   } = $props();
   // svelte-ignore state_referenced_locally
   const fleet = store.fleet;
@@ -82,7 +83,7 @@
 </script>
 
 {#if offered}
-  <button type="button" class="minor" aria-expanded={expanded} onclick={() => { expandedFor = expanded ? null : ownerID; part = null; if (expanded) onOpen?.(); }}>{word(LABELS.fleet, "Fleet")} {expanded ? "▾" : "▸"}</button>
+  <button type="button" class="minor" aria-expanded={expanded} onclick={() => { expandedFor = expanded ? null : ownerID; part = null; }}>{word(LABELS.fleet, "Fleet")} {expanded ? "▾" : "▸"}</button>
   {#if expanded}
     <span class="owner-fleet-menu">
       <button type="button" class="minor" onclick={() => { expandedFor = null; onDone(); showInfo({ kind: "character", characterID: ownerID }); }}>{word(LABELS.info, "Show Info")}</button>
@@ -94,7 +95,7 @@
       {#if !self}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "watch", characterID: ownerID, add: !favorite })}>{word(favorite ? LABELS.removeWatch : LABELS.addWatch, favorite ? "Remove Pilot from Watchlist" : "Add Pilot to Watchlist")}</button>{/if}
       {#if self && (boss || mine && [1, 2, 3].includes(mine.role))}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "travelToMe" })}>{word(LABELS.travel, "Broadcast: Travel To Me")}</button>{/if}
       <FleetWarpMenu {store} {flow} {ownerID} {blocked} warp={(range, group) => act({ kind: "warp", characterID: ownerID, range, group })} onDone={() => { expandedFor = null; onDone(); }} />
-      {@render navigation?.()}
+      <FleetBeaconMenu {store} {flow} {ownerID} {blocked} travel={how => act({ kind: "beacon", characterID: ownerID, how })} />
       {#if self}
         <button type="button" class="minor" aria-expanded={part === "leave"} onclick={() => part = part === "leave" ? null : "leave"}>{word(LABELS.leave, "Leave My Fleet")} {part === "leave" ? "▾" : "▸"}</button>
         {#if part === "leave"}<button type="button" class="minor" disabled={blocked} onclick={() => act({ kind: "leave" })}>{word(LABELS.confirm, "Confirm")}</button>{/if}

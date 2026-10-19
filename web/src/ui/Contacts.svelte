@@ -742,85 +742,10 @@
     rankWing: "UI/Fleet/Ranks/WingCommander",
     rankSquad: "UI/Fleet/Ranks/SquadCommander",
     rankMember: "UI/Fleet/Ranks/SquadMember",
-    jumpTo: "UI/Inflight/JumpToFleetMember",
-    bridgeTo: "UI/Fleet/BridgeToMember",
-    conduitTo: "UI/Fleet/ConduitJumpToFleetMember",
   } as const;
-  /**
-   * dogmaconst: the ship's jump drive (attributeCanJump), a fitted module's jump portal (attributeJumpPortalPassenger
-   * RequiredAttributeID) and the ship's jump conduit (attributeJumpConduitPassengerRequiredAttributeID), by which
-   * sessionChecker.isShipJumpCapable, canOpenJumpPortal and canPerformGroupJump (229 to 255) offer the three.
-   */
-  const ATTRIBUTE_CAN_JUMP = 861;
-  const ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED = 3318;
-  const ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED = 3321;
-  /** A wormhole system's number (sessionChecker.IsInWormholeSystem): no jump drive works there. */
-  const isWormholeSystem = (solarSystemID: number | null): boolean => solarSystemID !== null && solarSystemID >= 31_000_000 && solarSystemID < 32_000_000;
-  // svelte-ignore state_referenced_locally
-  const space = store.space;
-  // svelte-ignore state_referenced_locally
-  const dogma = store.dogma;
-  /** An attribute of the active ship (the first of godma's ships) or of a module fitted to it, where it is a number. */
-  const shipAttribute = (attributeID: number): number | null => {
-    const value = $dogma.allInfo?.ships[0]?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
-    return typeof value === "number" ? value : null;
-  };
-  const anyModuleHas = (attributeID: number): boolean => ($dogma.allInfo?.ships.slice(1) ?? []).some((module) => {
-    const value = module.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
-    return typeof value === "number" ? value !== 0 : value === true;
-  });
   /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
   function fleetMenuOffered(ownerID: number): boolean {
     return isCharacterContact(ownerID) && !isNpcOwner(ownerID) && $fleetState.availability === "ready" && fleetMemberIDs.has(ownerID);
-  }
-
-  /**
-   * GetDistanceToActiveShip (FleetMemberChecker): the member's ship among those the pilot sees (SlimItemFromCharID),
-   * the distance between their surfaces; none where it is not seen, which is far enough to warp to (or sys.maxint).
-   */
-  function memberDistance(ownerID: number): number | null {
-    const snapshot = $space.snapshot;
-    const ship = snapshot?.ship ?? null;
-    if (snapshot === null || !snapshot.inSpace || ship === null) return null;
-    const ball = snapshot.entities.find((entity) => entity.characterID === ownerID && !entity.isSelf) ?? null;
-    if (ball === null) return null;
-    const dx = ball.position.x - ship.position.x;
-    const dy = ball.position.y - ship.position.y;
-    const dz = ball.position.z - ship.position.z;
-    return Math.max(0, Math.hypot(dx, dy, dz) - ball.radius - ship.radius);
-  }
-
-  /** Beacon navigation remains here until D2p18c2b2; management and warps are shared. */
-  function fleetOffersOf(ownerID: number): { readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean } {
-    const mine = ownerID === myID;
-    const distance = memberDistance(ownerID);
-    // OfferJumpToFleetMember, OfferBridgeToMember and OfferGroupJumpToFleetMember (characterCheckers.py 470 to 510):
-    // another, the pilot in a ship in space, the member's own ship not where the pilot sees it, the member's cyno lit
-    // (HasActiveBeacon), and the ship able (sessionChecker 229 to 255: a jump drive, out of wormhole space; with a
-    // fitted jump portal for the bridge, with a jump conduit for the conduit's).
-    const toBeacon = !mine && $flightState.status?.inSpace === true && distance === null
-      && ($fleetState.jumpBeacons ?? {})[String(ownerID)] !== undefined;
-    const jumpCapable = toBeacon && !isWormholeSystem($flightState.status?.solarSystemID ?? null)
-      && (shipAttribute(ATTRIBUTE_CAN_JUMP) ?? 0) !== 0;
-    return {
-      jumpTo: jumpCapable,
-      bridgeTo: jumpCapable && anyModuleHas(ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED),
-      conduitTo: jumpCapable && (shipAttribute(ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED) ?? 0) !== 0,
-    };
-  }
-
-  /** The beacon gates read the active ship's held dogma when the menu opens. */
-  function openFleetMenu(): void {
-    if ($flightState.status?.inSpace === true) {
-      // (And the ship's dogma, by which the jumps to a member's cyno are offered, where it is not read yet.)
-      if ($dogma.allInfo === null) void flow.loadDogma().catch(() => {});
-    }
-  }
-
-  /** Jump, Conduit Jump and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember, BridgeToMember). */
-  function toMemberBeacon(ownerID: number, how: "jump" | "group" | "bridge"): void {
-    fleetDone();
-    void run(() => flow.toFleetMemberBeacon(ownerID, how));
   }
 
   function fleetDone(): void {
@@ -2725,20 +2650,7 @@
 {/snippet}
 
 {#snippet fleetSubmenu(ownerID: number)}
-  <OwnerFleetMenu {store} {flow} {ownerID} {openWatchlist} onOpen={openFleetMenu} onDone={fleetDone}>
-    {#snippet navigation()}
-      {@const fleetOffers = fleetOffersOf(ownerID)}
-      {#if fleetOffers.jumpTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "jump")}>{word(FLEET_WORDS.jumpTo, "Jump to their cyno")}</button>
-      {/if}
-      {#if fleetOffers.bridgeTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "bridge")}>{word(FLEET_WORDS.bridgeTo, "Open a bridge to their cyno")}</button>
-      {/if}
-      {#if fleetOffers.conduitTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "group")}>{word(FLEET_WORDS.conduitTo, "Take the fleet to their cyno")}</button>
-      {/if}
-    {/snippet}
-  </OwnerFleetMenu>
+  <OwnerFleetMenu {store} {flow} {ownerID} {openWatchlist} onDone={fleetDone} />
 {/snippet}
 
 <style>

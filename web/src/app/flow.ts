@@ -175,6 +175,7 @@ import {
 } from "../bridge/mail.ts";
 import { locationKind } from "../bridge/clientWords.ts";
 import { resolvedName } from "../store/names.ts";
+import { labelEscaped } from "../bridge/labelMarkup.ts";
 import { corporationTrackingOf, type CorporationTracking } from "../bridge/corporationTracking.ts";
 import { corporationMemberOf, memberField, memberInteger, memberTitleOf, MEMBER_ROLE_FIELDS, type CorporationMemberDetails } from "../bridge/corporationMemberDetails.ts";
 import { memberRoleGroups, myGrantableRoles, memberTitlesOf, changeMemberTitles, type RoleMasks, type CorporationTitle } from "../bridge/corporationRoles.ts";
@@ -1367,6 +1368,7 @@ export interface SkillsRequiredRow {
 
 /** The character owner menu's fleet management actions (menusvc.FleetMenu). */
 export type FleetMenuAction =
+  | { readonly kind: "beacon"; readonly characterID: number; readonly how: "jump" | "bridge" | "group" }
   | { readonly kind: "warp"; readonly characterID: number; readonly range: number; readonly group: boolean }
   | { readonly kind: "leader" | "kick"; readonly characterID: number }
   | { readonly kind: "move"; readonly characterID: number; readonly wingID: number | null; readonly squadID: number | null; readonly role: number }
@@ -5426,6 +5428,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           : null;
         store.apply({ type: "fleet/jump-beacon", characterID, beacon });
       }
+      return;
+    }
+    if (method === "OnGroupJumpAnchorActivated" || method === "OnGroupJumpedPassenger") {
+      // cynoTravelSvc22-28: the server's actual passenger count/anchor and destination in native FSD dialogs.
+      const first = wholeNumberOf(args[0]);
+      const second = wholeNumberOf(args[1]);
+      if (first === null || second === null) return;
+      const entries: [string, JsonValue][] = method === "OnGroupJumpAnchorActivated"
+        ? [["toSolarsystemID", first], ["numPassengers", second]]
+        : [["anchorCharID", first], ["toSolarsystemID", second]];
+      sayDialog(method.slice(2), { type: "dict", entries }, "Conduit jump completed.");
       return;
     }
     if (method === "OnFleetLeave") {
@@ -13433,15 +13446,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function fleetMenuAction(action: FleetMenuAction): Promise<"watchlist" | null> {
     const current = callOptions.captureRequestGuard!();
     try {
-      if (action.kind === "warp") {
-        if (action.group) await warpFleetToMember(action.characterID, action.range);
+      if (action.kind === "warp" || action.kind === "beacon") {
+        if (action.kind === "beacon") {
+          // menusvc.*ToMember: a beacon gone before the callback is a no-op, with no old flight error resurfaced.
+          if (!store.fleet.get().jumpBeacons?.[String(action.characterID)]) return null;
+          await toFleetMemberBeacon(action.characterID, action.how);
+        } else if (action.group) await warpFleetToMember(action.characterID, action.range);
         else await warpToFleetMember(action.characterID, action.range);
         current();
         const flight = store.flight.get();
         if (flight.actionError && !flight.actionErrorSaid) throw new Error(flight.actionError);
         return null;
       } else if (action.kind === "leader") {
-        if (!(await askDialog("ConfirmMakeFleetBoss", { type: "dict", entries: [["charName", [2, action.characterID]]] }, "Make this pilot the fleet's boss?", "yesno", { defaultAnswer: "no", suppressAnswer: "yes" }))) return null;
+        // fleetSvc.MakeLeader601: evelink.character_link uses cfg.eveowners' own type and name, not UE_OWNERID text.
+        const identity = await api.resolveNames([{ kind: "owner", id: action.characterID }, { kind: "ownerType", id: action.characterID }], callOptions);
+        current();
+        const name = identity.names[`owner:${action.characterID}`];
+        const typeID = Number(identity.names[`ownerType:${action.characterID}`]);
+        if (!name || !Number.isSafeInteger(typeID) || typeID <= 0) throw new Error("That pilot's identity could not be read.");
+        const link = `<a href="showinfo:${typeID}//${action.characterID}">${labelEscaped(name)}</a>`;
+        if (!(await askDialog("ConfirmMakeFleetBoss", { type: "dict", entries: [["charName", link]] }, "Make this pilot the fleet's boss?", "yesno", { defaultAnswer: "no", suppressAnswer: "yes" }))) return null;
         current();
         await makeFleetLeader(action.characterID);
       } else if (action.kind === "move") {
@@ -13503,9 +13527,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // menusvc.JumpToMember, GroupJumpToMember and BridgeToMember (2614 to 2681): the member's cyno as fleetSvc keeps it
   // (GetActiveBeaconForChar; none, nothing asked), then cynoTravelSvc's call on the park (bridge/movementWrites.ts).
   async function toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void> {
+    const current = callOptions.captureRequestGuard!();
     const beacon = store.fleet.get().jumpBeacons?.[String(characterID)] ?? null;
     if (beacon === null) return;
-    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(bridgeDo, flightNow, characterID, beacon, how)));
+    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(fencedDo(current), flightNow, characterID, beacon, how)));
   }
 
   // fleetSvc.SendBroadcast_TravelTo (1034): SendGlobalBroadcast('TravelTo', session.solarsystemid2), from the fleet's

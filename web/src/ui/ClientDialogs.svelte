@@ -45,6 +45,7 @@
   } from "../bridge/questions.ts";
   import { labelEscaped } from "../bridge/labelMarkup.ts";
   import LabelText from "./LabelText.svelte";
+  import { linkFollowerOf } from "./linkFollowers.ts";
   import { SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
@@ -637,6 +638,7 @@
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? template : own;
   };
+  const followerOf = (url: string, text: string) => linkFollowerOf(url, flow, null, label => wordOf(label, label), text);
 
   /** The types the client puts up as a box (_prompt_player), and as the passing strip (message_player). */
   const BOX_TYPES: ReadonlySet<string> = new Set(["info", "infomodal", "warning", "question", "error", "fatal", "windowhelp"]);
@@ -1618,7 +1620,7 @@
         <span class="for-pilot">For {pilotName}</span>
       {/if}
       <strong>{box.title}</strong>
-      <div class="body"><LabelText markup={box.markup} /></div>
+      <div class="body"><LabelText markup={box.markup} {followerOf} /></div>
       {#if box.suppress !== null}
         <label class="keep">
           <input type="checkbox" bind:checked={keepTicked} />

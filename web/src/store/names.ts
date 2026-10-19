@@ -68,6 +68,8 @@ export type NameKind =
    */
   | "evelocation"
   | "owner"
+  /** A player owner's cfg.eveowners.typeID, kept as a decimal string for an exact showinfo character link. */
+  | "ownerType"
   /** An owner's kind: the group its type is in, by name (Character, Corporation, Alliance, Faction). */
   | "ownerGroup";
 
