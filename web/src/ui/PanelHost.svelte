@@ -30,6 +30,7 @@
   import Travel from "./Travel.svelte";
   import RouteWindow from "./RouteWindow.svelte";
   import MissionTracker from "./MissionTracker.svelte";
+  import TypeCompare from "./TypeCompare.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
@@ -39,8 +40,9 @@
   import Chat from "./Chat.svelte";
   import Wallet from "./Wallet.svelte";
   import CorpWallet from "./CorpWallet.svelte";
-  import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
+  import CorporationWindow from "./CorporationWindow.svelte";
+  import CorporationMemberDetails from "./CorporationMemberDetails.svelte";
   import Settings from "./Settings.svelte";
   import ShowInfo from "./ShowInfo.svelte";
   import NoticeLog from "./NoticeLog.svelte";
@@ -55,6 +57,7 @@
     flow,
     tab,
     onOpen,
+    onClose,
     sessions,
     onGoToPilot,
   }: {
@@ -71,6 +74,7 @@
      * means the active pilot, which is what every other caller wants.
      */
     onOpen?: (tab: TabID, sessionID?: string) => void;
+    onClose?: () => void;
     // R107 — the full pilot roster (every session, not just the active one).
     // Optional and forwarded only to the Bot Manager panel, which is the only
     // one that needs to see pilots beyond its own store/flow.
@@ -121,7 +125,8 @@
 {:else if tab === "scanner"}
   <Scanner {store} {flow} />
 {:else if tab === "mail"}
-  <Mail {store} {flow} />
+  <!-- A skill plan link in a mail, followed (link.py handle_link): the Skills window opens on it. -->
+  <Mail {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
 {:else if tab === "contacts"}
   <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "locations"}
@@ -179,10 +184,12 @@
   <Wallet {store} {flow} />
 {:else if tab === "corpWallet"}
   <CorpWallet {store} {flow} />
-{:else if tab === "standings"}
-  <Standings {store} {flow} />
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
+{:else if tab === "corporation"}
+  <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
+{:else if tab === "memberDetails"}
+  <CorporationMemberDetails {store} {flow} {onClose} />
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}
@@ -205,7 +212,10 @@
   -->
   <ShowInfo {store} {flow} />
 {:else if tab === "chat"}
-  <Chat {store} {flow} />
+  <!-- A skill plan link in a message, followed (link.py handle_link): the Skills window opens on it. -->
+  <Chat {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />
+{:else if tab === "compare"}
+  <TypeCompare {store} {flow} />
 {:else}
   <!-- Every tab in `tabs.ts` is named above; this is the arm for a `TabID` that
        does not exist yet, and it says so rather than guessing. -->

@@ -125,6 +125,14 @@
     selected = request.id;
   });
 
+  // svelte-ignore state_referenced_locally
+  const conversations = flow.conversations.state;
+  let servedChatRequest = 0;
+  $effect(() => {
+    const request = $conversations.openSerial;
+    if (!request || request === servedChatRequest) return;
+    servedChatRequest = request; selected = "chat";
+  });
   const effective = $derived(
     selected !== null && isTabVisible(selected, isDocked) && isWindowTab(selected) ? selected : null,
   );
@@ -141,7 +149,7 @@
        scrolling padded column it has always had. -->
   <main class="mobile-main" class:mobile-main-station={effective === null && isDocked}>
     {#if effective !== null}
-      <PanelHost {store} {flow} tab={effective} onOpen={(id) => (selected = id)} {sessions} />
+      <PanelHost {store} {flow} tab={effective} onOpen={(id) => (selected = id)} onClose={() => selected = null} {sessions} />
     {:else if isDocked}
       <!-- Docked home = the same Station panel as the desktop's right-hand dock,
            at its narrowest tier. There is no strip to fold into on a phone, so

@@ -1518,6 +1518,62 @@ flagged 1, each one's domain (`carbonui/control/browser/sites.py` 348 to 354, 41
 being the list on disk unless its MD5 is not `browserLockdownSvc.GetFlaggedSitesHash()`, when
 `GetFlaggedSitesList()` is asked (380 to 406). Tranquility and EveJS both answer the MD5 of `[]`. A pilot on the
 game port checks so since `5f0b9627`.
+Private conversations and optional invitations (read 2026-10-19). Start Conversation calls
+`xmppchatsvc.Invite(charID, None)`: create through the proxy's
+`XmppChatMgr.CreatePrivateChannel(charID)`, keep the target as not yet invited, and join the returned room
+(1197 to 1208, 1239 to 1263). Opening the conversation sends no ordinary player invitation. The first
+`SendGroupChat` marks the target invited and sends the mediated MUC invite with reason `Private chat` before
+its groupchat line (328 to 342). Later lines do not repeat it. Invite To Chat in an existing private/player
+room sends the mediated invite immediately with empty reason; `xmppchatwindow.CanInvite` (598 to 604) permits
+any target outside that room. The character menu rejects self, NPC and multiple selections. Elevated chat roles
+use `XmppChatMgr.AddCharacterToChannel` instead of that ordinary invitation path (1257 to 1261).
+
+`xmppConnection.Invite` and `RejectInvite` (297 to 306) address the room from the bare character JID and
+put `invite to=` or `decline to=` inside the MUC user namespace. Acceptance joins; blocked senders reject with
+`blocked`, auto rejection and an ordinary rejection with `rejected`, and the dialog's block choice with
+`rejected_and_blocked` (`xmppchatsvc` 561 to 601). A personal contact is accepted automatically before the
+already-joined check. `_HandleDecline` (604 to 624) reads the rejecting sender, clears that pending invitation,
+closes a pending private room and reports `ChtRejected`, `ChtCharNotReachable` or `ChtBlockedNow`.
+The original compiled build-3396210 functions confirmed create/join/first-send order and both stanza templates.
+An all-folder Tranquility recording search found chat setup but no exact private conversation capture; these
+private contracts come from the client, not a claimed Tranquility observation.
+
+Three actual game-port/XMPP sessions reproduced EveJS dropping declines and refusing an explicitly invited
+third player. EveJS `4dce363ec` relays each decline from the room with the authenticated rejecting character;
+`f35c0cfe9` admits an explicitly invited additional participant without adding moderation rights. After a cold
+start, all three reasons arrived, an uninvited third player was refused, then its invitation, join, reply and
+three-member rosters succeeded. Creation alone still sent zero invitations. The production XMPP adapter now
+keeps full private/player/bot/system identities, retains optional invitations and declines, and exposes atomic
+room join/read/send/leave/invite/reject/acknowledge through the BFF and typed page API. The two native proxy
+writes use the existing confirmed pilot-call boundary. Three live BFF pilots held two independent private
+rooms, exchanged messages, added a third participant, exercised all decline reasons and kept one room working
+after closing the other. A real successful preflight held across logout/reselection was retired without a late
+invitation request; closing a native session during its actual spam-list read prevented the late line.
+The room-key rule comes from original compiled GetWindowNameForGroup (895 to 907). Native private
+GetDisplayName asks disco#info at the full room JID; a player room asks the conference service with its
+room name as node (1327 to 1342). The adapter now correlates these IQ replies, returns the actual identity
+name and occupant count, and rejects pending requests when the connection closes, using IssueRequest
+203 to 234's thirty-second deadline. Original compiled GetDisplayName and xmpphandler.issue_request
+confirmed both stanzas: private counts below two choose PrivateChatAlone; without a window, two or more
+choose PrivateChat with the count. GetPrivateChannelDisplayName uses other member names, a pending
+target fallback, and GroupChat for multiple others. GetMembers is the native member dict's keys (window459),
+so names follow its Python dict order. Live room counts changed 0/1/2/1/0, concurrent private/player IQs
+kept distinct replies, and queries never implicitly joined. A real successful response held across pilot
+replacement retired; closing an actual pending IQ rejected it and ignored the held late reply.
+The page now owns this private-conversation sequence in `chatConversations.ts`. Shared single-owner
+Contacts and Member List menus offer Start Conversation and the native eligible-room submenu. Private
+rooms retain independent histories, rosters and drafts alongside Local/Corp on desktop and phone.
+The nonmodal invitation window is keyed by sender and offers the native four choices, default Accept;
+Accept and Add opens the existing Contact Management form rather than writing a default contact.
+Blocked, auto-reject, personal-contact and already-joined decisions run in native order. Each awaited
+operation keeps its captured pilot, including the spam preflight before the first invitation.
+The mutable member-key table follows CPython 2.7 deletion and resize order; thirty operations matched
+the installed client's compiled `GetMembers`. Live browser checks covered first-send order, rejection
+cleanup, all four choices, duplicate invitations, pending-close cleanup, two independent rooms and a
+third participant. A real successful preflight held across a change of pilot retired without an invite
+or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
+verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config
@@ -1891,6 +1947,86 @@ version as `machoVersion`, and the server can reply "still good" instead of the 
 send 1, so the server always answers in full. (What comes back is handled; see below.)
 
 ## Reading the server's answers in the browser
+
+Member List's personal contact actions follow compiled `User.GetMenu`, `CharacterChecker` and `menusvc`:
+a single other player offers Add Contact or Edit/Remove Contact, plus Block or Unblock. Self and multiple selected
+members offer none of those personal actions; the Contacts window's own multi-edit menu is a different path.
+The existing Contact Management and removal question are reused without opening the Contacts list. Add/Edit keep
+the five positional `charMgr` arguments, removal passes the ID list, and BlockOwners/UnblockOwners each pass a list.
+Buddy additions prime the held online state before a missing status lookup; removing personal contacts clears
+their online entries, as native `onlineStatus.ClearOnlineStatus` does. No personal-contact write recording was found
+in the recursive Tranquility corpus search. Alliance row contact actions are separate work.
+
+The remaining corporation owner-menu administration flows and their native membership prerequisite are
+sized in [Corporation owner actions](game-port-corporation-owner-actions.md). Membership is retained from
+`GetEveOwners` and changed by notices; it is not a target's public corporation read.
+
+Corporation member-row contacts follow compiled `CharacterChecker` 55-60/314-321 and
+`SessionChecker.IsDiplomat`: director or diplomat, non-NPC targets, including self and multiple selections.
+`menusvc` 604-609 and compiled `menuMerge.MergeMenus`/`_ExecMulti` keep a separate callback for each
+eligible owner. A mixed selection offers Add for missing contacts and Edit/Remove for existing ones. Each owner
+gets its own management window or removal question; canceling one leaves the others pending. This differs from
+the Contacts list's bulk standing editor. The shared dialog host preserves those independent modal lifetimes.
+Corporate dialogs use the existing fractional standing/label controls and corporation moniker writers; personal
+dialogs retain their buddy/notification fields and personal scope. Live CEO, ordinary-member and non-director
+diplomat checks cover single/self/mixed/multiple selections, cancellation, fractional readback and phone layout.
+A second client's already-open Corporate Contacts view follows the actual organization notices, without another
+`GetCorporateContacts`; successful writes are positional Add/EditCorporateContact(id, level) and separate
+RemoveCorporateContacts([id]) calls. No exact corporate-write TQ recording was found. Alliance scope and its
+executor-corporation gate are the next unit, rather than inferred from the corporation implementation.
+
+The alliance server contact foundation is corrected in EveJS `82608f269` (native-rule assertion follow-up
+`bba9a58b8`). Compiled corporate/alliance Confirm methods return decimal standings; the native address book keeps
+the existing mask on Edit, keeps the other label field when one is None, and consumes mask-only organization
+notices. Live TCP before/after checks show Edit2.5/multi-edit-1.5 preserved, bit60 retained, label name/color
+preserved independently, and assignment/removal notices delivered to executor and non-executor alliance members.
+AssignLabels now leaves an absent contact absent in both corporation and alliance scopes, as the native controller
+opens Add separately and its cancellation creates no contact. A non-executor write remains refused. The resulting
+standing, full mask and labels survive a stopped-store check and a fresh server boot/login. No exact alliance-write
+TQ capture was found; this proves the compiled-client rules and local wire behavior. Alliance member-menu UI,
+scoped labels/writers and the BFF's held alliance-notice amendments remain the next unit.
+
+Successful personal contact writes now amend the held native `GetContactList` and `GetLabels` answers
+(`addressbookService.py` 617-869, 1001-1147). Existing row descriptors, row order, unrelated fields and full-width
+label masks survive; refused writes and replies belonging to retired sessions publish no local change. Label
+deletion clears its bit on contacts and retires only the labels table, which native immediately reads again.
+The client's local contact/label/block events refresh already-open personal Contacts views from those held answers;
+these are local events, not server packets. A view discards superseded or unmounted reads.
+Live browser captures show one `GetContactList` per selected session through Add/Edit/Delete/Block/Unblock,
+label create/rename/assign/remove/delete and repeated member menus. Label deletion adds one `GetLabels` read.
+Live TCP instrumentation also preserved bit 60 through low-bit removal and multi-edit, retained the previous answer
+after an injected server refusal, and published no local event for a real reply held until after session release.
+The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
+this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
+
+Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
+`bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
+`corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
+has no client role gate; Cancel makes no call, and the action neither applies nor clears the member-profile
+draft. Server UserErrors go through the ordinary client dialog handler. No transfer recording was found in the
+recursive Tranquility corpus search; this contract comes from the compiled native methods (2026-10-19).
+
+The wallet's `GiveSharesDialog.TransferShares` passes the holding's issuer as the first argument. Its corporate
+owner is `session.corpid` (`CorpSharesPanel.GetOwnerID`), and `GetCorpRegistry` remains bound to that session
+corporation. Corporate transfer authority and the debited allocation belong to that owner.
+
+Bulk member grants use the compiled task-management `ExecuteActions(targetIDs, actions)` path. `bco_members`
+forwards numeric GIVE cash/share actions unchanged. The native `SharesPanel.OnShareChange` rereads a visible
+owner's holdings, so the server publishes the grant's share changes after settlement completes. Mixed cash/share
+settlements keep the actual write's before/after allocations with their applied checkpoint; replay does not
+reapply or republish a completed grant. No Tranquility bulk-grant call or notice was found in the corpus.
+
+The corporation wallet's Shares / Owned by Corp view follows compiled `CorpISKPanel.GetMainTabs`,
+`CorpSharesPanel` and `SharesPanel`: accountant or junior-accountant roles, owner from `session.corpid`,
+`GetSharesByShareholder(True)` on tab selection and matching `OnShareChange` while visible. Corporate and personal
+holdings are kept separately. Hiding either Shares view stops its notification-triggered reads. The Shareholders
+subtab and the remaining share menus are separate work.
+
+Compiled `corpvotes.ApplySanctionedAction` calls `voteManager.ActivateSanctionedAction(voteCaseID)`.
+Share-creation activation now sends the corporate holder's `OnShareChange` after recording the action as applied;
+an already applied activation changes neither issued shares nor the holding and sends no duplicate notice.
+The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
+The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by

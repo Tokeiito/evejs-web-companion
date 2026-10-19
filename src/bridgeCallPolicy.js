@@ -91,10 +91,22 @@ const EARLIER_WRITE_METHODS = freezeMethodMap({
 });
 
 const FEATURE_WRITE_METHODS = freezeMethodMap({
+  // xmppchatsvc.py 1197-1208 / 1257-1261: native private conversations and elevated invitations.
+  XmppChatMgr: ["CreatePrivateChannel", "AddCharacterToChannel"],
+  // all_cso.py 250-278: alliance contacts and their separately scoped labels.
+  allianceRegistry: ["EditAllianceContact", "RemoveAllianceContacts", "EditContactsRelationshipID", "CreateLabel", "EditLabel", "DeleteLabel", "AssignLabels", "RemoveLabels"],
   // RepairItems is the server's own name for a repair, which the gateway's list has. The other two are the
   // client's, on the shop's Moniker (base_repairshop.py 65 to 70).
   repairSvc: ["RepairItems", "RepairItemsInStation", "RepairItemsInStructure"],
   officeManager: ["RentOffice", "UnrentOffice"],
+  // A fitting saved, and one of the same name saved over (fittingSvc.PersistFitting, 302 and 304): the fitting display's
+  // Save of a fitting not saved yet (Save Fit As). The game port carries both; the web gateway's list has neither.
+  charFittingMgr: ["SaveFitting", "UpdateFitting"],
+  // The same saves on the corporation's and the alliance's fitting managers, and the name and description changed
+  // there (fittingSvc.GetFittingMgr, 85 to 92): the fitting display's Save for Corporation and Save for Alliance. The
+  // game port carries them; the web gateway's list has none.
+  corpFittingMgr: ["SaveFitting", "UpdateFitting", "UpdateNameAndDescription", "DeleteFitting", "DeleteManyFittings"],
+  allianceFittingMgr: ["SaveFitting", "UpdateFitting", "UpdateNameAndDescription", "DeleteFitting", "DeleteManyFittings"],
   // PurchaseSkills is the client's own buying of skill books (characterskills/client/purchase.py 100), from its
   // books window; a page's write since 2026-10-16 (the Factory route it was kept for went with Pilot Training).
   // SaveNewQueue is the client's own saving of a queue, on its skill handler (skillQueueSvc.py 153). The game
@@ -127,6 +139,9 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // An acceleration gate activated (movementFunctions.RealActivateAccelerationGate, 553): the keeper's, by its
   // name. The game port carries it; the web gateway's list has nothing of the keeper's.
   keeper: ["ActivateAccelerationGate"],
+  // An expert system taken out (expertSystemSvc.RemoveExpertSystem: expertSystemMgr.RemoveMyExpertSystem, after the
+  // client's question). The game port carries it; the web gateway's list has nothing of the expert systems'.
+  expertSystemMgr: ["RemoveMyExpertSystem"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -186,6 +201,16 @@ function isBridgeWritePair(service, method) {
  *                                and train: the skills as one list. The handler buys for the session's own
  *                                character, judges each skill again (sold, not injected) and the cost against its
  *                                wallet, and takes no one's name.
+ *   dogmaIM.InjectSkillIntoBrain skills.InjectSkillIntoBrain (skillsvc.py 775 to 793): GetDogmaLM().
+ *                                InjectSkillIntoBrain(itemIDs), from a skill book dropped from an inventory onto the
+ *                                skill queue (skillQueuePanelNew.DoDropData): the books' item ids, one list. The
+ *                                handler (skillbookRuntime.injectSkillbookItems) injects for the session's own
+ *                                character, refuses an item not its own or no published skill (ItemNotASkill) and a
+ *                                skill it has (CharacterAlreadyKnowsSkill), and takes no one's name.
+ *   expertSystemMgr.RemoveMyExpertSystem  the expert systems page's Remove (PageController.remove_selected, after
+ *                                prompt_remove_expert_system's Yes): the system's type. The handler
+ *                                (expertSystemRuntime.removeExpertSystemFromCharacter) takes it from the session's own
+ *                                character and takes no one's name.
  *   crimewatch.SetSafetyLevel    the ship's safety level set. Its route confirmed, checked the level was one
  *                                of the three, and called. The handler sets the level of the session's own
  *                                character, takes any number as one of the three, and takes no one's name.
@@ -231,6 +256,23 @@ function isBridgeWritePair(service, method) {
  *                                handed. It holds every bank call to the ship the session is flying now (fixed
  *                                in eve.js on 2026-10-10), so the page names the ship, as a client does. Asked
  *                                of the service by its name, as the overload is.
+ *   dogmaIM.LinkWeapons,         one weapon grouped with another, by a drop on its slot with Shift held
+ *   dogmaIM.MergeModuleGroups    (clientDogmaLocation.LinkWeapons, 751 to 782): the ship, the bank's master and the
+ *                                module, or the master of the bank the module is in. Held to the ship the session
+ *                                is flying.
+ *   dogmaIM.OverloadRack,        a rack overloaded and stopped from its module button's menu (shipmodulebutton
+ *   dogmaIM.StopOverloadRack     695 and 699: godma.OverloadRack, StopOverloadRack), the module named.
+ *   dogmaIM.InitiateModuleRepairMany  the button's Repair All (shipmodulebutton 516: godma.RepairManyModules), the
+ *                                ship's damaged modules named in a list.
+ *   dogmaIM.PeelAndLink          a bank dragged onto another weapon on the HUD with Shift held
+ *                                (clientDogmaLocation.LinkWeapons 778): the ship, the master and the bank's master.
+ *   dogmaIM.DestroyWeaponBank    a bank broken up, as the client breaks one before a grouped weapon is put into a
+ *                                container off its slot (clientDogmaLocation.UnloadModuleToContainer, 1086), the
+ *                                ship and the bank's master named. Held to the ship the session is flying.
+ *   dogmaIM.UnlinkModule         one module taken out of a bank, as the client takes one out before a grouped
+ *                                weapon is unfitted from its slot (fittingSlotController.UnfitModule, 234:
+ *                                UngroupModule, clientDogmaLocation 785), the ship and the bank's master named.
+ *                                Held to the ship the session is flying, as the other bank calls are.
  *   dogmaIM.LoadAmmo,            ammunition put into modules and taken out of them. Each route took a word for
  *   dogmaIM.UnloadAmmo           the place (the hold, or the hangar) and named the ship and the place itself,
  *                                because the handlers took the ship, the place the charges lie and the place
@@ -513,6 +555,10 @@ function isBridgeWritePair(service, method) {
  *                                (invItemFunctions.py 197), from a packaged ship's menu in the hangar: Assemble Ship,
  *                                and Board Ship's first step. The handler assembles the session's own character's
  *                                packaged ships in the hangar where it is docked and no other's.
+ *   ship.FitShips                GetShipAccess().FitShips(shipTypeID=, fitInfo=, itemLocationID=, cargoItemsByType=,
+ *                                fitRigs=, name=, numToFit=, itemContainerID=) (fittingSvc.py 510), from the multifit
+ *                                window's Fit. The handler takes the place only where the session is docked there, and
+ *                                assembles and fits the session's own character's packaged ships of the hull there.
  *   dogmaIM.Activate             godma.Activate (2062), from the module's button (shipmodulebutton.py 1348):
  *   dogmaIM.Deactivate           Activate(itemID, effectName, target, repeat); Deactivate(itemID, effectName)
  *                                (2101). Routes until 2026-10-14 (POST /api/bridge/modules/activate and
@@ -776,8 +822,37 @@ function isBridgeWritePair(service, method) {
  *   abyssalMgr.AbyssalEntranceGateActivation   abyssal_service.activate_entrance_gate (56 to 59): (item_id), the
  *                                trace, the session into its pocket (PAGE_PLACE_CHANGE_CALLS, below); the server
  *                                takes only a trace the session's fleet may enter.
+ *
+ * And a saved fitting deleted, since 2026-10-16 (the fitting window's browser, its menu's Delete Fitting):
+ *
+ *   charFittingMgr.DeleteFitting   fittingSvc.DeleteFitting (433 to 439): (ownerID, fittingID), on the owner's fitting
+ *                                manager, the pilot's own for a fitting of its own; the server refuses an owner the
+ *                                session may not change (charFittingMgrService assertSessionCanMutateOwner).
+ *   charFittingMgr.UpdateNameAndDescription   fittingSvc.ChangeNameAndDescription (710 to 724), the fitting
+ *                                display's Save: (fittingID, ownerID, name, description), on the pilot's own fitting
+ *                                manager for a fitting of its own; the server refuses an owner the session may not
+ *                                change, as above.
+ *   charFittingMgr.SaveFitting, UpdateFitting   fittingSvc.PersistFitting (268 to 313), the fitting display's Save of
+ *                                a fitting not saved yet (Save Fit As): (ownerID, fitting), and the second with the
+ *                                fitting's number by keyword, on the pilot's own fitting manager; the server refuses an
+ *                                owner the session may not change, as above.
+ *   corpFittingMgr.SaveFitting, UpdateFitting, UpdateNameAndDescription
+ *   allianceFittingMgr.SaveFitting, UpdateFitting, UpdateNameAndDescription
+ *                                the same, on the corporation's and the alliance's fitting managers (the fitting
+ *                                display's Save for Corporation and Save for Alliance, fittingMgmtCont.SaveForOwner);
+ *                                the server refuses them without the fitting manager's role, and the alliance's
+ *                                to any corporation but its executor (fittingStore assertSessionCanMutateOwner).
+ *   corpFittingMgr.DeleteFitting, allianceFittingMgr.DeleteFitting
+ *                                fittingSvc.DeleteFitting (433 to 439) of the corporation's or the alliance's fitting,
+ *                                where fittingUtil.CanDeleteFit lets the pilot (its role, its corporation the
+ *                                alliance's executor); the server refuses the same, as above.
+ *   charFittingMgr.DeleteManyFittings, corpFittingMgr.DeleteManyFittings, allianceFittingMgr.DeleteManyFittings
+ *                                fittingSvc.DeleteManyFittings (441 to 460), the browser's Delete Fitting with many
+ *                                selected: (ownerID, fittingIDs), on each owner's fitting manager, for the fittings
+ *                                fittingUtil.GetDeletableNodes lets go; the server refuses an owner the session may
+ *                                not change, as above.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "skillHandler.ApplyFreeSkillPointsToSkills", "skillHandler.PurchaseSkills", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "fleetMgr.AddToWatchlist", "fleetMgr.RemoveFromWatchlist", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "beyonce.CmdGotoDirection", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "beyonce.BookmarkScanResult", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.BuyMultipleItems", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.AssembleShip", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll", "invbroker.SetLabel", "mailMgr.MarkAsRead", "mailMgr.MarkAsUnread", "mailMgr.MoveToTrash", "mailMgr.MoveFromTrash", "mailMgr.DeleteMail", "mailMgr.MarkAllAsRead", "mailMgr.MarkAsReadByLabel", "mailMgr.MoveAllToTrash", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash", "mailMgr.EmptyTrash", "mailMgr.CreateLabel", "mailMgr.EditLabel", "mailMgr.DeleteLabel", "mailMgr.AssignLabels", "mailMgr.RemoveLabels", "mailingListsMgr.Create", "mailingListsMgr.Join", "mailingListsMgr.Leave", "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete", "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers", "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail", "charMgr.AddContact", "charMgr.EditContact", "charMgr.DeleteContacts", "charMgr.BlockOwners", "charMgr.UnblockOwners", "charMgr.EditContactsRelationshipID", "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels", "notificationMgr.DeleteNotifications", "notificationMgr.MarkAsProcessed", "notificationMgr.MarkGroupAsProcessed", "notificationMgr.MarkAllAsProcessed", "notificationMgr.DeleteGroupNotifications", "notificationMgr.DeleteAllNotifications", "account.GiveCash", "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting", "accessGroupBookmarkMgr.BookmarkStaticLocation", "accessGroupBookmarkMgr.UpdateBookmark", "accessGroupBookmarkMgr.DeleteBookmarks", "beyonce.CmdGotoBookmark", "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.DeleteFolder", "accessGroupBookmarkMgr.AddFolder", "accessGroupBookmarkMgr.UpdateFolder", "accessGroupBookmarkMgr.RemoveFromKnownFolders", "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.AddToKnownFolders", "agentMgr.GotoLocation", "fleetObjectHandler.KickMember", "fleetObjectHandler.MakeLeader", "fleetObjectHandler.SendBroadcast", "fleetObjectHandler.MoveMember", "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon", "structureJumpBridgeMgr.CmdJumpThroughStructureStargate", "abyssalMgr.AbyssalEntranceDeployment", "abyssalMgr.AbyssalGateActivation", "abyssalMgr.AbyssalEndGateActivation", "keeper.ActivateAccelerationGate", "abyssalMgr.AbyssalEntranceGateActivation"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel", "allianceRegistry.AddAllianceContact", "allianceRegistry.EditAllianceContact", "allianceRegistry.RemoveAllianceContacts", "allianceRegistry.EditContactsRelationshipID", "allianceRegistry.CreateLabel", "allianceRegistry.EditLabel", "allianceRegistry.DeleteLabel", "allianceRegistry.AssignLabels", "allianceRegistry.RemoveLabels", "corpRegistry.UpdateMember", "corpRegistry.MoveCompanyShares", "corpRegistry.AddCorporateContact", "corpRegistry.EditCorporateContact", "corpRegistry.RemoveCorporateContacts", "corpRegistry.EditContactsRelationshipID", "corpRegistry.CreateLabel", "corpRegistry.EditLabel", "corpRegistry.DeleteLabel", "corpRegistry.AssignLabels", "corpRegistry.RemoveLabels", "skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "skillHandler.ApplyFreeSkillPointsToSkills", "skillHandler.PurchaseSkills", "dogmaIM.InjectSkillIntoBrain", "expertSystemMgr.RemoveMyExpertSystem", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "fleetMgr.AddToWatchlist", "fleetMgr.RemoveFromWatchlist", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.UnlinkModule", "dogmaIM.DestroyWeaponBank", "dogmaIM.LinkWeapons", "dogmaIM.MergeModuleGroups", "dogmaIM.OverloadRack", "dogmaIM.StopOverloadRack", "dogmaIM.InitiateModuleRepairMany", "dogmaIM.PeelAndLink", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "beyonce.CmdGotoDirection", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "beyonce.BookmarkScanResult", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.BuyMultipleItems", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.AssembleShip", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll", "invbroker.SetLabel", "invbroker.AssembleCargoContainer", "mailMgr.MarkAsRead", "mailMgr.MarkAsUnread", "mailMgr.MoveToTrash", "mailMgr.MoveFromTrash", "mailMgr.DeleteMail", "mailMgr.MarkAllAsRead", "mailMgr.MarkAsReadByLabel", "mailMgr.MoveAllToTrash", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash", "mailMgr.EmptyTrash", "mailMgr.CreateLabel", "mailMgr.EditLabel", "mailMgr.DeleteLabel", "mailMgr.AssignLabels", "mailMgr.RemoveLabels", "mailingListsMgr.Create", "mailingListsMgr.Join", "mailingListsMgr.Leave", "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete", "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers", "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail", "charMgr.AddContact", "charMgr.EditContact", "charMgr.DeleteContacts", "charMgr.BlockOwners", "charMgr.UnblockOwners", "charMgr.EditContactsRelationshipID", "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels", "notificationMgr.DeleteNotifications", "notificationMgr.MarkAsProcessed", "notificationMgr.MarkGroupAsProcessed", "notificationMgr.MarkAllAsProcessed", "notificationMgr.DeleteGroupNotifications", "notificationMgr.DeleteAllNotifications", "account.GiveCash", "charMgr.SaveCharacterSetting", "charMgr.DeleteCharacterSetting", "accessGroupBookmarkMgr.BookmarkStaticLocation", "accessGroupBookmarkMgr.UpdateBookmark", "accessGroupBookmarkMgr.DeleteBookmarks", "beyonce.CmdGotoBookmark", "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.DeleteFolder", "accessGroupBookmarkMgr.AddFolder", "accessGroupBookmarkMgr.UpdateFolder", "accessGroupBookmarkMgr.RemoveFromKnownFolders", "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder", "accessGroupBookmarkMgr.AddToKnownFolders", "agentMgr.GotoLocation", "fleetObjectHandler.KickMember", "fleetObjectHandler.MakeLeader", "fleetObjectHandler.SendBroadcast", "fleetObjectHandler.MoveMember", "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon", "structureJumpBridgeMgr.CmdJumpThroughStructureStargate", "abyssalMgr.AbyssalEntranceDeployment", "abyssalMgr.AbyssalGateActivation", "abyssalMgr.AbyssalEndGateActivation", "keeper.ActivateAccelerationGate", "abyssalMgr.AbyssalEntranceGateActivation", "charFittingMgr.DeleteFitting", "charFittingMgr.UpdateNameAndDescription", "charFittingMgr.SaveFitting", "charFittingMgr.UpdateFitting", "ship.FitShips", "corpFittingMgr.SaveFitting", "corpFittingMgr.UpdateFitting", "corpFittingMgr.UpdateNameAndDescription", "allianceFittingMgr.SaveFitting", "allianceFittingMgr.UpdateFitting", "allianceFittingMgr.UpdateNameAndDescription", "corpFittingMgr.DeleteFitting", "allianceFittingMgr.DeleteFitting", "charFittingMgr.DeleteManyFittings", "corpFittingMgr.DeleteManyFittings", "allianceFittingMgr.DeleteManyFittings"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -943,6 +1018,9 @@ function ordersAFollow(service, method) {
  *                                   for the assets window), on the same container. The handler lists the
  *                                   things of the session's own character and picks those at the station
  *                                   sent: a station names nothing of another's.
+ *   charMgr.ListIncludingContainers "assets": a READ, everything of the pilot's, containers' contents too
+ *                                   (invCache.py 880, for the assets window's search), on the same container,
+ *                                   with nothing sent. The handler lists the session's own character's things.
  *   fleetObjectHandler.LeaveFleet   "fleet": a WRITE, the pilot's fleet left (fleetSvc.LeaveFleet, 365 to 371). The
  *                                   object is the fleet service's self.fleet: what CreateFleet answered, or the
  *                                   Moniker that accepted an invite. A session is in one fleet, so the call names
@@ -1079,11 +1157,17 @@ function ordersAFollow(service, method) {
  *                                   Change Name, the name asked in the ship naming window). Its handler names only
  *                                   the session's own character's items, or a corporation's container in a hangar
  *                                   its roles may take from, and tells the session the name (OnCfgDataChanged).
+ *   invbroker.AssembleCargoContainer "inventoryManager": a WRITE, a packaged container assembled (menusvc
+ *                                   AssembleContainer, 3561 to 3564: AssembleCargoContainer(itemID, None, 0.0); the
+ *                                   item's double click, item.py 838 and 839). Its handler (invBroker/packaging.js,
+ *                                   read 2026-10-18) assembles only the session's own character's container in the
+ *                                   hangar where it is docked or in the cargo of its own ship there, or a
+ *                                   corporation's in a hangar its roles may take from; elsewhere it answers None.
  *
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "scanMgr.SetProbeDestination": "scanManager", "scanMgr.SetProbeRangeStep": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.GotoLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.SetLabel": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.DestroyFitting": "inventory", "reprocessingSvc.Reprocess": "refinery", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.KickMember": "fleet", "fleetObjectHandler.MakeLeader": "fleet", "fleetObjectHandler.SendBroadcast": "fleet", "fleetObjectHandler.MoveMember": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "scanMgr.SetProbeDestination": "scanManager", "scanMgr.SetProbeRangeStep": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.GotoLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.SetLabel": "inventoryManager", "invbroker.AssembleCargoContainer": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.List": "inventory", "invbroker.DestroyFitting": "inventory", "reprocessingSvc.Reprocess": "refinery", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "charMgr.ListIncludingContainers": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.KickMember": "fleet", "fleetObjectHandler.MakeLeader": "fleet", "fleetObjectHandler.SendBroadcast": "fleet", "fleetObjectHandler.MoveMember": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, a fleet that is not the
  * session's own (the one an invitation names), an agent, and an inventory (a thing's own, or the hangar's). A

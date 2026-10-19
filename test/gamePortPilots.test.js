@@ -1816,7 +1816,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charMgr.GetContactList": { same: 1 },
     "onlineStatus.GetInitialState": { same: 1 },
     "corpRegistry.GetAggressionSettings": { same: 1 },
-    "corpRegistry.GetEveOwners": { same: 1 },
+    // bco_members.__PrimeEveOwners: the native reply is a list of owner rows; an empty list is valid.
+    "corpRegistry.GetEveOwners": { type: "list", items: [] },
     "corpRegistry.GetMyApplications": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
@@ -3633,8 +3634,8 @@ test("the corporation's aggression settings are answered from what is kept, and 
   // Read at the choosing: answered as the server answered then, with nothing asked and nothing more in the ledger.
   assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(1), aggressionOf(1)]);
   assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetAggressionSettings")[0]], [[], [], { same: 1 }]);
-  // The members' names prime the client's names and are kept by nobody: asked each time, on the same object, and
-  // in the ledger as asked for by name.
+  // bco_members keeps IDs from the login reply (110-151), separately from raw owner rows.
+  // An explicit GetEveOwners RPC still asks the server; the new corporationMemberIDs seam reads retained IDs.
   await registryRead(pilots, handle, "GetEveOwners");
   await registryRead(pilots, handle, "GetEveOwners");
   assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetEveOwners")[0]], [["GetEveOwners", "GetEveOwners"], [], { same: 1, reshaped: 2 }]);
@@ -3754,7 +3755,7 @@ test("a character chosen has its contacts, its corporation's and who of them is 
   assert.equal(ledgerOf(npc.pilots, "corpRegistry.GetCorporateContacts"), null);
 });
 
-test("the pilot's own contacts and the watched contacts' online state are kept as the client keeps them, the corporation's is not: a read of it through the BFF asks the server, and the client's own name for its priming is no call of the client's", async () => {
+test("the pilot's own contacts, the corporation's and the watched contacts' online state are kept as the client keeps them, and the client's own name for its priming is no call of the client's", async () => {
   let asked = 0;
   const { pilots, session, handle } = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { asked += 1; return { type: "list", items: [asked] }; } } }, ADDRESS_BOOK_PAIRS);
   const read = async (service, method, args = []) => (await pilots.callMethod(service, method, args, null, FIELDS, handle)).result;
@@ -3762,14 +3763,45 @@ test("the pilot's own contacts and the watched contacts' online state are kept a
   assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [1] }, { type: "list", items: [1] }, { same: 1 }]);
   // The watched contacts' online state is kept too (onlineStatus.py Prime, 74 to 82): the read asks nothing more.
   await read("onlineStatus", "GetInitialState");
+  // The corporation's contacts are kept too (addressbookService.GetContacts, 237 to 240): the read asks
+  // nothing more than the choosing asked. Organization notices amend that dict (157 to 191, checked below).
   await read("corpRegistry", "GetCorporateContacts");
-  assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], session.boundCalls.at(-1)], [{ same: 1 }, { same: 1, reshaped: 1 }, { objectID: "N=2:1", method: "GetCorporateContacts", args: [], kwargs: null }]);
+  const corporateAsked = session.boundCalls.filter((call) => call.method === "GetCorporateContacts");
+  assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], corporateAsked.length], [{ same: 1 }, { same: 1 }, 1]);
   // onlineStatus.GetOnlineStatus(charID) is the client's, for a character its kept state does not have.
   await read("onlineStatus", "GetOnlineStatus", [PILOT + 1]);
   assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "onlineStatus.GetOnlineStatus")], [{ service: "onlineStatus", method: "GetOnlineStatus", args: [PILOT + 1], kwargs: null }, [{ same: 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:56"]]);
   // Prime is the client's own service's method, and never a call of its: asked of the server it is the web's alone.
   await read("onlineStatus", "Prime");
   assert.deepEqual(ledgerOf(pilots, "onlineStatus.Prime"), [{ "web-only": 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:74"]);
+});
+
+test("corporation contact notices and label deletion amend the held dict, preserving standings and long label bits independently", async () => {
+  // addressbookService.OnOrganizationContactsUpdated, 157 to 191: a level-only tuple preserves labels;
+  // a mask tuple preserves an existing standing; both None delete; a new owner carries both values.
+  const mask = 1n << 60n;
+  const { pilots, session, handle } = await selected({ corpid: 98000001, answers: {
+    "bound:GetCorporateContacts": () => ({ type: "dict", entries: [[PILOT, keyVal([
+      ["contactID", PILOT], ["relationshipID", 5], ["inWatchlist", 0], ["labelMask", mask],
+    ])]] }),
+  } }, { allowed: new Set([...ADDRESS_BOOK_PAIRS.allowed, "corpRegistry.DeleteLabel"]) });
+  const read = async () => (await pilots.callMethod("corpRegistry", "GetCorporateContacts", [], null, FIELDS, handle)).result;
+  session.notify("OnOrganizationContactsUpdated", [98000001, [[PILOT, 2.5, null], [PILOT + 1, -1.5, 3n]]]);
+  let rows = (await read()).entries;
+  const field = (row, name) => row.args.entries.find(([key]) => key === name)[1];
+  assert.deepEqual(rows.map(([id, row]) => [id, field(row, "relationshipID"), field(row, "labelMask")]), [
+    [PILOT, 2.5, { type: "long", value: mask.toString() }], [PILOT + 1, -1.5, 3],
+  ]);
+  session.notify("OnOrganizationContactsUpdated", [98000001, [[PILOT, 10, 2n], [PILOT + 1, null, null]]]);
+  // The existing contact's level stays 2.5 even with a non-None level beside its new mask (187 to 190).
+  rows = (await read()).entries;
+  assert.deepEqual(rows.map(([id, row]) => [id, field(row, "relationshipID"), field(row, "labelMask")]), [[PILOT, 2.5, 2]]);
+  session.notify("OnOrganizationContactsUpdated", [98000002, [[PILOT, null, null]]]);
+  assert.deepEqual((await read()).entries, rows);
+  // DeleteContactLabel, 1072-1084: deleting a label removes its bit from every contact without another contacts read.
+  await pilots.callMethod("corpRegistry", "DeleteLabel", [2], null, FIELDS, handle);
+  assert.equal(field((await read()).entries[0][1], "labelMask"), 0);
+  assert.equal(session.boundCalls.filter(call => call.method === "GetCorporateContacts").length, 1);
 });
 
 test("each of the address book's reads fails for itself, and the choosing is none the worse", async () => {
@@ -4094,17 +4126,19 @@ test("what the BFF asks of the alliance's registry is made on the moniker, or by
   // A pair nobody has read against the client goes to the moniker too, as it was given.
   await ask("SetRelationship", [5, 99000002]);
   assert.deepEqual([session.boundCalls.at(-1), ledgerOf(pilots, "allianceRegistry.SetRelationship")[0]], [{ objectID: "N=1:1", method: "SetRelationship", args: [5, 99000002], kwargs: null }, { unchecked: 1 }]);
-  // The alliance's own record: of the moniker, with nothing, however the BFF named the alliance.
+  // all_cso_alliance.py 43-53 keeps the alliance's own record: ask once on
+  // the moniker, with nothing, however the page named the alliance.
+  const beforeAlliance = session.boundCalls.length;
   await ask("GetAlliance");
   await ask("GetAlliance", [ALLIANCE]);
-  assert.deepEqual([session.boundCalls.slice(-2), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0]], [
-    [{ objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }, { objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }], { reshaped: 2 },
+  assert.deepEqual([session.boundCalls.slice(beforeAlliance), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0]], [
+    [{ objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }], { same: 1 },
   ]);
   // Another alliance's, and the ranking of them all, by name.
   await ask("GetAlliance", [ALLIANCE + 1]);
   assert.deepEqual(await ask("GetRankedAlliances", [100]), { type: "list", items: [1] });
   assert.deepEqual([byName(), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0], ledgerOf(pilots, "allianceRegistry.GetRankedAlliances")[0], session.binds.length], [
-    [["GetAlliance", [ALLIANCE + 1]], ["GetRankedAlliances", [100]]], { reshaped: 2, same: 1 }, { same: 1 }, 1,
+    [["GetAlliance", [ALLIANCE + 1]], ["GetRankedAlliances", [100]]], { same: 2 }, { same: 1 }, 1,
   ]);
 });
 
@@ -8489,8 +8523,8 @@ test("where godma cannot be primed again, the snapshot is still given and the sh
 // The page shows the standings by asking for them itself (web/src/bridge/standingsReads.ts). The client's panel
 // reads its standings service, which asked when the character was chosen and does not ask again.
 
-test("the character's standings and its corporation's, asked for by name, are answered from what is kept: nothing is sent", async () => {
-  const pairs = { allowed: new Set(["standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
+test("the NPCs' standings, the character's and its corporation's, asked for by name, are answered from what is kept: nothing is sent", async () => {
+  const pairs = { allowed: new Set(["standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS, corpid: PLAYER_CORP }, pairs);
   const ask = (method, args = []) => pilots.callMethod("standingMgr", method, args, null, WHOSE, handle);
   assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
@@ -8500,6 +8534,10 @@ test("the character's standings and its corporation's, asked for by name, are an
   assert.deepEqual([char.result, corp.result], [kept.char, kept.corp]);
   assert.deepEqual([char.service, char.method, standingRows(char.result), standingRows(corp.result)], ["standingMgr", "GetCharStandings", CHAR_ROWS, CORP_ROWS]);
   await Promise.all([ask("GetCharStandings"), ask("GetCharStandings"), ask("GetCorpStandings")]);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  // The NPCs' standings with each other, as an owner's Standings tab asks for them (panelStandings), are of the same
+  // keeping: nothing more is sent.
+  assert.equal((await ask("GetNPCNPCStandings")).method, "GetNPCNPCStandings");
   assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
   assert.deepEqual(["GetCharStandings", "GetCorpStandings"].map((method) => ledgerOf(pilots, `standingMgr.${method}`)[0]), [{ same: 1 }, { same: 1 }]);
   // What the server has said since is in the answer, with nothing asked.

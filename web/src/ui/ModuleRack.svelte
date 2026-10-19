@@ -31,6 +31,7 @@
     rackIsEmpty,
     rackModuleBurntOut,
     rackSlotTitle,
+    rackPlaces,
     OVERLOAD_HOLD_MS,
   } from "./moduleRack.ts";
   import {
@@ -40,16 +41,25 @@
     rackReloading,
     rackSlotAction,
     rackTakesCharges,
-    reloadAllPlan,
     weaponGroups,
   } from "./rackAmmo.ts";
   import type { AmmoChoice, WeaponGroup } from "./rackAmmo.ts";
+  import type { AmmoMenuEntry } from "../bridge/ammoMenu.ts";
   import { notify } from "./notices.ts";
   import { abbreviate } from "./fittingIcons.ts";
   import { resolvedName } from "../store/names.ts";
   import type { RackModule } from "./moduleRack.ts";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  import type { AppFlow, RackMenuEntry } from "../app/flow.ts";
+  import { showInfo } from "./showInfo.ts";
+  import DamageAlertSettings from "./DamageAlertSettings.svelte";
+  import { HEALTH_NOTIFICATIONS } from "../store/notifySettings.ts";
+  import { DEFAULT_SLOT_ORDER, hudSetting, setHudSetting, slotOrdersSignal, type HudSettingName } from "../store/hudSettings.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { GROUPABLE_GROUP_IDS } from "../bridge/fitModule.ts";
+  import { DRAG_MIME, carriesOurPayload, decodeDrag } from "./dragDrop.ts";
+  import { rowsIn } from "./inventoryModel.ts";
+  import { BAY_FLAGS } from "../bridge/inventoryWrites.ts";
 
   let { store, flow = null }: {
     store: ClientStore;
@@ -70,6 +80,189 @@
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
   const inventory = store.inventory;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  /**
+   * The HUD options (shipUI.GetHUDOptionMenu, 624 on), kept as the client keeps them in the user's settings
+   * (store/hudSettings.ts): those the page has a part for, in the menu's order, a divider (null) where it has one.
+   * Display Readout's two go to the ship's readout (ShipHud).
+   */
+  const showPassiveModules = hudSetting("showPassiveModules");
+  const showEmptySlots = hudSetting("showEmptySlots");
+  const showReadout = hudSetting("showReadout");
+  const readoutType = hudSetting("readoutType");
+  const showModuleTooltips = hudSetting("showModuleTooltips");
+  const lockOverload = hudSetting("lockOverload");
+  const lockModules = hudSetting("lockModules");
+  const hudButtonsExpanded = hudSetting("hudButtonsExpanded");
+  const blinkCargo = hudSetting("BlinkCargoHudIcon");
+  const hudTop = hudSetting("shipuialigntop");
+  const HUD_OPTIONS: readonly ({ readonly name: HudSettingName; readonly label: string; readonly own: string; readonly needs?: HudSettingName } | null)[] = [
+    { name: "showPassiveModules", label: "UI/Inflight/HUDOptions/DisplayPassiveModules", own: "Show the passive modules" },
+    { name: "showEmptySlots", label: "UI/Inflight/HUDOptions/DisplayEmptySlots", own: "Show the empty slots" },
+    { name: "showReadout", label: "UI/Inflight/HUDOptions/DisplayReadout", own: "Show the hit point numbers" },
+    // 636 to 640: a choice only while the readout is shown.
+    { name: "readoutType", label: "UI/Inflight/HUDOptions/DisplayReadoutAsPercentage", own: "Numbers as percentages", needs: "showReadout" },
+    { name: "hudButtonsExpanded", label: "UI/Inflight/HUDOptions/DisplayUtilityButtons", own: "Show the utility buttons" },
+    { name: "showModuleTooltips", label: "UI/Inflight/HUDOptions/DisplayModuleTooltips", own: "Show the modules' tooltips" },
+    null,
+    { name: "lockModules", label: "UI/Inflight/HUDOptions/LockModulesInPlace", own: "Keep the modules where they are" },
+    { name: "BlinkCargoHudIcon", label: "UI/Inflight/HUDOptions/BlinkCargo", own: "Flash the cargo button as it fills" },
+    { name: "lockOverload", label: "UI/Inflight/HUDOptions/LockOverloadState", own: "Keep the overload state as it is" },
+    { name: "shipuialigntop", label: "UI/Inflight/HUDOptions/AlignHUDToTop", own: "Put the HUD at the top" },
+  ];
+  const hudValues = $derived<Readonly<Record<HudSettingName, boolean>>>({
+    showPassiveModules: $showPassiveModules,
+    showEmptySlots: $showEmptySlots,
+    showReadout: $showReadout,
+    readoutType: $readoutType,
+    showModuleTooltips: $showModuleTooltips,
+    lockOverload: $lockOverload,
+    lockModules: $lockModules,
+    hudButtonsExpanded: $hudButtonsExpanded,
+    BlinkCargoHudIcon: $blinkCargo,
+    shipuialigntop: $hudTop,
+  });
+  /** The ship's order of the HUD's places (GetSlotOrder: settings.user.ui slotOrder, kept where its pilot moved them). */
+  const slotOrders = slotOrdersSignal;
+  const rackOrder = $derived($slotOrders[String($fitting.activeShipID)] ?? DEFAULT_SLOT_ORDER);
+  /**
+   * A module's button being dragged about the HUD (shipmodulebutton.GetDragData, 979 to 991): not where the modules
+   * are locked in place. While it is, every place is shown to drop it on (StartDragMode, 729 to 742): the button
+   * dragged dimmed, the others of its type highlighted where it is a weapon that groups.
+   */
+  const RACK_DRAG_MIME = "application/x-evejs-rack-module";
+  let rackDragging = $state<{ readonly flag: number; readonly itemID: number; readonly typeID: number; readonly groupable: boolean } | null>(null);
+  const groupOfModule = (itemID: number): number | null => $fitting.slots.find((slot) => slot.module?.itemID === itemID)?.module?.groupID ?? null;
+  function startRackDrag(event: DragEvent, flag: number, module: RackModule): void {
+    if ($lockModules || !flow || !event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
+    pressCancel();
+    event.dataTransfer.setData(RACK_DRAG_MIME, String(flag));
+    event.dataTransfer.effectAllowed = "move";
+    rackDragging = { flag, itemID: module.itemID, typeID: module.typeID, groupable: GROUPABLE_GROUP_IDS.has(groupOfModule(module.itemID) ?? -1) };
+  }
+  /** OnEndDrag: ResetSwapMode, the places not drawn hidden again. */
+  function endRackDrag(): void {
+    rackDragging = null;
+  }
+  /** A drag the HUD takes: one of its own buttons, or an item from a hold (the inventory's DRAG_MIME). */
+  function rackDragOver(event: DragEvent): void {
+    const types = event.dataTransfer?.types;
+    if (!types || !(types.includes(RACK_DRAG_MIME) || carriesOurPayload([...types]))) return;
+    event.preventDefault();
+    event.dataTransfer!.dropEffect = "move";
+  }
+  /**
+   * An item from a hold the drop carries, with its row, and where a charge of it is loaded from (the hangar while
+   * docked, or the ship flown for its cargo and every other hold of it, its own flag kept for a split, as the
+   * Fitting window's drop has it); null for anything else.
+   */
+  function droppedHoldItem(event: DragEvent) {
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME));
+    if (!payload || payload.kind !== "inventoryItem") return null;
+    const row = rowsIn($inventory, payload.from).find((each) => each.itemID === payload.itemID) ?? null;
+    if (row === null) return null;
+    const from = payload.from;
+    const ofShipFlown = from.kind === "cargo" || (from.kind === "shipBay" && $inventory.openShip?.itemID === $inventory.activeShipID);
+    const place = from.kind === "hangar" ? ("hangar" as const) : ofShipFlown ? ("cargo" as const) : null;
+    const flagID = from.kind === "hangar" ? 4 : from.kind === "cargo" ? 5 : from.kind === "shipBay" ? BAY_FLAGS[from.bay] ?? row.flagID ?? 5 : row.flagID ?? null;
+    return { row, place, flagID };
+  }
+  function draggedRackFlag(event: DragEvent): number | null {
+    const raw = event.dataTransfer?.getData(RACK_DRAG_MIME) ?? "";
+    const flag = Number(raw);
+    return raw !== "" && Number.isInteger(flag) ? flag : null;
+  }
+  /**
+   * Dropped on a module's button (shipmodulebutton.OnDropData 993 to 1023): another button, ChangeSlots (on itself
+   * nothing); a charge from a hold, DropLoadChargeToModule (only charges: 1013 to 1018).
+   */
+  async function dropOnRackModule(event: DragEvent, flag: number, moduleID: number): Promise<void> {
+    const from = draggedRackFlag(event);
+    if (from === null) {
+      const item = droppedHoldItem(event);
+      if (item === null || !flow) return;
+      event.preventDefault();
+      if (item.row.categoryID !== 8 || item.place === null || item.flagID === null) return;
+      try {
+        await flow.dropChargeOnRackModule({ itemID: item.row.itemID, typeID: item.row.typeID, quantity: item.row.quantity, from: item.place, flagID: item.flagID }, moduleID, event.shiftKey);
+      } catch (cause) {
+        sayRackProblem(moduleName(item.row.typeID), String(cause));
+      }
+      return;
+    }
+    event.preventDefault();
+    rackDragging = null;
+    if (from === flag || !flow) return;
+    try {
+      await flow.rackChangeSlots(flag, from, event.shiftKey);
+    } catch (cause) {
+      sayRackProblem("Modules", String(cause));
+    }
+  }
+  /**
+   * Dropped on a place with no button (ShipSlot.OnDropData): a button, SwapSlots; a module from the cargo
+   * (item.flagID flagCargo, IsFittingModule: a module or a structure module), the ship's inventory's Add of it there.
+   */
+  async function dropOnRackPlace(event: DragEvent, flag: number): Promise<void> {
+    const from = draggedRackFlag(event);
+    if (from === null) {
+      const item = droppedHoldItem(event);
+      if (item === null || !flow) return;
+      event.preventDefault();
+      if (item.row.flagID !== 5 || (item.row.categoryID !== 7 && item.row.categoryID !== 66)) return;
+      try {
+        await flow.fitCargoModuleToRackSlot(item.row.itemID, flag);
+      } catch (cause) {
+        sayRackProblem(moduleName(item.row.typeID), String(cause));
+      }
+      return;
+    }
+    event.preventDefault();
+    rackDragging = null;
+    if (!flow) return;
+    try {
+      await flow.rackSwapSlots(flag, from, event.shiftKey);
+    } catch (cause) {
+      sayRackProblem("Modules", String(cause));
+    }
+  }
+  /** groupAllIcon's hint where the modules are locked in place (91 to 92): UI/Inflight/Locked of it. */
+  function lockedHint(hint: string): string {
+    if (!$lockModules) return hint;
+    const template = $words.templates["UI/Inflight/Locked"];
+    return typeof template === "string" && template !== ""
+      ? plainText(formatTemplate(template, { unit: hint }, { nameOf: (_kind, id) => String(id) }))
+      : `${hint} (locked)`;
+  }
+  let hudOptionsOpen = $state(false);
+  /** The HUD options' Damage Alert Settings window (ShowNotifySettingsWindow), open or not. */
+  let damageAlertsOpen = $state(false);
+  $effect(() => {
+    // And the readout's words in hit points (ShipHud, which has no flow to ask with).
+    flow?.requestWords([
+      ...HUD_OPTIONS.flatMap((option) => (option ? [option.label] : [])), "UI/Inflight/GaugeAbsolute", "UI/Inflight/Locked",
+      "UI/Inflight/NotifySettingsWindow/DamageAlertSettings", "UI/Common/Formatting/Percentage",
+      ...HEALTH_NOTIFICATIONS.map((notification) => notification.label),
+    ]);
+  });
+  /**
+   * The modules Display Passive Modules leaves out where it is off (flow.passiveRackModules), read again as the fitted
+   * modules change.
+   */
+  let passiveModuleIDs = $state<ReadonlySet<number>>(new Set());
+  const fittedModulesKey = $derived($fitting.slots.map((slot) => (slot.module ? `${slot.module.itemID}:${slot.module.typeID}` : "")).join(","));
+  $effect(() => {
+    void fittedModulesKey;
+    if ($showPassiveModules || !flow) {
+      passiveModuleIDs = new Set();
+      return;
+    }
+    void flow.passiveRackModules().then((ids) => (passiveModuleIDs = ids)).catch(() => {});
+  });
 
   const rows = $derived(
     buildModuleRack(
@@ -110,7 +303,8 @@
   );
 
   async function setBanks(linked: boolean): Promise<void> {
-    if (!flow || pendingItemID !== null) {
+    // groupAllIcon.OnClick (29 to 30): nothing where the modules are locked in place.
+    if (!flow || pendingItemID !== null || $lockModules) {
       return;
     }
     try {
@@ -288,6 +482,100 @@
   let menuOpener: HTMLElement | null = null;
   let menuEl = $state<HTMLElement | null>(null);
   let cargoReading = $state(false);
+  /**
+   * A slot's menu as the client's GetAmmoMenu makes it (flow.rackAmmoMenu): read when the menu opens, once the cargo
+   * is read. Null while it is being read.
+   */
+  let slotMenu = $state<readonly (AmmoMenuEntry & { readonly text: string })[] | null>(null);
+  /** The button's own entries after the ammunition, in GetMenu's order (flow.rackModuleMenu). */
+  let slotEntries = $state<readonly RackMenuEntry[] | null>(null);
+  async function readSlotMenu(module: RackModule): Promise<void> {
+    if (!flow) return;
+    const [entries, own] = await Promise.all([
+      takesCharges(module)
+        ? flow.rackAmmoMenu(module.itemID, { reloading: reloadingNow(module), bankCount: module.bankSize }).catch(() => null)
+        : Promise.resolve([]),
+      flow.rackModuleMenu(module.itemID).catch(() => null),
+    ]);
+    if (menu?.target.kind === "slot" && menu.target.module.itemID === module.itemID) {
+      slotMenu = entries ?? [];
+      slotEntries = own;
+    }
+  }
+  /** One of the button's own entries chosen (GetMenu 462 to 523). */
+  async function chooseOwnEntry(module: RackModule, entry: RackMenuEntry): Promise<void> {
+    if (entry.kind === "autoRepeat") {
+      toggleAutoRepeat(module, !entry.on);
+      return;
+    }
+    if (entry.kind === "autoReload") {
+      await toggleAutoReload(module, !entry.on);
+      return;
+    }
+    closeMenu();
+    if (entry.kind === "showInfo") {
+      showInfo({ kind: "module", itemID: module.itemID, typeID: module.typeID });
+      return;
+    }
+    if (entry.kind === "overload") {
+      // The button's Overload(onoff, the overload effect) (688), as the hold's toggle makes it.
+      try {
+        await flow?.setModuleOverload(module.itemID, !entry.on);
+      } catch (cause) {
+        sayRackProblem(moduleName(module.typeID), String(cause));
+      }
+      return;
+    }
+    try {
+      if (entry.kind === "online") await flow?.setRackModuleOnline(module.itemID, !entry.on);
+      else if (entry.kind === "overloadRack" || entry.kind === "stopOverloadRack") await flow?.setRackOverload(module.itemID, entry.kind === "overloadRack");
+      else if (entry.kind === "clearGroup") await flow?.clearRackGroup(module.itemID);
+      else if (entry.kind === "repair") await flow?.repairRackModule(module.itemID);
+      else if (entry.kind === "cancelRepair") await flow?.cancelRackRepair(module.itemID);
+      else if (entry.kind === "repairAll") await flow?.repairRackModules(entry.moduleIDs);
+      else if (entry.kind === "cancelAllRepairs") await flow?.cancelRackRepairs(entry.moduleIDs);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
+    }
+  }
+  async function toggleAutoReload(module: RackModule, on: boolean): Promise<void> {
+    closeMenu();
+    if (!flow) return;
+    try {
+      await flow.setAutoReload(module.itemID, on);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
+    }
+  }
+  function toggleAutoRepeat(module: RackModule, on: boolean): void {
+    closeMenu();
+    flow?.setAutoRepeat(module.itemID, on);
+  }
+  /** Ctrl held as the press began: the click's 1000 repeats (OnClick, 927 to 929). */
+  let ctrlRepeat = false;
+  /** One of the slot menu's entries: LoadChargesToModule with its stacks, Reload all, or Unload to Cargo. */
+  async function chooseSlotEntry(module: RackModule, entry: AmmoMenuEntry): Promise<void> {
+    if (entry.kind === "load") {
+      await loadChoice([module], { typeID: entry.typeID, itemIDs: entry.itemIDs, quantity: entry.sumqty, verdict: null });
+      return;
+    }
+    if (entry.kind === "reloadAll") {
+      closeMenu();
+      await reloadAll();
+      return;
+    }
+    if (!flow || pendingItemID !== null) return;
+    closeMenu();
+    pendingItemID = module.itemID;
+    try {
+      await flow.unloadRackCharge(module.itemID);
+    } catch (cause) {
+      sayRackProblem(moduleName(module.typeID), String(cause));
+    } finally {
+      pendingItemID = null;
+    }
+    void readCargo();
+  }
 
   /** Re-read cargo. Counts change with every shot, so a menu always asks. */
   async function readCargo(): Promise<void> {
@@ -317,7 +605,9 @@
       bottom: Math.max(8, window.innerHeight - rect.top + 4),
     };
     menuOpener = opener;
-    void readCargo();
+    slotMenu = null;
+    slotEntries = null;
+    void readCargo().then(() => (target.kind === "slot" ? readSlotMenu(target.module) : undefined));
   }
 
   function closeMenu(returnFocus = false): void {
@@ -389,10 +679,10 @@
     if (target.kind === "group") {
       return `Load into ${target.group.modules.length}x ${moduleName(target.group.moduleTypeID)}`;
     }
-    // The server fills a whole bank from one launcher, so the header says so.
-    return target.module.bankSize > 1
-      ? `Load from cargo - ${target.module.bankSize} linked weapons`
-      : "Load from cargo";
+    // A slot's menu is the module's own (GetMenu), so it is headed with the module; the server fills a whole bank
+    // from one launcher, so the header says so.
+    const name = moduleName(target.module.typeID);
+    return target.module.bankSize > 1 ? `${name} - ${target.module.bankSize} linked weapons` : name;
   }
   /** The charge type currently in every one of these modules, if they agree. */
   function loadedTypeOf(target: MenuTarget): number | null {
@@ -450,11 +740,10 @@
   }
 
   /**
-   * Reload all — every weapon group topped up with what it already uses.
-   *
-   * ⚠ IT READS CARGO FIRST. The plan is built from the cargo rows, and a plan
-   * made from a list that is several volleys old would name stacks that are
-   * gone. One load per group, one after another: they share the cargo.
+   * Reload all, the client's Ctrl+R (slotsContainer.OnReloadAmmo, flow.reloadAll): each module that takes charges
+   * reloaded with what it holds or last held, where the cargo has it, one after another. The cargo is read first, the
+   * stacks named being the ones it lists. As in the client, nothing is said of a module left alone; a refusal the
+   * server gave a reason for has said it already.
    */
   async function reloadAll(): Promise<void> {
     if (!flow || pendingItemID !== null) {
@@ -462,36 +751,17 @@
     }
     closeMenu();
     await readCargo();
-    const plan = reloadAllPlan(groups, $inventory.cargo.rows, chargeFits);
+    const reloading = new Set(rows.flatMap((row) => row.slots.flatMap((slot) => (slot.module && reloadingNow(slot.module) ? [slot.module.itemID] : []))));
     const problems: string[] = [];
-    for (const skip of plan.skipped) {
-      const gun = moduleName(skip.moduleTypeID);
-      problems.push(
-        skip.reason === "out" && skip.chargeTypeID !== null
-          ? `${gun}: no ${moduleName(skip.chargeTypeID)} left in cargo.`
-          : `${gun}: empty, and nothing in cargo is known to fit - pick a charge from its menu.`,
-      );
-    }
-    for (const step of plan.steps) {
-      pendingItemID = step.moduleIDs[0] ?? null;
-      try {
-        const outcome = await flow.loadAmmo(step.moduleIDs, step.choice.itemIDs, "cargo");
-        if (outcome === "unchanged") {
-          // ⚠ NOT CALLED A FAILURE. Reload all sends every gun, full or not,
-          // and a group that was already full answers exactly like this.
-          problems.push(`${moduleName(step.moduleTypeID)}: nothing loaded - probably already full.`);
-        } else if (outcome === "refused" && !$fitting.actionError) {
-          // A refusal WITH a reason already popped up through the bridge.
-          problems.push(`${moduleName(step.moduleTypeID)}: refused.`);
+    try {
+      for (const { moduleID, outcome } of await flow.reloadAll(reloading)) {
+        if (outcome === "refused" && !$fitting.actionError) {
+          const typeID = rows.flatMap((row) => row.slots).find((slot) => slot.module?.itemID === moduleID)?.module?.typeID;
+          problems.push(`${typeID === undefined ? "A module" : moduleName(typeID)}: refused.`);
         }
-      } catch (cause) {
-        problems.push(`${moduleName(step.moduleTypeID)}: ${String(cause)}`);
-      } finally {
-        pendingItemID = null;
       }
-    }
-    if (plan.steps.length === 0 && problems.length === 0) {
-      problems.push("No weapons to reload.");
+    } catch (cause) {
+      problems.push(String(cause));
     }
     if (problems.length > 0) {
       sayRackProblem("Reload all", problems.join(" "), "warn");
@@ -621,7 +891,13 @@
    * An offline module, or one with an unknown overload state, is inert here.
    */
   async function overloadModule(module: RackModule): Promise<void> {
-    if (!flow || rackHoldAction(module) === null || pendingItemID !== null) {
+    if (!flow) return;
+    // shipmodulebutton.ToggleOverload (221 to 227): with the overload state locked, the notice and nothing else.
+    if ($lockOverload) {
+      flow.sayOverloadLocked();
+      return;
+    }
+    if (rackHoldAction(module) === null || pendingItemID !== null) {
       return;
     }
     pendingItemID = module.itemID;
@@ -675,6 +951,7 @@
         await flow.activateModule(module.itemID, {
           typeID: module.typeID,
           targetID: autoTargetID > 0 ? autoTargetID : null,
+          ...(ctrlRepeat ? { repeat: -1 as const } : {}),
         });
       }
       // Read the AUTHORITY, not the resolved promise: the flow's targeting
@@ -718,7 +995,7 @@
 </script>
 
 <div class="module-rack-rows" aria-label="Module rack">
-  {#each rows as row (row.family)}
+  {#each rackPlaces(rows, rackOrder, $showEmptySlots, passiveModuleIDs, rackDragging !== null) as row (row.family)}
     <div class="rack-row">
       <!--
         THE GUTTER CELL — empty on every rack but the high one.
@@ -756,9 +1033,9 @@
             class:linked
             aria-pressed={linked}
             disabled={pendingItemID !== null}
-            title={linked
+            title={lockedHint(linked
               ? `Unlink weapons — ${bankedCount} weapon${bankedCount === 1 ? "" : "s"} banked`
-              : "Link weapons — weapons fire one at a time"}
+              : "Link weapons — weapons fire one at a time")}
             aria-label={linked
               ? `Unlink weapons. ${bankedCount} weapon${bankedCount === 1 ? "" : "s"} banked.`
               : "Link weapons. Weapons fire one at a time."}
@@ -778,6 +1055,37 @@
               {/if}
             </svg>
           </button>
+        {/if}
+        {#if row.family === "low" && flow}
+          <!-- The HUD's settings (shipUI's hudSettingsMenu, GetHUDOptionMenu). -->
+          <button type="button" class="rack-hud-options" aria-expanded={hudOptionsOpen} title="HUD options"
+            aria-label="HUD options" onclick={() => (hudOptionsOpen = !hudOptionsOpen)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" /></svg>
+          </button>
+          {#if hudOptionsOpen}
+            <div class="rack-hud-menu" role="menu">
+              {#each HUD_OPTIONS as option, index (index)}
+                {#if option === null}
+                  <span class="rack-menu-rule" aria-hidden="true"></span>
+                {:else}
+                  {@const choosable = !option.needs || hudValues[option.needs]}
+                  <label class="rack-hud-option" class:unchoosable={!choosable}>
+                    <input type="checkbox" checked={hudValues[option.name]} disabled={!choosable}
+                      onchange={() => setHudSetting(option.name, !hudValues[option.name])} />
+                    {$words.templates[option.label] || option.own}
+                  </label>
+                {/if}
+              {/each}
+              <!-- After a divider (GetHUDOptionMenu 664 to 667): the damage alerts' settings window. -->
+              <span class="rack-menu-rule" aria-hidden="true"></span>
+              <button type="button" role="menuitem" class="rack-hud-entry" onclick={() => { hudOptionsOpen = false; damageAlertsOpen = true; }}>
+                {$words.templates["UI/Inflight/NotifySettingsWindow/DamageAlertSettings"] || "Ship health alerts"}
+              </button>
+            </div>
+          {/if}
+          {#if damageAlertsOpen}
+            <DamageAlertSettings {store} onClose={() => (damageAlertsOpen = false)} />
+          {/if}
         {/if}
       </span>
       <!--
@@ -828,10 +1136,11 @@
         </span>
       </span>
       <div class="rack-slots">
-        {#if row.slots.length === 0}
+        {#if row.places.length === 0}
           <span class="rack-empty muted">—</span>
         {:else}
-          {#each row.slots as slot, i (i)}
+          {#each row.places as place, i (i)}
+            {@const slot = { module: place.drawn === "module" ? place.slot?.module ?? null : null }}
             {#if slot.module}
               {@const nm = moduleName(slot.module.typeID)}
               {@const clickable = flow !== null && slotAction(slot.module) !== null}
@@ -849,12 +1158,20 @@
                 class:holding={holdItemID === slot.module.itemID}
                 disabled={!clickable || pendingItemID !== null}
                 aria-pressed={slot.module.active}
-                aria-haspopup={ammo && flow ? "menu" : undefined}
+                aria-haspopup={flow ? "menu" : undefined}
                 data-rack-module={slot.module.itemID}
-                title={slotTitle(slot.module)}
+                data-rack-flag={place.flag}
+                draggable={flow !== null && !$lockModules}
+                class:drag-source={rackDragging?.itemID === slot.module.itemID}
+                class:group-highlight={rackDragging !== null && rackDragging.groupable && rackDragging.itemID !== slot.module.itemID && rackDragging.typeID === slot.module.typeID}
+                ondragstart={(event) => slot.module && startRackDrag(event, place.flag, slot.module)}
+                ondragend={endRackDrag}
+                ondragover={rackDragOver}
+                ondrop={(event) => slot.module && dropOnRackModule(event, place.flag, slot.module.itemID)}
+                title={$showModuleTooltips ? slotTitle(slot.module) : undefined}
                 aria-label={slotTitle(slot.module)}
                 oncontextmenu={(event) => {
-                  if (!ammo || !flow || !slot.module) return;
+                  if (!flow || !slot.module) return;
                   event.preventDefault();
                   // ⚠ A TOUCH LONG-PRESS ALSO FIRES `contextmenu`, at about
                   // the time the overload hold is filling. The hold is the
@@ -863,6 +1180,7 @@
                   openMenu({ kind: "slot", module: slot.module }, event.currentTarget as HTMLElement);
                 }}
                 onpointerdown={(event) => {
+                  ctrlRepeat = event.ctrlKey;
                   if (event.button === 0 && slot.module) pressStart(slot.module);
                 }}
                 onpointerup={() => slot.module && pressEnd(slot.module)}
@@ -873,7 +1191,7 @@
                   // (getModifierState, not the shift flag: a source guard holds
                   // shift-CLICK out of this file, and this is not a click.)
                   if (
-                    ammo && flow && slot.module &&
+                    flow && slot.module &&
                     (event.key === "ContextMenu" || (event.key === "F10" && event.getModifierState("Shift")))
                   ) {
                     event.preventDefault();
@@ -1001,11 +1319,17 @@
                 must not look like. The handoff draws it dashed and empty, and
                 that is a shape nothing else on the rack has.
               -->
-              <span class="module-slot empty" title={rackSlotTitle("", null)}>
-                <svg class="slot-ring" viewBox="0 0 42 42" aria-hidden="true">
-                  <circle class="slot-ring-empty" cx="21" cy="21" r="17" />
-                </svg>
-              </span>
+              {#if place.drawn === null}
+                <!-- A place with no slot drawn keeps its column (InitDrawSlots: each place its own). -->
+                <span class="module-slot gap" aria-hidden="true"></span>
+              {:else}
+                <span class="module-slot empty" class:drop-target={place.drawn === "target"} title={rackSlotTitle("", null)}
+                  data-rack-flag={place.flag} role="listitem" ondragover={rackDragOver} ondrop={(event) => dropOnRackPlace(event, place.flag)}>
+                  <svg class="slot-ring" viewBox="0 0 42 42" aria-hidden="true">
+                    <circle class="slot-ring-empty" cx="21" cy="21" r="17" />
+                  </svg>
+                </span>
+              {/if}
             {/if}
           {/each}
         {/if}
@@ -1113,6 +1437,30 @@
       onkeydown={onMenuKey}
     >
       <span class="rack-menu-head">{menuHead(target)}</span>
+      {#if target.kind === "slot"}
+        <!-- GetAmmoMenu: Reload used and Reload, Reload all, Unload to Cargo, the other kinds (bridge/ammoMenu.ts). -->
+        {#if slotMenu === null}
+          <span class="rack-menu-note">Reading cargo...</span>
+        {:else}
+          {#if slotMenu.length === 0 && takesCharges(target.module)}
+            <span class="rack-menu-note">No ammunition in cargo for it.</span>
+          {/if}
+          {#each slotMenu as entry, index (index)}
+            <button type="button" role="menuitem" onclick={() => chooseSlotEntry(target.module, entry)}>
+              <span class="rack-menu-name">{entry.text}</span>
+            </button>
+          {/each}
+          {#each slotEntries ?? [] as entry, index (index)}
+            {#if entry.kind === "rule"}
+              <span class="rack-menu-rule" aria-hidden="true"></span>
+            {:else}
+              <button type="button" role="menuitem" onclick={() => chooseOwnEntry(target.module, entry)}>
+                <span class="rack-menu-name">{entry.text}</span>
+              </button>
+            {/if}
+          {/each}
+        {/if}
+      {:else}
       {#if choices.length === 0}
         <span class="rack-menu-note">
           {cargoReading ? "Reading cargo..." : "No ammunition in cargo."}
@@ -1141,6 +1489,7 @@
         <button type="button" role="menuitem" onclick={() => unloadModules(menuModules(target))}
           >Unload to cargo</button
         >
+      {/if}
       {/if}
     </div>
   {/if}

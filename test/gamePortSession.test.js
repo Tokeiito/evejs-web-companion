@@ -1129,9 +1129,37 @@ test("a service's method the server marks as cached is asked for once in a run, 
   assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60003760n], cachedResult(10)), [5, 0]);
   // Asked of the proxy's node, it is the same service's method.
   assert.deepEqual(await ask("proxyCall", "beyonce", "GetFormations", [], cachedResult([3, 4])), [[1, 2], 0]);
-  // An answer that is no CachedMethodCallResult is not kept, and nor is a bound object's that is one.
+  // An answer that is no CachedMethodCallResult is not kept. ObjectCallGPCS 390-451 caches a bound object's marked answer too.
   assert.deepEqual([await ask("call", "account", "GetCashBalance", [], 11), await ask("call", "account", "GetCashBalance", [], 12)], [[11, 1], [12, 1]]);
-  assert.deepEqual([await ask("bound", null, "List", [], cachedResult(13)), await ask("bound", null, "List", [], cachedResult(14))], [[13, 1], [14, 1]]);
+  assert.deepEqual([await ask("bound", null, "List", [], cachedResult(13)), await ask("bound", null, "List", [], cachedResult(14))], [[13, 1], [13, 0]]);
+});
+
+test("a moniker keeps its cached answer across rebinds, separately for each corporation, and forgets a named invalidation", { timeout: 5000 }, async (context) => {
+  // moniker.py 143: persistantObjectID=(serviceName, bindParams); ObjectCallGPCS 390-451 uses it for caching.
+  const { session, transport } = await cachingSession(context);
+  async function bind(corporationID, objectID) {
+    const binding = session.bind("corpRegistry", corporationID);
+    await settle();
+    if (lastCall(transport).method === "MachoResolveObject") await answerLast(transport, 65450);
+    await answerLast(transport, boundAs(objectID));
+    await binding;
+  }
+  async function tracking(objectID, answer) {
+    const before = transport.sent.length;
+    const asking = session.callBound(objectID, "GetMemberTrackingInfo", []);
+    await settle();
+    const sent = transport.sent.length - before;
+    if (sent) await answerLast(transport, cachedResult(answer));
+    return [await asking, sent];
+  }
+  await bind(98000001, "N=65450:31");
+  assert.deepEqual(await tracking("N=65450:31", 1), [1, 1]);
+  await bind(98000001, "N=65450:32");
+  assert.deepEqual(await tracking("N=65450:32", 2), [1, 0]);
+  await bind(98000002, "N=65450:33");
+  assert.deepEqual(await tracking("N=65450:33", 3), [3, 1]);
+  session.invalidateCachedMethodCalls([[["corpRegistry", 98000001], "GetMemberTrackingInfo", []]]);
+  assert.deepEqual(await tracking("N=65450:32", 4), [4, 1]);
 });
 
 test("how long a cached answer is good for is what the server said of the method the first time: never, always, the run, or a time", { timeout: 5000 }, async (context) => {

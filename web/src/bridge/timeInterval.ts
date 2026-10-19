@@ -118,9 +118,53 @@ export function intervalParts(value: bigint, showFrom: TimePart, showTo: TimePar
  */
 export function writtenInterval(value: bigint, showTo: TimePart, templates: Templates, showFrom: TimePart = "year", maxParts: number | null = null): string | null {
   const parts = intervalParts(value, showFrom, showTo);
-  if (parts === null) {
-    return null;
-  }
+  return parts === null ? null : writtenFromParts(parts, showTo, templates, maxParts);
+}
+
+/**
+ * dateutil's relativedelta(end, start) as the client's FormatDateTimeIntervalWritten takes it (timeIntervalFormatters.py
+ * 231 to 244): whole months by the calendar (the start moved on by them, its day kept within the month, and one fewer
+ * where that passes the end), then the days, hours, minutes and seconds left, counted as they are. Each unit from
+ * `showFrom` to `showTo`. Null where the end is before the start.
+ */
+export function dateTimeIntervalParts(startTicks: bigint, endTicks: bigint, showFrom: TimePart, showTo: TimePart): ReadonlyArray<readonly [TimePart, bigint]> | null {
+  if (endTicks < startTicks) return null;
+  const toDate = (ticks: bigint): Date => new Date(Number(ticks / 10_000n) - 11_644_473_600_000);
+  const start = toDate(startTicks);
+  const end = toDate(endTicks);
+  const movedOn = (months: number): Date => {
+    const total = start.getUTCFullYear() * 12 + start.getUTCMonth() + months;
+    const year = Math.floor(total / 12);
+    const month = total - year * 12;
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(year, month, Math.min(start.getUTCDate(), lastDay), start.getUTCHours(), start.getUTCMinutes(), start.getUTCSeconds(), start.getUTCMilliseconds()));
+  };
+  let months = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
+  while (end.getTime() < movedOn(months).getTime()) months -= 1;
+  const left = BigInt(end.getTime() - movedOn(months).getTime()) * BLUE_TIME.MSEC;
+  const counts: Record<TimePart, bigint> = {
+    year: BigInt(Math.floor(months / 12)),
+    month: BigInt(months % 12),
+    day: left / BLUE_TIME.DAY,
+    hour: (left % BLUE_TIME.DAY) / BLUE_TIME.HOUR,
+    minute: (left % BLUE_TIME.HOUR) / BLUE_TIME.MIN,
+    second: (left % BLUE_TIME.MIN) / BLUE_TIME.SEC,
+    millisecond: (left % BLUE_TIME.SEC) / BLUE_TIME.MSEC,
+  };
+  const from = TIME_PARTS.indexOf(showFrom);
+  const to = TIME_PARTS.indexOf(showTo);
+  if (to < from) return null;
+  return TIME_PARTS.slice(from, to + 1).map((part) => [part, counts[part]] as const);
+}
+
+/** FormatDateTimeIntervalWritten(startTime, endTime, showFrom, showTo, maxParts): the time between two moments in the client's words. */
+export function dateTimeIntervalWritten(startTicks: bigint, endTicks: bigint, showTo: TimePart, templates: Templates, showFrom: TimePart = "year", maxParts: number | null = null): string | null {
+  const parts = dateTimeIntervalParts(startTicks, endTicks, showFrom, showTo);
+  return parts === null ? null : writtenFromParts(parts, showTo, templates, maxParts);
+}
+
+/** _GetFormattedTimeString: the units that are not nought in the client's words, joined as it joins them. */
+function writtenFromParts(parts: ReadonlyArray<readonly [TimePart, bigint]>, showTo: TimePart, templates: Templates, maxParts: number | null): string | null {
   const words = (label: string, args: Record<string, string | number> = {}): string | null => {
     const template = templates[label];
     return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })) : null;

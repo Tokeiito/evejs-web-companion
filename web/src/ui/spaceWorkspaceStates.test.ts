@@ -43,10 +43,14 @@ const source = (file: string): string => readFileSync(path.join(UI_DIR, file), "
 
 /** No panel may call the flow during a server render — every read no-ops. */
 function fakeFlow(): unknown {
-  // Its one store, the drone-recovery gate, reads ready: the flow default
-  // unless the pilot opts in to browser recovery.
+  // Its stores: the drone-recovery gate reads ready (the flow default unless the
+  // pilot opts in to browser recovery), and the image server (the Neocom's
+  // portrait) none.
   const droneRecovery = { subscribe: (run: (value: unknown) => void) => (run({ phase: "ready", reason: null }), () => {}) };
-  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : async () => {} });
+  const imageServer = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
+  // Native defaultRangeUtils: no character-specific WarpTo override in this scene.
+  const warpDistance = { get: () => 0, subscribe: (run: (value: number) => void) => { run(0); return () => {}; } };
+  return new Proxy({}, { get: (_target, key) => key === "warpDistance" ? warpDistance : key === "droneRecovery" ? droneRecovery : key === "imageServer" ? imageServer : async () => {} });
 }
 
 const STATION_ID = 60003760;

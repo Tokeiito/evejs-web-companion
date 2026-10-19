@@ -61,9 +61,10 @@
   // merged CharacterMenu) has Show Info, Remove from Addressbook over all of them (one question, then each one's
   // DeleteContacts), and where none is under "All Agents" their removal from their folders; a drag carries them all.
   //
-  // Not here yet: Capture Portrait, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
-  // fleet's own menu).
-  import { onMount } from "svelte";
+  // Not here yet: Capture Portrait and the remaining owner actions.
+  import { onMount, untrack } from "svelte";
+  import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
+  import OwnerChatMenu from "./OwnerChatMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -82,12 +83,10 @@
     type AgentFolders,
     type ContactLabel,
     type NamedAddressBook,
+    type ContactScope,
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
-  import { fmtDist } from "../space/overview.ts";
-  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
-  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
   import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -100,8 +99,13 @@
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
+  import type { ContactAction } from "./contactAction.ts";
 
-  let { store, flow, showAgents, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist, contactType = "contact", contactAction, onActionDone, assertActionCurrent }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void; contactType?: ContactScope; contactAction?: ContactAction; onActionDone?: (book: NamedAddressBook | null) => void; assertActionCurrent?: () => void } = $props();
+  const organization = $derived(contactType !== "contact");
+  const alliance = $derived(contactType === "alliancecontact");
+  // svelte-ignore state_referenced_locally
+  const live = store.live;
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -113,6 +117,25 @@
   const addressBookState = store.addressBook;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // addressbook.ShowLabelMenuAndManageBtn and sessionChecker.IsDiplomat; appConst 316, 347.
+  const ownerID = $derived(alliance ? $station.online?.allianceID : $station.online?.corporationID);
+  const authorityScope = $derived(`${$station.online?.characterID}:${$station.online?.corporationID}:${$station.online?.allianceID}:${$station.online?.corpRole}`);
+  let executor = $state<{ scope: string; allowed: boolean } | null>(null);
+  const allianceChanged = $derived($live.notifications.slice().reverse().find(notice => notice.method === "OnAllianceChanged" && Number(notice.args[0]) === ownerID));
+  $effect(() => {
+    const scope = authorityScope;
+    const active = alliance;
+    const changed = allianceChanged;
+    let retired = false;
+    if (active) untrack(() => {
+      void changed;
+      executor = null;
+      // ShowLabelMenuAndManageBtn reads the executor even for an ordinary member.
+      void flow.saveForAllianceOffered().then(allowed => { if (!retired) executor = { scope, allowed }; }, () => {});
+    });
+    return () => { retired = true; };
+  });
+  const canManage = $derived(!organization || (!alliance || executor?.scope === authorityScope && executor.allowed) && /^(0|[1-9][0-9]*)$/.test($station.online?.corpRole ?? "") && (BigInt($station.online?.corpRole ?? "0") & (1n | 17179869184n)) !== 0n);
   // svelte-ignore state_referenced_locally
   const fleetState = store.fleet;
   // svelte-ignore state_referenced_locally
@@ -305,16 +328,27 @@
   const labelGroup = (labelID: bigint): string => `label:${labelID}`;
   const NO_LABEL = labelGroup(-1n);
 
+  let ownerQuery = $state("");
+  let ownerMatches = $state<readonly { id: number; name: string }[]>([]);
+  async function findCorporateOwner(): Promise<void> {
+    if (!canManage || ownerQuery.trim().length < 3) return;
+    await run(async () => {
+      const found = await flow.searchOwners(ownerQuery.trim(), [2, 3, 4], flow.ownersSearchBy());
+      ownerMatches = [...found.values()].flat().filter(owner => !isNpcOwner(owner.id));
+    });
+  }
   let book = $state<NamedAddressBook | null>(null);
   let error = $state("");
   let busy = $state(false);
   // svelte-ignore state_referenced_locally
-  const lastSelected: unknown = flow.contactsLastSelected();
+  const lastSelected: unknown = flow.contactsLastSelected(contactType);
   let group = $state<number | string>(typeof lastSelected === "number" || typeof lastSelected === "string" ? lastSelected : CONTACT_GROUP.all);
   let startPos = $state(0);
   // svelte-ignore state_referenced_locally
   const keptOnlineOnly: unknown = flow.onlineBuddyOnly();
-  let onlineOnly = $state(keptOnlineOnly === true);
+  // The contact scope is fixed for this mounted form; each parent mounts its own.
+  // svelte-ignore state_referenced_locally
+  let onlineOnly = $state(!organization && keptOnlineOnly === true);
   /** What the quick filter holds, and the text it filters by: taken 0.4 s after the typing stops (_SetQuickFilterInput). */
   let filterText = $state("");
   let filtering = $state("");
@@ -361,19 +395,86 @@
   /** The notification whose menu is open. */
   let notificationMenuFor = $state<number | null>(null);
 
+  let readGeneration = 0;
+  let disposed = false;
   async function load(): Promise<void> {
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
+    const owner = ownerID;
     busy = true;
     error = "";
     try {
-      const [read, notifications] = await Promise.all([flow.addressBook(), flow.contactNotifications().catch(() => null)]);
-      book = read;
+      const [read, notifications] = await Promise.all([flow.addressBook(contactType), organization ? Promise.resolve(null) : flow.contactNotifications().catch(() => null)]);
+      if (disposed || characterID !== store.station.get().online?.characterID || owner !== ownerID) return;
       notificationsHeld = notifications;
+      if (generation !== readGeneration) return;
+      book = read;
+      applyOrganizationNotices(store.live.get().notifications);
     } catch (cause) {
+      if (disposed || generation !== readGeneration) return;
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
-      busy = false;
+      if (!disposed && generation === readGeneration) busy = false;
     }
   }
+
+  // The held answer already includes old notices. Only apply updates arriving after this form was mounted;
+  // updates received during its read are applied once the answer arrives too.
+  const seenOrganizationNotices = new WeakSet<object>(live.get().notifications);
+  const seenPersonalNotices = new WeakSet<object>(live.get().notifications);
+  // addressbookService's own ScatterEvents (contactsForm 611-635). Read the
+  // amended held answer, without reloading notifications or disturbing a draft.
+  function applyPersonalNotices(notices: typeof $live.notifications): void {
+    if (organization || contactAction || disposed) return;
+    let changed = false;
+    for (const notice of notices) {
+      if (seenPersonalNotices.has(notice)) continue;
+      seenPersonalNotices.add(notice);
+      if ((notice.method === "OnContactChange" || notice.method === "OnEditLabel") && notice.args[1] === "contact"
+        || notice.method === "OnMyLabelsChanged" && notice.args[0] === "contact"
+        || notice.method === "OnBlockContacts" || notice.method === "OnUnblockContacts") changed = true;
+    }
+    if (!changed) return;
+    const generation = ++readGeneration;
+    const characterID = store.station.get().online?.characterID;
+    void flow.addressBook().then(read => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      book = read;
+      busy = false;
+      drawnAgain();
+    }).catch(cause => {
+      if (disposed || generation !== readGeneration || characterID !== store.station.get().online?.characterID) return;
+      busy = false;
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
+    });
+  }
+  function applyOrganizationNotices(notices: typeof $live.notifications): void {
+    if (!organization || book === null) return;
+    const values = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : value && typeof value === "object" && "items" in value && Array.isArray(value.items) ? value.items : [];
+    for (const notice of notices) {
+      if (seenOrganizationNotices.has(notice)) continue;
+      seenOrganizationNotices.add(notice);
+      if (notice.method !== "OnOrganizationContactsUpdated" || Number(notice.args[0]) !== ownerID) continue;
+      const contacts: Map<number, NamedAddressBook["contacts"][number]> = new Map(book.contacts.map(contact => [contact.contactID, contact]));
+      for (const update of values(notice.args[1])) {
+        const [id, level, mask] = values(update); const contactID = Number(id);
+        if (!(contactID > 0)) continue;
+        if (level == null && mask == null) { contacts.delete(contactID); continue; }
+        const previous = contacts.get(contactID);
+        contacts.set(contactID, { contactID, name: previous?.name ?? "Unknown contact", inWatchlist: false,
+          relationshipID: previous && mask != null ? previous.relationshipID : Number(level ?? previous?.relationshipID ?? 0),
+          labelMask: mask == null ? previous?.labelMask ?? 0n : BigInt(typeof mask === "object" && "value" in mask ? String(mask.value) : String(mask)) });
+        flow.requestNames([{kind: "owner", id: contactID}]);
+      }
+      book = { ...book, contacts: [...contacts.values()] };
+      drawnAgain();
+    }
+  }
+  $effect(() => {
+    const notices = $live.notifications;
+    untrack(() => applyOrganizationNotices(notices));
+    untrack(() => applyPersonalNotices(notices));
+  });
 
   /** The labels by name in lower case (GetLabelsSubContent, 197 to 204). */
   const labels = $derived([...(book?.labels ?? [])].sort((left, right) => {
@@ -385,7 +486,7 @@
 
   /** LoadData's filter (contactsForm.py 548 to 552; quickFilter.py QuickFilter): an owner whose name holds the text. */
   const matches = (name: string): boolean => filtering === "" || name.toLowerCase().includes(filtering.toLowerCase());
-  const contacts = $derived((book?.contacts ?? []).filter((contact) => matches(contact.name)));
+  const contacts = $derived((book?.contacts ?? []).map(contact => organization ? { ...contact, name: resolvedName($names.resolved, "owner", contact.contactID, contact.name) } : contact).filter((contact) => matches(contact.name)));
   const blocked = $derived((book?.blocked ?? []).filter((owner) => matches(owner.name)));
   const blockedIDs = $derived(new Set((book?.blocked ?? []).map((owner) => owner.ownerID)));
   const watched = $derived(new Set((book?.contacts ?? []).filter((contact) => contact.inWatchlist).map((contact) => contact.contactID)));
@@ -432,7 +533,7 @@
    */
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
     let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
-    let hint = word(WORDS.noContacts, "No contacts yet.");
+    let hint = organization ? alliance ? word("UI/PeopleAndPlaces/NoAllianceContacts", "No alliance contacts yet.") : word("UI/PeopleAndPlaces/NoCorpContacts", "No corporation contacts yet.") : word(WORDS.noContacts, "No contacts yet.");
     if (group === CONTACT_GROUP.notifications) {
       // Its entries are the notifications' (notificationEntries, below), and no contact is among them.
       entries = [];
@@ -453,7 +554,7 @@
     } else {
       entries = contacts.filter((contact) => inStandingGroup(group as number, contact.relationshipID)).map(entryOf);
       const [label, own] = STANDING_SHORT[group] ?? [WORDS.standingNeutral, "Neutral"];
-      hint = filledWord(WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
+      hint = filledWord(organization ? alliance ? "UI/PeopleAndPlaces/NoAllianceContactsStanding" : "UI/PeopleAndPlaces/NoCorpContactsStanding" : WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
     }
     if (onlineOnly) {
       entries = entries.filter((entry) => watched.has(entry.id) && onlineOf(entry.id) === true);
@@ -553,6 +654,10 @@
     const mine = ownerID === myID;
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
+    if (organization) {
+      const editable = canManage && !npc;
+      return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
+    }
     const isBlocked = blockedIDs.has(ownerID);
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
@@ -629,32 +734,8 @@
 
   // ── The fleet's own menu for a member (menusvc.py FleetMenu; characterCheckers.py FleetMemberChecker) ─────────
 
-  /** evefleet/const.py: the creator's job, and the commanders' roles. */
-  const FLEET_JOB_CREATOR = 2;
-  const FLEET_ROLE = Object.freeze({ leader: 1, wingCmdr: 2, squadCmdr: 3 });
-  /** appConst.minWarpDistance: no warp to what is nearer (sessionChecker.py isInWarpRange, 83 to 84). */
-  const MIN_WARP_DISTANCE_M = 150_000;
   /** The fleet menu's words (menusvc.py FleetMenu; WarpToMenu, 2254 to 2274; ConfirmMenu, 2250). */
   const FLEET_WORDS = {
-    fleet: "UI/Fleet/Fleet",
-    kick: "UI/Fleet/KickFleetMember",
-    confirm: "UI/Menusvc/ConfirmMenuOption",
-    makeLeader: "UI/Fleet/MakeFleetLeader",
-    warpToMember: "UI/Fleet/WarpToMember",
-    warpToMemberWithin: "UI/Fleet/WarpToMemberSubmenuOption",
-    within: "UI/Inflight/WarpToWithin",
-    setDefault: "UI/Inflight/Submenus/SetDefaultWarpRange",
-    leave: "UI/Fleet/LeaveMyFleet",
-    warpFleet: "UI/Fleet/WarpFleetToMember",
-    warpFleetWithin: "UI/Fleet/FleetSubmenus/WarpFleetToMember",
-    warpWing: "UI/Fleet/WarpWingToMember",
-    warpWingWithin: "UI/Fleet/FleetSubmenus/WarpWingToMember",
-    warpSquad: "UI/Fleet/WarpSquadToMember",
-    warpSquadWithin: "UI/Fleet/FleetSubmenus/WarpSquadToMember",
-    /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
-    formationPoint: "UI/Fleet/FleetFormations/Point",
-    travelToMe: "UI/Fleet/FleetBroadcast/Commands/BroadcastTravelToMe",
-    moveMember: "UI/Fleet/FleetSubmenus/MoveFleetMember",
     wingX: "UI/Fleet/FleetSubmenus/WingX",
     squadX: "UI/Fleet/FleetSubmenus/SquadX",
     squadWithCount: "UI/Fleet/FleetSubmenus/SquadNameWithNumMembers",
@@ -662,216 +743,16 @@
     rankWing: "UI/Fleet/Ranks/WingCommander",
     rankSquad: "UI/Fleet/Ranks/SquadCommander",
     rankMember: "UI/Fleet/Ranks/SquadMember",
-    addWatch: "UI/Fleet/AddPilotToWatchlist",
-    removeWatch: "UI/Fleet/RemovePilotFromWatchlist",
-    jumpTo: "UI/Inflight/JumpToFleetMember",
-    bridgeTo: "UI/Fleet/BridgeToMember",
-    conduitTo: "UI/Fleet/ConduitJumpToFleetMember",
   } as const;
-  /**
-   * dogmaconst: the ship's jump drive (attributeCanJump), a fitted module's jump portal (attributeJumpPortalPassenger
-   * RequiredAttributeID) and the ship's jump conduit (attributeJumpConduitPassengerRequiredAttributeID), by which
-   * sessionChecker.isShipJumpCapable, canOpenJumpPortal and canPerformGroupJump (229 to 255) offer the three.
-   */
-  const ATTRIBUTE_CAN_JUMP = 861;
-  const ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED = 3318;
-  const ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED = 3321;
-  /** A wormhole system's number (sessionChecker.IsInWormholeSystem): no jump drive works there. */
-  const isWormholeSystem = (solarSystemID: number | null): boolean => solarSystemID !== null && solarSystemID >= 31_000_000 && solarSystemID < 32_000_000;
-  /**
-   * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
-   * for its leader, a wing's for a wing's commander, a squad's for a squad's; the labels for each, the page's words
-   * where the client's are not to hand, the formation's name in them.
-   */
-  const GROUP_WARP_WORDS = {
-    fleet: { now: FLEET_WORDS.warpFleet, within: FLEET_WORDS.warpFleetWithin, own: "Take the fleet there ({fleetFormation})", ownWithin: "Take the fleet there, short ({fleetFormation})" },
-    wing: { now: FLEET_WORDS.warpWing, within: FLEET_WORDS.warpWingWithin, own: "Take the wing there ({fleetFormation})", ownWithin: "Take the wing there, short ({fleetFormation})" },
-    squad: { now: FLEET_WORDS.warpSquad, within: FLEET_WORDS.warpSquadWithin, own: "Take the squad there ({fleetFormation})", ownWithin: "Take the squad there, short ({fleetFormation})" },
-  } as const;
-  // svelte-ignore state_referenced_locally
-  const space = store.space;
-  // svelte-ignore state_referenced_locally
-  const dogma = store.dogma;
-  /** An attribute of the active ship (the first of godma's ships) or of a module fitted to it, where it is a number. */
-  const shipAttribute = (attributeID: number): number | null => {
-    const value = $dogma.allInfo?.ships[0]?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
-    return typeof value === "number" ? value : null;
-  };
-  const anyModuleHas = (attributeID: number): boolean => ($dogma.allInfo?.ships.slice(1) ?? []).some((module) => {
-    const value = module.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
-    return typeof value === "number" ? value !== 0 : value === true;
-  });
-  /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
-  const defaultWarp = $derived(Number($flyingDistances.warp));
-  const say = $derived(distanceSay($words.templates));
-  /** The fleet menu open, by where it is and whose, and which of its parts is open. */
-  let fleetMenuFor = $state<string | null>(null);
-  let fleetPart = $state<"kick" | "leave" | "warp" | "default" | "groupWarp" | "groupDefault" | "move" | null>(null);
-  const myFleetMember = $derived(fleetMembers.find((member) => Number(member.charID) === myID) ?? null);
-
   /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
   function fleetMenuOffered(ownerID: number): boolean {
     return isCharacterContact(ownerID) && !isNpcOwner(ownerID) && $fleetState.availability === "ready" && fleetMemberIDs.has(ownerID);
   }
 
-  /**
-   * GetDistanceToActiveShip (FleetMemberChecker): the member's ship among those the pilot sees (SlimItemFromCharID),
-   * the distance between their surfaces; none where it is not seen, which is far enough to warp to (or sys.maxint).
-   */
-  function memberDistance(ownerID: number): number | null {
-    const snapshot = $space.snapshot;
-    const ship = snapshot?.ship ?? null;
-    if (snapshot === null || !snapshot.inSpace || ship === null) return null;
-    const ball = snapshot.entities.find((entity) => entity.characterID === ownerID && !entity.isSelf) ?? null;
-    if (ball === null) return null;
-    const dx = ball.position.x - ship.position.x;
-    const dy = ball.position.y - ship.position.y;
-    const dz = ball.position.z - ship.position.z;
-    return Math.max(0, Math.hypot(dx, dy, dz) - ball.radius - ship.radius);
-  }
-
-  /**
-   * FleetMemberChecker's offers, the part the page makes: Kick Fleet Member for another, the pilot its creator or
-   * commanding it (IsMySubordinate: the leader any, a wing commander its wing's, a squad commander its squad's);
-   * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
-   * far enough; Leave My Fleet for the pilot's own.
-   */
-  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly addWatch: boolean; readonly removeWatch: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean; readonly leave: boolean } {
-    const mine = ownerID === myID;
-    const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
-    const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
-    const role = myFleetMember?.role ?? null;
-    const subordinate = member !== null && myFleetMember !== null && (role === FLEET_ROLE.leader
-      || (role === FLEET_ROLE.wingCmdr && String(member.wingID) === String(myFleetMember.wingID))
-      || (role === FLEET_ROLE.squadCmdr && String(member.squadID) === String(myFleetMember.squadID)));
-    const distance = memberDistance(ownerID);
-    const warp = !mine && $flightState.status?.inSpace === true && (distance === null || distance > MIN_WARP_DISTANCE_M);
-    // OfferJumpToFleetMember, OfferBridgeToMember and OfferGroupJumpToFleetMember (characterCheckers.py 470 to 510):
-    // another, the pilot in a ship in space, the member's own ship not where the pilot sees it, the member's cyno lit
-    // (HasActiveBeacon), and the ship able (sessionChecker 229 to 255: a jump drive, out of wormhole space; with a
-    // fitted jump portal for the bridge, with a jump conduit for the conduit's).
-    const toBeacon = !mine && $flightState.status?.inSpace === true && distance === null
-      && ($fleetState.jumpBeacons ?? {})[String(ownerID)] !== undefined;
-    const jumpCapable = toBeacon && !isWormholeSystem($flightState.status?.solarSystemID ?? null)
-      && (shipAttribute(ATTRIBUTE_CAN_JUMP) ?? 0) !== 0;
-    return {
-      kick: !mine && (creator || subordinate),
-      leader: !mine && creator,
-      // OfferAddPilotToWatchlist and OfferRemovePilotFromWatchlist (465 to 468, 526 to 529): another, not on the
-      // pilot's watchlist yet, or on it.
-      addWatch: !mine && !($fleetState.watchlist ?? []).includes(ownerID),
-      removeWatch: !mine && ($fleetState.watchlist ?? []).includes(ownerID),
-      // OfferBroadcastTravelToMe (492 to 499): the pilot's own, as the fleet's creator or a commander (fleetCmdrRoles).
-      travelToMe: mine && (creator || role === FLEET_ROLE.leader || role === FLEET_ROLE.wingCmdr || role === FLEET_ROLE.squadCmdr),
-      warp,
-      // session.IsPilotFleetLeader, IsPilotWingCommander, IsPilotSquadCommander: the pilot's own role in the fleet.
-      groupWarp: !warp ? null : role === FLEET_ROLE.leader ? "fleet" : role === FLEET_ROLE.wingCmdr ? "wing" : role === FLEET_ROLE.squadCmdr ? "squad" : null,
-      jumpTo: jumpCapable,
-      bridgeTo: jumpCapable && anyModuleHas(ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED),
-      conduitTo: jumpCapable && (shipAttribute(ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED) ?? 0) !== 0,
-      leave: mine,
-    };
-  }
-
-  /** The fleet menu opened or shut; the space read again for it where the pilot is in space, as the client's menu reads its ballpark. */
-  function openFleetMenu(key: string): void {
-    fleetMenuFor = fleetMenuFor === key ? null : key;
-    fleetPart = null;
-    if (fleetMenuFor !== null && $flightState.status?.inSpace === true) {
-      void flow.loadSpaceSnapshot().catch(() => {});
-      // (And the ship's dogma, by which the jumps to a member's cyno are offered, where it is not read yet.)
-      if ($dogma.allInfo === null) void flow.loadDogma().catch(() => {});
-    }
-  }
-
-  /** Jump, Conduit Jump and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember, BridgeToMember). */
-  function toMemberBeacon(ownerID: number, how: "jump" | "group" | "bridge"): void {
-    fleetDone();
-    void run(() => flow.toFleetMemberBeacon(ownerID, how));
-  }
-
   function fleetDone(): void {
-    fleetMenuFor = null;
-    fleetPart = null;
     menuFor = null;
     searchMenuFor = null;
     notes = [];
-  }
-
-  /** A fleet write, its refusal said as the Fleet window says it. */
-  function fleetWrite(write: () => Promise<void>): void {
-    void run(async () => {
-      await write();
-      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
-      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
-      if (refused !== null) throw new Error(refused);
-    });
-  }
-
-  /** Kick Fleet Member's Confirm (fleetSvc.KickMember, 607 to 612). */
-  function kickMember(ownerID: number): void {
-    fleetDone();
-    fleetWrite(() => flow.kickFleetMember(ownerID));
-  }
-
-  /** Make Fleet Leader (fleetSvc.MakeLeader, 601 to 605): the client's ConfirmMakeFleetBoss, and the boss handed on where it is answered yes. */
-  function makeBoss(ownerID: number, name: string): void {
-    fleetDone();
-    question = {
-      title: filledWord("dialog:ConfirmMakeFleetBoss/title", "Hand the fleet on?", {}),
-      body: filledWord("dialog:ConfirmMakeFleetBoss/body", "Make {charName} the fleet's boss?", { charName: name }),
-      answer: (yes) => {
-        question = null;
-        if (yes) fleetWrite(() => flow.makeFleetLeader(ownerID));
-      },
-    };
-  }
-
-  /** Warp to Member at the pilot's default distance, or Warp to Member Within at one of the seven (menusvc.WarpToMember). */
-  function warpToMember(ownerID: number, range: number): void {
-    fleetDone();
-    void run(() => flow.warpToFleetMember(ownerID, range));
-  }
-
-  /**
-   * Add Pilot to Watchlist and Remove Pilot from Watchlist (fleetSvc.AddFavorite, RemoveFavorite): the pilot's own list
-   * of members to watch, the server told. What the client refuses is said in its own dialog's words.
-   */
-  function watch(ownerID: number, add: boolean): void {
-    fleetDone();
-    void run(async () => {
-      const outcome = add ? await flow.addToFleetWatchlist([ownerID]) : await flow.removeFromFleetWatchlist(ownerID);
-      if (outcome === "not-in-fleet") {
-        throw new Error(filledWord("dialog:FleetNotInFleet/body", "That needs a fleet.", {}));
-      }
-      if (outcome === "too-many") {
-        throw new Error(filledWord("dialog:FleetTooManyFavorites/body", "The watchlist holds {num} pilots at most.", { num: "100" }));
-      }
-      // AddFavorite (674 to 677): with pilots added, the client opens its watch list.
-      if (outcome === "added") openWatchlist?.();
-    });
-  }
-
-  /**
-   * Broadcast Travel To Me (fleetSvc.SendBroadcast_TravelTo): the pilot's own solar system to the whole fleet. What the
-   * client refuses before it asks anything is said in its own dialog's words; a broadcast inside the client's wait
-   * is no broadcast, and nothing is said of it, as the client says nothing.
-   */
-  function broadcastTravelToMe(): void {
-    fleetDone();
-    void run(async () => {
-      const outcome = await flow.broadcastTravelToMe();
-      const refusal = outcome === "not-in-fleet" ? "FleetNotInFleetInSpace" : outcome === "in-station" ? "FleetCannotDoInStation" : outcome === "in-structure" ? "FleetCannotDoInStructure" : null;
-      if (refusal !== null) {
-        throw new Error(filledWord(`dialog:${refusal}/body`, outcome === "not-in-fleet" ? "That needs a fleet, and a ship in space." : outcome === "in-station" ? "That cannot be done from a station." : "That cannot be done from a structure.", {}));
-      }
-    });
-  }
-
-  /** Move Fleet Member (menusvc.FleetMenu: GetFleetMemberMenu2(charID, fleetSvc.MoveMember, True)): where the member may go. */
-  function moveMenuOf(ownerID: number): MemberMenuEntry[] {
-    if (myID === null) return [];
-    return memberMenu({ targetCharID: ownerID, me: myID, members: menuMembers, wings: menuWings, isFreeMove: fleetIsFreeMove, isMove: true });
   }
 
   /** A rank's word (RANK_LABELS), the page's own where the client's is not to hand. */
@@ -890,54 +771,6 @@
   function squadWord(squad: MemberMenuSquad): string {
     const squadName = squad.name !== "" ? squad.name : filledWord(FLEET_WORDS.squadX, "Squad {squadNumber}", { squadNumber: String(squad.squadNumber) });
     return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
-  }
-
-  /**
-   * fleetSvc.MoveMember (513 to 520): a pilot that moves itself to a lower role than its own, a fleet or wing
-   * commander and not the fleet's creator, is asked first (CheckIfIsOKWithDemotion, 505 to 511: FleetConfirmDemoteSelf).
-   */
-  function moveMember(ownerID: number, place: MemberMenuPlace): void {
-    fleetDone();
-    const role = place.role ?? MENU_ROLE.member;
-    const mine = myFleetMember;
-    const creator = mine !== null && (mine.job & FLEET_JOB_CREATOR) !== 0;
-    const move = () => fleetWrite(() => flow.moveFleetMember(ownerID, place.wingID, place.squadID, role));
-    if (ownerID === myID && mine !== null && !creator && mine.role < MENU_ROLE.squadCmdr && role > mine.role) {
-      question = {
-        title: filledWord("dialog:FleetConfirmDemoteSelf/title", "Step down?", {}),
-        body: filledWord("dialog:FleetConfirmDemoteSelf/body", "This gives up the command you hold.", {}),
-        answer: (yes) => {
-          question = null;
-          if (yes) move();
-        },
-      };
-      return;
-    }
-    move();
-  }
-
-  /** Warp Fleet, Wing or Squad to Member, and their Within (menusvc.WarpFleetToMember): the one call, the commander's. */
-  function warpGroupToMember(ownerID: number, range: number): void {
-    fleetDone();
-    void run(() => flow.warpFleetToMember(ownerID, range));
-  }
-
-  /** A commander's warp's label, the formation's name in it (menusvc.FleetMenu: {'fleetFormation': GetSelectedFormationName()}). */
-  function groupWarpWord(group: keyof typeof GROUP_WARP_WORDS, within: boolean): string {
-    const words = GROUP_WARP_WORDS[group];
-    return filledWord(within ? words.within : words.now, within ? words.ownWithin : words.own, { fleetFormation: word(FLEET_WORDS.formationPoint, "Point") });
-  }
-
-  /** Leave My Fleet's Confirm (fleetSvc.LeaveFleet, 365 to 371). */
-  function leaveMyFleet(): void {
-    fleetDone();
-    fleetWrite(() => flow.leaveFleet());
-  }
-
-  /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
-  function setDefaultWarp(metres: number): void {
-    setDistance("warp", String(metres));
-    fleetPart = "warp";
   }
 
   /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
@@ -988,7 +821,10 @@
     busy = true;
     error = "";
     try {
+      assertActionCurrent?.();
       await action();
+      assertActionCurrent?.();
+      if (contactAction) onActionDone?.(book);
     } catch (cause) {
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -1036,7 +872,7 @@
         sendNotification: held.isCharacter ? held.notify : false,
         message: held.isCharacter ? held.message : "",
         isCharacter: held.isCharacter,
-      }, held.isContact);
+      }, held.isContact, contactType);
       if (book !== null) {
         const before = book.contacts.find((each) => each.contactID === held.contactID);
         const contact = { contactID: held.contactID, name: held.name, relationshipID: held.level, inWatchlist: held.isCharacter && held.inWatchlist, labelMask: before?.labelMask ?? 0n };
@@ -1057,6 +893,7 @@
     const held = managing;
     managing = null;
     held?.afterAdd?.(false);
+    if (contactAction) onActionDone?.(book);
   }
 
   /**
@@ -1065,7 +902,7 @@
    * is its, and told, only where it is added. Told where `tellIt` (from a menu, not from Manage Labels).
    */
   async function labelGiven(ownerIDs: readonly number[], bits: bigint, labelName: string, tellIt: boolean): Promise<void> {
-    await flow.labelContacts(ownerIDs, bits, true);
+    await flow.labelContacts(ownerIDs, bits, true, contactType);
     const first = ownerIDs[0];
     const lone = ownerIDs.length === 1 && first !== undefined && !contactIDs.has(first) ? first : null;
     changeMasks(ownerIDs, (labelMask) => labelMask | bits);
@@ -1103,7 +940,7 @@
     notes = [];
     told = [];
     void run(async () => {
-      await flow.labelContacts(ownerIDs, label.labelID, false);
+      await flow.labelContacts(ownerIDs, label.labelID, false, contactType);
       changeMasks(ownerIDs, (labelMask) => labelMaskWithout(labelMask, label.labelID));
       drawnAgain();
       tell(filledWord(WORDS.labelRemoved, "Label {labelName} taken off {numContacts}", { labelName: label.name, numContacts: String(ownerIDs.length) }));
@@ -1125,9 +962,9 @@
       body: filledWord(`dialog:${dialog}/body`, "Take {names} off your contacts?", { names: owners.map((owner) => owner.name).join(", ") }),
       answer: (yes) => {
         question = null;
-        if (!yes) return;
+        if (!yes) { if (contactAction) onActionDone?.(book); return; }
         void run(async () => {
-          await flow.deleteContacts(ownerIDs);
+          await flow.deleteContacts(ownerIDs, contactType);
           if (book !== null) {
             book = { ...book, contacts: book.contacts.filter((each) => !ownerIDs.includes(each.contactID)) };
           }
@@ -1159,7 +996,7 @@
     const level = held.level;
     notes = [];
     void run(async () => {
-      await flow.editContactsRelationship(held.ids, level);
+      await flow.editContactsRelationship(held.ids, level, contactType);
       if (book !== null) {
         book = { ...book, contacts: book.contacts.map((contact) => (held.ids.includes(contact.contactID) ? { ...contact, relationshipID: level } : contact)) };
       }
@@ -1225,7 +1062,7 @@
     renaming = null;
     if (name === "") return;
     void run(async () => {
-      await flow.renameContactLabel(held.labelID, name);
+      await flow.renameContactLabel(held.labelID, name, contactType);
       if (book !== null) {
         book = { ...book, labels: (book.labels ?? []).map((label) => (label.labelID === held.labelID ? { ...label, name } : label)) };
       }
@@ -1244,7 +1081,7 @@
         question = null;
         if (!yes) return;
         void run(async () => {
-          const asked = await flow.deleteContactLabel(label.labelID);
+          const asked = await flow.deleteContactLabel(label.labelID, contactType);
           if (book !== null) {
             book = {
               ...book,
@@ -1285,7 +1122,7 @@
       return;
     }
     void run(async () => {
-      const labelID = await flow.createContactLabel(name);
+      const labelID = await flow.createContactLabel(name, contactType);
       if (labelID !== null && book !== null) {
         book = { ...book, labels: [...(book.labels ?? []).filter((label) => label.labelID !== labelID), { labelID, name, color: null }] };
         checkedLabels = [...checkedLabels, String(labelID)];
@@ -1322,7 +1159,7 @@
         await labelGiven(ownerIDs, bits, "", false);
         return;
       }
-      await flow.labelContacts(ownerIDs, bits, false);
+      await flow.labelContacts(ownerIDs, bits, false, contactType);
       changeMasks(ownerIDs, (labelMask) => labelMaskWithout(labelMask, bits));
       drawnAgain();
     });
@@ -1358,7 +1195,7 @@
     }
     selectedIDs = [];
     menuFor = null;
-    flow.keepContactsLastSelected(groupID);
+    flow.keepContactsLastSelected(groupID, contactType);
   }
 
   /** BrowseContacts (554 to 558): a page back or on. */
@@ -1425,7 +1262,8 @@
   type AddressBookTab = "contacts" | "agents" | "search";
   // svelte-ignore state_referenced_locally
   const keptTab = flow.addressBookTab();
-  let tab = $state<AddressBookTab>(keptTab === "agents" || keptTab === "search" ? keptTab : "contacts");
+  // svelte-ignore state_referenced_locally
+  let tab = $state<AddressBookTab>(!organization && (keptTab === "agents" || keptTab === "search") ? keptTab : "contacts");
   /** What the Search tab's last search found, by kind; none before any. */
   let searchFound = $state<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]> | null>(null);
   function chooseTab(chosen: AddressBookTab): void {
@@ -2067,28 +1905,37 @@
   onMount(() => {
     flow.requestWords([
       ...Object.values(WORDS),
+      "UI/PeopleAndPlaces/NoCorpContacts", "UI/PeopleAndPlaces/NoCorpContactsStanding",
+      "UI/PeopleAndPlaces/NoAllianceContacts", "UI/PeopleAndPlaces/NoAllianceContactsStanding",
       ...Object.values(AGENT_WORDS),
       ...Object.values(FLEET_WORDS),
-      ...DISTANCE_WORD_LABELS,
       ...Object.values(SEARCH_WORDS),
       "UI/PeopleAndPlaces/AlreadyAContact",
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
       ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
-    void load();
-    void flow.primeContactsOnline().catch(() => {});
+    if (contactAction) {
+      book = contactAction.book;
+      if (contactAction.kind === "manage") manage(contactAction.ownerID, contactAction.name);
+      else removeContacts([{ id: contactAction.ownerID, name: contactAction.name }]);
+    } else void load();
+    if (!contactAction && !organization) void flow.primeContactsOnline().catch(() => {});
     // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
-    if (store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
+    if (!contactAction && !organization && store.fleet.get().availability === "unknown") void flow.loadFleet(true).catch(() => {});
     return () => {
+      disposed = true;
+      ++readGeneration;
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
   });
 </script>
 
 <section class="panel">
+  {#if !contactAction}
   <header class="panel-head">
     <h2 class="panel-title">{word(WORDS.title, "Contacts")}</h2>
   </header>
+  {/if}
 
   {#if error}
     <p class="error">{error}</p>
@@ -2120,6 +1967,10 @@
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{editingSeveral.names}</strong></p>
       <p>{editingSeveral.level === null ? word(WORDS.selectStanding, "Choose a standing") : word(LEVELS.find(([level]) => level === editingSeveral?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === editingSeveral?.level)?.[2] ?? "Neutral Standing")}</p>
+      {#if organization}
+        <label>Standing <input type="range" aria-label="Standing" min="-10" max="10" step="0.1" value={editingSeveral.level ?? 0} oninput={(event) => { if (editingSeveral) editingSeveral.level = Number(event.currentTarget.value); }} /></label>
+        {#if editingSeveral.level !== null}<span>{editingSeveral.level.toFixed(1)}</span>{/if}
+      {/if}
       <p class="controls">
         {#each LEVELS as [level, label, own] (level)}
           <button type="button" class="minor" class:active={editingSeveral.level === level} aria-pressed={editingSeveral.level === level} title={word(label, own)} onclick={() => { if (editingSeveral) editingSeveral.level = level; }}>
@@ -2193,7 +2044,8 @@
     <section class="contacts-confirm" aria-label={word(WORDS.management, "Contact Management")}>
       <h3>{word(WORDS.management, "Contact Management")}</h3>
       <p><strong>{managing.name}</strong></p>
-      <p>{word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      <p>{organization ? managing.level.toFixed(1) : word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      {#if organization}<input type="range" aria-label="Standing" min="-10" max="10" step="0.1" bind:value={managing.level} />{/if}
       <p class="controls">
         {#each LEVELS as [level, label, own] (level)}
           <button type="button" class="minor" class:active={managing.level === level} aria-pressed={managing.level === level} title={word(label, own)} onclick={() => { if (managing) managing.level = level; }}>
@@ -2212,7 +2064,7 @@
           </select>
         </p>
       {/if}
-      {#if managing.isCharacter}
+      {#if managing.isCharacter && !organization}
         <p class="controls">
           <label title={word(WORDS.buddyHint, "")}>
             <input type="checkbox" bind:checked={managing.inWatchlist} />
@@ -2280,11 +2132,14 @@
   {/if}
 
   <!-- The window's tabs (ConstructTabs, 85 to 92): Contacts and Agents. -->
+  {#if !contactAction}
+  {#if !organization}
   <nav class="tabs">
     <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
     <button type="button" class:active={tab === "agents"} aria-pressed={tab === "agents"} onclick={() => chooseTab("agents")}>{word(AGENT_WORDS.agents, "Agents")}</button>
     <button type="button" class:active={tab === "search"} aria-pressed={tab === "search"} onclick={() => chooseTab("search")}>{word(SEARCH_WORDS.search, "Search")}</button>
   </nav>
+  {/if}
 
   {#if tab === "agents"}
     <div class="contacts-agents">
@@ -2530,8 +2385,9 @@
                         <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                         {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
                       {/if}
+                      <OwnerChatMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
                       {#if fleetMenuOffered(owner.id)}
-                        {@render fleetSubmenu(owner.id, owner.name, `search:${owner.id}`)}
+                        {@render fleetSubmenu(owner.id)}
                       {/if}
                       {#if offers.formFleetWith}
                         <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
@@ -2546,10 +2402,10 @@
       {/each}
     </div>
   {:else}
-  <div class="contacts-form">
+  <div class="contacts-form" class:organization>
     <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength), and the labels under theirs. -->
     <ul class="contacts-groups">
-      {#each GROUPS as [groupID, label, own] (groupID)}
+      {#each GROUPS.filter(([id]) => !organization || id === CONTACT_GROUP.all || id <= 10) as [groupID, label, own] (groupID)}
         {#if groupID === CONTACT_GROUP.blocked}
           <li class="contacts-gap" aria-hidden="true"></li>
         {/if}
@@ -2564,7 +2420,7 @@
         <!-- The Labels group, with its Manage Labels (LabelGroupMenu, 532 to 535; manage_labels_callback, 162). -->
         <li class="contacts-labels-head">
           {word(WORDS.labels, "Labels")}
-          <button type="button" class="minor" onclick={() => { notes = []; told = []; managingLabels = !managingLabels; }}>{word(WORDS.manageLabels, "Manage Labels")}</button>
+          {#if canManage}<button type="button" class="minor" onclick={() => { notes = []; told = []; managingLabels = !managingLabels; }}>{word(WORDS.manageLabels, "Manage Labels")}</button>{/if}
         </li>
         <li>
           <button type="button" class="minor contacts-label" class:active={group === NO_LABEL} onclick={() => choose(NO_LABEL)}>
@@ -2576,7 +2432,7 @@
             <button type="button" class="minor contacts-label" class:active={group === labelGroup(label.labelID)} onclick={() => choose(labelGroup(label.labelID))}>
               {label.name} [{countOf(labelGroup(label.labelID))}]
             </button>
-            <button type="button" class="minor" aria-expanded={labelMenuFor === String(label.labelID)} aria-label="Label menu" onclick={() => (labelMenuFor = labelMenuFor === String(label.labelID) ? null : String(label.labelID))}>⋯</button>
+            {#if canManage}<button type="button" class="minor" aria-expanded={labelMenuFor === String(label.labelID)} aria-label="Label menu" onclick={() => (labelMenuFor = labelMenuFor === String(label.labelID) ? null : String(label.labelID))}>⋯</button>{/if}
           </li>
           {#if labelMenuFor === String(label.labelID)}
             <!-- A label's menu (GetLabelMenu, 226 to 233): Rename, and Delete with the entry's own words, its count with them. -->
@@ -2590,11 +2446,18 @@
     </ul>
 
     <div class="contacts-list">
+      {#if organization && canManage}
+        <div class="controls">
+          <input type="search" aria-label="Find contact to add" placeholder="Find contact to add" bind:value={ownerQuery} onkeydown={(event) => { if (event.key === "Enter") void findCorporateOwner(); }} />
+          <button type="button" disabled={busy || ownerQuery.trim().length < 3} onclick={() => void findCorporateOwner()}>{word(SEARCH_WORDS.search, "Search")}</button>
+        </div>
+        {#each ownerMatches as owner (owner.id)}<p><button type="button" onclick={() => { manage(owner.id, owner.name); ownerMatches = []; }}>{owner.name}</button></p>{/each}
+      {/if}
       <p class="controls">
-        <label>
+        {#if !organization}<label>
           <input type="checkbox" bind:checked={onlineOnly} onchange={onlineOnlyChanged} />
           {word(WORDS.onlineOnly, "Online only")}
-        </label>
+        </label>{/if}
         <input type="search" maxlength="100" aria-label="Filter" bind:value={filterText} oninput={filterTyped} />
       </p>
       {#if book === null}
@@ -2667,7 +2530,7 @@
                   <button type="button" class="minor" aria-expanded={menuFor === row.id} aria-label="Menu" onclick={() => (menuFor = menuFor === row.id ? null : row.id)}>⋯</button>
                 </td>
               </tr>
-              {#if menuFor === row.id && selectedRows.length > 1 && selectedIDs.includes(row.id)}
+              {#if canManage && menuFor === row.id && selectedRows.length > 1 && selectedIDs.includes(row.id)}
                 {@const several = selectedRows}
                 {@const masks = several.map((each) => each.labelMask)}
                 {@const toAssign = labelsToAssign(masks, labels)}
@@ -2696,8 +2559,8 @@
                 </tr>
               {:else if menuFor === row.id}
                 {@const offers = offersOf(row.id)}
-                {@const toAssign = labelsToAssign([row.labelMask], labels)}
-                {@const toRemove = labelsToRemove([row.labelMask], labels)}
+                {@const toAssign = canManage ? labelsToAssign([row.labelMask], labels) : []}
+                {@const toRemove = canManage ? labelsToRemove([row.labelMask], labels) : []}
                 <!-- The entry's menu of a contact (menusvc.py 590 to 602), and its labels' (userentry.py GetMenu, 444 to 452). -->
                 <tr class="contacts-menu">
                   <td colspan="5">
@@ -2727,8 +2590,9 @@
                       <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                       {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
                     {/if}
+                    {#if selectedRows.length <= 1}<OwnerChatMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
-                      {@render fleetSubmenu(row.id, row.name, `contacts:${row.id}`)}
+                      {@render fleetSubmenu(row.id)}
                     {/if}
                     {#if offers.formFleetWith}
                       <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
@@ -2763,6 +2627,7 @@
     </div>
   </div>
   {/if}
+  {/if}
 </section>
 
 {#snippet memberPlaces(entries: readonly MemberMenuEntry[], pick: (place: MemberMenuPlace) => void)}
@@ -2789,89 +2654,8 @@
   {/each}
 {/snippet}
 
-{#snippet fleetSubmenu(ownerID: number, name: string, key: string)}
-  <!-- The fleet's own menu for a member (menusvc.py FleetMenu, in its order; characterCheckers.py FleetMemberChecker):
-       Show Info; Kick Fleet Member and its Confirm; Make Fleet Leader; Warp to Member, and Warp to Member Within with
-       the seven distances and Set Default; Warp Fleet, Wing or Squad to Member and its Within, for a commander;
-       Leave My Fleet and its Confirm, for the pilot's own. -->
-  <button type="button" class="minor" aria-expanded={fleetMenuFor === key} onclick={() => openFleetMenu(key)}>{word(FLEET_WORDS.fleet, "Fleet")} {fleetMenuFor === key ? "▾" : "▸"}</button>
-  {#if fleetMenuFor === key}
-    {@const fleetOffers = fleetOffersOf(ownerID)}
-    {@const moves = moveMenuOf(ownerID)}
-    <span class="contacts-submenu">
-      <button type="button" class="minor" onclick={() => { fleetDone(); ownerInfo(ownerID); }}>{word(WORDS.showInfo, "Info")}</button>
-      {#if fleetOffers.kick}
-        <button type="button" class="minor" aria-expanded={fleetPart === "kick"} onclick={() => (fleetPart = fleetPart === "kick" ? null : "kick")}>{word(FLEET_WORDS.kick, "Kick out")} {fleetPart === "kick" ? "▾" : "▸"}</button>
-        {#if fleetPart === "kick"}
-          <button type="button" class="minor" disabled={busy} onclick={() => kickMember(ownerID)}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
-        {/if}
-      {/if}
-      {#if fleetOffers.leader}
-        <button type="button" class="minor" disabled={busy} onclick={() => makeBoss(ownerID, name)}>{word(FLEET_WORDS.makeLeader, "Hand the fleet on")}</button>
-      {/if}
-      {#if fleetOffers.addWatch}
-        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, true)}>{word(FLEET_WORDS.addWatch, "Watch this pilot")}</button>
-      {/if}
-      {#if fleetOffers.removeWatch}
-        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, false)}>{word(FLEET_WORDS.removeWatch, "Stop watching this pilot")}</button>
-      {/if}
-      {#if fleetOffers.travelToMe}
-        <button type="button" class="minor" disabled={busy} onclick={broadcastTravelToMe}>{word(FLEET_WORDS.travelToMe, "Call the fleet here")}</button>
-      {/if}
-      {#if fleetOffers.warp}
-        <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, defaultWarp)}>{word(FLEET_WORDS.warpToMember, "Warp there")}</button>
-        <button type="button" class="minor" aria-expanded={fleetPart === "warp" || fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "warp" || fleetPart === "default" ? null : "warp")}>{word(FLEET_WORDS.warpToMemberWithin, "Warp there, short")} {fleetPart === "warp" || fleetPart === "default" ? "▾" : "▸"}</button>
-        {#if fleetPart === "warp" || fleetPart === "default"}
-          {#each WARP_RANGES as choice (choice.metres)}
-            <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
-          {/each}
-          <button type="button" class="minor" aria-expanded={fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "default" ? "warp" : "default")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "default" ? "▾" : "▸"}</button>
-          {#if fleetPart === "default"}
-            {#each WARP_RANGES as choice (choice.metres)}
-              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
-            {/each}
-          {/if}
-        {/if}
-      {/if}
-      {#if fleetOffers.groupWarp !== null}
-        {@const group = fleetOffers.groupWarp}
-        <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, defaultWarp)}>{groupWarpWord(group, false)}</button>
-        <button type="button" class="minor" aria-expanded={fleetPart === "groupWarp" || fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupWarp" || fleetPart === "groupDefault" ? null : "groupWarp")}>{groupWarpWord(group, true)} {fleetPart === "groupWarp" || fleetPart === "groupDefault" ? "▾" : "▸"}</button>
-        {#if fleetPart === "groupWarp" || fleetPart === "groupDefault"}
-          {#each WARP_RANGES as choice (choice.metres)}
-            <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
-          {/each}
-          <button type="button" class="minor" aria-expanded={fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupDefault" ? "groupWarp" : "groupDefault")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "groupDefault" ? "▾" : "▸"}</button>
-          {#if fleetPart === "groupDefault"}
-            {#each WARP_RANGES as choice (choice.metres)}
-              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
-            {/each}
-          {/if}
-        {/if}
-      {/if}
-      {#if fleetOffers.jumpTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "jump")}>{word(FLEET_WORDS.jumpTo, "Jump to their cyno")}</button>
-      {/if}
-      {#if fleetOffers.bridgeTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "bridge")}>{word(FLEET_WORDS.bridgeTo, "Open a bridge to their cyno")}</button>
-      {/if}
-      {#if fleetOffers.conduitTo}
-        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "group")}>{word(FLEET_WORDS.conduitTo, "Take the fleet to their cyno")}</button>
-      {/if}
-      {#if fleetOffers.leave}
-        <button type="button" class="minor" aria-expanded={fleetPart === "leave"} onclick={() => (fleetPart = fleetPart === "leave" ? null : "leave")}>{word(FLEET_WORDS.leave, "Leave")} {fleetPart === "leave" ? "▾" : "▸"}</button>
-        {#if fleetPart === "leave"}
-          <button type="button" class="minor" disabled={busy} onclick={leaveMyFleet}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
-        {/if}
-      {/if}
-      {#if moves.length > 0}
-        <button type="button" class="minor" aria-expanded={fleetPart === "move"} onclick={() => (fleetPart = fleetPart === "move" ? null : "move")}>{word(FLEET_WORDS.moveMember, "Put elsewhere")} {fleetPart === "move" ? "▾" : "▸"}</button>
-        {#if fleetPart === "move"}
-          {@render memberPlaces(moves, (place) => moveMember(ownerID, place))}
-        {/if}
-      {/if}
-    </span>
-  {/if}
+{#snippet fleetSubmenu(ownerID: number)}
+  <OwnerFleetMenu {store} {flow} {ownerID} {openWatchlist} onDone={fleetDone} />
 {/snippet}
 
 <style>
@@ -2902,6 +2686,8 @@
     flex-wrap: wrap;
     gap: 0.75rem;
   }
+  .contacts-form.organization .contacts-groups { order: 2; }
+  .contacts-form.organization .contacts-list table { width: 100%; }
   .contacts-groups {
     list-style: none;
     margin: 0;

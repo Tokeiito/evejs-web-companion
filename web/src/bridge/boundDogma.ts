@@ -107,6 +107,12 @@ export function exactInt(value: JsonValue | undefined): string | null {
   return null;
 }
 
+/** A GET-INFO entry's time (a FILETIME, exactInt's string) in milliseconds since 1970, to the tick; null without one. */
+export function infoTimeMs(time: string | null): number | null {
+  if (time === null || !/^\d+$/.test(time)) return null;
+  return Number(BigInt(time) - 116444736000000000n) / 10000;
+}
+
 /**
  * A dogma attribute value / measurement as a JS number (a double server-side).
  * Unwraps a {type:"real"} or {type:"long"} wrapper, a bare number, or a numeric
@@ -374,6 +380,49 @@ export function decodeGetAllInfo(result: JsonValue | undefined): BoundDogmaAllIn
     structureInfo: (topField(result, "structureInfo") ?? null) as JsonValue,
     locationInfo: (topField(result, "locationInfo") ?? null) as JsonValue,
   };
+}
+
+/** An instance row's columns, in their order (baseDogmaLocation's instanceRowDescriptor, after instanceID). */
+const INSTANCE_ROW_COLUMNS = ["online", "damage", "charge", "skillPoints", "armorDamage", "shieldCharge", "incapacitated"] as const;
+
+/**
+ * The instance rows of a ship's state (shipState[0], the client's instanceCache: itemID -> its row), each as its
+ * values in the order of the row (dgmAttributesByIdx), a flag as one or nought. An item whose row cannot be read is
+ * left out.
+ */
+export function decodeInstanceRows(shipState: JsonValue | undefined): ReadonlyMap<string, readonly number[]> {
+  const rows = new Map<string, readonly number[]>();
+  const cache = Array.isArray(shipState) ? (shipState as readonly JsonValue[])[0] : undefined;
+  for (const [key, row] of readDictPairs(cache)) {
+    const itemID = idData(key as JsonValue);
+    if (itemID === null) continue;
+    const values: number[] = [];
+    for (const column of INSTANCE_ROW_COLUMNS) {
+      const raw = readRowField(row, column);
+      const value = typeof raw === "boolean" ? (raw ? 1 : 0) : asFloat(raw);
+      if (value === null) break;
+      values.push(value);
+    }
+    if (values.length === INSTANCE_ROW_COLUMNS.length) rows.set(String(itemID), values);
+  }
+  return rows;
+}
+
+/**
+ * The weapon banks of a ship's state (shipState[2], the third part of it, which the client makes its banks:
+ * baseDogmaLocation.SetWeaponBanks, {masterID: [slaveID, ...]}), each master with its slaves. A master or a slave whose
+ * number cannot be read is left out.
+ */
+export function decodeWeaponBanks(shipState: JsonValue | undefined): ReadonlyMap<number, readonly number[]> {
+  const banks = new Map<number, readonly number[]>();
+  const held = Array.isArray(shipState) ? (shipState as readonly JsonValue[])[2] : undefined;
+  for (const [key, slaves] of readDictPairs(held)) {
+    const masterID = idData(key as JsonValue);
+    if (typeof masterID !== "number") continue;
+    const listed: readonly JsonValue[] = isListValue(slaves) ? slaves.items : Array.isArray(slaves) ? slaves : [];
+    banks.set(masterID, listed.map((slave) => idData(slave)).filter((slaveID): slaveID is number => typeof slaveID === "number"));
+  }
+  return banks;
 }
 
 // --- GetTargeters -----------------------------------------------------------

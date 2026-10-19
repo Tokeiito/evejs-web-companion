@@ -27,7 +27,34 @@
 
 import { failsTheReading, type Ask } from "./ask.ts";
 import { decodeOwnOrders, iskDelta, RANGE_STATION, roundPrice, toAmountString } from "./market.ts";
-import type { JsonValue } from "./wire.ts";
+import { readKeyVal, type JsonValue } from "./wire.ts";
+
+/** One of the orders a list of the server's order KeyVals holds: its number, its type and what was left of it. */
+export interface ListedOrder {
+  readonly orderID: string;
+  readonly typeID: number | null;
+  readonly volRemaining: number | null;
+}
+
+/**
+ * The orders a list of the server's order KeyVals holds, as the client reads them: BuyMultipleItems' answer
+ * (marketsvc.BuyMulti: order.orderID, order.typeID) and OnOwnOrdersChanged's orders (order.orderID,
+ * order.volRemaining, order.typeID). A row with no number is passed over.
+ */
+export function ordersListed(value: unknown): readonly ListedOrder[] {
+  const items = Array.isArray(value)
+    ? value
+    : value !== null && typeof value === "object" && Array.isArray((value as { items?: unknown }).items) ? (value as { items: unknown[] }).items : [];
+  const orders: ListedOrder[] = [];
+  for (const item of items) {
+    const orderID = toAmountString(readKeyVal(item, "orderID"));
+    if (orderID === null) continue;
+    const typeID = Number(readKeyVal(item, "typeID"));
+    const remaining = Number(toAmountString(readKeyVal(item, "volRemaining")) ?? NaN);
+    orders.push({ orderID, typeID: Number.isSafeInteger(typeID) && typeID > 0 ? typeID : null, volRemaining: Number.isFinite(remaining) ? remaining : null });
+  }
+  return orders;
+}
 
 /** What an order's taking down came to, as the pilot's orders and wallet say. */
 export interface MarketOrderChange {
@@ -181,14 +208,16 @@ export interface MultiBuyItem {
  * (src/gamePort/retailCalls.js); not for the corporation. Answers how many orders the server made. Fails as the call
  * fails.
  */
-export async function buyMultipleItems(act: Ask, stationID: number, items: readonly MultiBuyItem[]): Promise<number> {
+export async function buyMultipleItems(act: Ask, stationID: number, items: readonly MultiBuyItem[], useCorp = false): Promise<readonly ListedOrder[]> {
+  // marketsvc.BuyMulti(stationID, itemList, useCorp): the corporation's wallet where the window's box is ticked
+  // (buySellMultiBase.TradingForCorp).
   const answered = await act("marketProxy", "BuyMultipleItems", [
     stationID,
     items.map((item) => ({ stationID, typeID: item.typeID, price: roundPrice(item.price), quantity: item.quantity, minVolume: 1 })),
-    false,
+    useCorp,
   ]);
-  const made = Array.isArray(answered) ? answered : answered !== null && typeof answered === "object" && Array.isArray((answered as { items?: unknown }).items) ? (answered as { items: unknown[] }).items : [];
-  return made.length;
+  // marketsvc.BuyMulti: the orders made, which the window keeps the numbers of (_PerformTrade, 307 to 308).
+  return ordersListed(answered);
 }
 
 /** Gives one of the pilot's own orders a new price, the order named by its number as the pilot's orders have it. */

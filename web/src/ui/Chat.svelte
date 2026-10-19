@@ -1,12 +1,15 @@
 <script lang="ts">
-  // Chat panel (goal R7): Local + Corp sub-channels, each with a member roster,
-  // a message list, and a send box. A pure reader of the store's chat slice; all
-  // read/send logic runs on the BFF (which holds the bridgeSessionID) and in
-  // app/flow.ts. Chat delivery bypasses the notification drain, so READ is a
-  // backlog poll: the panel polls the active channel on a modest interval while
-  // it is open and stops when it closes (onDestroy). The browser never sees a
-  // bridge session.
-  import { onDestroy, onMount } from "svelte";
+  // Local/Corp and private conversations, each with its own roster and history.
+  // The page's chatConversations controller owns private creation, invitations
+  // and sending order; the BFF holds the XMPP connection. The active backlog is
+  // polled while this panel is open, and the per-session invitation listener
+  // keeps private membership current even when this panel is put away.
+  //
+  // A message is shown by its markup as the client's chat shows it (the editor's markup: bridge/mailMarkup.ts). Its
+  // links are followed when clicked as the client's link registry follows them (ui/linkFollowers.ts: skill plans, Show
+  // Info, the web), each in its colour and with its hint; any other link is underlined with its url as its hint. A link dragged onto the send box (a skill plan's share
+  // button: SkillPlanDragData.get_link) is put in at the caret as its markup.
+  import { onDestroy, onMount, untrack } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { createChatPoller } from "../app/chatPoll.ts";
   import { skipWhileBusy } from "../app/skipWhileBusy.ts";
@@ -16,11 +19,24 @@
   import type { ChatChannel } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
+  import { LINK_DRAG_TYPE } from "../bridge/skillPlanLink.ts";
+  import { droppedFittingDrag, isFittingDrag } from "./fittingDrag.ts";
+  import type { DroppedLink } from "../app/flow.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openSkillPlanLink = null }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** A skill plan's link in a message, clicked. */
+    openSkillPlanLink?: ((url: string) => void) | null;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const chat = store.chat;
+  // svelte-ignore state_referenced_locally
+  const conversations = flow.conversations.state;
   // svelte-ignore state_referenced_locally
   const names = store.names;
   // svelte-ignore state_referenced_locally
@@ -58,6 +74,70 @@
   let busy = $state(false);
   let error = $state("");
   let draft = $state("");
+  let drafts: Record<string, string> = {}, draftFor = "";
+  const activeKey = $derived($conversations.active ?? $chat.activeChannel);
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  const pilotID = $derived($station.online?.characterID ?? null);
+  $effect(() => {
+    const key = `${pilotID}:${activeKey}`;
+    untrack(() => { if (draftFor) drafts[draftFor] = draft; draftFor = key; draft = drafts[key] ?? ""; });
+  });
+  let sendBox = $state<HTMLInputElement | undefined>(undefined);
+
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  function linkWord(label: string): string {
+    const template = $words.templates[label];
+    return plainText(formatTemplate(typeof template === "string" ? template : LINK_WORDS[label] ?? "", {}, { nameOf: () => "" }));
+  }
+
+  /** How a link in a message is followed (ui/linkFollowers.ts: the client's link registry), or null where it is not. */
+  function followerOf(url: string, text: string) {
+    return linkFollowerOf(url, flow, openSkillPlanLink, linkWord, text);
+  }
+
+  /** chat/client/const.py MAX_MESSAGE_LENGTH: the most the chat's text holds, its tags counted (EditPlainText countWithTags). */
+  const MAX_MESSAGE_LENGTH = 1024;
+
+  /** A link or a fitting dragged over the send box is taken. */
+  function linkDragOver(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes(LINK_DRAG_TYPE) || isFittingDrag(event)) event.preventDefault();
+  }
+
+  /**
+   * A link or a fitting dropped on the send box (eveEditPlainText.OnDropData): its markup (<a href="url">text</a>,
+   * evelink.Link; a fitting's its link, format_fitting_url) put in at the caret, as the room left lets it
+   * (flow.droppedLinkMarkup). What was dropped is read before any await, as a drop's data can only be.
+   */
+  function linkDropped(event: DragEvent): void {
+    const fitting = droppedFittingDrag(event);
+    const raw = fitting === null ? event.dataTransfer?.getData(LINK_DRAG_TYPE) : null;
+    if (fitting === null && !raw) return;
+    event.preventDefault();
+    let dropped: DroppedLink;
+    if (fitting?.kind === "source") {
+      dropped = { kind: "fittingSource", source: fitting.source };
+    } else if (fitting !== null) {
+      dropped = { kind: "fitting", shipTypeID: fitting.fitting.shipTypeID, fitData: fitting.fitting.fitData, name: fitting.fitting.name };
+    } else {
+      let link: { readonly url?: unknown; readonly text?: unknown };
+      try {
+        link = JSON.parse(raw ?? "") as { readonly url?: unknown; readonly text?: unknown };
+      } catch {
+        return;
+      }
+      if (typeof link.url !== "string" || typeof link.text !== "string") return;
+      dropped = { kind: "link", url: link.url, text: link.text };
+    }
+    const at = sendBox?.selectionStart ?? draft.length;
+    const selected = Math.abs((sendBox?.selectionEnd ?? at) - at);
+    void flow.droppedLinkMarkup(dropped, { length: draft.length, selected, max: MAX_MESSAGE_LENGTH }).then((markup) => {
+      if (markup === null) return;
+      const place = Math.min(at, draft.length);
+      draft = draft.slice(0, place) + markup + draft.slice(place);
+    }).catch(() => {});
+  }
 
   const CHANNELS: readonly { id: ChatChannel; label: string }[] = [
     { id: "local", label: "Local" },
@@ -89,11 +169,11 @@
   }
 
   async function refresh(): Promise<void> {
-    await run(() => flow.loadChat(currentChannel()));
+    await run(() => flow.conversations.state.get().active ? flow.conversations.refresh() : flow.loadChat(currentChannel()));
   }
 
   async function switchChannel(channel: ChatChannel): Promise<void> {
-    if (channel === currentChannel()) {
+    if (channel === currentChannel() && flow.conversations.state.get().active === null) {
       return;
     }
     flow.setChatChannel(channel);
@@ -105,10 +185,10 @@
     if (!text) {
       return;
     }
-    const channel = currentChannel();
+    const channel = currentChannel(), room = flow.conversations.state.get().active, key = draftFor;
     await run(async () => {
-      await flow.sendChatMessage(channel, text);
-      draft = "";
+      if (room) await flow.conversations.send(room, text); else await flow.sendChatMessage(channel, text);
+      if (draftFor === key) draft = ""; else drafts[key] = "";
     });
   }
 
@@ -118,6 +198,7 @@
   }
 
   onMount(() => {
+    flow.requestWords(Object.keys(LINK_WORDS));
     void refresh();
     poller.start();
   });
@@ -134,7 +215,8 @@
   });
 
   // The active channel's decoded state (roster + backlog).
-  const active = $derived($chat[$chat.activeChannel]);
+  const activeRoom = $derived($conversations.rooms.find(room => room.channel === $conversations.active) ?? null);
+  const active = $derived(activeRoom?.state ?? $chat[$chat.activeChannel]);
 
   // The active channel's resolved name (Local → system, Corp → corporation), or
   // "" while it resolves — the header then shows just "Local" / "Corp", never the
@@ -150,35 +232,40 @@
   <header class="panel-head">
     <h2 class="panel-title">Chat</h2>
   </header>
-  <nav class="tabs">
+  <nav class="tabs" style="flex-wrap: wrap">
     {#each CHANNELS as channel (channel.id)}
       <button
         type="button"
-        class:active={$chat.activeChannel === channel.id}
+        class:active={$conversations.active === null && $chat.activeChannel === channel.id}
         disabled={busy}
         onclick={() => switchChannel(channel.id)}
       >
         {channel.label}
       </button>
     {/each}
+    {#each $conversations.rooms as room (room.channel)}
+      <button type="button" class:active={$conversations.active === room.channel} disabled={busy} onclick={() => flow.conversations.select(room.channel)}>{room.title}</button>
+    {/each}
+    {#if activeRoom}<button type="button" class="minor" disabled={busy || $conversations.busy} aria-label="Close conversation" onclick={() => run(() => flow.conversations.close(activeRoom!.channel))}>×</button>{/if}
     <button type="button" disabled={busy} onclick={() => refresh()}>Refresh</button>
   </nav>
   {#if error}
     <p class="error">{error}</p>
   {/if}
+  {#if $conversations.error}<p class="error">{$conversations.error}</p>{/if}
   {#if $chat.error}
     <p class="error">{$chat.error}</p>
   {/if}
 </section>
 
-<section>
+<section data-chat-active={activeRoom?.channel ?? $chat.activeChannel}>
   <h2>
-    {$chat.activeChannel === "corp" ? "Corp" : "Local"}
-    {#if channelName}<span class="note">· {channelName}</span>{/if}
+    {activeRoom?.title ?? ($chat.activeChannel === "corp" ? "Corp" : "Local")}
+    {#if !activeRoom && channelName}<span class="note">· {channelName}</span>{/if}
   </h2>
   {#if !active.loaded}
     <p class="note">Loading…</p>
-  {:else if $chat.activeChannel === "corp" && active.corporationID === null}
+  {:else if !activeRoom && $chat.activeChannel === "corp" && active.corporationID === null}
     <p class="note">This character is not in a corporation.</p>
   {:else}
     <div class="chat-grid">
@@ -191,7 +278,7 @@
             {#each active.messages as message, index (index)}
               <li>
                 <span class="author">{message.characterName}</span>:
-                <span class="body">{message.message}</span>
+                <span class="body">{#each mailBodyLines(message.message) as line, place (place)}{#if place > 0}<br />{/if}{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button type="button" class="evelink {follower.kind}" title={follower.hint} onclick={follower.follow} draggable="true" ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}>{run.text}</button>{:else}<span class:chat-bold={run.bold} class:chat-italic={run.italic} class:chat-underline={run.underline || run.link !== null} title={run.link ?? undefined}>{run.text}</span>{/if}{/each}{/each}</span>
               </li>
             {/each}
           </ul>
@@ -214,9 +301,12 @@
     <form class="send-box" onsubmit={onSubmit}>
       <input
         type="text"
+        bind:this={sendBox}
         bind:value={draft}
-        maxlength="4096"
-        placeholder={`Message ${$chat.activeChannel === "corp" ? "Corp" : "Local"}…`}
+        ondragover={linkDragOver}
+        ondrop={linkDropped}
+        maxlength={MAX_MESSAGE_LENGTH}
+        placeholder={`Message ${activeRoom?.title ?? ($chat.activeChannel === "corp" ? "Corp" : "Local")}…`}
         disabled={busy}
       />
       <button type="submit" disabled={busy || draft.trim().length === 0}>Send</button>
@@ -225,6 +315,9 @@
 </section>
 
 <style>
+  .chat-bold { font-weight: 700; }
+  .chat-italic { font-style: italic; }
+  .chat-underline { text-decoration: underline; }
   .chat-grid {
     display: grid;
     grid-template-columns: 1fr minmax(140px, 220px);

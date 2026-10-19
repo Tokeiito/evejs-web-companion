@@ -38,6 +38,7 @@ const SafetyMenu = (await import("./SafetyMenu.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
 const TargetBracket = (await import("./TargetBracket.svelte")).default;
+const { setHudSetting } = await import("../store/hudSettings.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HUD_SOURCE = readFileSync(path.join(UI_DIR, "HudBar.svelte"), "utf8");
@@ -65,7 +66,12 @@ function fakeFlow(): unknown {
   const walletOverview = { get: () => overviewUnread, subscribe: (listener: (value: typeof overviewUnread) => void) => (listener(overviewUnread), () => {}) };
   const tradesUnread = { loaded: false, transactions: [], error: null };
   const marketTransactions = { get: () => tradesUnread, subscribe: (listener: (value: typeof tradesUnread) => void) => (listener(tradesUnread), () => {}) };
-  return new Proxy({ walletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  // The HUD's autopilot button (HudButtons) follows whether the autopilot is on: off.
+  const autopilotOn = { get: () => false, subscribe: (listener: (value: boolean) => void) => (listener(false), () => {}) };
+  // And the HUD's buff bar (BuffBar) the buffs on the ship: none.
+  const noBuffs = { incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "", jammers: new Map(), activeJams: [], jamTimers: new Map(), shipEffects: [] };
+  const buffBar = { get: () => noBuffs, subscribe: (listener: (value: typeof noBuffs) => void) => (listener(noBuffs), () => {}) };
+  return new Proxy({ walletJournal, walletOverview, marketTransactions, autopilotOn, buffBar } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 const SHIP_ID = 9001;
@@ -200,7 +206,18 @@ test("the header says where you are while in space", () => {
 // --- the in-space HUD --------------------------------------------------------
 
 test("in space the HUD reads the ship's condition off the live snapshot", () => {
-  const body = renderHud(inSpaceStore());
+  // The numbers as text are the client's readout, shown only where the HUD options' Display Readout is on
+  // (settings.user.ui showReadout, off at first: shipUI.CheckShowReadoutCont); the wheel's label says them whether or not.
+  const hidden = renderHud(inSpaceStore());
+  assert.equal(/class="hud-readout"/.test(hidden), false, "the readout is shown with Display Readout off");
+  assert.match(hidden, /aria-label="[^"]*Armor 50%/, "the wheel does not say the armor reading");
+  setHudSetting("showReadout", true);
+  let body: string;
+  try {
+    body = renderHud(inSpaceStore());
+  } finally {
+    setHudSetting("showReadout", false);
+  }
   const text = visibleText(body);
   // ⚠ ANCHORED TO THE READOUT ELEMENT, not just to the words. "Armor" and
   // "Shield" appear in more than one place in this markup, so a bare text match
@@ -522,11 +539,14 @@ function renderNeocom(isDocked: boolean): string {
 test("the neocom launches every openable panel for the current state", () => {
   const docked = visibleText(renderNeocom(true));
   const space = visibleText(renderNeocom(false));
-  // The static set — reachable docked or in space — is in both.
-  for (const label of ["Market", "Wallet", "Mail", "Skills", "Standings", "Planets"]) {
+  // btnDataRaw.py BTNDATARAW_BY_ID (78, 82): Character Sheet and Corporation are Neocom entries.
+  // Standings is inside those windows (characterSheetWindow.OpenStandings, 395 to 397), not a launcher.
+  for (const label of ["Market", "Wallet", "Mail", "Skills", "Character Sheet", "Corporation", "Planets"]) {
     assert.match(docked, new RegExp(label), `${label} missing from the docked neocom`);
     assert.match(space, new RegExp(label), `${label} missing from the in-space neocom`);
   }
+  assert.doesNotMatch(docked, /Standings/, "standings belongs inside Character Sheet and Corporation");
+  assert.doesNotMatch(space, /Standings/, "standings belongs inside Character Sheet and Corporation");
   // No state badge in the rail: the workspace header carries docked/in-space —
   // the rail proves its state through WHICH tabs it offers.
   assert.doesNotMatch(docked, /Docked/);

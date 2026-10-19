@@ -141,6 +141,16 @@ export interface ShipStats {
   readonly tank: Readonly<Record<LayerName, LayerTank>>;
   readonly totalEhp: Stat;
   /**
+   * The client's own defense panel figures (fittingUtil GetEffectiveHp, defensePanel.py: bridge/dogma/defense.ts),
+   * where the figures are the page's own dogma's. Absent where they are the server's.
+   */
+  readonly defense?: import("./dogma/defense.ts").DefenseReading;
+  /**
+   * The client's own drone panel figures (shipfitting/droneUtil, clientDogmaLocation.GetActiveDrones:
+   * bridge/dogma/drones.ts), where the figures are the page's own dogma's. Absent where they are the server's.
+   */
+  readonly drones?: import("./dogma/drones.ts").DroneReading;
+  /**
    * Seconds for the shield to recharge from empty (attribute 479 / 1000). The
    * ship reports this directly, so it is sourced — unlike the ACTIVE repair
    * rates, which need per-module reads and stay unavailable.
@@ -156,12 +166,30 @@ export interface ShipStats {
     /** EveJS has no capacitor solver, and neither did the R20 oracle. */
     readonly stability: Stat;
     readonly lastsForSeconds: Stat;
+    /**
+     * The client's capacitor simulation (fittingDogmaLocationUtil.CapacitorSimulator, ghostControllerMixin
+     * ._GetCapSimulatorValues), where the figures are the page's own dogma's: the spare recharge in GJ/s (two
+     * places), its share of the peak recharge (one place), the share of the capacity it settles at (0 where it runs
+     * out), and when it runs out, in 100ns ticks (null where it does not). Absent where the figures are the server's.
+     */
+    readonly simulator?: {
+      readonly delta: number;
+      readonly deltaPercentage: number;
+      readonly loadBalance: number;
+      readonly ttl: number | null;
+    };
   };
 
   readonly firepower: {
     readonly dps: Stat;
     readonly volley: Stat;
     readonly droneDps: Stat;
+    /**
+     * The client's own reckoning of the weapons (fittingDogmaLocationUtil GetTurretMissileAndAoeDps and
+     * GetAlphaStrike: bridge/dogma/offense.ts), where the figures are the page's own dogma's. Absent where they are
+     * the server's.
+     */
+    readonly simulator?: import("./dogma/offense.ts").OffenseReading;
   };
   readonly mining: { readonly cubicMetresPerSecond: Stat };
   readonly repairs: Readonly<Record<LayerName, Stat>>;
@@ -172,6 +200,8 @@ export interface ShipStats {
     readonly warpSpeedAuPerSecond: Stat;
     readonly signatureRadius: Stat;
     readonly mass: Stat;
+    /** The agility (inertia modifier). */
+    readonly inertiaModifier: Stat;
   };
 
   readonly targeting: {
@@ -354,10 +384,15 @@ const NEEDS_MODULE_READ =
 /** EveJS has no capacitor solver, and R20 established the oracle has none either. */
 const NO_CAP_SOLVER = "working out how long a capacitor lasts is not supported yet";
 
-/** Derive everything the fitting window shows from the ship's attribute map. */
+/**
+ * Derive everything the fitting window shows from the ship's attribute map. The drone control range is the pilot's
+ * (ghostControllerMixin.GetDroneControlRange: the character's droneControlDistance), read from `pilotAttributes`
+ * where they are given, else from the ship's map.
+ */
 export function deriveShipStats(
   attributes: Attributes,
   profile: DamageProfile = UNIFORM_DAMAGE_PROFILE,
+  pilotAttributes: Attributes | null = null,
 ): ShipStats {
   const hp: Record<LayerName, Stat> = {
     shield: readPositive(attributes, ATTR.shieldHP, "its shield strength"),
@@ -429,6 +464,7 @@ export function deriveShipStats(
       warpSpeedAuPerSecond: warpSpeed(attributes),
       signatureRadius: readPositive(attributes, ATTR.signatureRadius, "its signature radius"),
       mass: readPositive(attributes, ATTR.mass, "its mass"),
+      inertiaModifier: readPositive(attributes, ATTR.inertiaModifier, "its inertia modifier"),
     },
 
     targeting: {
@@ -443,7 +479,7 @@ export function deriveShipStats(
       cargoCapacity: read(attributes, ATTR.cargoCapacity, "its cargo space"),
       droneCapacity: read(attributes, ATTR.droneCapacity, "its drone bay"),
       droneBandwidth: read(attributes, ATTR.droneBandwidth, "its drone bandwidth"),
-      droneControlRange: readPositive(attributes, ATTR.droneControlRange, "its drone control range"),
+      droneControlRange: readPositive(pilotAttributes ?? attributes, ATTR.droneControlRange, "its drone control range"),
     },
   };
 }

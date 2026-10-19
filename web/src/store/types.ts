@@ -3,6 +3,8 @@
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
+import type { FittingSkillWarning } from "../bridge/fittingSkills.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { SkillNotification } from "../bridge/skillNotifications.ts";
@@ -65,6 +67,18 @@ export interface OnlineCharacterState {
    * does not say them.
    */
   readonly corpRole?: string | null;
+  /**
+   * session.role: the session's own roles (carbon/common/script/sys/serviceConst.py: a GM's among them), a 64-bit mask
+   * as its digits; null where the transport does not say them.
+   */
+  readonly role?: string | null;
+  /**
+   * session.corpAccountKey: the corporation wallet division the pilot trades from (1000 the master wallet, 1001 to
+   * 1006 the second to the seventh); null where the session has none or the transport does not say it.
+   */
+  readonly corpAccountKey?: number | null;
+  /** session.raceID: the character's race (an alpha clone's skills go by it); null where the transport does not say it. */
+  readonly raceID?: number | null;
 }
 
 /**
@@ -364,6 +378,8 @@ export interface FittingSlot {
   readonly family: SlotFamily;
   readonly index: number;
   readonly module: FittedModule | null;
+  /** False for a slot the ship no longer has (a subsystem taken away), drawn for the module it still holds. */
+  readonly present?: boolean;
 }
 
 /** One used-vs-total reading (CPU, powergrid, capacitor, calibration). */
@@ -412,6 +428,72 @@ export interface FittingState {
    * its reason instead of a number; see `bridge/shipStats.ts`.
    */
   readonly stats: ShipStats;
+  /**
+   * Where `resources` and `stats` came from: the server's attributes of the ship ("server"), or the page's own dogma
+   * of it ("page": bridge/dogma/location.ts, as the client's Fitting window reads its own dogma location). The
+   * server's notices of the ship's attributes change the figures only where they are the server's.
+   */
+  readonly statsFrom?: "server" | "page";
+  /**
+   * The active ship's fighter bay, or its drone bay where it has none, as the window's readout gives it (the page's
+   * reckoning, flow.reckonActiveShip): its capacity (GetFighterCapacity, GetDroneCapacity) and its use (the ship's
+   * inventory, as the server sent it; null where unread).
+   */
+  readonly bayReadout?: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
+  /** The active ship's fitting warnings as the page reckoned them (bridge/dogma/fittingWarnings.ts evaluateFit). */
+  readonly warnings?: readonly FitWarning[];
+  /** Its skill warning (bridge/fittingSkills.ts); null where a fact it goes by is not held. */
+  readonly skillWarning?: FittingSkillWarning | null;
+  /**
+   * The Fitting window's simulation of the active ship (ghostFittingSvc: Simulate Fitting), while it is simulating:
+   * the ship it simulates, the simulated figures, and each simulated module's state by its slot (bridge/dogma
+   * moduleStates.ts: OFFLINE 0, ONLINE 1, ACTIVE 2, OVERHEATED 3). Absent or null where it is not.
+   */
+  readonly simulation?: {
+    /** The pilot's own ship it simulates; null for a saved fitting or a hull alone. */
+    readonly shipID: number | null;
+    /** The simulated hull's type, and its name (the fitting's; null for the hull's own). */
+    readonly shipTypeID: number;
+    readonly name: string | null;
+    /** ghostFittingSvc.simulationChanged: changed since it was loaded (GetShipName puts "*" before the name). */
+    readonly changed: boolean;
+    readonly resources: FittingResources;
+    readonly stats: ShipStats;
+    readonly moduleStates: Readonly<Record<number, number>>;
+    /** Each simulated module's kind by its slot (moduleStateUtil: PASSIVE 0, ACTIVATABLE 1, RIG 2, SUBSYSTEM 3). */
+    readonly moduleKinds: Readonly<Record<number, number>>;
+    /** The simulated ship's slots: the ship's own, with what the simulation has fitted in each. */
+    readonly slots: readonly FittingSlot[];
+    /** The simulated drone bay by type: how many drones of it, how many selected. */
+    readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
+    /** The simulated cargo hold by type: how many, and the most it may be made (its count and the room left). */
+    readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+    /** The simulated cargo hold's capacity and what is in it takes (GetCapacity), m³. */
+    readonly cargoCapacity: { readonly capacity: number; readonly used: number };
+    /** The simulated fighter bay's capacity and use (GetCapacity(flagFighterBay)), m³; null for a hull with none (HasFighterBay). */
+    readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+    /**
+     * What the simulated holds' readouts write as their use (GetSimulatedCapacity): a Python int nought where the hold
+     * is empty ({int: 0}), else the float of its items' volumes.
+     */
+    readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
+    /** The simulated ship's fitting warnings (evaluateFit). */
+    readonly warnings: readonly FitWarning[];
+    /** The simulated ship's skill warning; null where a fact it goes by is not held. */
+    readonly skillWarning: FittingSkillWarning | null;
+    /** The squadrons in the tubes at their full size and short of it (GetFullAndPartialSquadrons). */
+    readonly fighterSquadrons: { readonly full: number; readonly partial: number };
+    /** The squadrons in the tubes' damage a second (GetTotalFighterDps). */
+    readonly fighterDps: number;
+    /** A structure simulated: its window shows the Fighters section in the drones' place (HasDronePanel false). */
+    readonly structure: boolean;
+    /** The five tubes (the fighter bay's picker, SingleTube): its number, whether the ship has it, its squadron. */
+    readonly fighterTubes: readonly { readonly flagID: number; readonly number: number; readonly present: boolean; readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null }[];
+    /** Each kind's squadrons the ship may have in its tubes and has there (the picker's fightersAllowedCont). */
+    readonly squadronSlots: Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>>;
+    /** The simulated fighter bay by type: how many, and the most it may be made (its count and the room left). */
+    readonly fighterBayTypes: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+  } | null;
   /**
    * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the
    * active ship and every fitted module with the SERVER's post-dogma attribute
@@ -1245,6 +1327,8 @@ export interface AgentRow {
   readonly corporationID: number | null;
   readonly missionKind: string | null;
   readonly missionTypeLabel: string | null;
+  /** The agent's bloodline (Tranquility's table has it), where the table gives one: its Show Info's Description is the bloodline's. */
+  readonly bloodlineID?: number;
 }
 
 /**
@@ -1575,17 +1659,23 @@ export interface StandingComposition {
 
 /**
  * One row of a standing's HISTORY (standingMgr.GetStandingTransactions): a dated
- * event that changed the standing. `eventTypeID` is mapped to a plain label
- * (R9a); `modification` is the recorded raw change (a small server-owned float,
- * shown as-is — the client does not recompute standing math). `id` is a stable
- * list key only and is never rendered; the row's own fromID/toID/int_* fields
- * are entity ids and are NOT decoded, so no raw id can reach the panel (R7d).
+ * event that changed the standing, as the client's standing service keeps it
+ * (standingsvc.GetStandingTransactions: the modification times ten). Its fromID,
+ * int_1 to int_3 and msg are what the client words its reason by
+ * (eveFormat.FmtStandingTransaction, bridge/standingTransactions.ts): an owner or a
+ * place they name is shown by its name, never its number (R7d). `id` is a stable
+ * list key only and is never rendered.
  */
 export interface StandingTransaction {
   readonly id: string;
   readonly date: bigint | null;
   readonly eventTypeID: number;
   readonly modification: number;
+  readonly fromID: number | null;
+  readonly msg: string | null;
+  readonly int1: number | null;
+  readonly int2: number | null;
+  readonly int3: number | null;
 }
 
 /**
@@ -1600,28 +1690,30 @@ export interface StandingTransaction {
  * rides in the matching *Error); a SUCCESSFUL read with no rows decodes to [] —
  * a real "no standings with anyone yet" (worldHasNoContracts precedent).
  *
- * The drill-down is loaded on demand for one selected entity: a character-row's
- * standing HISTORY (`transactions`) or a corp-row's per-member COMPOSITION
- * (`compositions`). `detailFromID`/`detailScope` say which row (and section) the
- * loaded detail belongs to, so a late read never repaints the wrong row.
+ * Each list's selected owner's drill-down is loaded on demand, each list its own (the
+ * client's two standings panels hold one each): the pilot's standing HISTORY with it
+ * (`transactions`) or the corporation's per-member COMPOSITION (`compositions`).
+ * `fromID` says whose it is, so a late read never repaints another owner.
  */
+export interface StandingDetail {
+  readonly fromID: number;
+  readonly transactions: readonly StandingTransaction[] | null;
+  readonly compositions: readonly StandingComposition[] | null;
+  readonly error: string | null;
+}
 export interface StandingsState {
   readonly char: readonly CharStanding[] | null;
   readonly charError: string | null;
   readonly corp: readonly CharStanding[] | null;
   readonly corpError: string | null;
   readonly loaded: boolean;
-  readonly detailFromID: number | null;
-  readonly detailScope: "char" | "corp" | null;
-  readonly transactions: readonly StandingTransaction[] | null;
-  readonly compositions: readonly StandingComposition[] | null;
-  readonly detailError: string | null;
+  readonly details: { readonly char: StandingDetail | null; readonly corp: StandingDetail | null };
 }
 
 // --- R56 Character Sheet ----------------------------------------------------
 
 /**
- * Who this character is, from charMgr.GetPublicInfo3 (goal R56). Public identity
+ * Who this character is, from charMgr.GetPublicInfo and crimewatch.GetMySecurityStatus (goal R56). Public identity
  * only — the same fields any character can see about another. Every id here is
  * kept ONLY to be resolved to a name (R7d): `corporationID`/`allianceID` are
  * name-resolved by the page and NEVER rendered as numbers; a PLAYER corp that
@@ -3126,14 +3218,33 @@ export interface SkillQueueEntry {
   readonly endTimeMs: number | null;
   /** Non-zero only for the head: a later entry's rate is not knowable yet. */
   readonly skillPointsPerMinute: number;
+  /**
+   * The level's own training time as the client reckons it (skillQueueSvc.GetAllTrainingLengths), a booster running
+   * out on the way; null or absent where it is not reckoned (the web gateway's sheet).
+   */
+  readonly lengthMs?: number | null;
+  /** A skill accelerator runs as the level begins (its isAccelerated). */
+  readonly accelerated?: boolean;
 }
 
 export interface SkillQueueState {
   readonly active: boolean;
   readonly entries: readonly SkillQueueEntry[];
   readonly endTimeMs: number | null;
+  /** When the queue ends as the client reckons it (GetTrainingEndTimeOfQueue); null or absent where not reckoned. */
+  readonly reckonedEndMs?: number | null;
   /** The server's own cap on queue length, shown rather than enforced here. */
   readonly maxEntries: number;
+  /**
+   * GetEstimatedSkillPointsTrained's reckoning of the skill in training (bridge/skillTraining.ts TrainingEstimate): its
+   * points, the queue's start, the rate then and from each booster's expiry; null or absent where not reckoned.
+   */
+  readonly estimate?: {
+    readonly startingPoints: number;
+    readonly startMs: number;
+    readonly rate: number;
+    readonly changes: readonly { readonly offsetMs: number; readonly rate: number }[];
+  } | null;
 }
 
 /** The decoded GET /api/bridge/skills payload. */

@@ -27,6 +27,7 @@
 // memory and no simulation of its own.
 
 import { refusalWords } from "./refusals.ts";
+import { estimateAt, estimateRateAt, type TrainingEstimate } from "./skillTraining.ts";
 import type { JsonValue } from "./wire.ts";
 import type {
   SkillGroup,
@@ -101,6 +102,8 @@ function decodeQueueEntry(value: JsonValue): SkillQueueEntry | null {
     startTimeMs: asInstant(record.startTimeMs),
     endTimeMs: asInstant(record.endTimeMs),
     skillPointsPerMinute: Math.max(0, asNumber(record.skillPointsPerMinute)),
+    lengthMs: typeof record.lengthMs === "number" && Number.isFinite(record.lengthMs) ? record.lengthMs : null,
+    accelerated: record.accelerated === true,
   };
 }
 
@@ -120,8 +123,30 @@ function decodeQueue(value: JsonValue | undefined): SkillQueueState | null {
     active: record.active === true,
     entries,
     endTimeMs: asInstant(record.endTimeMs),
+    reckonedEndMs: asInstant(record.reckonedEndMs),
     maxEntries: Math.max(0, asNumber(record.maxEntries)),
+    estimate: decodeEstimate(record.estimate),
   };
+}
+
+/** The sheet's estimate of the skill in training (skillTraining.ts TrainingEstimate); null where it gave none. */
+function decodeEstimate(value: JsonValue | undefined): TrainingEstimate | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, JsonValue>;
+  const finite = (each: JsonValue | undefined): number | null => (typeof each === "number" && Number.isFinite(each) ? each : null);
+  const startingPoints = finite(record.startingPoints);
+  const startMs = finite(record.startMs);
+  const rate = finite(record.rate);
+  if (startingPoints === null || startMs === null || rate === null || !Array.isArray(record.changes)) return null;
+  const changes: { offsetMs: number; rate: number }[] = [];
+  for (const change of record.changes) {
+    if (change === null || typeof change !== "object" || Array.isArray(change)) return null;
+    const offsetMs = finite((change as Record<string, JsonValue>).offsetMs);
+    const after = finite((change as Record<string, JsonValue>).rate);
+    if (offsetMs === null || after === null) return null;
+    changes.push({ offsetMs, rate: after });
+  }
+  return { startingPoints, startMs, rate, changes };
 }
 
 /** The whole GET /api/bridge/skills payload, decoded. */
@@ -315,6 +340,23 @@ export function trainingReadout(
     return null;
   }
   const span = head.destinationSP - head.startSP;
+  // skillQueueSkillEntry.UpdateProgress (322 to 335): each second, the points as GetEstimatedSkillPointsTrained reckons
+  // them, a booster's running out lowering the rate from then; where the sheet gave that reckoning.
+  const estimate = queue.estimate ?? null;
+  if (estimate !== null) {
+    const skillPoints = Math.min(head.destinationSP, Math.max(head.startSP, estimateAt(estimate, nowMs)));
+    return {
+      typeID: head.typeID,
+      toLevel: head.toLevel,
+      skillPoints,
+      startSP: head.startSP,
+      destinationSP: head.destinationSP,
+      fraction: span <= 0 ? 1 : clampFraction((skillPoints - head.startSP) / span),
+      remainingMs: Math.max(0, head.endTimeMs - nowMs),
+      finishAtMs: head.endTimeMs,
+      skillPointsPerMinute: estimateRateAt(estimate, nowMs),
+    };
+  }
   const elapsedMinutes = Math.max(0, (nowMs - head.startTimeMs) / 60_000);
   const earned = head.skillPointsPerMinute > 0
     ? head.skillPointsPerMinute * elapsedMinutes

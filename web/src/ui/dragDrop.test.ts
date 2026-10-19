@@ -116,10 +116,11 @@ test("an item from the cargo hold may be fitted", () => {
   );
 });
 
-test("an ALREADY-FITTED module is refused with a reason, not silently ignored", () => {
-  // The fitting flow only accepts a source of hangar or cargo, so a socket
-  // cannot honestly take a module that is already on the ship.
-  const verdict = dropOnSocketVerdict(FITTED);
+test("an ALREADY-FITTED module is taken by the real ship's slots, and refused with a reason in a simulation", () => {
+  // The fitting slot's OnDropData groups it (Shift) or moves it (AddRealItem); a simulation's slots take what comes
+  // from the hangar.
+  assert.equal(dropOnSocketVerdict(FITTED), null);
+  const verdict = dropOnSocketVerdict(FITTED, true);
   assert.notEqual(verdict, null);
   assert.match(verdict!, /take it off the ship first/i);
 });
@@ -149,17 +150,17 @@ test("same-place is judged by the container's identity, not just its kind", () =
   assert.equal(dropOnPlaceVerdict(fromThree, { kind: "corp", division: 4 }), null);
 });
 
-test("a fitted module dropped on the hangar is an unfit, and is allowed", () => {
-  assert.equal(dropOnPlaceVerdict(FITTED, HANGAR), null);
+test("a fitted module dropped on the cargo is taken off into it, and is allowed", () => {
+  // minihangar CargoCargoSlots.OnDropData and invCtrl.ShipCargo: UnloadModuleToContainer to the ship's cargo.
+  assert.equal(dropOnPlaceVerdict(FITTED, CARGO), null);
 });
 
-test("a fitted module dropped anywhere ELSE says where modules actually go", () => {
-  // Unfitting always lands in the hangar in this client, so offering it on a
-  // cargo hold would promise something different from what happens.
-  for (const to of [CARGO, ORE_BAY, { kind: "corp", division: 1 } as InventoryPlace]) {
-    const verdict = dropOnPlaceVerdict(FITTED, to);
-    assert.notEqual(verdict, null, `${to.kind} must refuse`);
-    assert.match(verdict!, /into your hangar/i);
+test("a fitted module dropped on the hangar, a hold, a container or the corporation's hangar is taken off into it", () => {
+  // invControllers BaseInvContainer.AddItems (505 to 517): each container's UnloadModuleToContainer and
+  // UnloadAmmoToContainer with its own arguments and flag; the corporation's hangar's are its office's and its
+  // division's flag, the pilot asked first (ConfirmOneWayItemMove), which is the flow's and not the verdict's.
+  for (const to of [HANGAR, ORE_BAY, { kind: "container", itemID: 1 } as InventoryPlace, { kind: "corp", division: 1 } as InventoryPlace]) {
+    assert.equal(dropOnPlaceVerdict(FITTED, to), null, `${to.kind} must take it`);
   }
 });
 

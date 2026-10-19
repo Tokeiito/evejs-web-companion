@@ -16,12 +16,12 @@ const failing = (code: string | undefined, more: Record<string, unknown> = {}): 
 const keyVal = (entries: readonly (readonly [string, JsonValue])[]): JsonValue => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: entries as unknown as JsonValue } });
 const dict = (entries: readonly (readonly [JsonValue, JsonValue])[]): JsonValue => ({ type: "dict", entries: entries as unknown as JsonValue });
 
-const PUBLIC: JsonValue = { type: "list", items: [keyVal([["characterID", 140000005], ["characterName", "Farmer"]])] };
+const PUBLIC: JsonValue = keyVal([["characterID", 140000005], ["characterName", "Farmer"]]);
 const HOME: JsonValue = keyVal([["stationID", 60015249]]);
 const IMPLANTS: JsonValue = dict([[1, keyVal([["typeID", 9941], ["itemID", 990000001]])], [2, keyVal([["typeID", 9899]])], [3, keyVal([["typeID", 9941]])]]);
 /** homestation.types.StationData, as the home station service answers and the generic call hands it on. */
 const STATION: JsonValue = { type: "objectex2", header: [[{ type: "token", value: "homestation.types.StationData" }], dict([["is_fallback", false], ["solar_system_id", 30000142], ["id", 60015249], ["type_id", 52678]])], list: [], dict: [] };
-const ANSWERS: Record<string, JsonValue> = { GetPublicInfo3: PUBLIC, GetCharacterDescription: "a bio", get_home_station: STATION, GetHomeStationRow: HOME, GetImplants: dict([]) };
+const ANSWERS: Record<string, JsonValue> = { GetPublicInfo: PUBLIC, GetCharacterDescription: "a bio", get_home_station: STATION, GetHomeStationRow: HOME, GetImplants: dict([]), GetMySecurityStatus: 0.1404 };
 
 /** An asking the test answers, with what was asked kept in order. */
 function asking(answers: Record<string, JsonValue | (() => JsonValue)>): { ask: Ask; asked: string[] } {
@@ -45,8 +45,9 @@ test("the sheet is read with the client's own calls: the character named where t
   const statics = staticData({});
   const reads = await createCharacterSheetReads(ask, statics.typeAttributes).read({ characterID: 140000005 });
   // The home station by the home station service's own call, as the client's sheet has it: the row is not asked for.
-  assert.deepEqual(asked, ["charMgr.GetPublicInfo3(140000005)", "charMgr.GetCharacterDescription(140000005)", "home_station.get_home_station()", "skillHandler.GetImplants()"]);
-  assert.deepEqual([reads.publicInfo, reads.description, reads.homeStation, reads.errors], [PUBLIC, "a bio", STATION, { publicInfo: null, description: null, homeStation: null, cloneInfo: null }]);
+  // The security status by the crimewatch location's own call, as the client's sheet has it (characterOverviewPanel 153).
+  assert.deepEqual(asked, ["charMgr.GetPublicInfo(140000005)", "charMgr.GetCharacterDescription(140000005)", "home_station.get_home_station()", "skillHandler.GetImplants()", "crimewatch.GetMySecurityStatus()"]);
+  assert.deepEqual([reads.publicInfo, reads.description, reads.homeStation, reads.securityStatus, reads.errors], [PUBLIC, "a bio", STATION, 0.1404, { publicInfo: null, description: null, homeStation: null, cloneInfo: null, securityStatus: null }]);
   assert.equal(decodeHomeStationID(reads.homeStation), 60015249);
   // No implants is a clean clone, a real answer, with nothing asked of the static data.
   assert.deepEqual([implantsOf(reads), statics.asked], [[], []]);
@@ -56,7 +57,7 @@ test("the sheet is read with the client's own calls: the character named where t
   // With nobody chosen there is no one to name.
   const nobody = asking(ANSWERS);
   await createCharacterSheetReads(nobody.ask, statics.typeAttributes).read({ characterID: null });
-  assert.deepEqual(nobody.asked.slice(0, 2), ["charMgr.GetPublicInfo3()", "charMgr.GetCharacterDescription()"]);
+  assert.deepEqual(nobody.asked.slice(0, 2), ["charMgr.GetPublicInfo()", "charMgr.GetCharacterDescription()"]);
 });
 
 test("the clone is the implants the skill handler answers, each in the slot the static data has for its type, under the server's own key", async () => {
@@ -91,15 +92,15 @@ test("an answer that is not implants is the clone's own failure, and never an em
   assert.deepEqual([reads.cloneInfo, reads.errors.cloneInfo, reads.description], [null, "TOO_MANY_IDS", "a bio"]);
 });
 
-test("each of the four fails by itself, with why; and what is nobody's own failure fails the whole sheet", async () => {
+test("each of the five fails by itself, with why; and what is nobody's own failure fails the whole sheet", async () => {
   const statics = staticData({});
   const one = (method: string, failure: unknown) => createCharacterSheetReads(asking({ ...ANSWERS, [method]: () => { throw failure; } }).ask, statics.typeAttributes).read({ characterID: 140000005 });
-  const fields: Record<string, "publicInfo" | "description" | "homeStation" | "cloneInfo"> = { GetPublicInfo3: "publicInfo", GetCharacterDescription: "description", get_home_station: "homeStation", GetImplants: "cloneInfo" };
+  const fields: Record<string, "publicInfo" | "description" | "homeStation" | "cloneInfo" | "securityStatus"> = { GetPublicInfo: "publicInfo", GetCharacterDescription: "description", get_home_station: "homeStation", GetImplants: "cloneInfo", GetMySecurityStatus: "securityStatus" };
   for (const [method, field] of Object.entries(fields)) {
     const reads = await one(method, failing("CALL_REFUSED"));
-    assert.deepEqual([reads[field], reads.errors], [null, { publicInfo: null, description: null, homeStation: null, cloneInfo: null, [field]: "CALL_REFUSED" }], method);
-    // The other three are as answered.
-    assert.equal(Object.values(fields).filter((other) => other !== field && reads[other] !== null).length, 3, method);
+    assert.deepEqual([reads[field], reads.errors], [null, { publicInfo: null, description: null, homeStation: null, cloneInfo: null, securityStatus: null, [field]: "CALL_REFUSED" }], method);
+    // The other four are as answered.
+    assert.equal(Object.values(fields).filter((other) => other !== field && reads[other] !== null).length, 4, method);
     assert.equal((await one(method, failing(undefined))).errors[field], "READ_FAILED", method);
     for (const lost of [failing("SESSION_NOT_FOUND"), failing("NO_LIVE_SESSION"), failing("BRIDGE_NETWORK_ERROR"), failing("SESSION_REQUEST_RETIRED"), failing("AUTH_REQUIRED", { status: 401 })]) {
       await assert.rejects(one(method, lost), (error) => error === lost, `${(lost as { code?: string }).code} at ${method}`);

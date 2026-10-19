@@ -17,11 +17,30 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { CorpWalletDivision } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { canViewCorporateShares } from "../bridge/walletShares.ts";
+  import { plainText } from "../bridge/clientWords.ts";
+  import WalletShares from "./WalletShares.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const wallet = store.wallet;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  const sharesAllowed = $derived(canViewCorporateShares($station.online?.corpRole));
+  let tab = $state<"divisions" | "shares">("divisions");
+  const labels = {
+    shares: "UI/Corporations/CorpUIHome/Shares",
+    divisions: "UI/Wallet/WalletWindow/TabWalletDivisions",
+    owned: "UI/Wallet/WalletWindow/TabOwnedByCorp",
+  };
+  $effect(() => { flow.requestWords(Object.values(labels)); });
+  function word(label: string, fallback: string): string {
+    const value = $words.templates[label];
+    return typeof value === "string" && value !== "" ? plainText(value) : fallback;
+  }
 
   let busy = $state(false);
   let error = $state("");
@@ -44,7 +63,7 @@
 
   // The button asks the server again; the window opening takes what is kept (bridge/walletReads.ts).
   function refresh(): void {
-    void run(() => flow.loadWallet({ fresh: true }));
+    void run(() => tab === "shares" && sharesAllowed ? flow.loadWalletShares(true) : flow.loadWallet({ fresh: true }));
   }
 
   onMount(() => {
@@ -79,7 +98,17 @@
     <p class="error">The corp wallet read failed: {$wallet.corpError}</p>
   {/if}
 
-  {#if !$wallet.loaded || ($wallet.corpDivisions === null && $wallet.corpError === null)}
+  <nav class="tabs" aria-label="Corporation wallet">
+    {#if sharesAllowed}
+      <button type="button" class:active={tab === "shares"} onclick={() => (tab = "shares")}>{word(labels.shares, "Shares")}</button>
+    {/if}
+    <button type="button" class:active={tab === "divisions" || !sharesAllowed} onclick={() => (tab = "divisions")}>{word(labels.divisions, "Wallet Divisions")}</button>
+  </nav>
+
+  {#if tab === "shares" && sharesAllowed}
+    <h3>{word(labels.owned, "Owned by corporation")}</h3>
+    <WalletShares {store} {flow} corporate />
+  {:else if !$wallet.loaded || ($wallet.corpDivisions === null && $wallet.corpError === null)}
     <p class="empty">Reading your corporation's wallet…</p>
   {:else if $wallet.corpDivisions === null}
     <!-- Failed read: the reason is shown above; do not imply an empty wallet. -->

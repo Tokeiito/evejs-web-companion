@@ -16,7 +16,7 @@ export const AGENT_FIELDS = [
 function lineOf(agent: AgentRow): unknown {
   return { type: "list", items: [
     agent.agentID, agent.agentTypeID, agent.divisionID, agent.level, agent.stationID, agent.corporationID, false, agent.stationID === null,
-    14, false, agent.missionKind, agent.missionTypeLabel, 15, 1531, 1,
+    14, false, agent.missionKind, agent.missionTypeLabel, 15, 1531, agent.bloodlineID ?? null,
   ] };
 }
 

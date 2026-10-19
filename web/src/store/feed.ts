@@ -1,4 +1,6 @@
 import type { ChargeFitment } from "../bridge/fitting.ts";
+import type { FitWarning } from "../bridge/dogma/fittingWarnings.ts";
+import type { FittingSkillWarning } from "../bridge/fittingSkills.ts";
 // Feed adapter seam (goal R1b, roadmap section 5).
 //
 // The client-state store is fed by whatever event transport exists at the
@@ -150,6 +152,7 @@ export type FeedEvent =
   // (OnContactLoggedOn, OnContactLoggedOff).
   | { readonly type: "address-book/online-primed"; readonly online: Readonly<Record<number, boolean>> }
   | { readonly type: "address-book/online-changed"; readonly contactID: number; readonly online: boolean }
+  | { readonly type: "address-book/online-forgotten"; readonly contactIDs: readonly number[] }
   // The session's corporation, alliance or corporation roles changed (OnSessionChanged: corpid, allianceid,
   // corprole), each given where it changed, as the client's session takes them.
   | {
@@ -157,6 +160,8 @@ export type FeedEvent =
       readonly corporationID?: number | null;
       readonly allianceID?: number | null;
       readonly corpRole?: string | null;
+      readonly corpAccountKey?: number | null;
+      readonly role?: string | null;
     }
   // Goal R6b — the docked station changed on the SAME live session (autopilot
   // arrival / manual dock), learned from a flight-status snapshot. Re-points the
@@ -267,6 +272,44 @@ export type FeedEvent =
       readonly resources: FittingResources;
       readonly stats: ShipStats;
     }
+  // The Fitting window's figures as the page's own dogma reckons the active ship (flow.reckonActiveShip).
+  | {
+      readonly type: "fitting/reckoned";
+      readonly shipID: number;
+      readonly resources: FittingResources;
+      readonly stats: ShipStats;
+      readonly bayReadout: { readonly shipID: number; readonly kind: "fighter" | "drone"; readonly capacity: number; readonly used: number | null } | null;
+      readonly warnings: readonly FitWarning[];
+      readonly skillWarning: FittingSkillWarning | null;
+    }
+  // The Fitting window's simulation of the active ship: its figures and its modules' states (flow.showSimulation).
+  | {
+      readonly type: "fitting/simulated";
+      readonly shipID: number | null;
+      readonly shipTypeID: number;
+      readonly name: string | null;
+      readonly changed: boolean;
+      readonly resources: FittingResources;
+      readonly stats: ShipStats;
+      readonly moduleStates: Readonly<Record<number, number>>;
+      readonly moduleKinds: Readonly<Record<number, number>>;
+      readonly slots: readonly FittingSlot[];
+      readonly drones: readonly { readonly typeID: number; readonly total: number; readonly active: number }[];
+      readonly cargo: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+      readonly cargoCapacity: { readonly capacity: number; readonly used: number };
+      readonly fighterBay: { readonly capacity: number; readonly used: number } | null;
+      readonly holdUse: { readonly cargo: number | { readonly int: number }; readonly drone: number | { readonly int: number }; readonly fighter: number | { readonly int: number } };
+      readonly warnings: readonly FitWarning[];
+      readonly skillWarning: FittingSkillWarning | null;
+      readonly fighterSquadrons: { readonly full: number; readonly partial: number };
+      readonly fighterDps: number;
+      readonly structure: boolean;
+      readonly fighterTubes: readonly { readonly flagID: number; readonly number: number; readonly present: boolean; readonly squadron: { readonly typeID: number; readonly size: number; readonly max: number; readonly role: number } | null }[];
+      readonly squadronSlots: Readonly<Record<"light" | "support" | "heavy", { readonly total: number; readonly used: number }>>;
+      readonly fighterBayTypes: readonly { readonly typeID: number; readonly quantity: number; readonly most: number }[];
+    }
+  // The simulation left (flow.exitSimulation).
+  | { readonly type: "fitting/simulation-ended" }
   // R21 slice B — the bound-dogma snapshot that accompanies the fit: the active
   // ship and every fitted module with the SERVER's post-dogma attributes. Its
   // own event because it rides a SEPARATE read that is a companion to the fit,
@@ -295,6 +338,8 @@ export type FeedEvent =
     }
   // Drop the fitting state (character offline / logged out).
   | { readonly type: "fitting/cleared" }
+  // A fitted module's isOnline as godma hears it (fittingController.OnAttribute).
+  | { readonly type: "fitting/module-online"; readonly shipID: number; readonly itemID: number; readonly online: boolean }
   // R21 slice B — the bound-dogma snapshot (active ship + fitted modules with
   // their SERVER-effective attributes), loaded alongside the fitting slice. A
   // failed read carries its own error and never blanks the fit.
@@ -370,6 +415,8 @@ export type FeedEvent =
   // What the last write ACTUALLY did, assembled from re-reads (never a
   // prediction, and never the estimated fee shown at confirm time).
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
+  // The pilot's escrow as the client's market progression keeps it (flow.watchMarketProgression).
+  | { readonly type: "market/escrow"; readonly escrow: MarketEscrow | null }
   // Drop the market state (character offline / logged out).
   | { readonly type: "market/cleared" }
   // Read-only Activity Center. Each bridge arm keeps its own ready / empty /

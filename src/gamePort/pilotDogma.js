@@ -1,5 +1,7 @@
 "use strict";
 
+const { marshalDecode } = require("../gameProtocol/marshal");
+
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
 //
@@ -134,6 +136,13 @@ const ATTRIBUTE = Object.freeze({
   CAPACITOR_CAPACITY: 482,
   QUANTITY: 805,
 });
+/**
+ * godma's sublocrd: the columns of an inventory row (itemID, typeID, ownerID, locationID, flagID, quantity, groupID,
+ * categoryID, customInfo), the itemID a string for the tuple a charge in a module is keyed by.
+ */
+const SUBLOCATION_COLUMNS = Object.freeze([["itemID", 129], ["typeID", 3], ["ownerID", 3], ["locationID", 20], ["flagID", 2], ["quantity", 3], ["groupID", 3], ["categoryID", 3], ["customInfo", 129]]);
+/** const.ixStackSize: the column a change names a stack's size by. */
+const IX_STACKSIZE = 9;
 /** dogma/const.py heatAttributes: each rack's heat, with its capacity and its dissipation rate; and the family the snapshot names it by. */
 const HEAT = new Map([
   [1175, { capacity: 1178, dissipation: 1179, family: "high" }],
@@ -253,7 +262,17 @@ function chargeValue(oldVal, oldTime, tau, Ec, newTime) {
  * of each module in a slot, which godma asks the server about, and `onFitted`
  * of each item newly fitted, after it.
  */
-function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null, onSlotted = () => {}, onFitted = () => {} } = {}) {
+function createPilotDogma({
+  characterID = null,
+  now = filetimeNow,
+  effectCategory = () => null,
+  onSlotted = () => {},
+  onFitted = () => {},
+  // sm.ScatterEvent('OnItemChange', item, change, location), as godma scatters it: (row, change).
+  onItemChange = () => {},
+  // A type's { groupID, categoryID } (evetypes.GetGroupID, GetCategoryID), or null.
+  typeFacts = () => null,
+} = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
@@ -272,6 +291,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const heat = new Map();
   /** godma's `session.charid in self.invByID`: whether a priming has brought the character. */
   let characterPrimed = false;
+  /**
+   * The brain the client's dogma location holds (clientDogmaLocation.brain): (version, charEffects, shipEffects,
+   * structureEffects), what the pilot's skills and implants do, as the server worked it out. Null until a priming
+   * brings it.
+   */
+  let brain = null;
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -343,6 +368,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (an empty
     // one, as Tranquility's and this server's are to a later priming in space) primes nothing of the character.
     if (items(all.get("charInfo")).length > 0) characterPrimed = true;
+    // 2427 to 2430: the brain, charInfo's second, given to the client's dogma location when it is made
+    // (clientDogmaIM.GetDogmaLocation: once, so a later priming's is not taken), its version -1
+    // (clientDogmaLocation.__init__: `initialBrain = (-1,) + charBrain[1:]`) so that any update the server sends
+    // after it is taken.
+    const charBrain = items(all.get("charInfo"))[1];
+    if (brain === null && Array.isArray(charBrain) && charBrain.length >= 4) brain = [-1, ...charBrain.slice(1)];
     // 2446: the character's attributes the ship changes, laid over what is held of the character.
     if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
     // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
@@ -430,7 +461,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const listed = fields.get("activeEffects");
     for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
       if (!Array.isArray(line)) continue;
-      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null });
+      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null, line });
     }
     effects.set(key(itemID), active);
   }
@@ -486,22 +517,43 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
 
   /**
    * An item's GET-INFO row as godma holds it now: the row last given, its attributes each as godma has it now
-   * (godma.GetAttribute of each). Null for an item whose row was not given.
+   * (godma.GetAttribute of each), and its active effects as godma holds them now (effectsByItemEffect, which each
+   * OnGodmaShipEffect sets: one stopped is no longer among them, one started is, with the line its notice gave; one
+   * the client started itself keeps the line its row had, where it had one). Null for an item whose row was not given.
    */
   function infoNow(itemID, at = now()) {
     const kept = rows.get(key(itemID));
     if (!kept) return null;
     const nowAttributes = { type: "dict", entries: attributesOf(itemID, at) };
-    return withField(kept.row, "attributes", nowAttributes);
+    const withAttributes = withField(kept.row, "attributes", nowAttributes);
+    const held = effects.get(key(itemID));
+    if (!held) return withAttributes;
+    const given = fieldsOf(kept.row).get("activeEffects");
+    const lineGiven = new Map((given && Array.isArray(given.entries) ? given.entries : []).map(([effectID, line]) => [number(effectID), line]));
+    const entries = [];
+    for (const [effectID, effect] of held) {
+      if (!effect.isActive) continue;
+      const line = effect.line ?? lineGiven.get(effectID);
+      if (Array.isArray(line)) entries.push([effectID, line]);
+    }
+    return withField(withAttributes, "activeEffects", { type: "dict", entries });
   }
 
   /**
    * godma's GetAllInfo answered from what godma holds: `allInfo` the priming's answer, with its ship's items as godma
    * holds them now (the ship and what is in its slots, each its row with its attributes now) and the ship its active
-   * one. Each item's active effects are as its row gave them.
+   * one. Each item's active effects are as godma holds them now (infoNow). The ship's weapon banks in its state are
+   * the ones held now (the client's dogma location keeps them from its own calls' answers and the server's notices:
+   * OnWeaponBanksChanged, UngroupModule), where the priming's answer has them as they were when it was asked.
    */
   function allInfoNow(allInfo, shipID) {
     const ship = key(shipID);
+    const state = fieldsOf(allInfo).get("shipState");
+    const heldBanks = banks.get(ship);
+    if (Array.isArray(state) && state.length >= 3 && heldBanks) {
+      const entries = [...heldBanks].map(([masterID, slaves]) => [masterID, { type: "list", items: [...slaves] }]);
+      allInfo = withField(allInfo, "shipState", [state[0], state[1], { type: "dict", entries }, ...state.slice(3)]);
+    }
     // The character is in the ship, and is charInfo's, never shipInfo's.
     const mine = characterID === null ? null : key(characterID);
     const entries = [];
@@ -510,7 +562,31 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       const info = infoNow(id);
       if (info) entries.push([kept.itemID, info]);
     }
-    return withField(withField(allInfo, "shipInfo", { type: "dict", entries }), "activeShipID", shipID);
+    const answer = withField(withField(allInfo, "shipInfo", { type: "dict", entries }), "activeShipID", shipID);
+    if (brain === null) return answer;
+    // charInfo as the client holds it now: the character godma holds (its row, with its attributes now) and the
+    // brain its dogma location holds, which the server's OnServerBrainUpdated keeps. A later priming's answer has
+    // neither (the character is not asked for again), and the client has both all the same.
+    const own = mine !== null && rows.has(mine) ? infoNow(mine) : null;
+    const characters = own
+      ? { type: "dict", entries: [[rows.get(mine).itemID, own]] }
+      : (items(fieldsOf(allInfo).get("charInfo"))[0] ?? { type: "dict", entries: [] });
+    return withField(answer, "charInfo", [characters, brain]);
+  }
+
+  /**
+   * clientDogmaLocation.OnServerBrainUpdated(brainData) (1313): a brain no newer than the one held is let go
+   * ("Update cancelled!"); otherwise ProcessBrainData: (version, grayMatter), the gray matter a marshal stream of
+   * (charEffects, shipEffects, structureEffects), and none where it is empty.
+   */
+  function brainUpdated(brainData) {
+    const [version, grayMatter] = Array.isArray(brainData) ? brainData : [];
+    const newVersion = number(version);
+    if (newVersion === null) return;
+    if (brain !== null && number(brain[0]) >= newVersion) return;
+    if (!Buffer.isBuffer(grayMatter) || grayMatter.length === 0) return;
+    const effects = marshalDecode(grayMatter);
+    if (Array.isArray(effects) && effects.length >= 3) brain = [newVersion, effects[0], effects[1], effects[2]];
   }
 
   /** godma.UpdateItem with what the server answered ItemGetInfo: the row of an item that is still held, in place of what was known of it. */
@@ -584,7 +660,35 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       if (rack) rack.value = number(newValue);
     }
     if (HEAT_INPUTS.has(attribute_)) settleHeat(id, now());
-    return applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
+    const ofACharge = Array.isArray(itemKey) && attribute_ === ATTRIBUTE.QUANTITY && attributes.has(id);
+    const before = ofACharge ? attribute(id, attribute_) : null;
+    const changed = applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
+    if (changed && ofACharge) chargeQuantityChanged(itemKey, id, number(newValue), before);
+    return changed;
+  }
+
+  /**
+   * godma.ApplyAttributeChange of a charge in a module's quantity, once it has changed (2589 to 2602): nothing where
+   * another type is loaded in that slot now; a charge emptied is let go (out of sublocationsByLocationFlag and
+   * sublocationsByKey, so nothing the server says of it after is about anything held); and the inventory cache told
+   * of it as an item (OnItemChange), its row godma's own (the tuple, no owner, the new quantity) and the change its
+   * stack before.
+   */
+  function chargeQuantityChanged(itemKey, id, newValue, oldValue) {
+    const [shipID, flagID, typeID] = itemKey;
+    for (const [held, what] of identity) {
+      if (held !== id && typeof held === "string" && what.locationID === key(shipID) && what.flagID === number(flagID) && what.typeID !== number(typeID)) return;
+    }
+    if (newValue === 0) {
+      identity.delete(id);
+      attributes.delete(id);
+      effects.delete(id);
+      rows.delete(id);
+    }
+    const facts = typeFacts(number(typeID)) ?? {};
+    const values = [itemKey, typeID, null, shipID, flagID, newValue, facts.groupID ?? null, facts.categoryID ?? null, null];
+    const fields = Object.fromEntries(SUBLOCATION_COLUMNS.map(([name], index) => [name, values[index]]));
+    onItemChange({ type: "packedrow", header: null, columns: SUBLOCATION_COLUMNS, values, fields }, { type: "dict", entries: [[IX_STACKSIZE, oldValue]] });
   }
 
   /**
@@ -601,6 +705,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       duration: number(duration),
       repeat: typeof repeat === "boolean" ? Number(repeat) : number(repeat),
       targetID: Array.isArray(environment) ? environment[ENV_IDX_TARGET] ?? null : null,
+      // The item's activeEffects line for it as a GET-INFO row gives one: the environment's item, owner, location,
+      // target, other, area and effect, then when it began, how long a cycle is and how many are left.
+      line: Array.isArray(environment) ? [...environment.slice(0, 7), startTime, duration, repeat] : null,
     });
     return true;
   }
@@ -655,7 +762,13 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       return true;
     }
     if (notification.method === "OnModuleAttributeChanges") {
-      for (const each of items(notification.args[0])) {
+      // godma.OnModuleAttributeChanges (1342 to 1360): a charge in a module emptied in this notice has its other
+      // changes in it left untaken.
+      const changes = items(notification.args[0]);
+      const ofACharge = (each) => Array.isArray(each) && Array.isArray(each[2]);
+      const emptied = new Set(changes.filter((each) => ofACharge(each) && number(each[3]) === ATTRIBUTE.QUANTITY && number(each[5]) === 0).map((each) => key(each[2])));
+      for (const each of changes) {
+        if (ofACharge(each) && emptied.has(key(each[2])) && number(each[3]) !== ATTRIBUTE.QUANTITY) continue;
         try {
           change(each);
         } catch {
@@ -694,6 +807,14 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     }
     if (notification.method === "OnGodmaPrimeItem") {
       primeItem(Array.isArray(notification.args) ? notification.args : []);
+      return true;
+    }
+    if (notification.method === "OnServerBrainUpdated") {
+      try {
+        brainUpdated(Array.isArray(notification.args) ? notification.args[0] : null);
+      } catch {
+        // A brain that will not decode leaves the one held.
+      }
       return true;
     }
     if (notification.method === "OnItemsChanged" || notification.method === "OnItemChange") {

@@ -118,6 +118,9 @@ test("a time is the game's own form, in its own clock", () => {
   assert.equal(fill("{[datetime]when, time=none}", { when }), "2026.10.08");
   assert.equal(fill("{[datetime]when, date=none}", { when }), "11:30");
   assert.equal(fill("{[formattedtime]when}", { when }), "2026.10.08 11:30");
+  // A formatted time's format is strftime's (the install's DateLongNone and HoursAndMinutes labels).
+  assert.equal(fill('{[formattedtime]when, format="%Y.%m.%d"}', { when }), "2026.10.08");
+  assert.equal(fill('{[formattedtime]when, format="%H:%M"}', { when }), "11:30");
   assert.equal(fill("{[datetime]when}", { when: "soon" }), "");
   // A length of time, in the same ticks.
   assert.equal(fill("{[timeinterval]t}", { t: 10_000_000 * (86_400 + 2 * 3_600 + 5 * 60 + 7) }), "1d 2h 5m 7s");

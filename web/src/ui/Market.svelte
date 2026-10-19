@@ -15,6 +15,7 @@
   // So it is implemented client-side here too, which is also why re-sorting the
   // book costs no round-trip.
   import { onMount } from "svelte";
+  import { portal } from "./portal.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
   import {
     DURATION_CHOICES,
@@ -41,6 +42,31 @@
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
+  import NamePopup from "./NamePopup.svelte";
+  import { marketQuickbar, changeQuickbar } from "./marketQuickbar.ts";
+  import {
+    addFolder,
+    addType,
+    childrenOf,
+    deleteFolder,
+    isFolder,
+    isType,
+    removeType,
+    renameFolder,
+    setExtraText,
+    typesUnderFolder,
+    type QuickbarEntry,
+  } from "../bridge/marketQuickbar.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
+  import type { JsonValue } from "../bridge/wire.ts";
+  import type { TypeMetaFacts } from "../app/api.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { showMarketDetails } from "./marketDetails.ts";
+  import { findInContracts } from "./contractsSearch.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { compareType } from "./typeCompare.ts";
   import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
   import type { MarketGroupNode } from "../app/api.ts";
 
@@ -50,6 +76,260 @@
   const market = store.market;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  const quickbar = marketQuickbar;
+
+  // --- The Quickbar (the market window's left tabs, marketbase.py 378 to 381: Browse and Quickbar) ---------------
+  //
+  // The market's quickbar (bridge/marketQuickbar.ts, kept by ui/marketQuickbar.ts): its folders, each a group that
+  // opens (QuickbarGroup), and its types (QuickbarItem), each list sorted by name (LoadQuickBarItems and
+  // GetGroupSubContent, 1641 to 1817: folders first, then types). A type is written with its extra text where it has
+  // one (QuickbarTypeNameWithExtraText); one the market does not sell is faded, with the client's hint, and does
+  // nothing when clicked (QuickbarItem.Load and OnClick). A type clicked shows its market (the scroll's selection).
+  // Above it, New Folder and Reset (ResetQuickbar's question); the import and export menus are not the page's.
+  //
+  // A folder's menu (QuickbarGroup.GetMenu: ListGroup.GetMenu, 284 to 311, then GroupMenu and Buy All): Expand or
+  // Collapse, Change Label, Delete Folder (ConfirmDeleteFolder), New Folder (maxdepth 99: always), and Buy All where it
+  // or its folders hold any type (GetTypesUnderFolder: the multibuy with each type and its quantity). The market
+  // ticker's entries are not the page's. A type's menu (GetQuickItemMenu, 577 to 588, then the type's menu): Add or
+  // Edit Additional Text, Remove; then Show Info, View Market Details, Find in Contracts, Find Personal Assets and
+  // Compare as the type's menu offers them (menusvc.GetMenuFromItemIDTypeID). A browsed type's menu (OnTypeMenu, 1489 to
+  // 1496): Add to Market Quickbar and Show Info.
+  const QUICKBAR_WORDS: Readonly<Record<string, string>> = {
+    "UI/Market/Browse": "Browse",
+    "UI/Market/QuickBar": "Quickbar",
+    "Tooltips/Market/MarketQuickbarNewFolder": "Make a folder",
+    "Tooltips/Market/MarketQuickbarReset": "Empty it",
+    "UI/Market/Marketbase/FolderName": "Folder",
+    "UI/Market/Marketbase/TypeFolderName": "Its name",
+    "UI/Market/Marketbase/QuickbarTypeNameWithExtraText": "{typeName} [{extraText}]",
+    "UI/Market/Marketbase/NotAvailableOnMarket": "Not sold on the market",
+    "UI/Market/Marketbase/EditAdditionalText": "Change its note",
+    "UI/Market/Marketbase/AddAdditionalText": "Give it a note",
+    "UI/Market/Marketbase/TypeInAdditionalText": "Its note",
+    "UI/Market/Remove": "Take out",
+    "UI/Market/NewFolder": "Make a folder",
+    "/Carbon/UI/Controls/ScrollEntries/ChangeLabel": "Rename",
+    "/Carbon/UI/Controls/ScrollEntries/DeleteFolder": "Delete",
+    "/Carbon/UI/Controls/ScrollEntries/TypeInNewName": "New name",
+    "/Carbon/UI/Controls/ScrollEntries/TypeInNewFolderName": "The folder's new name",
+    "UI/Market/MarketQuote/BuyAll": "Buy them all",
+    "UI/Common/PleaseTypeSomething": "Type something first.",
+    "UI/Common/Expand": "Open it",
+    "UI/Common/Collapse": "Close it",
+    "UI/Common/NothingFound": "Nothing here",
+    "UI/Common/Buttons/OK": "OK",
+    "UI/Common/Buttons/Cancel": "Cancel",
+    "UI/Common/Buttons/Yes": "Yes",
+    "UI/Common/Buttons/No": "No",
+    "UI/Inventory/ItemActions/AddTypeToMarketQuickbar": "Put in the quickbar",
+    "UI/Commands/ShowInfo": "About it",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
+    "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
+    "UI/Compare/CompareButton": "Side by side",
+    "dialog:ResetQuickbar/title": "Empty the quickbar?",
+    "dialog:ResetQuickbar/body": "Everything in the quickbar goes.",
+    "dialog:ConfirmDeleteFolder/title": "Delete the folder?",
+    "dialog:ConfirmDeleteFolder/body": "The folder and all in it go.",
+    "dialog:cannotTradeOnMarket/body": "{[item]typeID.name} is not traded on the market.",
+  };
+  function qbWord(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
+    const template = $words.templates[label];
+    const text = typeof template === "string" && template !== "" ? template : QUICKBAR_WORDS[label] ?? "";
+    return plainText(formatTemplate(text, args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
+  }
+
+  let leftTab = $state<"browse" | "quickbar">("browse");
+  let qbOpen = $state<Record<number, boolean>>({});
+  let qbFacts = $state.raw<ReadonlyMap<number, TypeMetaFacts | null>>(new Map());
+  type QbMenuTarget =
+    | { readonly kind: "folder"; readonly entry: QuickbarEntry }
+    | { readonly kind: "type"; readonly entry: QuickbarEntry }
+    | { readonly kind: "browse"; readonly typeID: number };
+  let qbMenu = $state<(QbMenuTarget & { readonly x: number; readonly y: number }) | null>(null);
+  // Shut by its flag, the menu last shown kept: its values are read as it is taken down, and must never be null then.
+  let qbMenuUp = $state(false);
+  /** The name popup up (NamePopup), and what its OK does. */
+  let naming = $state<{ readonly caption: string; readonly label: string; readonly value: string; readonly maxLength: number | null; readonly refuses: boolean; readonly ok: (text: string) => void } | null>(null);
+  let namingUp = $state(false);
+  /** The client's question up (its dialog), and what its answer does. */
+  let question = $state<{ readonly title: string; readonly body: string; readonly answer: (yes: boolean) => void } | null>(null);
+  let questionUp = $state(false);
+  let qbNotice = $state("");
+
+  // The quickbar's types: their facts (market group, published, category: the client's types records) and names.
+  $effect(() => {
+    const typeIDs = $quickbar.entries.flatMap((entry) => (isType(entry) ? [entry.label] : []));
+    if (typeIDs.length === 0) return;
+    flow.requestNames(typeIDs.map((id) => ({ kind: "type" as const, id })));
+    void flow.typeFacts(typeIDs).then((facts) => {
+      if (facts !== null) qbFacts = facts;
+    });
+  });
+
+  onMount(() => {
+    flow.requestWords(Object.keys(QUICKBAR_WORDS));
+  });
+
+  $effect(() => {
+    if (!qbMenuUp) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".hull-menu"))) qbMenuUp = false;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") qbMenuUp = false;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+
+  function openQbMenu(menu: QbMenuTarget, event: MouseEvent): void {
+    event.preventDefault();
+    qbMenu = { ...menu, x: event.clientX, y: event.clientY };
+    qbMenuUp = true;
+  }
+
+  /** A folder's or the top's entries (GetItems), folders then types, each sorted by name. */
+  function qbChildren(parent: number): { readonly folders: QuickbarEntry[]; readonly types: QuickbarEntry[] } {
+    const entries = childrenOf($quickbar, parent);
+    return {
+      folders: entries.filter(isFolder).sort((left, right) => String(left.label).localeCompare(String(right.label))),
+      types: entries.filter(isType).sort((left, right) => typeName(Number(left.label)).localeCompare(typeName(Number(right.label)))),
+    };
+  }
+
+  function qbTypeLabel(entry: QuickbarEntry): string {
+    const name = typeName(Number(entry.label));
+    const extraText = entry.extraText ?? "";
+    return extraText !== "" ? qbWord("UI/Market/Marketbase/QuickbarTypeNameWithExtraText", { typeName: name, extraText: String(extraText) }) : name;
+  }
+
+  /** QuickbarItem.Load: a type the market does not sell (no market group); unknown while its facts are not had. */
+  const qbUnsold = (typeID: number): boolean => qbFacts.has(typeID) && (qbFacts.get(typeID)?.marketGroupID ?? null) === null;
+
+  function qbClick(entry: QuickbarEntry): void {
+    const typeID = Number(entry.label);
+    if (qbUnsold(typeID)) return;
+    chooseItem({ typeID, name: typeName(typeID), groupName: "" });
+  }
+
+  function qbToggled(id: number, event: Event): void {
+    const open = (event.currentTarget as HTMLDetailsElement).open;
+    if ((qbOpen[id] === true) !== open) qbOpen[id] = open;
+  }
+
+  /** The window's NewFolder and AddNewQuickbarFolder: the name popup, then the folder. */
+  function newFolder(parent: number): void {
+    qbMenuUp = false;
+    namingUp = true;
+    naming = {
+      caption: qbWord("UI/Market/Marketbase/FolderName"),
+      label: qbWord("UI/Market/Marketbase/TypeFolderName"),
+      value: "",
+      maxLength: 20,
+      refuses: true,
+      ok: (text) => {
+        namingUp = false;
+        changeQuickbar((quickbar) => addFolder(quickbar, text, parent).quickbar);
+      },
+    };
+  }
+
+  /** ListGroup.ChangeLabel: the list group's popup (no length), then RenameFolder. */
+  function changeLabel(entry: QuickbarEntry): void {
+    qbMenuUp = false;
+    namingUp = true;
+    naming = {
+      caption: qbWord("/Carbon/UI/Controls/ScrollEntries/TypeInNewName"),
+      label: qbWord("/Carbon/UI/Controls/ScrollEntries/TypeInNewFolderName"),
+      value: "",
+      maxLength: null,
+      refuses: true,
+      ok: (text) => {
+        namingUp = false;
+        changeQuickbar((quickbar) => renameFolder(quickbar, entry.id, text));
+      },
+    };
+  }
+
+  /** ListGroup.DeleteFolder: ConfirmDeleteFolder, then GroupDeleteFolder. */
+  function deleteQbFolder(entry: QuickbarEntry): void {
+    qbMenuUp = false;
+    questionUp = true;
+    question = {
+      title: qbWord("dialog:ConfirmDeleteFolder/title"),
+      body: qbWord("dialog:ConfirmDeleteFolder/body"),
+      answer: (yes) => {
+        questionUp = false;
+        if (yes) changeQuickbar((quickbar) => deleteFolder(quickbar, entry.id));
+      },
+    };
+  }
+
+  /** ResetQuickbar: its question, then all of it gone and the numbering from nought. */
+  function resetQuickbar(): void {
+    questionUp = true;
+    question = {
+      title: qbWord("dialog:ResetQuickbar/title"),
+      body: qbWord("dialog:ResetQuickbar/body"),
+      answer: (yes) => {
+        questionUp = false;
+        if (yes) changeQuickbar(() => ({ entries: [], lastID: 0 }));
+      },
+    };
+  }
+
+  /** EditExtraText: the popup (the type's name its caption, at most 25, nothing refused), then the text kept. */
+  function editExtraText(entry: QuickbarEntry): void {
+    qbMenuUp = false;
+    namingUp = true;
+    naming = {
+      caption: typeName(Number(entry.label)),
+      label: qbWord("UI/Market/Marketbase/TypeInAdditionalText"),
+      value: String(entry.extraText ?? ""),
+      maxLength: 25,
+      refuses: false,
+      ok: (text) => {
+        namingUp = false;
+        changeQuickbar((quickbar) => setExtraText(quickbar, entry.id, text));
+      },
+    };
+  }
+
+  /**
+   * The window's AddTypeToQuickBar (1512 to 1518: marketQuote.AddToQuickBar at the top, no extra text): refused, with
+   * the client's cannotTradeOnMarket, for a type the market does not sell.
+   */
+  async function addToQuickbar(typeID: number): Promise<void> {
+    qbMenuUp = false;
+    const facts = (await flow.typeFacts([typeID]))?.get(typeID) ?? null;
+    if (facts !== null && facts.marketGroupID === null) {
+      qbNotice = qbWord("dialog:cannotTradeOnMarket/body", { typeID });
+      return;
+    }
+    qbNotice = "";
+    changeQuickbar((quickbar) => addType(quickbar, typeID, 0, ""));
+  }
+
+  /** The type's menu as menusvc gives it (the page's part of it): what is offered of a type, by its facts. */
+  function typeMenuOffers(typeID: number): { readonly market: boolean; readonly published: boolean; readonly compare: boolean } {
+    const facts = qbFacts.get(typeID) ?? null;
+    return {
+      market: facts !== null && facts.marketGroupID !== null,
+      published: facts !== null && facts.published,
+      compare: facts !== null && facts.categoryID !== null && COMPARE_CATEGORIES.includes(facts.categoryID),
+    };
+  }
   // ⚠ SELLING NEEDS THE HANGAR. PlaceMultiSellOrder moves a specific STACK into
   // escrow, so a sell must name an itemID — "10 of Tritanium" is not something
   // the market can act on. The hangar the Inventory page already reads is where
@@ -443,6 +723,8 @@
     // market load: it is a different panel's read, and failing it must cost the
     // player only the ability to sell, not the whole market page.
     void flow.loadInventory().catch(() => {});
+    // The escrow the window shows, as the client's market progression keeps it (asked at most each twelve hours).
+    return flow.watchMarketProgression();
   });
 </script>
 
@@ -487,6 +769,101 @@
     and its own icon; an item carries its picture) but they behave consistently,
     which is what makes the list scannable in a narrow window.
   -->
+  {#if namingUp && naming !== null}
+    {@const held = naming}
+    <NamePopup caption={held.caption} label={held.label} value={held.value} maxLength={held.maxLength}
+      refusal={held.refuses ? qbWord("UI/Common/PleaseTypeSomething") : null}
+      okWord={qbWord("UI/Common/Buttons/OK")} cancelWord={qbWord("UI/Common/Buttons/Cancel")}
+      onok={(text) => held.ok(text)} oncancel={() => (namingUp = false)} />
+  {/if}
+  {#if questionUp && question !== null}
+    {@const asked = question}
+    <div class="qb-question" role="alertdialog" aria-label={asked.title}>
+      <strong>{asked.title}</strong>
+      <p>{asked.body}</p>
+      <p class="controls">
+        <button type="button" onclick={() => asked.answer(true)}>{qbWord("UI/Common/Buttons/Yes")}</button>
+        <button type="button" class="minor" onclick={() => asked.answer(false)}>{qbWord("UI/Common/Buttons/No")}</button>
+      </p>
+    </div>
+  {/if}
+  {#if qbMenuUp && qbMenu !== null}
+    {@const menuFor = qbMenu}
+    <span class="hull-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+      {#if menuFor.kind === "folder"}
+        {@const folder = menuFor.entry}
+        {@const buyDict = typesUnderFolder($quickbar, folder.id)}
+        <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; qbOpen[folder.id] = qbOpen[folder.id] !== true; }}>{qbWord(qbOpen[folder.id] === true ? "UI/Common/Collapse" : "UI/Common/Expand")}</button>
+        <button type="button" role="menuitem" onclick={() => changeLabel(folder)}>{qbWord("/Carbon/UI/Controls/ScrollEntries/ChangeLabel")}</button>
+        <button type="button" role="menuitem" onclick={() => deleteQbFolder(folder)}>{qbWord("/Carbon/UI/Controls/ScrollEntries/DeleteFolder")}</button>
+        <button type="button" role="menuitem" onclick={() => newFolder(folder.id)}>{qbWord("UI/Market/NewFolder")}</button>
+        {#if buyDict.size > 0}
+          <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; void flow.openMultiBuy(buyDict).catch(() => {}); }}>{qbWord("UI/Market/MarketQuote/BuyAll")}</button>
+        {/if}
+      {:else if menuFor.kind === "type"}
+        {@const entry = menuFor.entry}
+        {@const typeID = Number(entry.label)}
+        {@const offers = typeMenuOffers(typeID)}
+        <button type="button" role="menuitem" onclick={() => editExtraText(entry)}>{qbWord(entry.extraText ? "UI/Market/Marketbase/EditAdditionalText" : "UI/Market/Marketbase/AddAdditionalText")}</button>
+        <hr />
+        <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; changeQuickbar((quickbar) => removeType(quickbar, entry.parent, typeID)); }}>{qbWord("UI/Market/Remove")}</button>
+        <hr />
+        <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; showInfo({ kind: "type", typeID }); }}>{qbWord("UI/Commands/ShowInfo")}</button>
+        {#if offers.market}
+          <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; showMarketDetails(typeID); }}>{qbWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+        {/if}
+        {#if offers.published}
+          <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; findInContracts(typeID); }}>{qbWord("UI/Inventory/ItemActions/FindInContracts")}</button>
+          <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; findInPersonalAssets(assetSearchTextForType(qbWord("UI/Inventory/AssetSearch/KeywordTypeExact"), typeName(typeID))); }}>{qbWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+        {/if}
+        {#if offers.compare}
+          <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; compareType(typeID); }}>{qbWord("UI/Compare/CompareButton")}</button>
+        {/if}
+      {:else}
+        {@const typeID = menuFor.typeID}
+        <button type="button" role="menuitem" onclick={() => void addToQuickbar(typeID)}>{qbWord("UI/Inventory/ItemActions/AddTypeToMarketQuickbar")}</button>
+        <button type="button" role="menuitem" onclick={() => { qbMenuUp = false; showInfo({ kind: "type", typeID }); }}>{qbWord("UI/Commands/ShowInfo")}</button>
+      {/if}
+    </span>
+  {/if}
+  {#if qbNotice}
+    <p class="note">{qbNotice}</p>
+  {/if}
+  <nav class="tabs qb-tabs">
+    <button type="button" class:active={leftTab === "browse"} aria-pressed={leftTab === "browse"} onclick={() => (leftTab = "browse")}>{qbWord("UI/Market/Browse")}</button>
+    <button type="button" class:active={leftTab === "quickbar"} aria-pressed={leftTab === "quickbar"} onclick={() => (leftTab = "quickbar")}>{qbWord("UI/Market/QuickBar")}</button>
+  </nav>
+  {#snippet qbLevel(parent: number, depth: number)}
+    {@const kids = qbChildren(parent)}
+    {#each kids.folders as folder (folder.id)}
+      <details class="qb-folder" style:margin-left={`${depth}rem`} open={qbOpen[folder.id] === true} ontoggle={(event) => qbToggled(folder.id, event)}>
+        <summary oncontextmenu={(event) => openQbMenu({ kind: "folder", entry: folder }, event)}>{String(folder.label)}</summary>
+        {#if qbOpen[folder.id] === true}
+          {@render qbLevel(folder.id, 1)}
+        {/if}
+      </details>
+    {/each}
+    {#each kids.types as entry (entry.id)}
+      {@const typeID = Number(entry.label)}
+      <button type="button" class="pick-row qb-type" class:qb-unsold={qbUnsold(typeID)} style:margin-left={`${depth}rem`}
+        title={qbUnsold(typeID) ? qbWord("UI/Market/Marketbase/NotAvailableOnMarket") : undefined}
+        disabled={busy} onclick={() => qbClick(entry)} oncontextmenu={(event) => openQbMenu({ kind: "type", entry }, event)}>
+        <TypeIcon typeID={typeID} name={typeName(typeID)} />
+        <span class="pick-main"><span class="pick-name">{qbTypeLabel(entry)}</span></span>
+      </button>
+    {/each}
+  {/snippet}
+  {#if leftTab === "quickbar"}
+    <p class="controls qb-buttons">
+      <button type="button" class="minor" title={qbWord("Tooltips/Market/MarketQuickbarNewFolder")} onclick={() => newFolder(0)}>{qbWord("UI/Market/NewFolder")}</button>
+      <button type="button" class="minor" title={qbWord("Tooltips/Market/MarketQuickbarReset")} aria-label={qbWord("Tooltips/Market/MarketQuickbarReset")} onclick={resetQuickbar}>🗑</button>
+    </p>
+    {#if $quickbar.entries.length === 0}
+      <p class="empty">{qbWord("UI/Common/NothingFound")}</p>
+    {:else}
+      <div class="qb-tree">{@render qbLevel(0, 0)}</div>
+    {/if}
+  {:else}
   <nav class="market-crumbs" aria-label="Where you are in the market">
     <button type="button" class="crumb" disabled={busy || browsing} onclick={() => goToCrumb(-1)}>
       All items
@@ -510,7 +887,7 @@
     <ul class="market-picker">
       {#each matches as match (match.typeID)}
         <li>
-          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(match)}>
+          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(match)} oncontextmenu={(event) => openQbMenu({ kind: "browse", typeID: match.typeID }, event)}>
             <TypeIcon typeID={match.typeID} name={match.name} />
             <span class="pick-main">
               <span class="pick-name">{match.name}</span>
@@ -539,7 +916,7 @@
       {/each}
       {#each groupTypes as item (item.typeID)}
         <li>
-          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(item)}>
+          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(item)} oncontextmenu={(event) => openQbMenu({ kind: "browse", typeID: item.typeID }, event)}>
             <TypeIcon typeID={item.typeID} name={item.name} />
             <span class="pick-main">
               <span class="pick-name">{item.name}</span>
@@ -554,6 +931,7 @@
            with the search box instead of believing they have seen everything. -->
       <p class="note">Only the first {groupTypes.length} items here are listed — search to narrow it.</p>
     {/if}
+  {/if}
   {/if}
   {#if !$market.loaded}
     <p class="note">Loading the market…</p>
@@ -1125,3 +1503,11 @@
     {/if}
   </section>
 {/if}
+
+<style>
+  /* The quickbar (QuickbarItem.Load fades a type the market does not sell), its question and its folders. */
+  .qb-type.qb-unsold { opacity: 0.5; }
+  .qb-question { border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+  .qb-folder > summary { cursor: pointer; padding: 0.25rem 0; }
+  .qb-tree { display: flex; flex-direction: column; }
+</style>

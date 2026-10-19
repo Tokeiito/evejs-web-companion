@@ -23,24 +23,51 @@
   // Not done: the dialog's icon, its sound (audio.AudioMessage), its line in the client's log (logger.AddMessage), the
   // strip's place with the HUD at the top and its being dragged, and the box's holding the rest of the client still
   // (is_modal) for a pilot not in front.
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { DO_NOT_ASK_AGAIN_LABEL, DO_NOT_SHOW_AGAIN_LABEL, answerKept, suppressKey } from "../bridge/dialogSuppression.ts";
+
+  function focusDefault(node: HTMLButtonElement, question: number | null) {
+    if (question !== null) node.focus();
+    return { update(next: number | null) { if (next !== null) node.focus(); } };
+  }
   import type { Session } from "../app/sessions.ts";
   import type { MultiBuyAsk, MultiBuyRow, SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
   import { romanLevel } from "../bridge/skills.ts";
+  import NamePopup from "./NamePopup.svelte";
+  import { changeQuickbar } from "./marketQuickbar.ts";
+  import { addFolder, addType } from "../bridge/marketQuickbar.ts";
   import {
-    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionText, wordsLabels, wordsNameRefs,
+    DIALOG_TYPE_TITLES, INFORMATION_TITLE, NUMERIC_WORD_LABELS, OWN_DIALOG_TITLES, iskWords, questionMarkup, questionText, wordsLabels, wordsNameRefs,
     type ClientWording,
   } from "../bridge/questions.ts";
-  import { SHORT_INTERVAL_WORD_LABELS, intervalWriters, shortWrittenInterval } from "../bridge/timeInterval.ts";
+  import { labelEscaped } from "../bridge/labelMarkup.ts";
+  import LabelText from "./LabelText.svelte";
+  import { linkFollowerOf } from "./linkFollowers.ts";
+  import { SHORT_INTERVAL_WORD_LABELS, intervalWriters } from "../bridge/timeInterval.ts";
   import { orderDelta, priceDelta } from "../bridge/market.ts";
   import { showMarketDetails } from "./marketDetails.ts";
   import { SKILL_BOOK_NOT_YET, SKILL_TRAINING_COMPLETE, skillGroupIcon } from "./skillGroupIcons.ts";
-  import type { SkillRowMark } from "../bridge/missingSkills.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import RequiredSkillRow from "./RequiredSkillRow.svelte";
+  import SkillTrainingAction from "./SkillTrainingAction.svelte";
+  import { applyPointsButton, trainingTimeText, TYPE_ALPHA_TRAINING_INJECTOR, TYPE_SKILL_INJECTOR } from "./skillAction.ts";
+  import { createSkillPlanButton } from "./skillPlanTemplate.ts";
+  import { ROLE_GML, ROLE_WORLDMOD, sessionHasRole } from "../bridge/gmWrites.ts";
+  import { CONTENTS_LABELS, RACK_EFFECTS, type FittingContentsGroup } from "../bridge/fittingContents.ts";
+  import type { ViewFittingTypeMark } from "../app/flow.ts";
+  import { clientTexture } from "./skillGroupIcons.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { findInPersonalAssets } from "./assetsSearch.ts";
+  import { findInContracts } from "./contractsSearch.ts";
+  import { compareType } from "./typeCompare.ts";
+  import { assetSearchTextForType } from "../bridge/assetSearch.ts";
+  import { COMPARE_CATEGORIES } from "../bridge/dogmaAttributeGroups.ts";
+  import { openFittingWindow } from "./fittingWindowTarget.ts";
+  import { portal } from "./portal.ts";
+  import { startFittingDrag } from "./fittingDrag.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -62,14 +89,340 @@
   // svelte-ignore state_referenced_locally
   const skillBooksAsked = flow.skillBooksAsked;
   // svelte-ignore state_referenced_locally
+  const buyAllAsked = flow.buyAllAsked;
+  // svelte-ignore state_referenced_locally
+  const viewFittingsAsked = flow.viewFittingsAsked;
+  // The types' facts its entries' menus go by (a market group, published, the category), as the fitting browser holds them.
+  const hullBrowser = flow.hullBrowser;
+  // svelte-ignore state_referenced_locally
+  const multiFitAsked = flow.multiFitAsked;
+  // svelte-ignore state_referenced_locally
+  const progressWnd = flow.progressWnd;
+  // svelte-ignore state_referenced_locally
+  const useFittingNameForShips = flow.useFittingNameForShips;
+  // svelte-ignore state_referenced_locally
+  const inventory = session.store.inventory;
+  // The client's multifit window (fitting/multiFitWnd.py MultiFitWnd): its caption, the hull's icon (the fitting shown
+  // on a click), the ships' name (20 letters at most), the hull's name, the equipment's place (the item hangar or one of
+  // the pilot's own containers, by name), the count (one to GetMaxShipsToFit), the warnings (ships or equipment missing,
+  // with what is missing and Buy All; a strategic cruiser's fitting that will not go), the two counts (the hangar's
+  // packaged ships, the rounds of the fitting the place holds) in red where short of the count, each with what it lacks
+  // and Buy All, the refresh, the rigs box where the fitting has rigs, Fit Ships (as many as can be) and Close, and the
+  // count of ships fitted while it fits. Closed when the pilot undocks (OnSessionChanged). Its words are the install's;
+  // the page's own stand in. Not done: the QA tools' Create Missing and GM buttons, and dragging the fitting out.
+  const MULTIFIT_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader": "Fit several ships",
+    "UI/Fitting/ShowFitting": "Look at the fitting",
+    "UI/Common/ShipName": "The ships' name",
+    "UI/Fitting/FittingWindow/FittingManagement/EquipmentLocation": "Equipment from",
+    "UI/Fitting/FittingWindow/FittingManagement/EquipmentLocationHint": "Where the modules and charges are taken from",
+    "UI/Inventory/ItemHangar": "Item hangar",
+    "UI/Fitting/FittingWindow/FittingManagement/NumShipsToFit": "Ships to fit",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingShipEquipment": "Ships or equipment are missing",
+    "UI/Fitting/FittingWindow/FittingManagement/InvalidT3Fit": "This fitting cannot be put on its hull",
+    "UI/Fitting/FittingWindow/FittingManagement/RefreshInventoryStatusHint": "Count again",
+    "UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangar": "Packaged ships in the hangar",
+    "UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangarHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/RoundsOfFittingsInLocation": "Fittings' worth in {locationName}",
+    "UI/Fitting/FittingWindow/FittingManagement/FitRigs": "Fit the rigs",
+    "UI/Fitting/FittingWindow/FittingManagement/FitRigsHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/FitShips": "Fit {numToFit} ships",
+    "UI/Common/Close": "Close",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingItems": "Missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingShips": "Ships missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MissingEquipment": "Equipment missing to fit {numToFit} of {fittingName}:",
+    "UI/Fitting/FittingWindow/FittingManagement/MoreItemTypesMissing": "and {numMoreItems} more",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    // Said as the ships are fitted (flow.ts fitMultiFit): asked here, where they are fitted from.
+    "UI/Fitting/MissingItems": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BadFitFittingFailed": "",
+    "UI/Fitting/FittingWindow/FittingManagement/BusyFittingWarning": "",
+  };
+  $effect(() => {
+    const fit = $multiFitAsked;
+    if (fit === null) return;
+    flow.requestWords(Object.keys(MULTIFIT_WORDS));
+    flow.requestNames([
+      { kind: "type" as const, id: fit.fitting.shipTypeID },
+      ...fit.containers.flatMap((container) => [{ kind: "evelocation" as const, id: container.itemID }, { kind: "type" as const, id: container.typeID }]),
+      ...(fit.status === null ? [] : [...fit.status.missingShips, ...fit.status.missingEquipment].map((each) => ({ kind: "type" as const, id: each.typeID }))),
+    ]);
+  });
+  // MultiFitWnd.OnSessionChanged: the window closed when the pilot is no longer docked.
+  $effect(() => {
+    const fit = $multiFitAsked;
+    if (fit !== null && $inventory.loaded && ($inventory.stationID ?? $inventory.structureID ?? null) === null) void flow.answerMultiFit(fit.n, "close");
+  });
+  /** A label of the multifit window, as plain text, with its arguments. */
+  function fitWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
+    return plainText(formatTemplate(wordOf(label, MULTIFIT_WORDS[label] ?? ""), args, { nameOf }));
+  }
+  /** A container's name in the place's list (cfg.evelocations' name, else its type's). */
+  function containerName(container: { readonly itemID: number; readonly typeID: number }): string {
+    const own = resolvedName($names.resolved, "evelocation", container.itemID, "");
+    return own !== "" ? own : nameOf("type", container.typeID);
+  }
+  /** LoadCounterTooltip (472 to 492): what is missing, each type and how many, by name, ten at most and how many more. */
+  function missingLines(missing: readonly { readonly typeID: number; readonly qty: number }[]): string[] {
+    const sorted = missing.slice().sort((left, right) => {
+      const a = nameOf("type", left.typeID).toLowerCase();
+      const b = nameOf("type", right.typeID).toLowerCase();
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const lines = sorted.slice(0, 10).map((each) => `${each.qty}x ${nameOf("type", each.typeID)}`);
+    if (sorted.length > 10) lines.push(fitWord("UI/Fitting/FittingWindow/FittingManagement/MoreItemTypesMissing", { numMoreItems: sorted.length - 10 }));
+    return lines;
+  }
+  // The client's fitting display window (fittingMgmtWindow.ViewFitting, its FittingMgmtContInStandalone): its caption
+  // (UI/Fitting/ShipFitting and the ship's type), the ship's icon and the fitting's name with its owner's kind, the
+  // ship's info icon (Show Info on the hull), two tabs, the contents by heading (each slot kind under its effect's name,
+  // each type "Nx" and its name with its icon, its marks and its info icon, FittingModuleEntry) and the description,
+  // and Fit (disabled for a structure's), Save, Buy and Simulate: the name (40 letters at most, the client's field) and
+  // the description (500, maxLengthFittingDescription) edited and saved for the pilot's own fitting. Its words are the
+  // install's; the page's own stand in. Its header's menu has Open Multifit, docked, and Export to Clipboard (the
+  // fitting as the client's text, its names English). Save, for any fitting, has its menu: Save for Alliance (the
+  // executor corporation's), for Corporation and for the pilot; a fitting of another owner's is saved as a copy; and,
+  // for one with the fitting manager's role, its tooltip of the same three. Its settings have Use Fitting Name for Ship
+  // (the ship named after a fitting loaded on it). Not the page's: the ship's preview (the ship icon's click,
+  // preview.PreviewType), which has no 3D view here. A fitting read from a link cut short has the truncated label; the
+  // ship icon dragged is the fitting shown (FittingDraggableIcon2).
+  const VIEW_FITTING_WORDS: Readonly<Record<string, string>> = {
+    "UI/Fitting/ShipFitting": "Fitting",
+    // Its header's menu (ViewFitting._AddCustomMenuOptions, 414 to 419).
+    "UI/Fitting/FittingWindow/FittingManagement/OpenMultifit": "Fit several ships",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard": "Copy it as text",
+    "UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint": "",
+    "UI/Fitting/FittingWindow/FittingManagement/Fittings": "Contents",
+    "UI/Common/Description": "About it",
+    "UI/Fitting/FittingWindow/FittingManagement/Fit": "Fit this ship",
+    "UI/Common/Buttons/Save": "Keep the changes",
+    // Save's menu (fittingMgmtCont._get_save_sub_menu_data, 123 to 131).
+    "UI/Fitting/FittingWindow/SaveForAlliance": "Keep it for the alliance",
+    "UI/Fitting/FittingWindow/SaveForCorp": "Keep it for the corporation",
+    "UI/Fitting/FittingWindow/SaveForCharacter": "Keep it for yourself",
+    // Its settings (fittingMgmtCont.AddFittingNameElements, SettingMenu, 65 to 74 and 152 to 155).
+    "UI/Common/Settings": "Settings",
+    "UI/Fitting/FittingWindow/FittingManagement/UseFittingNameForShip": "Name the ship after the fitting loaded",
+    "UI/Fitting/FittingWindow/FittingManagement/FittingName": "Name",
+    "UI/Market/MarketQuote/CommandBuy": "Purchase",
+    "UI/Fitting/FittingWindow/FittingManagement/PersonalFitting": "Your own fitting",
+    "UI/Fitting/FittingWindow/FittingManagement/CorporationFitting": "Your corporation's fitting",
+    // TryAddSimulationBtn.
+    "UI/Fitting/FittingWindow/Simulate": "Try it out",
+    // The truncated label (AddFittingNameElements).
+    "UI/Fitting/FittingWindow/FittingManagement/Truncated": "Cut short: not all of it came",
+    // Each entry's marks (FittingModuleEntry.Startup and Load, fitting.py 104 to 160) and its info icon.
+    "UI/Control/Entries/FittingModuleSkillMissing": "You lack a skill it needs",
+    "UI/Control/Entries/FittingModuleSkillOK": "You have the skills it needs",
+    "UI/Fitting/TypeIsObsolete": "This is no longer made",
+    "UI/Fitting/FittingWindow/FittingManagement/AbyssalModuleWarning": "A mutated module: the one bought may not be this one",
+    // Each entry's menu (Item.GetMenu: menusvc.GetMenuFromItemIDTypeID(None, typeID, includeMarketDetails=True)).
+    "UI/Commands/ShowInfo": "About it",
+    "UI/Inventory/ItemActions/ViewTypesMarketDetails": "Its market",
+    "UI/Inventory/ItemActions/FindInContracts": "Contracts of it",
+    "UI/Inventory/ItemActions/FindPersonalAssets": "Where you have it",
+    "UI/Inventory/AssetSearch/KeywordTypeExact": "typeExact",
+    "UI/Compare/CompareButton": "Side by side",
+    [CONTENTS_LABELS.charges]: "Ammunition",
+    [CONTENTS_LABELS.ice]: "Fuel",
+    [CONTENTS_LABELS.drones]: "Drones",
+    [CONTENTS_LABELS.fighters]: "Fighters",
+    [CONTENTS_LABELS.implants]: "Implants and boosters",
+    [CONTENTS_LABELS.modules]: "Modules in the hold",
+    [CONTENTS_LABELS.filaments]: "Filaments",
+    [CONTENTS_LABELS.otherInCargo]: "Other things in the hold",
+    [CONTENTS_LABELS.other]: "Everything else",
+  };
+  // Each display window's own (one for each fitting DisplayFitting was asked for with Shift held, and the one it
+  // reloads), by its number: its tab, its menus, Save's tooltip panel (fittingMgmtCont.LoadSaveBtnTooltipPanel, 157 to
+  // 180: on the pointer over Save, for a pilot with the fitting manager's role only, the same three as the menu), the
+  // name and the description as edited, and where it has been dragged to from the middle, where a window opens
+  // (Window.default_left and default_top, '__center__'). What is edited is set afresh with each fitting loaded into it
+  // (ReloadWnd), and only then: its contents arriving leave what is being typed.
+  interface ViewFittingState {
+    tab: "contents" | "description";
+    menuOpen: boolean;
+    settingsOpen: boolean;
+    saveMenuOpen: boolean;
+    saveForAlliance: boolean;
+    savePanelOpen: boolean;
+    name: string;
+    description: string;
+    loaded: number;
+    dx: number;
+    dy: number;
+  }
+  let viewStates = $state<Record<number, ViewFittingState>>({});
+  $effect(() => {
+    const views = $viewFittingsAsked;
+    const held = untrack(() => viewStates);
+    const next: Record<number, ViewFittingState> = {};
+    let changed = Object.keys(held).length !== views.length;
+    for (const view of views) {
+      const kept = held[view.n];
+      if (kept !== undefined && kept.loaded === view.loaded) {
+        next[view.n] = kept;
+        continue;
+      }
+      changed = true;
+      next[view.n] = {
+        tab: kept?.tab ?? "contents", menuOpen: false, settingsOpen: false, saveMenuOpen: false, saveForAlliance: kept?.saveForAlliance ?? false,
+        savePanelOpen: false, name: view.fitting.name, description: view.fitting.description, loaded: view.loaded, dx: kept?.dx ?? 0, dy: kept?.dy ?? 0,
+      };
+    }
+    if (changed) viewStates = next;
+  });
+  function viewFittingSaveHovered(state: ViewFittingState): void {
+    if (!flow.hasFittingManagerRole()) return;
+    state.savePanelOpen = true;
+    void flow.saveForAllianceOffered().then((offered) => (state.saveForAlliance = offered)).catch(() => {});
+  }
+  /** A display window moved by its caption, as a window is (the caption's buttons are its own). */
+  function dragViewFitting(event: PointerEvent, state: ViewFittingState): void {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, input, textarea, [role=menu]"))) return;
+    event.preventDefault();
+    const fromX = event.clientX - state.dx;
+    const fromY = event.clientY - state.dy;
+    const move = (moved: PointerEvent): void => {
+      state.dx = moved.clientX - fromX;
+      state.dy = moved.clientY - fromY;
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  $effect(() => {
+    const views = $viewFittingsAsked;
+    if (views.length === 0) return;
+    flow.requestWords([...Object.keys(VIEW_FITTING_WORDS), ...views.flatMap((view) => Object.values(view.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])))]);
+    flow.requestNames([
+      ...views.map((view) => ({ kind: "type" as const, id: view.fitting.shipTypeID })),
+      // SaveForCharacter names the pilot as an owner (charID).
+      ...($station.online ? [{ kind: "owner" as const, id: $station.online.characterID }] : []),
+      ...views.flatMap((view) => (view.contents ?? []).flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID })))),
+    ]);
+    const types = views.flatMap((view) => (view.contents ?? []).flatMap((group) => group.entries.map((entry) => entry.typeID)));
+    if (types.length > 0) void flow.loadHullBrowser(types).catch(() => {});
+  });
+  /** InfoIcon's picture (infoIcon.py default_texturePath). */
+  const VIEW_FITTING_INFO_ICON = clientTexture("res:/ui/Texture/Icons/38_16_208.png");
+  // FittingModuleEntry's marks: 'ui_38_16_193' and 'ui_38_16_194' (the skills had or not), and the warning
+  // (res:/ui/texture/icons/44_32_7.png, tinted 1.0, 0.1, 0.1 at 0.8).
+  const VIEW_FITTING_SKILL_OK = clientTexture("res:/ui/texture/icons/38_16_193.png");
+  const VIEW_FITTING_SKILL_MISSING = clientTexture("res:/ui/texture/icons/38_16_194.png");
+  const VIEW_FITTING_WARNING = clientTexture("res:/ui/texture/icons/44_32_7.png");
+  /**
+   * An entry's mark (FittingModuleEntry.Load, 121 to 160): an obsolete type's warning with its error frame; else the
+   * skills' mark (HasSkill: a rig in its slot always has them, godma.CheckSkillRequirementsForType for any other), and a
+   * type under Other Items (isValidGroup false) framed as an error, or a dynamic one framed in orange with the Abyssal
+   * module's warning in the skills' mark's place. None while the marks are read.
+   */
+  function viewFittingEntryMark(header: FittingContentsGroup["header"], typeID: number, marks: Readonly<Record<number, ViewFittingTypeMark>> | null):
+    { readonly icon: string | null; readonly tinted: boolean; readonly hint: string; readonly frame: "error" | "dynamic" | null } {
+    const mark = marks?.[typeID] ?? null;
+    if (mark === null) return { icon: null, tinted: false, hint: "", frame: null };
+    if (mark.obsolete) return { icon: VIEW_FITTING_WARNING, tinted: true, hint: viewWord("UI/Fitting/TypeIsObsolete"), frame: "error" };
+    const hasSkill = "effectID" in header && header.effectID === RACK_EFFECTS.rigSlots ? true : mark.skillsMet;
+    const icon = hasSkill === null ? null : hasSkill ? VIEW_FITTING_SKILL_OK : VIEW_FITTING_SKILL_MISSING;
+    const hint = hasSkill === null ? "" : viewWord(hasSkill ? "UI/Control/Entries/FittingModuleSkillOK" : "UI/Control/Entries/FittingModuleSkillMissing");
+    if ("label" in header && header.label === CONTENTS_LABELS.other) return { icon, tinted: false, hint, frame: "error" };
+    if (mark.dynamic) return { icon: VIEW_FITTING_WARNING, tinted: true, hint: viewWord("UI/Fitting/FittingWindow/FittingManagement/AbyssalModuleWarning"), frame: "dynamic" };
+    return { icon, tinted: false, hint, frame: null };
+  }
+  // An entry's menu on its right click (Item.GetMenu, item.py 80 to 95: GetMenuFromItemIDTypeID(None, typeID,
+  // includeMarketDetails=True), menusvc.py 2281 to 2352): Show Info; View Market Details where the type has a market
+  // group; Find in Contracts and Find Personal Assets where it is published; Compare for a category in compareCategories.
+  // Not the page's: a GM's "GM / WM Extras".
+  let viewFittingEntryMenu = $state<{ readonly typeID: number; readonly x: number; readonly y: number } | null>(null);
+  function openViewFittingEntryMenu(typeID: number, event: MouseEvent): void {
+    event.preventDefault();
+    viewFittingEntryMenu = { typeID, x: event.clientX, y: event.clientY };
+  }
+  $effect(() => {
+    if (viewFittingEntryMenu === null) return;
+    const close = (event: Event): void => {
+      if (!(event.target instanceof Element && event.target.closest(".view-fitting-entry-menu"))) viewFittingEntryMenu = null;
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") viewFittingEntryMenu = null;
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", key);
+    });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", key);
+    };
+  });
+  $effect(() => {
+    if ($viewFittingsAsked.length === 0) viewFittingEntryMenu = null;
+  });
+  const viewWord = (label: string): string => plainText(wordOf(label, VIEW_FITTING_WORDS[label] ?? ""));
+  /** A heading of the contents: a slot kind's effect's name (the client's message), or the kind's label. */
+  // Buy and Fit's tooltip (buyMultiFromBase.AddBuyAndFitBtn, fittingInfoTooltip.LoadFittingInfoTooltip, 19 to 42): "Fit
+  // to apply to current ship", the hull's name, the fitting's name where it has one, and its contents by heading as the
+  // display window lists them. As a hint's lines.
+  // Raw: the fitting is kept as the window has it, to be known again by identity (a deep state would proxy it).
+  let buyAndFitInfo = $state.raw<{ readonly fitting: unknown; readonly contents: readonly FittingContentsGroup[]; readonly effectNames: Readonly<Record<number, number | null>> } | null>(null);
+  $effect(() => {
+    const fitting = $multiBuyAsked?.fitting ?? null;
+    if (fitting === null || buyAndFitInfo?.fitting === fitting) return;
+    flow.requestWords(["UI/Market/MarketQuote/FitToApplyToCurrentShip", ...Object.keys(VIEW_FITTING_WORDS)]);
+    void flow.fittingInfo(fitting).then((info) => {
+      buyAndFitInfo = { fitting, ...info };
+      flow.requestWords(Object.values(info.effectNames).flatMap((messageID) => (messageID === null ? [] : [`#${messageID}`])));
+      flow.requestNames([{ kind: "type" as const, id: fitting.shipTypeID }, ...info.contents.flatMap((group) => group.entries.map((entry) => ({ kind: "type" as const, id: entry.typeID })))]);
+    }).catch(() => {});
+  });
+  function buyAndFitTooltip(fitting: NonNullable<NonNullable<typeof $multiBuyAsked>["fitting"]>): string {
+    const lines = [plainText(wordOf("UI/Market/MarketQuote/FitToApplyToCurrentShip", "To be fitted to the ship you are in")), nameOf("type", fitting.shipTypeID)];
+    if (fitting.name) lines.push(plainText(fitting.name));
+    if (buyAndFitInfo !== null && buyAndFitInfo.fitting === fitting) {
+      for (const group of buyAndFitInfo.contents) {
+        lines.push(contentsHeading(group.header, buyAndFitInfo.effectNames));
+        for (const entry of group.entries) lines.push(`  ${groupedNumber(entry.qty)}x ${nameOf("type", entry.typeID)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+  function contentsHeading(header: FittingContentsGroup["header"], effectNames: Readonly<Record<number, number | null>>): string {
+    if ("label" in header) return viewWord(header.label);
+    const messageID = effectNames[header.effectID];
+    return messageID === null || messageID === undefined ? "" : plainText(wordOf(`#${messageID}`, ""));
+  }
+  // The client's Buy All box (fittingScreen/missingItemsPopup.py BuyAllMessageBox), put up when a fitting could not all
+  // be loaded: its info icon and caption, the header, each type that failed with how many ("%sx %s", by name) and its
+  // icon, and Buy All (the multibuy window with them, for the fitting) and Close. Its words are the install's; the
+  // page's own stand in. Not done: GM: Give All, which a game master's role adds (the page does not hold the session's
+  // role).
+  const BUY_ALL_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/Information": "Note",
+    "UI/Fitting/MissingItemsHeader": "These could not be fitted, for want of them in the hangar:",
+    "UI/Market/MarketQuote/BuyAll": "Shop for all of it",
+    "/Carbon/UI/Common/Close": "Close",
+  };
+  $effect(() => {
+    if ($buyAllAsked === null) return;
+    flow.requestWords(Object.keys(BUY_ALL_WORDS));
+    flow.requestNames($buyAllAsked.missing.map((entry) => ({ kind: "type" as const, id: entry.typeID })));
+  });
+  const buyAllWord = (label: string): string => plainText(wordOf(label, BUY_ALL_WORDS[label] ?? ""));
+  // svelte-ignore state_referenced_locally
   const multiBuyAsked = flow.multiBuyAsked;
   // The client's multibuy window (eve/client/script/ui/shared/market/buyMultiFromBase.py, with its base and rows): its
   // title with how many rows, where it buys (the station list's current one), the number of orders, each type a row
   // with its icon and name, its quantity, the total where the orders are more than one, its best price at the station
-  // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel. Its words are
-  // the install's; the page's own stand in. Not done: the other markets of the system in the station list, each row's
-  // distance from the average and its tooltip, the corporation's wallet, the warning above the average, importing and
-  // exporting a list, dropping types in, Buy and Fit, the orders' expiry kept watch on.
+  // and its total, "-" where the station's orders do not hold it; the window's total; Buy and Cancel, and Buy and Fit
+  // first of them where it was opened for a fitting (AddBuyAndFitBtn). Its words are the install's; the page's own stand
+  // in. Not done: dropping types in, and Buy and Fit's tooltip (LoadFittingInfoTooltip). The station list is the
+  // client's (GetStations: the system's markets, bridge/multiBuyStations.ts), with its warning. Add Order to Quickbar (AddToQuickbar, 207 to 212): AddNewQuickbarFolder's name popup, then
+  // a folder of that name at the quickbar's top and each row's type in it with its whole quantity (GetTotalQty: the
+  // row's times the orders') as its extra text (ui/marketQuickbar.ts).
   const MULTIBUY_WORDS: Readonly<Record<string, string>> = {
     "UI/Inventory/ItemActions/MultiBuy": "Shopping list",
     "UI/Market/MarketQuote/CurrentStation": "Here: {stationName}",
@@ -78,6 +431,8 @@
     "UI/Generic/Cancel": "Not now",
     "UI/Common/Quantity": "How many",
     "UI/Market/MarketQuote/NoStationSelected": "Nowhere to buy chosen",
+    "UI/Market/MarketQuote/NotStationsAvailable": "No market in this system",
+    "UI/Market/MarketQuote/StationWarning": "Not where you are docked",
     "UI/Common/Percentage": "{[numeric]percentage, decimalPlaces=1}%",
     "UI/Market/MarketQuote/MultiBuyAboveAverage": "Altogether these cost {percentage} above their average.",
     "UI/Market/MarketQuote/MultiBuyTypesAboveAverage": "These cost far above their average:",
@@ -103,10 +458,34 @@
     "UI/Market/MarketQuote/ImportShoppingListOption": "Paste a shopping list",
     "UI/Market/MarketQuote/ImportShoppingListOptionHint": "One type to a line, with how many before or after its name.",
     "UI/Market/MarketQuote/CopyOrderToClipboard": "Copy the list",
+    "UI/Market/MarketQuote/AddOrderToQuickbar": "Keep the list in the quickbar",
+    "UI/Market/Marketbase/FolderName": "Folder",
+    "UI/Market/Marketbase/TypeFolderName": "Its name",
+    "UI/Common/PleaseTypeSomething": "Type something first.",
+    "UI/Common/Buttons/OK": "OK",
+    "UI/Common/Buttons/Cancel": "Cancel",
     "UI/Market/MarketQuote/TotalPrice": "Total",
     // The import's lines not read (ImportShoppingList, CustomInfo): asked here, said by the flow.
     "UI/SkillQueue/CouldNotReadLines": "These lines were not understood:",
+    "UI/Market/MarketQuote/UseCorpAccount": "Pay from {accountName}",
+    "UI/Corporations/Common/CorporateDivisionMasterWallet": "Master wallet",
+    "UI/Corporations/Common/CorporateDivisionWalletSecond": "Wallet division 2",
+    "UI/Corporations/Common/CorporateDivisionWalletThird": "Wallet division 3",
+    "UI/Corporations/Common/CorporateDivisionWalletFourth": "Wallet division 4",
+    "UI/Corporations/Common/CorporateDivisionWalletFifth": "Wallet division 5",
+    "UI/Corporations/Common/CorporateDivisionWalletSixth": "Wallet division 6",
+    "UI/Corporations/Common/CorporateDivisionWalletSeventh": "Wallet division 7",
+    "UI/Market/MarketQuote/BuyAndFit": "Buy, then fit",
+    // Said as the fitting is loaded again after Buy and Fit (flow.ts multiBuyTryFit): asked here.
+    "UI/Market/MarketQuote/SomeItemsCouldNotBeFitted": "",
   };
+  /** The words for each wallet division where the corporation named it none (bco_corporations.GetDivisionNames, 8 to 14). */
+  const WALLET_DIVISION_WORDS = ["UI/Corporations/Common/CorporateDivisionMasterWallet", "UI/Corporations/Common/CorporateDivisionWalletSecond",
+    "UI/Corporations/Common/CorporateDivisionWalletThird", "UI/Corporations/Common/CorporateDivisionWalletFourth", "UI/Corporations/Common/CorporateDivisionWalletFifth",
+    "UI/Corporations/Common/CorporateDivisionWalletSixth", "UI/Corporations/Common/CorporateDivisionWalletSeventh"] as const;
+  /** corporation.GetCorpAccountName: the division's name, the corporation's own or the client's word for it. */
+  const corpAccountName = (account: { readonly division: number; readonly name: string | null }): string =>
+    account.name ?? buyWord(WALLET_DIVISION_WORDS[account.division - 1] ?? WALLET_DIVISION_WORDS[0]);
   /** eveFormat.FmtAmt(amount, showFraction=2), as the export writes a price: grouped by thousands, two places. */
   const twoPlaces = (amount: number): string => new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
   /**
@@ -134,7 +513,24 @@
     await flow.importMultiBuy(n, text);
   }
   /** The export menu's Copy Order to Clipboard (ExportShoppingListLocalized): the list put on the clipboard. */
+  /** The station list's options (LoadStationOptions): where the pilot is docked, as Current Station, then the others. */
+  function stationOptionsOf(buy: MultiBuyAsk): { readonly id: number; readonly name: string }[] {
+    return [
+      ...(buy.currentStationID === null ? [] : [{ id: buy.currentStationID, name: buyWord("UI/Market/MarketQuote/CurrentStation", { stationName: nameOf(buy.currentStationID >= 1_000_000_000_000 ? "structure" : "station", buy.currentStationID) }) }]),
+      ...(buy.stationList ?? []),
+    ];
+  }
   let exportOpen = $state(false);
+  /** The multibuy whose list is being kept in the quickbar (its number), its folder's name asked; null where none is. */
+  let quickbarNaming = $state<number | null>(null);
+  /** AddToQuickbar: the folder, then each row's type in it with its whole quantity. */
+  function addOrderToQuickbar(name: string, buy: { readonly rows: readonly { readonly typeID: number; readonly qty: number }[]; readonly multiplier: number }): void {
+    quickbarNaming = null;
+    changeQuickbar((quickbar) => {
+      const made = addFolder(quickbar, name, 0);
+      return buy.rows.reduce((held, row) => addType(held, row.typeID, made.folder.id, row.qty * buy.multiplier), made.quickbar);
+    });
+  }
   /** A percentage as FmtAmt(percentage * 100, showFraction=1) writes it: to a tenth. */
   const tenths = (fraction: number): number => Math.round(fraction * 1000) / 10;
   /**
@@ -242,6 +638,7 @@
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? template : own;
   };
+  const followerOf = (url: string, text: string) => linkFollowerOf(url, flow, null, label => wordOf(label, label), text);
 
   /** The types the client puts up as a box (_prompt_player), and as the passing strip (message_player). */
   const BOX_TYPES: ReadonlySet<string> = new Set(["info", "infomodal", "warning", "question", "error", "fatal", "windowhelp"]);
@@ -295,7 +692,7 @@
     // No such dialog to be read: the page's own words, in a box.
     if (type === null) return { said: one, kind: "box", type: null };
     // A question waits on its answer: a box, whatever its type.
-    if (one.answers === "yesno") return { said: one, kind: "box", type };
+    if (one.answers === "yesno" || one.answers === "okcancel") return { said: one, kind: "box", type };
     return { said: one, kind: BOX_TYPES.has(type) ? "box" : STRIP_TYPES.has(type) ? "strip" : "none", type };
   }));
 
@@ -319,7 +716,7 @@
     const title = own || (typeof typeWords === "string" && typeWords !== "" ? typeWords : OWN_TITLES[typeTitle] ?? "Information");
     const body = first.type === null ? first.said.fallback : questionText(partOf(first.said, "body"), nameOf, client) || first.said.fallback;
     const suppress = $words.templates[suppressKey(first.said.dialog)];
-    return { said: first.said, title, body, suppress: typeof suppress === "string" ? suppress : null };
+    return { said: first.said, title, body, markup: bodyMarkup(first.said, first.type !== null), suppress: typeof suppress === "string" ? first.said.suppressAnswer ?? suppress : null };
   });
   // The box's checkbox, unticked for each box put up.
   let keepTicked = $state(false);
@@ -335,15 +732,25 @@
     const shownBox = box;
     if (shownBox === null) return;
     if (keepTicked && answerKept(shownBox.suppress, answer)) flow.keepDialogAnswer(shownBox.said.dialog, answer);
-    if (answer === "ok") flow.dismissDialog(shownBox.said.n);
-    else flow.answerDialog(shownBox.said.n, answer === "yes");
+    if (answer === "ok" && shownBox.said.answers !== "okcancel") flow.dismissDialog(shownBox.said.n);
+    else flow.answerDialog(shownBox.said.n, answer === "yes" || answer === "ok");
   }
 
   const strip = $derived.by(() => {
     const strips = shown.filter((one) => one.kind === "strip");
     const last = strips[strips.length - 1];
-    return last === undefined ? null : { said: last.said, text: questionText(partOf(last.said, "body"), nameOf, client) || last.said.fallback };
+    return last === undefined ? null : { said: last.said, text: questionText(partOf(last.said, "body"), nameOf, client) || last.said.fallback, markup: bodyMarkup(last.said, true) };
   });
+
+  /**
+   * A dialog's body as the client's label is given it (messagebox.MessageBox.construct_message_body and
+   * QuickMessage: carbonui.text.styles.TextBody): the client's text filled in with its markup kept; where the page
+   * has none of the client's text, its own words, written so that the label reads them as they are.
+   */
+  function bodyMarkup(one: SaidDialog, typed: boolean): string {
+    const marked = typed ? questionMarkup(partOf(one, "body"), nameOf, client) : null;
+    return marked !== null && marked !== "" ? marked : labelEscaped(one.fallback);
+  }
 
   // The strip's own time, from when its text is put in. Kept apart from the effect's runs: a run for any other change
   // of the store leaves the time as it is (the effect reads the whole store's words).
@@ -377,7 +784,18 @@
   $effect(() => {
     const ask = $asked;
     if (ask === null) return;
-    flow.requestWords([...Object.keys(QUANTITY_WORDS), ...(ask.hintLabel === null ? [] : [ask.hintLabel])]);
+    flow.requestWords([
+      ...Object.keys(QUANTITY_WORDS),
+      ...[ask.hintLabel, ask.captionLabel ?? null, ask.labelLabel ?? null].filter((label): label is string => label !== null),
+    ]);
+  });
+  // The names its label speaks of (UseSkillPointsWindow's skill), as its words come.
+  $effect(() => {
+    const ask = $asked;
+    if (ask === null || ask.labelLabel === undefined) return;
+    const template = $words.templates[ask.labelLabel];
+    const refs = typeof template === "string" ? templateNameRefs(template, ask.labelArgs ?? {}) : [];
+    if (refs.length > 0) untrack(() => flow.requestNames(refs));
   });
   // (Text, not a number field: a number field's text cannot be selected, and the client's is selected to begin with.
   // Digits only, as the client's field takes them: intonly.)
@@ -416,34 +834,33 @@
     "UI/Generic/Information": "Information",
     "Tooltips/SkillPlanner/SkillsRequiredToPerformActivity": "Skills needed to {doActivity}",
     "Tooltips/SkillPlanner/ActivityFlyShip": "fly it",
+    "Tooltips/SkillPlanner/OmegaCloneStateRequiredForActivity": "Only an omega clone can {doActivity}",
+    "UI/CloneState/Upgrade": "Upgrade",
     "Tooltips/SkillPlanner/SkillsAndSkillLevels": "{numSkills} skills to train, {numLevels} levels in all",
     "Tooltips/SkillPlanner/MissingSkillBooks": "({numMissingBooks} not owned)",
     "UI/InfoWindow/RequiredSkillNameAndLevel": "{[item]skill.name} {level}",
     "Achievements/AuraText/laterButton": "Not now",
+    "Tooltips/SkillPlanner/SkillPlanButtonTooltip": "Begin a skill plan of these",
+    "UI/SkillPlan/MaximumSkillPlanReached": "You have {numPlans} plans, as many as may be had.",
   };
+  // The personal plans' count as the window opened, for its Create Skill Plan button's limit.
+  let windowPlanCount = $state<number | null>(null);
+  $effect(() => {
+    if ($skillsRequired === null) return;
+    void flow.personalSkillPlanCount().then((count) => (windowPlanCount = count)).catch(() => {});
+  });
   $effect(() => {
     const open = $skillsRequired;
     if (open === null) return;
     flow.requestWords([...Object.keys(SKILL_WINDOW_WORDS), ...SHORT_INTERVAL_WORD_LABELS]);
     flow.requestNames([{ kind: "type", id: open.typeID }, ...open.skills.map(([skill]) => ({ kind: "type" as const, id: skill }))]);
   });
-  /** RequiredSkillRow's hint for each mark. */
-  const SKILL_MARK_LABELS: Readonly<Record<Exclude<SkillRowMark, null>, string>> = {
-    "book-missing": "UI/SkillQueue/SkillBookMissing",
-    "rare-book-missing": "UI/SkillQueue/RareSkillBookMissing",
-    "level-short": "UI/InfoWindow/SkillNotTrainedToRequiredLevel",
-  };
   /**
    * A training time as the window writes it (FormatTimeIntervalShortWritten(time, showTo=TIME_CATEGORY_MINUTE)), in
    * the install's words; the page's own where they are not to hand. None is the window's Training Complete.
    */
   function trainingTime(ticks: number | null): string {
-    if (ticks === null || !(ticks > 0)) return skillWord("Tooltips/SkillPlanner/TrainingComplete");
-    const written = shortWrittenInterval(BigInt(Math.trunc(ticks)), $words.templates, "year", "minute");
-    if (written !== null) return written;
-    const minutes = Math.ceil(ticks / 600_000_000);
-    const [days, hours, mins] = [Math.floor(minutes / 1440), Math.floor((minutes % 1440) / 60), minutes % 60];
-    return [days > 0 ? `${days}d` : "", hours > 0 ? `${hours}h` : "", mins > 0 || minutes === 0 ? `${mins}m` : ""].filter(Boolean).join(" ");
+    return trainingTimeText(ticks, $words.templates, skillWord("Tooltips/SkillPlanner/TrainingComplete"));
   }
   // The client's books window (characterskills/client/UI/missingSkillbooksWnd.py), which Buy and train opens: its
   // title; the books sold, each by name, with what they cost and Buy and Inject; the books not sold, by name, under a
@@ -472,14 +889,12 @@
       writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, $words.templates, nameOf),
     }));
   }
-  /** inventorycommon.const typeSkillInjector: what the apply-points button's market details are of, without free points. */
-  const TYPE_SKILL_INJECTOR = 40520;
   // The skill requirement window's apply-points button (skillBtns.ApplySkillPointsButton) and the client's Apply Skill
   // Points window it opens where the pilot has free points (skilltrading/applySkillPointsWindow.py): its title and
   // words, each level a row with its gauges (trained, and with the points), the time saved and the percentages, and
-  // Confirm and Cancel, then Close. Its words are the install's; the page's own stand in. Not done: the rows' group
-  // icons and their book marks, the gauges' animation, and the button for an alpha clone with no free points (the
-  // client's store, which this server has not).
+  // Confirm and Cancel, then Close. Its words are the install's; the page's own stand in. Not done: the gauges'
+  // animation, and the store an alpha clone's button opens with no free points (the page has none: the button is shown
+  // and not live).
   const APPLY_WORDS: Readonly<Record<string, string>> = {
     "UI/SkillQueue/ApplySkillPoints": "Put free points into these",
     "UI/Market/MarketQuote/BuyType": "Shop for {[item]typeID.name}",
@@ -495,7 +910,7 @@
     if ($skillsRequired === null && $applyPointsAsked === null) return;
     flow.requestWords([...Object.keys(APPLY_WORDS), ...SHORT_INTERVAL_WORD_LABELS]);
     if ($applyPointsAsked !== null) flow.requestNames($applyPointsAsked.entries.map((entry) => ({ kind: "type" as const, id: entry.skill })));
-    else flow.requestNames([{ kind: "type", id: TYPE_SKILL_INJECTOR }]);
+    else flow.requestNames([{ kind: "type", id: TYPE_SKILL_INJECTOR }, { kind: "type", id: TYPE_ALPHA_TRAINING_INJECTOR }]);
   });
   /** A label of the apply-points button or its window, filled with `args`, as plain text. */
   function applyWord(label: string, args: Readonly<Record<string, string | number>> = {}): string {
@@ -506,24 +921,6 @@
   }
   /** round(x * 100, 1), as the window's percentages are. */
   const percent = (fraction: number): number => Math.round(fraction * 1000) / 10;
-  /**
-   * The apply-points button (ApplySkillPointsButton.UpdateState and ClickFunc): with free points it puts them into the
-   * levels, offered where no book is missing; without, an omega clone's opens the Skill Injector's market details.
-   */
-  function applyPointsButton(open: { readonly freeSkillPoints: number; readonly offerInjection: boolean; readonly omega: boolean }): { readonly hint: string; readonly enabled: boolean; readonly use: () => void } | null {
-    if (open.freeSkillPoints > 0) {
-      return { hint: applyWord("UI/SkillQueue/ApplySkillPoints"), enabled: open.offerInjection, use: () => void flow.applySkillPointsRequired().catch(() => {}) };
-    }
-    if (!open.omega) return null;
-    return {
-      hint: applyWord("UI/Market/MarketQuote/BuyType", { typeID: TYPE_SKILL_INJECTOR }),
-      enabled: true,
-      use: () => {
-        flow.dismissSkillsRequired();
-        showMarketDetails(TYPE_SKILL_INJECTOR);
-      },
-    };
-  }
   /** eveformat.number: whole, grouped by thousands. */
   const groupedNumber = (value: number): string => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
   /** A label of the window filled with `args`, as plain text. */
@@ -572,7 +969,21 @@
     const name = confirm ? (shipNameTyped || shipNameHint).replace(/\n/g, " ").trim() : null;
     flow.answerShipName(ask.n, name, shipNameKeep);
   }
-  const hintText = $derived($asked === null ? "" : $asked.hintLabel === null ? $asked.hint ?? "" : wordOf($asked.hintLabel, $asked.hint ?? ""));
+  const hintText = $derived($asked === null
+    ? ""
+    : $asked.hintLabel === null
+      ? $asked.hint ?? ""
+      : $asked.hintArgs === undefined
+        ? wordOf($asked.hintLabel, $asked.hint ?? "")
+        : plainText(formatTemplate(wordOf($asked.hintLabel, $asked.hint ?? ""), $asked.hintArgs, { nameOf })));
+  /** QtyPopup's caption: the one asked, else SetQuantity. */
+  const captionText = $derived($asked?.captionLabel === undefined
+    ? wordOf("UI/Common/SetQuantity", "Set Quantity")
+    : wordOf($asked.captionLabel, $asked.caption ?? ""));
+  /** QtyPopup's label beside its field, where one is asked. */
+  const labelText = $derived($asked === null || $asked.labelLabel === undefined
+    ? $asked?.label ?? ""
+    : plainText(formatTemplate(wordOf($asked.labelLabel, $asked.label ?? ""), $asked.labelArgs ?? {}, { nameOf })));
   function focusAll(node: HTMLInputElement): void {
     node.focus();
     node.select();
@@ -588,7 +999,7 @@
 
 {#if $asked !== null}
   <div class="client-dialog-shade" class:modal={inFront}>
-    <div class="client-dialog" role="dialog" aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")} data-dialog="setQuantityPopup" data-in-front={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={captionText} data-dialog="setQuantityPopup" data-in-front={inFront}>
       <form
         class="quantity"
         onsubmit={(event) => {
@@ -599,8 +1010,9 @@
         {#if !inFront && pilotName !== null}
           <span class="for-pilot">For {pilotName}</span>
         {/if}
-        <strong>{wordOf("UI/Common/SetQuantity", "Set Quantity")}</strong>
+        <strong>{captionText}</strong>
         {#if hintText !== ""}<p class="body">{hintText}</p>{/if}
+        {#if labelText !== ""}<p class="body quantity-label">{labelText}</p>{/if}
         <input
           type="text"
           inputmode="numeric"
@@ -730,7 +1142,7 @@
   {@const buy = $multiBuyAsked}
   {@const sum = buy.rows.reduce((total, row) => total + (row.price ?? 0) * row.qty * buy.multiplier, 0)}
   <div class="client-dialog-shade" class:modal={inFront}>
-    <div class="client-dialog multibuy" role="dialog" aria-label={buyWord("UI/Inventory/ItemActions/MultiBuy")} data-dialog="MultiBuy" data-in-front={inFront}>
+    <div class="client-dialog multibuy" class:disabled={buy.disabled} role="dialog" aria-label={buyWord("UI/Inventory/ItemActions/MultiBuy")} data-dialog="MultiBuy" data-in-front={inFront}>
       {#if !inFront && pilotName !== null}
         <span class="for-pilot">For {pilotName}</span>
       {/if}
@@ -739,8 +1151,8 @@
         <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>✕</button>
       </span>
       <!-- The import button at the top left (_AddImportButton, its hint the option and how a line is read), and the export
-           menu (GetExportMenu): Copy Order to Clipboard. Not here: the English copy (only a client in another language
-           has it) and Add Order to Quickbar (the market's quickbar, which the page has not). -->
+           menu (GetExportMenu): Copy Order to Clipboard and Add Order to Quickbar. Not here: the English copy (only a
+           client in another language has it). -->
       <span class="multibuy-tools">
         <button type="button" class="multibuy-import" disabled={buy.busy}
           title={`${buyWord("UI/Market/MarketQuote/ImportShoppingListOption")}\n\n${buyWord("UI/Market/MarketQuote/ImportShoppingListOptionHint", { type1: 1230, type2: 34 })}`}
@@ -750,16 +1162,28 @@
           {#if exportOpen}
             <span class="multibuy-menu" role="menu">
               <button type="button" role="menuitem" onclick={() => { exportOpen = false; void navigator.clipboard.writeText(multiBuyExport(buy, sum)).catch(() => {}); }}>{buyWord("UI/Market/MarketQuote/CopyOrderToClipboard")}</button>
+              <button type="button" role="menuitem" onclick={() => { exportOpen = false; quickbarNaming = buy.n; }}>{buyWord("UI/Market/MarketQuote/AddOrderToQuickbar")}</button>
             </span>
           {/if}
         </span>
       </span>
+      {#if quickbarNaming === buy.n}
+        <NamePopup caption={buyWord("UI/Market/Marketbase/FolderName")} label={buyWord("UI/Market/Marketbase/TypeFolderName")} maxLength={20}
+          refusal={buyWord("UI/Common/PleaseTypeSomething")} okWord={buyWord("UI/Common/Buttons/OK")} cancelWord={buyWord("UI/Common/Buttons/Cancel")}
+          onok={(name) => addOrderToQuickbar(name, buy)} oncancel={() => (quickbarNaming = null)} />
+      {/if}
       <span class="multibuy-place">
-        <select disabled>
-          {#if buy.stationID === null}
-            <option>{buyWord("UI/Market/MarketQuote/NoStationSelected")}</option>
+        <!-- The station list (stationCombo, LoadStationOptions and GetStations): where the pilot is docked first, as Current
+             Station, then the system's other markets (the flow's stationList); "No stations available in solar system"
+             where it has none (noChoiceLabel). A pick buys there and reads every row's price there (OnStationChanged). -->
+        <select disabled={buy.busy || stationOptionsOf(buy).length === 0} value={buy.stationID === null ? "" : String(buy.stationID)}
+          onchange={(event) => void flow.editMultiBuy(buy.n, { stationID: Number((event.currentTarget as HTMLSelectElement).value) }).catch(() => {})}>
+          {#if stationOptionsOf(buy).length === 0}
+            <option value="">{buy.stationList === null ? buyWord("UI/Market/MarketQuote/NoStationSelected") : buyWord("UI/Market/MarketQuote/NotStationsAvailable")}</option>
           {:else}
-            <option>{buyWord("UI/Market/MarketQuote/CurrentStation", { stationName: nameOf(buy.stationID >= 1_000_000_000_000 ? "structure" : "station", buy.stationID) })}</option>
+            {#each stationOptionsOf(buy) as option (option.id)}
+              <option value={String(option.id)}>{option.name}</option>
+            {/each}
           {/if}
         </select>
         <label class="multibuy-orders">
@@ -791,11 +1215,328 @@
         {/each}
       </ul>
       <!-- UpdateNumbers: the total, its description beside it from a million; its tooltip on it and on its info mark, shown where there is a total. -->
+      <!-- buySellMultiBase.DrawCheckBox: "use the corporation's account", for a pilot who may trade for it. -->
+      {#if buy.corpAccount !== null}
+        <label class="multibuy-corp">
+          <input type="checkbox" checked={buy.useCorp} disabled={buy.busy || buy.disabled}
+            onchange={(event) => void flow.editMultiBuy(buy.n, { useCorp: (event.currentTarget as HTMLInputElement).checked })} />
+          {buyWord("UI/Market/MarketQuote/UseCorpAccount", { accountName: corpAccountName(buy.corpAccount) })}
+        </label>
+      {/if}
+      <!-- ShowOrHideStationWarning (442 to 452): none chosen, or not where the pilot is docked. -->
+      {#if buy.stationID === null}
+        <span class="multibuy-warning">{buyWord("UI/Market/MarketQuote/NoStationSelected")}</span>
+      {:else if buy.stationID !== buy.currentStationID}
+        <span class="multibuy-warning">{buyWord("UI/Market/MarketQuote/StationWarning")}</span>
+      {/if}
       <span class="multibuy-sum" title={totalTooltip(buy, sum)}>{isk(sum)}{sum >= 1e6 ? ` (${iskDescription(sum)})` : ""}{#if sum}<span class="multibuy-info" aria-hidden="true"> ⓘ</span>{/if}</span>
       <span class="answers">
-        <button type="button" disabled={buy.busy || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        {#if buy.fitting !== null}
+          <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} title={buyAndFitTooltip(buy.fitting)}
+            onclick={() => void flow.answerMultiBuy(buy.n, "buy-and-fit").catch(() => {})}>{buyWord("UI/Market/MarketQuote/BuyAndFit")}</button>
+        {/if}
+        <button type="button" disabled={buy.busy || buy.disabled || buy.rows.some((row) => row.loading)} onclick={() => void flow.answerMultiBuy(buy.n, "buy").catch(() => {})}>{buyWord("UI/Market/MarketQuote/CommandBuy")}</button>
         <button type="button" onclick={() => void flow.answerMultiBuy(buy.n, "cancel")}>{buyWord("UI/Generic/Cancel")}</button>
       </span>
+    </div>
+  </div>
+{/if}
+
+{#if $viewFittingsAsked.length > 0}
+  <!-- The display windows, each opened in the middle and moved by its caption, the one last clicked or loaded in front. -->
+  <div class="client-dialog-shade view-fitting-shade" class:modal={inFront}>
+    {#each $viewFittingsAsked as view, order (view.n)}
+    {@const st = viewStates[view.n]}
+    {#if st !== undefined}
+    <div class="client-dialog multibuy" role="dialog" tabindex="-1" aria-label={viewWord("UI/Fitting/ShipFitting")} data-dialog="ViewFitting" data-window-id={view.windowID} data-in-front={inFront}
+      style:z-index={order + 1} style:transform={`translate(${st.dx}px, ${st.dy}px)`} onpointerdown={() => flow.raiseViewFitting(view.n)}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span class="book-title view-fitting-caption" onpointerdown={(event) => dragViewFitting(event, st)}>
+        <strong>{viewWord("UI/Fitting/ShipFitting")}: {nameOf("type", view.fitting.shipTypeID)}</strong>
+        <span class="multibuy-export">
+          <button type="button" aria-haspopup="menu" aria-expanded={st.menuOpen} onclick={() => (st.menuOpen = !st.menuOpen)}>☰</button>
+          {#if st.menuOpen}
+            <span class="multibuy-menu" role="menu">
+              {#if ($inventory.stationID ?? $inventory.structureID ?? null) !== null}
+                <button type="button" role="menuitem" onclick={() => { st.menuOpen = false; void flow.answerViewFitting(view.n, "multifit").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/OpenMultifit")}</button>
+              {/if}
+              <button type="button" role="menuitem" title={viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboardHint")}
+                onclick={() => { st.menuOpen = false; void flow.viewFittingText(view.n).then((text) => (text === null ? undefined : navigator.clipboard.writeText(text))).catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/ExportToClipboard")}</button>
+            </span>
+          {/if}
+        </span>
+        <button type="button" class="close" aria-label="Close" onclick={() => void flow.answerViewFitting(view.n, "close")}>✕</button>
+      </span>
+      <span class="multibuy-row view-fitting-name-row">
+        <!-- The ship icon (FittingDraggableIcon2): dragged, the fitting shown (its GetDragData, a FittingEntry). Its click's
+             preview (ClickDragIcon) is not the page's. -->
+        <span class="view-fitting-ship" role="img" aria-label={nameOf("type", view.fitting.shipTypeID)} draggable="true"
+          ondragstart={(event) => startFittingDrag(event, {
+            fittingID: view.fitting.fittingID > 0 ? view.fitting.fittingID : null,
+            shipTypeID: view.fitting.shipTypeID,
+            fitData: view.fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: view.fitting.name,
+          })}><TypeIcon typeID={view.fitting.shipTypeID} name={nameOf("type", view.fitting.shipTypeID)} size="sm" /></span>
+        <input class="multibuy-name" maxlength="40" bind:value={() => st.name, (value) => (st.name = value)} aria-label={viewWord("UI/Fitting/FittingWindow/FittingManagement/FittingName")}
+          title={view.fitting.source === "personal" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/PersonalFitting") : view.fitting.source === "corporation" ? viewWord("UI/Fitting/FittingWindow/FittingManagement/CorporationFitting") : undefined} />
+        <!-- AddFittingNameElements' settings (UtilMenu, SettingMenu): Use Fitting Name for Ship; and its info icon, the
+             hull's (LoadNewFitting: infoicon.SetTypeID(fitting.shipTypeID)). -->
+        <span class="multibuy-export">
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={st.settingsOpen} title={viewWord("UI/Common/Settings")}
+            onclick={() => (st.settingsOpen = !st.settingsOpen)}>⚙</button>
+          {#if st.settingsOpen}
+            <span class="multibuy-menu" role="menu">
+              <label class="keep">
+                <input type="checkbox" checked={$useFittingNameForShips} onchange={(event) => flow.setUseFittingNameForShips(event.currentTarget.checked)} />
+                {viewWord("UI/Fitting/FittingWindow/FittingManagement/UseFittingNameForShip")}
+              </label>
+            </span>
+          {/if}
+        </span>
+        <button type="button" class="fit-entry-info" title={viewWord("UI/Commands/ShowInfo")} aria-label={viewWord("UI/Commands/ShowInfo")}
+          onclick={() => showInfo({ kind: "type", typeID: view.fitting.shipTypeID })}><img src={VIEW_FITTING_INFO_ICON} alt="" width="16" height="16" /></button>
+      </span>
+      {#if view.truncated}
+        <!-- AddFittingNameElements' truncated label, shown for a fitting read from a link cut short (LoadNewFitting). -->
+        <span class="view-fitting-truncated">{viewWord("UI/Fitting/FittingWindow/FittingManagement/Truncated")}</span>
+      {/if}
+      <span class="answers">
+        <button type="button" class:active={st.tab === "contents"} onclick={() => (st.tab = "contents")}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fittings")}</button>
+        <button type="button" class:active={st.tab === "description"} onclick={() => (st.tab = "description")}>{viewWord("UI/Common/Description")}</button>
+      </span>
+      {#if st.tab === "contents"}
+        {#if view.contents === null}
+          <p>…</p>
+        {:else}
+          <ul class="multibuy-rows">
+            {#each view.contents as group, at (at)}
+              <li class="multibuy-row"><strong>{contentsHeading(group.header, view.effectNames)}</strong></li>
+              {#each group.entries as entry (entry.typeID)}
+                {@const mark = viewFittingEntryMark(group.header, entry.typeID, view.marks)}
+                <li class="multibuy-row fit-entry" class:fit-entry-error={mark.frame === "error"} class:fit-entry-dynamic={mark.frame === "dynamic"}
+                  oncontextmenu={(event) => openViewFittingEntryMenu(entry.typeID, event)}>
+                  <TypeIcon typeID={entry.typeID} name={nameOf("type", entry.typeID)} size="sm" />
+                  <span class="multibuy-name">{groupedNumber(entry.qty)}x {nameOf("type", entry.typeID)}</span>
+                  {#if mark.icon !== null && mark.tinted}
+                    <span class="fit-entry-mark tinted" role="img" title={mark.hint} aria-label={mark.hint}
+                      style={`mask-image: url(${mark.icon}); -webkit-mask-image: url(${mark.icon})`}></span>
+                  {:else if mark.icon !== null}
+                    <img class="fit-entry-mark" src={mark.icon} alt={mark.hint} title={mark.hint} width="16" height="16" />
+                  {/if}
+                  <button type="button" class="fit-entry-info" title={viewWord("UI/Commands/ShowInfo")} aria-label={viewWord("UI/Commands/ShowInfo")}
+                    onclick={() => showInfo({ kind: "type", typeID: entry.typeID })}><img src={VIEW_FITTING_INFO_ICON} alt="" width="16" height="16" /></button>
+                </li>
+              {/each}
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <textarea rows="6" maxlength="500" bind:value={() => st.description, (value) => (st.description = value)} aria-label={viewWord("UI/Common/Description")}></textarea>
+      {/if}
+      <span class="answers">
+        <!-- LoadNewFitting (235 to 238): Fit disabled for a structure's fitting (categoryStructure). -->
+        <button type="button" disabled={view.shipCategoryID === 65} onclick={() => void flow.answerViewFitting(view.n, "fit").catch(() => {})}>{viewWord("UI/Fitting/FittingWindow/FittingManagement/Fit")}</button>
+        <!-- AddFitSaveBtns: Save, with its menu (_get_save_sub_menu_data): Save for Alliance where the pilot's corporation is
+             its alliance's executor, Save for Corporation, and for the pilot. -->
+        <span class="multibuy-export" role="group" onpointerleave={() => (st.savePanelOpen = false)}>
+          <button type="button" onpointerenter={() => viewFittingSaveHovered(st)}
+            onclick={() => void flow.saveViewFitting(view.n, st.name, st.description).catch(() => {})}>{viewWord("UI/Common/Buttons/Save")}</button>
+          <button type="button" class="minor" aria-haspopup="menu" aria-expanded={st.saveMenuOpen}
+            onclick={() => { st.saveMenuOpen = !st.saveMenuOpen; if (st.saveMenuOpen) void flow.saveForAllianceOffered().then((offered) => (st.saveForAlliance = offered)).catch(() => {}); }}>▾</button>
+          {#if st.saveMenuOpen}
+            <span class="multibuy-menu" role="menu">
+              {#if st.saveForAlliance}
+                <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" role="menuitem" onclick={() => { st.saveMenuOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {:else if st.savePanelOpen}
+            <span class="multibuy-menu save-panel" role="group" data-panel="LoadSaveBtnTooltipPanel">
+              {#if st.saveForAlliance}
+                <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "alliance").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForAlliance")}</button>
+              {/if}
+              <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "corporation").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/SaveForCorp")}</button>
+              <button type="button" onclick={() => { st.savePanelOpen = false; void flow.saveViewFitting(view.n, st.name, st.description, "character").catch(() => {}); }}>{plainText(formatTemplate(wordOf("UI/Fitting/FittingWindow/SaveForCharacter", VIEW_FITTING_WORDS["UI/Fitting/FittingWindow/SaveForCharacter"] ?? ""), { charID: $station.online?.characterID ?? 0 }, { nameOf }))}</button>
+            </span>
+          {/if}
+        </span>
+        <button type="button" onclick={() => void flow.answerViewFitting(view.n, "buy").catch(() => {})}>{viewWord("UI/Market/MarketQuote/CommandBuy")}</button>
+        <!-- TryAddSimulationBtn: Simulate (SimulateFitting: the Fitting window raised or opened, then the fitting simulated). -->
+        <button type="button" class="view-fitting-simulate" onclick={() => { openFittingWindow(); void flow.answerViewFitting(view.n, "simulate").catch(() => {}); }}>{viewWord("UI/Fitting/FittingWindow/Simulate")}</button>
+      </span>
+    </div>
+    {/if}
+    {/each}
+  </div>
+      {#if viewFittingEntryMenu !== null}
+        {@const menuFor = viewFittingEntryMenu}
+        {@const facts = $hullBrowser?.types.get(menuFor.typeID) ?? null}
+        <span class="hull-menu view-fitting-entry-menu" role="menu" use:portal style:left={`${menuFor.x}px`} style:top={`${menuFor.y}px`}>
+          <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; showInfo({ kind: "type", typeID }); }}>{viewWord("UI/Commands/ShowInfo")}</button>
+          {#if (facts?.marketGroupID ?? null) !== null}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; showMarketDetails(typeID); }}>{viewWord("UI/Inventory/ItemActions/ViewTypesMarketDetails")}</button>
+          {/if}
+          {#if facts?.published === true}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; findInContracts(typeID); }}>{viewWord("UI/Inventory/ItemActions/FindInContracts")}</button>
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; findInPersonalAssets(assetSearchTextForType(viewWord("UI/Inventory/AssetSearch/KeywordTypeExact"), nameOf("type", typeID))); }}>{viewWord("UI/Inventory/ItemActions/FindPersonalAssets")}</button>
+          {/if}
+          {#if facts !== null && facts.categoryID !== null && COMPARE_CATEGORIES.includes(facts.categoryID)}
+            <button type="button" role="menuitem" onclick={() => { const typeID = menuFor.typeID; viewFittingEntryMenu = null; compareType(typeID); }}>{viewWord("UI/Compare/CompareButton")}</button>
+          {/if}
+        </span>
+      {/if}
+{/if}
+
+{#if $multiFitAsked !== null}
+  {@const fit = $multiFitAsked}
+  {@const status = fit.status}
+  {@const args = { numToFit: fit.numToFit, fittingName: fit.fitting.name }}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog multifit" role="dialog" aria-label={fitWord("UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader")} data-dialog="MultiFitWnd" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title">
+        <strong>{fitWord("UI/Fitting/FittingWindow/FittingManagement/MultiFitHeader")}</strong>
+        <button type="button" class="close" aria-label="Close" disabled={fit.isFitting} onclick={() => void flow.answerMultiFit(fit.n, "close")}>✕</button>
+      </span>
+      <div class="multifit-top" class:dimmed={fit.isFitting}>
+        <!-- The hull's icon (multiFitWnd shipIcon): its click the fitting shown, dragged the fitting (GetFittingDragData). -->
+        <button type="button" class="multifit-icon" title={fitWord("UI/Fitting/ShowFitting")} onclick={() => void flow.answerMultiFit(fit.n, "view").catch(() => {})}
+          draggable="true" ondragstart={(event) => startFittingDrag(event, {
+            fittingID: fit.fitting.fittingID > 0 ? fit.fitting.fittingID : null,
+            shipTypeID: fit.fitting.shipTypeID,
+            fitData: fit.fitting.modules.map((module) => [module.typeID, module.flagID, module.quantity] as const),
+            name: fit.fitting.name,
+          })}>
+          <TypeIcon typeID={fit.fitting.shipTypeID} name={nameOf("type", fit.fitting.shipTypeID)} size="lg" />
+        </button>
+        <div class="multifit-fields">
+          <input maxlength="20" value={fit.fitName} title={fitWord("UI/Common/ShipName")} aria-label={fitWord("UI/Common/ShipName")} disabled={fit.isFitting}
+            oninput={(event) => void flow.editMultiFit(fit.n, { fitName: event.currentTarget.value })} />
+          <span>{nameOf("type", fit.fitting.shipTypeID)}</span>
+          <label title={fitWord("UI/Fitting/FittingWindow/FittingManagement/EquipmentLocationHint")}>
+            <small>{fitWord("UI/Fitting/FittingWindow/FittingManagement/EquipmentLocation")}</small>
+            <select disabled={fit.isFitting} value={fit.locationID === null ? "" : String(fit.locationID)}
+              onchange={(event) => void flow.editMultiFit(fit.n, { locationID: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) }).catch(() => {})}>
+              <option value="">{fitWord("UI/Inventory/ItemHangar")}</option>
+              {#each fit.containers.slice().sort((left, right) => { const a = containerName(left).toLowerCase(); const b = containerName(right).toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; }) as container (container.itemID)}
+                <option value={String(container.itemID)}>{containerName(container)}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="multifit-grid" class:dimmed={fit.isFitting}>
+        <label class="multifit-count">
+          {fitWord("UI/Fitting/FittingWindow/FittingManagement/NumShipsToFit")}
+          <input type="number" min="1" max={fit.maxShips} value={fit.numToFit} disabled={fit.isFitting}
+            onchange={(event) => void flow.editMultiFit(fit.n, { numToFit: Number(event.currentTarget.value) }).catch(() => {})} />
+        </label>
+        {#if status !== null && (status.missingShips.length > 0 || status.missingEquipment.length > 0)}
+          <p class="multifit-warning" title={[fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingItems", args), ...missingLines([...status.missingShips, ...status.missingEquipment])].join("\n")}>
+            {fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingShipEquipment")}
+            <button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-missing").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+            {@render multiFitGmButtons(fit.n, "missing")}
+          </p>
+        {/if}
+        {#if fit.invalidT3}
+          <p class="multifit-warning">{fitWord("UI/Fitting/FittingWindow/FittingManagement/InvalidT3Fit")}</p>
+        {/if}
+        <div class="multifit-counters">
+          <span class="multifit-counter" class:short={status !== null && status.packagedShips < fit.numToFit}
+            title={status !== null && status.missingShips.length > 0 ? [fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingShips", args), ...missingLines(status.missingShips)].join("\n") : undefined}>
+            {status === null ? "…" : status.packagedShips}
+          </span>
+          <span title={fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangarHint")}>{fitWord("UI/Fitting/FittingWindow/FittingManagement/PackagedShipsInHangar")}</span>
+          {#if status !== null && status.missingShips.length > 0}
+            <span><button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-ships").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+              {@render multiFitGmButtons(fit.n, "ships")}</span>
+          {:else}<span></span>{/if}
+          <span class="multifit-counter" class:short={status !== null && status.maxAvailableFitting !== null && status.maxAvailableFitting < fit.numToFit}
+            title={status !== null && status.missingEquipment.length > 0 ? [fitWord("UI/Fitting/FittingWindow/FittingManagement/MissingEquipment", args), ...missingLines(status.missingEquipment)].join("\n") : undefined}>
+            {status === null ? "…" : status.maxAvailableFitting === null ? "-" : status.maxAvailableFitting}
+          </span>
+          <span>{fitWord("UI/Fitting/FittingWindow/FittingManagement/RoundsOfFittingsInLocation", { locationName: fit.locationID === null ? fitWord("UI/Inventory/ItemHangar") : containerName(fit.containers.find((container) => container.itemID === fit.locationID) ?? { itemID: fit.locationID, typeID: 0 }) })}</span>
+          {#if status !== null && status.missingEquipment.length > 0}
+            <span><button type="button" class="minor" onclick={() => void flow.answerMultiFit(fit.n, "buy-equipment").catch(() => {})}>{fitWord("UI/Market/MarketQuote/BuyAll")}</button>
+              {@render multiFitGmButtons(fit.n, "equipment")}</span>
+          {:else}<span></span>{/if}
+        </div>
+        <button type="button" class="minor multifit-refresh" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/RefreshInventoryStatusHint")} disabled={fit.isFitting}
+          onclick={() => void flow.answerMultiFit(fit.n, "refresh").catch(() => {})}>⟳</button>
+        {#if fit.rigsToFit}
+          <label class="keep" title={fitWord("UI/Fitting/FittingWindow/FittingManagement/FitRigsHint")}>
+            <input type="checkbox" checked={fit.fitRigs} disabled={fit.isFitting} onchange={(event) => void flow.editMultiFit(fit.n, { fitRigs: event.currentTarget.checked }).catch(() => {})} />
+            {fitWord("UI/Fitting/FittingWindow/FittingManagement/FitRigs")}
+          </label>
+        {/if}
+      </div>
+      {#if fit.isFitting && status !== null}
+        <p class="multifit-progress">{fit.progress} / {status.canFitNum}</p>
+      {/if}
+      <span class="answers">
+        <button type="button" disabled={fit.isFitting || status === null || status.canFitNum < 1 || fit.invalidT3}
+          onclick={() => void flow.answerMultiFit(fit.n, "fit").catch(() => {})}>{fitWord("UI/Fitting/FittingWindow/FittingManagement/FitShips", { numToFit: status?.canFitNum ?? 0 })}</button>
+        <button type="button" disabled={fit.isFitting} onclick={() => void flow.answerMultiFit(fit.n, "close")}>{fitWord("UI/Common/Close")}</button>
+      </span>
+    </div>
+  </div>
+{/if}
+
+{#if $buyAllAsked !== null}
+  {@const box = $buyAllAsked}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={buyAllWord("UI/Common/Information")} data-dialog="BuyAllMessageBox" data-in-front={inFront}>
+      {#if !inFront && pilotName !== null}
+        <span class="for-pilot">For {pilotName}</span>
+      {/if}
+      <span class="book-title"><strong>ⓘ {buyAllWord("UI/Common/Information")}</strong></span>
+      <p>{buyAllWord("UI/Fitting/MissingItemsHeader")}</p>
+      <ul class="multibuy-rows">
+        {#each box.missing.slice().sort((left, right) => nameOf("type", left.typeID).toLowerCase().localeCompare(nameOf("type", right.typeID).toLowerCase())) as entry (entry.typeID)}
+          <li class="multibuy-row">
+            <TypeIcon typeID={entry.typeID} name={nameOf("type", entry.typeID)} size="sm" />
+            <span class="multibuy-name">{entry.qty}x {nameOf("type", entry.typeID)}</span>
+          </li>
+        {/each}
+      </ul>
+      <span class="answers">
+        <button type="button" onclick={() => void flow.answerBuyAll(box.n, "buy").catch(() => {})}>{buyAllWord("UI/Market/MarketQuote/BuyAll")}</button>
+        <button type="button" onclick={() => void flow.answerBuyAll(box.n, "close")}>{buyAllWord("/Carbon/UI/Common/Close")}</button>
+        <!-- BuyAllMessageBox (52 to 53): GM: Give all, to a session with ROLE_GML; the client's own words, no label's. -->
+        {#if sessionHasRole($station.online?.role, ROLE_GML)}
+          <button type="button" onclick={() => void flow.answerBuyAll(box.n, "gm-give-all").catch(() => {})}>GM: Give all</button>
+        {/if}
+      </span>
+    </div>
+  </div>
+{/if}
+
+<!-- MultiFitWnd.AddBuyAllBtn (494 to 505): beside each Buy All, GM: Give all to a session with ROLE_WORLDMOD and GM: Load
+     me all to one with ROLE_GML. -->
+{#snippet multiFitGmButtons(n: number, which: "missing" | "ships" | "equipment")}
+  {#if sessionHasRole($station.online?.role, ROLE_WORLDMOD)}
+    <button type="button" class="minor" onclick={() => void flow.multiFitGm(n, which, "create").catch(() => {})}>GM: Give all</button>
+  {/if}
+  {#if sessionHasRole($station.online?.role, ROLE_GML)}
+    <button type="button" class="minor" onclick={() => void flow.multiFitGm(n, which, "load me").catch(() => {})}>GM: Load me all</button>
+  {/if}
+{/snippet}
+
+<!-- The loading service's progress window (loading.ProgressWnd): its title, its text and how far of how many, over all
+     else while it is up. -->
+{#if $progressWnd !== null}
+  {@const shown = $progressWnd}
+  <div class="client-dialog-shade modal">
+    <div class="client-dialog progress-wnd" role="dialog" aria-label={shown.title} data-dialog="ProgressWnd">
+      <span class="book-title"><strong>{shown.title}</strong></span>
+      {#if shown.text !== ""}<p>{shown.text}</p>{/if}
+      <progress max={shown.total} value={shown.portion}>{shown.portion} / {shown.total}</progress>
     </div>
   </div>
 {/if}
@@ -855,63 +1596,16 @@
       <ul class="skill-rows">
         {#each open.skills as [skill, level] (skill)}
           {@const row = open.rows.find((one) => one.skill === skill) ?? null}
-          <li class="skill-row">
-            <span class="skill-name">{skillWord("UI/InfoWindow/RequiredSkillNameAndLevel", { skill, level: romanLevel(level), levelColor: "#ffffff" })}</span>
-            {#if row !== null && row.mark !== null}
-              <span class="skill-mark" class:book={row.mark !== "level-short"} title={skillWord(SKILL_MARK_LABELS[row.mark])}></span>
-            {/if}
-            {#if row !== null && row.boxes.length > 0}
-              <span class="skill-bar" aria-hidden="true">
-                {#each row.boxes as one, at (at)}
-                  <span class="skill-box {one.box}" class:partial={one.partial}></span>
-                {/each}
-              </span>
-            {/if}
-          </li>
+          <RequiredSkillRow {skill} {level} mark={row?.mark ?? null} boxes={row?.boxes ?? []} word={skillWord} />
         {/each}
       </ul>
-      {#if open.trainingTicks !== null}
-        <div class="skill-time">
-          {#if open.omega}
-            <span class="dim">{skillWord("Tooltips/SkillPlanner/OmegaTrainingTime")}</span>
-            <span>{trainingTime(open.trainingTicks)}</span>
-          {:else}
-            <span class="dim">{skillWord("Tooltips/SkillPlanner/TrainingTime")}</span>
-            <span>α {trainingTime(open.trainingTicks)}</span>
-            <span class="omega">Ω {trainingTime(Math.floor(open.trainingTicks / 2))}</span>
-          {/if}
-        </div>
-      {/if}
-      {#if open.action !== null}
-        <div class="skill-points">
-          <span class="dim">{skillWord("UI/Skills/SkillPointsRequired")}</span>
-          <span>{open.skillPointsRequired === null ? "" : groupedNumber(open.skillPointsRequired)}</span>
-          {#if applyPointsButton(open) !== null}
-            {@const button = applyPointsButton(open)!}
-            <button type="button" class="apply-points" title={button.hint} aria-label={button.hint} disabled={!button.enabled} onclick={button.use}>+</button>
-          {/if}
-        </div>
-        {#if open.action.kind === "train"}
-          <span class="answers">
-            <button
-              type="button"
-              disabled={open.action.queued}
-              title={skillWord(open.action.queued ? "Tooltips/SkillPlanner/AddAllSkillsToQueueButtonFinished" : "Tooltips/SkillPlanner/AddAllSkillsToQueueButton")}
-              onclick={() => void flow.trainSkillsRequired().catch(() => {})}
-            >{skillWord("UI/Skills/TrainSkills")}</button>
-          </span>
-        {:else}
-          <!-- BuyAndTrainButton: its hint says where a book is a rare one (isRareSkill, IsMissingRarePrereqs). -->
-          {@const rare = open.action.missing.some((skill) => open.books[skill]?.sold !== true)}
-          <span class="answers">
-            <button
-              type="button"
-              title={rare ? skillWord("UI/Skills/ErrorRareRequirements") : ""}
-              onclick={() => void flow.buySkillsRequired().catch(() => {})}
-            >{skillWord("UI/Skills/BuyAndTrain")}</button>
-          </span>
-        {/if}
-      {/if}
+      <!-- AddTrainingTimeForType and AddSkillAction (SkillTrainingAction): the time, the points and Train Skills or Buy
+           and Train. -->
+      <SkillTrainingAction record={open} activity="Tooltips/SkillPlanner/ActivityFlyShip"
+        word={skillWord} timeText={trainingTime}
+        apply={applyPointsButton(open, applyWord, () => void flow.applySkillPointsRequired().catch(() => {}), () => flow.dismissSkillsRequired())}
+        onTrain={() => void flow.trainSkillsRequired().catch(() => {})} onBuy={() => void flow.buySkillsRequired().catch(() => {})}
+        plan={((button) => ({ hint: button.hint, use: () => { flow.dismissSkillsRequired(); button.use(); } }))(createSkillPlanButton({ kind: "type", typeID: open.typeID }, windowPlanCount, skillWord))} />
       <span class="answers">
         <button type="button" onclick={() => flow.dismissSkillsRequired()}>{skillWord("Achievements/AuraText/laterButton")}</button>
       </span>
@@ -926,17 +1620,21 @@
         <span class="for-pilot">For {pilotName}</span>
       {/if}
       <strong>{box.title}</strong>
-      <p class="body">{box.body}</p>
+      <div class="body"><LabelText markup={box.markup} {followerOf} /></div>
       {#if box.suppress !== null}
         <label class="keep">
           <input type="checkbox" bind:checked={keepTicked} />
-          {box.said.answers === "yesno" ? wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again") : wordOf(DO_NOT_SHOW_AGAIN_LABEL, "Do not show me this again")}
+          {box.said.answers === "yesno" || box.said.answers === "okcancel" ? wordOf(DO_NOT_ASK_AGAIN_LABEL, "Do not ask me again") : wordOf(DO_NOT_SHOW_AGAIN_LABEL, "Do not show me this again")}
         </label>
       {/if}
       <span class="answers">
         {#if box.said.answers === "yesno"}
           <button type="button" onclick={() => answerBox("yes")}>{wordOf("UI/Common/Buttons/Yes", "Yes")}</button>
-          <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+          <button type="button" use:focusDefault={inFront && box.said.defaultAnswer === "no" ? box.said.n : null} onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+        {:else if box.said.answers === "okcancel"}
+          <!-- uiconst.OKCANCEL: OK the question's yes, Cancel its no. -->
+          <button type="button" onclick={() => answerBox("ok")}>{wordOf("UI/Common/Buttons/OK", "OK")}</button>
+          <button type="button" onclick={() => answerBox("no")}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
         {:else}
           <button type="button" onclick={() => answerBox("ok")}>OK</button>
         {/if}
@@ -947,7 +1645,7 @@
 {#if strip !== null}
   <div class="client-strip" role="status" data-dialog={strip.said.dialog} data-in-front={inFront}>
     {#if !inFront && pilotName !== null}<span class="for-pilot">For {pilotName}</span>{/if}
-    <span class="strip-text">{strip.text}</span>
+    <span class="strip-text"><LabelText markup={strip.markup} /></span>
   </div>
 {/if}
 
@@ -957,22 +1655,8 @@
   .ship-name-count { align-self: flex-end; font-size: 0.8rem; opacity: 0.7; }
   .skill-rows { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.35rem; }
   .skill-head { display: flex; align-items: center; gap: 0.75rem; }
-  .skill-row { display: flex; align-items: center; gap: 0.5rem; }
-  .skill-name { flex: 1; }
   .skill-mark { width: 12px; height: 14px; flex: none; }
   .skill-mark.book { background: #e0a43c; border-radius: 1px 3px 3px 1px; }
-  .skill-bar { display: inline-flex; gap: 2px; margin-left: 0.75rem; }
-  .skill-box { width: 8px; height: 8px; box-sizing: border-box; }
-  .skill-box.none { visibility: hidden; }
-  .skill-box.trained { background: rgba(204, 204, 204, 1); }
-  .skill-box.training { background: rgba(204, 204, 204, 0.6); outline: 1px solid rgba(204, 204, 204, 1); }
-  .skill-box.queued { background: #3ea8d9; }
-  .skill-box.untrained { background: rgba(255, 255, 255, 0.3); }
-  .skill-box.small { width: 4px; height: 4px; margin: 2px; background: rgba(255, 255, 255, 0.3); }
-  .skill-box.partial { outline: 1px solid rgba(204, 204, 204, 1); }
-  .skill-time, .skill-points { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0.6rem; background: rgba(25, 25, 25, 0.7); }
-  .skill-points { flex-direction: row; justify-content: space-between; }
-  .skill-time .omega { color: #ff9e1b; }
   .dim { opacity: 0.7; }
   .book-title { display: flex; justify-content: space-between; align-items: center; }
   .book-title .close { padding: 0 0.4rem; border: none; background: none; }
@@ -980,21 +1664,60 @@
   .book-heading { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.3rem; background: rgba(51, 51, 51, 0.5); font-size: 1.05rem; }
   .book-heading.unavailable { color: #ff4d4d; }
   .book-list { margin: 0; padding: 0; list-style: none; max-height: 100px; overflow-y: auto; }
-  .apply-points { margin-left: 0.6rem; padding: 0 0.5rem; }
   .multibuy { width: min(40rem, calc(100vw - 2rem)); }
+  /* The multifit window (multiFitWnd.py): the counts red where short of the count (WARNING_COLOR), the main area faded
+     while the ships are fitted (layoutGrid.opacity = 0.2). */
+  .multifit { width: min(30rem, calc(100vw - 2rem)); }
+  .multifit-top { display: flex; gap: 0.6rem; align-items: flex-start; }
+  .multifit-icon { padding: 0; background: none; border: none; }
+  .multifit-fields { display: flex; flex-direction: column; gap: 0.3rem; flex: 1; }
+  .multifit-fields label { display: flex; align-items: center; gap: 0.4rem; }
+  .multifit-grid { display: flex; flex-direction: column; gap: 0.4rem; }
+  .multifit-count { display: flex; align-items: center; gap: 0.6rem; }
+  .multifit-count input { width: 4rem; }
+  .multifit-warning { margin: 0; color: #ff8080; text-align: center; }
+  .multifit-counters { display: grid; grid-template-columns: 3rem 1fr auto; align-items: center; gap: 0.3rem 0.6rem; }
+  .multifit-counter { text-align: right; font-size: 1.2rem; }
+  .multifit-counter.short { color: rgba(255, 0, 0, 0.75); }
+  .multifit-refresh { align-self: center; }
+  .multifit-progress { margin: 0; text-align: center; font-size: 1.1rem; }
+  .dimmed { opacity: 0.2; pointer-events: none; }
   .multibuy-place { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.6rem; }
   .multibuy-orders { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.85rem; }
+  /* The client's station warning: large, bold, red (DrawStationWarning: COL_RED). */
+  .multibuy-warning { color: #e05050; font-weight: 700; }
   .multibuy-orders input { width: 5rem; }
   .multibuy-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.3rem; max-height: 50vh; overflow-y: auto; }
   .multibuy-row { display: grid; grid-template-columns: auto 1fr 7rem 8rem 8rem 5.5rem auto; align-items: center; gap: 0.5rem; }
   .multibuy-delta { text-align: right; font-size: 0.8rem; background: none; border: none; color: inherit; padding: 0; cursor: pointer; }
   .multibuy-info { font-weight: normal; color: var(--muted, #9aa); }
   .multibuy-tools { display: flex; justify-content: space-between; align-items: center; }
+  /* ChangeOrderUIState(disable=True): the main area at half opacity until the orders made have run out. */
+  .multibuy.disabled .multibuy-rows, .multibuy.disabled .multibuy-place, .multibuy.disabled .multibuy-sum { opacity: 0.5; }
   .multibuy-export { position: relative; }
   .multibuy-menu { position: absolute; right: 0; top: 100%; z-index: 2; display: flex; flex-direction: column; background: var(--panel, #1b2230); border: 1px solid rgba(255, 255, 255, 0.2); padding: 0.2rem; white-space: nowrap; }
   .multibuy-delta.above { color: #ff5050; }
   .multibuy-delta.below { color: #00ff00; }
   .multibuy-row.none { background: rgba(255, 80, 80, 0.12); }
+  /* The fitting display window's name row and entries: the name, then the marks and the info icon at the right. */
+  .view-fitting-name-row { grid-template-columns: auto 1fr auto auto; }
+  /* The display windows over one another in the middle, each where it was dragged to. */
+  .view-fitting-shade { display: grid; place-items: center; }
+  .view-fitting-shade > .client-dialog { grid-area: 1 / 1; }
+  .view-fitting-caption { cursor: move; user-select: none; }
+  .view-fitting-ship { cursor: grab; line-height: 0; }
+  .view-fitting-truncated { display: block; }
+  .multibuy-row.fit-entry { display: flex; padding: 1px 2px; }
+  .fit-entry .multibuy-name { flex: 1; min-width: 0; }
+  /* FittingModuleEntry's ErrorFrame: red (1, 0, 0) for an obsolete type or one under Other Items, orange (1, 0.35, 0)
+     for a dynamic one, at an opacity of 0.1 to 0.2. */
+  .fit-entry.fit-entry-error { background: rgba(255, 0, 0, 0.15); box-shadow: inset 0 0 0 1px rgba(255, 0, 0, 0.2); }
+  .fit-entry.fit-entry-dynamic { background: rgba(255, 89, 0, 0.15); box-shadow: inset 0 0 0 1px rgba(255, 89, 0, 0.2); }
+  .fit-entry-mark { width: 16px; height: 16px; flex: none; }
+  /* The warning tinted as the client tints it (SetRGBA(1.0, 0.1, 0.1, 0.8)). */
+  .fit-entry-mark.tinted { display: inline-block; background: rgba(255, 26, 26, 0.8); mask-size: 16px 16px; -webkit-mask-size: 16px 16px;
+    mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; }
+  .fit-entry-info { flex: none; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0; }
   .multibuy-qty { display: flex; flex-direction: column; }
   .multibuy-qty input { width: 6rem; }
   .multibuy-price, .multibuy-total { text-align: right; }

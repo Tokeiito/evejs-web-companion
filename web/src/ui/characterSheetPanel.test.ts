@@ -33,6 +33,16 @@ function fakeFlow(): unknown {
   return new Proxy({}, { get: () => async () => {} });
 }
 
+/**
+ * The sheet as the client's window shows it, one panel at a time (characterSheetWindow's tabs): rendered open on
+ * each panel these assertions cover (CharacterSheetWindow.Open(panelID)), Home Station, Implants and Bio, the bodies
+ * joined.
+ */
+function renderPanels(store: unknown): { body: string } {
+  const bodies = (["home", "implants", "bio"] as const).map((panel) => render(CharacterSheet as never, { props: { store, flow: fakeFlow(), panel } } as never).body);
+  return { body: bodies.join("\n") };
+}
+
 function visibleText(body: string): string {
   return body.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 }
@@ -102,7 +112,7 @@ function loadedSheet(
 
 test("CharacterSheet renders name, security, corp/alliance/home/implants BY NAME", () => {
   const store = loadedSheet();
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
 
   assert.match(text, /Farmer/);
@@ -121,7 +131,7 @@ test("CharacterSheet renders name, security, corp/alliance/home/implants BY NAME
 // R7d SWEEP: not one of the ids may appear in the rendered text.
 test("CharacterSheet never renders a raw id (R7d)", () => {
   const store = loadedSheet();
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   for (const id of SWEEP_IDS) {
     assert.equal(text.includes(String(id)), false, `id ${id} must never render`);
@@ -134,7 +144,7 @@ test("CharacterSheet never renders a raw id (R7d)", () => {
 // `includes` check fires on a string that does contain the id.
 test("the CharacterSheet id-sweep matcher actually inspects rendered text", () => {
   const store = loadedSheet({}, {}); // no names resolved at all
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   // Player corp degrades to a NAME-shaped fallback, never the id.
   assert.match(text, /Unknown corporation/);
@@ -146,7 +156,7 @@ test("the CharacterSheet id-sweep matcher actually inspects rendered text", () =
 test("CharacterSheet shows 'Unknown corporation' for a player corp with no static name", () => {
   // Farmer's real corp (98000001) resolves to null live — a definitive unknown.
   const store = loadedSheet({}, { ...NAMES, "corporation:98000001": null });
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   assert.match(text, /Unknown corporation/);
   assert.equal(text.includes("98000001"), false);
@@ -154,28 +164,28 @@ test("CharacterSheet shows 'Unknown corporation' for a player corp with no stati
 
 test("CharacterSheet omits the alliance row entirely when there is no alliance", () => {
   const store = loadedSheet({ identity: { ...IDENTITY, allianceID: null } });
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   assert.equal(/Alliance/.test(text), false, "no Alliance label when the character has none");
 });
 
 test("CharacterSheet shows an honest 'no implants' for a clean clone (empty ≠ failed)", () => {
   const store = loadedSheet({ clone: { ...CLONE, implants: [] } });
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   assert.match(text, /no implants/i);
 });
 
 test("CharacterSheet shows an honest 'no bio' for an empty bio (empty ≠ failed)", () => {
   const store = loadedSheet({ description: "" });
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   assert.match(text, /have not written a bio/i);
 });
 
 test("CharacterSheet shows the error, NOT the empty message, when the clone read failed", () => {
   const store = loadedSheet({ clone: null, cloneError: "your clone: READ_FAILED" });
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   assert.match(text, /READ_FAILED/);
   // ⚠ A failed read must never claim the clone is clean.
@@ -184,7 +194,7 @@ test("CharacterSheet shows the error, NOT the empty message, when the clone read
 
 test("CharacterSheet renders on first paint with an empty store (R18 loading state)", () => {
   const store = createClientStore();
-  const output = render(CharacterSheet as never, { props: { store, flow: fakeFlow() } } as never);
+  const output = renderPanels(store);
   const text = visibleText(output.body);
   // Nothing loaded yet: honest "reading…" placeholders, no crash, no id.
   assert.match(text, /Reading your character/i);

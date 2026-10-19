@@ -1,3 +1,6 @@
+// Fleet request paths below ignore only the menu view selector. Native fleetSvc
+// GetMembers/GetWings/GetOptions do not open composition/join-request windows;
+// that read scope is checked against real game-port frames, not these HTTP fixtures.
 // The fleet companion's LIFECYCLE, driven through the real flow over a faked BFF.
 //
 // The unit tests beside `nav/fleetCompanionLoop.ts` prove the ladder. This file
@@ -170,7 +173,7 @@ function harness(
 
   const posted: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     posted.push({ path, body: body as Record<string, unknown> });
     return {
@@ -303,7 +306,7 @@ function chatHarness(
   }
 
   const fakeFetch = (async (input: unknown, init?: { body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     calls.push(path);
     // A call the page makes itself is said by its name and what it went with, beside its path.
     const asked = path === "/api/bridge/call" && typeof init?.body === "string" ? JSON.parse(init.body) : null;
@@ -374,7 +377,7 @@ test("an UNREADABLE fleet refuses the start too — unknown is never permission"
   // The roster read failing is not the roster saying no, but it is equally not
   // grounds to start an unattended loop nobody could check the fleet of.
   const fakeFetch = (async (input: unknown) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     if (path === "/api/bridge/bound-fleet") {
       throw new Error("gateway unreachable");
     }
@@ -522,7 +525,7 @@ test("a notification DRAINED onto a bridge response reaches the push dispatch", 
 
   let inviteDrained = false;
   const fakeFetch = (async (input: unknown, init?: { body?: string }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init?.body ? JSON.parse(init.body) : {};
     return {
       ok: true,
@@ -805,7 +808,7 @@ function harnessWithRosterGoingBadMidRun(afterPreflight: () => unknown) {
   let boundFleetCalls = 0;
 
   const fakeFetch = (async (input: unknown, init?: { body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     if (path === "/api/bridge/bound-fleet") {
       boundFleetCalls += 1;
@@ -945,7 +948,7 @@ function taggingHarness(own: RosterMemberFixture = { charID: OWN_CHARACTER_ID, r
   }
 
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     calls.push({ path, body: body as Record<string, unknown> });
     return {
@@ -1033,7 +1036,7 @@ test("a scram push reaches the ladder and the tackler is lettered for the fleet"
 test("a plain member writes no tag, however hard it is being scrambled", async () => {
   const calls: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     calls.push({ path, body: body as Record<string, unknown> });
     return {
@@ -1316,7 +1319,7 @@ function gridHarness(options: {
   }
 
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const parsed =
       init && typeof init.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
@@ -1739,7 +1742,7 @@ async function companionAwaitingOrders() {
   const { factory, sources } = makeFakeCompanionSource();
   const readsAtMs: number[] = [];
   const fakeFetch = (async (input: unknown, init?: { body?: unknown }) => {
-    const path = String(input);
+    const path = String(input).replace(/\?view=menu$/, "");
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     if (path === "/api/bridge/flight/status") {
       readsAtMs.push(Date.now());

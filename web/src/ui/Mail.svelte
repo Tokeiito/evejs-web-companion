@@ -63,6 +63,7 @@
     hasChatManagerRole,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
+  import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { isSearchMatch } from "../bridge/searchMatch.ts";
@@ -76,7 +77,12 @@
   import { resolvedName } from "../store/names.ts";
   import MailNotifications from "./MailNotifications.svelte";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, openSkillPlanLink = null }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** A skill plan's link in a mail, followed (link.py handle_link). */
+    openSkillPlanLink?: ((url: string) => void) | null;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const mail = store.mail;
@@ -94,6 +100,14 @@
   function word(label: string, own: string): string {
     const template = $words.templates[label];
     return typeof template === "string" ? template : own;
+  }
+
+  /**
+   * How a link in the open mail's body is followed (ui/linkFollowers.ts: the client's link registry, as the reading
+   * pane's label follows its links), or null where it is not.
+   */
+  function followerOf(url: string, text: string) {
+    return linkFollowerOf(url, flow, openSkillPlanLink, (label) => word(label, LINK_WORDS[label] ?? ""), text);
   }
 
   let busy = $state(false);
@@ -1973,6 +1987,7 @@
       ...Object.values(MANAGE_WORDS),
       ...MANAGE_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       ...Object.values(ACCESS_WORDS),
+      ...Object.keys(LINK_WORDS),
       "dialog:PICKERRORNOTIFY/title",
       "dialog:PICKERRORNOTIFY/body",
       ...Object.values(WELCOME_WORDS),
@@ -2525,11 +2540,18 @@
           <!-- The body's markup as the client's reading pane shows it: its lines, and in them runs as marked. -->
           <div class="mail-body">
             {#each mailBodyLines($mail.open.body) as line, place (place)}
-              <p class="mail-line">{#each line as run, at (at)}<span
+              <p class="mail-line">{#each line as run, at (at)}{@const follower = run.link === null ? null : followerOf(run.link, run.text)}{#if follower !== null}<button
+                    type="button"
+                    class="evelink {follower.kind}"
+                    class:mail-italic={run.italic}
+                    title={follower.hint}
+                    draggable="true"
+                    ondragstart={(event) => startLinkDrag(event, run.link ?? "", run.text)}
+                    onclick={follower.follow}>{run.text}</button>{:else}<span
                     class:mail-bold={run.bold}
                     class:mail-italic={run.italic}
                     class:mail-underline={run.underline || run.link !== null}
-                    title={run.link ?? undefined}>{run.text}</span>{/each}</p>
+                    title={run.link ?? undefined}>{run.text}</span>{/if}{/each}</p>
             {/each}
           </div>
         {/if}

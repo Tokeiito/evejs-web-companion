@@ -11,7 +11,6 @@ import {
   rackReloading,
   rackSlotAction,
   rackTakesCharges,
-  reloadAllPlan,
   weaponGroups,
 } from "./rackAmmo.ts";
 import {
@@ -138,45 +137,7 @@ test("weapon groups are the high rack's charge-taking modules, by type", () => {
   assert.equal(groups[0]!.rounds, 80);
 });
 
-test("reload all tops a group up with what most of it already uses", () => {
-  const groups = weaponGroups(
-    rack([
-      gun(1, { typeID: SCOURGE, quantity: 10 }),
-      gun(2, { typeID: SCOURGE, quantity: 40 }),
-      gun(3),
-      gun(4, { typeID: INFERNO, quantity: 40 }),
-    ]),
-    FITS,
-  );
-  const plan = reloadAllPlan(
-    groups,
-    [cargo(11, SCOURGE, HAM_GROUP, 3000), cargo(12, INFERNO, HAM_GROUP, 3000)],
-    FITS,
-  );
-  assert.equal(plan.skipped.length, 0);
-  assert.equal(plan.steps.length, 1);
-  assert.equal(plan.steps[0]!.choice.typeID, SCOURGE);
-  // The empty gun joins the majority; the Inferno gun keeps its choice.
-  assert.deepEqual(plan.steps[0]!.moduleIDs, [1, 2, 3]);
-});
-
-test("reload all says when a group's ammunition has run out of cargo", () => {
-  const groups = weaponGroups(rack([gun(1, { typeID: SCOURGE, quantity: 10 })]), FITS);
-  const plan = reloadAllPlan(groups, [cargo(12, INFERNO, HAM_GROUP, 3000)], FITS);
-  assert.deepEqual(plan.steps, []);
-  assert.deepEqual(plan.skipped, [{ moduleTypeID: LAUNCHER, reason: "out", chargeTypeID: SCOURGE }]);
-});
-
-test("⚠ an empty group gets only a LIKELY fit, never a guess", () => {
-  const groups = weaponGroups(rack([gun(1), gun(2)]), FITS);
-  const fits = reloadAllPlan(groups, [cargo(10, LIGHT_MISSILE, LIGHT_GROUP, 500), cargo(11, SCOURGE, HAM_GROUP, 99)], FITS);
-  assert.equal(fits.steps[0]!.choice.typeID, SCOURGE);
-  assert.deepEqual(fits.steps[0]!.moduleIDs, [1, 2]);
-
-  const misfitOnly = reloadAllPlan(groups, [cargo(10, LIGHT_MISSILE, LIGHT_GROUP, 500)], FITS);
-  assert.deepEqual(misfitOnly.steps, []);
-  assert.equal(misfitOnly.skipped[0]!.reason, "choose");
-});
+// The three tests of reloadAllPlan went with it (2026-10-18): Reload all is the client's OnReloadAmmo, in the flow.
 
 test("the badge counts rounds, shortens big stacks, and reads 0 when empty", () => {
   assert.equal(rackChargeBadge(gun(1)), "0");

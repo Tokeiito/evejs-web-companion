@@ -96,6 +96,7 @@
   bind:this={el}
   class="win"
   class:focused
+  style:display={win.minimized ? "none" : undefined}
   style="left:{win.x}px; top:{win.y}px; width:{win.w}px; height:{win.h}px; z-index:{win.z};"
   onpointerdown={onFocus}
   aria-label={title}

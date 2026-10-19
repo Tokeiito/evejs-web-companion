@@ -114,6 +114,48 @@ function getMarketTypeNames() {
   return caches.get(cacheKey);
 }
 
+/** inventorycommon/const.py categorySkill. */
+const CATEGORY_SKILL = 16;
+
+/**
+ * ImportSkillPlan's names (textImporting/importSkillplan.py: TextToTypeIDFinder over
+ * evetypes.GetTypeIDsByCategory(categorySkill)): every skill type, by English name cleaned, stripped and lowered
+ * (CleanAndStripText). Made once.
+ */
+function getSkillImportNames() {
+  const cacheKey = "itemTypes:skillImportNames";
+  if (!caches.has(cacheKey)) {
+    const { cleanText } = require("./clientData/importMultibuy");
+    const names = new Map();
+    for (const type of buildIndex("itemTypes", "types", "typeID").values()) {
+      if (!type || Number(type.categoryID) !== CATEGORY_SKILL || typeof type.name !== "string") continue;
+      names.set(cleanText(type.name).trim().toLowerCase(), Number(type.typeID));
+    }
+    caches.set(cacheKey, names);
+  }
+  return caches.get(cacheKey);
+}
+
+/** evetypes.IsSkill: a type of the skill category. */
+function isSkillType(typeID) {
+  const type = getType(typeID);
+  return Boolean(type) && Number(type.categoryID) === CATEGORY_SKILL;
+}
+
+/**
+ * ImportFittingUtil's names (shipfitting/importFittingUtil.py 47 to 51; src/clientData/importFitting.js
+ * importTypeNames): the types of the nine categories, the ice products and the two type lists, by English name cleaned
+ * and lowered, with the lists' types. Made once.
+ */
+function getFittingImportNames() {
+  const cacheKey = "itemTypes:fittingImportNames";
+  if (!caches.has(cacheKey)) {
+    const { importTypeNames } = require("./clientData/importFitting");
+    caches.set(cacheKey, importTypeNames(buildIndex("itemTypes", "types", "typeID").values(), getTypeIDsByListID));
+  }
+  return caches.get(cacheKey);
+}
+
 function getTypeName(typeID) {
   const entry = getType(typeID);
   return entry ? String(entry.name || `Type ${typeID}`) : `Type ${typeID}`;
@@ -490,6 +532,17 @@ function getSkillType(typeID) {
   return buildIndex("skillTypes", "skills", "typeID").get(Number(typeID) || 0) || null;
 }
 
+/** Every skill type: its type, name, group and group's name, and whether it is published. */
+function listSkillTypes() {
+  return [...buildIndex("skillTypes", "skills", "typeID").values()].map((skill) => ({
+    typeID: Number(skill.typeID),
+    name: String(skill.name || ""),
+    groupID: Number(skill.groupID) || 0,
+    groupName: String(skill.groupName || ""),
+    published: skill.published === true,
+  }));
+}
+
 function buildTypeDogmaIndex() {
   const cacheKey = "typeDogma:typesByTypeID";
   if (caches.has(cacheKey)) {
@@ -863,6 +916,25 @@ function readTypeAttributes(input = {}) {
 
 function getStation(stationID) {
   return buildIndex("stations", "stations", "stationID").get(Number(stationID) || 0) || null;
+}
+
+/**
+ * A solar system's NPC stations as the client's own map data has them (cfg.GetLocationsLocalBySystem, which
+ * mapSvc.GetSolarsystemItems reads): each station's number, and its celestialIndex and orbitIndex (the SDE's
+ * npcStations), by which the multibuy's station list sorts (buyMultiFromBase.GetStations). Static reference data.
+ */
+function getSystemStations(solarSystemID) {
+  const numericSystemID = Number(solarSystemID) || 0;
+  const stations = [];
+  for (const [stationID, row] of buildJsonlIndex("npcStations.jsonl")) {
+    if (Number(row && row.solarSystemID) !== numericSystemID) continue;
+    stations.push({
+      stationID,
+      celestialIndex: Number.isFinite(Number(row.celestialIndex)) ? Number(row.celestialIndex) : null,
+      orbitIndex: Number.isFinite(Number(row.orbitIndex)) ? Number(row.orbitIndex) : null,
+    });
+  }
+  return stations.sort((left, right) => left.stationID - right.stationID);
 }
 
 function getStationName(stationID) {
@@ -1832,6 +1904,41 @@ const NAMES_MAX_ITEMS = 500;
 // known at the call site (a station owner, or a standings `fromID`, is a corp,
 // faction, character, or alliance). It tries each in turn and returns the first
 // that resolves, so one request covers all four.
+/**
+ * An NPC character (an NPC corporation's CEO, an agent) by its number, from the static NPC characters: the client puts
+ * every one of them in its table of owners as it starts (eveCfg.py LoadEveOwners, 570 to 579: iter_npc_characters, its
+ * name and typeCharacter), so it names one without asking anyone.
+ */
+function getNpcCharacter(characterID) {
+  const numericCharacterID = Number(characterID) || 0;
+  return numericCharacterID ? buildJsonlIndex("npcCharacters.jsonl").get(numericCharacterID) || null : null;
+}
+
+/**
+ * The certificates filed under skill groups, as the client's certificate service holds them (certificateSvc.Certificates
+ * from cfg.certificates: res:/staticdata/certificates.static), read from the static data export of the same build:
+ * by the group a certificate is filed under (its groupID), each certificate's number and its skills, each with the
+ * level each of its five grades asks of it (basic, standard, improved, advanced, elite; nought where a grade asks none),
+ * in the export's order.
+ */
+function getSkillGroupCertificates(groupIDs) {
+  const wanted = new Set((Array.isArray(groupIDs) ? groupIDs : []).map((groupID) => Number(groupID) || 0).filter((groupID) => groupID > 0));
+  const grades = ["basic", "standard", "improved", "advanced", "elite"];
+  const byGroup = {};
+  for (const row of buildJsonlIndex("certificates.jsonl").values()) {
+    const groupID = Number(row && row.groupID) || 0;
+    if (!wanted.has(groupID)) continue;
+    const skills = (Array.isArray(row.skillTypes) ? row.skillTypes : [])
+      .map((skill) => [Number(skill && skill._key) || 0, grades.map((grade) => Number(skill && skill[grade]) || 0)])
+      .filter(([typeID]) => typeID > 0);
+    (byGroup[groupID] = byGroup[groupID] || []).push({ certificateID: Number(row._key) || 0, skills });
+  }
+  return byGroup;
+}
+
+/** inventorycommon/const.py typeCharacter: the type the client gives an NPC character in its table of owners. */
+const NPC_CHARACTER_TYPE_ID = 1373;
+
 function resolveOwnerName(id) {
   if (getCorporation(id)) {
     return getCorporationName(id);
@@ -1841,6 +1948,10 @@ function resolveOwnerName(id) {
   }
   if (getCharacter(id)) {
     return getCharacterName(id);
+  }
+  const npcCharacter = getNpcCharacter(id);
+  if (npcCharacter) {
+    return getLocalizedName(npcCharacter, `Character ${Number(id)}`);
   }
   if (getAlliance(id)) {
     return getAllianceName(id);
@@ -1871,6 +1982,9 @@ function resolveOwnerGroupName(id) {
   const character = getCharacter(id);
   if (character) {
     return getKnownTypeGroupName(Number(character.typeID) || 0);
+  }
+  if (getNpcCharacter(id)) {
+    return getKnownTypeGroupName(NPC_CHARACTER_TYPE_ID);
   }
   if (getAlliance(id)) {
     return getKnownTypeGroupName(OWNER_TYPE_IDS.alliance);
@@ -2211,7 +2325,32 @@ function getNpcIndustryFacility(facilityID) {
   ).get(Number(facilityID) || 0) || null;
 }
 
+/**
+ * A dbuff collection as the client's dbuff/storage.py has it (dbuffCollections): its displayName's English text or
+ * null, its operation's name and how its value is shown (showOutputValueInUI); null for none.
+ */
+function getDbuffCollection(collectionID) {
+  const row = buildJsonlIndex("dbuffCollections.jsonl").get(Number(collectionID) || 0);
+  if (!row) return null;
+  const name = row.displayName && typeof row.displayName.en === "string" ? row.displayName.en : null;
+  return {
+    name,
+    operationName: typeof row.operationName === "string" ? row.operationName : "",
+    showOutputValueInUI: typeof row.showOutputValueInUI === "string" ? row.showOutputValueInUI : "",
+  };
+}
+
+/** A dogma unit's displayName's English text (units.get_display_name), or "" for none. */
+function getDogmaUnitDisplayName(unitID) {
+  const row = buildJsonlIndex("dogmaUnits.jsonl").get(Number(unitID) || 0);
+  return row && row.displayName && typeof row.displayName.en === "string" ? row.displayName.en : "";
+}
+
 module.exports = {
+  buildJsonlIndex,
+  getDbuffCollection,
+  getDogmaUnitDisplayName,
+  getSkillGroupCertificates,
   findAgents,
   findCharacters,
   findMapLocations,
@@ -2246,6 +2385,9 @@ module.exports = {
   getOverloadEffectID,
   getTypeActivatable,
   getMarketTypeNames,
+  getSkillImportNames,
+  isSkillType,
+  getFittingImportNames,
   getPassiveFilteredEffects,
   getModuleChargeFitment,
   getChargeSize,
@@ -2276,11 +2418,13 @@ module.exports = {
   getSolarSystemName,
   getStargates,
   getStation,
+  getSystemStations,
   getStationName,
   getStationShortName,
   getLocalTypeIconUrl,
   getRemoteTypeIconUrl,
   getSkillType,
+  listSkillTypes,
   getType,
   getTypeCategoryID,
   getTypeCategoryName,

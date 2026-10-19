@@ -525,11 +525,7 @@ const INITIAL_STANDINGS: StandingsState = Object.freeze({
   corp: null,
   corpError: null,
   loaded: false,
-  detailFromID: null,
-  detailScope: null,
-  transactions: null,
-  compositions: null,
-  detailError: null,
+  details: Object.freeze({ char: null, corp: null }),
 });
 
 // R56 character sheet. Every read starts null/unloaded: an unread sheet must not
@@ -1370,6 +1366,7 @@ export function createClientStore(): ClientStore {
           resources: event.resources,
           shipAttributes: event.shipAttributes,
           stats: event.stats,
+          statsFrom: "server",
           // The dogma snapshot rides a separate read that lands just after this
           // one; carry the previous one through so a refresh never blanks the
           // module stats in between.
@@ -1388,7 +1385,38 @@ export function createClientStore(): ClientStore {
       case "fitting/ship-attributes": {
         const current = fitting.get();
         if (current.activeShipID !== event.shipID) break;
-        fitting.set({ ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        fitting.set(current.statsFrom === "page"
+          ? { ...current, shipAttributes: event.shipAttributes }
+          : { ...current, shipAttributes: event.shipAttributes, resources: event.resources, stats: event.stats });
+        break;
+      }
+      case "fitting/reckoned": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        fitting.set({ ...current, resources: event.resources, stats: event.stats, statsFrom: "page", bayReadout: event.bayReadout, warnings: event.warnings, skillWarning: event.skillWarning });
+        break;
+      }
+      case "fitting/simulated": {
+        const current = fitting.get();
+        fitting.set({
+          ...current,
+          simulation: { shipID: event.shipID, shipTypeID: event.shipTypeID, name: event.name, changed: event.changed, resources: event.resources, stats: event.stats, moduleStates: event.moduleStates, moduleKinds: event.moduleKinds, slots: event.slots, drones: event.drones, cargo: event.cargo, cargoCapacity: event.cargoCapacity, fighterBay: event.fighterBay, holdUse: event.holdUse, warnings: event.warnings, skillWarning: event.skillWarning, fighterSquadrons: event.fighterSquadrons, fighterDps: event.fighterDps, structure: event.structure, fighterTubes: event.fighterTubes, squadronSlots: event.squadronSlots, fighterBayTypes: event.fighterBayTypes },
+        });
+        break;
+      }
+      case "fitting/simulation-ended": {
+        const current = fitting.get();
+        if (current.simulation) fitting.set({ ...current, simulation: null });
+        break;
+      }
+      case "fitting/module-online": {
+        const current = fitting.get();
+        if (current.activeShipID !== event.shipID) break;
+        if (!current.slots.some((slot) => slot.module?.itemID === event.itemID && slot.module.online !== event.online)) break;
+        fitting.set({
+          ...current,
+          slots: current.slots.map((slot) => (slot.module?.itemID === event.itemID ? { ...slot, module: { ...slot.module, online: event.online } } : slot)),
+        });
         break;
       }
       case "fitting/charge-quantity": {
@@ -1517,6 +1545,9 @@ export function createClientStore(): ClientStore {
         break;
       case "market/outcome":
         market.set({ ...market.get(), lastOutcome: event.outcome });
+        break;
+      case "market/escrow":
+        market.set({ ...market.get(), escrow: event.escrow });
         break;
       case "market/cleared":
         market.set(INITIAL_MARKET);
@@ -1930,6 +1961,15 @@ export function createClientStore(): ClientStore {
         addressBook.set({ ...current, online: { ...(current.online ?? {}), [event.contactID]: event.online } });
         break;
       }
+      case "address-book/online-forgotten": {
+        const current = addressBook.get();
+        if (current.online !== null) {
+          const online = { ...current.online };
+          for (const id of event.contactIDs) delete online[id];
+          addressBook.set({ ...current, online });
+        }
+        break;
+      }
       // R50 wallet. The two halves land together but keep their own errors, so a
       // failed corp read never blanks the personal balance. `corpDivisions`
       // stays NULL on a failed corp read (carried in `corpError`); a successful
@@ -1964,42 +2004,27 @@ export function createClientStore(): ClientStore {
           corp: event.corp,
           corpError: event.corpError,
           loaded: true,
-          detailFromID: null,
-          detailScope: null,
-          transactions: null,
-          compositions: null,
-          detailError: null,
+          details: { char: null, corp: null },
         });
         break;
-      case "standings/detail":
+      case "standings/detail": {
+        const current = standings.get();
         standings.set({
-          ...standings.get(),
-          detailFromID: event.fromID,
-          detailScope: event.scope,
-          transactions: event.transactions,
-          compositions: event.compositions,
-          detailError: null,
+          ...current,
+          details: { ...current.details, [event.scope]: { fromID: event.fromID, transactions: event.transactions, compositions: event.compositions, error: null } },
         });
         break;
-      case "standings/detail-error":
+      }
+      case "standings/detail-error": {
+        const current = standings.get();
         standings.set({
-          ...standings.get(),
-          detailFromID: event.fromID,
-          detailScope: event.scope,
-          transactions: null,
-          compositions: null,
-          detailError: event.message,
+          ...current,
+          details: { ...current.details, [event.scope]: { fromID: event.fromID, transactions: null, compositions: null, error: event.message } },
         });
         break;
+      }
       case "standings/detail-cleared":
-        standings.set({
-          ...standings.get(),
-          detailFromID: null,
-          detailScope: null,
-          transactions: null,
-          compositions: null,
-          detailError: null,
-        });
+        standings.set({ ...standings.get(), details: { char: null, corp: null } });
         break;
       case "standings/cleared":
         standings.set(INITIAL_STANDINGS);

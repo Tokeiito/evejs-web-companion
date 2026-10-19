@@ -26,6 +26,15 @@
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
+  import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
+  import { shipHoldTarget } from "./shipHold.ts";
+  import { windowToggleTarget } from "./windowToggle.ts";
+  import { hudSetting } from "../store/hudSettings.ts";
+  import { untrack } from "svelte";
+  import { assetsSearchTarget } from "./assetsSearch.ts";
+  import { contractsSearchTarget } from "./contractsSearch.ts";
+  import { typeCompareTarget } from "./typeCompare.ts";
+  import { fittingWindowTarget } from "./fittingWindowTarget.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import AbyssInfoPanel from "./AbyssInfoPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -42,8 +51,11 @@
     focusedId as computeFocusedId,
     loadLayout,
     saveLayout,
+    placeOnDesktop,
+    registerPlace,
     DEFAULT_DOCK_WIDTH,
     DEFAULT_TARGETS_POS,
+    type RegisteredPlace,
     type WinState,
   } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -137,6 +149,16 @@
 
   // ── the desktop: open windows + the collapsible dock panel ──────────────
   let wins = $state<WinState[]>([]);
+  // Each window's place as the client keeps it by its ID (desktop.ts RegisteredPlace): registered as it is moved or
+  // resized, and taken when it is opened again.
+  let places = $state<Record<string, RegisteredPlace>>({});
+  let desktopView = $state<{ surfaceSize(): { readonly w: number; readonly h: number } | null } | null>(null);
+  function registerWindowPlace(id: TabID): void {
+    const win = wins.find((each) => each.id === id);
+    const desktop = desktopView?.surfaceSize() ?? null;
+    if (win && desktop) places = registerPlace(places, win, desktop);
+  }
+  const hudTopAligned = hudSetting("shipuialigntop");
   let dockCollapsed = $state(false);
   let dockWidth = $state(DEFAULT_DOCK_WIDTH);
   /**
@@ -176,7 +198,9 @@
       return;
     }
     expandPreferred = false;
-    wins = openWindow(wins, id);
+    const registered = places[id];
+    const desktop = desktopView?.surfaceSize() ?? null;
+    wins = openWindow(wins, id, undefined, registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null);
   };
   // The Neocom pick, with one de-dupe: while docked, Inventory & Ship IS the
   // permanent dock panel — expand it, snap it to the Ship Inventory tab (the
@@ -209,13 +233,22 @@
   );
   const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
   const close = (id: TabID): void => {
+    // The Fitting window's close (fittingWnd.Close, 887 to 905): with a simulation shown, the client's question first
+    // (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning, where it was changed); on No the window
+    // stays; else it closes, and the simulation ends with it.
+    if (id === "fitting") {
+      void flow.exitSimulation().then((leave) => {
+        if (leave) wins = closeWindow(wins, id);
+      }).catch(() => {});
+      return;
+    }
     wins = closeWindow(wins, id);
     // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
     if (id === "industry") void flow.industryWindowClosed();
   };
-  const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); };
-  const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); };
+  const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); registerWindowPlace(id); };
+  const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); registerWindowPlace(id); };
   const minimize = (id: TabID): void => { wins = toggleMinimize(wins, id); };
   const toggleDock = (): void => { dockCollapsed = !dockCollapsed; };
 
@@ -227,12 +260,14 @@
     const online = $station.online;
     if (online && loadedFor !== online.characterID) {
       const saved = loadLayout(online.characterID);
-      wins = saved ? saved.wins.slice() : [];
+      // Member Details opens for a character (memberDetails.OpenMemberDetails); keep its place, not an empty window.
+      wins = saved ? saved.wins.filter(win => win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
       dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
       targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
       targetsY = saved ? saved.targetsY : DEFAULT_TARGETS_POS.y;
       expandPreferred = saved ? saved.stationExpanded : false;
+      places = saved?.places ? { ...saved.places } : {};
       loadedFor = online.characterID;
     } else if (!online && loadedFor !== null) {
       wins = [];
@@ -241,6 +276,7 @@
       targetsX = DEFAULT_TARGETS_POS.x;
       targetsY = DEFAULT_TARGETS_POS.y;
       expandPreferred = false;
+      places = {};
       loadedFor = null;
     }
   });
@@ -255,6 +291,7 @@
       targetsX,
       targetsY,
       stationExpanded: expandPreferred,
+      places: { ...places },
     };
     if (id === null) return;
     const handle = setTimeout(() => saveLayout(id, layout), 300);
@@ -281,13 +318,96 @@
     servedInfoRequests = count;
     // Skip the initial reading: a restored session must not pop an info window
     // nobody asked for.
-    if (count > 0) open("showInfo");
+    if (count > 0) openFromPopup("showInfo");
   });
 
   // A type's market details asked for from outside the market window (marketDetails.ts: marketutils.ShowMarketDetails,
   // as the skill windows ask for the Skill Injector's): the market window opened, which takes the type and reads its
   // market. It watches the request counter, as the Show Info effect above does, and starts at the count it finds, so
   // that a workspace mounted later does not answer a request made before it.
+  // A search of the pilot's things asked for from outside the assets window (assetsSearch.ts: FindInPersonalAssets):
+  // the assets window opened, which takes the text and searches; watched as the market's details are, below.
+  let servedAssetsSearches = assetsSearchTarget.requests.get();
+  const assetsSearchRequests = assetsSearchTarget.requests;
+  $effect(() => {
+    const count = $assetsSearchRequests;
+    if (count === servedAssetsSearches) return;
+    servedAssetsSearches = count;
+    open("assets");
+  });
+
+  // Contracts of a type asked for from outside the contracts window (contractsSearch.ts: contracts.FindRelated): the
+  // contracts window opened, which takes the type and searches.
+  let servedContractsSearches = contractsSearchTarget.requests.get();
+  const contractsSearchRequests = contractsSearchTarget.requests;
+  $effect(() => {
+    const count = $contractsSearchRequests;
+    if (count === servedContractsSearches) return;
+    servedContractsSearches = count;
+    open("contracts");
+  });
+
+  // Types asked to be compared from outside the compare tool (typeCompare.ts: menusvc.CompareType): the tool opened,
+  // which takes the types and adds them.
+  let servedCompareRequests = typeCompareTarget.requests.get();
+  const compareRequests = typeCompareTarget.requests;
+  $effect(() => {
+    const count = $compareRequests;
+    if (count === servedCompareRequests) return;
+    servedCompareRequests = count;
+    open("compare");
+  });
+
+  // The Fitting window asked for from outside it (fittingWindowTarget.ts: the fitting display window's Simulate): opened,
+  // or raised where it is open (FittingWindow.Maximize).
+  let servedFittingWindowRequests = fittingWindowTarget.requests.get();
+  const fittingWindowRequests = fittingWindowTarget.requests;
+  $effect(() => {
+    const count = $fittingWindowRequests;
+    if (count === servedFittingWindowRequests) return;
+    servedFittingWindowRequests = count;
+    open("fitting");
+  });
+
+  // A new skill plan asked for (skillPlanTemplate.ts: CreateSkillPlanButton, cmd.OpenSkillsWindow): the Skills window.
+  let servedSkillPlanRequests = skillPlanTemplateTarget.requests.get();
+  const skillPlanRequests = skillPlanTemplateTarget.requests;
+  $effect(() => {
+    const count = $skillPlanRequests;
+    if (count === servedSkillPlanRequests) return;
+    servedSkillPlanRequests = count;
+    open("skills");
+  });
+
+  // A hold of the active ship asked for (shipHold.ts: the Fitting window's readouts, cmd.OpenCargoHoldOfActiveShip and
+  // its kin): the inventory as the Neocom opens it, the dock panel while docked.
+  let servedHoldRequests = shipHoldTarget.requests.get();
+  const holdRequests = shipHoldTarget.requests;
+  $effect(() => {
+    const count = $holdRequests;
+    if (count === servedHoldRequests) return;
+    servedHoldRequests = count;
+    openFromNeocom("inventory");
+  });
+
+  // A window toggled from the HUD's utility buttons (windowToggle.ts): closed where it is open, else opened; the
+  // inventory as OpenCargoHoldOfActiveShip opens it, on the cargo (shipHold.ts).
+  let servedToggleRequests = windowToggleTarget.requests.get();
+  const toggleRequests = windowToggleTarget.requests;
+  $effect(() => {
+    const count = $toggleRequests;
+    if (count === servedToggleRequests) return;
+    servedToggleRequests = count;
+    const id = untrack(() => windowToggleTarget.take());
+    if (id === null) return;
+    if (untrack(() => wins.some((win) => win.id === id))) {
+      wins = closeWindow(wins, id);
+      return;
+    }
+    if (id === "inventory") shipHoldTarget.ask("cargo");
+    else open(id);
+  });
+
   let servedMarketRequests = marketDetailsTarget.requests.get();
   const marketRequests = marketDetailsTarget.requests;
   $effect(() => {
@@ -338,6 +458,15 @@
       open(id);
     }
   };
+  // Native chat windows open for the pilot whose conversation was accepted/started.
+  // svelte-ignore state_referenced_locally
+  const conversations = flow.conversations.state;
+  let servedChatRequest = 0;
+  $effect(() => {
+    const request = $conversations.openSerial;
+    if (!request || request === servedChatRequest) return;
+    servedChatRequest = request; openFromPopup("chat");
+  });
   // A can or a wreck opened by Open Cargo (flow.openCargo): the inventory window opened or raised for it, as the
   // client's Inventory.OpenOrShow opens its primary window. Each one asked after this desktop was drawn.
   // svelte-ignore state_referenced_locally
@@ -350,6 +479,16 @@
     openFromPopup("inventory");
   });
   let servedOpenRequest = 0;
+  // memberDetails.OpenMemberDetails: one per pilot; repeat requests raise the same member's window.
+  // svelte-ignore state_referenced_locally
+  const memberDetailsShown = flow.memberDetailsShown;
+  let servedMemberDetails = memberDetailsShown.get()?.n ?? 0;
+  $effect(() => {
+    const request = $memberDetailsShown;
+    if (request === null || request.n === servedMemberDetails) return;
+    servedMemberDetails = request.n;
+    openFromPopup("memberDetails");
+  });
   $effect(() => {
     const request = openRequest;
     if (!request || request.sessionID !== sessionID) return;
@@ -401,7 +540,8 @@
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
-  <div class="workspace" class:in-space={!isDocked}>
+  <!-- The HUD options' Align HUD to Top (shipUI.ToggleAlign): the HUD's row above the view. -->
+  <div class="workspace" class:in-space={!isDocked} class:hud-top={$hudTopAligned}>
     <!-- Every piece of always-on chrome gets its own boundary. These are mounted
          for the whole session and refresh on every poll, so before this an error
          in any one of them froze the entire tab (see ErrorBoundary.svelte). -->
@@ -422,6 +562,7 @@
       <div class="work-main" class:station-expanded={stationExpanded}>
         <ErrorBoundary name="Desktop">
           <Desktop
+            bind:this={desktopView}
             {store}
             {flow}
             {sessions}
@@ -458,7 +599,9 @@
                the whole left side. -->
           <ErrorBoundary name="HUD bar">
             <!-- No `onOpen`: the HUD's nav buttons went, because every one
-                 of them is a Neocom rail entry that is on screen anyway. -->
+                 of them is a Neocom rail entry that is on screen anyway. The
+                 client's own utility buttons (HudButtons) ask through
+                 windowToggle.ts, which this workspace serves. -->
             <HudBar {store} {flow} />
           </ErrorBoundary>
           <ErrorBoundary name="Locked targets">

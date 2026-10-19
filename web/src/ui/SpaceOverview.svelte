@@ -123,6 +123,8 @@
     /** Fold the panel to the dock's thin strip. The panel carries the control. */
     onCollapse?: (() => void) | null;
   } = $props();
+  // svelte-ignore state_referenced_locally
+  const warpDistance = flow.warpDistance;
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -914,7 +916,7 @@
 
   /** The distances the dispatcher flies at, as the player has them set. */
   const ranges = $derived({
-    warp: Number($flyingDistances.warp),
+    warp: $warpDistance,
     orbit: storedRangeMetres($flyingDistances.orbit, 1000),
     hold: storedRangeMetres($flyingDistances.hold, 1000),
   });

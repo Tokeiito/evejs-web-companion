@@ -13,7 +13,6 @@ import { readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire
 
 /** A holding: the corporation's shares the shareholder holds. */
 export interface ShareHolding {
-  readonly shareholderID: number;
   readonly corporationID: number;
   readonly shares: number;
 }
@@ -39,7 +38,6 @@ export function decodeShareHoldings(result: JsonValue | null | undefined): reado
     const corporationID = numberOf(readRowField(row, "corporationID"));
     if (corporationID <= 0) continue;
     byCorporation.set(corporationID, {
-      shareholderID: numberOf(readRowField(row, "shareholderID")),
       corporationID,
       shares: numberOf(readRowField(row, "shares")),
     });
@@ -50,4 +48,15 @@ export function decodeShareHoldings(result: JsonValue | null | undefined): reado
 /** The Shares tab's read: GetSharesByShareholder(False), the pilot's own. Fails as the call fails. */
 export async function readMyShares(ask: Ask): Promise<readonly ShareHolding[]> {
   return decodeShareHoldings(await ask("corpRegistry", "GetSharesByShareholder", [false]));
+}
+
+/** CorpISKPanel.GetMainTabs / walletUtil.AmAccountantOrJuniorAccountant. */
+export function canViewCorporateShares(corpRole: string | null | undefined): boolean {
+  try { return (BigInt(corpRole ?? "0") & (256n | 4503599627370496n)) !== 0n; }
+  catch { return false; }
+}
+
+/** CorpSharesPanel.IsCorpWallet: same current-corporation moniker, corporate holder. */
+export async function readCorpShares(ask: Ask): Promise<readonly ShareHolding[]> {
+  return decodeShareHoldings(await ask("corpRegistry", "GetSharesByShareholder", [true]));
 }

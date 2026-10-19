@@ -24,12 +24,14 @@
 //   the total            skillsvc.GetTotalSkillPointsForCharacter: every skill's
 //                        points, the lapsed with them, and the free points
 //
-// What it does not do, the BFF's does not either, and the notes there say why:
-// a booster running out while the skill trains, and an alpha clone's halved
-// attributes. test/gamePortSkillSheet.test.js sets the two makings side by side
-// at every point of a real session.
+// Given the skill accelerators running and the clone's grade, the points in
+// training and each queued level's time are reckoned as the client reckons them,
+// a booster running out on the way and an alpha clone's attributes halved
+// (skillTraining.ts: GetEstimatedSkillPointsTrained and GetAllTrainingLengths).
+// The BFF's making (the web gateway's sheet) does neither.
 
 import type { JsonValue } from "./wire.ts";
+import { allTrainingLengths, estimatedPointsTrained, trainingEstimate, type SkillAccelerator, type TrainingFacts } from "./skillTraining.ts";
 
 /** characterskills/const.py */
 const MAX_SKILL_LEVEL = 5;
@@ -144,8 +146,8 @@ export function effectiveSkillLevel(skills: unknown, typeID: number): number {
  */
 export function skillLevelsOf(
   skills: unknown,
-): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number }> {
-  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number }>();
+): ReadonlyMap<number, { readonly trainedSkillLevel: number; readonly trainedSkillPoints: number; readonly effectiveSkillLevel: number; readonly injected: boolean; readonly virtualSkillLevel: number }> {
+  const levels = new Map<number, { trainedSkillLevel: number; trainedSkillPoints: number; effectiveSkillLevel: number; injected: boolean; virtualSkillLevel: number }>();
   for (const [key, entry] of entriesOf(skills)) {
     const typeID = number(key);
     const fields = skillFields(entry);
@@ -155,6 +157,10 @@ export function skillLevelsOf(
       trainedSkillLevel: trained,
       trainedSkillPoints: number(fields[2]) ?? 0,
       effectiveSkillLevel: Math.max(trained, number(fields[4]) ?? 0),
+      // An expert system's skill alone: its trainedSkillLevel None (skillsvc.IsSkillInjected).
+      injected: number(fields[1]) !== null,
+      // The level an expert system gives it (virtualSkillLevel), nought where none.
+      virtualSkillLevel: number(fields[4]) ?? 0,
     });
   }
   return levels;
@@ -184,6 +190,13 @@ export interface SkillSheetGiven {
   readonly freeSkillPoints: JsonValue;
   /** skillHandler.GetAttributes, or null: then no rate is said and the skill in training has the points answered. */
   readonly attributes: JsonValue;
+  /**
+   * The skill accelerators running (skillsvc._GetSkillAcceleratorBoosters, of skillHandler.GetBoosters), each its
+   * expiry and its bonus to each attribute; none where not known.
+   */
+  readonly boosters?: readonly SkillAccelerator[];
+  /** An alpha clone (clone_grade_svc): its attributes are halved, and the boosters' bonuses with them. */
+  readonly alpha?: boolean;
   /** The server's clock, in milliseconds. Read once, when the rows are made. */
   now(): number;
   typeName(typeID: number): string | null | undefined;
@@ -198,15 +211,38 @@ export function buildSkillSheet(given: SkillSheetGiven): JsonValue {
   const head = queued[0];
   const attribute = (attributeID: number | null): number | null =>
     number((entriesOf(given.attributes).find(([id]) => number(id) === attributeID) ?? [])[1]);
+  // skillsvc.GetCharacterAttribute: halved for an alpha clone (clonegrade.ALPHA_TRAINING_MULTIPLIER).
+  const grade = given.alpha === true ? 0.5 : 1;
   /** The pilot's rate at a skill, or null where the attributes or the skill's two are not known. */
   const rateFor = (typeID: number): number | null => {
     const [primary, secondary] = [ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY].map((which) => attribute(number(given.typeAttribute(typeID, which))));
-    const rate = primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary, secondary);
+    const rate = primary === null || primary === undefined || secondary === null || secondary === undefined ? null : skillPointsPerMinute(primary * grade, secondary * grade);
     // The client's calculator refuses a rate of nothing or less.
     return rate !== null && rate > 0 ? rate : null;
   };
   const trainingRate = training === null ? null : rateFor(training);
   const trainingStartMs = training === null || head === undefined ? null : epochMs(head.get("trainingStartTime"));
+  // What the client's training calculator is given (ClientCharacterSkillInterface): the skills including the lapsed,
+  // the attributes, the boosters and the grade.
+  const lapsed = skillLevelsOf(given.allSkills);
+  const ranks = new Map<number, number>();
+  for (const [typeID, entry] of entriesOf(given.allSkills)) {
+    const type = number(typeID);
+    const rank = number((skillFields(entry) ?? [])[3]);
+    if (type !== null && rank !== null) ranks.set(type, rank);
+  }
+  const facts: TrainingFacts = {
+    attribute: (attributeID) => (given.attributes === null ? null : attribute(attributeID)),
+    alpha: given.alpha === true,
+    boosters: given.boosters ?? [],
+    rank: (skill) => ranks.get(skill) ?? null,
+    primary: (skill) => number(given.typeAttribute(skill, ATTRIBUTE_PRIMARY)),
+    secondary: (skill) => number(given.typeAttribute(skill, ATTRIBUTE_SECONDARY)),
+    trained: (skill) => {
+      const levels = lapsed.get(skill);
+      return levels === undefined ? null : { level: levels.trainedSkillLevel, points: levels.trainedSkillPoints };
+    },
+  };
 
   interface Row { typeID: number | null; name: string; groupName: string; level: number; rank: number; skillPoints: number; levelSkillPoints: number[]; inTraining: boolean }
   const rows: Row[] = [];
@@ -233,9 +269,22 @@ export function buildSkillSheet(given: SkillSheetGiven): JsonValue {
   rows.sort((left, right) => left.name.localeCompare(right.name));
   // The clock is read after the rows are made: the sheet's time is the time its figures were worked at.
   const nowMs = given.now();
-  if (inTrainingRow !== null && trainingRate !== null && trainingStartMs !== null) {
-    inTrainingRow.skillPoints = pointsTrainedBy(inTrainingRow.skillPoints, trainingStartMs, nowMs, trainingRate);
+  if (inTrainingRow !== null && trainingRate !== null && trainingStartMs !== null && training !== null) {
+    // GetSkillPointsFromSkillObject: the estimate, where it is more than the points answered.
+    const estimate = estimatedPointsTrained(facts, training, trainingStartMs, nowMs);
+    inTrainingRow.skillPoints = estimate === null
+      ? pointsTrainedBy(inTrainingRow.skillPoints, trainingStartMs, nowMs, trainingRate)
+      : Math.max(estimate, inTrainingRow.skillPoints);
   }
+  // Each queued level's own time and whether a booster runs as it begins (GetAllTrainingLengths), where they can be had.
+  const lengths = given.attributes === null
+    ? new Map<string, { readonly lengthMs: number; readonly accelerated: boolean }>()
+    : allTrainingLengths(
+      facts,
+      queued.map((entry) => ({ typeID: number(entry.get("trainingTypeID")) ?? 0, toLevel: number(entry.get("trainingToLevel")) ?? 0 })),
+      training === null ? null : { typeID: training, queueStartMs: trainingStartMs },
+      nowMs,
+    );
 
   const free = Math.max(0, number(given.freeSkillPoints) ?? 0);
   const trained = entriesOf(given.allSkills).reduce((sum, [, entry]) => sum + (number((skillFields(entry) ?? [])[2]) ?? 0), 0);
@@ -259,9 +308,18 @@ export function buildSkillSheet(given: SkillSheetGiven): JsonValue {
         endTimeMs: epochMs(entry.get("trainingEndTime")),
         // The rate is said of the skill in training alone: a later entry's is what the attributes are then.
         skillPointsPerMinute: index === 0 && trainingRate !== null ? trainingRate : 0,
+        lengthMs: lengths.get(`${number(entry.get("trainingTypeID")) ?? 0}:${number(entry.get("trainingToLevel")) ?? 0}`)?.lengthMs ?? null,
+        accelerated: lengths.get(`${number(entry.get("trainingTypeID")) ?? 0}:${number(entry.get("trainingToLevel")) ?? 0}`)?.accelerated ?? false,
       })),
       endTimeMs: last === undefined ? null : epochMs(last.get("trainingEndTime")),
+      // skillQueueSvc.GetTrainingEndTimeOfQueue: now and the queue's reckoned length (the level in training at its head,
+      // so no correction by its end), where every level's time was had.
+      reckonedEndMs: queued.length > 0 && lengths.size === queued.length
+        ? nowMs + [...lengths.values()].reduce((sum, length) => sum + length.lengthMs, 0)
+        : null,
       maxEntries: SKILLQUEUE_MAX_NUM_SKILLS,
+      // GetEstimatedSkillPointsTrained's reckoning of the skill in training, which the readout steps between reads.
+      estimate: training === null || given.attributes === null ? null : trainingEstimate(facts, training, trainingStartMs, nowMs),
     },
     queueWarning: null,
   } as unknown as JsonValue;

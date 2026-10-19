@@ -25,8 +25,8 @@ import { type JsonValue } from "./wire.ts";
 
 export type { SavedFitting } from "./fittings.ts";
 
-/** Which library a fitting the refit block can apply came from. */
-export type FittingSource = "personal" | "corporation";
+/** Which library a fitting came from: the refit block's two, and the fitting browser's community and alliance libraries. */
+export type FittingSource = "personal" | "corporation" | "community" | "alliance";
 
 /** A saved fitting tagged with the library it was read from. */
 export interface SourcedFitting extends SavedFitting {

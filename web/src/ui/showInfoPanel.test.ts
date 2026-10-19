@@ -21,7 +21,14 @@ const ORE_TYPE_ID = 1230;
 const SHIP_ID = 9001;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => () => {} });
+  // Its stores, the NPC corporations' factions (a corporation's window names its faction by them), the owners'
+  // logos, the corporation logo library, the image server (an alliance's logo) and the player corporations' logos, read
+  // none; every other member does nothing.
+  const none = { subscribe: (run: (value: unknown) => void) => (run(null), () => {}) };
+  const noLogos = { subscribe: (run: (value: unknown) => void) => (run({}), () => {}) };
+  return new Proxy({}, {
+    get: (_target, key) => (key === "corpLogos" ? noLogos : key === "corporationFactions" || key === "ownerLogos" || key === "corpLogoLibrary" || key === "imageServer" ? none : () => {}),
+  });
 }
 
 /** A snapshot with one rock 12 km out (or `rockX` metres), half its shield gone. */
@@ -155,13 +162,12 @@ test("a module with no dogma read draws no attribute table", () => {
   assert.equal(body.includes("Attributes"), false);
 });
 
-test("a pilot with no recorded standing says so instead of showing 0.00", () => {
-  // 0.00 is a REAL standing — neutral. It must never stand in for "we do not
-  // know", which is a different fact a player would act on differently.
+test("a pilot's window shows no standing before its Standings tab's reads have answered", () => {
+  // The tab is the client's (PanelStandings): the address book's standings toward the pilot, its corporation and
+  // its alliance, each the client's neutral 0.0 where there is no contact. Nothing is shown before they are read.
   showInfoTarget.show({ kind: "character", characterID: 140000005 });
   const body = renderInfo(createClientStore());
-  assert.match(body, /no recorded standing/);
-  assert.equal(body.includes("0.00"), false);
+  assert.equal(body.includes("info-standings"), false);
 });
 
 /**

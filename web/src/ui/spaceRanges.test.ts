@@ -138,7 +138,6 @@ test("⚠ an unreadable stored distance falls back — it never becomes 0", () =
 });
 
 interface StoredDistances {
-  readonly warp: string;
   readonly orbit: string;
   readonly hold: string;
 }
@@ -151,7 +150,7 @@ async function readFresh(tag: string): Promise<StoredDistances> {
   const fresh = (await import(`./flyingDistances.ts?${tag}`)) as {
     flyingDistances: { subscribe(run: (value: StoredDistances) => void): () => void };
   };
-  let seen: StoredDistances = { warp: "", orbit: "", hold: "" };
+  let seen: StoredDistances = { orbit: "", hold: "" };
   fresh.flyingDistances.subscribe((value) => {
     seen = value;
   })();
@@ -196,7 +195,8 @@ test("⚠ but rubbish in storage still falls back to the default", async () => {
   };
   const seen = await readFresh(`junk-${Date.now()}`);
   // The handoff's defaults, not retail's 1 km each — see flyingDistances.ts.
-  assert.deepEqual(seen, { warp: "0", orbit: "5000", hold: "10000" });
+  // defaultRangeUtils34-68: WarpTo is character scoped and no longer belongs to this browser store.
+  assert.deepEqual(seen, { orbit: "5000", hold: "10000" });
 });
 
 test("warp keeps its fixed menu, because nothing offers a custom warp range", () => {

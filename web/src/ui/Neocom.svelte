@@ -23,6 +23,9 @@
   import { isWindowTab } from "./desktop.ts";
   import { NEOCOM_GLYPHS, eveClock, portraitInitials, shortIsk } from "./neocomIcons.ts";
   import { formatIsk } from "./isk.ts";
+  import OwnerPicture from "./OwnerPicture.svelte";
+  import { clientTexture } from "./skillGroupIcons.ts";
+  import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -60,6 +63,17 @@
 
   const pilotName = $derived($station.online?.characterName ?? null);
   const initials = $derived(portraitInitials(pilotName));
+  // svelte-ignore state_referenced_locally
+  const imageServer = flow?.imageServer ?? null;
+  /**
+   * ButtonCharacterIcon.UpdateIcon: photo.GetPortrait(session.charid, 256), the image server's portrait and the
+   * client's silhouette behind it. None while the image server is not read (and with no flow): the initials then.
+   */
+  const portraitUrls = $derived.by<readonly string[]>(() => {
+    const characterID = $station.online?.characterID ?? null;
+    const portrait = characterID === null ? null : portraitUrl($imageServer ?? null, characterID, 256);
+    return portrait === null ? [] : [portrait, clientTexture(portraitDefaultPath(256))];
+  });
   const balance = $derived($wallet.cashBalance ?? null);
 
   /**
@@ -90,6 +104,16 @@
    * it. Fire-and-forget: a failed read leaves the dash, which is the honest
    * answer, and never disturbs the rail.
    */
+  /** The image server's address, read once a pilot is online (the portrait is asked of it). */
+  let imageServerAsked = false;
+  $effect(() => {
+    if (!flow || imageServerAsked || $station.online == null) {
+      return;
+    }
+    imageServerAsked = true;
+    flow.loadImageServer();
+  });
+
   let walletAsked = false;
   $effect(() => {
     if (!flow || walletAsked || $station.online == null) {
@@ -101,12 +125,14 @@
 </script>
 
 <nav class="neocom" aria-label="Panels">
-  <!-- The pilot plate. There is no portrait IMAGE to show — nothing in this
-       client, the BFF or the gateway serves one — so the initials plate is the
-       only state rather than a fallback, and is styled as a deliberate plate for
-       exactly that reason (the same call R27's icon tile makes). -->
+  <!-- The pilot plate: the pilot's portrait from the image server the game server names (ButtonCharacterIcon), the
+       client's silhouette where it has none; the initials plate until the image server is read. -->
   <div class="neocom-pilot" title={pilotName ?? "No pilot online"}>
-    <span class="neocom-portrait" aria-hidden="true">{initials}</span>
+    {#if portraitUrls.length > 0}
+      <span class="neocom-portrait neocom-portrait-picture" aria-hidden="true"><OwnerPicture name={pilotName ?? ""} urls={portraitUrls} size={28} /></span>
+    {:else}
+      <span class="neocom-portrait" aria-hidden="true">{initials}</span>
+    {/if}
     <span class="neocom-pilot-name">{pilotName ?? "—"}</span>
   </div>
 

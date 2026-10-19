@@ -56,6 +56,7 @@ const { GamePortSession } = require("./session");
 const packets = require("./packets");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
+const { noticeTargetMatches } = require("./publicGateway");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
@@ -68,6 +69,8 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const { createPilotCorporationMembers } = require("./pilotCorporationMembers");
+const personalContacts = require("./personalContacts");
 const { createPilotStation } = require("./pilotStation");
 const { createPilotStructureGuests } = require("./pilotStructureGuests");
 const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
@@ -91,6 +94,7 @@ const STATUS = Object.freeze({
   CALL_REFUSED: 409,
   QUESTION_NOT_FOUND: 404,
   SESSION_NOT_FOUND: 404,
+  SESSION_REQUEST_RETIRED: 409,
   SESSION_SELECT_FAILED: 502,
   BOUND_HANDLE_NOT_FOUND: 404,
   BOUND_NO_OBJECT: 502,
@@ -156,6 +160,9 @@ const CORP_REGISTRY = "corpRegistry";
  * allianceid). Kept through a move, and made again when the alliance changes.
  */
 const ALLIANCE_REGISTRY = "allianceRegistry";
+/** The address book's two organization reads (addressbook.GetContacts: corp.GetContactList, alliance.GetContactList). */
+const CORPORATE_CONTACTS = "GetCorporateContacts";
+const ALLIANCE_CONTACTS = "GetAllianceContacts";
 /**
  * The service whose moniker is for the pilot's alliance, or for its corporation where it is in none
  * (eveMoniker.GetWar, 184 to 192: Moniker('warRegistry', (session.allianceid or session.corpid, 1)), its session
@@ -359,11 +366,11 @@ const PRIME_OFFICE = "PrimeOfficeItem";
 const STANDING_MGR = "standingMgr";
 /**
  * What the client's standings service asks for when the character is chosen and keeps right from the server's
- * notices (standingsvc.py 111): the character's standings and its corporation's. Asked for again by name, as the
- * page asks when it shows them, they are answered from what is kept (refreshStandings): the client's panel reads
- * its service, and its service does not ask twice.
+ * notices (standingsvc.py 111): the NPCs' standings with each other, the character's and its corporation's. Asked
+ * for again by name, as the page asks when it shows them, they are answered from what is kept (refreshStandings):
+ * the client's panels read its service, and its service does not ask twice.
  */
-const STANDINGS_KEPT = Object.freeze({ GetCharStandings: "char", GetCorpStandings: "corp" });
+const STANDINGS_KEPT = Object.freeze({ GetNPCNPCStandings: "npcNpc", GetCharStandings: "char", GetCorpStandings: "corp" });
 const ACCOUNT = "account";
 /**
  * What the client's account service asks for once and keeps (svc.account GetStaticData, accountsvc.py 86: kept in
@@ -451,6 +458,9 @@ const FACILITY_PLACES_KEPT_MS = 60_000;
  */
 const FACILITIES_KEPT_AS = Object.freeze({ GetFacilities: "region", GetMaxActivityModifiers: "largest" });
 const facilitiesKeptAs = (method, form) => (Object.hasOwn(FACILITIES_KEPT_AS, method) && form.args.length === 0 && form.kwargs === null ? FACILITIES_KEPT_AS[method] : null);
+const CONTRACT_PROXY = "contractProxy";
+/** contracts.NeocomBlink (190 to 206): GetLoginInfo(), nothing sent, asked once as the notifications are ready. */
+const loginInfoKeptAs = (method, form) => (method === "GetLoginInfo" && form.args.length === 0 && form.kwargs === null ? "loginInfo" : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -539,15 +549,12 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   // the character is chosen and kept for the session. The client works the server's word of a contact added,
   // changed or taken away into what it keeps (OnContactSlashCommand, OnPersonalContactsUpdated, 106 to 155;
   // OnContactNoLongerContact, 326 to 330; OnPersonalContactsAdded and Deleted, 585 to 616), and its own writes of
-  // a contact, a block or a contact's label (658 to 842, 1073 to 1134); here what is kept is let go at each, and
-  // asked for when it is next wanted. Its contact labels (GetContactLabels, 1022 to 1044) are kept beside them, from
-  // their first asking, and let go with them and at the pilot's own making and renaming of one (1001 to 1021).
+  // a contact, a block or a contact's label (658 to 842, 1073 to 1134). Successful own writes amend the held
+  // reply (afterPersonalContactCall); a refusal keeps it. Only label deletion retires the labels table.
   [CHAR_MGR]: Object.freeze({
     keptAs: contactsKeptAs,
     notices: new Set(["OnContactSlashCommand", "OnPersonalContactsUpdated", "OnContactNoLongerContact", "OnPersonalContactsAdded", "OnPersonalContactsDeleted"]),
-    writes: Object.freeze({
-      [CHAR_MGR]: new Set(["AddContact", "EditContact", "EditContactsRelationshipID", "DeleteContacts", "BlockOwners", "UnblockOwners", "AssignLabels", "RemoveLabels", "CreateLabel", "EditLabel", "DeleteLabel"]),
-    }),
+    writes: Object.freeze({}),
   }),
   // onlineStatus (comtool/onlineStatus.py, Prime, 74 to 82): the watched contacts' online state, asked as the
   // character is chosen and kept; the client works the server's word of one logging on or off into it
@@ -556,6 +563,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   [ONLINE_STATUS]: Object.freeze({
     keptAs: onlineKeptAs,
     notices: new Set(["OnContactLoggedOn", "OnContactLoggedOff"]),
+    writes: Object.freeze({}),
+  }),
+  // contracts (contracts.py 186 to 206): what of the pilot's contracts wants attention, asked once as its
+  // notifications are ready (OnNotificationUiReady, NeocomBlink) and never again in the session; the client keeps
+  // what it makes of it (contractsInProgress) and its windows ask by other calls. Here the answer is kept for the
+  // session, and an asking after (the page's contracts window) is answered from it.
+  [CONTRACT_PROXY]: Object.freeze({
+    keptAs: loginInfoKeptAs,
+    notices: new Set(),
     writes: Object.freeze({}),
   }),
 });
@@ -920,6 +936,10 @@ function defaultClientCallAnswer({ service, method, args, kwargs }, characterID,
 
 /** The items of a decoded list or tuple, or none. */
 const itemsOf = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+/** buffBarConst.FX_GUIDS_BY_SLOT's effects: the buff bar's slots an effect on the ship brings up. */
+const BUFF_BAR_FX_GUIDS = new Set(["effects.Tethering", "effects.TetheringRepair", "effects.ReserveBankHackingBeam", "effects.MainBankHackingBeam", "effects.DataLink", "effects.LinkedToTraceGate"]);
+/** The events in a destiny update's OnMultiEvent the page is told of as godma scatters them (godma.OnMultiEvent_). */
+const SCATTERED_FROM_MULTI_EVENT = new Set(["OnEwarStart", "OnEwarEnd", "OnJamStart", "OnJamEnd"]);
 
 /** A keyword by name from a decoded dict, or undefined. */
 function dictValue(dict, name) {
@@ -997,6 +1017,13 @@ function defaultStationOwner(stationID) {
   if (ownerID === null) return null;
   const corporation = staticData.getCorporation(ownerID);
   return { ownerID, factionID: corporation ? positive(corporation.factionID) : null };
+}
+
+/** A type's group and category (evetypes.GetGroupID and GetCategoryID on the retail client), or null. */
+function defaultTypeFacts(typeID) {
+  // eslint-disable-next-line global-require
+  const type = require("../staticData").getType(typeID);
+  return type ? { groupID: Number.isInteger(type.groupID) ? type.groupID : null, categoryID: Number.isInteger(type.categoryID) ? type.categoryID : null } : null;
 }
 
 function defaultTypeGroup(typeID) {
@@ -1107,6 +1134,8 @@ function createGamePortPilots({
   // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
   typeAttribute = defaultTypeAttribute,
   typeGroup = defaultTypeGroup,
+  // A type's group and category, for a charge in a module as godma makes its inventory row.
+  typeFacts = defaultTypeFacts,
   // A station's owner and that owner's faction, for the broker's fee: cfg.stations and get_corporation_faction_id on the retail client.
   stationOwner = defaultStationOwner,
   // A type's base price and portion size, for its average price where nothing has traded: evetypes on the retail client.
@@ -1114,6 +1143,9 @@ function createGamePortPilots({
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
+  // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
+  // consume); none read where it is not given.
+  gatewayNotices = null,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
@@ -1131,6 +1163,9 @@ function createGamePortPilots({
   // The client's travel effects (fsdBuiltData/client/travelEffects.py GetTravelEffectsGuids): a Promise of their
   // guids, or of null where the client's data cannot be read.
   travelEffects = async () => null,
+  // The kind of electronic warfare a module working on a ship is, as tactical.OnEwarOnConnect reads it (ewarTypes.js):
+  // a Promise of its buff bar slot, or of null.
+  ewarTypeOf = async () => null,
 } = {}) {
   const sessions = new Map();
   // Asked for once, as a pilot's space starts; a table that could not be read is asked for again at the next.
@@ -1194,7 +1229,7 @@ function createGamePortPilots({
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
-  /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
+  /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The page's asking is answered from what is kept. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
   /** facilitySvc: self.facilityManager.GetFacility(facilityID), one facility by itself (46, 71 and 103), which no route of the BFF's may ask by name. */
   const A_FACILITY_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/industry/facilitySvc.py:71", note: null });
@@ -1314,6 +1349,34 @@ function createGamePortPilots({
     const frame = publish(entry, { kind: "notification", notification });
     entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
+  }
+
+  /**
+   * The pilot's public gateway notices, read for as long as the pilot is held (the client's NoticeConsumer). Those
+   * whose target group is the pilot's session's (NoticeConsumer._validate_target_group_against_session) go on its
+   * stream, each as {typeName, payload}; the rest the client logs and keeps a while in case the session comes to match
+   * them, which here is not done.
+   */
+  function startGatewayNotices(entry) {
+    if (typeof gatewayNotices !== "function") return;
+    try {
+      entry.gatewayNoticesStop = gatewayNotices({ userID: entry.accountID, characterID: entry.characterID }, (notice) => {
+        if (entry.ended) return;
+        const attributes = entry.session.attributes || {};
+        const forPilot = noticeTargetMatches(notice.targetGroup, {
+          applicationInstance: notice.applicationInstance,
+          solarSystemID: positive(attributes.solarsystemid2),
+          userID: positive(attributes.userid) ?? entry.accountID,
+          characterID: positive(attributes.charid) ?? entry.characterID,
+          corporationID: positive(attributes.corpid),
+          allianceID: positive(attributes.allianceid),
+        });
+        if (!forPilot) return;
+        publish(entry, { kind: "gateway-notice", notice: { typeName: notice.typeName, payload: notice.payload } });
+      });
+    } catch {
+      entry.gatewayNoticesStop = null;
+    }
   }
 
   /** One event on the pilot's stream, for whoever is listening now and whoever resumes from before it. */
@@ -1544,12 +1607,17 @@ function createGamePortPilots({
   function end(entry, reason, refusalStatus = 404) {
     if (entry.ended) return;
     entry.ended = true;
+    entry.corporationMembers.clear();
     // Nobody is left to answer: each question closes unanswered, as its window would with the client.
     for (const asked of [...entry.questions.values()]) asked.settle(undefined, "session_ended");
     if (entry.space) entry.space.release();
     entry.space = null;
     averagePricesThreadEnded(entry);
     warsThreadEnded(entry);
+    if (entry.gatewayNoticesStop) {
+      try { entry.gatewayNoticesStop(); } catch { /* Gone with the pilot either way. */ }
+      entry.gatewayNoticesStop = null;
+    }
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -1671,6 +1739,13 @@ function createGamePortPilots({
         effectCategory,
         onSlotted: (item) => askAbout(entry, item),
         onFitted: (item) => onlineIfApplicable(entry, item),
+        // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
+        // inventory cache takes as it takes the server's.
+        onItemChange: (row, change) => {
+          entry.listings.forget();
+          entry.inventory.itemChanged(row, change);
+        },
+        typeFacts,
       }),
       dogmaLoaded: null,
       /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
@@ -1723,6 +1798,8 @@ function createGamePortPilots({
       locationsWork: Promise.resolve(),
       /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
       tickers: new Map(),
+      /** cfg.corptickernames' logo of each corporation asked about: its three shapes and colours, or null for none. */
+      corpLogos: new Map(),
       tickersWork: Promise.resolve(),
       /** cfg.allianceshortnames: each alliance the server has been asked about, its short name, or null for one it had no row for; and the askings, one after another. */
       allianceTickers: new Map(),
@@ -1845,6 +1922,12 @@ function createGamePortPilots({
       aggression: null,
       /** bco_corporations.corporationByCorporationID: the pilot's corporation's row as last answered, or null. */
       corporationRow: null,
+      corporationMembers: createPilotCorporationMembers(),
+      /** addressbook's corporateContacts and allianceContacts: { answer } as last answered, or null where none is kept. */
+      corporateContacts: null,
+      allianceContacts: null,
+      allianceReads: createKeptReads(),
+      allianceVersion: 0,
       corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
@@ -2057,6 +2140,10 @@ function createGamePortPilots({
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);
+        // addressbook: another alliance's contacts are another's to ask for.
+        entry.allianceContacts = null;
+        entry.allianceVersion += 1;
+        entry.allianceReads.forget();
         if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
       }
       // war_cso.OnSessionChanged (69 to 80): in another alliance or corporation, what is kept of the wars of the
@@ -2077,8 +2164,10 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
-        // bco_corporations.Reset: another corporation's row is another's to ask for.
+        // bco_corporations.Reset: another corporation's row is another's to ask for; and its contacts (addressbook).
         entry.corporationRow = null;
+        entry.corporationMembers.clear();
+        entry.corporateContacts = null;
         if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
@@ -2234,8 +2323,9 @@ function createGamePortPilots({
       // project is enabled, which its client service asks once. In the retail client's own login, behind the pilot's
       // applications as the neocom is set up. A service that refuses fails no choosing.
       await discoveryEnabledRead(entry).catch(() => {});
-      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
-      await asks(entry, "contractProxy", "GetLoginInfo").catch(() => {});
+      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready,
+      // and kept (KEPT_UNTIL_CHANGED).
+      await keptRead(entry, CONTRACT_PROXY, "GetLoginInfo", shape(CONTRACT_PROXY, "GetLoginInfo", [], null, contextFor(entry))).catch(() => {});
       // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
       await keptRead(entry, NOTIFICATION_MGR, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
       // calendar.GetEventsNextXMonths: this month's events and the next's, by the server's clock, a month at a time.
@@ -2273,6 +2363,7 @@ function createGamePortPilots({
     closedByServerByCharacter.delete(characterID);
     sessions.set(entry.handle, entry);
     session.onClose((error) => end(entry, noteClosedByServer(entry, error) ? "closed_by_server" : "connection_closed"));
+    startGatewayNotices(entry);
     // A pilot that was left in space comes back in space.
     syncSpace(entry);
     return {
@@ -2294,6 +2385,14 @@ function createGamePortPilots({
         // none, and the roles a 64-bit mask, so as its digits. The page keeps them as the session's changes say.
         allianceID: attribute(entry, "allianceid"),
         corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
+        // session.role: the session's roles (carbon/common/script/sys/serviceConst.py), a 64-bit mask, so as its
+        // digits: what the client shows a GM's buttons by (missingItemsPopup.BuyAllMessageBox, ROLE_GML).
+        role: String(wholeOf(entry.session.attributes.role) ?? 0n),
+        // session.corpAccountKey: the corporation wallet division the pilot trades from, 1000 for the master wallet
+        // (corporation.GetMyCorpAccountName); none where the session has none.
+        corpAccountKey: attribute(entry, "corpAccountKey"),
+        // session.raceID: the character's race, by which an alpha clone's skills go (clonegrade.CloneGradeStorage).
+        raceID: attribute(entry, "raceID"),
         shipID: attribute(entry, "shipid"),
       },
     };
@@ -2506,8 +2605,8 @@ function createGamePortPilots({
     // The selection screen's data: the client's character service keeps what it was answered at the choosing
     // (ccSvc.GetCharacterSelectionData), and whoever asks it again, as its queue service does to count the
     // account's characters in training, has that. Asked for by name with nothing, it is what was kept: nothing
-    // is sent, and nothing is counted.
-    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null) {
+    // is sent, and nothing is counted. (Where it was let go, at a character made or deleted, it is asked.)
+    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null && entry.selection !== undefined) {
       return { service, method, result: entry.selection, notifications: drain(entry) };
     }
     // The home station service's read: asked once and kept, until the server says the home station is another.
@@ -2559,6 +2658,9 @@ function createGamePortPilots({
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
       (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
       (service === CORP_REGISTRY && method === CORPORATION_ROW && form.args.length === 0) ||
+      // The address book's organization contacts, noted where they are asked for (addressBookRead, monikerCall).
+      (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && form.args.length === 0 && form.kwargs === null) ||
+      (service === ALLIANCE_REGISTRY && (method === ALLIANCE_CONTACTS || method === "GetAlliance") && form.args.length === 0 && form.kwargs === null) ||
       // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
       (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
@@ -2576,6 +2678,7 @@ function createGamePortPilots({
       if (Array.isArray(favorites)) entry.watchlist = favorites.filter((id) => Number.isSafeInteger(id) && id > 0);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
+    const allianceVersionForCall = entry.allianceVersion;
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
@@ -2589,6 +2692,8 @@ function createGamePortPilots({
       if (facilityID !== null) facilitiesAskedAfresh(entry, [facilityID]);
       throw error;
     });
+    await afterPersonalContactCall(entry, service, method, form, result);
+    await afterAllianceContactCall(entry, service, method, form, allianceVersionForCall);
     // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60): each row the server answers is made the client's
     // job, and a job whose row names a facility is given it afresh (_JobInstance, 196 to 197), before the jobs
     // are anyone's to read.
@@ -2928,13 +3033,31 @@ function createGamePortPilots({
         const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiCorpTickerNamesEx", [{ type: "list", items: asked }], null));
         const columns = itemsOf(header).map(textOf);
         const [corporationID, tickerName] = ["corporationID", "tickerName"].map((column) => columns.indexOf(column));
-        for (const row of itemsOf(rows).map(itemsOf)) entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+        // The row's logo too (eveIcon.CorpIcon.DoLayout: shape1 to shape3, color1 to color3), each a number or none.
+        const logoColumns = ["shape1", "shape2", "shape3", "color1", "color2", "color3"].map((column) => columns.indexOf(column));
+        const wholeOrNull = (value) => (Number.isSafeInteger(Number(value)) && value !== null && value !== undefined ? Number(value) : null);
+        for (const row of itemsOf(rows).map(itemsOf)) {
+          entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+          const [s1, s2, s3, c1, c2, c3] = logoColumns.map((at) => (at < 0 ? null : wholeOrNull(row[at])));
+          entry.corpLogos.set(positive(row[corporationID]), { shapes: [s1, s2, s3], colors: [c1, c2, c3] });
+        }
         for (const corpID of asked) if (!entry.tickers.has(corpID)) entry.tickers.set(corpID, null);
       }
       return new Map(wanted.map((corpID) => [corpID, entry.tickers.get(corpID) ?? null]));
     }));
     entry.tickersWork = priming.catch(() => {});
     return priming;
+  }
+
+  /**
+   * cfg.corptickernames' logos (eveIcon.CorpIcon: logoData's shape1 to shape3 and color1 to color3) of the player
+   * corporations asked about, primed as their tickers are (corpTickersNamed). Answers a Map of each to its
+   * { shapes, colors }, or to null for one with no row. Fails as the priming fails.
+   */
+  async function corpLogosNamed(corpIDs, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const named = await corpTickersNamed(corpIDs, false, sessionFields, bridgeSessionID);
+    return new Map([...named.keys()].map((corpID) => [corpID, entry.corpLogos.get(corpID) ?? null]));
   }
 
   /**
@@ -3610,6 +3733,25 @@ function createGamePortPilots({
     });
   }
 
+  async function afterPersonalContactCall(entry, service, method, form, result) {
+    if (service !== CHAR_MGR || !personalContacts.OWN_WRITES.has(method)) return;
+    const current = () => !entry.ended && sessions.get(entry.handle) === entry && attribute(entry, "charid") === entry.characterID;
+    if (!current()) return;
+    if (form.status === "differs" || form.kwargs !== null) {
+      entry.kept[CHAR_MGR].forget();
+      return;
+    }
+    const args = argumentsToWire(form.args);
+    await Promise.all([
+      entry.kept[CHAR_MGR].amend("contacts", answer => current() ? personalContacts.amendContacts(answer, method, args) : answer),
+      entry.kept[CHAR_MGR].amend("labels", answer => current() ? personalContacts.amendLabels(answer, method, args, result) : answer),
+    ]);
+    if (!current()) return;
+    const [event, eventArgs] = personalContacts.localEvent(method, args, result);
+    // These are the client's own ScatterEvents, not packets from EveJS.
+    record(entry, { kind: "client", service: null, method: event, idType: null, args: wireToBridgeJson(eventArgs), kwargs: null });
+  }
+
   /**
    * bookmarkSvc.GetBookmarks (69 to 79): the bookmark manager's three lists as they are kept, asked for, and noted,
    * where none are; less the bookmarks whose time has run out by the server's clock, which the client's service
@@ -4248,9 +4390,17 @@ function createGamePortPilots({
     const pilot = [...sessions.values()].find((candidate) => candidate.accountID === accountID && !candidate.ended);
     if (pilot) {
       const form = shape(service, method, args, kwargs, {});
+      // The selection screen's data is what the client's character service kept at the choosing, and whoever asks it
+      // again has that (ccSvc.GetCharacterSelectionData; the pilot's own asking of it, call): nothing is sent. A
+      // character made or deleted, or its deletion begun or let go, and it is let go, and asked when next wanted.
+      const selectionRead = service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null;
+      if (selectionRead && pilot.selection !== undefined) return { service, method, result: pilot.selection, notifications: [] };
       ledger.note(service, method, form);
       try {
-        return { service, method, result: wireToBridgeJson(await byName(pilot.session, service, method, form)), notifications: [] };
+        const result = wireToBridgeJson(await byName(pilot.session, service, method, form));
+        if (selectionRead) pilot.selection = result;
+        else if (service === "charUnboundMgr" && /^(Create|Delete|Prepare|Cancel)/.test(method)) pilot.selection = undefined;
+        return { service, method, result, notifications: [] };
       } catch (error) {
         throw failed(error);
       }
@@ -4442,7 +4592,18 @@ function createGamePortPilots({
         },
       });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
-      entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
+      // godma.OnMultiEvent_ scatters the events it does not fold itself, each as if it had come alone: the electronic
+      // warfare's and the jams' (OnEwarStart and OnEwarEnd for tactical, OnJamStart and OnJamEnd for godma and shipUI,
+      // which Tranquility sends this way) are handed on to the page so.
+      entry.space.park.onMultiEvent = (messages) => {
+        entry.dogma.multiEvent(messages);
+        if (!sessions.has(entry.handle)) return;
+        for (const pair of itemsOf(messages)) {
+          const event = itemsOf(Array.isArray(pair) ? pair[0] : null);
+          const method = textOf(event[0]);
+          if (method !== null && SCATTERED_FROM_MULTI_EVENT.has(method)) record(entry, notificationToBridgeJson({ method, args: event.slice(1) }));
+        }
+      };
       // targetMgr.DoBallsRemove: a ball that goes is no target any more; invCache.DoBallRemove: nor a container held.
       entry.space.park.onBallsRemoved = (gone) => {
         entry.targets.ballsRemoved(gone.map((each) => each.id));
@@ -4461,6 +4622,36 @@ function createGamePortPilots({
       // with the pilot's notifications. Any other special effect is not.
       void travelGuids();
       entry.space.park.onEvent = (name, args) => {
+        // tactical.OnEwarOnConnect: a module the state says is working on the pilot's own ship, of a kind of electronic
+        // warfare, counted as tactical.OnEwarStart counts it; handed on so (the page's tactical takes OnEwarStart).
+        if (name === "OnEwarOnConnect") {
+          const own = positive(attribute(entry, "shipid"));
+          const [shipID, moduleID, moduleTypeID, targetID, guid] = Array.isArray(args) ? args : [];
+          if (own === null || positive(targetID) !== own) return;
+          void Promise.resolve(ewarTypeOf(positive(moduleTypeID), textOf(guid))).then((ewarType) => {
+            if (ewarType && sessions.has(entry.handle)) {
+              record(entry, notificationToBridgeJson({ method: "OnEwarStart", args: [shipID, moduleID, targetID, ewarType] }));
+            }
+          }, () => {});
+          return;
+        }
+        // FxSequencer's activations of the buff bar's effects (buffBarConst.FX_GUIDS_THAT_UPDATE_BUFF_BAR) on the pilot's
+        // own ship, as the effect's source or its target (AddActivationToBallRegister files one under both balls).
+        if (name === "OnSpecialFX" && Array.isArray(args) && BUFF_BAR_FX_GUIDS.has(textOf(args[5]))) {
+          const own = positive(attribute(entry, "shipid"));
+          if (own !== null && (positive(args[0]) === own || positive(args[3]) === own) && sessions.has(entry.handle)) {
+            record(entry, notificationToBridgeJson({ method: "OnSpecialFX", args }));
+          }
+          return;
+        }
+        // michelle.OnDbuffUpdated (1574) and SetState's (1002): the warfare buffs on the pilot's own ship
+        // (IncomingDbuffTracker.OnDbuffUpdated drops another ship's), handed on as the server sent them.
+        if (name === "OnDbuffUpdated") {
+          if (Array.isArray(args) && positive(args[0]) !== null && positive(args[0]) === positive(attribute(entry, "shipid")) && sessions.has(entry.handle)) {
+            record(entry, notificationToBridgeJson({ method: "OnDbuffUpdated", args }));
+          }
+          return;
+        }
         if (name !== "OnSpecialFX" || !Array.isArray(args) || positive(args[0]) === null || positive(args[0]) !== positive(attribute(entry, "shipid"))) return;
         const guid = textOf(args[5]);
         const handOn = (guids) => {
@@ -4611,6 +4802,7 @@ function createGamePortPilots({
    *   LinkWeapons, MergeModuleGroups, PeelAndLink, LinkAllWeapons   the answer is the ship's banks, anew
    *   UnlinkModule(shipID, moduleID)                                the answer is the slave taken out of that bank
    *   UnlinkAllModules(shipID)                                      no banks
+   *   DestroyWeaponBank(shipID, masterID)                           that bank is gone (OnWeaponGroupDestroyed, 864 to 884)
    */
   function afterGroupingCall(entry, method, args, result) {
     if (["LinkWeapons", "MergeModuleGroups", "PeelAndLink", "LinkAllWeapons"].includes(method)) {
@@ -4619,6 +4811,8 @@ function createGamePortPilots({
       entry.dogma.unlinkModule(args[0], args[1], result);
     } else if (method === "UnlinkAllModules") {
       entry.dogma.setWeaponBanks(args[0], null);
+    } else if (method === "DestroyWeaponBank") {
+      entry.dogma.feed({ method: "OnWeaponGroupDestroyed", args: [args[0], args[1]] });
     }
   }
 
@@ -4932,6 +5126,15 @@ function createGamePortPilots({
     // bco_corporations.GetCorporation (43 to 54): the corporation's row as the client's corporation service keeps it
     // (corporationByCorporationID), asked where none is kept. Two windows wanting it at once ask once.
     if (service === CORP_REGISTRY && method === CORPORATION_ROW && args.length === 0) return corporationDoes(entry, () => entry.corporationRow ?? corporationRowRead(entry));
+    // addressbook.GetContacts (193 to 250): the corporation's contacts and the alliance's as the address book keeps
+    // them from the choosing of the character, asked where none are kept; corporate notices amend the held dict.
+    if (service === CORP_REGISTRY && method === CORPORATE_CONTACTS && args.length === 0 && kwargs === null) {
+      return corporationDoes(entry, async () => (entry.corporateContacts ??= { answer: await corporationAsk(entry, CORPORATE_CONTACTS) }).answer);
+    }
+    if (service === ALLIANCE_REGISTRY && method === ALLIANCE_CONTACTS && args.length === 0 && kwargs === null) {
+      return allianceKeptRead(entry, "contacts", method);
+    }
+    if (service === ALLIANCE_REGISTRY && method === "GetAlliance" && args.length === 0 && kwargs === null) return allianceKeptRead(entry, "info", method);
     // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
     // on the service's moniker, which is another where its owner is another's by now.
     if (service === WAR_REGISTRY) {
@@ -4939,7 +5142,16 @@ function createGamePortPilots({
       warMonikerIsItsOwners(entry);
     }
     if (service !== SKILL_HANDLER) {
-      return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+      const result = await keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+      // addressbook.DeleteContactLabel (1072-1084): clear this bit in every held corporate contact, after success.
+      if (service === CORP_REGISTRY && method === "DeleteLabel" && entry.corporateContacts?.answer?.type === "dict") {
+        const bit = wholeOf(args[0]);
+        if (bit !== null) entry.corporateContacts = corporateContactsChanged(entry.corporateContacts,
+          entry.corporateContacts.answer.entries.map(([id, contact]) => [id, null,
+            (wholeOf(dictValue(contact.args, "labelMask")) ?? 0n) & (9223372036854775807n - bit),
+          ]));
+      }
+      return result;
     }
     // What the client's skill services keep is theirs to answer. Anything else of the handler's is asked of it.
     if (Object.hasOwn(SKILL_KEPT, method)) return skillsDoes(entry, () => skillRead(entry, method, args));
@@ -5498,7 +5710,7 @@ function createGamePortPilots({
    * neither, and has none. Each in the gateway's form, under the name of the read it stands for. Null where no
    * object is held or no state could be read: then nothing is kept, as the client keeps nothing.
    */
-  async function fleetKept(sessionFields = {}, bridgeSessionID = undefined) {
+  async function fleetKept(sessionFields = {}, bridgeSessionID = undefined, { details = true } = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     // What the client is asking of its own accord comes first.
     await entry.fleetWork;
@@ -5506,17 +5718,17 @@ function createGamePortPilots({
     const object = entry.fleet;
     if (object && !entry.fleetKept.inited) await fleetDoes(entry, () => initFleet(entry, object));
     if (!entry.fleetKept.inited) return null;
-    if (entry.fleetKept.motd() === null) {
+    if (details && entry.fleetKept.motd() === null) {
       await fleetDoes(entry, async () => entry.fleetKept.setMotd(await ownFleetCall(entry, object, "GetMotd")));
     }
-    if (entry.fleetKept.isBoss() && entry.fleetKept.openJoinRequests()) {
+    if (details && entry.fleetKept.isBoss() && entry.fleetKept.openJoinRequests()) {
       await fleetDoes(entry, async () => {
         const requests = await ownFleetCall(entry, object, "GetJoinRequests");
         if (entry.fleet === object) entry.fleetKept.setJoinRequests(requests);
       });
     }
     const commands = () => entry.fleetKept.isBoss() || FLEET_COMMANDER_ROLES.has(attribute(entry, "fleetrole"));
-    if (commands() && entry.fleetKept.compositionDue(now())) {
+    if (details && commands() && entry.fleetKept.compositionDue(now())) {
       await fleetDoes(entry, async () => {
         const composition = await ownFleetCall(entry, object, "GetFleetComposition");
         if (entry.fleet === object) entry.fleetKept.setComposition(composition, now());
@@ -5581,11 +5793,71 @@ function createGamePortPilots({
     return doing;
   }
 
+  // all_cso_alliance keeps the alliance row; addressbook keeps its contact dict.
+  // Serialize reads and amendments, including notices arriving during a read.
+  const allianceCurrent = (entry, version) => !entry.ended && (!sessions.has(entry.handle) || sessions.get(entry.handle) === entry) && entry.allianceVersion === version;
+  async function allianceKeptRead(entry, key, method) {
+    const version = entry.allianceVersion;
+    const kept = await entry.allianceReads.read(key, async () => {
+      ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
+      return { answer: await keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null) };
+    });
+    if (key === "contacts" && allianceCurrent(entry, version)) entry.allianceContacts = kept;
+    return kept.answer;
+  }
+  function amendAlliance(entry, key, version, change) {
+    return entry.allianceReads.amend(key, kept => {
+      if (!allianceCurrent(entry, version)) return kept;
+      const next = change(kept);
+      if (key === "contacts") entry.allianceContacts = next ?? null;
+      return next;
+    });
+  }
+  async function afterAllianceContactCall(entry, service, method, form, version) {
+    if (service !== ALLIANCE_REGISTRY || !allianceCurrent(entry, version)) return;
+    const writes = ["AddAllianceContact", "EditAllianceContact", "RemoveAllianceContacts", "EditContactsRelationshipID", "AssignLabels", "RemoveLabels", "DeleteLabel"];
+    if (!writes.includes(method)) return;
+    await amendAlliance(entry, "contacts", version, kept => {
+      if (form.status === "differs" || form.kwargs !== null) return undefined;
+      const args = argumentsToWire(form.args);
+      const level = args[1]?.type === "real" ? args[1].value : args[1];
+      if (method === "AddAllianceContact" || method === "EditAllianceContact") return corporateContactsChanged(kept, [[args[0], level, null]]);
+      const ids = itemsOf(args[0]);
+      if (method === "RemoveAllianceContacts") return corporateContactsChanged(kept, ids.map(id => [id, null, null]));
+      if (method === "EditContactsRelationshipID") return corporateContactsChanged(kept, ids.map(id => [id, level, null]));
+      const bit = wholeOf(method === "DeleteLabel" ? args[0] : args[1]);
+      if (bit === null) return undefined;
+      return corporateContactsChanged(kept, kept.answer.entries.filter(([id]) => method === "DeleteLabel" || ids.some(owner => Number(owner) === Number(id))).map(([id, contact]) => {
+        const mask = wholeOf(dictValue(contact.args, "labelMask")) ?? 0n;
+        return [id, null, method === "AssignLabels" ? mask | bit : mask & (9223372036854775807n - bit)];
+      }));
+    });
+  }
+
+  function corporationMemberIDsRead(entry) {
+    const corporationID = Number(attribute(entry, "corpid"));
+    const current = () => {
+      if (entry.ended || sessions.has(entry.handle) && sessions.get(entry.handle) !== entry) throw fail("SESSION_NOT_FOUND", SESSION_GONE);
+      if (Number(attribute(entry, "corpid")) !== corporationID) throw fail("SESSION_REQUEST_RETIRED", "This corporation membership belongs to the pilot's previous corporation.");
+    };
+    return entry.corporationMembers.read(async () => wireToBridgeJson(await corporationAsk(entry, "GetEveOwners")), current);
+  }
+
+  async function corporationMemberIDs(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields), corporationID = Number(attribute(entry, "corpid"));
+    await entry.corpWork;
+    if (held(bridgeSessionID, sessionFields) !== entry || Number(attribute(entry, "corpid")) !== corporationID) {
+      throw fail("SESSION_REQUEST_RETIRED", "The pilot's corporation changed while its members were being read.");
+    }
+    const memberIDs = await corporationMemberIDsRead(entry);
+    return { corporationID, memberIDs, notifications: drain(entry) };
+  }
+
   /**
    * What the client's services ask of the corporation's registry when the session's corporation changes, the
    * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
    * are kept, and its members' names (bco_members.OnSessionChanged, which primes the client's names with them
-   * and keeps nothing else). Each fails for itself.
+   * and retains their IDs). Each fails for itself.
    *
    * A character chosen is asked besides for its own applications, as the client asks for them once
    * (bco_applications), after the address book's reads as a recorded login has them. They are not kept here,
@@ -5596,7 +5868,7 @@ function createGamePortPilots({
   function corporationRead(entry) {
     return corporationDoes(entry, async () => {
       await aggressionRefreshed(entry).catch(() => {});
-      await corporationAsk(entry, "GetEveOwners").catch(() => {});
+      await corporationMemberIDsRead(entry).catch(() => {});
     });
   }
 
@@ -5613,24 +5885,63 @@ function createGamePortPilots({
    *
    * The pilot's own contacts and blocked owners, and the watched contacts' online state, are kept as the client
    * keeps them (KEPT_UNTIL_CHANGED), for the page's reading of them by charMgr.GetContactList and
-   * onlineStatus.GetInitialState. Nothing is kept of the corporation's and the alliance's, though the client keeps
-   * them and works them over at the server's notices: no window of the page reads them yet.
+   * onlineStatus.GetInitialState. The corporation's and the alliance's are kept too (corporateContacts,
+   * allianceContacts), for the page's reading of them by name (an owner's Standings tab); the client works the
+   * server's word of a change into them (OnOrganizationContactsUpdated, 157 to 191). The corporation's kept dict
+   * and alliance dicts are updated from those tuples without another read.
    */
   async function addressBookRead(entry) {
-    const ofTheAlliance = (method) => {
-      ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
-      return keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null);
-    };
     await Promise.all([
       keptRead(entry, CHAR_MGR, CONTACT_LIST, shape(CHAR_MGR, CONTACT_LIST, [], null, contextFor(entry))),
-      ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
-      ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
+      ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, CORPORATE_CONTACTS).then((answer) => { entry.corporateContacts = { answer }; })]),
+      ...(attribute(entry, "allianceid") === null ? [] : [allianceKeptRead(entry, "contacts", ALLIANCE_CONTACTS)]),
       keptRead(entry, ONLINE_STATUS, "GetInitialState", shape(ONLINE_STATUS, "GetInitialState", [], null, contextFor(entry))),
     ].map((asked) => asked.catch(() => {})));
   }
 
+  /** addressbookService.OnOrganizationContactsUpdated (157 to 191): amend the held dict without another read. */
+  function corporateContactsChanged(kept, updates) {
+    if (!kept || kept.answer?.type !== "dict") return kept;
+    const contacts = new Map(kept.answer.entries.map(([id, contact]) => [Number(id), [id, contact]]));
+    for (const update of itemsOf(updates)) {
+      const [contactID, level, labelMask] = itemsOf(update);
+      const id = finite(contactID);
+      if (id === null || id <= 0) continue;
+      if (level === null && labelMask === null) { contacts.delete(id); continue; }
+      const previous = contacts.get(id);
+      if (!previous) {
+        contacts.set(id, [contactID, { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [
+          ["contactID", contactID], ["relationshipID", level], ["inWatchlist", 0], ["labelMask", labelMask ?? 0],
+        ] } }]);
+      } else {
+        const [key, contact] = previous;
+        const field = labelMask === null ? "relationshipID" : "labelMask";
+        const value = labelMask === null ? level : labelMask;
+        contacts.set(id, [key, { ...contact, args: { ...contact.args,
+          entries: contact.args.entries.map(([name, old]) => [name, textOf(name) === field ? value : old]),
+        } }]);
+      }
+    }
+    return { answer: { ...kept.answer, entries: [...contacts.values()] } };
+  }
+
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
   function afterCorporationNotice(entry, notification) {
+    entry.corporationMembers.feed(notification, Number(attribute(entry, "corpid")));
+    // addressbook.OnOrganizationContactsUpdated(ownerID, updates): the corporation's or the alliance's contacts changed.
+    if (notification.method === "OnOrganizationContactsUpdated" && Array.isArray(notification.args)) {
+      const ownerID = Number(notification.args[0]);
+      if (ownerID === Number(attribute(entry, "corpid"))) entry.corporateContacts = corporateContactsChanged(entry.corporateContacts, notification.args[1]);
+      if (ownerID === Number(attribute(entry, "allianceid"))) amendAlliance(entry, "contacts", entry.allianceVersion, kept => corporateContactsChanged(kept, notification.args[1]));
+    }
+    if (notification.method === "OnAllianceChanged" && Number(notification.args?.[0]) === attribute(entry, "allianceid")) {
+      amendAlliance(entry, "info", entry.allianceVersion, kept => {
+        const changes = itemsOf(notification.args[1]?.entries);
+        if (!kept.answer?.args?.entries || changes.length > 0 && changes.every(([, pair]) => itemsOf(pair)[1] === null)) return undefined;
+        const updates = new Map(changes.map(([name, pair]) => [textOf(name), itemsOf(pair)[1]]));
+        return { answer: { ...kept.answer, args: { ...kept.answer.args, entries: kept.answer.args.entries.map(([name, value]) => [name, updates.has(textOf(name)) ? updates.get(textOf(name)) : value]) } } };
+      });
+    }
     if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
     // bco_corporations.OnCorporationChanged(corpID, change) (79 to 103): the client works the change into the row it
     // keeps; here the row of the pilot's own corporation is let go, and asked for when it is next wanted.
@@ -5815,6 +6126,7 @@ function createGamePortPilots({
     // A planet's colony and what the planet carries are kept by the planet, where they are asked as the client asks them.
     const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
+    const allianceVersionForCall = entry.allianceVersion;
     try {
       result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
@@ -5830,6 +6142,8 @@ function createGamePortPilots({
     if (mayChangeContents(service, method)) entry.listings.forget();
     forgetKeptAfter(entry, service, method);
     if (changesAColony(service, method)) forgetColonies(entry);
+    await afterPersonalContactCall(entry, service, method, form, result);
+    await afterAllianceContactCall(entry, service, method, form, allianceVersionForCall);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
@@ -5935,6 +6249,7 @@ function createGamePortPilots({
     fleet,
     fleetKept,
     standingsKept,
+    corporationMemberIDs,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,
@@ -5945,6 +6260,7 @@ function createGamePortPilots({
     ownersNamed,
     locationsNamed,
     corpTickersNamed,
+    corpLogosNamed,
     allianceTickersNamed,
     shipInfo,
     shipAttribute,

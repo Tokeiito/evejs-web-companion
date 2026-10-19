@@ -34,7 +34,12 @@
     contractTypeLabel,
     formatIsk,
     formatVolume,
+    contractTitle,
+    CONTRACT_TITLE_LABELS,
+    type ContractSearchEntry,
   } from "../bridge/contracts.ts";
+  import { contractsSearchTarget } from "./contractsSearch.ts";
+  import type { JsonValue } from "../bridge/wire.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -99,7 +104,7 @@
       : { text: jumpWords(JUMP_WORDS.jumps, `${count} jumps`, { numJumps: count }), unreachable: false };
   }
   $effect(() => {
-    flow.requestWords(Object.values(JUMP_WORDS));
+    flow.requestWords([...Object.values(JUMP_WORDS), ...Object.values(SEARCH_WORDS), ...CONTRACT_TITLE_LABELS]);
   });
   // The counts are asked for again when the autopilot's settings change, which lets them go.
   $effect(() => {
@@ -123,7 +128,60 @@
   // contract generator, is usually empty. So the DEFAULT tab follows the
   // contracts offered to you — but only until the player picks a tab
   // themselves, after which their choice wins and stops moving under them.
-  let chosenTab = $state<"board" | "mine" | null>(null);
+  let chosenTab = $state<"board" | "mine" | "search" | null>(null);
+  // The window's Contract Search tab (contractsWnd.py 100: its third; contractsearch.py's results), as far as the page
+  // has it: the contracts of a type found by the type menu's Find in Contracts (contracts.FindRelated).
+  const SEARCH_WORDS = {
+    tab: "UI/Contracts/ContractsSearch/ContractSearch",
+    contract: "UI/Contracts/ContractsSearch/columnContract",
+    location: "UI/Contracts/ContractsSearch/columnLocation",
+    price: "UI/Contracts/ContractsSearch/columnPrice",
+    issuer: "UI/Contracts/ContractsSearch/columnIssuer",
+    nothingFound: "UI/Common/NothingFound",
+    auction: "UI/Contracts/Auction",
+  } as const;
+  let searchedType = $state<number | null>(null);
+  let searching = $state(false);
+  let searchFound = $state.raw<{ readonly entries: readonly ContractSearchEntry[]; readonly numFound: number } | null>(null);
+  function searchType(typeID: number): void {
+    chosenTab = "search";
+    searchedType = typeID;
+    searchFound = null;
+    void run(async () => {
+      searching = true;
+      try {
+        searchFound = await flow.findContractsOfType(typeID);
+      } finally {
+        searching = false;
+      }
+    });
+  }
+  // A search asked for from outside (contractsSearch.ts): the Contract Search tab, searching the type.
+  // svelte-ignore state_referenced_locally
+  const contractsSearchRequests = contractsSearchTarget.requests;
+  $effect(() => {
+    void $contractsSearchRequests;
+    const wanted = contractsSearchTarget.take();
+    if (wanted !== null) searchType(wanted);
+  });
+  /** A label of the client's filled, for a contract's title (GetContractTitle); the page's own words where it has none. */
+  function titleWord(label: string, args: Readonly<Record<string, JsonValue>> = {}): string {
+    const template = $words.templates[label];
+    if (typeof template === "string" && template !== "") {
+      return plainText(formatTemplate(template, args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
+    }
+    const typeID = Number(args.typeID ?? 0);
+    if (label.endsWith("/TypeNameWithQuantity")) return `${itemName(typeID)} x ${String(args.quantity ?? "")}`;
+    if (label.endsWith("/TypeName")) return itemName(typeID);
+    if (label === "UI/Common/MoreTrail") return "...";
+    if (label === "UI/Common/Unknown") return "unknown";
+    return "";
+  }
+  /** ContractEntrySearch.GetContractLabel (499 to 512): the title, and "(auction)" after an auction's. */
+  function searchLabel(entry: ContractSearchEntry): string {
+    const title = contractTitle(entry.contract, entry.items, titleWord);
+    return entry.contract.type === 2 ? `${title} (${titleWord(SEARCH_WORDS.auction).toLowerCase() || "auction"})` : title;
+  }
   let chosenMineView = $state<"assigned" | "outstanding" | "accepted" | "expired" | null>(
     null,
   );
@@ -326,6 +384,9 @@
     <button type="button" class:active={tab === "board"} onclick={() => (chosenTab = "board")}>
       Jobs on offer
     </button>
+    <button type="button" class:active={tab === "search"} onclick={() => (chosenTab = "search")}>
+      {titleWord(SEARCH_WORDS.tab) || "Contract search"}
+    </button>
     <button type="button" class:active={tab === "mine"} onclick={() => (chosenTab = "mine")}>
       Yours{mineCount > 0 ? ` (${mineCount})` : ""}
     </button>
@@ -389,6 +450,50 @@
         <p class="note">
           Showing the first {$contracts.browse.length} of {$contracts.numFound} jobs.
         </p>
+      {/if}
+    {/if}
+  {:else if tab === "search"}
+    {#if searchedType === null}
+      <p class="note">A type's menu finds its contracts here (Find in Contracts).</p>
+    {:else if searching || searchFound === null}
+      <p class="note">Looking for contracts of {itemName(searchedType)}…</p>
+    {:else if searchFound.entries.length === 0}
+      <p class="note">{titleWord(SEARCH_WORDS.nothingFound) || "Nothing found"}</p>
+    {:else}
+      <!-- ContractEntrySearchItemExchange and ContractEntrySearchAuction (645 to 711): the contract's name, where it is,
+           its price (an auction's: the price, with no bids here), who issued it, when it ends. -->
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr>
+              <th>{titleWord(SEARCH_WORDS.contract) || "Contract"}</th>
+              <th>{titleWord(SEARCH_WORDS.location) || "Where"}</th>
+              <th class="num">{titleWord(SEARCH_WORDS.price) || "Price"}</th>
+              <th>{titleWord(SEARCH_WORDS.issuer) || "Issued by"}</th>
+              <th>Expires</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each searchFound.entries as entry (entry.contract.contractID)}
+              <tr>
+                <td data-label="Contract">{searchLabel(entry)}</td>
+                <td data-label="Where">{systemName(entry.contract.startSolarSystemID)}</td>
+                <td class="num" data-label="Price">{formatIsk(entry.contract.price)}</td>
+                <td data-label="Issued by">{entry.contract.forCorp ? ownerName(entry.contract.issuerCorpID) : personName(entry.contract.issuerID)}</td>
+                <td data-label="Expires">{dateText(entry.contract.dateExpired)}</td>
+                <td data-label="">
+                  <div class="row-actions">
+                    <button type="button" disabled={busy} onclick={() => open(entry.contract.contractID)}>See details</button>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if searchFound.numFound > searchFound.entries.length}
+        <p class="note">Showing the first {searchFound.entries.length} of {searchFound.numFound}.</p>
       {/if}
     {/if}
   {:else}

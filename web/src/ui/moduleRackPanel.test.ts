@@ -145,19 +145,20 @@ function visibleText(body: string): string {
     .replace(/\s+/g, " ");
 }
 
-test("R8 — fitted modules render as real buttons; the empty slot does not", () => {
+test("R8 — fitted modules render as real buttons; the empty slot is not drawn while empty slots are not shown", () => {
   const body = renderRack();
   const buttons = body.match(/<button[^>]*class="[^"]*module-slot/g) ?? [];
   assert.equal(buttons.length, 3, "three fitted modules, three buttons");
-  // The empty mid slot is a span, because there is nothing to press.
-  assert.match(body, /<span[^>]*class="[^"]*module-slot[^"]*empty/);
+  // The client draws an empty slot only where the pilot shows empty slots (slotsContainer.CheckButtonVisibility,
+  // the HUD options' Display Empty Slots, off at first), and then as a span: there is nothing to press.
+  assert.doesNotMatch(body, /<span[^>]*class="[^"]*module-slot[^"]*empty/);
 });
 
 test("the button says what a click does, by NAME", () => {
   const body = renderRack();
   assert.match(body, /Small Shield Booster I — click to switch on\./);
   assert.match(body, /Miner I — active\. Click to switch off\./);
-  assert.match(body, /Armor EM Hardener I — offline \(bring it online from the Fitting window\)/);
+  assert.match(body, /Armor EM Hardener I — offline \(bring it online from its menu\)/);
 });
 
 test("the cycling module carries aria-pressed and the glow class", () => {

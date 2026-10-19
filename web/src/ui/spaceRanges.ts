@@ -4,7 +4,7 @@
 //
 // ⚠ THERE IS EXACTLY ONE PLACE THIS IS STORED, AND IT IS NOT NEW.
 //
-// `ui/flyingDistances.ts` already holds warp / orbit / hold, persisted per
+// `ui/flyingDistances.ts` holds orbit / hold, persisted per
 // browser, read by the Overview's dispatch, by the radial menu and by the
 // tactical viewport, and picked in Settings. The in-space redesign moves the
 // PICKING to a `▾` on the Orbit and Keep buttons themselves — which is a better

@@ -34,6 +34,17 @@ export async function readCharacterFittings(ask: Ask, characterID: number): Prom
   return ask("charFittingMgr", "GetFittings", [characterID]);
 }
 
+/**
+ * The fittings of the pilot's alliance (fittingSvc.GetAllianceFittings, 415 to 418: only for a pilot in one), as the
+ * server answers them (decoded by bridge/sharedFittings.ts). Fails as the call fails.
+ */
+export async function readAllianceFittings(ask: Ask, allianceID: number): Promise<JsonValue> {
+  if (!anID(allianceID)) {
+    throw new Error("There is no alliance to read the fittings of.");
+  }
+  return ask("allianceFittingMgr", "GetFittings", [allianceID]);
+}
+
 /** The fittings of the pilot's corporation, as the server answers them (decoded by bridge/sharedFittings.ts). Fails as the call fails. */
 export async function readCorporationFittings(ask: Ask, corporationID: number): Promise<JsonValue> {
   if (!anID(corporationID)) {

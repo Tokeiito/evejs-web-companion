@@ -88,8 +88,9 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   piManager: ["M12 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10", "M4 20h.01M12 20h.01M20 20h.01", "M4 17h16"],
   // Industry Manager: one box over three, a build tree.
   industryManager: ["M9 3h6v5H9z", "M12 8v4M5 12h14M5 12v3M12 12v3M19 12v3", "M3 15h4v5H3zM10 15h4v5h-4zM17 15h4v5h-4z"],
+  // A building: the corporation.
+  corporation: ["M4 21V9l8-5 8 5v12z", "M9 21v-6h6v6", "M8 11h2M14 11h2"],
   characterSheet: ["M5 3h14v18H5z", "M12 8a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M8 18a4 4 0 0 1 8 0"],
-  standings: ["M4 9h10M4 9l3-3M4 9l3 3", "M20 15H10M20 15l-3-3M20 15l-3 3"],
 
   // --- people ---
   fleet: ["M12 3l4 8-4-2-4 2z", "M6 13l3 7-3-1.5-3 1.5z", "M18 13l3 7-3-1.5-3 1.5z"],
@@ -111,11 +112,14 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   // error here instead of an empty box. It is also drawn on the window's own
   // title row and by the openers that raise it.
   showInfo: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18", "M12 8h.01", "M12 11v6"],
+  memberDetails: ["M5 3h14v18H5z", "M12 8a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M8 18a4 4 0 0 1 8 0"],
   // The route window, contextual too: a list of places and an arrow along it.
   routeWindow: ["M4 6h10M4 12h10M4 18h6", "M19 5v14", "M16 16l3 3 3-3"],
   // The mission tracker: a list with a tick against its first line.
   missionTracker: ["M4 7l2 2 4-4", "M13 7h7M4 13h16M4 18h12"],
   log: ["M5 4h14v16H5z", "M8 9h8M8 13h8M8 17h5"],
+  // The compare tool: two columns side by side, a line between them.
+  compare: ["M4 6h6v13H4z", "M14 6h6v13h-6z", "M12 3v18"],
 };
 
 /** The glyph for a tab. */

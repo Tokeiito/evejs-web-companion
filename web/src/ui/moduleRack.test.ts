@@ -116,7 +116,7 @@ test("the slot title names the module and what a click would do", () => {
   );
   assert.equal(
     rackSlotTitle("Small Shield Booster I", rackModule({ online: false })),
-    "Small Shield Booster I — offline (bring it online from the Fitting window)",
+    "Small Shield Booster I — offline (bring it online from its menu)",
   );
   assert.equal(rackSlotTitle("", null), "Empty slot");
 });

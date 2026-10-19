@@ -107,6 +107,7 @@ export function openWindow(
   wins: readonly WinState[],
   id: TabID,
   size?: { readonly w?: number; readonly h?: number },
+  place?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } | null,
 ): WinState[] {
   // ⚠ AND NOT A GLOBAL TAB EITHER. The Bot Manager is a window, but it belongs
   // to App's layer above the per-pilot workspaces (globalWindow.ts) — letting a
@@ -125,17 +126,74 @@ export function openWindow(
     // happen because the window was minimized is the whole bug this prevents.
     return wins.map((w) => (w.id === id ? { ...w, z, minimized: false } : w));
   }
-  const spot = firstSpot(wins.length);
+  // Where it was last (the client's registered place: placeOnDesktop), or the first spot.
+  const spot = place ?? firstSpot(wins.length);
   const next: WinState = {
     id,
     x: spot.x,
     y: spot.y,
-    w: size?.w ?? DEFAULT_W,
-    h: size?.h ?? DEFAULT_H,
+    w: place ? Math.max(MIN_W, place.w) : size?.w ?? DEFAULT_W,
+    h: place ? Math.max(MIN_H, place.h) : size?.h ?? DEFAULT_H,
     z,
     minimized: false,
   };
   return [...wins, next];
+}
+
+/**
+ * A window's place as the client keeps it by its windowID (carbonui Window._RegisterWindowSizeAndPositionSetting:
+ * settings.char.windows' windowSizesAndPositions_1, per character): its left, top, width and height, and the desktop's
+ * width and height when it was registered. Registered as the window is moved and resized (OnMouseUp, EndScale,
+ * _OnResize); a window opened again takes it (InitializeSize, UpdatePosition: GetRegisteredPositionAndSize).
+ */
+export interface RegisteredPlace {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly dw: number;
+  readonly dh: number;
+}
+
+/** A window's place registered, with the desktop's size now. */
+export function registerPlace(
+  places: Readonly<Record<string, RegisteredPlace>>,
+  win: WinState,
+  desktop: { readonly w: number; readonly h: number },
+): Record<string, RegisteredPlace> {
+  return { ...places, [win.id]: { x: win.x, y: win.y, w: win.w, h: win.h, dw: desktop.w, dh: desktop.h } };
+}
+
+/**
+ * GetRegisteredPositionAndSizeByClass: a registered place on a desktop of another size. Across, a window at the right
+ * edge (or 16 short of it) keeps to it, one at the left (0 or 16) stays, and any other is moved by how far the share of
+ * its centred spot moves ((width less its width) halved, in whole pixels, as a share of the old width, on the new);
+ * down the same, the top (0 or 16) staying and the bottom keeping to it.
+ */
+export function placeOnDesktop(
+  place: RegisteredPlace,
+  desktop: { readonly w: number; readonly h: number },
+): { readonly x: number; readonly y: number; readonly w: number; readonly h: number } {
+  let left = place.x;
+  let top = place.y;
+  const { w: width, h: height, dw: cdw, dh: cdh } = place;
+  if (cdw !== desktop.w && cdw > 0) {
+    if (left + width === cdw || left + width === cdw - 16) left += desktop.w - cdw;
+    else if (left !== 0 && left !== 16) {
+      const oldCenterX = Math.floor((cdw - width) / 2);
+      left += Math.trunc((oldCenterX / cdw) * desktop.w) - oldCenterX;
+    }
+  }
+  if (cdh !== desktop.h && cdh > 0) {
+    if (top === 0 || top === 16) {
+      // stays
+    } else if (top + height === cdh || top + height === cdh - 16) top += desktop.h - cdh;
+    else {
+      const oldCenterY = Math.floor((cdh - height) / 2);
+      top += Math.trunc((oldCenterY / cdh) * desktop.h) - oldCenterY;
+    }
+  }
+  return { x: left, y: top, w: width, h: height };
 }
 
 /** Raise a window to the top of the stack. No-op if already on top or absent. */
@@ -196,6 +254,8 @@ export interface DesktopLayout {
    * come back expanded on the next dock.
    */
   readonly stationExpanded: boolean;
+  /** Each window's place the last time it was moved or resized, open or not (RegisteredPlace). */
+  readonly places?: Readonly<Record<string, RegisteredPlace>>;
 }
 
 const STORAGE_VERSION = 1;
@@ -235,6 +295,20 @@ function isWinState(v: unknown): v is WinState {
     // unknown field is simply ignored — which is what makes dropping a field
     // safe in a way that adding one is not.
   );
+}
+
+/** The registered places of a saved layout, those of known window tabs with every number finite. */
+function placesOf(value: unknown): Record<string, RegisteredPlace> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const places: Record<string, RegisteredPlace> = {};
+  for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!KNOWN_TABS.has(id) || !raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if ([p.x, p.y, p.w, p.h, p.dw, p.dh].every(isFiniteNumber)) {
+      places[id] = { x: p.x as number, y: p.y as number, w: p.w as number, h: p.h as number, dw: p.dw as number, dh: p.dh as number };
+    }
+  }
+  return places;
 }
 
 /** Read a saved layout for a character; null when none/unusable/unavailable. */
@@ -290,6 +364,8 @@ export function loadLayout(characterID: number): DesktopLayout | null {
       // Absent in every layout saved before the expand toggle existed, and
       // `=== true` is what makes that read as "not expanded" rather than throw.
       stationExpanded: o.stationExpanded === true,
+      // Absent in every layout saved before places were kept: none known.
+      places: placesOf(o.places),
     };
   } catch {
     return null;

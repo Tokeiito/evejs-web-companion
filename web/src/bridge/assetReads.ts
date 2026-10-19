@@ -93,6 +93,25 @@ export interface AssetStationItemsRead {
  * What of the pilot's is at one station, as the server lists it. Nothing is asked for what is no station. Fails
  * as the call fails; and where the server's answer is no list, which is no list of things at all.
  */
+// --- Everything of the pilot's, containers' contents too (the assets window's search) -------------------------
+//
+// THE CALL, as the client makes it (invCache.inv5MinCacheContainer.ListIncludingContainers, 878 to 889):
+//
+//   self.moniker.ListIncludingContainers()
+//
+// with nothing sent, on the same container. No recording has one. The assets window's search asks it at each search
+// (assetsWindow.py 415). It answers a list of a packed row for each of the pilot's things anywhere, those in
+// containers too. The client keeps it five minutes (_DeleteCachedItemsAll); so does the flow.
+
+/** Everything of the pilot's, as the server lists it, untouched. Fails as the call fails, and where it is no list. */
+export async function readAllAssets(ask: Ask): Promise<JsonValue> {
+  const answered = await ask("charMgr", "ListIncludingContainers", []);
+  if (!isListValue(answered)) {
+    throw new Error("Your things could not be read (the server did not answer with a list).");
+  }
+  return answered;
+}
+
 export async function readAssetStationItems(ask: Ask, stationID: number): Promise<AssetStationItemsRead> {
   if (!Number.isSafeInteger(stationID) || stationID <= 0) {
     throw new Error("No location was named.");

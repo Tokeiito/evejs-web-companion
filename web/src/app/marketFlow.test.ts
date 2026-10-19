@@ -252,7 +252,7 @@ function makeFlow(responder: ReturnType<typeof respondOk>) {
 
 // --- Loading ----------------------------------------------------------------
 
-test("loadMarket decodes the book, the own orders, the trades, the escrow and the ISK", async () => {
+test("loadMarket decodes the book, the own orders, the trades and the ISK", async () => {
   const { store, flow } = makeFlow(respondOk());
   await flow.loadMarket(TYPE_ID);
 
@@ -265,7 +265,6 @@ test("loadMarket decodes the book, the own orders, the trades, the escrow and th
   assert.equal(market.ownOrders.length, 1);
   assert.equal(market.orderHistory.length, 1);
   assert.equal(market.orderHistory[0]?.state, "filled");
-  assert.equal(market.escrow?.isk, "2450");
   // ⚠ ISK stays a DECIMAL STRING all the way into the store.
   assert.equal(market.cashBalance, "125000000");
   assert.equal(typeof market.cashBalance, "string");
