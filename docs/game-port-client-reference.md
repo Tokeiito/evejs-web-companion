@@ -2361,7 +2361,17 @@ it is corrected using IsValidNamedItem's existing ship/group predicate and TypeN
 Original compiled3070 confirms an ordinary drone makes no location-name lookup and a named ship
 uses the combined label. Deploy-component naming remains beyond that existing predicate.
 
-Container ancestry/removal tax, fitted-item unloads, live Shift quantity proof,
+Personal ordinary containers directly in the current hangar or active cargo are now valid Trade
+sources. Original compiled invCache.AcceptPossibleRemovalTax754-780 and GetCachedItem confirm
+these parent chains require no price RPC. Cold capture3124 offers the actual container IDs as
+sources, restores exact contents on Abort, then completes delivery of Acolyte3/Hobgoblin2 while
+leaving both containers with their original owner/location/flag. The browser's open-container
+view now follows item notices through the existing native inventory cache; it clears on offering
+and refills on cancellation. Stopped custody3125 agrees with the recipient's hangar screenshot3118.
+Deeper/corporate container ancestry and asset-safety recovery remain explicitly unavailable;
+the server's delivered-wrap and charged-withdrawal lifecycle is the immediate next server work.
+
+The remaining ancestry/removal-tax paths, fitted-item unloads, live Shift quantity proof,
 inventory view controls, item menus/tooltips, splitter persistence and additional
 character-menu placements remain follow-up work. Corporate and active-ship-bay sources are
 wired but were not exercised through this window in the current drop verification.

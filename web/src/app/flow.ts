@@ -5950,7 +5950,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!inventory.loaded) return false;
     const places = itemChangeLocations(args);
     if (places === null) return true;
-    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.container?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
     return places.some((placeID) => shown.includes(placeID));
   }
   function scheduleInventoryRefresh(): void {
@@ -5959,6 +5959,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       inventoryRefreshTimer = null;
       void (async () => {
         await loadInventory();
+        // invCache.OnItemChange updates both the old and new cached container.
+        // Read the open view from that cache too, including a Trade source.
+        const container = store.inventory.get().container;
+        if (container) await openContainer(container.itemID);
         const open = store.inventory.get().openShip;
         if (open) await openShipBays(open.itemID);
       })().catch(() => {});
@@ -6774,9 +6778,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     itemQuantity: max => askQuantity({ min: 0, max, value: max, hintLabel: "UI/Common/NoMoreUnits", hint: "There are no more units available." }),
     source: async (itemID, place) => {
       if (!dockedNow()) throw new Error("Dock before offering inventory in a trade.");
-      // Top-level hangar/office and the active ship cannot be descendants of
-      // an asset-safety wrap (invCache.AcceptPossibleRemovalTax754-780).
-      if (place.kind === "container") throw new Error("Trading items from inside containers is not available yet.");
+      if (place.kind === "container") {
+        // invCache.AcceptPossibleRemovalTax754-780 walks cached parents before
+        // asking for a recovery price. A personal container directly in the
+        // current hangar/active cargo has no asset-wrap ancestor and asks none.
+        // Keep deeper/corporate sources unavailable until their ancestry and
+        // server recovery/access paths have been ported and verified.
+        const inventory = store.inventory.get(), dockedAt = dockedNow();
+        const parent = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === place.itemID);
+        if (!parent || parent.ownerID !== onlineCharacterID()
+            || ![dockedAt, inventory.activeShipID].includes(parent.locationID ?? null)) {
+          throw new Error("Trading from this container's ancestry is not available yet.");
+        }
+        if (parent.typeID === 60) throw new Error("The server's asset-safety recovery price and withdrawal are not implemented yet.");
+      }
       const all = rowsAt(place);
       const row = all?.find(row => row.itemID === itemID);
       if (!row) throw new Error("That item is no longer in the source inventory.");
