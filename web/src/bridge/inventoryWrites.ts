@@ -201,9 +201,11 @@ export async function moveItems(
 /** inventorycommon/const.py flagHangar and flagCargo. Other ship bays use their controller's own flag. */
 const STACK_FLAGS = { hangar: 4, cargo: 5 } as const;
 
-export type StackPlace = keyof typeof STACK_FLAGS | { readonly kind: "shipBay"; readonly bay: string };
+export type StackPlace = keyof typeof STACK_FLAGS
+  | { readonly kind: "shipBay"; readonly bay: string }
+  | { readonly kind: "corp"; readonly division: number };
 
-/** BaseInvContainer.StackAll382-388: each ship bay stacks its locationFlag on the ship's cached inventory. */
+/** BaseInvContainer.StackAll382-388: a bay or corporation division stacks its own locationFlag. */
 export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: StackPlace): Promise<void> {
   const flag = typeof place === "string" ? STACK_FLAGS[place] : moveFlagOf(place);
   await act("invbroker", "StackAll", [flag], null, inventory);

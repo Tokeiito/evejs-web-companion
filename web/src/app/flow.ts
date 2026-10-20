@@ -1483,7 +1483,7 @@ export interface AppFlow {
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
   readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
-  /** Stack loose stacks in the hangar or an active-ship hold, then refresh. */
+  /** Stack loose stacks in the hangar, an active-ship hold or the current corporation division, then refresh. */
   stackContainer(target: StackPlace): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
@@ -6602,13 +6602,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Stack All of the hangar or a ship hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
+   * Stack All of the hangar, a ship hold or a corporation division, on its own inventory (bridge/inventoryWrites.ts),
    * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
-  async function stackPlaceNow(target: StackPlace): Promise<void> {
+  async function stackPlaceNow(target: StackPlace): Promise<void | false> {
     const place = typeof target === "string" ? { kind: target } as const : target;
-    await stackAllCall(inventoryMoves.act, inventoryAt(place).inventory, target);
-    if (typeof target !== "string") {
+    // BaseInvContainer.StackAll383 checks BaseCorpContainer.oneWay before office/cache lookup.
+    if (place.kind === "corp" && !await askOneWayMove()) return false;
+    const destination = place.kind === "corp" ? await inventoryOfPlace(place) : inventoryAt(place);
+    await stackAllCall(inventoryMoves.act, destination.inventory, target);
+    if (place.kind === "corp") await loadCorpHangar();
+    if (place.kind === "shipBay") {
       const open = store.inventory.get().openShip;
       if (open?.itemID === store.inventory.get().activeShipID) await openShipBays(open.itemID);
     }

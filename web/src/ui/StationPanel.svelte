@@ -838,7 +838,7 @@
     readonly emptyText: string;
     /** Where this place's contents may be sent. Excludes the place itself. */
     readonly targets: readonly MoveDestination[];
-    /** BaseInvContainer.StackAll382-388 applies to each actionable ship bay's own locationFlag. */
+    /** The native header stacks the selected controller's own locationFlag. */
     readonly stackKey: Parameters<AppFlow["stackContainer"]>[0] | null;
   }
 
@@ -937,6 +937,8 @@
       place: { kind: "corp", division: division.division },
       rows: division.error ? null : division.rows,
       error: division.error,
+      // The native header dispatches StackAll through the division's controller (oneWay prompt and own flag).
+      stackKey: { kind: "corp", division: division.division },
       emptyText:
         "Nothing here. This division is either empty or your corporation roles do not let you see it — the server decides, and it does not say which.",
     });
