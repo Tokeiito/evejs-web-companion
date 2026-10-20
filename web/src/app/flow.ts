@@ -665,6 +665,7 @@ import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCo
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -4042,6 +4043,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
+  const inventoryMoves = createCachedInventoryMoves(() => {
+    const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
+    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => current, captureNotificationSink: () => sink };
+    return {
+      ask: api.bridgeAsk(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }), current,
+      activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
+      dockedAt: dockedNow(),
+    };
+  });
   // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
   // dispatch itself, before a hosted fetch can be taken by a newer generation of its caller.
   const fencedDo = (assertCurrent: () => void) => api.bridgeDo({ ...callOptions, fetch: (input, init) => {
@@ -5209,6 +5220,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     insideMultiEvent = false,
   ): void {
     directTrades.receive(method, args);
+    if (method === "OnLockedItemChange") inventoryMoves.invalidate(Number(args[2]));
     if (method === "OnDuelChallenge") {
       const incoming = duelChallengeOf(args);
       if (incoming) {
@@ -6136,6 +6148,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    inventoryMoves.clear();
     if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
     fittingRefreshTimer = null;
     containerReadGeneration += 1;
@@ -20035,7 +20048,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
       return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
     });
-    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    if (rows.length > 0) await moveItemsCall(inventoryMoves.act, "hangar", { kind: "hangar" }, shipID, rows, null);
     let after: readonly HoldItem[];
     try {
       after = (await held()).rows;
@@ -28916,7 +28929,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           let quantity = qty ?? null;
           for (let attempt = 0; ; attempt += 1) {
             try {
-              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              await moveItemsCall(inventoryMoves.act, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
               break;
             } catch (error) {
               if (present.length !== 1) throw error;

@@ -2393,9 +2393,30 @@ native custody reads confirm the source remainder and recipient split. This chec
 production handler, dialog and RPC, not a physical Shift gesture: the available drag input
 reset the modifier, as retained event observations show. Physical Shift remains unverified.
 
+Ordinary numeric multi-item Inventory moves now pass through the cached inventory wrapper
+(original invCache1027-1063): active-hull refusal before locking, destination-self and persistent
+lock skips, per-flow local move locks, a NEW acquired-minus-empty-charges set, then finally
+unlock in the acquired set's traversal order. ItemLocking30-34/57-79 supplies a cached dictionary
+for the current station/structure, invalidated by native OnLockedItemChange. Dictionary long
+keys stay exact decimal strings; moved IDs are limited to safe integers. Single Add and other
+inventory writers do not yet share this local broker; fitted/tuple producers remain separate.
+Direct PlayerTrade1691 returns its session moniker and retains the controller's volume order.
+
+Cold browser capture3568 moves eight original mineral stacks to cargo and back. The controller's
+volume order9187..9180 becomes native set order9180..9187, with one station lock-dictionary read
+across both moves. Original compiled MultiAdd/ItemLocking reproduces both actual wire calls
+(agent4); fifteen installed-runtime order cases also match, including collisions and safe
+near-2^53 IDs. All117 calls succeed without decoding errors. Native custody read3573 and cold
+restart3579 agree exactly on original IDs/quantities, empty cargo and unchanged cash; no mutation
+replay. This browser fixture has an empty lock dictionary: populated lock skips and live
+invalidation remain the next coverage, alongside shared locking with other inventory writers.
+The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
+actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
+and lane are not established by a Tranquility lock-change capture.
+
 The remaining ancestry/removal-tax paths, inventory view controls, item menus/tooltips,
-splitter persistence, native MultiAdd cache locks/set traversal and additional character-menu
-placements remain follow-up work. Corporate and active-ship-bay source coverage is recorded
+splitter persistence and additional character-menu placements remain follow-up work.
+Corporate and active-ship-bay source coverage is recorded
 per case in the ignored loop journal; the older drop verification above covers its own fixture.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway

@@ -181,6 +181,8 @@ function hangarMoving(afterMove: (rows: { fields: { itemID: number; quantity: nu
   let moved = false;
   return makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/call") {
+      // ItemLocking.GetLockedItemsByLocation30-34 / IsItemIDLocked57-64.
+      if (body.service === "itemLocking") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "dict", entries: [] }, notifications: [] } };
       moved = true;
       return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
     }
@@ -206,8 +208,10 @@ test("many things moved from the hangar to the hold are the client's one MultiAd
   await flow.transferItems([100, 101], { kind: "hangar" }, { kind: "cargo" });
 
   // AddItems (557 to 558): invCacheCont.MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), the hold's
-  // flagCargo, sorted smallest first (neither row says its volume here, so they stay as they are).
+  // flagCargo. invCache.MultiAdd1027-1063 first checks the cached station lock dictionary,
+  // then traverses a NEW acquired-minus-charges Python set (these two IDs retain order).
   assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "itemLocking", method: "GetItemsByLocation", args: [60003760], kwargs: null, pilot: true },
     { service: "invbroker", method: "MultiAdd", args: [[100, 101], 60003760], kwargs: { flag: 5 }, pilot: true, confirm: true, of: 9001 },
   ]);
   assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/transfer"), false);

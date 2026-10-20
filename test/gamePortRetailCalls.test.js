@@ -1735,6 +1735,8 @@ test("the game port carries native direct trade and the other calls absent from 
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
     // invCache769 removal-tax quote and966-975 inventory self-item read.
     "invbroker.GetPriceForItems", "invbroker.GetSelfInvItem",
+    // ItemLocking30-34/57-64: cached dictionary for the current station/structure.
+    "itemLocking.GetItemsByLocation",
     // pvptradesvc26-51 and pvptradewnd67-89; TQ In station trade41-48:
     // remote initiation, then a lazy List on the returned/notified moniker, and close Abort.
     "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",
