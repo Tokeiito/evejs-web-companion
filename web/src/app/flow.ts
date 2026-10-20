@@ -2163,6 +2163,7 @@ export interface AppFlow {
   corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext>;
   corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]>;
   corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]>;
+  corporationMemberQueryNeedsValue(current?: () => void): Promise<void>;
   memberQueryPreference(name: "FMBQincludeImplied" | "FMBQsearchTitles"): { readonly value: ReadableSignal<boolean>; set(value: boolean): void };
   corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
@@ -29559,6 +29560,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberQueryContext,
     corporationMemberQueryBases,
     corporationMemberQuery,
+    async corporationMemberQueryNeedsValue(current) {
+      const scope = captureMemberOperation(current);
+      const text = "UI/Shared/PleaseTypeSomething";
+      await wordsNow([text]); scope.current();
+      const info = templateWords(text, {}, "Please type something.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    },
     memberQueryPreference: name => memberQuerySetting(store.session.get().accountID, name, settingsStorage),
     corporationMemberTitles,
     corporationMemberSummary,
