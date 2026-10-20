@@ -2018,14 +2018,14 @@ const RETAIL_CALLS = Object.freeze({
   "invbroker.GetAvailableTurretSlots": judged("achievements/client/eventHandler.py:427", sentWithNothing, "invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots(), nothing sent, on the ship's own inventory: how many of its turret hardpoints are free. The achievements' event handler asks it at every change of the session's ship to a ship (251 to 260, 419 to 429: godma's item of the ship first, and only for one of the ship category) and when what is fitted high changes (inventorysvc.py 124). Tranquility's recordings have it in 20: at a login, an ejection, a boarding."),
   "invbroker.List": reshaped(
     `${INV_CACHE}:1138`,
-    // self.moniker.List(flag=flag): the flag is always a keyword, None when there is none.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: kwargs.flag !== undefined ? kwargs.flag : args[0] ?? null } }),
+    // Local List1131-1138: the first positional flag wins, even 0/None. Keep local filters until listedRead consumes them.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: args.length > 0 ? args[0] : kwargs.flag ?? null } }),
     "List(flag=flag)",
   ),
   "invbroker.ListByFlags": reshaped(
     `${INV_CACHE}:1174`,
-    // self.moniker.ListByFlags(flags=uncachedFlags): a keyword, and a list.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(kwargs.flags !== undefined ? kwargs.flags : args[0] ?? []) } }),
+    // Local ListByFlags1167: positional flagIDs wins; listedRead sends only the uncached flags remotely.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(args.length > 0 ? args[0] ?? [] : kwargs.flags ?? []) } }),
     "ListByFlags(flags=[...])",
   ),
   "invbroker.GetCapacity": webOnly(

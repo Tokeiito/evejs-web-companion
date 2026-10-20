@@ -280,10 +280,11 @@ function createPilotInventory({ rowFields, session }) {
     },
     /**
      * invCacheContainer.List(flag): the flag's items, asked for (`ask()`) where the flag has not been listed, and
-     * answered from what the container holds. `typeID` narrows it as the client's keyword does. Where no container
+     * answered from what the container holds. `typeID` narrows it when present, including None/0 (List1159).
+     * Undefined alone means no type filter. Where no container
      * is held for the key, it is asked and nothing is kept.
      */
-    list(key, flag, ask, typeID = null, askSelf = null) {
+    list(key, flag, ask, typeID, askSelf = null) {
       const container = containers.get(key);
       if (!container) return ask();
       return inTurn(container, async () => {
@@ -295,14 +296,14 @@ function createPilotInventory({ rowFields, session }) {
           if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
           container.listed.add(flag);
         }
-        return answerOf(container, (fields) => (flag === null || fields.flagID === flag) && (typeID === null || fields.typeID === typeID));
+        return answerOf(container, (fields) => (flag === null || fields.flagID === flag) && (typeID === undefined || fields.typeID === typeID));
       });
     },
     /**
      * invCacheContainer.ListByFlags(flags): the flags not listed yet asked for (`ask(unlisted)`), alone, and the
      * flags' items answered from what the container holds.
      */
-    listByFlags(key, flags, ask, typeID = null, askSelf = null) {
+    listByFlags(key, flags, ask, typeID, askSelf = null) {
       const container = containers.get(key);
       if (!container) return ask(flags);
       return inTurn(container, async () => {
@@ -315,7 +316,7 @@ function createPilotInventory({ rowFields, session }) {
           if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
           for (const flag of unlisted) container.listed.add(flag);
         }
-        return answerOf(container, (fields) => flags.includes(fields.flagID) && (typeID === null || fields.typeID === typeID));
+        return answerOf(container, (fields) => flags.includes(fields.flagID) && (typeID === undefined || fields.typeID === typeID));
       });
     },
     /**

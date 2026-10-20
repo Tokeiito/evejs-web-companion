@@ -5521,11 +5521,22 @@ function createGamePortPilots({
   function listedRead(entry, object, boundHandle, method, form, sent, selfRead) {
     if (object.container === undefined) return entry.listings.read(listingKeptAs(boundHandle, form), sent);
     const kwargs = form.kwargs ?? {};
-    const typeID = kwargs.typeID === undefined ? null : positive(kwargs.typeID);
-    if (method === "List") return entry.inventory.list(object.container, flagOf(kwargs.flag), () => sent(), typeID, selfRead);
-    const flags = itemsOf(kwargs.flags).map(flagOf).filter((flag) => flag !== null);
-    // self.moniker.ListByFlags(flags=uncachedFlags): only the flags not listed are asked.
-    return entry.inventory.listByFlags(object.container, flags, (unlisted) => sent({ ...form, kwargs: { ...kwargs, flags: { type: "list", items: unlisted } } }), typeID, selfRead);
+    // Python numeric equality for the row's integer fields; preserve None and strings as distinct filters.
+    // Keep the caller's wire values separately: local equality must not change remote int/long/bool representation.
+    const filterValue = (value) => {
+      if (typeof value === "boolean" || typeof value === "bigint") return Number(value);
+      if (value?.type === "long" && /^-?\d+$/.test(String(value.value))) return Number(BigInt(value.value));
+      return value;
+    };
+    const typeID = filterValue(kwargs.typeID);
+    // Original List1138 consumes typeID/securityCode/other kwargs locally, fetching all types with only flag.
+    if (method === "List") return entry.inventory.list(object.container, filterValue(kwargs.flag), () => sent({ ...form, kwargs: { flag: kwargs.flag } }), typeID, selfRead);
+    const rawFlags = itemsOf(kwargs.flags), flags = rawFlags.map(filterValue);
+    // Original ListByFlags1174 sends only uncachedFlags, preserving their input order, duplicates and None.
+    return entry.inventory.listByFlags(object.container, flags, (unlisted) => {
+      const cold = new Set(unlisted);
+      return sent({ ...form, kwargs: { flags: { type: "list", items: rawFlags.filter((_, i) => cold.has(flags[i])) } } });
+    }, typeID, selfRead);
   }
 
   /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
