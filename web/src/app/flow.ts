@@ -13,6 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, safetyWrapAncestor, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -430,8 +431,8 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, iskWords } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
-import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { convertTyped, DATE_LABELS, formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
@@ -663,7 +664,8 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, ordinaryContainerStackPlace, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace, type StackPlace } from "../bridge/inventoryWrites.ts";
+import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -721,7 +723,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
-import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, corporateJournalLines, canViewCorporateJournal, type WalletJournalRead, type CorpWalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
@@ -801,6 +803,8 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
+import { createDirectTrades, type DirectTrades, type FittedTradeSource } from "./directTrades.ts";
+import { fmtAmt } from "../bridge/pyNumbers.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
 import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
@@ -1098,11 +1102,13 @@ export type RackMenuEntry =
   | { readonly kind: "rule" };
 
 /**
- * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a number
  * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
  * own words for it (`hint`).
  */
 export interface QuantityAsk {
+  /** QtyPopup's floatonly precision; the default is an integer field. */
+  readonly digits?: number;
   readonly n: number;
   readonly min: number;
   readonly max: number;
@@ -1440,6 +1446,8 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly directTrades: DirectTrades;
+  startDirectTrade(characterID: number): Promise<void>;
   readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
   startDuel(characterID: number): Promise<void>;
   answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
@@ -1477,8 +1485,9 @@ export interface AppFlow {
   refreshStationPanel(): Promise<void>;
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
-  /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
-  stackContainer(target: "hangar" | "cargo"): Promise<void>;
+  readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
+  /** Stack loose stacks in the hangar, an active-ship hold, a corporation division or an ordinary container, then refresh. */
+  stackContainer(target: StackPlace): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
   /**
@@ -1513,6 +1522,7 @@ export interface AppFlow {
   clearSelection(): void;
   /** Open a container and read its contents; null closes it. */
   openContainer(containerID: number | null): Promise<void>;
+  selectSafetyDivision(divisionID: number): void;
   /** Goal R40 — expand a ship in the Ships card and read its bays; null closes it. */
   openShipBays(shipID: number | null): Promise<void>;
   /** Project the latest loaded fit/dogma/bay observations; performs no IO or actions. */
@@ -2590,6 +2600,8 @@ export interface AppFlow {
    */
   readonly walletJournal: ReadableSignal<WalletJournalRead>;
   loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  readonly corpWalletJournal: ReadableSignal<CorpWalletJournalRead>;
+  loadCorpWalletJournal(accountKey?: number, year?: number | null, month?: number | null): Promise<void>;
   /**
    * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
    * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
@@ -4046,6 +4058,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
+  const inventoryMoves = createCachedInventoryMoves(() => {
+    const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
+    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => current, captureNotificationSink: () => sink };
+    return {
+      ask: api.bridgeAsk(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }), current,
+      activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
+      dockedAt: dockedNow(),
+      structureID: store.station.get().online?.structureID ?? null,
+      now: serverNow,
+      corporationRole: BigInt(store.station.get().online?.corpRole ?? "0"),
+      isCorporationOwner: async ownerID => {
+        const online = store.station.get().online;
+        if (ownerID === online?.characterID) return false;
+        if (ownerID === online?.corporationID || (ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 98_999_999)) return true;
+        if (ownerID < 100_000_000 || ownerID > 2_099_999_999) return false;
+        // Original IsPlayerCorporation consults cfg.eveowners for pre-Inv64 IDs.
+        await memberNames({ current, options: { ...scoped, captureRequestGuard: () => current } }, [{ kind: "ownerType", id: ownerID }]); current();
+        const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)) ?? 0);
+        if (!typeID) return false; // cfg.eveowners KeyError / generic type0.
+        const facts = await infoTypeFacts([typeID]); current();
+        if (!facts[typeID]) throw new Error("The stack owner's type could not be read.");
+        return facts[typeID].groupID === 2;
+      },
+      blankLockValues: async when => {
+        const reasonLabel = "UI/Generic/NoReasonWasSpecified", dateLabel = DATE_LABELS.ll!;
+        await wordsNow([reasonLabel, dateLabel]); current();
+        const templates = store.words.get().templates, reason = templates[reasonLabel];
+        const lockTime = convertTyped(14, when, null, { templates, nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        if (typeof reason !== "string" || !lockTime) throw new Error("The client's lock reason and date words could not be loaded.");
+        return { type: "dict", entries: [["reason", plainText(reason)], ["lockTime", lockTime]] };
+      },
+    };
+  });
   // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
   // dispatch itself, before a hosted fetch can be taken by a newer generation of its caller.
   const fencedDo = (assertCurrent: () => void) => api.bridgeDo({ ...callOptions, fetch: (input, init) => {
@@ -4705,8 +4751,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await wordsNow([label]).catch(() => {});
       const qty = await askQuantity({ min: 0, max: most, value: most, hintLabel: label, hint: most === 0 ? "There are none left where they were." : "How many?" });
       if (qty === null || qty <= 0) return;
-      // containerInventory: GetInventoryFromId(chargeLocationID), the inventory of where the charges lie.
-      const split = await bridgeDo("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
+      // Original compiled DropLoadChargeToModule: GetInventoryFromId(source).Add, not its direct moniker.
+      // Split in the source custody through the shared broker before loading the returned numeric ID.
+      const split = await inventoryMoves.act("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
       const splitID = typeof split === "number" ? split : Number(unwrapLong(split));
       if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
       chargeIDs = [splitID];
@@ -5158,6 +5205,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    inventoryMoves.itemChanged(args[0], args[1]);
+    // Keep already observed parents current for invCache's removal-tax walk.
+    // The notice contains the complete current item, including a changed owner.
+    for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
+      if (!safetyItemCache.has(row.itemID)) continue;
+      if (row.quantity <= 0 || !row.locationID) safetyItemCache.delete(row.itemID);
+      else safetyItemCache.set(row.itemID, row);
+    }
     // ONE item's move comes by this name, and several by OnItemsChanged: the
     // server sends this one unless a batch is asked for. A drone landing in
     // its bay is one item, and with only the batch's own refresh heard the window
@@ -5177,6 +5232,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // reckoned again where they are the page's, as the client's drone panel takes its drones again
     // (clientDogmaLocation.GetActiveDrones).
     const fittingNow = store.fitting.get();
+    // FittingController.OnDogmaItemChange344-365 updates slots when flag or
+    // location changes on an item entering/leaving the displayed ship. Trade
+    // cancellation can restore a fitted item without a fitting-window action.
+    if (fittingNow.activeShipID !== null && readDictPairs(args[1]).some(([key]) => Number(key) === 3 || Number(key) === 4)
+        && itemChangeLocations(args)?.includes(fittingNow.activeShipID)) scheduleFittingRefresh();
     if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
     // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
     // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
@@ -5200,6 +5260,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    directTrades.receive(method, args);
+    if (method === "OnLockedItemChange") inventoryMoves.invalidate(Number(args[2]));
     if (method === "OnDuelChallenge") {
       const incoming = duelChallengeOf(args);
       if (incoming) {
@@ -5573,6 +5635,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      const online = store.station.get().online;
+      const station = sessionNames.includes("stationid") ? sessionChangeValue(method, args, "stationid") : online?.stationID;
+      const structure = sessionNames.includes("structureid") ? sessionChangeValue(method, args, "structureid") : online?.structureID;
+      const inSpace = sessionNames.includes("solarsystemid") ? sessionChangeValue(method, args, "solarsystemid") != null : station == null && structure == null;
+      // Original ProcessSessionChange155-161 returns early for an in-space ship change, even with location keys.
+      if (!sessionNames.includes("shipid") || !inSpace) inventoryMoves.resetLocalLocks();
+    }
     if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
     if (sessionNames?.includes("corpid")) {
       const value = sessionChangeValue(method, args, "corpid");
@@ -5613,6 +5683,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
         ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
+      if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
+        corpWalletJournalGeneration += 1;
+        corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+        walletReads.corporationChanged();
+        containerReadGeneration += 1;
+        const open = store.inventory.get().container;
+        if (open && (open.safety || safetyWrapAncestor(open.itemID, safetyItemCache) !== null)) store.apply({ type: "inventory/container", container: null });
+        safetyCacheGeneration += 1;
+        safetyItemCache.clear();
+        void loadSafetyDeliveries().catch(() => {});
+      }
+    }
+    // invCache.ProcessSessionChange143-170: these place changes invalidate
+    // cached parent inventories as well as any read still coming from them.
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      containerReadGeneration += 1;
+      safetyCacheGeneration += 1;
+      safetyReadGeneration += 1;
+      safetyItemCache.clear();
+      safetyDeliveriesSignal.set(null);
+      store.apply({ type: "inventory/container", container: null });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
@@ -5631,7 +5722,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
-      if (sessionNames?.some(name => name === "locationid" || name === "charid")) duelInvitationSignal.set(null);
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) {
+        duelInvitationSignal.set(null);
+        directTrades.reset(true);
+      }
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -5955,12 +6049,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const INVENTORY_REFRESH_COALESCE_MS = 400;
   let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let fittingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleFittingRefresh(): void {
+    if (fittingRefreshTimer !== null) return;
+    const current = callOptions.captureRequestGuard!();
+    fittingRefreshTimer = setTimeout(() => {
+      fittingRefreshTimer = null;
+      try { current(); } catch { return; }
+      void loadFitting().catch(() => {});
+    }, HOLD_REFRESH_COALESCE_MS);
+  }
   function inventoryShowsItemChange(args: readonly unknown[]): boolean {
     const inventory = store.inventory.get();
     if (!inventory.loaded) return false;
     const places = itemChangeLocations(args);
     if (places === null) return true;
-    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.container?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
     return places.some((placeID) => shown.includes(placeID));
   }
   function scheduleInventoryRefresh(): void {
@@ -5969,6 +6073,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       inventoryRefreshTimer = null;
       void (async () => {
         await loadInventory();
+        // invCache.OnItemChange updates both the old and new cached container.
+        // Read the open view from that cache too, including a Trade source.
+        const container = store.inventory.get().container;
+        if (container) await openContainer(container.itemID);
         const open = store.inventory.get().openShip;
         if (open) await openShipBays(open.itemID);
       })().catch(() => {});
@@ -6094,6 +6202,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    inventoryMoves.clear();
+    if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
+    fittingRefreshTimer = null;
+    containerReadGeneration += 1;
+    safetyCacheGeneration += 1;
+    safetyItemCache.clear();
+    safetyDeliveriesSignal.set(null);
+    safetyWrapNames.clear();
+    safetyReadGeneration += 1;
     if (liveStream) {
       liveStream.close();
       liveStream = null;
@@ -6218,7 +6335,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // independently (their own error is preserved) so one failed read never
   // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
+  const safetyDeliveriesSignal = createSignal<SafetyDeliveries | null>(null);
+  const safetyWrapNames = new Map<number, string | null>();
+  const safetyItemCache = new Map<number, InventoryItemRow>();
+  let safetyCacheGeneration = 0;
+  function rememberSafetyParents(rows: readonly InventoryItemRow[]): void {
+    for (const row of rows) safetyItemCache.set(row.itemID, row);
+  }
+  let safetyReadGeneration = 0;
+  async function loadSafetyDeliveries(): Promise<void> {
+    const characterID = onlineCharacterID(), locationID = dockedNow();
+    const online = store.station.get().online, corporationID = online?.corporationID ?? null, corpRole = online?.corpRole ?? "0";
+    const generation = ++safetyReadGeneration;
+    if (!characterID || !locationID) { safetyDeliveriesSignal.set(null); return; }
+    let wraps: SafetyDeliveries["wraps"] = [], error: string | null = null;
+    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames, corporationID, corpRole); }
+    catch (cause) {
+      if (isSessionLost(cause)) throw cause;
+      error = errorWords(cause);
+    }
+    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID
+      && store.station.get().online?.corporationID === corporationID && (store.station.get().online?.corpRole ?? "0") === corpRole) {
+      safetyDeliveriesSignal.set({ characterID, corporationID, corpRole, locationID, wraps, error });
+      if (!error) {
+        const present = new Set(wraps.map(wrap => wrap.row.itemID));
+        for (const [id, row] of safetyItemCache) if (row.typeID === 60 && row.locationID === locationID && !present.has(id)) safetyItemCache.delete(id);
+        rememberSafetyParents(wraps.map(wrap => wrap.row));
+      }
+    }
+  }
+
   async function loadInventory(): Promise<void> {
+    const cacheGeneration = safetyCacheGeneration;
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
     try {
       panel = await api.loadInventory(callOptions);
@@ -6240,6 +6388,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error, panel.volumes),
       cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
+    await loadSafetyDeliveries();
+    if (cacheGeneration === safetyCacheGeneration) rememberSafetyParents([...store.inventory.get().hangar.rows, ...store.inventory.get().cargo.rows]);
   }
 
   // Run a mutation, then refresh the panel. A lost session is rethrown to
@@ -6385,8 +6535,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // Turn a transfer result into one honest sentence. A split is judged by the
   // source stack shrinking (it mints a NEW stack at the destination, so the
-  // requested itemID never appears there), and a decline with no reason is
-  // reported AS a decline with no reason.
+  // requested itemID never appears there). Items retained at source may have
+  // been skipped by the local cache or refused remotely; report custody only.
   function describeTransfer(
     result: { applied: boolean; moved: readonly number[]; declined: readonly number[] },
     requested: number,
@@ -6399,9 +6549,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return `Moved ${result.moved.length} of ${requested}.`;
     }
     if (result.applied) {
-      return `Moved ${result.moved.length} of ${requested}; the server declined the rest without giving a reason.`;
+      return `Moved ${result.moved.length} of ${requested}; ${result.declined.length} stayed in the source.`;
     }
-    return "The server did not move anything, and gave no reason.";
+    // invCache.MultiAdd1041-1056 can skip locally locked items without an RPC.
+    // A custody re-read establishes what stayed, not which layer declined it.
+    return "No items moved.";
   }
 
   /**
@@ -6470,13 +6622,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Stack All of the hangar or the ship's hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
-   * and only where the panel's rows of it have two stacks of a type, as the client asks nothing otherwise.
+   * Stack All of the hangar, a ship hold, a corporation division or an ordinary container, on its own inventory,
+   * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
-  async function stackPlaceNow(target: "hangar" | "cargo"): Promise<void> {
-    const inventory = store.get().inventory;
-    if (!hasSomethingToStack(target === "hangar" ? inventory.hangar.rows : inventory.cargo.rows)) return;
-    await stackAllCall(bridgeDo, inventoryAt({ kind: target }).inventory, target);
+  async function stackPlaceNow(target: StackPlace): Promise<void | false> {
+    const place = typeof target === "string" ? { kind: target } as const : target;
+    if (place.kind === "container" && (dockedNow() === null || ordinaryContainerStackPlace(store.inventory.get(), store.station.get().online?.characterID ?? null)?.itemID !== place.itemID)) return false;
+    // BaseInvContainer.StackAll383 checks BaseCorpContainer.oneWay before office/cache lookup.
+    if (place.kind === "corp" && !await askOneWayMove()) return false;
+    const destination = place.kind === "corp" ? await inventoryOfPlace(place) : inventoryAt(place);
+    await stackAllCall(inventoryMoves.act, destination.inventory, target);
+    if (place.kind === "corp") await loadCorpHangar();
+    if (place.kind === "container" && store.inventory.get().container?.itemID === place.itemID) await openContainer(place.itemID);
+    if (place.kind === "shipBay") {
+      const open = store.inventory.get().openShip;
+      if (open?.itemID === store.inventory.get().activeShipID) await openShipBays(open.itemID);
+    }
   }
 
   // Reload whatever places are currently on screen. A mutation can touch the
@@ -6486,8 +6647,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
-    if (current.container) {
-      await openContainer(current.container.itemID);
+    if (current.container && store.inventory.get().container?.itemID === current.container.itemID) {
+      const safety = safetyDeliveriesSignal.get();
+      await openContainer(current.container.typeID === 60 && safety && !safety.error
+        && !safety.wraps.some(wrap => wrap.row.itemID === current.container!.itemID) ? null : current.container.itemID);
     }
     if (current.corp.loaded) {
       await loadCorpHangar();
@@ -6617,7 +6780,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await refreshOpenPlaces();
   }
 
+  let containerReadGeneration = 0;
   async function openContainer(containerID: number | null): Promise<void> {
+    const generation = ++containerReadGeneration;
     if (containerID === null) {
       store.apply({ type: "inventory/container", container: null });
       return;
@@ -6628,6 +6793,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const owningRow =
       current.hangar.rows.find((row) => row.itemID === containerID) ??
       current.cargo.rows.find((row) => row.itemID === containerID) ??
+      current.container?.rows.find((row) => row.itemID === containerID) ??
+      safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row ??
+      safetyItemCache.get(containerID) ??
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
@@ -6639,6 +6807,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : current.container && current.container.itemID === containerID
         ? current.container.typeID
         : inSpace?.typeID ?? 0;
+    const ownName = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.name
+      ?? (current.container?.itemID === containerID ? current.container.name : undefined);
+    const safetyRow = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row;
+    const online = store.station.get().online;
+    if (owningRow) rememberSafetyParents([owningRow]);
+    if (knownTypeID === 60 && safetyRow && online?.corporationID && safetyRow.ownerID === online.corporationID) {
+      try {
+        // Original corporate tree/controller(None): one full List, no capacity query.
+        const raw = await bridgeAsk("invbroker", "List", [], null, containerID);
+        const listed = decodeInventoryRowsChecked(raw);
+        if (listed === null) throw new Error("The corporation Asset Safety inventory could not be read.");
+        const knownVolumes = (await api.loadTypeVolumes([...new Set(listed.map(row => row.typeID))], callOptions)).volumes;
+        const volumes: Record<string, number> = {};
+        for (const [typeID, volume] of Object.entries(knownVolumes)) if (typeof volume === "number") volumes[typeID] = volume;
+        const rows = decodeInventoryRows(raw, volumes);
+        const corporation = rows.length ? await bridgeAsk("corpRegistry", "GetCorporation", []) : null;
+        if (rows.length) await wordsNow(SAFETY_DIVISION_LABELS);
+        const divisions = safetyDivisionRows(rows, containerID, online.corporationID!, corporation, (key, own) => templateWords(key, {}, own));
+        const keptDivision = current.container?.itemID === containerID ? current.container.safety?.divisionID ?? null : null;
+        const selected = divisions.find(division => division.divisionID === keptDivision);
+        if (generation !== containerReadGeneration || store.station.get().online?.characterID !== online.characterID
+          || store.station.get().online?.corporationID !== online.corporationID || store.station.get().online?.corpRole !== online.corpRole
+          || dockedNow() !== safetyRow.locationID) return;
+        rememberSafetyParents(rows);
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: selected?.name ? selected.rows : [], capacity: null, hasCapacity: false, error: null,
+          safety: { corporationID: online.corporationID!, divisionID: selected?.divisionID ?? null, divisions } } });
+      } catch (cause) {
+        if (isSessionLost(cause)) throw cause;
+        if (generation !== containerReadGeneration) return;
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: [], capacity: null, hasCapacity: false, error: errorWords(cause) } });
+      }
+      return;
+    }
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -6648,11 +6851,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      if (generation !== containerReadGeneration) return;
       store.apply({
         type: "inventory/container",
         container: {
           itemID: containerID,
           typeID: knownTypeID,
+          name: ownName,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -6660,13 +6865,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
+    if (generation !== containerReadGeneration) return;
+    const rows = decodeInventoryRows(reads.list, reads.volumes);
+    rememberSafetyParents(rows);
     store.apply({
       type: "inventory/container",
       container: {
         itemID: containerID,
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
-        rows: decodeInventoryRows(reads.list, reads.volumes),
+        name: ownName,
+        rows,
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         hasCapacity: reads.hasCapacity,
         error: null,
@@ -6765,6 +6974,118 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+  function fittedTradeSlot(source: FittedTradeSource): FittingSlot {
+    if (!dockedNow()) throw new Error("Dock before offering fitted items in a trade.");
+    const fitting = store.fitting.get();
+    if (fitting.activeShipID !== store.inventory.get().activeShipID) throw new Error("The active ship's fitting changed.");
+    const slot = fitting.slots.find(slot => slot.module?.itemID === (source.kind === "fittedModule" ? source.itemID : source.moduleID));
+    if (!slot?.module || slot.present === false) throw new Error("That module is no longer fitted to this ship.");
+    if (source.kind === "fittedCharge") {
+      if (slotFlagOf(slot.family, slot.index) !== source.flagID || slot.module.charge?.typeID !== source.typeID) throw new Error("That charge is no longer loaded in this slot.");
+    } else if (slot.module.typeID !== source.typeID) throw new Error("That fitted module changed.");
+    return slot;
+  }
+  const directTrades = createDirectTrades({
+    ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
+    name: id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot"),
+    requestNames: ids => {
+      requestNames(ids.map(id => ({ kind: "owner" as const, id })));
+      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/PVPTrade/TypeNameAndItemName", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
+    },
+    primeItems: ids => requestNames(ids.map(id => ({ kind: "evelocation" as const, id }))),
+    manifestMismatch: () => store.words.get().templates["UI/Messages/DirectTradeManifestMismatch"] ?? "The trade contents changed.",
+    wealth: async () => {
+      const wealth = Number(toAmountString(await walletReads.wealth()));
+      if (!Number.isFinite(wealth)) throw new Error("The wallet did not provide the pilot's ISK balance.");
+      return wealth;
+    },
+    quantity: (min, max) => askQuantity({ min, max, value: 100, digits: 2, hintLabel: "UI/Common/SetQtyBetween", hint: "", hintArgs: { min: fmtAmt(min), max: fmtAmt(max) } }),
+    itemQuantity: max => askQuantity({ min: 0, max, value: max, hintLabel: "UI/Common/NoMoreUnits", hint: "There are no more units available." }),
+    source: async (itemID, place) => {
+      if (!dockedNow()) throw new Error("Dock before offering inventory in a trade.");
+      if (place.kind === "container") {
+        // invCache.AcceptPossibleRemovalTax754-780 walks cached parents before
+        // asking for a recovery price. A personal container directly in the
+        // current hangar/active cargo has no asset-wrap ancestor and asks none.
+        // Keep deeper/corporate sources unavailable until their ancestry and
+        // server recovery/access paths have been ported and verified.
+        const inventory = store.inventory.get(), dockedAt = dockedNow();
+        const parent = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === place.itemID);
+        if (!parent || parent.ownerID !== onlineCharacterID()
+            || ![dockedAt, inventory.activeShipID].includes(parent.locationID ?? null)) {
+          throw new Error("Trading from this container's ancestry is not available yet.");
+        }
+        if (parent.typeID === 60) throw new Error("Trading directly from Asset Safety is not available yet. Recover these items to your hangar first.");
+      }
+      const all = rowsAt(place);
+      const row = all?.find(row => row.itemID === itemID);
+      if (!row) throw new Error("That item is no longer in the source inventory.");
+      const selected = store.inventory.get().selection;
+      const rows = selected.includes(itemID) ? all!.filter(row => selected.includes(row.itemID)) : [row];
+      // AddItems takes the first actual row's location, rather than looking
+      // the office up again. Ship-bay projections identify their enclosing
+      // active ship separately from the projected item rows.
+      const sourceID = row.locationID ?? (place.kind === "shipBay" ? inventoryAt(place).liesIn : null);
+      if (!sourceID) throw new Error("The source inventory did not identify where the item is located.");
+      return { rows, sourceID };
+    },
+    fittedType: source => {
+      const module = fittedTradeSlot(source).module!;
+      return source.kind === "fittedCharge" ? module.charge!.typeID : module.typeID;
+    },
+    unloadFitted: async (containerID, source, current) => {
+      const guard = callOptions.captureRequestGuard!(), slot = fittedTradeSlot(source), place = ammoSession();
+      const valid = () => { guard(); return current() && ammoSession().shipID === place.shipID && dockedNow() === place.dockedAt; };
+      if (source.kind === "fittedModule") {
+        // DogmaLocation1077-1104 binds the destination inventory and reads its
+        // self item before UnloadAmmo, then Add has no kwargs for Trade.
+        await unloadModuleToContainerCall(bridgeDo, fittedNow, place, source.itemID, heldWeaponBanks(), askClearGroup,
+          { inventory: containerID, containerItemID: containerID, flag: null }, async () => {
+            if (!valid()) return false;
+            const item = await bridgeAsk("invbroker", "GetSelfInvItem", [], null, containerID);
+            if (!valid()) return false;
+            if (Number(unwrapLong(readRowField(item, "itemID"))) !== containerID) throw new Error("The trade inventory did not identify itself.");
+            fittedTradeSlot(source);
+            return true;
+          });
+      } else {
+        // UnloadAmmoToContainer1106-1134 resolves the module in the source
+        // slot before unloading to (tradeID, offering owner, None), quantityNone.
+        const flag = slotFlagOf(slot.family, slot.index)!;
+        // Slot listings also contain tuple-identified charges. The ordinary
+        // inventory decoder drops those; only the exact numeric module is
+        // needed here, rather than certifying every row as an inventory stack.
+        const listed = decodeInventoryRows(await bridgeAsk("invbroker", "List", [], { flag }, place.shipID));
+        if (!valid()) return;
+        if (!listed.some(row => row.itemID === source.moduleID && row.flagID === flag && row.typeID === slot.module!.typeID && row.locationID === place.shipID)) throw new Error("The source slot did not identify its module.");
+        fittedTradeSlot(source);
+        const outcome = await unloadChargeToContainerCall(bridgeDo, place, source.moduleID, heldWeaponBanks(),
+          error => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", [containerID, place.characterID, null]);
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");
+      }
+      if (!valid()) return;
+      await loadFitting();
+      await refreshOpenPlaces();
+    },
+    activeShipID: () => store.inventory.get().activeShipID,
+    restrictions: async types => {
+      const lists: Record<number, readonly number[] | null> = {};
+      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142, 338], callOptions));
+      return lists;
+    },
+    volumes: async types => (await api.loadTypeVolumes(types, callOptions)).volumes,
+    confirm: key => askDialog(key, null, key === "ConfirmCancelTrade" ? "Cancel this trade?" : "Accept the offer containing a ship?", "okcancel"),
+    say: sayDialog,
+    report: error => { if (failureCode(error) !== "SESSION_REQUEST_RETIRED" && !sayRefusalDialog(error, "The trade could not be updated.")) sayDialog("CustomNotify", { type: "dict", entries: [["notify", errorWords(error)]] }, errorWords(error)); },
+  });
+  async function startDirectTrade(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    // CharacterChecker.OfferTradeWithCharacter281-290 / IsGuest403-408.
+    if (!online || !dockedNow() || characterID === online.characterID || isNpcOwner(characterID)
+        || !store.station.get().guests.some(guest => guest.characterID === characterID)) return;
+    try { await directTrades.start(characterID); }
+    catch (error) { if (!sayRefusalDialog(error, "The trade could not be started.")) throw error; }
   }
   const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
   let duelInvitationN = 0;
@@ -9685,7 +10006,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
-  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  /** QtyPopup: an integer by default, or a float with digits; null on Cancel. */
   function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
     quantityAnswer?.(null);
     dialogsSaidCount += 1;
@@ -9694,7 +10015,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       quantityAnswer = (quantity) => {
         quantityAnswer = null;
         quantityAskedSignal.set(null);
-        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+        const value = (ask.digits ?? 0) === 0 ? Math.trunc(quantity ?? 0) : quantity ?? 0;
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, value)));
       };
       quantityAskedSignal.set({ n, ...ask });
     });
@@ -14471,6 +14793,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
   const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
   let walletJournalGeneration = 0;
+  const NO_CORP_WALLET_JOURNAL: CorpWalletJournalRead = { ...NO_WALLET_JOURNAL, accountKey: 1000, corporationID: null };
+  const corpWalletJournalSignal = createSignal<CorpWalletJournalRead>(NO_CORP_WALLET_JOURNAL);
+  let corpWalletJournalGeneration = 0;
   let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
   const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
     journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
@@ -14501,6 +14826,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
+  }
+
+  function corporateJournalAccountKey(): number {
+    try {
+      const key = Number(settingsStorage?.getItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`) ?? 1000);
+      return Number.isInteger(key) && key >= 1000 && key <= 1006 ? key : 1000;
+    } catch { return 1000; }
+  }
+
+  async function loadCorpWalletJournal(accountKey: number = corporateJournalAccountKey(),
+    year: number | null = corpWalletJournalSignal.get().year, month: number | null = corpWalletJournalSignal.get().month): Promise<void> {
+    const online = store.station.get().online, generation = ++corpWalletJournalGeneration;
+    if (!online?.corporationID || !canViewCorporateJournal(online.corpRole)) {
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+      return;
+    }
+    if (!Number.isInteger(accountKey) || accountKey < 1000 || accountKey > 1006) throw new Error("Choose a corporation wallet division.");
+    // CorpTransactionsPanel's accountkey is a user setting, independent of
+    // the active spending division (session.corpAccountKey).
+    try { settingsStorage?.setItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`, String(accountKey)); } catch { /* Keep the live choice. */ }
+    const held = corpWalletJournalSignal.get();
+    if (held.accountKey !== accountKey || held.year !== year || held.month !== month || held.corporationID !== online.corporationID) {
+      corpWalletJournalSignal.set({ ...NO_CORP_WALLET_JOURNAL, accountKey, year, month, corporationID: online.corporationID });
+    }
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.corporateJournal(accountKey, year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== corpWalletJournalGeneration || store.station.get().online?.corporationID !== online.corporationID
+      || store.station.get().online?.corpRole !== online.corpRole) return;
+    for (const each of [entries, kinds]) if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    const readable = entries.status === "fulfilled" && isListValue(entries.value);
+    corpWalletJournalSignal.set({ accountKey, corporationID: online.corporationID, year, month, loaded: true,
+      lines: entries.status === "fulfilled" ? corporateJournalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : held.kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? errorWords(entries.reason) : !readable ? "The corporation journal could not be read." : kinds.status === "rejected" ? errorWords(kinds.reason) : null });
   }
 
   // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
@@ -19824,7 +20183,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
       return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
     });
-    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    if (rows.length > 0) await moveItemsCall(inventoryMoves.act, "hangar", { kind: "hangar" }, shipID, rows, null);
     let after: readonly HoldItem[];
     try {
       after = (await held()).rows;
@@ -28465,6 +28824,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationAggression.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
+      corpWalletJournalGeneration += 1;
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
@@ -28478,6 +28839,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      directTrades.reset();
       duelInvitationSignal.set(null);
       requestGeneration++;
       cancelCorporationCEOChoice();
@@ -28525,8 +28887,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      // invControllers.StackAll (382 to 388): PermissionDenied asks for the container's password, which the page
-      // does not ask yet; any other refusal goes to the client's handler.
+      // invControllers.StackAll382-407 has a distinct legacy PermissionDenied branch; its installed popup
+      // composition is broken. Secure containers' working EnterPassword proxy is a separate pending unit.
       await runMutation(() => stackPlaceNow(target), STACK_KEPT);
     },
 
@@ -28624,6 +28986,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openContainer,
+    selectSafetyDivision(divisionID) {
+      const container = store.inventory.get().container;
+      const division = container?.safety?.divisions.find(division => division.divisionID === divisionID);
+      if (!container?.safety || !division) return;
+      store.apply({ type: "inventory/container", container: { ...container,
+        rows: division.name === null ? [] : division.rows,
+        error: division.name === null ? "This corporation delivery division could not be named." : null,
+        safety: { ...container.safety, divisionID } } });
+    },
     openShipBays,
     readMiningSupportCapabilities,
     readMiningSupportServices,
@@ -28660,9 +29031,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
-        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
-        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
-        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -28674,13 +29042,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
+          // Native AddItems asks for the full-stack recovery price BEFORE its quantity and one-way prompts.
+          const sourceWrap = present[0]?.locationID === undefined ? null : safetyWrapAncestor(present[0].locationID, safetyItemCache);
+          if (sourceWrap !== null && !(await acceptSafetyRecovery(bridgeAsk, sourceWrap, present.map(row => row.itemID), async tax => {
+            await wordsNow(["UI/Common/Confirm", "UI/Inventory/AssetSafetyRecoveryConfirmation", "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"]);
+            const template = store.words.get().templates["UI/Inventory/AssetSafetyRecoveryConfirmation"];
+            const writeIsk = (value: number, places: number) => iskWords(value, places, store.words.get().templates, () => "")
+              ?? `${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+            const question = typeof template === "string" ? plainText(formatTemplate(template, { tax }, {
+              nameOf: () => "", writeIsk,
+            })) : `Recovering the selected items will cost ${writeIsk(tax, 2)}. Do you wish to continue?`;
+            return askDialog("CustomQuestion", { type: "dict", entries: [["header", templateWords("UI/Common/Confirm", {}, "Confirm")], ["question", question]] }, question);
+          }))) return null;
+          // BaseCorpContainer's one-way prompt follows recovery acceptance (AddItems529).
+          if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
+          if (to.kind === "container" && store.inventory.get().container?.itemID === to.itemID && store.inventory.get().container?.typeID === 60) {
+            throw new Error("Items cannot be added to Asset Safety deliveries.");
+          }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
           // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
           // the second try with the quantity the pilot gave (noRoomForAll).
           let quantity = qty ?? null;
           for (let attempt = 0; ; attempt += 1) {
             try {
-              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              await moveItemsCall(inventoryMoves.act, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
               break;
             } catch (error) {
               if (present.length !== 1) throw error;
@@ -28724,7 +29109,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
         }
         const where = await inventoryOfPlace(place);
-        await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
+        await mergeStacksCall(inventoryMoves.act, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
         await refreshOpenPlaces();
         const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
         const merged = after ? after.quantity - destination.quantity : 0;
@@ -29773,6 +30158,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    directTrades,
+    safetyDeliveries: readonlySignal(safetyDeliveriesSignal),
+    startDirectTrade,
     duelInvitation: readonlySignal(duelInvitationSignal),
     startDuel,
     answerDuel,
@@ -30065,6 +30453,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMarketTransactions,
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
+    corpWalletJournal: readonlySignal(corpWalletJournalSignal),
+    loadCorpWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
     abyssalTimer: readonlySignal(abyssalTimerSignal),
     collapseWarning: readonlySignal(collapseWarningSignal),
@@ -30471,6 +30861,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        directTrades.reset();
         duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
@@ -30505,6 +30896,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        directTrades.reset();
         duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);

@@ -131,19 +131,32 @@ test("Stack All is the client's StackAll on the hangar's own inventory with the 
   const store = createClientStore();
   dockedAtJita(store);
   let panel: unknown = inventoryPanel();
-  const { fetch, requests } = makeFakeFetch((path, _method, body) => (path === "/api/bridge/call" ? ANSWERED(body) : { status: 200, body: panel }));
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path !== "/api/bridge/call") return { status: 200, body: panel };
+    if (body.method === "GetSelfInvItem") return { status: 200, body: { ok: true, result: packedRow({ itemID: 60003760, typeID: 1531 }), notifications: [] } };
+    if (body.method === "List") {
+      // Original compiled StackAll1065-1098 reads native quantities/owners, not display singleton booleans.
+      const items = (panel as ReturnType<typeof inventoryPanel>).hangar.list.items.map(row => ({ ...row as object, fields: { ...(row as { fields: object }).fields, ownerID: 90000001, locationID: 60003760, ...((row as { fields: { singleton: number } }).fields.singleton ? { quantity: -1 } : {}) } }));
+      return { status: 200, body: { ok: true, result: { type: "list", items }, notifications: [] } };
+    }
+    return ANSWERED(body);
+  });
   const flow = createAppFlow(store, { fetch });
   await flow.loadInventory();
 
   // One stack of each type: invCache's container lists and asks nothing (invCache.py 1065 to 1093).
   await flow.stackContainer("hangar");
-  assert.equal(requests.some((r) => r.path === "/api/bridge/call"), false);
+  assert.equal(requests.some((r) => r.path === "/api/bridge/call" && r.body.method === "StackAll"), false);
 
   panel = twoStacks();
   await flow.loadInventory();
   await flow.stackContainer("hangar");
   // invControllers.StackAll (382 to 388): the container's own StackAll(self.locationFlag), flagHangar for the hangar.
   assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "invbroker", method: "GetSelfInvItem", args: [], kwargs: null, pilot: true, of: "hangar" },
+    { service: "invbroker", method: "List", args: [4], kwargs: null, pilot: true, of: "hangar" },
+    { service: "invbroker", method: "GetSelfInvItem", args: [], kwargs: null, pilot: true, of: "hangar" },
+    { service: "invbroker", method: "List", args: [4], kwargs: null, pilot: true, of: "hangar" },
     { service: "invbroker", method: "StackAll", args: [4], kwargs: null, pilot: true, confirm: true, of: "hangar" },
   ]);
   assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/stack"), false);
@@ -373,7 +386,7 @@ test("a leaving the server refuses is said in the panel, in its words", async ()
   assert.match(String(store.inventory.get().actionError), /A session change is already in progress/);
 });
 
-test("a refused mutation is surfaced through the store, not thrown", async () => {
+test("a refused StackAll backing read reaches the client's exception handler", async () => {
   const store = createClientStore();
   dockedAtJita(store);
   const { fetch, requests } = makeFakeFetch((path) => {
@@ -388,13 +401,13 @@ test("a refused mutation is surfaced through the store, not thrown", async () =>
 
   await flow.stackContainer("hangar");
 
-  // R31 — surfaced, in words. The point of the test is that it is surfaced
-  // at all rather than thrown, and that is unchanged.
+  // Original compiled invCache.StackAll1065 reads itemID before List or locking;
+  // a refused backing read propagates to the caller's exception handler.
   assert.equal(
     store.inventory.get().actionError,
     "This client is not allowed to ask the game server for that.",
   );
-  // No reload after a failed mutation (only the failed stacking was requested).
+  // The backing read refused before StackAll could scan or call its remote.
   assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, readsBefore);
 });
 

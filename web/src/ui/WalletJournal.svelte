@@ -4,32 +4,37 @@
   // (red less, green more), its balance and its description (FmtWalletEntry), the hint behind a description that has
   // one ("[r] " before it). Its type filter ("All Types" and the kinds the lines are of) and period ("Last 30 days" and
   // the five months before this one), its headers that sort, a hundred to a page. A player's donation has its two
-  // parties' menus (Show Info, for a character).
+  // parties' menus (Show Info using each owner's actual type).
   //
   // Read as the tab is shown, and again as a period is chosen, from what the account service keeps.
   //
   // Not done: the months' names are the page's own (the client's are label numbers 13 to 24, which the page cannot
-  // look up); a corporation's menu on a donation; the description of a project's payout, which the client makes a link.
+  // look up); the description of a project's payout, which the client makes a link.
   import { onMount } from "svelte";
   import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
   import {
     JOURNAL_LINES_PER_PAGE, entryDescription, entryHint, entryNeeds, journalKindChoices, journalPeriods, ownerNameKind, walletAmount, type JournalLine,
   } from "../bridge/walletJournal.ts";
   import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
-  import { showInfo } from "./showInfo.ts";
+  import { showInfo, subjectOfShowInfoLink } from "./showInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, corporate = false }: { store: ClientStore; flow: AppFlow; corporate?: boolean } = $props();
   // svelte-ignore state_referenced_locally
-  const read = flow.walletJournal;
+  const read = corporate ? flow.corpWalletJournal : flow.walletJournal;
+  // svelte-ignore state_referenced_locally
+  const corpRead = flow.corpWalletJournal;
+  // svelte-ignore state_referenced_locally
+  const wallet = store.wallet;
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const names = store.names;
 
   const W = "UI/Wallet/WalletWindow";
+  const DIVISION_WORDS = ["CorporateDivisionMasterWallet", "CorporateDivisionWalletSecond", "CorporateDivisionWalletThird", "CorporateDivisionWalletFourth", "CorporateDivisionWalletFifth", "CorporateDivisionWalletSixth", "CorporateDivisionWalletSeventh"].map(name => `UI/Corporations/Common/${name}`);
   const WORDS = {
     date: "UI/Common/Date",
     type: `${W}/ColHeaderType`,
@@ -68,7 +73,7 @@
 
   // The words and names the lines need, asked for as the lines come.
   $effect(() => {
-    const labels = new Set<string>(Object.values(WORDS));
+    const labels = new Set<string>([...Object.values(WORDS), ...(corporate ? DIVISION_WORDS : [])]);
     const refs: NameRef[] = [];
     for (const line of $read.lines) {
       const needs = entryNeeds(line, journalMessageID(line.entryTypeID));
@@ -97,6 +102,15 @@
   }
   const isk = (amount: number): string => said(WORDS.isk, { amount: walletAmount(amount) }) ?? `${walletAmount(amount).toLocaleString("en-US")} ISK`;
   const dateText = (line: JournalLine): string => (line.transactionDate === null ? "" : said(WORDS.fmtDate, { dt: String(line.transactionDate) }) ?? "");
+  // transactionsPanel._GetMenuForTransactionScrollEntity uses eveowners.typeID;
+  // player corporations share the broad numeric range used by player characters.
+  function ownerInfo(ownerID: number): void {
+    menuFor = null;
+    void flow.ownerEntryInfo(ownerID, (typeID, itemID) => {
+      const subject = subjectOfShowInfoLink(`showinfo:${typeID}//${itemID}`);
+      if (subject) showInfo(subject);
+    }).catch(() => undefined);
+  }
 
   interface Shown {
     readonly line: JournalLine;
@@ -114,11 +128,24 @@
   const periods = journalPeriods(new Date());
   let periodIndex = $state(0);
   const kinds = $derived(journalKindChoices($read.lines, kindName));
+  function loadPeriod(): void {
+    const period = periods[periodIndex] ?? periods[0]!;
+    void (corporate ? flow.loadCorpWalletJournal($corpRead.accountKey, period.year, period.month)
+      : flow.loadWalletJournal(period.year, period.month)).catch(() => undefined);
+  }
   function choosePeriod(index: number): void {
     periodIndex = index;
     page = 0;
-    const period = periods[index] ?? periods[0]!;
-    void flow.loadWalletJournal(period.year, period.month).catch(() => undefined);
+    loadPeriod();
+  }
+  function chooseAccount(accountKey: number): void {
+    page = 0;
+    const period = periods[periodIndex] ?? periods[0]!;
+    void flow.loadCorpWalletJournal(accountKey, period.year, period.month).catch(() => undefined);
+  }
+  function divisionName(index: number): string {
+    const given = index > 0 ? $wallet.corpDivisions?.find(division => division.key === 1000 + index)?.name : null;
+    return given ?? word(DIVISION_WORDS[index]!, index === 0 ? "Master Wallet" : `Wallet Division ${index + 1}`);
   }
   const periodName = (index: number): string => {
     const period = periods[index]!;
@@ -178,13 +205,20 @@
   ];
 
   onMount(() => {
-    void flow.loadWalletJournal().catch(() => undefined);
+    void (corporate ? flow.loadCorpWalletJournal() : flow.loadWalletJournal()).catch(() => undefined);
   });
 </script>
 
 <div class="wallet-journal">
   <p class="controls">
-    <select bind:value={kindChoice} aria-label={word(WORDS.type, "Type")} onchange={() => (page = 0)}>
+    {#if corporate}
+      <select value={$corpRead.accountKey} aria-label="Wallet division" onchange={event => chooseAccount(Number(event.currentTarget.value))}>
+        {#each DIVISION_WORDS as _label, index}
+          <option value={1000 + index}>{divisionName(index)}</option>
+        {/each}
+      </select>
+    {/if}
+    <select bind:value={kindChoice} aria-label={word(WORDS.type, "Type")} onchange={() => { page = 0; if (corporate) loadPeriod(); }}>
       <option value={0}>{word(WORDS.allTypes, "All Types")}</option>
       {#each kinds as choice (choice.entryTypeID)}
         <option value={choice.entryTypeID}>{choice.name}</option>
@@ -232,8 +266,8 @@
                   {#if menuFor === row.line.sortValue}
                     <span class="journal-menu">
                       {#each [row.line.ownerID1, row.line.ownerID2] as ownerID, party (party)}
-                        {#if ownerID >= 90_000_000 || (ownerID >= 3_000_000 && ownerID < 4_000_000)}
-                          <button type="button" class="minor" onclick={() => { menuFor = null; showInfo({ kind: "character", characterID: ownerID }); }}>{resolvedName($names.resolved, ownerNameKind(ownerID), ownerID, "")}</button>
+                        {#if ownerID > 0}
+                          <button type="button" class="minor" onclick={() => ownerInfo(ownerID)}>{resolvedName($names.resolved, ownerNameKind(ownerID), ownerID, "")}</button>
                         {/if}
                       {/each}
                     </span>

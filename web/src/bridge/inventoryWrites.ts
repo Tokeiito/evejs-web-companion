@@ -13,6 +13,8 @@
 //   the call       invCache's container's MultiMerge (1100 to 1124): self.moniker.MultiMerge(ops, sourceContainerID)
 //                  on the inventory the target is in: the hangar's for a stack in the hangar
 //                  (invCache.GetInventory(const.containerHangar)), a thing's own for one in a ship or a container
+//                  Ordinary numeric calls pass through cachedInventoryMoves: source locks gate acquisition,
+//                  any acquired source permits the original complete operation list, and the wrapper returns None.
 //
 // Recorded on Tranquility once ("Unknown Events Level 2"): in the hangar's container, MultiMerge([(source, target,
 // 3822)], 60001717), a list of one tuple and the station the dropped stack lay in.
@@ -41,6 +43,7 @@
 // refusals (CannotTrashItem) where it destroys nothing.
 
 import type { Ask } from "./ask.ts";
+import type { InventoryState } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** `of`, for the hangar of where the pilot is docked: invCache.GetInventory(const.containerHangar). */
@@ -78,6 +81,8 @@ export async function mergeStacks(
 //   many things   AddItems (489 to 562): sorted by volume times stack, smallest first, from where the first lies,
 //                 MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), or flag=const.flagNone where the
 //                 container has no flag of its own
+//                 Ordinary move callers pass this through cachedInventoryMoves: invCache1027-1063 filters locks
+//                 and traverses a new acquired-minus-charges set AFTER this controller's volume sort.
 //
 // The window's flags: the hangar's flagHangar (StationItems, 1138), the ship's hold flagCargo (ShipCargo, 605), a bay
 // its own (BAY_FLAGS, below), and a container none (BaseInvContainer, 60): one thing into a container goes with
@@ -189,27 +194,40 @@ export async function moveItems(
 // STACK ALL. Until 2026-10-14 a route (POST /api/bridge/inventory/stack) sent StackAll(flag) on the hangar's or the
 // ship's binding. The client's window's Stack All (invControllers.StackAll, 382 to 388) asks its container's own
 // inventory, StackAll(self.locationFlag): the hangar's with flagHangar, the ship's with flagCargo; and invCache's
-// container asks nothing where what it lists has no two stacks of a type (invCache.py 1065 to 1093: a singleton,
-// its quantity below nothing, is passed over). The server merges per type, owner and flag, each merge by the
-// custody's own check with the session's character as the actor (invBrokerService.Handle_StackAll, 11605 on).
+// container acquires shared locks while scanning its own List (cachedInventoryMoves, original compiled
+// invCache.py1065-1098). Only eligible duplicate types with an acquired lock reach the remote. The server merges
+// per type, owner and flag, each merge by custody's own check with the session's character as the actor
+// (invBrokerService.Handle_StackAll, 11955 on).
 
-/** inventorycommon/const.py flagHangar and flagCargo: the flag a hangar's and a ship's hold's Stack All names. */
+/** inventorycommon/const.py flagHangar and flagCargo. Other ship bays use their controller's own flag. */
 const STACK_FLAGS = { hangar: 4, cargo: 5 } as const;
 
-/** Whether rows have something to stack, as invCache's container asks before it calls: two stacks of a type. */
-export function hasSomethingToStack(rows: readonly { readonly typeID: number; readonly singleton: boolean; readonly quantity: number }[]): boolean {
-  const types = new Set<number>();
-  for (const row of rows) {
-    if (row.singleton || row.quantity < 0) continue;
-    if (types.has(row.typeID)) return true;
-    types.add(row.typeID);
-  }
-  return false;
+export type StackPlace = keyof typeof STACK_FLAGS
+  | { readonly kind: "shipBay"; readonly bay: string }
+  | { readonly kind: "corp"; readonly division: number }
+  | { readonly kind: "container"; readonly itemID: number };
+
+/**
+ * First supported StationContainer scope: an assembled ordinary cargo container (group12) directly in the docked
+ * pilot's hangar or active cargo. StationContainer.oneWay1559-1574 is falsey for these personally owned rows.
+ * Corporate/nested/space/secure containers need their own controller confirmation/password handling before exposure.
+ */
+export function ordinaryContainerStackPlace(inventory: InventoryState, characterID: number | null): Extract<StackPlace, { kind: "container" }> | null {
+  const open = inventory.container;
+  if (!open || open.error || characterID === null) return null;
+  const row = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === open.itemID);
+  if (!row || row.groupID !== 12 || !row.singleton || row.ownerID !== characterID) return null;
+  const dockedAt = inventory.structureID ?? inventory.stationID;
+  if (dockedAt === null) return null;
+  const atHangar = row.locationID === dockedAt && row.flagID === 4;
+  const atCargo = row.locationID === inventory.activeShipID && row.flagID === 5;
+  return atHangar || atCargo ? { kind: "container", itemID: open.itemID } : null;
 }
 
-/** Stacks all of a hangar or a ship's hold, on its own inventory (the hangar's, or the ship's by its number). */
-export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: keyof typeof STACK_FLAGS): Promise<void> {
-  await act("invbroker", "StackAll", [STACK_FLAGS[place]], null, inventory);
+/** BaseInvContainer.StackAll382-393: a bay/division passes its flag; an unflagged StationContainer calls StackAll(). */
+export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: StackPlace): Promise<void> {
+  const flag = typeof place === "string" ? STACK_FLAGS[place] : moveFlagOf(place);
+  await act("invbroker", "StackAll", typeof place !== "string" && place.kind === "container" ? [] : [flag], null, inventory);
 }
 
 /** The refusals TrashItems answered, as the wire spelled the list; none for an answer of None. */

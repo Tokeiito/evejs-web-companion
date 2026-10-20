@@ -2271,7 +2271,7 @@ and Cancel methods (loop evidence cdx2924, with UI/RPC boundaries recorded). A c
 two-account probe cdx2923/cdx2931 verified the existing server's returned/received monikers,
 carried List and subsequent bound List row shapes, True Abort and bilateral OnTradeCancel.
 The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or complete a trade.
-The full store baseline was restored byte for byte afterward. No browser trade UI exists yet.
+The full store baseline was restored byte for byte afterward. Later slices below add the browser UI.
 
 The same recording's lines386/388 prove corporate source inventory: a staged item changes from
 owner98826653/location1052880078604/flag115 to the offering pilot's trade row. Server commit
@@ -2314,8 +2314,159 @@ state, accepted both manifests and received completion for both pilots. Wallets 
 expected net0.25 and close Abort remained valid. Decoded wire3007 confirms the argument kinds;
 actual zero-money call3008 uses PyZeroReal0x0b. The TQ offer packet itself is LARGE PAYLOAD; the
 client's decoded scatter at968 exposes its manifest fields, not exact packet bytes. No TQ money
-offer was found. Browser controllers, window lifecycle, drop restrictions, ship-warning and money
-dialogs, notice-driven exchange state and guest-gated menus remain separate work.
+offer was found.
+
+The browser now owns each exchange in `app/directTrades.ts`, keyed by container and received
+moniker. It opens the native-sized window for incoming trades even when that pilot is inactive.
+The two native inventory requests share one List result (TQ220-226); actual cold browser capture
+cdx3043 shows four opening List calls for the source and three for the recipient, without polling.
+Money, manifests, item rows and closure follow the native notifications. Cancel asks the installed
+ConfirmCancelTrade question and clears its close-time reference before Abort; OnTradeCancel
+closes without another call. Completion closes with Abort. Both flows were observed in the browser:
+a .25/.50 ISK exchange completed with a net .25 transfer, then a new exchange canceled after first
+declining the confirmation. The actual wire contains two close-time Aborts for completion and one
+for cancellation, all True. Self and non-guest member menus omit Trade; a present guest gets it.
+
+Offer Money uses the current offer as minimum, wallet wealth as maximum, initial100 and digits2.
+The native float field trims excess decimals (original compiled SingleLineEditFloat29-41).
+Displayed offers use eveformat.isk's default zero decimals, while the manifest retains fractions;
+QtyPopup's hint uses FmtAmt's grouped whole bounds. Original compiled currency13-18 and FmtAmt
+confirm these separate display rules. The browser's first screenshot caught a clipped money label;
+its corrected 64px header and whole-ISK labels were then checked visually (cdx3045).
+
+Inventory stacks now drop through the same received trade moniker. Retained List rows supply
+their actual source location; selected stacks use native type volume times quantity for MultiAdd,
+with flag0, while a single Add uses flagNone. PlayerTrade1672-1687's active-ship, asset-safety-wrap
+and static typelist gates run before those writes. The installed typeListLoader.pyd's lists36/142
+match every inclusion/exclusion array in the same-build CCP data used by the app. Ship-hangar
+rows now provide the existing inventory drag payload too. Native Shift quantity rules are ported,
+but a physical Shift-drag has not yet been proven with the available input API.
+
+Cold browser capture3069 proves local injector/wrap/active-ship refusals with no Add, two
+volume-ordered MultiAdds, three single Adds, nonempty offers and acceptance reset after adding.
+Declining the recipient's TradeShipWarning sends no MakeOffer; accepting it completes the Rifter,
+three Acolytes and one Hobgoblin. Browser hangars and stopped custody read3082 agree on delivery.
+Cancellation restores the drone stacks, including a subsequent reverse-direction trade. The
+ordinary Member List's Trade entry is also verified. A drop on the other-party header routes to
+the offering pilot's controller. Cold capture3099 also verifies a drop wholly inside the other
+party's blank lower inventory: Add(item, Jita, qty3, flagNone) returns True, and both windows show
+the offering pilot's three Acolytes. Cancel returns them to the source hangar. Temporary event
+tracing3094 showed the earlier failed automated gestures ended on a newly entered element
+without a final dragover or drop event; the successful gesture emitted both on the inventory
+div. No application hit-area change was needed, and the diagnostic logging was removed.
+
+Native GetItemLabel251-264 uses type names for ordinary drones and combines type/item names for
+named hulls. The first nonempty browser check exposed an incorrect location-name preference;
+it is corrected using IsValidNamedItem's existing ship/group predicate and TypeNameAndItemName.
+Original compiled3070 confirms an ordinary drone makes no location-name lookup and a named ship
+uses the combined label. Deploy-component naming remains beyond that existing predicate.
+
+Personal ordinary containers directly in the current hangar or active cargo are now valid Trade
+sources. Original compiled invCache.AcceptPossibleRemovalTax754-780 and GetCachedItem confirm
+these parent chains require no price RPC. Cold capture3124 offers the actual container IDs as
+sources, restores exact contents on Abort, then completes delivery of Acolyte3/Hobgoblin2 while
+leaving both containers with their original owner/location/flag. The browser's open-container
+view now follows item notices through the existing native inventory cache; it clears on offering
+and refills on cancellation. Stopped custody3125 agrees with the recipient's hangar screenshot3118.
+That capture did not exercise deeper/corporate ancestry or charged asset-safety recovery.
+The later recovery, corporation and nested-container cases are recorded separately in the loop journal.
+
+Single active fitted-source drags now follow the original compiled AddItems489-525 and
+DogmaLocation1077-1134 (web `f85b40b0`, server `2eedd415b`). A loaded slot supplies its charge;
+that path lists the source flag and sends UnloadAmmo(ship,module,(tradeID,actor,None),None).
+A module binds/reads the destination self item, sends scalar UnloadAmmo and then inventory Add
+without qty or flag, after any bank confirmation/breakup. Cold browser capture3469 offers
+EMP20, both original guns and shield377, including a drop on the peer half. Abort restores the
+loaded charge and original gun slot automatically; a new completed trade retains all four
+original IDs in the recipient's personal Jita hangar across cold restart3481. The native charge
+tuple previously failed the server's scalar-only preflight. No exact fitted-Trade TQ capture
+or launched retail UI is claimed; multiple fitted selection is a distinct native producer.
+
+Original compiled PlayerTrade.AddItems and BaseInvContainer._AddItem/__AddItem/
+PromptUserForQuantity193-327 confirm the ordinary single-stack quantity branch: Shift asks
+QtyPopup(max,0,max,NoMoreUnits), Cancel or zero sends no Add, and a stack of one bypasses the
+popup. The browser's production dialog and native partial offer were checked cold with an
+explicit DOM drop shiftKey boundary using the actual captured inventory drag payload: Cancel
+and zero retain an empty Trade, choosing3 from50 leaves47 at source and offers3, and Pyerite1
+offers without a question. Actual browser buttons accept the dialog and completed trade;
+native custody reads confirm the source remainder and recipient split. This checks the
+production handler, dialog and RPC, not a physical Shift gesture: the available drag input
+reset the modifier, as retained event observations show. Physical Shift remains unverified.
+
+Ordinary numeric multi-item Inventory moves now pass through the cached inventory wrapper
+(original invCache1027-1063): active-hull refusal before locking, destination-self and persistent
+lock skips, per-flow local move locks, a NEW acquired-minus-empty-charges set, then finally
+unlock in the acquired set's traversal order. ItemLocking30-34/57-79 supplies a cached dictionary
+for the current station/structure, invalidated by native OnLockedItemChange. Dictionary long
+keys stay exact decimal strings; moved IDs are limited to safe integers. Single Add and other
+inventory writers do not yet share this local broker; fitted/tuple producers remain separate.
+Direct PlayerTrade1691 returns its session moniker and retains the controller's volume order.
+
+Cold browser capture3568 moves eight original mineral stacks to cargo and back. The controller's
+volume order9187..9180 becomes native set order9180..9187, with one station lock-dictionary read
+across both moves. Original compiled MultiAdd/ItemLocking reproduces both actual wire calls
+(agent4); fifteen installed-runtime order cases also match, including collisions and safe
+near-2^53 IDs. All117 calls succeed without decoding errors. Native custody read3573 and cold
+restart3579 agree exactly on original IDs/quantities, empty cargo and unchanged cash; no mutation
+replay. That first fixture has an empty lock dictionary. Populated capture3595 subsequently
+checks a mixed corporation blueprint selection: only the unlocked ID reaches MultiAdd. An
+actual peer unlock notice causes a fresh empty dictionary read on the same page, then both
+remaining blueprints move. Relocking invalidates the cache again; an all-locked selection
+reads two keys and sends no move RPC. Original compiled consumers reproduce all four actual
+MultiAdd lists and three browser cache invalidations (agent5). The outcome now states how many
+items stayed at source, or "No items moved", without attributing a local skip to the server.
+All276 calls succeed; cold restart3611 preserves both corporate locked originals and the
+personal cargo original, with unchanged cash and no replay. Full staged baseline is restored.
+Ordinary single Add now shares the broker with MultiAdd; other numeric inventory writers
+remain follow-up work.
+The prerequisite container metadata cache now keeps the actual backing self row separately
+from listed contents and from a public own-item notice override. Original compiled
+`invCache` constructor913-936, properties942-975 and List/ListByFlags1131-1205 show why:
+a cold station hangar lists first, then lazily fetches its itemID/typeID; a numeric inventory
+already has its ID, so listing it needs no self RPC. Canonical backing `GetSelfInvItem()`
+reads reuse that reply until the container is dropped. A public own-item notice does not
+prime a cold backing type. Owner/group consumers prefer the public notice, then backing
+self, then an already-listed row (OnItemChange295-300, GetCorpKeys645-657).
+Actual production transport3628 verifies both empty listing forms, one self read per
+container lifetime, numeric listing without self, and fresh metadata after reselection.
+Closed wire3630 has252 successful calls including100 from the real browser; its empty item
+hangar and populated Badger cargo render normally. Lifecycle3634 verifies incoming corporate
+contents without a parent listing or relist, ownership notices, and real role resignation:
+the now-personal container stays held while the still-corporate container is rebound and
+receives the server's access refusal. The raw metadata route represents backing
+`_SetItemData`, not every native public `GetItem(force)` behavior or a capacity cache.
+
+**Ordinary single Add and shared locks.** Original compiled `invCache.Add998-1025` rejects
+the active hull first, evaluates the destination ID, returns None for explicit zero quantity,
+checks persistent locks before self-placement, then evaluates the destination type before
+acquiring `lockAddItemToContainer`. A contender uses the holder's reason and values. The
+default MultiAdd holder produces `ItemIsLocked` with the client's already-formatted held date
+and `NoReasonWasSpecified` text; a named Add holder carries only its actual `containerType`.
+Installed native localization and the existing web formatter agree (agent4). Add preserves
+the remote result; both paths release by ID, including on an early valid item notice, with
+no acquisition token. Same-pilot invalidation replaces the broker's current map; an old
+finally still operates on that current map (agent5). Whole-pilot retirement stays isolated.
+The structure hangar alias seeds its numeric ID, avoiding a station-only metadata lookup.
+
+Cold browser42 refuses the locked blueprint locally, then moves original Tritanium50 to
+cargo and back (3659/3661). StationPanel disables overlapping UI actions; the held HTTP
+request3660 proves no browser contention. Production flow3663/3664, with deliberate request
+gates and real replies, verifies Add-held MultiAdd skips and both contention payloads.
+The production helper/API then forwards actual item notices before a gated first completion;
+the same original Nocxium30 moves back before that first operation returns, and both Add
+results retain their numeric ID. Closed3667 has218 successful calls,29 notices and no
+unmatched/decode errors. Cold3670 preserves all eight exact stacks, empty cargo, all three
+corporate blueprints, the original persistent lock and unchanged balance without replay.
+Trace diagnostics, tuple/fitted producers, natural scheduler timing, other numeric writers
+and universal public GetItem/capacity semantics are outside this ordinary move slice.
+The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
+actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
+and lane are not established by a Tranquility lock-change capture.
+
+The remaining ancestry/removal-tax paths, inventory view controls, item menus/tooltips,
+splitter persistence and additional character-menu placements remain follow-up work.
+Corporate and active-ship-bay source coverage is recorded
+per case in the ignored loop journal; the older drop verification above covers its own fixture.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by

@@ -312,7 +312,7 @@ const flow = {
     rows.splice(a, 1);
     push();
   },
-  async stackContainer(which: string): Promise<void> { log(`stackContainer("${which}")`); },
+  async stackContainer(which: Parameters<AppFlow["stackContainer"]>[0]): Promise<void> { log(`stackContainer(${JSON.stringify(which)})`); },
   async boardShip(itemID: number): Promise<void> {
     log(`boardShip(a hull)`);
     world.activeShipID = itemID;

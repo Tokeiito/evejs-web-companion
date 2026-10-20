@@ -92,8 +92,9 @@ test("normalizeDivisionNames keys by 1..7 ordinal and tolerates string keys", ()
 // Fixtures reproduce EXACTLY what the eve.js account service emitted for
 // rrfarmer -> Farmer, captured live through the BFF on 2026-07-21 (documented in
 // the AFK log): GetJournal is a util.Rowset (header + POSITIONAL lines,
-// `buildJournalRowset`), GetTransactions a list<util.KeyVal>
-// (`buildTransactionList`), GetEntryTypes a CachedMethodCallResult wrapping a
+// `buildJournalRowset`), GetTransactions then a list<util.KeyVal>
+// (historical compatibility inputs; the corrected native path now uses DBRows),
+// GetEntryTypes a CachedMethodCallResult wrapping a
 // list<KeyVal{entryTypeID, entryTypeName, …}>. The row VALUES below are the real
 // bytes off the wire, not a guessed shape.
 
@@ -112,8 +113,7 @@ const JOURNAL_HEADER: readonly string[] = [
   "sortValue",
 ];
 
-/** A list<util.KeyVal> exactly like `buildTransactionList`. */
-/** The same entries as account.GetTransactions answers them: one KeyVal each, named as the journal's columns were. */
+/** Retained historical KeyVal entries, named as the old journal's columns were. */
 function asTransactions(lines: ReadonlyArray<readonly JsonValue[]>): JsonValue {
   return txnList(lines.map((line) => Object.fromEntries(JOURNAL_HEADER.map((name, at) => [name, line[at] ?? null]))));
 }

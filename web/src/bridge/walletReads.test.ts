@@ -36,7 +36,8 @@ function asking(answers: Record<string, JsonValue | (() => JsonValue | Promise<J
 }
 
 const ROW = corporationRow({ corporationID: 98000001, division1: "Hangar One", division2: "Hangar Two", walletDivision1: "never read", walletDivision2: "Payroll", walletDivision3: "  ", walletDivision5: "Ships" });
-const NAMES = { 1: null, 2: "Payroll", 3: null, 4: null, 5: "Ships", 6: null, 7: null };
+// Original bco_corporations.GetDivisionNames138-154 retains nonempty whitespace.
+const NAMES = { 1: null, 2: "Payroll", 3: "  ", 4: null, 5: "Ships", 6: null, 7: null };
 const ANSWERS = {
   "account.GetCashBalance": 1000165000,
   "account.GetWalletDivisionsInfo": { type: "list", items: [] },
