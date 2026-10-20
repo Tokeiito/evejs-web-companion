@@ -431,7 +431,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, iskWords } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
@@ -799,7 +799,7 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
-import { createDirectTrades, type DirectTrades } from "./directTrades.ts";
+import { createDirectTrades, type DirectTrades, type FittedTradeSource } from "./directTrades.ts";
 import { fmtAmt } from "../bridge/pyNumbers.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
@@ -5180,6 +5180,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // reckoned again where they are the page's, as the client's drone panel takes its drones again
     // (clientDogmaLocation.GetActiveDrones).
     const fittingNow = store.fitting.get();
+    // FittingController.OnDogmaItemChange344-365 updates slots when flag or
+    // location changes on an item entering/leaving the displayed ship. Trade
+    // cancellation can restore a fitted item without a fitting-window action.
+    if (fittingNow.activeShipID !== null && readDictPairs(args[1]).some(([key]) => Number(key) === 3 || Number(key) === 4)
+        && itemChangeLocations(args)?.includes(fittingNow.activeShipID)) scheduleFittingRefresh();
     if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
     // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
     // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
@@ -5978,6 +5983,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const INVENTORY_REFRESH_COALESCE_MS = 400;
   let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let fittingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleFittingRefresh(): void {
+    if (fittingRefreshTimer !== null) return;
+    const current = callOptions.captureRequestGuard!();
+    fittingRefreshTimer = setTimeout(() => {
+      fittingRefreshTimer = null;
+      try { current(); } catch { return; }
+      void loadFitting().catch(() => {});
+    }, HOLD_REFRESH_COALESCE_MS);
+  }
   function inventoryShowsItemChange(args: readonly unknown[]): boolean {
     const inventory = store.inventory.get();
     if (!inventory.loaded) return false;
@@ -6121,6 +6136,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
+    fittingRefreshTimer = null;
     containerReadGeneration += 1;
     safetyCacheGeneration += 1;
     safetyItemCache.clear();
@@ -6880,6 +6897,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
   }
+  function fittedTradeSlot(source: FittedTradeSource): FittingSlot {
+    if (!dockedNow()) throw new Error("Dock before offering fitted items in a trade.");
+    const fitting = store.fitting.get();
+    if (fitting.activeShipID !== store.inventory.get().activeShipID) throw new Error("The active ship's fitting changed.");
+    const slot = fitting.slots.find(slot => slot.module?.itemID === (source.kind === "fittedModule" ? source.itemID : source.moduleID));
+    if (!slot?.module || slot.present === false) throw new Error("That module is no longer fitted to this ship.");
+    if (source.kind === "fittedCharge") {
+      if (slotFlagOf(slot.family, slot.index) !== source.flagID || slot.module.charge?.typeID !== source.typeID) throw new Error("That charge is no longer loaded in this slot.");
+    } else if (slot.module.typeID !== source.typeID) throw new Error("That fitted module changed.");
+    return slot;
+  }
   const directTrades = createDirectTrades({
     ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
     name: id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot"),
@@ -6924,10 +6952,48 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (!sourceID) throw new Error("The source inventory did not identify where the item is located.");
       return { rows, sourceID };
     },
+    fittedType: source => {
+      const module = fittedTradeSlot(source).module!;
+      return source.kind === "fittedCharge" ? module.charge!.typeID : module.typeID;
+    },
+    unloadFitted: async (containerID, source, current) => {
+      const guard = callOptions.captureRequestGuard!(), slot = fittedTradeSlot(source), place = ammoSession();
+      const valid = () => { guard(); return current() && ammoSession().shipID === place.shipID && dockedNow() === place.dockedAt; };
+      if (source.kind === "fittedModule") {
+        // DogmaLocation1077-1104 binds the destination inventory and reads its
+        // self item before UnloadAmmo, then Add has no kwargs for Trade.
+        await unloadModuleToContainerCall(bridgeDo, fittedNow, place, source.itemID, heldWeaponBanks(), askClearGroup,
+          { inventory: containerID, containerItemID: containerID, flag: null }, async () => {
+            if (!valid()) return false;
+            const item = await bridgeAsk("invbroker", "GetSelfInvItem", [], null, containerID);
+            if (!valid()) return false;
+            if (Number(unwrapLong(readRowField(item, "itemID"))) !== containerID) throw new Error("The trade inventory did not identify itself.");
+            fittedTradeSlot(source);
+            return true;
+          });
+      } else {
+        // UnloadAmmoToContainer1106-1134 resolves the module in the source
+        // slot before unloading to (tradeID, offering owner, None), quantityNone.
+        const flag = slotFlagOf(slot.family, slot.index)!;
+        // Slot listings also contain tuple-identified charges. The ordinary
+        // inventory decoder drops those; only the exact numeric module is
+        // needed here, rather than certifying every row as an inventory stack.
+        const listed = decodeInventoryRows(await bridgeAsk("invbroker", "List", [], { flag }, place.shipID));
+        if (!valid()) return;
+        if (!listed.some(row => row.itemID === source.moduleID && row.flagID === flag && row.typeID === slot.module!.typeID && row.locationID === place.shipID)) throw new Error("The source slot did not identify its module.");
+        fittedTradeSlot(source);
+        const outcome = await unloadChargeToContainerCall(bridgeDo, place, source.moduleID, heldWeaponBanks(),
+          error => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", [containerID, place.characterID, null]);
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");
+      }
+      if (!valid()) return;
+      await loadFitting();
+      await refreshOpenPlaces();
+    },
     activeShipID: () => store.inventory.get().activeShipID,
     restrictions: async types => {
       const lists: Record<number, readonly number[] | null> = {};
-      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142], callOptions));
+      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142, 338], callOptions));
       return lists;
     },
     volumes: async types => (await api.loadTypeVolumes(types, callOptions)).volumes,

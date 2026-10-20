@@ -70,6 +70,11 @@ test("Add is the client's when it carries a quantity, and is marked when it does
   // A quantity the caller gave is the caller's, whatever is held of the item; null is none given.
   assert.deepEqual([withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: 3 }, knows).kwargs, withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: 3 }, knows).status], [{ flag: 5, qty: 3 }, "same"]);
   assert.deepEqual(withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: null }, knows).kwargs, { flag: 5, qty: 3822 });
+  // Original DogmaLocation.UnloadModuleToContainer1097-1103: flagless Trade
+  // omits qty/flag; a corporation division retains explicit qty=None and flag.
+  const fitted = { ...knows, shipID: 9, slotOf: itemID => itemID === 101 ? 19 : null };
+  assert.deepEqual(withContext("invbroker.Add", [101, 9], null, fitted).kwargs, null);
+  assert.deepEqual(withContext("invbroker.Add", [101, 9], { qty: null, flag: 116 }, fitted).kwargs, { qty: null, flag: 116 });
   // An item the cache does not hold: sent as it came, and marked.
   const unknown = withContext("invbroker.Add", [999, 60003760], { flag: 5 }, knows);
   assert.deepEqual([unknown.kwargs, unknown.status], [{ flag: 5 }, "differs"]);
@@ -491,7 +496,8 @@ test("ammunition goes in and out with its modules as a list, and one module by i
   assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, list([7]), list([31]), 5000]).args, [5000, list([7]), list([31]), 5000], "already lists: kept");
   assert.equal(form("dogmaIM.LoadAmmo", [5000, [7], [31], 5000]).status, "reshaped");
   const hangar = [60003760, 140000001, 4];
-  // No quantity (UnloadAmmoFromModules): the modules as a list, the place as it came (a tuple, which is what an
+  // UnloadAmmoFromModules1136 sends a list; UnloadModuleToContainer1097 below
+  // sends a scalar. The place comes as a tuple, which is what an
   // array is on the wire).
   assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7, 8], hangar]).args, [5000, list([7, 8]), hangar]);
   // UnloadModuleToContainer: one module by itself and the container, as Tranquility recorded it.
@@ -1727,6 +1733,8 @@ test("what goes up into a customs office, and comes down from one, goes as the c
 
 test("the game port carries native direct trade and the other calls absent from the web gateway", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // invCache769 removal-tax quote and966-975 inventory self-item read.
+    "invbroker.GetPriceForItems", "invbroker.GetSelfInvItem",
     // pvptradesvc26-51 and pvptradewnd67-89; TQ In station trade41-48:
     // remote initiation, then a lazy List on the returned/notified moniker, and close Abort.
     "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",

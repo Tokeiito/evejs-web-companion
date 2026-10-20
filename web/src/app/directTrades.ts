@@ -16,6 +16,9 @@ export interface DirectTradeWindow {
   readonly abortOnClose: boolean;
   readonly raised: number;
 }
+export type FittedTradeSource =
+  | { readonly kind: "fittedModule"; readonly itemID: number; readonly typeID: number }
+  | { readonly kind: "fittedCharge"; readonly moduleID: number; readonly flagID: number; readonly typeID: number };
 interface Dependencies {
   readonly ask: Ask;
   readonly act: Ask;
@@ -28,6 +31,8 @@ interface Dependencies {
   quantity(min: number, max: number): Promise<number | null>;
   itemQuantity(max: number): Promise<number | null>;
   source(itemID: number, place: InventoryPlace): Promise<{ rows: readonly InventoryItemRow[]; sourceID: number }>;
+  fittedType(source: FittedTradeSource): number;
+  unloadFitted(containerID: number, source: FittedTradeSource, current: () => boolean): Promise<void>;
   activeShipID(): number | null;
   restrictions(types: readonly number[]): Promise<Readonly<Record<number, readonly number[] | null>>>;
   volumes(types: readonly number[]): Promise<Readonly<Record<number, number | null>>>;
@@ -179,7 +184,31 @@ export function createDirectTrades(deps: Dependencies) {
       if (row.itemID === deps.activeShipID()) { deps.say("PeopleAboardShip", null, "That ship is currently being piloted."); return; }
       if (row.typeID === 60) { deps.say("CannotTradeAssetSafety", null, "Asset safety wraps cannot be traded."); return; }
     }
-    const types = [...new Set(rows.map(row => row.typeID))], lists = await deps.restrictions(types);
+    const types = [...new Set(rows.map(row => row.typeID))];
+    if (!await checkTradable(types)) return;
+    if (rows.length === 1) {
+      const row = rows[0]!, quantity = shift && row.quantity > 1 ? await deps.itemQuantity(row.quantity) : row.quantity;
+      if (!quantity || !get(id)?.abortOnClose) return;
+      await addDirectTradeItem(deps.act, w.moniker, row.itemID, sourceID, quantity);
+    } else if (rows.length > 1) {
+      const volumes = await deps.volumes(types);
+      const items = rows.map(row => {
+        const volume = volumes[row.typeID];
+        if (typeof volume !== "number") throw new Error("The installed client has no volume for this item type.");
+        return { itemID: row.itemID, stacksize: row.quantity, unitVolume: volume };
+      });
+      if (get(id)?.abortOnClose) await addDirectTradeItems(deps.act, w.moniker, items, sourceID);
+    }
+  }
+  async function checkTradable(types: readonly number[], fitted = false): Promise<boolean> {
+    const lists = await deps.restrictions(types);
+    // BaseInvContainer.OnDropData/_ValidateMove438-479 runs before PlayerTrade
+    // AddItems: installed TYPE_LIST_CANNOT_BE_UNFITTED338, not a rig guess.
+    const cannotUnfit = fitted ? types.filter(typeID => lists[typeID]?.includes(338)) : [];
+    if (cannotUnfit.length) {
+      deps.say("CannotUnfitItem", { type: "dict", entries: [["itemList", [29, { type: "list", items: intSetOf(cannotUnfit).keys() }]]] }, "These fitted items cannot be removed.");
+      return false;
+    }
     const restricted = types.filter(typeID => {
       const holding = lists[typeID];
       if (!holding) throw new Error("The installed client has no trade restriction data for this item type.");
@@ -189,26 +218,22 @@ export function createDirectTrades(deps: Dependencies) {
       // The native local error takes a Python set. Keep its iteration order
       // when supplying the browser's type-list formatter with those entries.
       deps.say("CannotTradeNonTradable", { type: "dict", entries: [["itemList", [29, { type: "list", items: intSetOf(restricted).keys() }]]] }, "These items cannot be traded.");
-      return;
+      return false;
     }
-    if (rows.length === 1) {
-      const row = rows[0]!, quantity = shift && row.quantity > 1 ? await deps.itemQuantity(row.quantity) : row.quantity;
-      if (!quantity || !get(id)) return;
-      await addDirectTradeItem(deps.act, w.moniker, row.itemID, sourceID, quantity);
-    } else if (rows.length > 1) {
-      const volumes = await deps.volumes(types);
-      const items = rows.map(row => {
-        const volume = volumes[row.typeID];
-        if (typeof volume !== "number") throw new Error("The installed client has no volume for this item type.");
-        return { itemID: row.itemID, stacksize: row.quantity, unitVolume: volume };
-      });
-      if (get(id)) await addDirectTradeItems(deps.act, w.moniker, items, sourceID);
-    }
+    return true;
+  }
+  async function offerFitted(id: number, source: FittedTradeSource): Promise<void> {
+    const captured = generation;
+    const current = () => generation === captured && get(id)?.abortOnClose === true;
+    if (!current() || !await checkTradable([deps.fittedType(source)], true) || !current()) return;
+    // BaseInvContainer.AddItems505-517 precedes _AddItem and its Shift quantity
+    // popup. A fitted charge therefore unloads the whole slot, even with Shift.
+    await deps.unloadFitted(id, source, current);
   }
   function reset(abort = false): void {
     const old = windows.get(); generation++; windows.set([]); opening.clear();
     if (abort) for (const w of old) if (w.abortOnClose) void abortDirectTrade(deps.act, w.moniker).catch(deps.report);
   }
-  return { windows: readonlySignal(windows), start, receive, cancel, accept, offerMoney, offerItems, reset, report: deps.report };
+  return { windows: readonlySignal(windows), start, receive, cancel, accept, offerMoney, offerItems, offerFitted, reset, report: deps.report };
 }
 export type DirectTrades = ReturnType<typeof createDirectTrades>;

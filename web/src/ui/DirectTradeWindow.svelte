@@ -57,10 +57,12 @@
   function drop(event: DragEvent): void {
     event.preventDefault();
     const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME));
-    if (!payload || payload.kind !== "inventoryItem") return;
+    if (!payload) return;
     // pvptradewnd60: a drop onto the other side uses the offering pilot's
     // controller too; it never changes the ownership of the offered row.
-    void run(() => session.flow.directTrades.offerItems(trade.state.containerID, payload.itemID, payload.from, event.shiftKey));
+    void run(() => payload.kind === "inventoryItem"
+      ? session.flow.directTrades.offerItems(trade.state.containerID, payload.itemID, payload.from, event.shiftKey)
+      : session.flow.directTrades.offerFitted(trade.state.containerID, payload));
   }
   function resizeSplit(event: PointerEvent): void {
     if (event.button !== 0) return;
