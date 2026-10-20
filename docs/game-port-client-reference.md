@@ -2050,6 +2050,20 @@ after an injected server refusal, and published no local event for a real reply 
 The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
 this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
 
+Corporation and alliance labels preserve no color (`None`) independently of explicit white (`0`).
+Original compiled `addressbookService.CreateContactLabel` 1015-1020 and `GetLabelText` 1189-1202,
+executed through the installed Python 2.7 DLL, keep None and render plain label text; explicit 0
+adds a white color tag (`mailSvc.py` 31). EveJS previously changed a newly created uncolored label
+to 0 on the next session's `GetLabels`; server fix `76299b459` preserves null in both organization
+registries. Native game-port writes, rename, fresh sessions and a full server restart retain
+None alongside explicit 0/2, assigned label masks and standing 2.5. Captured replies show None in
+corporate CIndexedRowset packed rows and alliance KeyVals. The unmodified Corporation Contacts
+and Alliance Contacts panels display those actual persisted labels; orange is colored, while
+the existing browser swatch policy renders white and uncolored labels in its own text color.
+The recursive TQ corpus has an empty corporate `GetLabels` reply but no matching label-write
+recording, so this establishes compiled-client behavior and local wire parity, not a TQ write
+default. CCP `blue/src/PyRowSet.cpp` 1151-1180 supports None in numeric DBRow columns.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
