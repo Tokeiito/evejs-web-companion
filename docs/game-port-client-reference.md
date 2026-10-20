@@ -2348,8 +2348,12 @@ Declining the recipient's TradeShipWarning sends no MakeOffer; accepting it comp
 three Acolytes and one Hobgoblin. Browser hangars and stopped custody read3082 agree on delivery.
 Cancellation restores the drone stacks, including a subsequent reverse-direction trade. The
 ordinary Member List's Trade entry is also verified. A drop on the other-party header routes to
-the offering pilot's controller; attempts in its blank lower inventory area produced no RPC and
-need diagnosis. No claim that every drop position works.
+the offering pilot's controller. Cold capture3099 also verifies a drop wholly inside the other
+party's blank lower inventory: Add(item, Jita, qty3, flagNone) returns True, and both windows show
+the offering pilot's three Acolytes. Cancel returns them to the source hangar. Temporary event
+tracing3094 showed the earlier failed automated gestures ended on a newly entered element
+without a final dragover or drop event; the successful gesture emitted both on the inventory
+div. No application hit-area change was needed, and the diagnostic logging was removed.
 
 Native GetItemLabel251-264 uses type names for ordinary drones and combines type/item names for
 named hulls. The first nonempty browser check exposed an incorrect location-name preference;
@@ -2357,8 +2361,8 @@ it is corrected using IsValidNamedItem's existing ship/group predicate and TypeN
 Original compiled3070 confirms an ordinary drone makes no location-name lookup and a named ship
 uses the combined label. Deploy-component naming remains beyond that existing predicate.
 
-Container ancestry/removal tax, fitted-item unloads, live Shift quantity proof, the blank lower
-drop target, inventory view controls, item menus/tooltips, splitter persistence and additional
+Container ancestry/removal tax, fitted-item unloads, live Shift quantity proof,
+inventory view controls, item menus/tooltips, splitter persistence and additional
 character-menu placements remain follow-up work. Corporate and active-ship-bay sources are
 wired but were not exercised through this window in the current drop verification.
 
