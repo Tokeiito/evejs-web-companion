@@ -134,6 +134,9 @@ function standardFetch(
     if (path.startsWith("/api/bridge/inventory/container/")) {
       return { status: 200, body: containerReads(containerItems) };
     }
+    // invCache.Add998-1025 reads persistent locks and backing type before the actual move.
+    if (path === "/api/bridge/call" && body.service === "itemLocking") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "dict", entries: [] }, notifications: [] } };
+    if (path === "/api/bridge/call" && body.method === "GetSelfInvItem") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: packedRow({ itemID: body.of === "hangar" ? 60003760 : body.of, typeID: body.of === "hangar" ? 52678 : 588 }), notifications: [] } };
     return mutation(path, body);
   });
 }
@@ -183,6 +186,9 @@ function hangarMoving(afterMove: (rows: { fields: { itemID: number; quantity: nu
     if (path === "/api/bridge/call") {
       // ItemLocking.GetLockedItemsByLocation30-34 / IsItemIDLocked57-64.
       if (body.service === "itemLocking") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "dict", entries: [] }, notifications: [] } };
+      // Original invCache.Add1016 evaluates lazy typeID before taking the shared broker lock.
+      // This supplies metadata only; it must not mark the fixture as moved.
+      if (body.service === "invbroker" && body.method === "GetSelfInvItem") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: packedRow({ itemID: body.of === "hangar" ? 60003760 : body.of, typeID: body.of === "hangar" ? 52678 : 588 }), notifications: [] } };
       moved = true;
       return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
     }
@@ -232,8 +238,10 @@ test("a split is the client's Add with the number asked, and is reported as a sp
 
   await flow.transferItems([100], { kind: "hangar" }, { kind: "cargo" }, 300);
 
-  // __AddItem (213): Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag).
+  // __AddItem213 -> invCache.Add998-1025: persistent guard, lazy destination type, then numeric Add.
   assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "itemLocking", method: "GetItemsByLocation", args: [60003760], kwargs: null, pilot: true },
+    { service: "invbroker", method: "GetSelfInvItem", args: [], kwargs: null, pilot: true, of: 9001 },
     { service: "invbroker", method: "Add", args: [100, 60003760], kwargs: { qty: 300, flag: 5 }, pilot: true, confirm: true, of: 9001 },
   ]);
   assert.equal(store.inventory.get().lastOutcome?.applied, true);
@@ -271,7 +279,7 @@ test("a partial move reports how many of the selection actually landed", async (
   await flow.transferItems([100, 101], { kind: "hangar" }, { kind: "cargo" });
 
   assert.match(String(store.inventory.get().lastOutcome?.message), /Moved 1 of 2/);
-  assert.match(String(store.inventory.get().lastOutcome?.message), /without giving a reason/);
+  assert.match(String(store.inventory.get().lastOutcome?.message), /stayed in the source/);
 });
 
 test("a typed refusal surfaces the SERVER's own message, not a guess", async () => {
@@ -372,13 +380,19 @@ test("a container that fails to open shows its reason and stays open in the pane
 
 test("a move out of a container names the container as the source place", async () => {
   const store = createClientStore();
-  const { fetch, requests } = standardFetch();
+  dockedAtJita(store);
+  const { fetch, requests } = standardFetch(undefined, [packedRow({ itemID: 200, typeID: 34, groupID: 18, categoryID: 4, flagID: 0, quantity: 40, singleton: 0 })]);
   const flow = createAppFlow(store, { fetch });
 
+  await flow.loadInventory();
+  await flow.openContainer(CONTAINER_ID);
   await flow.transferItems([200], { kind: "container", itemID: CONTAINER_ID }, { kind: "hangar" });
 
-  const transfer = requests.find((r) => r.path === "/api/bridge/inventory/transfer");
-  assert.deepEqual(transfer!.body.from, { kind: "container", itemID: CONTAINER_ID });
+  // invControllers._AddItem229-262 -> invCache.Add998-1025: numeric source is where this row lies.
+  const transfer = requests.find((r) => r.path === "/api/bridge/call" && r.body.method === "Add");
+  assert.deepEqual(transfer!.body.args, [200, CONTAINER_ID]);
+  assert.deepEqual(transfer!.body.kwargs, { qty: 40, flag: 4 });
+  assert.equal(transfer!.body.of, "hangar");
 });
 
 // --- merge ------------------------------------------------------------------

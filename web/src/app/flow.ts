@@ -432,7 +432,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
-import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { convertTyped, DATE_LABELS, formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
@@ -4051,6 +4051,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }), current,
       activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
       dockedAt: dockedNow(),
+      structureID: store.station.get().online?.structureID ?? null,
+      now: serverNow,
+      blankLockValues: async when => {
+        const reasonLabel = "UI/Generic/NoReasonWasSpecified", dateLabel = DATE_LABELS.ll!;
+        await wordsNow([reasonLabel, dateLabel]); current();
+        const templates = store.words.get().templates, reason = templates[reasonLabel];
+        const lockTime = convertTyped(14, when, null, { templates, nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        if (typeof reason !== "string" || !lockTime) throw new Error("The client's lock reason and date words could not be loaded.");
+        return { type: "dict", entries: [["reason", plainText(reason)], ["lockTime", lockTime]] };
+      },
     };
   });
   // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
@@ -5165,6 +5175,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    inventoryMoves.itemChanged(args[0], args[1]);
     // Keep already observed parents current for invCache's removal-tax walk.
     // The notice contains the complete current item, including a changed owner.
     for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
@@ -5589,6 +5600,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      const online = store.station.get().online;
+      const station = sessionNames.includes("stationid") ? sessionChangeValue(method, args, "stationid") : online?.stationID;
+      const structure = sessionNames.includes("structureid") ? sessionChangeValue(method, args, "structureid") : online?.structureID;
+      const inSpace = sessionNames.includes("solarsystemid") ? sessionChangeValue(method, args, "solarsystemid") != null : station == null && structure == null;
+      // Original ProcessSessionChange155-161 returns early for an in-space ship change, even with location keys.
+      if (!sessionNames.includes("shipid") || !inSpace) inventoryMoves.resetLocalLocks();
+    }
     if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
     if (sessionNames?.includes("corpid")) {
       const value = sessionChangeValue(method, args, "corpid");

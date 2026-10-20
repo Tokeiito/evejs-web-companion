@@ -2417,7 +2417,8 @@ MultiAdd lists and three browser cache invalidations (agent5). The outcome now s
 items stayed at source, or "No items moved", without attributing a local skip to the server.
 All276 calls succeed; cold restart3611 preserves both corporate locked originals and the
 personal cargo original, with unchanged cash and no replay. Full staged baseline is restored.
-Shared locking with single Add and other inventory writers remains follow-up work.
+Ordinary single Add now shares the broker with MultiAdd; other numeric inventory writers
+remain follow-up work.
 The prerequisite container metadata cache now keeps the actual backing self row separately
 from listed contents and from a public own-item notice override. Original compiled
 `invCache` constructor913-936, properties942-975 and List/ListByFlags1131-1205 show why:
@@ -2434,6 +2435,30 @@ contents without a parent listing or relist, ownership notices, and real role re
 the now-personal container stays held while the still-corporate container is rebound and
 receives the server's access refusal. The raw metadata route represents backing
 `_SetItemData`, not every native public `GetItem(force)` behavior or a capacity cache.
+
+**Ordinary single Add and shared locks.** Original compiled `invCache.Add998-1025` rejects
+the active hull first, evaluates the destination ID, returns None for explicit zero quantity,
+checks persistent locks before self-placement, then evaluates the destination type before
+acquiring `lockAddItemToContainer`. A contender uses the holder's reason and values. The
+default MultiAdd holder produces `ItemIsLocked` with the client's already-formatted held date
+and `NoReasonWasSpecified` text; a named Add holder carries only its actual `containerType`.
+Installed native localization and the existing web formatter agree (agent4). Add preserves
+the remote result; both paths release by ID, including on an early valid item notice, with
+no acquisition token. Same-pilot invalidation replaces the broker's current map; an old
+finally still operates on that current map (agent5). Whole-pilot retirement stays isolated.
+The structure hangar alias seeds its numeric ID, avoiding a station-only metadata lookup.
+
+Cold browser42 refuses the locked blueprint locally, then moves original Tritanium50 to
+cargo and back (3659/3661). StationPanel disables overlapping UI actions; the held HTTP
+request3660 proves no browser contention. Production flow3663/3664, with deliberate request
+gates and real replies, verifies Add-held MultiAdd skips and both contention payloads.
+The production helper/API then forwards actual item notices before a gated first completion;
+the same original Nocxium30 moves back before that first operation returns, and both Add
+results retain their numeric ID. Closed3667 has218 successful calls,29 notices and no
+unmatched/decode errors. Cold3670 preserves all eight exact stacks, empty cargo, all three
+corporate blueprints, the original persistent lock and unchanged balance without replay.
+Trace diagnostics, tuple/fitted producers, natural scheduler timing, other numeric writers
+and universal public GetItem/capacity semantics are outside this ordinary move slice.
 The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
 actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
 and lane are not established by a Tranquility lock-change capture.
