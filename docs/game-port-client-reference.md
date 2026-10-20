@@ -2135,8 +2135,21 @@ the supplied abstract graphics at render size256 in a 128×256 frame1347-1352.
 The page preserves that sequence and ordinary window history/reuse. Live browser
 verification showed accented text, correct large icon, count3/count0, issuer logo
 navigation and history back to the medal. Wire capture has two details calls for
-each reconstruction and none for minimize/restore. The existing EveJS details
-reply supplies all consumed fields; no additional handler change was supported.
+each reconstruction and none for minimize/restore. The original browser check
+established field availability, but a later native encoding check found a server
+defect: details title/description and recipient/received reasons were UTF-8 PyString.
+Installed `eveprefs`7,205-206 sets CP1252; original compiled
+`LabelCore._Layout`669 -> `stringManip.GetAsUnicode`39-44 therefore corrupts those
+bytes. EveJS now explicitly returns PyUnicode for these persisted user texts.
+Actual before/after replies run through the original compiled label and recipient
+consumers show mojibake before and preserved accented text after (cdx2531).
+
+Received-medal rows also need title/description: `charSheetUtil.GetMedalScrollEntries`
+29-57 passes them directly to compiled `infosvc.GetMedalEntry`529-561, which reads
+both without a details lookup. EveJS appends the missing Unicode fields after
+its original seven columns. The actual old row raises AttributeError in that
+original consumer; the fixed row constructs the entry and held graphics.
+This establishes required named fields, not an exact TQ received-row descriptor.
 There is no GetMedalDetails reply in the recursive TQ corpus search, so its exact
 TQ container/descriptor/cache policy remains unverified.
 
