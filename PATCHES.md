@@ -22,6 +22,7 @@ been offered. This file is only the merge order the rebuild replays. Every branc
 | 11 | `fix/companion-pi-haul-tax-funds` | [#137](https://github.com/rrfarmer/evejs-web-companion/pull/137) (seen live 2026-10-19) |
 | 12 | `feat/login-rewards` | [#138](https://github.com/rrfarmer/evejs-web-companion/pull/138) |
 | 13 | `feat/server-messages` | [#139](https://github.com/rrfarmer/evejs-web-companion/pull/139) (seen live 2026-10-19) |
+| 14 | `fix/bridge-abyss-strip-only` | [#140](https://github.com/rrfarmer/evejs-web-companion/pull/140) (bot engine loads in the live BFF 2026-10-20) |
 
 ## Synced 2026-10-19 (nineteenth sync): `main` rebuilt from the PR branches
 
