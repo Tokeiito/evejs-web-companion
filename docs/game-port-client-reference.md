@@ -2153,6 +2153,23 @@ This establishes required named fields, not an exact TQ received-row descriptor.
 There is no GetMedalDetails reply in the recursive TQ corpus search, so its exact
 TQ container/descriptor/cache policy remains unverified.
 
+Decorations uses ordinary `Scroll` with sortGroups/reverseGroupSortEnabled false
+(`corp_ui_member_decorations.Load`39-49). Compiled `Scroll.SortAsRoot`914-951 keeps
+medal groups in server order, places nested groups before preview entries, and
+sorts recipient rows by the selected column key then the lowercase full label.
+`_GetSortValue`721-758 strips only `font.DeTag`'s color/alignment tags, attempts
+the native numeric/unit conversion, otherwise appends the remaining columns
+without lowercasing them. Python 2 numeric keys precede text. Descending reverses
+the completed list, including ties. The page follows this order and saves
+`scrollsortby_3[corp_decorations_scroll] = [localizedHeader, reversed]` in the
+account's user settings (`GetSortBy`674-689, `ChangeSortBy`966-992). A new column
+starts ascending; clicking the current column flips direction. An unavailable
+saved header falls back to the first header (`__LoadHeaders`1106-1125).
+An empty opened recipient group shows the native NoItem label
+(`PrepareSubContent`1314-1339). Live counts2/10, numeric/text reasons, group order
+and preference survival across a full page reload were verified. Width preferences
+are the next unit; this ordinary scroll has no column hide/reorder menu.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

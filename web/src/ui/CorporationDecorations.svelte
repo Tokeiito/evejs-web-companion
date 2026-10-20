@@ -9,9 +9,13 @@
   import { showInfo } from "./showInfo.ts";
   import { DATE_LABELS, formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
+  import { sortScrollRows } from "../bridge/scrollSort.ts";
   let { store, flow, active }: { store: ClientStore; flow: AppFlow; active: boolean } = $props();
   // svelte-ignore state_referenced_locally
   const words = store.words, names = store.names, changed = flow.corporationDecorationsChanged;
+  // Ordinary Scroll; this preference belongs to the account's user section.
+  // svelte-ignore state_referenced_locally
+  const sortSetting = flow.scrollSortPreference("corp_decorations_scroll"), sortPreference = sortSetting.value;
   const PREFIX = "UI/Corporations/CorporationWindow/Members/Decorations/";
   const HEADERS = [
     [PREFIX + "DecorationRecipient", "Decoration / Recipient"],
@@ -21,7 +25,13 @@
   const TITLE = "UI/Corporations/BaseCorporationUI/Decorations";
   const EMPTY = PREFIX + "NoDecorationsFound";
   const AWARDEES = PREFIX + "ViewAwardees", INFO = "UI/Commands/ShowInfo";
+  const NO_ITEM = "/Carbon/UI/Controls/Common/NoItem";
   const word = (label: string, fallback: string) => plainText($words.templates[label] ?? fallback);
+  const headerNames = $derived(HEADERS.map(([label, fallback]) => word(label!, fallback!)));
+  const sortIndex = $derived(Math.max(0, headerNames.indexOf($sortPreference.by ?? "")));
+  function changeSort(index: number): void {
+    sortSetting.set(headerNames[index]!, index === sortIndex ? !$sortPreference.reversed : false);
+  }
   let rows = $state<readonly CorporationDecoration[] | null>(null);
   let graphics = $state<readonly CorporationDecorationGraphic[]>([]);
   let expanded = $state(new Set<number>());
@@ -55,11 +65,18 @@
     if (reload) untrack(() => { void load(); });
   });
   onMount(() => {
-    flow.requestWords([TITLE, EMPTY, AWARDEES, INFO, DATE_LABELS.ss!, ...HEADERS.map(([label]) => label!)]);
+    flow.requestWords([TITLE, EMPTY, AWARDEES, INFO, NO_ITEM, DATE_LABELS.ss!, ...HEADERS.map(([label]) => label!)]);
     return () => { disposed = true; ++serial; };
   });
   function date(value: bigint): string {
     return plainText(formatTemplate($words.templates[DATE_LABELS.ss!] ?? "", { datetime: { type: "long", value: value.toString() } }, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") }));
+  }
+  function sortedAwardees(medalID: number): readonly CorporationMedalAwardee[] {
+    return sortScrollRows(awardees.get(medalID) ?? [], row => [
+      resolvedName($names.resolved, "owner", row.recipientID, "…"),
+      resolvedName($names.resolved, "owner", row.issuerID, "…"),
+      date(row.date), row.reason, String(row.awarded),
+    ].join("<t>"), sortIndex, $sortPreference.reversed);
   }
   function expand(medalID: number): void {
     if (expanded.has(medalID)) { expanded = new Set([...expanded].filter(id => id !== medalID)); return; }
@@ -94,7 +111,7 @@
   {:else if rows.length === 0}<p class="empty">{word(EMPTY, "No decorations found")}</p>
   {:else}
     <div class="table-scroll"><table>
-      <thead><tr>{#each HEADERS as [label, fallback]}<th>{word(label!, fallback!)}</th>{/each}</tr></thead>
+      <thead><tr>{#each headerNames as label, index}<th aria-sort={sortIndex === index ? $sortPreference.reversed ? "descending" : "ascending" : "none"}><button type="button" class="sort" onclick={() => changeSort(index)}>{label}{sortIndex === index ? $sortPreference.reversed ? " ▼" : " ▲" : ""}</button></th>{/each}</tr></thead>
       <tbody>{#each rows as row (row.medalID)}
         <tr title={plainText(row.description)} data-medal={row.medalID}>
           <td><button type="button" class="group" aria-expanded={expanded.has(row.medalID)} onclick={() => expand(row.medalID)}>{expanded.has(row.medalID) ? "▾" : "▸"} {plainText(row.title)}</button></td><td>{resolvedName($names.resolved, "owner", row.creatorID, "…")}</td>
@@ -103,18 +120,19 @@
         {#if expanded.has(row.medalID)}
           {#if previewErrors.has(row.medalID)}<tr><td colspan="5" class="error">{previewErrors.get(row.medalID)}</td></tr>
           {:else}
-            <tr><td colspan="5"><div class="medal-entry"><MedalPreview layers={previews.get(row.medalID) ?? []} title={plainText(row.title)} /><div><strong>{plainText(row.title)}</strong><div class="description">{plainText(row.description)}</div></div><button type="button" class="minor" aria-label={`${word(INFO, "Show Info")}: ${plainText(row.title)}`} onclick={() => showInfo({ kind: "medal", typeID: 29496, itemID: row.medalID, graphics: graphics.filter(g => g.medalID === row.medalID) })}>i</button></div></td></tr>
+            <!-- Scroll.SortAsRoot keeps groups before ordinary entries. -->
             <tr><td colspan="5" class="awardee-group"><button type="button" class="group" aria-expanded={awardeesOpen.has(row.medalID)} onclick={() => { void expandAwardees(row.medalID); }}>{awardeesOpen.has(row.medalID) ? "▾" : "▸"} {word(AWARDEES, "View Awardees")}</button></td></tr>
             {#if awardeesOpen.has(row.medalID)}
               {#if awardeeLoading.has(row.medalID)}<tr><td colspan="5" class="note">Loading…</td></tr>
               {:else if awardeeErrors.has(row.medalID)}<tr><td colspan="5" class="error">{awardeeErrors.get(row.medalID)}</td></tr>
-              {:else}{#each awardees.get(row.medalID) ?? [] as awardee (awardee.recipientID)}
+              {:else}{#each sortedAwardees(row.medalID) as awardee (awardee.recipientID)}
                 <tr data-awardee={awardee.recipientID}>
                   <td class="awardee"><span>{resolvedName($names.resolved, "owner", awardee.recipientID, "…")}</span> <button type="button" class="minor" aria-label={`${word(INFO, "Show Info")}: ${resolvedName($names.resolved, "owner", awardee.recipientID, "…")}`} onclick={() => showInfo({ kind: "character", characterID: awardee.recipientID })}>i</button></td>
                   <td>{resolvedName($names.resolved, "owner", awardee.issuerID, "…")}</td><td>{date(awardee.date)}</td><td>{plainText(awardee.reason)}</td><td>{awardee.awarded}</td>
                 </tr>
-              {/each}{/if}
+              {:else}<tr><td colspan="5" class="awardee note">{word(NO_ITEM, "No Item")}</td></tr>{/each}{/if}
             {/if}
+            <tr><td colspan="5"><div class="medal-entry"><MedalPreview layers={previews.get(row.medalID) ?? []} title={plainText(row.title)} /><div><strong>{plainText(row.title)}</strong><div class="description">{plainText(row.description)}</div></div><button type="button" class="minor" aria-label={`${word(INFO, "Show Info")}: ${plainText(row.title)}`} onclick={() => showInfo({ kind: "medal", typeID: 29496, itemID: row.medalID, graphics: graphics.filter(g => g.medalID === row.medalID) })}>i</button></div></td></tr>
           {/if}
         {/if}
       {/each}</tbody>
@@ -127,6 +145,7 @@
   table { border-collapse: collapse; width: 100%; }
   th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
   th { color: var(--muted); font-weight: 500; }
+  .sort { border: 0; background: transparent; color: inherit; padding: 0; cursor: pointer; font: inherit; }
   .group { border: 0; background: transparent; color: inherit; padding: 0; text-align: left; cursor: pointer; }
   .medal-entry { display: flex; align-items: flex-start; gap: 6px; padding-left: 16px; }
   .description { white-space: normal; }
