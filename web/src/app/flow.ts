@@ -13,7 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
-import { readSafetyDeliveries, acceptSafetyRecovery, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, safetyWrapAncestor, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -5152,6 +5152,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    // Keep already observed parents current for invCache's removal-tax walk.
+    // The notice contains the complete current item, including a changed owner.
+    for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
+      if (!safetyItemCache.has(row.itemID)) continue;
+      if (row.quantity <= 0 || !row.locationID) safetyItemCache.delete(row.itemID);
+      else safetyItemCache.set(row.itemID, row);
+    }
     // ONE item's move comes by this name, and several by OnItemsChanged: the
     // server sends this one unless a batch is asked for. A drone landing in
     // its bay is one item, and with only the batch's own refresh heard the window
@@ -5605,9 +5612,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
         containerReadGeneration += 1;
-        if (store.inventory.get().container?.safety) store.apply({ type: "inventory/container", container: null });
+        const open = store.inventory.get().container;
+        if (open && (open.safety || safetyWrapAncestor(open.itemID, safetyItemCache) !== null)) store.apply({ type: "inventory/container", container: null });
+        safetyCacheGeneration += 1;
+        safetyItemCache.clear();
         void loadSafetyDeliveries().catch(() => {});
       }
+    }
+    // invCache.ProcessSessionChange143-170: these place changes invalidate
+    // cached parent inventories as well as any read still coming from them.
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      containerReadGeneration += 1;
+      safetyCacheGeneration += 1;
+      safetyReadGeneration += 1;
+      safetyItemCache.clear();
+      safetyDeliveriesSignal.set(null);
+      store.apply({ type: "inventory/container", container: null });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
@@ -6097,6 +6117,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function stopLiveStream(): void {
     containerReadGeneration += 1;
+    safetyCacheGeneration += 1;
+    safetyItemCache.clear();
     safetyDeliveriesSignal.set(null);
     safetyWrapNames.clear();
     safetyReadGeneration += 1;
@@ -6226,6 +6248,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // already-settled per-container results. A lost session unwinds to select.
   const safetyDeliveriesSignal = createSignal<SafetyDeliveries | null>(null);
   const safetyWrapNames = new Map<number, string | null>();
+  const safetyItemCache = new Map<number, InventoryItemRow>();
+  let safetyCacheGeneration = 0;
+  function rememberSafetyParents(rows: readonly InventoryItemRow[]): void {
+    for (const row of rows) safetyItemCache.set(row.itemID, row);
+  }
   let safetyReadGeneration = 0;
   async function loadSafetyDeliveries(): Promise<void> {
     const characterID = onlineCharacterID(), locationID = dockedNow();
@@ -6241,10 +6268,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID
       && store.station.get().online?.corporationID === corporationID && (store.station.get().online?.corpRole ?? "0") === corpRole) {
       safetyDeliveriesSignal.set({ characterID, corporationID, corpRole, locationID, wraps, error });
+      if (!error) {
+        const present = new Set(wraps.map(wrap => wrap.row.itemID));
+        for (const [id, row] of safetyItemCache) if (row.typeID === 60 && row.locationID === locationID && !present.has(id)) safetyItemCache.delete(id);
+        rememberSafetyParents(wraps.map(wrap => wrap.row));
+      }
     }
   }
 
   async function loadInventory(): Promise<void> {
+    const cacheGeneration = safetyCacheGeneration;
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
     try {
       panel = await api.loadInventory(callOptions);
@@ -6267,6 +6300,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
     await loadSafetyDeliveries();
+    if (cacheGeneration === safetyCacheGeneration) rememberSafetyParents([...store.inventory.get().hangar.rows, ...store.inventory.get().cargo.rows]);
   }
 
   // Run a mutation, then refresh the panel. A lost session is rethrown to
@@ -6661,6 +6695,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       current.cargo.rows.find((row) => row.itemID === containerID) ??
       current.container?.rows.find((row) => row.itemID === containerID) ??
       safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row ??
+      safetyItemCache.get(containerID) ??
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
@@ -6676,6 +6711,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ?? (current.container?.itemID === containerID ? current.container.name : undefined);
     const safetyRow = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row;
     const online = store.station.get().online;
+    if (owningRow) rememberSafetyParents([owningRow]);
     if (knownTypeID === 60 && safetyRow && online?.corporationID && safetyRow.ownerID === online.corporationID) {
       try {
         // Original corporate tree/controller(None): one full List, no capacity query.
@@ -6694,6 +6730,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (generation !== containerReadGeneration || store.station.get().online?.characterID !== online.characterID
           || store.station.get().online?.corporationID !== online.corporationID || store.station.get().online?.corpRole !== online.corpRole
           || dockedNow() !== safetyRow.locationID) return;
+        rememberSafetyParents(rows);
         store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
           rows: selected?.name ? selected.rows : [], capacity: null, hasCapacity: false, error: null,
           safety: { corporationID: online.corporationID!, divisionID: selected?.divisionID ?? null, divisions } } });
@@ -6729,6 +6766,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (generation !== containerReadGeneration) return;
+    const rows = decodeInventoryRows(reads.list, reads.volumes);
+    rememberSafetyParents(rows);
     store.apply({
       type: "inventory/container",
       container: {
@@ -6736,7 +6775,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
         name: ownName,
-        rows: decodeInventoryRows(reads.list, reads.volumes),
+        rows,
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         hasCapacity: reads.hasCapacity,
         error: null,
@@ -28745,9 +28784,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
           // Native AddItems asks for the full-stack recovery price BEFORE its quantity and one-way prompts.
-          const sourceWrap = from.kind === "container" && store.inventory.get().container?.itemID === from.itemID
-            && store.inventory.get().container?.typeID === 60;
-          if (sourceWrap && !(await acceptSafetyRecovery(bridgeAsk, (from as { itemID: number }).itemID, present.map(row => row.itemID), async tax => {
+          const sourceWrap = present[0]?.locationID === undefined ? null : safetyWrapAncestor(present[0].locationID, safetyItemCache);
+          if (sourceWrap !== null && !(await acceptSafetyRecovery(bridgeAsk, sourceWrap, present.map(row => row.itemID), async tax => {
             await wordsNow(["UI/Common/Confirm", "UI/Inventory/AssetSafetyRecoveryConfirmation", "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"]);
             const template = store.words.get().templates["UI/Inventory/AssetSafetyRecoveryConfirmation"];
             const writeIsk = (value: number, places: number) => iskWords(value, places, store.words.get().templates, () => "")

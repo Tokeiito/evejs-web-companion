@@ -1349,7 +1349,7 @@
           type="button"
           class="stn-btn stn-btn-quick"
           disabled={busy}
-          onclick={() => run(() => flow.openContainer(row.itemID))}
+          onclick={() => run(async () => { await flow.openContainer(row.itemID); view = "container"; })}
         >
           Open
         </button>

@@ -70,6 +70,21 @@ export function safetyDivisionRows(rows: readonly InventoryItemRow[], wrapID: nu
   });
 }
 
+/** Find the type-60 ancestor using rows already observed by this client. */
+export function safetyWrapAncestor(locationID: number, cached: ReadonlyMap<number, InventoryItemRow>): number | null {
+  // invCache.AcceptPossibleRemovalTax754-777 walks GetCachedItem, rather than
+  // quoting the immediate container or fetching a separate safety catalogue.
+  const visited = new Set<number>();
+  let parent = cached.get(locationID);
+  while (parent) {
+    if (visited.has(parent.itemID)) throw new Error("The source container's location could not be read.");
+    visited.add(parent.itemID);
+    if (parent.typeID === 60) return parent.itemID;
+    parent = parent.locationID === undefined ? undefined : cached.get(parent.locationID);
+  }
+  return null;
+}
+
 /** The native quote names complete stacks; quantity is chosen by the move afterward. */
 export async function acceptSafetyRecovery(ask: Ask, wrapID: number, itemIDs: readonly number[], confirm: (tax: number) => Promise<boolean>): Promise<boolean> {
   if (!itemIDs.length) return true;
