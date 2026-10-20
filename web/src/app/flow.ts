@@ -2228,6 +2228,7 @@ export interface AppFlow {
   readonly imageServer: ReadableSignal<string | null>;
   /** The image server's address read from the pilot's global config, once. */
   loadImageServer(): void;
+  capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void>;
   /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
   readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
   /** The library read once, and the logos of these corporations asked for where they are not had. */
@@ -16418,6 +16419,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       })
       .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
   }
+  const capturedPortraitCache = new Map<string, { readonly image: { readonly base64: string; readonly contentType: string }; readonly modified: number }>();
+  async function capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void> {
+    // Original photo.SavePortraits/_SavePortraits437-453: merged list, one size
+    // read, forced refresh of each image, byte copy, and progress even if absent.
+    const current = callOptions.captureRequestGuard!();
+    const options = { ...callOptions, priority: "user" as const, captureRequestGuard: () => current };
+    current(); progress(0, characterIDs.length);
+    const config = await api.getGlobalConfig(["defaultPortraitSaveSize"], options); current();
+    const configured = config.values.defaultPortraitSaveSize;
+    const size = configured === null || configured === undefined ? 1024 : Math.trunc(Number(configured));
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error("The image server supplied an invalid portrait save size.");
+    for (const [index, id] of characterIDs.entries()) {
+      const key = `${id}:${size}`, cached = capturedPortraitCache.get(key);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        current(); const reply = await api.readCapturePortrait(id, size, cached?.modified ?? null, options); current();
+        if (!reply.transportError) {
+          const image = reply.notModified ? cached?.image : reply.image;
+          if (image) { capturedPortraitCache.set(key, { image, modified: Date.now() }); received(id, image); }
+          break;
+        }
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+      }
+      current(); progress(index + 1, characterIDs.length);
+    }
+    progress(characterIDs.length, characterIDs.length);
+  }
 
   // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
   const corpLogoLibrarySignal = createSignal<api.CorpLogoLibrary | null>(null);
@@ -29602,6 +29629,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    capturePortraits,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
     loadOwnerLogos,

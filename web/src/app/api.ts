@@ -4742,6 +4742,13 @@ export async function importMultibuy(
   return { found, failedLines };
 }
 
+/** One forced portrait image read; a transport error is retried by the page's native image loop. */
+export async function readCapturePortrait(characterID: number, size: number, modifiedSince: number | null, options: ApiOptions = {}): Promise<{ readonly image: { readonly base64: string; readonly contentType: string } | null; readonly transportError: boolean; readonly notModified: boolean }> {
+  const data = await getJson(`/api/client-data/portrait-capture?characterID=${characterID}&size=${size}${modifiedSince === null ? "" : `&modifiedSince=${modifiedSince}`}`, options);
+  const image = data.image && typeof data.image === "object" && !Array.isArray(data.image) ? data.image as Readonly<Record<string, JsonValue>> : null;
+  return { image: image && typeof image.base64 === "string" && typeof image.contentType === "string" ? { base64: image.base64, contentType: image.contentType } : null, transportError: data.transportError === true, notModified: data.notModified === true };
+}
+
 /**
  * The global config the game server gave the pilot's client at its login, for the names asked (GET
  * /api/bridge/global-config): each value as given, or null. `available` false where the pilot's transport does not

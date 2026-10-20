@@ -22,6 +22,7 @@
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
+  import { BridgeCallError } from "../bridge/callMethod.ts";
 
 
   let { store, flow, ownerIDs, active, onDone, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; ownerIDs: readonly number[]; active: boolean; onDone: () => void; openMail?: () => void; openWatchlist?: () => void } = $props();
@@ -40,6 +41,8 @@
   let contactActions = $state<readonly ScopedAction[]>([]);
   let contactMenuSerial = 0;
   let contactBusy = $state(false);
+  let capturing = $state(false), captureProgress = $state<readonly [number, number] | null>(null);
+  let captures = $state<readonly { readonly id: number; readonly url: string }[]>([]);
   $effect(() => {
     const authority = contactAuthority;
     untrack(() => {
@@ -144,11 +147,30 @@
     const opening = flow.openMoneyTransfer(target.member.characterID); close();
     void opening.catch(cause => { if (!disposed && cause?.code !== "SESSION_REQUEST_RETIRED") contactError = String(cause); });
   }
+  async function capture(): Promise<void> {
+    const targets = selected.filter(row => !isNpcOwner(row.member.characterID)).map(row => row.member.characterID);
+    if (capturing || !targets.length) return;
+    capturing = true; contactError = ""; close();
+    try {
+      await flow.capturePortraits(targets, (id, image) => {
+        const bytes = Uint8Array.from(atob(image.base64), ch => ch.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: image.contentType }));
+        for (const previous of captures.filter(image => image.id === id)) URL.revokeObjectURL(previous.url);
+        captures = [...captures.filter(image => image.id !== id), { id, url }];
+        const link = document.createElement("a"); link.href = url; link.download = `${id}.jpg`;
+        document.body.append(link); link.click(); link.remove();
+        if (disposed) setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }, (done, total) => { if (!disposed) captureProgress = [done, total]; });
+    } catch (cause) { if (!disposed && !(cause instanceof BridgeCallError && cause.code === "SESSION_REQUEST_RETIRED")) contactError = String(cause); }
+    finally { if (!disposed) capturing = false; }
+  }
 
-  onMount(() => flow.requestWords([...Object.values(LABELS), "UI/Commands/GiveMoney", ...["AddContact", "EditContact", "RemoveContact", "BlockContact", "UnblockContact"].map(key => "UI/PeopleAndPlaces/" + key)]));
-  onDestroy(() => { disposed = true; contactMenuSerial++; });
+  onMount(() => flow.requestWords([...Object.values(LABELS), "UI/Commands/GiveMoney", "UI/Commands/CapturePortrait", "UI/Shared/GeneratingPicture", ...["AddContact", "EditContact", "RemoveContact", "BlockContact", "UnblockContact"].map(key => "UI/PeopleAndPlaces/" + key)]));
+  onDestroy(() => { disposed = true; contactMenuSerial++; for (const image of captures) URL.revokeObjectURL(image.url); });
 </script>
 {#if contactError}<p role="alert" class="note">{contactError}</p>{/if}
+{#if captureProgress}<p role="status">{word("UI/Shared/GeneratingPicture", "Generating picture")}: {captureProgress[0]}/{captureProgress[1]}</p>{/if}
+{#if captures.length}<ul aria-label="Captured portraits">{#each captures as image}<li><a href={image.url} download={`${image.id}.jpg`}>{image.id}.jpg</a></li>{/each}</ul>{/if}
     {#if active && selected.length > 0}
       <div class="controls member-menu" aria-label="Member actions">
         <span>{selected.length} selected</span>
@@ -157,6 +179,7 @@
           <button type="button" class="minor" onclick={mailSelected}>{word(LABELS.mail, "Send Pilot EVEMail")}</button>
         {/if}
         {#if personalContactTarget}<button type="button" class="minor" onclick={giveMoney}>{word("UI/Commands/GiveMoney", "Give Money")}</button>{/if}
+        {#if selected.some(row => !isNpcOwner(row.member.characterID))}<button type="button" class="minor" disabled={capturing} onclick={() => void capture()}>{word("UI/Commands/CapturePortrait", "Capture Portrait")}</button>{/if}
         {#if personalContactTarget && contactBook}
           {#if targetIsContact}
             <button type="button" class="minor" onclick={() => contactManage("manage")}>{word("UI/PeopleAndPlaces/EditContact", "Edit Contact")}</button>
