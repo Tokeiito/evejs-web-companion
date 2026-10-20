@@ -451,6 +451,16 @@ The 38 native cases distinguish 29 completed no-date windows from nine runs
 deliberately stopped at the date formatter boundary. Those nine are not native
 formatter failures and establish no rendered pending-time text.
 
+The zero rule is now ported for decoded numeric timestamps. Selection still
+chooses disable before enable; a selected zero then produces the no-change
+label, without trying a later enable. Original compiled full-window runs cover
+long zero, False and signed-zero values at zero and negative clocks, complete
+enlistment reads and never call the date formatter. Actual successful deliveries
+with controlled timestamp fields and status clocks verify long/False cases,
+cached repeats and ordinary-data recovery. The default-socket browser renders
+plain Legal for a zero disable masking enable1, including its cached reopening.
+This does not claim the remaining typed-float timestamp decoder is complete.
+
 The installed _evelocalization.dll (SHA256
 005ab2fb8d1d41106e630fb3963b100f0dccc490b8c8aa402fa3c362ecd4f6dd)
 does have a distinct float path: formattedtime interprets floats as Unix

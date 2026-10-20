@@ -211,8 +211,11 @@ export function friendlyFireAt(settings: AggressionSettings, now: bigint): { rea
   const disablePast = disableAfter !== null && disableAfter < now;
   const enablePast = enableAfter !== null && enableAfter < now;
   const legal = disablePast && enablePast ? disableAfter! < enableAfter! : disablePast ? false : enablePast ? true : true;
-  const changeAt = disableAfter !== null && disableAfter >= now ? disableAfter : enableAfter !== null && enableAfter >= now ? enableAfter : null;
-  return { legal, changeAt };
+  const pending = disableAfter !== null && disableAfter >= now ? disableAfter : enableAfter !== null && enableAfter >= now ? enableAfter : null;
+  // GetNextPendingChangeTime selects disable first even when it is zero.
+  // GetCorpFriendlyFireStatus283-284 then tests truthiness: zero means no
+  // displayed change, without falling through to a later enable time.
+  return { legal, changeAt: pending === 0n ? null : pending };
 }
 
 /** The friendly fire status's label (GetCorpFriendlyFireStatus); `tomorrow` where the change is on another day. */
