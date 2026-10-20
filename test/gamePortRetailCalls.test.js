@@ -1730,6 +1730,9 @@ test("the game port carries native direct trade and the other calls absent from 
     // pvptradesvc26-51 and pvptradewnd67-89; TQ In station trade41-48:
     // remote initiation, then a lazy List on the returned/notified moniker, and close Abort.
     "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",
+    // invControllers.__AddItem193-226/AddItems489 and pvptradewnd92-164;
+    // compiled cdx2995 records None/zero flag, Python list, money and set manifest.
+    "trademgr.Add", "trademgr.MultiAdd", "trademgr.OfferMoney", "trademgr.MakeOffer",
     // Original build-3396210 xmppchatsvc.py 1197-1208 / 1257-1261: proxy writes.
     "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
     // EditMemberDialog.LoadChar 148: the private character row for Member Details.

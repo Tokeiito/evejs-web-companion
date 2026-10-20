@@ -662,7 +662,7 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A server-returned direct-trade Moniker; the page binds it lazily with List.
-  "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",
+  "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort", "trademgr.Add", "trademgr.MultiAdd", "trademgr.OfferMoney", "trademgr.MakeOffer",
   // xmppchatsvc.py 1197-1208 / 1257-1261: private allocation and elevated addition, both on the proxy.
   "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
   "charMgr.GetPrivateInfo",
@@ -2556,6 +2556,10 @@ const RETAIL_CALLS = Object.freeze({
     shape: ownersContracts,
   }),
   "crimewatch.GetClientStates": same(`${CRIMEWATCH_SVC}:89`, "CharGetCrimewatchLocation().GetClientStates(), no arguments, on a moniker made for the call. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "trademgr.Add": same("eve/client/script/environment/invControllers.py:193-226", "PlayerTrade inherits locationFlag=None: Add(itemID, sourceLocationID, qty=quantity, flag=None). Compiled cdx2995 confirms the keyword values."),
+  "trademgr.MultiAdd": reshaped("eve/client/script/environment/invControllers.py:489", ([ids, source], kwargs) => ({ args: [list(ids), source], kwargs }), "BaseInvContainer.AddItems sorts by type volume times stacksize, then MultiAdd(list IDs, sourceLocation, flag=flagNone0). Compiled cdx2995 confirms list/order/flag."),
+  "trademgr.OfferMoney": reshaped("eve/client/script/ui/station/pvptrade/pvptradewnd.py:160-164", ([amount], kwargs) => ({ args: [asFloat(amount)], kwargs }), "QtyPopup returns a two-decimal float; OfferMoney(qty) on the trade object. No money offer in the TQ corpus."),
+  "trademgr.MakeOffer": reshaped("eve/client/script/ui/station/pvptrade/pvptradewnd.py:92-115", ([manifest], kwargs) => ({ args: [manifest && manifest.type === undefined ? keyVal(constructorKeywordOrder(["tradeContainerID", "money", "tradeItems"]).map(name => [name, name === "money" ? list(manifest[name]) : manifest[name]])) : manifest], kwargs }), "KeyVal(tradeContainerID, money list in trader order, tradeItems Python set of both sides' DBRows), after the native other-party ship warning. TQ968 exposes manifest/None offer state; its packet is LARGE PAYLOAD."),
   "trademgr.InitiateTrade": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:38-41", "RemoteSvc InitiateTrade(charID) returns the trade Moniker. Its node/params are retained unchanged; no location-derived moniker is invented."),
   "trademgr.List": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:28-51", "List() on the returned or notified trade Moniker, first carried by its lazy bind. TQ In station trade41-48 records the receiver path and inline Row."),
   "trademgr.Abort": same("eve/client/script/ui/station/pvptrade/pvptradewnd.py:67-89", "Abort() on that same trade object after confirmed Cancel or during close, including after completion. TQ In station trade1268/1432 records close-time Abort -> True."),
