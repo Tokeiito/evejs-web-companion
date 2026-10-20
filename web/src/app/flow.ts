@@ -272,6 +272,7 @@ import { createCorporationWealth, type CorporationWealthChange } from "../bridge
 import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
 import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { scrollSortSetting, type ScrollSortSetting } from "./scrollSortSetting.ts";
+import { scrollWidthsSetting, type ScrollWidthsSetting } from "./scrollWidthsSetting.ts";
 import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
 import type { InfoReadScope } from "./infoReadScope.ts";
 import { createCorporationRecords } from "../bridge/corporationRecords.ts";
@@ -2434,6 +2435,7 @@ export interface AppFlow {
   readonly infoWindows: InfoWindows;
   readonly infoWindowReusePreference: ReadableSignal<boolean>;
   scrollSortPreference(scrollID: string): ScrollSortSetting;
+  scrollWidthsPreference(scrollID: string): ScrollWidthsSetting;
   setInfoWindowReusePreference(value: boolean): void;
   setOwnerDoubleClickPreference(value: 0 | 1): void;
   ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
@@ -29470,6 +29472,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     infoWindows,
     get infoWindowReusePreference() { return infoWindowSetting(store.session.get().accountID, settingsStorage).value; },
     scrollSortPreference: scrollID => scrollSortSetting(store.session.get().accountID, scrollID, settingsStorage),
+    scrollWidthsPreference: scrollID => scrollWidthsSetting(store.session.get().accountID, scrollID, settingsStorage),
     setInfoWindowReusePreference: value => infoWindowSetting(store.session.get().accountID, settingsStorage).set(value),
     setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
     ownerEntryDoubleClick,

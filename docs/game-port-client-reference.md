@@ -2167,8 +2167,20 @@ starts ascending; clicking the current column flips direction. An unavailable
 saved header falls back to the first header (`__LoadHeaders`1106-1125).
 An empty opened recipient group shows the native NoItem label
 (`PrepareSubContent`1314-1339). Live counts2/10, numeric/text reasons, group order
-and preference survival across a full page reload were verified. Width preferences
-are the next unit; this ordinary scroll has no column hide/reorder menu.
+and preference survival across a full page reload were verified.
+
+Every Decorations column, including the last, can resize. `Scroll`452-472 saves
+`columnWidths_3[corp_decorations_scroll][localizedHeader]` in user settings and
+clamps manual widths to24; an unmoved handle saves nothing. Double-clicking a
+header or its handle fits the loaded column and saves the result
+(`ResetColumnWidth`1133-1177, `ColumnHeader`353/158). Automatic measurement considers
+headers and loaded tabbed rows, their indentation and two8px margins; native
+`font.MeasureTabstops`306-343 starts at32. The browser measures its rendered font
+and controls, so these are behavior/measurement-boundary matches rather than
+native glyph-pixel equality. Saved widths remain fixed as groups load/collapse;
+unsaved widths fit the current loaded text. Header click dispatch follows compiled
+`uilib._TryExecuteClickHandler`957-981: first click sorts, second fits, with no
+second sort toggle. This ordinary scroll has no column hide/reorder menu.
 
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
