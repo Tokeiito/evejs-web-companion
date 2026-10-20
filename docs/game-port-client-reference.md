@@ -2239,6 +2239,53 @@ an already applied activation changes neither issued shares nor the holding and 
 The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
 The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
 
+### Direct station trade: source audit and implementation slices
+
+The receiver-side Tranquility recording `Archive/In station trade.txt` is the primary packet
+reference. Lines41-48 show `OnTradeInitiate(initiatorCharID, Moniker)` with `idtype="charid"`.
+The moniker state is `(trademgr, nodeID, (dockedLocationID, solarSystemID, traders, clientIDs), None)`.
+Its first call is carried by `MachoBindObject(params, ('List', (), {}))`. The inline answer is a
+`carbon.common.script.sys.row.Row` with headers `tradeContainerID, traders, state, money, items`:
+the traders are a tuple, state and money are lists, and items is a Python set. The empty state is
+`[None, None]`, not numeric flags. Repeated List reads are visible during window construction.
+
+Original compiled `pvptradesvc.StartTradeSession` calls `InitiateTrade(charID)` and then List
+twice on the path that opens a new window: once in `_ShowTradeSessionWindow`, once in
+`OnTradeInitiate`. An incoming invitation starts at the latter and reads List once before
+opening. `PVPTrade.ApplyAttributes` reads again, as do its two inventory controllers through
+`invControllers.PlayerTrade._GetItems`. Reuse the same moniker; do not repeat InitiateTrade
+to refresh the window. `CharacterChecker.OfferTradeWithCharacter281-290` requires one other
+non-NPC character who is a guest of the current station or structure (`IsGuest403-408`).
+
+`pvptradewnd.Cancel80-89` asks `ConfirmCancelTrade({}, OKCANCEL)`; refusal sends nothing and
+confirmation clears the window's session reference before Abort. `_OnClose67-78` otherwise
+attempts Abort, including after completion. The recorded completion path returns True from
+MakeOffer and the close-time Abort. Accept constructs a KeyVal manifest containing the container,
+both money offers and the union of both item sets; `OnTradeOffer` carries manifests/None, not
+boolean state flags. OfferMoney and cancellation are client-code-backed but not exercised by
+this successful item-only recording. Ship warnings, item restrictions, offer resets and completion
+notifications must be ported with the exchange controls, before exposing a usable trade action.
+
+The installed Python27 oracle executed the original compiled menu, outgoing/incoming controller
+and Cancel methods (loop evidence cdx2924, with UI/RPC boundaries recorded). A cold live native
+two-account probe cdx2923/cdx2931 verified the existing server's returned/received monikers,
+carried List and subsequent bound List row shapes, True Abort and bilateral OnTradeCancel.
+The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or complete a trade.
+The full store baseline was restored byte for byte afterward. No browser trade UI exists yet.
+
+The same recording's lines386/388 prove corporate source inventory: a staged item changes from
+owner98826653/location1052880078604/flag115 to the offering pilot's trade row. The server's
+`_validateOfferedItem` currently refuses every non-personal source. This is a server difference
+to fix before the browser transport, using existing corporation take permissions and retaining
+the original owner/location/flag for abort. The old personal-only gate must not simply be removed.
+
+Implementation order: fix and prove that server difference; carry returned and notified trade
+monikers through the browser transport; port inventory/money/manifests and cancel/complete
+controllers; then wire the guest-gated member menus and verify both pilots in the browser.
+The generic returned-bound-object helper currently recognizes remote substructs, not this returned
+Moniker. A trade session therefore needs explicit moniker handling with lazy first-call binding;
+it must not be added to the location-derived `MONIKER_SERVICES` table.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
