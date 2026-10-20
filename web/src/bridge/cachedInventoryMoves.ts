@@ -1,4 +1,4 @@
-// Ordinary numeric inventory moves through invCacheContainer.Add998-1025/MultiAdd1027-1063.
+// Ordinary numeric inventory moves through invCacheContainer.Add998-1025/MultiAdd1027-1063/MultiMerge1100-1128.
 // PlayerTrade returns a direct moniker (invControllers1691) and does not use this wrapper.
 // Fitted/tuple sublocations and their pre-try dogma unload path are separate producers.
 import type { Ask } from "./ask.ts";
@@ -70,12 +70,17 @@ export function createCachedInventoryMoves(capture: () => Scope) {
     const scope = capture();
     // A whole pilot lifetime is isolated; same-pilot InvalidateCache replaces this broker's current map.
     const lifetime = broker;
-    if (service !== "invbroker" || !["Add", "MultiAdd"].includes(method)) return scope.act(service, method, args, kwargs, of);
-    const ids = method === "Add" ? [args[0]] : args[0];
+    if (service !== "invbroker" || !["Add", "MultiAdd", "MultiMerge"].includes(method)) return scope.act(service, method, args, kwargs, of);
+    const merging = method === "MultiMerge";
+    const ops = merging ? args[0] : null;
+    if (merging && (!Array.isArray(ops) || !ops.every(op => Array.isArray(op) && op.length === 3 && exactID(op[0]) && exactID(op[1]) && typeof op[2] === "number" && Number.isSafeInteger(op[2])))) {
+      throw new Error("Ordinary inventory merges require numeric stack operations.");
+    }
+    const ids = merging ? (ops as JsonValue[][]).map(op => op[0]) : method === "Add" ? [args[0]] : args[0];
     if (!Array.isArray(ids) || !ids.every(id => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) {
       throw new Error("Ordinary inventory moves require exact numeric item IDs.");
     }
-    if (scope.activeShipID !== null && ids.includes(scope.activeShipID)) {
+    if (!merging && scope.activeShipID !== null && ids.includes(scope.activeShipID)) {
       throw refusal("CanNotPlaceActiveShipInAnotherHangar");
     }
     // The backing property read is on this same inventory. The BFF's container cache owns its lifetime.
@@ -89,11 +94,35 @@ export function createCachedInventoryMoves(capture: () => Scope) {
     // A numeric key seeds it; the special hangar key requires actual backing metadata, even for an empty MultiAdd.
     // A structure's hangar alias binds GetInventoryFromId(structureID), not the station's special key.
     const seededID = exactID(of) ? of : of === "hangar" ? scope.structureID : null;
-    let own = seededID !== null ? { itemID: seededID, typeID: null as number | null } : await readOwn();
+    let own = seededID !== null ? { itemID: seededID, typeID: null as number | null } : null;
     const acquired: number[] = [];
     const hold = (id: number, error: string, values: JsonValue) => lifetime.locks.set(id, {
       when: { type: "long", value: (BigInt(Math.trunc(scope.now())) * 10000n + 116444736000000000n).toString() }, error, values,
     });
+    if (merging) {
+      // Original compiled MultiMerge evaluates itemID INSIDE the loop; an empty list never primes it.
+      // These guards choose locks only. With any acquired source, send ALL original numeric operations.
+      for (const id of ids as number[]) {
+        own ??= await readOwn();
+        if (id === own.itemID) continue;
+        if (scope.dockedAt !== null) {
+          const persistent = await at(scope, scope.dockedAt); scope.current();
+          if (persistent.has(String(id))) continue;
+        }
+        if (lifetime.locks.has(id)) continue;
+        hold(id, "", { type: "dict", entries: [] }); acquired.push(id);
+      }
+      if (!acquired.length) return null;
+      try {
+        scope.current();
+        await scope.act(service, method, args, kwargs, of);
+      } finally {
+        // Native uses the acquired LIST, in input order, and unlocks the current map by ID.
+        for (const id of acquired) lifetime.locks.delete(id);
+      }
+      return null; // Original ignores every remote result and returns None.
+    }
+    own ??= await readOwn();
     if (method === "Add") {
       const id = ids[0] as number;
       if (kwargs?.qty === 0) {

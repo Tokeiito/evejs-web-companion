@@ -417,7 +417,9 @@ function hangarMerging(merges: boolean) {
   let merged = false;
   return makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/call") {
-      merged = merges;
+      if (body.method === "GetSelfInvItem") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: packedRow({ itemID: 60003760, typeID: 1531 }), notifications: [] } };
+      if (body.method === "GetItemsByLocation") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "dict", entries: [] }, notifications: [] } };
+      if (body.method === "MultiMerge") merged = merges;
       return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
     }
     if (path === "/api/bridge/inventory") {
@@ -443,6 +445,9 @@ test("a stack dropped on a stack in the hangar is the client's MultiMerge on the
 
   const calls = requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body);
   assert.deepEqual(calls, [
+    // Original compiled invCache.MultiMerge1100-1128: itemID then persistent source lock before RPC.
+    { service: "invbroker", method: "GetSelfInvItem", args: [], kwargs: null, pilot: true, of: "hangar" },
+    { service: "itemLocking", method: "GetItemsByLocation", args: [60003760], kwargs: null, pilot: true },
     { service: "invbroker", method: "MultiMerge", args: [[[101, 100, 500]], 60003760], kwargs: null, pilot: true, confirm: true, of: "hangar" },
   ]);
   assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/merge"), false);

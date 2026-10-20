@@ -28994,7 +28994,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
         }
         const where = await inventoryOfPlace(place);
-        await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
+        await mergeStacksCall(inventoryMoves.act, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
         await refreshOpenPlaces();
         const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
         const merged = after ? after.quantity - destination.quantity : 0;

@@ -13,6 +13,8 @@
 //   the call       invCache's container's MultiMerge (1100 to 1124): self.moniker.MultiMerge(ops, sourceContainerID)
 //                  on the inventory the target is in: the hangar's for a stack in the hangar
 //                  (invCache.GetInventory(const.containerHangar)), a thing's own for one in a ship or a container
+//                  Ordinary numeric calls pass through cachedInventoryMoves: source locks gate acquisition,
+//                  any acquired source permits the original complete operation list, and the wrapper returns None.
 //
 // Recorded on Tranquility once ("Unknown Events Level 2"): in the hangar's container, MultiMerge([(source, target,
 // 3822)], 60001717), a list of one tuple and the station the dropped stack lay in.
