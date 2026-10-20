@@ -377,9 +377,9 @@ with compiled Recordset.Get confirms these empty iterables perform no faction
 owner lookup and still build the same row as empty list/tuple/set. Controlled
 replacement after actual successful replies verifies all six empty forms;
 the browser displays Permitted Faction Enlistments: None for the empty dict,
-with normal public/aggression/enlistment order and no console errors. Nonempty
-iterables still need the native int(key), owner-cache/Prime failure and ordering
-port; no general dict or string iteration behavior is claimed by this change.
+with normal public/aggression/enlistment order and no console errors. The
+sequential owner-read and bounded ASCII string ports are described below;
+native dict/set ordering and non-ASCII string behavior remain separate audits.
 
 The owner-read layer is available through the existing names endpoint's
 eveowners recordset mode and api.readEveOwners. It seeds only the native
@@ -410,6 +410,18 @@ faction-only name lookup. A None name remains a blank row value. Original
 Recordset.Get/Prime/_Prime and UpdateDataCorp establish the order, conversion
 exceptions and cached row/miss behavior; original LabelCore and font methods
 confirm None/empty text returns without glyph layout and has zero text height.
+
+ASCII str and Unicode enlistment replies are iterated one character at a time,
+with the same lazy owner-key conversion. Original compiled UpdateDataCorp and
+Recordset.Get/Prime/_Prime establish that "12021" reads owners 1,2,0,2,1 and
+retains duplicate sorted names, whereas ["12021"] reads only owner 12021.
+"12x3" primes the earlier owner before ValueError at x, retains the old caption
+and leaves only the header; a repeat uses that earlier cached row. Native RPC
+and row-installation boundaries are explicit. Live controlled successful Enlist
+deliveries verify byte/Unicode ASCII digits, invalid later characters and leading
+whitespace, repeated construction/cache order and unmodified recovery. The
+default single-socket browser shows the duplicate names and header-only failure.
+Non-ASCII string semantics and native dict/set iteration order remain separate.
 
 Friendly-fire status also retains its time before enlistment and owner reads.
 Original compiled status plus UpdateDataCorp keeps the earlier LegalWithChangeTime

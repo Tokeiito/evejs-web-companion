@@ -184,11 +184,19 @@ export function enlistmentFactionsOf(result: JsonValue | null | undefined): Iter
     || (isRecord(result) && (result.type === "long" || result.type === "real" || result.type === "float"))) {
     throw Object.assign(new TypeError("The corporation enlistment answer is not iterable."), { code: "INFO_CORPORATION_ENLISTMENT_NOT_ITERABLE" });
   }
-  const items = Array.isArray(result)
-    ? result
-    : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)
-      ? result.items
-      : null;
+  const text = typeof result === "string" ? result
+    : isRecord(result) && result.type === "wstring" && typeof result.value === "string" ? result.value : null;
+  // UpdateDataCorp iterates str/unicode, rather than treating the entire text
+  // as one Recordset.Get key. Keep conversion lazy so earlier characters can
+  // prime owners before a later invalid character raises ValueError. Native
+  // non-ASCII byte/code-unit behavior remains a separate transport audit.
+  const items = text !== null && /^[\u0000-\u007f]*$/.test(text)
+    ? text
+    : Array.isArray(result)
+      ? result
+      : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)
+        ? result.items
+        : null;
   if (items === null) return null;
   return (function* () { for (const item of items) yield enlistmentOwnerKey(item); })();
 }
