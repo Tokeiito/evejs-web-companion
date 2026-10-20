@@ -6481,8 +6481,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // Turn a transfer result into one honest sentence. A split is judged by the
   // source stack shrinking (it mints a NEW stack at the destination, so the
-  // requested itemID never appears there), and a decline with no reason is
-  // reported AS a decline with no reason.
+  // requested itemID never appears there). Items retained at source may have
+  // been skipped by the local cache or refused remotely; report custody only.
   function describeTransfer(
     result: { applied: boolean; moved: readonly number[]; declined: readonly number[] },
     requested: number,
@@ -6495,9 +6495,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return `Moved ${result.moved.length} of ${requested}.`;
     }
     if (result.applied) {
-      return `Moved ${result.moved.length} of ${requested}; the server declined the rest without giving a reason.`;
+      return `Moved ${result.moved.length} of ${requested}; ${result.declined.length} stayed in the source.`;
     }
-    return "The server did not move anything, and gave no reason.";
+    // invCache.MultiAdd1041-1056 can skip locally locked items without an RPC.
+    // A custody re-read establishes what stayed, not which layer declined it.
+    return "No items moved.";
   }
 
   /**

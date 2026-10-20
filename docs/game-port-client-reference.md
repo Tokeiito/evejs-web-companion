@@ -2408,8 +2408,16 @@ across both moves. Original compiled MultiAdd/ItemLocking reproduces both actual
 (agent4); fifteen installed-runtime order cases also match, including collisions and safe
 near-2^53 IDs. All117 calls succeed without decoding errors. Native custody read3573 and cold
 restart3579 agree exactly on original IDs/quantities, empty cargo and unchanged cash; no mutation
-replay. This browser fixture has an empty lock dictionary: populated lock skips and live
-invalidation remain the next coverage, alongside shared locking with other inventory writers.
+replay. That first fixture has an empty lock dictionary. Populated capture3595 subsequently
+checks a mixed corporation blueprint selection: only the unlocked ID reaches MultiAdd. An
+actual peer unlock notice causes a fresh empty dictionary read on the same page, then both
+remaining blueprints move. Relocking invalidates the cache again; an all-locked selection
+reads two keys and sends no move RPC. Original compiled consumers reproduce all four actual
+MultiAdd lists and three browser cache invalidations (agent5). The outcome now states how many
+items stayed at source, or "No items moved", without attributing a local skip to the server.
+All276 calls succeed; cold restart3611 preserves both corporate locked originals and the
+personal cargo original, with unchanged cash and no replay. Full staged baseline is restored.
+Shared locking with single Add and other inventory writers remains follow-up work.
 The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
 actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
 and lane are not established by a Tranquility lock-change capture.

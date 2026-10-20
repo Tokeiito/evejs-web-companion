@@ -3,11 +3,11 @@
 // division picker.
 //
 // The theme running through these tests is the R12 lesson, applied one layer
-// up: the BFF re-reads after every mutation because invbroker declines
+// up: the flow re-reads after every mutation because invbroker declines
 // SILENTLY, and the flow reports that re-read rather than an optimistic
 // success. A route that answers `applied: false` must surface as a refusal the
-// player can see — and when the server gave no reason, the message must say so
-// instead of inventing one.
+// player can see. A custody check cannot identify whether a local cache skip or
+// remote refusal kept an item at source (invCache.MultiAdd1041-1056).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -242,7 +242,7 @@ test("a split is the client's Add with the number asked, and is reported as a sp
 
 // --- the silent-decline discipline -----------------------------------------
 
-test("a silently declined move is reported AS a decline with no reason given", async () => {
+test("an unchanged source is reported without assigning a reason or a refusing layer", async () => {
   const store = createClientStore();
   dockedAtJita(store);
   const { fetch } = hangarMoving((rows) => rows);
@@ -254,8 +254,9 @@ test("a silently declined move is reported AS a decline with no reason given", a
   const outcome = store.inventory.get().lastOutcome;
   assert.equal(outcome?.applied, false, "a 200 is not treated as proof");
   assert.equal(outcome?.declinedSilently, true);
-  // The message states the absence of a reason rather than inventing one.
-  assert.match(String(outcome?.message), /did not move anything, and gave no reason/);
+  // The message reports observed custody without assigning a reason.
+  // invCache.MultiAdd1041-1056 can skip a persistent/local lock without sending it to the server.
+  assert.equal(String(outcome?.message), "No items moved.");
   // And it is NOT dressed up as an error the player caused.
   assert.equal(store.inventory.get().actionError, null);
 });
