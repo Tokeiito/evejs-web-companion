@@ -1141,7 +1141,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (objectKind === "corporationExpected") {
     if (body.service === "account") await dispatchCorporationCashWrite(req, res, next, body);
-    else if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
+    else if (body.service === "corporationSvc") await dispatchCorporationMedalWrite(req, res, next, body);
     else if (["UpdateApplicationOffer", "InsertInvitation"].includes(body.method)) await dispatchCorporationRecruitmentWrite(req, res, next, body);
     else await dispatchCorporationMemberWrite(req, res, next, body);
     return;
@@ -6765,14 +6765,19 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
   }
 }
 
-// medals.py108/116 uses a top-level RemoteSvc. `of` is only our original-dialog
+// medals.py38/49/108/116 use a top-level RemoteSvc. `of` is only our original-dialog
 // fence; it must never turn this into a corpRegistry call or another RPC argument.
-async function dispatchCorporationAwardWrite(req, res, next, body) {
+async function dispatchCorporationMedalWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const args = body.args, corporationID = strictPositiveID(body.of);
-  if (!Array.isArray(args) || ![3, 4].includes(args.length) || strictPositiveID(args[0]) === null || !Array.isArray(args[1]) || !args[1].length || args[1].some(id => strictPositiveID(id) === null) || typeof args[2] !== "string" || (args.length === 4 && args[3] !== true) || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
+  const creating = body.method === "CreateMedal";
+  const validCommon = Array.isArray(args) && [3, 4].includes(args.length) && (args.length === 3 || args[3] === true) && body.kwargs == null;
+  const validArguments = validCommon && (creating ?
+    typeof args[0] === "string" && typeof args[1] === "string" && Array.isArray(args[2]) && args[2].every(row => Array.isArray(row) && row.length === 3 && Number.isSafeInteger(row[0]) && typeof row[1] === "string" && Number.isSafeInteger(row[2])) :
+    body.method === "GiveMedalToCharacters" && strictPositiveID(args[0]) !== null && Array.isArray(args[1]) && args[1].length > 0 && args[1].every(id => strictPositiveID(id) !== null) && typeof args[2] === "string");
+  if (!validArguments) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: creating ? "Creation names a title, description, graphics list and optional confirmed True." : "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
   }
   try {
     assertCurrentHeldSession(held, req.webSessionID);
@@ -6786,7 +6791,7 @@ async function dispatchCorporationAwardWrite(req, res, next, body) {
       context = { corporationID: answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")] };
     }
     assertCurrentHeldSession(held, req.webSessionID);
-    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This award belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This decoration operation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
     const outcome = await heldTopLevelCall(held, req.webSessionID, body.service, body.method, args, null, corporationID, context.version);
     res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: [...notifications, ...(outcome.notifications ?? [])], ...pilotClock(held) });
   } catch (error) { next(error); }

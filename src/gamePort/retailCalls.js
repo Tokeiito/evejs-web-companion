@@ -51,6 +51,8 @@ const { NO_OPTIONAL_MATERIAL } = require("../../web/src/bridge/industryReckoning
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
+// Compiled MedalRibbonPickerWindow.SubmitData553-560 builds nested lists.
+const medalGraphics = (value) => Array.isArray(value) ? list(value.map(list)) : value?.type === "list" && Array.isArray(value.items) ? { ...value, items: value.items.map(list) } : value;
 
 /**
  * A market order's ID as the client has it: a number, off the order's row. The BFF's routes have it as the text the
@@ -762,7 +764,7 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // (infosvc.py 2842). The gateway's list has nothing of the corporation service's.
   "corporationSvc.GetEmployementRecordAndCharacterTransfers",
   // medals.py60/64/87/89/108: catalogue, recipients, received medals, details and awards on RemoteSvc.
-  "corporationSvc.GetAllCorpMedals", "corporationSvc.GetRecipientsOfMedal", "corporationSvc.GetMedalDetails", "corporationSvc.GetMedalsReceived", "corporationSvc.GiveMedalToCharacters",
+  "corporationSvc.GetAllCorpMedals", "corporationSvc.GetRecipientsOfMedal", "corporationSvc.GetMedalDetails", "corporationSvc.GetMedalsReceived", "corporationSvc.CreateMedal", "corporationSvc.GiveMedalToCharacters",
   // A folder of the mail window marked read, trashed, and the trash restored (evemail.py StaticMenu). The gateway's
   // list has the mail manager's others, not these.
   "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
@@ -2770,6 +2772,7 @@ const RETAIL_CALLS = Object.freeze({
   "corporationSvc.GetRecipientsOfMedal": same("eve/client/script/ui/services/medals.py:64", "RemoteSvc('corporationSvc').GetRecipientsOfMedal(medalID), lazily from corp_ui_member_decorations.GetMedalSubContent112-149; repeated recepientID rows form one awardee entry."),
   "corporationSvc.GetMedalDetails": same("eve/client/script/ui/services/medals.py:89", "RemoteSvc('corporationSvc').GetMedalDetails(medalID); infoContentBase1450-1453 and675-687 read info[0] separately for caption/description and corporation/count header."),
   "corporationSvc.GetMedalsReceived": same("eve/client/script/ui/services/medals.py:87", "GetMedalsReceived(characterID), received medal and graphics rowsets, invalidated by OnMedalIssued/OnMedalStatusChanged."),
+  "corporationSvc.CreateMedal": typing(reshaped("eve/client/script/ui/services/medals.py:31-53", ([title, description, graphics, ...rest], kwargs) => ({ args: [title, description, medalGraphics(graphics), ...rest], kwargs }), "Unicode title/description and nested Python graphics lists from MedalRibbonPickerWindow.SubmitData553-560. Initial three arguments; fourth True only after ConfirmCreatingMedal and Yes. No recorded TQ fee or confirmation policy."), [0, 1]),
   "corporationSvc.GiveMedalToCharacters": typing(reshaped("eve/client/script/ui/services/medals.py:108", ([medalID, recipients, ...rest], kwargs) => ({ args: [medalID, list(recipients), ...rest], kwargs }), "Scalar medal ID, Python list of recipients, Unicode reason; fourth True only after a ConfirmGivingMedal* refusal and Yes. Top-level RemoteSvc, not the corporation moniker. No TQ award capture found."), [2]),
   "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
   "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),

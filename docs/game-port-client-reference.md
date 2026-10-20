@@ -2194,6 +2194,22 @@ children. A closed parent or child suppresses that read. The page keeps these
 identities and character scope, reconstructs remembered groups after catalogue
 loads, and re-reads a remembered-open recipient group when reopening its parent.
 
+Creation is being built in three parts: the native medals service operation,
+the layer designer, then window submission/wallet selection. The service operation
+is `medals.CreateMedal`31-53: Director OR Personnel Manager, name length at most100,
+description length at most1000, then top-level `corporationSvc.CreateMedal` with
+three arguments. Title/description are Unicode, graphics are nested Python lists
+from `MedalRibbonPickerWindow.SubmitData`553-560. Only an exact
+`ConfirmCreatingMedal` refusal prompts with formatted bold cost and Yes suppression;
+only Yes retries with fourth True. No returns normally, so the future window
+still closes; role/length/other refusals keep it open. The flow's boolean reports
+normal completion versus a displayed refusal, rather than a newly allocated ID.
+Original compiled execution confirms these branches. No creation/confirmation
+reply was found in the recursive TQ search; neither a mandatory confirmation nor
+a fee amount is established. The current EveJS success path returns immediately.
+The designer and wallet checks remain separate work; this service operation does
+not add the window's missing-field or wallet checks to the service.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

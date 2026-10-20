@@ -430,7 +430,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
-import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo } from "../bridge/corporationDecorations.ts";
+import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
@@ -2126,6 +2126,8 @@ export interface AppFlow {
   readonly corporationApplicationsChanged: ReadableSignal<number>;
   readonly corporationDecorationsChanged: ReadableSignal<number>;
   corporationDecorations(): Promise<CorporationDecorations>;
+  /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
+  createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
   corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
   medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo>;
   readonly corporationApplicationsRequested: ReadableSignal<number>;
@@ -15207,6 +15209,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // owner cache makes repeated creators free without changing this order.
     for (const medal of catalogue.medals) await memberNames(scope, [{ kind: "owner", id: medal.creatorID }]);
     scope.current(); return catalogue;
+  }
+  async function createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean> {
+    const scope = captureMemberOperation(current);
+    // Original compiled medals.CreateMedal31-53. Window missing-field/wallet
+    // checks precede this service; do not add them to the service operation.
+    if ((BigInt(scope.online.corpRole ?? "0") & 129n) === 0n) {
+      await wordsNow(["UI/Corporations/CreateDecorationWindow/NeedRolesError"]); scope.current();
+      const reason = templateWords("UI/Corporations/CreateDecorationWindow/NeedRolesError", {}, "You need corporation roles to create decorations.");
+      sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", reason]] }, reason); return false;
+    }
+    if (title.length > 100) {
+      sayDialog("MedalNameTooLong", { type: "dict", entries: [["maxLength", "100"]] }, "The decoration name is too long."); return false;
+    }
+    if (description.length > 1000) {
+      sayDialog("MedalDescriptionTooLong", { type: "dict", entries: [["maxLength", "1000"]] }, "The decoration description is too long."); return false;
+    }
+    const args: JsonValue[] = [title, description, graphics.map(row => [...row])];
+    try {
+      try { await scope.write("corporationSvc", "CreateMedal", args, null, scope.online.corporationID); scope.current(); }
+      catch (error) {
+        scope.current();
+        const refusal = error instanceof BridgeCallError ? error.refusal : null;
+        if (refusal?.key !== "ConfirmCreatingMedal") throw error;
+        const boldLabel = "UI/Map/StarMap/lblBoldName";
+        await wordsNow([boldLabel, "UI/Util/FmtIsk"]); scope.current();
+        const rawCost = readDictEntry(refusal.values, "cost"), cost = typeof rawCost === "number" ? rawCost : Number(unwrapLong(rawCost) ?? 0n);
+        const costText = iskWords(cost, 2, store.words.get().templates, () => "") ?? `${cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+        const boldCost = formatTemplate(store.words.get().templates[boldLabel] ?? "<b>{name}</b>", { name: costText }, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        // No returns normally from the native service; SubmitData still closes
+        // its window. Only an accepted server question adds the fourth True.
+        if (!await askDialog(refusal.key, { type: "dict", entries: [["cost", boldCost]] }, `Create this decoration for ${costText}?`, "yesno", { suppressAnswer: "yes" })) { scope.current(); return true; }
+        scope.current(); await scope.write("corporationSvc", "CreateMedal", [...args, true], null, scope.online.corporationID); scope.current();
+      }
+      return true;
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return false; throw error; }
   }
   async function corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]> {
     const scope = captureMemberOperation();
@@ -29328,6 +29365,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
     corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
     corporationDecorations,
+    createCorporationMedal,
     corporationMedalAwardees,
     medalShowInfo,
     corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),

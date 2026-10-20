@@ -33,6 +33,9 @@ export interface CorporationMedalAwardee {
   readonly awarded: number;
 }
 
+// MedalRibbonPickerWindow.SubmitData553-560: ribbon rows, then medal rows.
+export type MedalCreationGraphic = readonly [part: number, graphic: string, color: number];
+
 // GetMedalSubContent112-149: first award supplies the fields; repeats only
 // increase the count. Iteration follows the native integer-key dict.
 export function corporationMedalAwardeesOf(answer: JsonValue): readonly CorporationMedalAwardee[] {
