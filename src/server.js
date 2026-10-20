@@ -1054,6 +1054,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     });
     return;
   }
+  if (objectKind === "trade" && !(typeof body.of === "string" && /^[A-Za-z0-9_-]{32}$/.test(body.of))) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A received direct-trade reference is required." });
+    return;
+  }
   if (objectKind === "planet" && !(Number.isSafeInteger(body.of) && body.of > 0)) {
     res.status(400).json({ ok: false, error: "INVALID_PLANET", message: "A positive planetID is required." });
     return;
@@ -1171,7 +1175,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     // (A write is a pilot's, so one is held; and it is made under the checks every write of a held pilot's is
     // under, as its route made it.)
     // (A call on a planet's object goes by the bind its route went by: bound once for the planet and kept.)
-    const outcome = objectKind === "planet"
+    const outcome = objectKind === "trade"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => {
+        if (!gamePortPilots || !isGamePortHandle(heldBridgeSession.bridgeSessionID)) throw Object.assign(new Error("Direct trade needs a game-port pilot."), { code: "CALL_REFUSED", statusCode: 409 });
+        return boundCall(heldBridgeSession, req.webSessionID, { key: "trade:" + JSON.stringify(body.of), service: "trademgr", method: "MachoBindObject", args: [body.of], kwargs: null }, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
+      }) }
+      : objectKind === "planet"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, planetBindSpec(body.of), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (A call on an agent's object goes by the bind an agent's routes go by: bound for that agent, and kept.)

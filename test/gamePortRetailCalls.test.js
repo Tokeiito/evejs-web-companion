@@ -105,11 +105,12 @@ test("every entry names a pair the web client may call, a status, and where it w
   for (const [pair, entry] of Object.entries(RETAIL_CALLS)) {
     assert.ok(allowed.has(pair), `${pair} is on the allowlist`);
     assert.ok(["same", "reshaped", "differs", "web-only"].includes(entry.status), `${pair} has a status`);
-    assert.match(entry.source, /\.py(:\d+)?$/, `${pair} names a client file`);
+    // Feature citations may name one line or a native method's source span.
+    assert.match(entry.source, /\.py(?::\d+(?:-\d+)?)?$/, `${pair} names a client file`);
     if (entry.status === "reshaped") assert.equal(typeof entry.shape, "function", `${pair} says how`);
     if (entry.status === "differs" || entry.status === "web-only") assert.ok(entry.note, `${pair} says what differs`);
     // Where the decompiled client is on this machine, the file each entry cites is really there.
-    if (haveClient) assert.ok(fs.existsSync(path.join(clientRoot, entry.source.replace(/:\d+$/, ""))), `${pair}: ${entry.source} exists`);
+    if (haveClient) assert.ok(fs.existsSync(path.join(clientRoot, entry.source.replace(/:\d+(?:-\d+)?$/, ""))), `${pair}: ${entry.source} exists`);
   }
 });
 
@@ -1724,8 +1725,11 @@ test("what goes up into a customs office, and comes down from one, goes as the c
   }
 });
 
-test("the game port carries the customs office's transfer, the station's offices and the clone's grade, which the web gateway's list has not got", () => {
+test("the game port carries native direct trade and the other calls absent from the web gateway", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // pvptradesvc26-51 and pvptradewnd67-89; TQ In station trade41-48:
+    // remote initiation, then a lazy List on the returned/notified moniker, and close Abort.
+    "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",
     // Original build-3396210 xmppchatsvc.py 1197-1208 / 1257-1261: proxy writes.
     "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
     // EditMemberDialog.LoadChar 148: the private character row for Member Details.

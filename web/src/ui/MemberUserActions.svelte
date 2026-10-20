@@ -11,6 +11,7 @@
   import ContactActionDialog from "./ContactActionDialog.svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
+  import OwnerDuelMenu from "./OwnerDuelMenu.svelte";
   import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
   import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
   import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
@@ -205,6 +206,7 @@
         {/if}
         <MemberFleetInvites {store} {flow} targets={selected.map(row => row.member.characterID)} onDone={() => close()} />
         {#if selected.length === 1}
+          <OwnerDuelMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => close()} />
           <OwnerChatMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => close()} />
           <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => close()} />
         {/if}

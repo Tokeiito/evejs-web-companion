@@ -13,6 +13,7 @@
   import CharacterBar from "./CharacterBar.svelte";
   import FleetInvitation from "./FleetInvitation.svelte";
   import ChatInvitations from "./ChatInvitations.svelte";
+  import DuelInvitations from "./DuelInvitations.svelte";
   import ClientDialogs from "./ClientDialogs.svelte";
   import InfoWindows from "./InfoWindows.svelte";
   import type { InfoWindowHost } from "./infoWindowHost.ts";
@@ -757,6 +758,7 @@
   <!-- A refusal the server names a dialog for, put up as the client puts up a UserError: each pilot's, whichever is in
        front, as the invitations are. -->
   <ErrorBoundary name="Chat invitations"><div class="chat-invitation-stack">{#each sessions as session (session.id)}<ChatInvitations {session} inFront={session.id === activeId} />{/each}</div></ErrorBoundary>
+  <ErrorBoundary name="Duel invitations"><div class="duel-invitation-stack">{#each sessions as session (session.id)}<DuelInvitations {session} inFront={session.id === activeId} />{/each}</div></ErrorBoundary>
   <ErrorBoundary name="Client dialogs">
     {#each sessions as session (session.id)}
       <ClientDialogs {session} inFront={session.id === activeId} />

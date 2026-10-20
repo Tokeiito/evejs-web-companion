@@ -1729,6 +1729,9 @@ function createGamePortPilots({
       bound: new Map(),
       /** fleetSvc's self.fleet: the one object the client keeps for the pilot's fleet, as it is held in `bound`; null with none. */
       fleet: null,
+      /** pvptradesvc: only trade Monikers received from this pilot's server connection. */
+      trades: new Map(),
+      tradeReferences: new WeakMap(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
       /** The monikers the client keeps for where the pilot is, by service: the "N=..." each is bound to (monikerCall). */
@@ -2043,7 +2046,11 @@ function createGamePortPilots({
       if (COLONY_NOTICES.has(notification.method)) forgetColonies(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
-      record(entry, notificationToBridgeJson(notification));
+      const carried = notificationToBridgeJson(notification);
+      if (notification.method === "OnTradeInitiate" && Array.isArray(carried.args)) {
+        carried.args[1] = tradeMonikerToBridge(entry, notification.args?.[1]);
+      }
+      record(entry, carried);
     });
     session.onSessionChange((changes) => {
       // What the client's own services tell its object cache to forget on this change.
@@ -2759,7 +2766,8 @@ function createGamePortPilots({
     return {
       service,
       method,
-      result: HANDED_BACK_AS_ANSWERED.has(`${service}.${method}`) ? longKeptToBridgeJson(result) : wireToBridgeJson(result === undefined ? null : result),
+      result: service === "trademgr" && method === "InitiateTrade" ? tradeMonikerToBridge(entry, result)
+        : HANDED_BACK_AS_ANSWERED.has(`${service}.${method}`) ? longKeptToBridgeJson(result) : wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
   }
@@ -6095,9 +6103,32 @@ function createGamePortPilots({
     return journal ? wireToBridgeJson(journal) : null;
   }
 
+  // A returned/notified Moniker names its own node and bind parameters (moniker.__setstate__).
+  // Keep only the server's trade references; an arbitrary page-supplied address is not a new trade.
+  function tradeMonikerToBridge(entry, value) {
+    const moniker = monikerOf(value);
+    if (!moniker || moniker.service !== "trademgr" || !Array.isArray(moniker.params)) return wireToBridgeJson(value);
+    if (moniker.nodeID !== null) entry.session.setNodeOfAddress(moniker.service, moniker.params, moniker.nodeID);
+    // Consecutive trades can reuse params; each received Moniker is a distinct object.
+    let reference = entry.tradeReferences.get(value);
+    if (!reference) {
+      reference = randomBytes(24).toString("base64url");
+      entry.tradeReferences.set(value, reference);
+      entry.trades.set(reference, { objectID: null, service: "trademgr", params: moniker.params, key: "trade:" + reference });
+    }
+    return { ...wireToBridgeJson(value), tradeReference: reference };
+  }
+
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    if (service === "trademgr" && method === "MachoBindObject") {
+      const object = entry.trades.get(Array.isArray(args) ? args[0] : null);
+      if (!object) throw fail("CALL_REFUSED", "This pilot has not received that trade session.");
+      const boundHandle = randomBytes(24).toString("base64url");
+      entry.bound.set(boundHandle, object);
+      return { boundHandle, service, method, notifications: drain(entry) };
+    }
     // fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked. So
     // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
