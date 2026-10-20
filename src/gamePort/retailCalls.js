@@ -642,6 +642,7 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "invCache.InvalidateLocationCache",
   "invbroker.EnterPassword",
   "invbroker.GetPriceForItems",
   "invbroker.GetSelfInvItem",
@@ -2012,6 +2013,11 @@ const RETAIL_CALLS = Object.freeze({
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
+  "invCache.InvalidateLocationCache": {
+    status: "local",
+    source: `${INV_CACHE}:596-605,1454-1457`,
+    note: "CLIENT-LOCAL: retire only the exact published inventory key and its mapped handles. No native server RPC, manager/session reset or broker-lock reset. Numeric station IDs do not alias containerHangar; pending-only binds remain. Retained Python old-guard behavior is outside the semantic-address API.",
+  },
   "invbroker.EnterPassword": typing(same(`${INV_CACHE}:1442-1477`, "PasswordHandlerCallWrapper sends EnterPassword(passwordType, scalar text from NamePopup) on the SAME underlying bound inventory; type1 is general, type2 configuration. The return is ignored before retrying the original operation. Nonempty edit text is Unicode. No Tranquility capture established."), [1]),
   "invbroker.GetSelfInvItem": judged(`${INV_CACHE}:966-975`, sentWithNothing, "invCacheContainer.GetItem reads its inventory's GetSelfInvItem(), as DogmaLocation.UnloadModuleToContainer1087-1088 requires before unloading to a Trade inventory."),
   "itemLocking.GetItemsByLocation": same("eve/client/script/ui/services/corporation/itemLocking.py:30-34,57-64", "GetItemsByLocation(current station or docked structure), cached per location until OnLockedItemChange. invCacheContainer.MultiAdd1044 checks every ordinary item ID before acquiring a local broker lock."),

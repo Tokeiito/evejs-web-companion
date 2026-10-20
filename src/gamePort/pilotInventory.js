@@ -347,6 +347,14 @@ function createPilotInventory({ rowFields, session }) {
       containers.delete(key);
     },
     /**
+     * InvalidateLocationCache596-605 removes one published guard. A pending-only
+     * bind is absent to the original client and may still publish afterwards.
+     * Retained Python guard objects are not exposed by this cache API.
+     */
+    invalidateLocation(key) {
+      return containers.delete(key);
+    },
+    /**
      * invCache.InvalidateCorpCache at a change of the pilot's corporation roles, docked: the containers that are the
      * corporation's own items let go, as far as the rows held tell whose a container is.
      */

@@ -2463,6 +2463,37 @@ function createGamePortPilots({
       return { service, method, result: wireToBridgeJson(row === undefined ? null : row), notifications: drain(entry) };
     }
     assertAllowed(service, method);
+    if (service === "invCache" && method === "InvalidateLocationCache") {
+      // Client-local invCache596-605, not a game service or a moniker RPC.
+      // Support current numeric locations and exact native (location, owner)
+      // keys; notably a station ID does not alias (containerHangar, None).
+      const numericID = (value) => {
+        if (value && typeof value === "object" && !Array.isArray(value) &&
+            value.type === "long" && typeof value.value === "string" && /^\d+$/.test(value.value)) {
+          return positive(BigInt(value.value));
+        }
+        return positive(value);
+      };
+      const target = Array.isArray(args) && args.length === 1 ? args[0] : undefined;
+      const tuple = Array.isArray(target) ? target
+        : target && typeof target === "object" && target.type === "tuple" && Array.isArray(target.items) ? target.items : null;
+      const location = numericID(tuple ? tuple[0] : target);
+      const owner = tuple && tuple[1] !== null ? numericID(tuple[1]) : null;
+      if (!location || tuple && (tuple.length !== 2 || tuple[1] !== null && !owner) ||
+          kwargs !== null && (typeof kwargs !== "object" || Array.isArray(kwargs) || Object.keys(kwargs).length !== 0)) {
+        throw fail("CALL_INVALID", "InvalidateLocationCache requires one numeric location or (location, owner-or-None) key, with no keywords.");
+      }
+      ledger.note(service, method, shape(service, method, args, kwargs, contextFor(entry)));
+      const key = entry.inventory.keyOf(location, owner);
+      if (entry.inventory.invalidateLocation(key)) {
+        // Every local alias of this guard retires. Generic numeric-of callers
+        // hit boundCall's existing handle reaper and bind the replacement once.
+        for (const [handle, object] of entry.bound) {
+          if (object.service === "invbroker" && object.container === key) entry.bound.delete(handle);
+        }
+      }
+      return { service, method, result: null, notifications: drain(entry) };
+    }
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
@@ -6126,6 +6157,9 @@ function createGamePortPilots({
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    if (service === "invCache" && method === "InvalidateLocationCache") {
+      throw fail("CALL_INVALID", "InvalidateLocationCache is client-local and cannot bind a server object.");
+    }
     if (service === "trademgr" && method === "MachoBindObject") {
       const object = entry.trades.get(Array.isArray(args) ? args[0] : null);
       if (!object) throw fail("CALL_REFUSED", "This pilot has not received that trade session.");

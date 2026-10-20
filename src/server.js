@@ -2008,6 +2008,11 @@ async function inventoryCall(held, webSessionID, of, method, args, kwargs) {
     spec = hangarBindSpec(held);
   } else if (Number(of) === Number(held.activeShipID)) {
     spec = cargoBindSpec(held, held.activeShipID);
+  } else if (method === "EnterPassword" && held.boundHandles.has(`container:${Number(of)}`)) {
+    // invCache1450-1477 enters on the challenged moniker, without an office discovery read.
+    spec = containerBindSpec(Number(of));
+  } else if (method === "EnterPassword" && held.boundHandles.has(`corpOffice:${Number(of)}`)) {
+    spec = corpOfficeBindSpec(Number(of));
   } else {
     // The corporation's office where the pilot is docked is bound as the corporation hangar's read binds it, so that
     // the two are one bind (the client's invCache keeps one inventory a thing) and a write to it is held to the office
