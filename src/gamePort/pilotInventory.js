@@ -250,6 +250,12 @@ function createPilotInventory({ rowFields, session }) {
     rows: () => [...containers.values()].flatMap((container) => [...container.items.values()]),
     /** The key of the container (location, owner). */
     keyOf: containerKey,
+    /** invCache.FetchItem693-702: exact retained source only; never bind, list or fetch remotely. */
+    fetchItem(itemID, fromLocationID) {
+      const location = num(fromLocationID);
+      const key = containerKey(location >= 60000000 && location < 64000000 ? CONTAINER_HANGAR : location, null);
+      return containers.get(key)?.items.get(itemKey(itemID)) ?? null;
+    },
     /**
      * The bound object of a container held, or of one being bound now, as a promise (null where the binding failed);
      * null where neither: asked for again, it is the one given (GetInventoryFromId 553).

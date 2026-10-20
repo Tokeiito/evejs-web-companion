@@ -2463,6 +2463,21 @@ function createGamePortPilots({
       return { service, method, result: wireToBridgeJson(row === undefined ? null : row), notifications: drain(entry) };
     }
     assertAllowed(service, method);
+    if (service === "invCache" && method === "FetchItem") {
+      // Native CheckCanFit1143-1150 consults its source cache, with no remote fallback.
+      // This page seam currently supports exact numeric items/sources; tuple charge writers are separate.
+      const idOf = value => value && typeof value === "object" && !Array.isArray(value) &&
+        value.type === "long" && typeof value.value === "string" && /^\d+$/.test(value.value)
+        ? positive(BigInt(value.value)) : positive(value);
+      const itemID = Array.isArray(args) && args.length === 2 ? idOf(args[0]) : null;
+      const sourceID = Array.isArray(args) && args.length === 2 ? idOf(args[1]) : null;
+      if (!itemID || !sourceID || kwargs !== null &&
+          (typeof kwargs !== "object" || Array.isArray(kwargs) || Object.keys(kwargs).length !== 0)) {
+        throw fail("CALL_INVALID", "FetchItem requires exact numeric item and source IDs, with no keywords.");
+      }
+      ledger.note(service, method, shape(service, method, args, kwargs, contextFor(entry)));
+      return { service, method, result: wireToBridgeJson(entry.inventory.fetchItem(itemID, sourceID)), notifications: drain(entry) };
+    }
     if (service === "invCache" && method === "InvalidateLocationCache") {
       // Client-local invCache596-605, not a game service or a moniker RPC.
       // Support current numeric locations and exact native (location, owner)
@@ -6157,6 +6172,9 @@ function createGamePortPilots({
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    if (service === "invCache" && method === "FetchItem") {
+      throw fail("CALL_INVALID", "FetchItem is client-local and cannot bind a server object.");
+    }
     if (service === "invCache" && method === "InvalidateLocationCache") {
       throw fail("CALL_INVALID", "InvalidateLocationCache is client-local and cannot bind a server object.");
     }
