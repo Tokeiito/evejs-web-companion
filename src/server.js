@@ -14588,6 +14588,45 @@ app.get("/api/bridge/global-config", requireAuth, (req, res, next) => {
   }
 });
 
+// RemoteImageCacher.__GetImageFromUrl: one fresh image read from this pilot's
+// configured image server. The page owns Capture Portrait's size, retries and
+// multi-owner loop; this carries bytes across the browser's image CORS boundary.
+app.get("/api/client-data/portrait-capture", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    const characterID = Number(req.query.characterID), size = Number(req.query.size);
+    if (!Number.isSafeInteger(characterID) || characterID <= 0 || !Number.isSafeInteger(size) || size <= 0) {
+      res.status(400).json({ ok: false, error: "BAD_PORTRAIT", message: "A character and portrait size are required." }); return;
+    }
+    const values = gamePortPilots && isGamePortHandle(held.bridgeSessionID)
+      ? gamePortPilots.globalConfigValues(["imageserverurl"], { userid: held.accountID }, held.bridgeSessionID) : {};
+    const configured = values.imageserverurl;
+    if (typeof configured !== "string") { res.json({ ok: true, image: null }); return; }
+    let base = configured === "" ? "http://xxx.dev.image/" : configured.trim();
+    if (!base.endsWith("/")) base += "/";
+    const url = new URL(`${base}Character/${characterID}_${size}.jpg`);
+    if (!["http:", "https:"].includes(url.protocol)) { res.json({ ok: true, image: null }); return; }
+    const modifiedSince = Number(req.query.modifiedSince);
+    const headers = Number.isFinite(modifiedSince) && modifiedSince > 0
+      ? { "If-Modified-Since": new Date(modifiedSince).toUTCString() } : {};
+    let response;
+    try { response = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(10_000), cache: "no-store" }); }
+    catch { res.json({ ok: true, image: null, transportError: true }); return; }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (response.status === 304) { await response.body?.cancel(); res.json({ ok: true, image: null, notModified: true }); return; }
+    // requests.Response.__nonzero__/ok rejects HTTP 400-599 before the native
+    // image check. 302 is a deliberate skip.
+    if (response.status >= 400 && response.status < 600 || response.status === 302 || !contentType.startsWith("image/")) {
+      await response.body?.cancel(); res.json({ ok: true, image: null }); return;
+    }
+    let bytes;
+    try { bytes = Buffer.from(await response.arrayBuffer()); }
+    catch { res.json({ ok: true, image: null, transportError: true }); return; }
+    res.set("Cache-Control", "no-store").json({ ok: true, image: { contentType, base64: bytes.toString("base64") } });
+  } catch (error) { next(error); }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
