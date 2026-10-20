@@ -276,8 +276,10 @@ export class AbyssObjectiveChain {
   private entities: readonly SpaceEntity[] = [];
   /** What was on the grid at the last look: a thing not among it is one just added (OnBallAdded). */
   private seen: ReadonlySet<number> = new Set();
+  private readonly data: ObjectiveChainData;
 
-  constructor(private readonly data: ObjectiveChainData, context: Readonly<Record<string, Value>> = {}) {
+  constructor(data: ObjectiveChainData, context: Readonly<Record<string, Value>> = {}) {
+    this.data = data;
     Object.assign(this.context, context);
     // set_default_values: only what has no value yet.
     for (const [key, value] of Object.entries(data.defaults)) if (this.context[key] === undefined || this.context[key] === null) this.context[key] = value;
