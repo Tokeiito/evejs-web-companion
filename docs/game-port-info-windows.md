@@ -342,6 +342,24 @@ object-state and iterable behavior needs its own original-client consumer audit.
 Controlled None deliveries after actual successful replies establish these
 boundaries, not a naturally recorded server failure.
 
+Known non-None builtin aggression replies also stop at the native status
+consumer. Original GetCorpFriendlyFireStatus280-282 calls
+IsFriendlyFireLegalAtTime on the raw cached reply; scalar, byte/Unicode string
+and collection values raise AttributeError. The Info flow now checks this
+method-absence boundary before decoding, after raw-cache publication. Other
+consumers retain their existing decoding policy. Unknown classes and malformed
+instance states need separate native-unmarshal analysis.
+
+Original compiled full-window/content/cache/status methods confirm a repeat
+uses the cached builtin, never calls enlistment and retains header/old caption;
+a normal reply after expiry recovers. Controlled actual successful API deliveries
+verify twelve represented forms twice. The default-socket browser shows the
+header-only error, cached repeat without another aggression read, then complete
+recovery after a temporary page-clock advance. Only the two expected ordinary
+AttributeErrors are logged; native diagnostic wording is not claimed where
+the bridge loses Python type identity. TQ records canonical settings objects,
+not these controlled malformed replies.
+
 For the canonical crimewatch.corp_aggression.settings.AggressionSettings object,
 missing state fields also stop construction. Original compiled settings methods
 and GetCorpFriendlyFireStatus raise AttributeError for _disableAfter first, then

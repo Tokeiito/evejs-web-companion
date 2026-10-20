@@ -94,6 +94,17 @@ export interface AggressionSettings {
   readonly disableAfter: bigint | null;
 }
 
+/** GetCorpFriendlyFireStatus280-282 calls this method on the cached raw reply. */
+export function assertCorpAggressionStatusMethod(result: JsonValue): void {
+  const builtin = typeof result === "number" || typeof result === "boolean" || typeof result === "string"
+    || Array.isArray(result) || (isRecord(result) && ["long", "real", "float", "wstring", "Buffer", "list", "tuple", "dict", "set"].includes(String(result.type)));
+  if (builtin) throw Object.assign(new Error("The aggression reply has no attribute 'IsFriendlyFireLegalAtTime'."), {
+    name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_METHOD_MISSING",
+  });
+  // Unknown classes and malformed instance states can fail during native
+  // unmarshalling, before this consumer. Do not infer their failure here.
+}
+
 /** corpmgr.GetAggressionSettings: the object's two times (its state dict); null for anything else. */
 export function aggressionSettingsOf(result: JsonValue | null | undefined): AggressionSettings | null {
   if (!isRecord(result) || result.type !== "object" || typeof result.name !== "string" || !result.name.endsWith("AggressionSettings")) {
