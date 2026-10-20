@@ -78,6 +78,8 @@ export async function mergeStacks(
 //   many things   AddItems (489 to 562): sorted by volume times stack, smallest first, from where the first lies,
 //                 MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), or flag=const.flagNone where the
 //                 container has no flag of its own
+//                 Ordinary move callers pass this through cachedInventoryMoves: invCache1027-1063 filters locks
+//                 and traverses a new acquired-minus-charges set AFTER this controller's volume sort.
 //
 // The window's flags: the hangar's flagHangar (StationItems, 1138), the ship's hold flagCargo (ShipCargo, 605), a bay
 // its own (BAY_FLAGS, below), and a container none (BaseInvContainer, 60): one thing into a container goes with

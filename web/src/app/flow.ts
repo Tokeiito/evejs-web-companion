@@ -433,7 +433,7 @@ import { classifyDistributionAgentConversation, selectDistributionAgent } from "
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { REMOTE_MESSAGE, remoteDialogOf } from "../bridge/serverDialogs.ts";
-import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { convertTyped, DATE_LABELS, formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
@@ -666,6 +666,7 @@ import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCo
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -4043,6 +4044,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
+  const inventoryMoves = createCachedInventoryMoves(() => {
+    const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
+    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => current, captureNotificationSink: () => sink };
+    return {
+      ask: api.bridgeAsk(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }), current,
+      activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
+      dockedAt: dockedNow(),
+      structureID: store.station.get().online?.structureID ?? null,
+      now: serverNow,
+      blankLockValues: async when => {
+        const reasonLabel = "UI/Generic/NoReasonWasSpecified", dateLabel = DATE_LABELS.ll!;
+        await wordsNow([reasonLabel, dateLabel]); current();
+        const templates = store.words.get().templates, reason = templates[reasonLabel];
+        const lockTime = convertTyped(14, when, null, { templates, nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        if (typeof reason !== "string" || !lockTime) throw new Error("The client's lock reason and date words could not be loaded.");
+        return { type: "dict", entries: [["reason", plainText(reason)], ["lockTime", lockTime]] };
+      },
+    };
+  });
   // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
   // dispatch itself, before a hosted fetch can be taken by a newer generation of its caller.
   const fencedDo = (assertCurrent: () => void) => api.bridgeDo({ ...callOptions, fetch: (input, init) => {
@@ -5155,6 +5176,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    inventoryMoves.itemChanged(args[0], args[1]);
     // Keep already observed parents current for invCache's removal-tax walk.
     // The notice contains the complete current item, including a changed owner.
     for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
@@ -5210,6 +5232,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     insideMultiEvent = false,
   ): void {
     directTrades.receive(method, args);
+    if (method === "OnLockedItemChange") inventoryMoves.invalidate(Number(args[2]));
     if (method === "OnDuelChallenge") {
       const incoming = duelChallengeOf(args);
       if (incoming) {
@@ -5586,6 +5609,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      const online = store.station.get().online;
+      const station = sessionNames.includes("stationid") ? sessionChangeValue(method, args, "stationid") : online?.stationID;
+      const structure = sessionNames.includes("structureid") ? sessionChangeValue(method, args, "structureid") : online?.structureID;
+      const inSpace = sessionNames.includes("solarsystemid") ? sessionChangeValue(method, args, "solarsystemid") != null : station == null && structure == null;
+      // Original ProcessSessionChange155-161 returns early for an in-space ship change, even with location keys.
+      if (!sessionNames.includes("shipid") || !inSpace) inventoryMoves.resetLocalLocks();
+    }
     if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
     if (sessionNames?.includes("corpid")) {
       const value = sessionChangeValue(method, args, "corpid");
@@ -6145,6 +6176,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    inventoryMoves.clear();
     if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
     fittingRefreshTimer = null;
     containerReadGeneration += 1;
@@ -6477,8 +6509,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // Turn a transfer result into one honest sentence. A split is judged by the
   // source stack shrinking (it mints a NEW stack at the destination, so the
-  // requested itemID never appears there), and a decline with no reason is
-  // reported AS a decline with no reason.
+  // requested itemID never appears there). Items retained at source may have
+  // been skipped by the local cache or refused remotely; report custody only.
   function describeTransfer(
     result: { applied: boolean; moved: readonly number[]; declined: readonly number[] },
     requested: number,
@@ -6491,9 +6523,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return `Moved ${result.moved.length} of ${requested}.`;
     }
     if (result.applied) {
-      return `Moved ${result.moved.length} of ${requested}; the server declined the rest without giving a reason.`;
+      return `Moved ${result.moved.length} of ${requested}; ${result.declined.length} stayed in the source.`;
     }
-    return "The server did not move anything, and gave no reason.";
+    // invCache.MultiAdd1041-1056 can skip locally locked items without an RPC.
+    // A custody re-read establishes what stayed, not which layer declined it.
+    return "No items moved.";
   }
 
   /**
@@ -20044,7 +20078,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
       return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
     });
-    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    if (rows.length > 0) await moveItemsCall(inventoryMoves.act, "hangar", { kind: "hangar" }, shipID, rows, null);
     let after: readonly HoldItem[];
     try {
       after = (await held()).rows;
@@ -28925,7 +28959,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           let quantity = qty ?? null;
           for (let attempt = 0; ; attempt += 1) {
             try {
-              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              await moveItemsCall(inventoryMoves.act, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
               break;
             } catch (error) {
               if (present.length !== 1) throw error;

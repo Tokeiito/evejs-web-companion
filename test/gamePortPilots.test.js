@@ -282,8 +282,14 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       if (key in answers) return typeof answers[key] === "function" ? answers[key](args, kwargs, objectID) : answers[key];
       if (method === "GetInventory" || method === "GetInventoryFromId") {
         session.objects += 1;
-        return boundObject(`N=1:${session.objects}`);
+        const id = `N=1:${session.objects}`;
+        const itemID = method === "GetInventory" ? (session.attributes.stationid ?? STATION) : args[0];
+        session.inventorySelfRows.set(id, { type: "packedrow", fields: { itemID, typeID: method === "GetInventory" ? 52678 : itemID === SHIP ? 588 : 3297 } });
+        return boundObject(id);
       }
+      // Original invCache.List1145 lazily reads the hangar's own item after its first listing;
+      // numeric containers keep their bind's ID and fetch the self row only when requested.
+      if (method === "GetSelfInvItem") return session.inventorySelfRows.get(objectID) ?? { type: "packedrow", fields: { itemID: STATION, typeID: 52678 } };
       return null;
     },
     /** The server's clock as the session's last synchronising has it, in milliseconds: a test may move it on. */
@@ -297,6 +303,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     setNodeOfAddress(service, bindParams, nodeID) { session.nodes.push([service, bindParams, nodeID]); },
     proxyCalls: [],
     boundCalls: [],
+    inventorySelfRows: new Map(),
     /** The method of every call, by name, at the proxy node or on an object, in the order they were sent. */
     sent: [],
     objects: 0,
@@ -1735,7 +1742,7 @@ test("a call goes out as the retail client sends it, on a service and on a bound
   const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
   const sent = async (method, args, kwargs = null) => {
     await pilots.callBoundMethod("invbroker", method, args, kwargs, WHO, handle, boundHandle);
-    const { args: sentArgs, kwargs: sentKwargs } = session.boundCalls.at(-1);
+    const { args: sentArgs, kwargs: sentKwargs } = session.boundCalls.findLast(call => call.method === method);
     return [sentArgs, sentKwargs];
   };
   // invCache.py: self.moniker.List(flag=flag), self.moniker.ListByFlags(flags=[...]), self.moniker.MultiAdd(list(...), sourceID, **kw)
@@ -1829,6 +1836,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
+    // Original List1145 -> itemID property -> _SetItemData966-975, once for this cold hangar.
+    "invbroker.GetSelfInvItem": { same: 1 },
     // Crimewatch's states and the pilot's security status, at the choosing.
     "crimewatch.GetClientStates": { same: 1 },
     "crimewatch.GetMySecurityStatus": { same: 1 },
@@ -6403,7 +6412,7 @@ test("the ship is already flying an order when its own ball says so, and the pil
 
 // (An order to the engines among them is the autopilot's warp, asked by name. The stop was, until it was made on the
 // ballpark's own object, of which a docked pilot has none: 2026-10-11.)
-const LIST_PAIRS = new Set(["beyonce.CmdJumpThroughFleet", "stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
+const LIST_PAIRS = new Set(["beyonce.CmdJumpThroughFleet", "stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.GetSelfInvItem", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
 /** A docked pilot with its hangar and its ship bound. Each listing the server answers is a different one, so that what was kept can be told from what was asked for again. */
 async function withContainers(answers = {}) {
   let answered = 0;
@@ -6427,7 +6436,13 @@ test("what a container lists is asked for once and kept: by container, by flag, 
   assert.deepEqual(session.boundCalls.filter((call) => call.method === "List").map((call) => call.kwargs), [{ flag: 4 }, { flag: 5 }, { flag: 4 }, { flag: 5 }]);
   const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.calls]));
   assert.deepEqual([tally["invbroker.List"], tally["invbroker.ListByFlags"]], [4, 1]);
-  // Anything else of a container's is asked each time, and so is a List that is not a container's.
+  // Original List1145 primes only the special hangar key. Numeric List leaves its self/type cold.
+  assert.equal(session.boundCalls.filter(call => call.method === "GetSelfInvItem").length, 1);
+  for (let time = 0; time < 2; time += 1) await pilots.callBoundMethod("invbroker", "GetSelfInvItem", [], null, WHO, handle, hangar);
+  assert.equal(session.boundCalls.filter(call => call.method === "GetSelfInvItem").length, 1);
+  for (let time = 0; time < 2; time += 1) await pilots.callBoundMethod("invbroker", "GetSelfInvItem", [], null, WHO, handle, ship);
+  assert.equal(session.boundCalls.filter(call => call.method === "GetSelfInvItem").length, 2);
+  // GetCapacity is still asked each time, as is a List that is not a container's.
   for (let time = 0; time < 2; time += 1) await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, hangar);
   assert.equal(session.boundCalls.filter((call) => call.method === "GetCapacity").length, 2);
   const elsewhere = (await pilots.bindObject("dogmaIM", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
