@@ -4736,8 +4736,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await wordsNow([label]).catch(() => {});
       const qty = await askQuantity({ min: 0, max: most, value: most, hintLabel: label, hint: most === 0 ? "There are none left where they were." : "How many?" });
       if (qty === null || qty <= 0) return;
-      // containerInventory: GetInventoryFromId(chargeLocationID), the inventory of where the charges lie.
-      const split = await bridgeDo("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
+      // Original compiled DropLoadChargeToModule: GetInventoryFromId(source).Add, not its direct moniker.
+      // Split in the source custody through the shared broker before loading the returned numeric ID.
+      const split = await inventoryMoves.act("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
       const splitID = typeof split === "number" ? split : Number(unwrapLong(split));
       if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
       chargeIDs = [splitID];
