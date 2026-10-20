@@ -194,7 +194,7 @@ export function moveDestinations(
     }
   }
   const container = inventory.container;
-  if (container && !samePlace(current, { kind: "container", itemID: container.itemID })) {
+  if (container && container.typeID !== 60 && !samePlace(current, { kind: "container", itemID: container.itemID })) {
     options.push({
       label: containerName,
       place: { kind: "container", itemID: container.itemID },

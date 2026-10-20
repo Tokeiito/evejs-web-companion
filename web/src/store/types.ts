@@ -291,6 +291,8 @@ export type InventoryPlace =
 export interface OpenContainerState {
   readonly itemID: number;
   readonly typeID: number;
+  /** AssetSafetySvc's wrap name, rather than the generic type name. */
+  readonly name?: string;
   readonly rows: readonly InventoryItemRow[];
   readonly capacity: CapacityInfo | null;
   /**

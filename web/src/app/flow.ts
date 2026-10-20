@@ -13,6 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -1480,6 +1481,7 @@ export interface AppFlow {
   refreshStationPanel(): Promise<void>;
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
+  readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
   /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
@@ -6088,6 +6090,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    safetyDeliveriesSignal.set(null);
+    safetyWrapNames.clear();
+    safetyReadGeneration += 1;
     if (liveStream) {
       liveStream.close();
       liveStream = null;
@@ -6212,6 +6217,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // independently (their own error is preserved) so one failed read never
   // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
+  const safetyDeliveriesSignal = createSignal<SafetyDeliveries | null>(null);
+  const safetyWrapNames = new Map<number, string | null>();
+  let safetyReadGeneration = 0;
+  async function loadSafetyDeliveries(): Promise<void> {
+    const characterID = onlineCharacterID(), locationID = dockedNow();
+    const generation = ++safetyReadGeneration;
+    if (!characterID || !locationID) { safetyDeliveriesSignal.set(null); return; }
+    let wraps: SafetyDeliveries["wraps"] = [], error: string | null = null;
+    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames); }
+    catch (cause) {
+      if (isSessionLost(cause)) throw cause;
+      error = errorWords(cause);
+    }
+    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID) {
+      safetyDeliveriesSignal.set({ characterID, locationID, wraps, error });
+    }
+  }
+
   async function loadInventory(): Promise<void> {
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
     try {
@@ -6234,6 +6257,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error, panel.volumes),
       cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
+    await loadSafetyDeliveries();
   }
 
   // Run a mutation, then refresh the panel. A lost session is rethrown to
@@ -6481,7 +6505,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const current = store.get().inventory;
     await loadInventory();
     if (current.container) {
-      await openContainer(current.container.itemID);
+      const safety = safetyDeliveriesSignal.get();
+      await openContainer(current.container.typeID === 60 && safety && !safety.error
+        && !safety.wraps.some(wrap => wrap.row.itemID === current.container!.itemID) ? null : current.container.itemID);
     }
     if (current.corp.loaded) {
       await loadCorpHangar();
@@ -6622,6 +6648,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const owningRow =
       current.hangar.rows.find((row) => row.itemID === containerID) ??
       current.cargo.rows.find((row) => row.itemID === containerID) ??
+      current.container?.rows.find((row) => row.itemID === containerID) ??
+      safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row ??
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
@@ -6633,6 +6661,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : current.container && current.container.itemID === containerID
         ? current.container.typeID
         : inSpace?.typeID ?? 0;
+    const ownName = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.name
+      ?? (current.container?.itemID === containerID ? current.container.name : undefined);
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -6647,6 +6677,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         container: {
           itemID: containerID,
           typeID: knownTypeID,
+          name: ownName,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -6660,6 +6691,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         itemID: containerID,
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
+        name: ownName,
         rows: decodeInventoryRows(reads.list, reads.volumes),
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         hasCapacity: reads.hasCapacity,
@@ -6790,7 +6822,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             || ![dockedAt, inventory.activeShipID].includes(parent.locationID ?? null)) {
           throw new Error("Trading from this container's ancestry is not available yet.");
         }
-        if (parent.typeID === 60) throw new Error("The server's asset-safety recovery price and withdrawal are not implemented yet.");
+        if (parent.typeID === 60) throw new Error("Trading directly from Asset Safety is not available yet. Recover these items to your hangar first.");
       }
       const all = rowsAt(place);
       const row = all?.find(row => row.itemID === itemID);
@@ -28648,9 +28680,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
-        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
-        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
-        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -28661,6 +28690,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           const present = (rowsAt(from) ?? []).filter((row) => itemIDs.includes(row.itemID));
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
+          }
+          // Native AddItems asks for the full-stack recovery price BEFORE its quantity and one-way prompts.
+          const sourceWrap = from.kind === "container" && store.inventory.get().container?.itemID === from.itemID
+            && store.inventory.get().container?.typeID === 60;
+          if (sourceWrap && !(await acceptSafetyRecovery(bridgeAsk, (from as { itemID: number }).itemID, present.map(row => row.itemID), async tax => {
+            await wordsNow(["UI/Common/Confirm", "UI/Inventory/AssetSafetyRecoveryConfirmation", "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"]);
+            const template = store.words.get().templates["UI/Inventory/AssetSafetyRecoveryConfirmation"];
+            const writeIsk = (value: number, places: number) => iskWords(value, places, store.words.get().templates, () => "")
+              ?? `${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+            const question = typeof template === "string" ? plainText(formatTemplate(template, { tax }, {
+              nameOf: () => "", writeIsk,
+            })) : `Recovering the selected items will cost ${writeIsk(tax, 2)}. Do you wish to continue?`;
+            return askDialog("CustomQuestion", { type: "dict", entries: [["header", templateWords("UI/Common/Confirm", {}, "Confirm")], ["question", question]] }, question);
+          }))) return null;
+          // BaseCorpContainer's one-way prompt follows recovery acceptance (AddItems529).
+          if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
+          if (to.kind === "container" && store.inventory.get().container?.itemID === to.itemID && store.inventory.get().container?.typeID === 60) {
+            throw new Error("Items cannot be added to Asset Safety deliveries.");
           }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
           // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
@@ -29762,6 +29809,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
     directTrades,
+    safetyDeliveries: readonlySignal(safetyDeliveriesSignal),
     startDirectTrade,
     duelInvitation: readonlySignal(duelInvitationSignal),
     startDuel,
