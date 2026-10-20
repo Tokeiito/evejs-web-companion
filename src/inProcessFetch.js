@@ -28,8 +28,9 @@
 // (`{ ok: false, error: "NOT_FOUND" }`), as on the tab's socket.
 //
 // A REQUEST GIVEN UP ON (its signal aborted) rejects with the signal's reason,
-// as a fetch does. Its route is not stopped by that, as it is not stopped by a
-// connection that closes. An event stream given up on is let go: its request
+// as a fetch does. The route can observe its operation signal: native owner
+// priming and scalar aggression reads use it to release their caller's locks.
+// An event stream given up on is let go: its request
 // is told it has closed, which is what its route waits for.
 
 const { EVENTS_PATH, dispatchInProcess, streamInProcess } = require("./pilotSocket");
@@ -84,7 +85,7 @@ function createInProcessFetch(app, options = {}) {
       const onAbort = () => reject(signal.reason);
       const heard = () => signal?.removeEventListener("abort", onAbort);
       signal?.addEventListener("abort", onAbort, { once: true });
-      dispatchInProcess(app, request)
+      dispatchInProcess(app, { ...request, signal })
         .then((answer) => responseOf(answer.status, answer.headers, answer.body))
         .then(
           (response) => {

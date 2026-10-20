@@ -116,7 +116,7 @@ export interface BridgeRefusal {
 }
 
 /** The refusal an error body says, or null where it says none or not as one. */
-function refusalOfBody(value: unknown): BridgeRefusal | null {
+export function refusalOfBody(value: unknown): BridgeRefusal | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const { key, values } = value as { key?: unknown; values?: unknown };
   return typeof key === "string" && /^\w{1,100}$/.test(key) ? { key, values: (values ?? null) as JsonValue | null } : null;

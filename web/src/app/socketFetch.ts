@@ -444,7 +444,20 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
           // Given up on by the asker: its reply, if one comes, has nobody waiting.
           const queuedAt = current.queued.indexOf(waiting);
           if (queuedAt >= 0) current.queued.splice(queuedAt, 1);
-          for (const [id, each] of current.sent) if (each === waiting) current.sent.delete(id);
+          for (const [id, each] of current.sent) if (each === waiting) {
+            current.sent.delete(id);
+            // These native cache reads belong to their calling tasklet. Other
+            // operations retain their existing delivery semantics.
+            const body = waiting.operation.body as { recordset?: unknown; service?: unknown; method?: unknown; pilot?: unknown; args?: unknown } | null;
+            const nativeRead = waiting.operation.method === "POST" && (
+              waiting.operation.path === "/api/names" && body?.recordset === "eveowners"
+              || waiting.operation.path === "/api/bridge/call" && body?.pilot === true && body.service === "corpmgr"
+                && body.method === "GetAggressionSettings" && Array.isArray(body.args) && body.args.length === 1
+                && Number.isSafeInteger(body.args[0]) && body.args[0] > 0);
+            if (nativeRead && current.state === "open") {
+              try { current.socket?.send(JSON.stringify({ cancel: id })); } catch { /* The connection is already gone. */ }
+            }
+          }
           waiting.forget();
           reject(signal.reason);
         };

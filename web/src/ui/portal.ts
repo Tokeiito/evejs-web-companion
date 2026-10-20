@@ -16,9 +16,10 @@
 // ones that take this.
 
 /** Svelte action: the node moved to document.body, and taken away with it. */
-export function portal(node: HTMLElement): { destroy(): void } {
-  document.body.appendChild(node);
+export function portal(node: HTMLElement, target: HTMLElement = document.body): { update(target: HTMLElement): void; destroy(): void } {
+  target.appendChild(node);
   return {
+    update(next) { if (node.parentElement !== next) next.appendChild(node); },
     destroy() {
       node.remove();
     },

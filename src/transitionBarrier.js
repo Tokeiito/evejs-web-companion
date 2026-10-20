@@ -56,7 +56,9 @@ function beginHeldTransition(held, kind, expected = {}, nowMs = Date.now()) {
   }
   const priorCooldownUntilMs = Number(held.cooldownUntilMs) || 0;
   held.transitionEpoch = (Number(held.transitionEpoch) || 0) + 1;
-  held.cooldownUntilMs = nowMs + SESSION_CHANGE_COOLDOWN_MS;
+  // sessions.PerformSessionChange418-476: violateSafetyTimer bypasses and
+  // preserves the prior timer. base_corporation.SetAccountKey165 uses it.
+  held.cooldownUntilMs = expected.violateSafetyTimer === true ? priorCooldownUntilMs : nowMs + SESSION_CHANGE_COOLDOWN_MS;
   held.transition = {
     epoch: held.transitionEpoch,
     kind,

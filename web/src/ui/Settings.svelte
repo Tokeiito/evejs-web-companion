@@ -28,17 +28,28 @@
   const warpDistance = flow?.warpDistance ?? readable(0);
   // svelte-ignore state_referenced_locally
   const station = store?.station ?? null;
+  // svelte-ignore state_referenced_locally
+  const userSession = store?.session ?? null;
+  // svelte-ignore state_referenced_locally
+  const ownerDoubleClick = flow?.ownerDoubleClickPreference ?? readable<0 | 1>(0);
+  // svelte-ignore state_referenced_locally
+  const reuseInfoWindows = flow?.infoWindowReusePreference ?? readable(true);
 
   // --- Chat ------------------------------------------------------------------
   //
   // The client's system menu's Chat section (systemmenu.py ConstructChatSettings, 1197 to 1208), as far as the page
-  // has its chat: Auto-reject invitations, which turns a fleet's invitation away unasked (app/autoRejectInvitations.ts).
+  // has its chat: owner double-click behavior, and Auto-reject invitations
+  // (app/autoRejectInvitations.ts).
   const CHAT_WORDS = {
     header: "UI/SystemMenu/AudioAndChat/Chat/Header",
     autoReject: "UI/SystemMenu/AudioAndChat/Chat/AutoRejectInvitations",
+    doubleClick: "UI/SystemMenu/AudioAndChat/Chat/OnDoubleClick",
+    showInfo: "UI/Commands/ShowInfo",
+    conversation: "UI/Chat/StartConversation",
   } as const;
   $effect(() => {
     flow?.requestWords(Object.values(CHAT_WORDS));
+    flow?.requestWords(["UI/SystemMenu/GeneralSettings/Windows/TryUseExistingInfoWin"]);
   });
   // svelte-ignore state_referenced_locally
   const words = store?.words ?? null;
@@ -232,6 +243,15 @@
 
   <section class="settings-group">
     <h3>{chatWord(CHAT_WORDS.header, "Chat")}</h3>
+    {#if flow && $userSession?.accountID}
+    <div class="settings-field">
+      <label for="owner-double-click">{chatWord(CHAT_WORDS.doubleClick, "On double-click")}</label>
+      <select id="owner-double-click" value={String($ownerDoubleClick)} onchange={event => flow?.setOwnerDoubleClickPreference(Number(event.currentTarget.value) === 1 ? 1 : 0)}>
+        <option value="0">{chatWord(CHAT_WORDS.showInfo, "Show Info")}</option>
+        <option value="1">{chatWord(CHAT_WORDS.conversation, "Start Conversation")}</option>
+      </select>
+    </div>
+    {/if}
     <div class="settings-field">
       <label for="chat-auto-reject">{chatWord(CHAT_WORDS.autoReject, "Turn invitations away unasked")}</label>
       <input
@@ -241,6 +261,16 @@
         onchange={(e) => setAutoRejectInvitations(e.currentTarget.checked)}
       />
     </div>
+  </section>
+
+  <section class="settings-group">
+    <h3>Windows</h3>
+    {#if flow && $userSession?.accountID}
+    <div class="settings-field">
+      <label for="reuse-info-windows">{chatWord("UI/SystemMenu/GeneralSettings/Windows/TryUseExistingInfoWin", "Try to use existing info window")}</label>
+      <input id="reuse-info-windows" type="checkbox" checked={$reuseInfoWindows} onchange={event => flow?.setInfoWindowReusePreference(event.currentTarget.checked)} />
+    </div>
+    {/if}
   </section>
 
   <section class="settings-group">

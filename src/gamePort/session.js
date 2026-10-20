@@ -527,8 +527,8 @@ class GamePortSession {
   // ── calls: ServiceCallGPCS, ObjectCallGPCS, moniker ────────────────────────
 
   /** sm.RemoteSvc(service).method(*args, **kwargs) */
-  call(service, method, args = [], kwargs = null, beforeDispatch = undefined) {
-    return this._serviceCall(anyAddress(service), service, method, args, kwargs, beforeDispatch);
+  call(service, method, args = [], kwargs = null, beforeDispatch = undefined, signal = undefined) {
+    return this._serviceCall(anyAddress(service), service, method, args, kwargs, beforeDispatch, signal);
   }
 
   /** sm.ProxySvc(service).method(*args, **kwargs): addressed to our proxy node. */
@@ -543,12 +543,13 @@ class GamePortSession {
    * answer, which is kept in its place, or with CacheOK, and then the copy held is the answer and is good from
    * now (UpdateVersionCheckPeriod). With nothing held the version is 1.
    */
-  _serviceCall(destination, service, method, args, kwargs, beforeDispatch = undefined) {
-    return this._cachedCall({ destination, boundObject: null, service, method, args, kwargs, beforeDispatch }, service);
+  _serviceCall(destination, service, method, args, kwargs, beforeDispatch = undefined, signal = undefined) {
+    return this._cachedCall({ destination, boundObject: null, service, method, args, kwargs, beforeDispatch, signal }, service);
   }
 
   /** ServiceCallGPCS and ObjectCallGPCS both consult objectCaching, keyed by the persistent object or service. */
   async _cachedCall(spec, identity) {
+    if (spec.signal?.aborted) throw new GamePortError("CALL_RETIRED", "The calling tasklet has retired.");
     const { method, args } = spec;
     const said = this.methodCallDetails.get(`${identity}.${method}`);
     const kept = said ? this.cachedMethodCalls.get(this._methodCallKey(identity, method, args, said)) : undefined;
@@ -635,7 +636,7 @@ class GamePortSession {
     for (;;) {
       const out = this.callsOut.get(key);
       if (!out) break;
-      const shared = await out.then((answer) => ({ answer }), () => null);
+      const shared = await this._callerWait(out.then((answer) => ({ answer }), () => null), spec.signal);
       if (shared) return shared.answer;
     }
     const asking = this._makeCall(spec, written);
@@ -643,18 +644,33 @@ class GamePortSession {
     try {
       return await asking;
     } finally {
-      this.callsOut.delete(key);
+      if (this.callsOut.get(key) === asking) this.callsOut.delete(key);
     }
   }
 
+  /** A killed throttler waiter must not kill the tasklet whose result it shares. */
+  _callerWait(work, signal) {
+    if (!signal) return work;
+    if (signal.aborted) return Promise.reject(new GamePortError("CALL_RETIRED", "The calling tasklet has retired."));
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(new GamePortError("CALL_RETIRED", "The calling tasklet has retired."));
+      signal.addEventListener("abort", abort, { once: true });
+      Promise.resolve(work).then(
+        value => { signal.removeEventListener("abort", abort); resolve(value); },
+        error => { signal.removeEventListener("abort", abort); reject(error); },
+      );
+    });
+  }
+
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch }, written) {
+  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch, signal }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
     // A top-level corporation write can wait behind an identical outstanding
     // call. Recheck its original session at the actual send, including retries.
     beforeDispatch?.();
+    if (signal?.aborted) return Promise.reject(new GamePortError("CALL_RETIRED", "The calling tasklet has retired."));
     const callID = this.nextCallID;
     this.nextCallID += 1;
     // Every call's keywords carry machoVersion, 1 unless a cached answer says
@@ -677,10 +693,20 @@ class GamePortSession {
       body: [body],
       journeyID: this.journeyID,
     });
+    let abort;
     const answered = new Promise((resolve, reject) => {
       const waiter = { label: `${service ?? boundObject}.${method}`, resolve, reject, timer: undefined };
       this.pending.set(callID, waiter);
       this._waitFor(callID, waiter, this.callTimeoutMs);
+      if (signal) {
+        abort = () => {
+          if (this.pending.get(callID) !== waiter) return;
+          this.pending.delete(callID); this.timers.clearTimeout(waiter.timer);
+          reject(new GamePortError("CALL_RETIRED", "The calling tasklet has retired."));
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) { abort(); return; }
+      }
       try {
         this._writePacket(packet);
       } catch (error) {
@@ -691,7 +717,10 @@ class GamePortSession {
       }
       this._sent(service ?? this.objectServices.get(boundObject) ?? null, method, carried);
     });
-    return answered.then((result) => this._answered({ boundObject, service, method, args }, result));
+    return answered.then((result) => {
+      if (signal?.aborted) throw new GamePortError("CALL_RETIRED", "The calling tasklet has retired.");
+      return this._answered({ boundObject, service, method, args }, result);
+    }).finally(() => { if (abort) signal.removeEventListener("abort", abort); });
   }
 
   /** A call on the wire, told to whoever counts them (onSent), and the call a bind carried after it. Their counting is never the call's failure. */

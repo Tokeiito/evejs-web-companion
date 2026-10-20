@@ -24,7 +24,7 @@
   import NotificationPopups from "./NotificationPopups.svelte";
   import DroneRecoveryNotice from "./DroneRecoveryNotice.svelte";
   import ServerQuestion from "./ServerQuestion.svelte";
-  import { showInfoTarget } from "./showInfo.ts";
+  import type { InfoWindowHost } from "./infoWindowHost.ts";
   import { marketDetailsTarget } from "./marketDetails.ts";
   import { skillPlanTemplateTarget } from "./skillPlanTemplate.ts";
   import { shipHoldTarget } from "./shipHold.ts";
@@ -73,6 +73,7 @@
     openRequest,
     onOpenRequestServed,
     sessionID,
+    onInfoHost,
   }: {
     store: ClientStore;
     flow: AppFlow;
@@ -105,8 +106,7 @@
     /**
      * A panel App wants opened HERE, as a counter that App bumps.
      *
-     * ⚠ A COUNTER, NOT AN ID, for the reason the Show Info effect below spells
-     * out: the global Bot Manager's Edit button asks for the Bot Builder, and
+     * A counter retains repeated requests: the global Bot Manager's Edit button asks for the Bot Builder, and
      * asking a second time for the panel already open must still raise it. This
      * is the one path INTO a workspace from above it, and it is deliberately a
      * prop rather than a registered callback — data flows down, the same shape
@@ -117,6 +117,7 @@
     onOpenRequestServed?: () => void;
     /** This workspace's own session id, so it can tell whose request is whose. */
     sessionID?: string;
+    onInfoHost?: (sessionID: string, host: InfoWindowHost | null) => void;
   } = $props();
 
   // The store's identity is stable for this component's lifetime (App keys each
@@ -178,6 +179,8 @@
   const stationExpanded = $derived(isDocked && expandPreferred);
   const openIds = $derived(new Set(wins.map((w) => w.id)));
   const focused = $derived(computeFocusedId(wins));
+  const infoTop = (): number => Math.max(0, ...flow.infoWindows.state.get().map(w => w.z));
+  const topZ = (): number => Math.max(infoTop(), ...wins.map(w => w.z));
 
   // Opening a window GIVES THE WORK AREA BACK. While the Station panel has the
   // whole column the desktop is hidden, so a window opened into it would appear
@@ -200,7 +203,9 @@
     expandPreferred = false;
     const registered = places[id];
     const desktop = desktopView?.surfaceSize() ?? null;
-    wins = openWindow(wins, id, undefined, registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null);
+    const place = registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null;
+    wins = openWindow(wins, id, id === "medalDesigner" ? { w: 465, h: 630 } : undefined, id === "medalDesigner" && place ? { ...place, w: 465, h: 630 } : place);
+    const z = topZ() + 1; wins = wins.map(w => w.id === id ? { ...w, z } : w);
   };
   // The Neocom pick, with one de-dupe: while docked, Inventory & Ship IS the
   // permanent dock panel — expand it, snap it to the Ship Inventory tab (the
@@ -231,7 +236,7 @@
       ...(isDocked && !dockCollapsed ? (["inventory"] as TabID[]) : []),
     ]),
   );
-  const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
+  const focus = (id: TabID): void => { const z = topZ() + 1; wins = focusWindow(wins, id).map(w => w.id === id ? { ...w, z } : w); };
   const close = (id: TabID): void => {
     // The Fitting window's close (fittingWnd.Close, 887 to 905): with a simulation shown, the client's question first
     // (ShouldContinueAfterAskingAboutSwitchingShips: ExitSimulationWarning, where it was changed); on No the window
@@ -243,13 +248,14 @@
       return;
     }
     wins = closeWindow(wins, id);
+    if (id === "medalDesigner") flow.closeMedalDesigner();
     // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
     if (id === "industry") void flow.industryWindowClosed();
   };
   const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); registerWindowPlace(id); };
   const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); registerWindowPlace(id); };
-  const minimize = (id: TabID): void => { wins = toggleMinimize(wins, id); };
+  const minimize = (id: TabID): void => { const restore = wins.some(w => w.id === id && w.minimized); wins = toggleMinimize(wins, id); if (restore) focus(id); };
   const toggleDock = (): void => { dockCollapsed = !dockCollapsed; };
 
   // Restore the saved layout when a character comes online (keyed by characterID)
@@ -261,7 +267,7 @@
     if (online && loadedFor !== online.characterID) {
       const saved = loadLayout(online.characterID);
       // Member Details opens for a character (memberDetails.OpenMemberDetails); keep its place, not an empty window.
-      wins = saved ? saved.wins.filter(win => win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) : [];
+      wins = saved ? saved.wins.filter(win => (win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) && (win.id !== "medalDesigner" || flow.medalDesignerShown.get() !== null)) : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
       dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
       targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
@@ -298,32 +304,9 @@
     return () => clearTimeout(handle);
   });
 
-  // R76 — Show Info raises its window from ANYWHERE.
-  //
-  // The openers (an overview row, a tactical bracket, a fitting socket) live in
-  // different subtrees, some of them inside floating windows, so threading an
-  // `onShowInfo` callback to each would touch a dozen components to add one
-  // button. Instead they push a subject into the shared target and this raises
-  // the window — one place that knows about windows at all.
-  //
-  // ⚠ IT WATCHES THE REQUEST COUNTER, NOT THE SUBJECT. Asking for info on the
-  // thing already displayed must still bring the window back to the front, and
-  // it may well have been closed or buried since. Watching the subject alone
-  // would make the second Show Info on the same object do nothing at all.
-  let servedInfoRequests = 0;
-  const infoRequests = showInfoTarget.requests;
-  $effect(() => {
-    const count = $infoRequests;
-    if (count === servedInfoRequests) return;
-    servedInfoRequests = count;
-    // Skip the initial reading: a restored session must not pop an info window
-    // nobody asked for.
-    if (count > 0) openFromPopup("showInfo");
-  });
-
   // A type's market details asked for from outside the market window (marketDetails.ts: marketutils.ShowMarketDetails,
   // as the skill windows ask for the Skill Injector's): the market window opened, which takes the type and reads its
-  // market. It watches the request counter, as the Show Info effect above does, and starts at the count it finds, so
+  // market. It watches the request counter, as the other request effects do, and starts at the count it finds, so
   // that a workspace mounted later does not answer a request made before it.
   // A search of the pilot's things asked for from outside the assets window (assetsSearch.ts: FindInPersonalAssets):
   // the assets window opened, which takes the text and searches; watched as the market's details are, below.
@@ -419,7 +402,7 @@
 
   // A panel App asked to be opened on THIS desktop — today, the Bot Builder,
   // requested by the Edit button in the global Bot Manager. Watches the counter
-  // and not the id, for the same reason the Show Info effect above does: asking
+  // and not the id, so a repeated request remains observable: asking
   // twice for the same panel must still raise it, and it may have been closed or
   // buried in between.
   let mobileOpenRequest = $state<{ id: TabID; n: number } | null>(null);
@@ -482,6 +465,15 @@
   // memberDetails.OpenMemberDetails: one per pilot; repeat requests raise the same member's window.
   // svelte-ignore state_referenced_locally
   const memberDetailsShown = flow.memberDetailsShown;
+  // svelte-ignore state_referenced_locally
+  const medalDesignerShown = flow.medalDesignerShown;
+  let servedMedalDesigner = 0;
+  $effect(() => {
+    const request = $medalDesignerShown;
+    if (request === null) { untrack(() => { wins = closeWindow(wins, "medalDesigner"); }); return; }
+    if (request.n === servedMedalDesigner) return;
+    servedMedalDesigner = request.n; openFromPopup("medalDesigner");
+  });
   let servedMemberDetails = memberDetailsShown.get()?.n ?? 0;
   $effect(() => {
     const request = $memberDetailsShown;
@@ -528,7 +520,7 @@
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
-  <MobileWorkspace {store} {flow} {isDocked} {sessions} openRequest={mobileOpenRequest} />
+  <MobileWorkspace {store} {flow} {isDocked} {sessions} openRequest={mobileOpenRequest} onInfoHost={host => { if (sessionID) onInfoHost?.(sessionID, host); }} />
 {:else}
   <DockWipe {isDocked} />
   <!-- Mounted once for the whole workspace, and once each: the bridge is what
@@ -577,6 +569,8 @@
             onMove={move}
             onResize={resize}
             onOpen={open}
+            onInfoHost={host => { if (sessionID) onInfoHost?.(sessionID, host); }}
+            onRevealInfo={() => { expandPreferred = false; }}
           />
         </ErrorBoundary>
         <DockPanel
