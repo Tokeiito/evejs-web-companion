@@ -25,6 +25,21 @@ function options(family: string, count: number): MedalDesignOption[] {
 }
 export const MEDAL_BASES: readonly MedalDesignOption[] = families.flatMap(([family, count]) => options(family, count));
 export const MEDAL_ELEMENTS: readonly MedalDesignOption[] = options("elements", 33);
+// Original compiled ColorSwatch.swatches, not the decompiler's literal slots.
+// Installed TriColor GetHSV/SetHSV/AsInt replay preserves every opaque palette
+// integer after both native round trips (loop evidence cdx2673).
+export const MEDAL_COLOURS = [
+  "faf5e1", "ebd492", "cb9133", "825830", "f6e631", "f59122", "d95100", "bf1616",
+  "790000", "7f1157", "abc8e2", "598cb9", "375d81", "3b8bd1", "124d8c", "183152",
+  "185662", "6e9058", "3f740b", "516324", "384328", "bfb7aa", "625e57", "19191c",
+] as const;
+export function setMedalDesignColour(design: MedalDesign, row: number, swatch: number): MedalDesign {
+  const hex = MEDAL_COLOURS[swatch];
+  if (!hex || !Number.isInteger(row) || row < 0 || row > 3) return design;
+  const ribbon = [...design.ribbon], id = 4 - row;
+  ribbon[id] = { ...ribbon[id]!, color: 0xff000000 | Number.parseInt(hex, 16) };
+  return { ...design, ribbon };
+}
 export function ribbonShapes(race: string | null): readonly MedalDesignOption[] {
   return RIBBON_SHAPES.map(shape => ({ name: `${race ?? "caldari"}.${shape}`, graphics: [`${race ?? "caldari"}.${shape}`] }));
 }

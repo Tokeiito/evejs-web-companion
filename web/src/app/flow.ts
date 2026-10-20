@@ -2130,6 +2130,7 @@ export interface AppFlow {
   readonly medalDesignerShown: ReadableSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>;
   showMedalDesigner(): void;
   closeMedalDesigner(): void;
+  medalColourPaletteOpened(): void;
   /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
   createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
   corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
@@ -29392,6 +29393,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     medalDesignerShown: readonlySignal(medalDesignerSignal),
     showMedalDesigner,
     closeMedalDesigner,
+    medalColourPaletteOpened() { if (store.station.get().online) sayDialog("ComboExpand", null, ""); },
     createCorporationMedal,
     corporationMedalAwardees,
     medalShowInfo,

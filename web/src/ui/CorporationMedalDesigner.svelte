@@ -3,9 +3,10 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { plainText } from "../bridge/clientWords.ts";
-  import { emptyMedalDesign, selectMedalDesign, resetMedalDesignLayer, medalDesignPreview, ribbonShapes, RIBBON_BASES, MEDAL_BASES, MEDAL_ELEMENTS } from "../bridge/medalDesigner.ts";
+  import { emptyMedalDesign, selectMedalDesign, resetMedalDesignLayer, setMedalDesignColour, medalDesignPreview, ribbonShapes, RIBBON_BASES, MEDAL_BASES, MEDAL_ELEMENTS } from "../bridge/medalDesigner.ts";
   import MedalPreview from "./MedalPreview.svelte";
   import MedalDesignSlider from "./MedalDesignSlider.svelte";
+  import MedalColourPicker from "./MedalColourPicker.svelte";
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -32,7 +33,7 @@
             <div class="design-row" class:hidden={!shown}>
               {#if row > 0}<button type="button" class="reset-item" title={word(P + "ResetItem", "Reset Item")} aria-label={`${part === 1 ? "Ribbon" : "Medal"} ${row}: ${word(P + "ResetItem", "Reset Item")}`} onclick={() => design = resetMedalDesignLayer(design, part as 1 | 2, row)}>×</button>{:else}<span class="reset-spacer"></span>{/if}
                 <MedalDesignSlider options={part === 1 ? row === 0 ? RIBBON_BASES : ribbonShapes(design.race) : row === 0 ? MEDAL_BASES : MEDAL_ELEMENTS} part={part as 1 | 2} label={`${part === 1 ? "Ribbon" : "Medal"} ${row}`} selected={(part === 1 ? design.ribbonSelected : design.medalSelected)[row] ?? null} onSelect={index => design = selectMedalDesign(design, part as 1 | 2, row, index)} previous={word(P + "PreviousItem", "Previous Item")} next={word(P + "NextItem", "Next Item")} />
-              {#if part === 1 && design.ribbonColoursVisible[row]}<span class="colour" style:background={`#${((design.ribbon[4 - row]?.color ?? -1) >>> 0 & 0xffffff).toString(16).padStart(6, "0")}`}></span>{/if}
+              {#if part === 1 && design.ribbonColoursVisible[row]}<MedalColourPicker color={design.ribbon[4 - row]!.color} label={`${word(P + "Ribbon", "Ribbon")} ${row}`} onSelect={swatch => design = setMedalDesignColour(design, row, swatch)} onOpen={() => flow.medalColourPaletteOpened()} />{/if}
             </div>
           {/each}
         {/each}
@@ -56,7 +57,6 @@
   .hidden { display: none; }
   .reset-item, .reset-spacer { width: 16px; flex-shrink: 0; padding: 0; }
   .reset-item { height: 32px; border: 1px solid var(--border); background: #0004; color: inherit; cursor: pointer; }
-  .colour { width: 24px; height: 30px; border: 1px solid var(--border); flex-shrink: 0; }
   .buttons { display: flex; justify-content: center; padding-top: 8px; }
   .buttons button { font-size: 12px; line-height: 16px; padding: 4px 12px; }
 </style>
