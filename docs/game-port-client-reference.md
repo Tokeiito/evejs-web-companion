@@ -2274,12 +2274,23 @@ The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or comp
 The full store baseline was restored byte for byte afterward. No browser trade UI exists yet.
 
 The same recording's lines386/388 prove corporate source inventory: a staged item changes from
-owner98826653/location1052880078604/flag115 to the offering pilot's trade row. The server's
-`_validateOfferedItem` currently refuses every non-personal source. This is a server difference
-to fix before the browser transport, using existing corporation take permissions and retaining
-the original owner/location/flag for abort. The old personal-only gate must not simply be removed.
+owner98826653/location1052880078604/flag115 to the offering pilot's trade row. Server commit
+`f17205f03` replaces the old personal-only gate for direct rows in the acting corporation's local,
+non-impounded office division, using existing Hangar Take permissions. Staged ownership becomes
+the offering pilot's; saved original custody remains available for cancellation. Native cold
+before/after probes verified the authorized refusal before, then staging, exact abort restoration,
+re-staging and bilateral manifest completion to the recipient afterward. Another corporation and
+a division without Take remain refused. Nested corporate source containers remain unsupported.
 
-Implementation order: fix and prove that server difference; carry returned and notified trade
+Commit `16649b126` also sends the partial source stack's quantity debit to the acting pilot.
+Native `invCache.OnItemsChanged219-307` and its container's `_ProcessItemChange1327-1430` consume
+that row to update cached office inventory. A measured split of quantity2 into1 previously sent
+only the new trade row; the corrected call also sends the remaining office row quantity1 with
+old quantity2 to the source pilot. The counterparty receives the trade row. Server ledger
+`f6f383aca` records those real packet probes, full fixture restoration and remaining limits;
+interrupted-stage recovery, lockdown and impound cases were not exercised live.
+
+Implementation order: carry returned and notified trade
 monikers through the browser transport; port inventory/money/manifests and cancel/complete
 controllers; then wire the guest-gated member menus and verify both pilots in the browser.
 The generic returned-bound-object helper currently recognizes remote substructs, not this returned
