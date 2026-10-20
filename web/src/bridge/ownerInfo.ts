@@ -126,6 +126,9 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
   }
   const time = (key: string): bigint | null => {
     const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === key);
+    // Native settings retain the value, and bool is an int in these numeric
+    // comparisons. False/True timestamps are 0/1, distinct from None.
+    if (Array.isArray(entry) && typeof entry[1] === "boolean") return entry[1] ? 1n : 0n;
     const text = Array.isArray(entry) ? longToDecimalString(entry[1]) : null;
     return text === null ? null : BigInt(text);
   };

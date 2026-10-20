@@ -361,6 +361,18 @@ the bridge loses Python type identity. TQ records canonical settings objects,
 not these controlled malformed replies.
 
 For the canonical crimewatch.corp_aggression.settings.AggressionSettings object,
+boolean timestamp fields retain their native numeric values: False is 0 and
+True is 1, each distinct from None. Original compiled settings constructor,
+past/future comparisons, status consumer and complete window chain confirm
+all twelve bool/None/0/1 combinations and the completed friendly-fire labels.
+The decoder now retains these as bigint0/1 instead of omitting the timestamp.
+Live controlled canonical-state deliveries verify both fields, repeat raw-cache
+reads and normal recovery. The default-socket browser shows Illegal for a False
+disable time and no enable time, then Legal with the ordinary reply after
+expiry, with zero console errors. TQ's recorded states use long/None; boolean
+states here are controlled consumer checks, not recorded server behavior.
+
+For the canonical crimewatch.corp_aggression.settings.AggressionSettings object,
 missing state fields also stop construction. Original compiled settings methods
 and GetCorpFriendlyFireStatus raise AttributeError for _disableAfter first, then
 _enableAfter, including an enable field missing beside a future disable time.
