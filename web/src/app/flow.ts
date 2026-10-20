@@ -12421,11 +12421,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // The native status consumer calls methods on the cached raw object.
       // A cached None fails there on every attempt; it is not an omitted row.
       if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
-      assertCorpAggressionStatusMethod(aggressionAnswer);
-      const aggression = aggressionSettingsOf(aggressionAnswer);
-      reads?.assertCurrent();
-      // GetCorpFriendlyFireStatus captures its time before enlistment/owners.
+      // GetCorpFriendlyFireStatus captures now before either status method,
+      // including their conditional helper calls and any decoding failures.
       const readAt = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      assertCorpAggressionStatusMethod(aggressionAnswer);
+      const aggression = aggressionSettingsOf(aggressionAnswer, readAt);
+      reads?.assertCurrent();
       let enlistmentFactions: readonly number[] | null = null;
       let enlistmentFactionNames: readonly (string | null)[] | null = null;
       if (!isNpcCorporation(corporationID)) {

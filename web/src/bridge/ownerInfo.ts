@@ -121,7 +121,7 @@ function aggressionStateKey(value: JsonValue): string | null {
 }
 
 /** corpmgr.GetAggressionSettings: the object's two times (its state dict); null for anything else. */
-export function aggressionSettingsOf(result: JsonValue | null | undefined): AggressionSettings | null {
+export function aggressionSettingsOf(result: JsonValue | null | undefined, now?: bigint): AggressionSettings | null {
   if (!isRecord(result) || result.type !== "object" || typeof result.name !== "string" || !result.name.endsWith("AggressionSettings")) {
     return null;
   }
@@ -141,6 +141,19 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
   }
   const read = (key: string): JsonValue | undefined => canonical
     ? state.get(key) : entries.find(candidate => Array.isArray(candidate) && candidate[0] === key)?.[1];
+  const numericTime = (key: string): boolean => {
+    const value = read(key);
+    return value === null || typeof value === "boolean" || (typeof value === "number" && Number.isSafeInteger(value))
+      || (isRecord(value) && value.type === "long" && /^-?\d+$/.test(longToDecimalString(value) ?? ""));
+  };
+  const time = (key: string): bigint | null => {
+    const value = read(key);
+    // Native settings retain the value, and bool is an int in these numeric
+    // comparisons. False/True timestamps are 0/1, distinct from None.
+    if (typeof value === "boolean") return value ? 1n : 0n;
+    const text = longToDecimalString(value);
+    return text === null ? null : BigInt(text);
+  };
   // The compiled settings methods read disable first, then enable. Instance
   // unmarshalling installs the state without __init__; an absent field is not
   // None. Preserve the native consumer failure after the raw reply is cached.
@@ -155,31 +168,36 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
     // Instance dict state can shadow a class method. The first status call
     // fails before any settings field is read, even if those fields are absent.
     requireCallable("IsFriendlyFireLegalAtTime");
+    const originalStatus = onlyTextKeys && !state.has("IsFriendlyFireLegalAtTime");
+    if (originalStatus) requireCallable("_IsDisableTimeInPast");
     for (const key of ["_disableAfter", "_enableAfter"]) {
+      // Original IsFriendlyFireLegalAtTime calls the disable helper before
+      // reading disable, then the enable helper before reading enable. An
+      // unknown callable or nonnumeric comparison needs its own native audit.
+      if (key === "_enableAfter" && originalStatus && !state.has("_IsDisableTimeInPast") && numericTime("_disableAfter")) {
+        requireCallable("_IsEnableTimeInPast");
+      }
       if (!state.has(key)) {
         throw Object.assign(new Error(`AggressionSettings instance has no attribute '${key}'`), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_MISSING_FIELD" });
       }
     }
     // The second call follows the first method's field reads. Limit this
-    // boundary to its original method/helpers and known numeric state; custom
-    // callables, helper shadows and other state types need their own audit.
+    // boundary to original methods and known numeric state. Its enable helper
+    // is conditional: a pending disable returns before it is called.
     const firstUnmodified = onlyTextKeys
       && !["IsFriendlyFireLegalAtTime", "_IsDisableTimeInPast", "_IsEnableTimeInPast"].some(key => state.has(key));
-    const numericTimes = ["_disableAfter", "_enableAfter"].every(key => {
-      const value = read(key);
-      return value === null || typeof value === "boolean" || (typeof value === "number" && Number.isSafeInteger(value))
-        || (isRecord(value) && value.type === "long" && /^-?\d+$/.test(longToDecimalString(value) ?? ""));
-    });
-    if (firstUnmodified && numericTimes) requireCallable("GetNextPendingChangeTime");
+    const numericTimes = ["_disableAfter", "_enableAfter"].every(numericTime);
+    if (firstUnmodified && numericTimes) {
+      requireCallable("GetNextPendingChangeTime");
+      if (!state.has("GetNextPendingChangeTime")) {
+        requireCallable("_IsDisableTimeInFuture");
+        const disable = time("_disableAfter");
+        if (!state.has("_IsDisableTimeInFuture") && now !== undefined && (disable === null || disable < now)) {
+          requireCallable("_IsEnableTimeInFuture");
+        }
+      }
+    }
   }
-  const time = (key: string): bigint | null => {
-    const value = read(key);
-    // Native settings retain the value, and bool is an int in these numeric
-    // comparisons. False/True timestamps are 0/1, distinct from None.
-    if (typeof value === "boolean") return value ? 1n : 0n;
-    const text = longToDecimalString(value);
-    return text === null ? null : BigInt(text);
-  };
   return { enableAfter: time("_enableAfter"), disableAfter: time("_disableAfter") };
 }
 

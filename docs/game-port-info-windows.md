@@ -423,6 +423,26 @@ cache reset completes PublicInfo, Aggression, Enlistment and all existing rows.
 Tranquility's recorded canonical states have both keys. These missing-field
 checks do not establish other classes, non-dict states, or malformed time values.
 
+Canonical instance state can also shadow the status helpers. The original
+compiled settings module, native old-style instance and full status consumer
+establish the order: call the past-disable helper, read disable, call the
+past-enable helper, read enable, then call GetNextPendingChangeTime and its
+future-disable helper. Its future-enable helper runs only when disable is None
+or earlier than the captured clock; an equal or later disable returns first.
+Known non-callable builtin shadows raise TypeError only when reached, before
+later field failures or enlistment reads. Unknown callables and other timestamp
+types remain separate audits. The Info flow captures now before these calls.
+
+Forty-four controlled states, each reconstructed twice after actual successful
+server deliveries, verify helper failures, missing-field priority, conditional
+skips, raw-cache repeats and recovery after expiry. Conditional API cases control
+both timestamps and the reported status clock. The default-socket browser shows
+the pending Legal status with the future-enable helper skipped, then retains
+the prior caption and new header when a past disable reaches that helper.
+Cached retry makes no aggression read; ordinary data after expiry completes.
+Exactly two expected TypeErrors and no other console errors were observed.
+TCP confirms the corresponding public/aggression/enlistment boundaries.
+
 Numeric and boolean enlistment answers now raise TypeError before construction
 can complete. The original compiled UpdateDataCorp directly iterates them and
 raises for int, long, float and bool, including zero and False; the helper does
