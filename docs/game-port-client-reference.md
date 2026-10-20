@@ -2334,11 +2334,33 @@ QtyPopup's hint uses FmtAmt's grouped whole bounds. Original compiled currency13
 confirm these separate display rules. The browser's first screenshot caught a clipped money label;
 its corrected 64px header and whole-ISK labels were then checked visually (cdx3045).
 
-Item drops and their native ownership, access and type gates remain the next controller slice.
-Rows update from item notices, but nonempty rows, ship warnings and offer resets have not yet
-been verified through this window. Inventory view controls, item menus/tooltips, drag behavior,
-splitter persistence, and additional character-menu placements remain follow-up work. The native
-ship-warning gate is implemented before MakeOffer; this unit's live exchange contained no ship.
+Inventory stacks now drop through the same received trade moniker. Retained List rows supply
+their actual source location; selected stacks use native type volume times quantity for MultiAdd,
+with flag0, while a single Add uses flagNone. PlayerTrade1672-1687's active-ship, asset-safety-wrap
+and static typelist gates run before those writes. The installed typeListLoader.pyd's lists36/142
+match every inclusion/exclusion array in the same-build CCP data used by the app. Ship-hangar
+rows now provide the existing inventory drag payload too. Native Shift quantity rules are ported,
+but a physical Shift-drag has not yet been proven with the available input API.
+
+Cold browser capture3069 proves local injector/wrap/active-ship refusals with no Add, two
+volume-ordered MultiAdds, three single Adds, nonempty offers and acceptance reset after adding.
+Declining the recipient's TradeShipWarning sends no MakeOffer; accepting it completes the Rifter,
+three Acolytes and one Hobgoblin. Browser hangars and stopped custody read3082 agree on delivery.
+Cancellation restores the drone stacks, including a subsequent reverse-direction trade. The
+ordinary Member List's Trade entry is also verified. A drop on the other-party header routes to
+the offering pilot's controller; attempts in its blank lower inventory area produced no RPC and
+need diagnosis. No claim that every drop position works.
+
+Native GetItemLabel251-264 uses type names for ordinary drones and combines type/item names for
+named hulls. The first nonempty browser check exposed an incorrect location-name preference;
+it is corrected using IsValidNamedItem's existing ship/group predicate and TypeNameAndItemName.
+Original compiled3070 confirms an ordinary drone makes no location-name lookup and a named ship
+uses the combined label. Deploy-component naming remains beyond that existing predicate.
+
+Container ancestry/removal tax, fitted-item unloads, live Shift quantity proof, the blank lower
+drop target, inventory view controls, item menus/tooltips, splitter persistence and additional
+character-menu placements remain follow-up work. Corporate and active-ship-bay sources are
+wired but were not exercised through this window in the current drop verification.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by

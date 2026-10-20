@@ -17,6 +17,8 @@
   import { notify } from "./notices.ts";
   import DesktopWindow from "./DesktopWindow.svelte";
   import OwnerPicture from "./OwnerPicture.svelte";
+  import { DRAG_MIME, decodeDrag, carriesOurPayload } from "./dragDrop.ts";
+  import { isNamedItem } from "./inventoryModel.ts";
   let { session, trade, inFront }: { session: Session; trade: DirectTradeWindow; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
   const words = session.store.words, names = session.store.names, station = session.store.station, images = session.flow.imageServer;
@@ -27,14 +29,18 @@
   const myID = $derived($station.online?.characterID ?? 0), otherID = $derived(trade.state.traders.find(id => id !== myID)!);
   const indexes = $derived([trade.state.traders.indexOf(myID), trade.state.traders.indexOf(otherID)]);
   const word = (label: string, fallback: string) => plainText($words.templates[label] ?? fallback);
-  const name = (id: number) => resolvedName($names.resolved, "owner", id, String(id));
-  const caption = $derived(plainText(formatTemplate($words.templates["UI/PVPTrade/TradeWith"] ?? "Trade with {otherParty}", { otherParty: otherID }, { nameOf: (_kind, id) => name(id) })));
+  const name = (id: number) => resolvedName($names.resolved, "owner", id, "Unknown pilot");
+  const caption = $derived(plainText(formatTemplate($words.templates["UI/PVPTrade/TradeWith"] ?? "Trade with {[character]otherParty.name}", { otherParty: otherID }, { nameOf: (_kind, id) => name(id) })));
   let lastRaised = 0;
   $effect(() => { const raised = trade.raised; if (raised !== lastRaised) { lastRaised = raised; untrack(() => geometry = { ...geometry, minimized: false, z: ++topZ }); } });
   $effect(() => { session.flow.requestNames(trade.state.items.map(row => ({ kind: "type" as const, id: Number(readRowField(row, "typeID")) }))); });
   function itemName(row: JsonValue): string {
     const item = Number(readRowField(row, "itemID")), type = Number(readRowField(row, "typeID"));
-    return resolvedName($names.resolved, "evelocation", item, resolvedName($names.resolved, "type", type, String(type)));
+    const typeName = resolvedName($names.resolved, "type", type, "Unknown item");
+    const named = isNamedItem({ singleton: readRowField(row, "singleton") === true || Number(readRowField(row, "singleton")) === 1 || Number(readRowField(row, "quantity")) < 0,
+      categoryID: Number(readRowField(row, "categoryID")), groupID: Number(readRowField(row, "groupID")) });
+    const own = named ? resolvedName($names.resolved, "evelocation", item, typeName) : typeName;
+    return own === typeName ? typeName : plainText(formatTemplate($words.templates["UI/PVPTrade/TypeNameAndItemName"] ?? "{typeName} ({itemName})", { typeName, itemName: own }, { nameOf: () => "" }));
   }
   function quantity(row: JsonValue): number { const quantity = Number(readRowField(row, "quantity")); return quantity < 0 ? 1 : quantity; }
   async function run(action: () => Promise<void>): Promise<void> {
@@ -44,6 +50,18 @@
     finally { busy = false; }
   }
   function info(id: number): void { void showOwnerInfo(session.flow, id).catch(cause => notify({ kind: "danger", title: "Show Info", detail: String(cause) })); }
+  function over(event: DragEvent): void {
+    if (!trade.abortOnClose || !carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) return;
+    event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  }
+  function drop(event: DragEvent): void {
+    event.preventDefault();
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME));
+    if (!payload || payload.kind !== "inventoryItem") return;
+    // pvptradewnd60: a drop onto the other side uses the offering pilot's
+    // controller too; it never changes the ownership of the offered row.
+    void run(() => session.flow.directTrades.offerItems(trade.state.containerID, payload.itemID, payload.from, event.shiftKey));
+  }
   function resizeSplit(event: PointerEvent): void {
     if (event.button !== 0) return;
     const handle = event.currentTarget as HTMLElement, parent = handle.parentElement!;
@@ -64,7 +82,7 @@
       {#each [myID, otherID] as ownerID, side}
         {@const index = indexes[side]!}
         {@const amount = trade.state.money[index]!}
-        <section aria-label={name(ownerID)} style:flex-basis={side === 0 ? `${split}%` : undefined}>
+        <section aria-label={name(ownerID)} style:flex-basis={side === 0 ? `${split}%` : undefined} ondragover={over} ondrop={drop}>
           <div class="owner">
             <button class="portrait" type="button" title={name(ownerID)} onclick={() => info(ownerID)}><OwnerPicture name={name(ownerID)} urls={[portraitUrl($images, ownerID, 64), clientTexture(portraitDefaultPath(64))].filter((url): url is string => url !== null)} size={64} /></button>
             <div class="offer"><button type="button" class="owner-name" onclick={() => info(ownerID)}>{name(ownerID)}</button>

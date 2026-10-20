@@ -146,6 +146,9 @@ export interface StationGuest {
  * these game IDs.
  */
 export interface InventoryItemRow {
+  /** Native inventory custody, retained when the List row supplies it. */
+  readonly ownerID?: number;
+  readonly locationID?: number;
   readonly itemID: number;
   readonly typeID: number;
   readonly groupID: number | null;

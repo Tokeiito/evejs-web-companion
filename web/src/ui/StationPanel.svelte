@@ -1816,7 +1816,8 @@
         <ul class="stn-rows">
           {#each ships as ship (ship.itemID)}
             {@const flying = ship.itemID === $inventory.activeShipID}
-            <li class="stn-row stn-ship-row" class:flying class:picked={openShip?.itemID === ship.itemID}>
+            <li class="stn-row stn-ship-row" class:flying class:picked={openShip?.itemID === ship.itemID}
+              draggable="true" ondragstart={event => startDrag(event, ship, { kind: "hangar" })}>
               <span class="stn-cell-render">
                 <TypeIcon typeID={ship.typeID} name={nameOf(ship)} size="md" />
               </span>

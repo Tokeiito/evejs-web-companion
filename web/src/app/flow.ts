@@ -6758,10 +6758,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   const directTrades = createDirectTrades({
     ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
-    name: id => resolvedName(store.names.get().resolved, "owner", id, String(id)),
+    name: id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot"),
     requestNames: ids => {
       requestNames(ids.map(id => ({ kind: "owner" as const, id })));
-      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
+      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/PVPTrade/TypeNameAndItemName", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
     },
     primeItems: ids => requestNames(ids.map(id => ({ kind: "evelocation" as const, id }))),
     manifestMismatch: () => store.words.get().templates["UI/Messages/DirectTradeManifestMismatch"] ?? "The trade contents changed.",
@@ -6771,6 +6771,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return wealth;
     },
     quantity: (min, max) => askQuantity({ min, max, value: 100, digits: 2, hintLabel: "UI/Common/SetQtyBetween", hint: "", hintArgs: { min: fmtAmt(min), max: fmtAmt(max) } }),
+    itemQuantity: max => askQuantity({ min: 0, max, value: max, hintLabel: "UI/Common/NoMoreUnits", hint: "There are no more units available." }),
+    source: async (itemID, place) => {
+      if (!dockedNow()) throw new Error("Dock before offering inventory in a trade.");
+      // Top-level hangar/office and the active ship cannot be descendants of
+      // an asset-safety wrap (invCache.AcceptPossibleRemovalTax754-780).
+      if (place.kind === "container") throw new Error("Trading items from inside containers is not available yet.");
+      const all = rowsAt(place);
+      const row = all?.find(row => row.itemID === itemID);
+      if (!row) throw new Error("That item is no longer in the source inventory.");
+      const selected = store.inventory.get().selection;
+      const rows = selected.includes(itemID) ? all!.filter(row => selected.includes(row.itemID)) : [row];
+      // AddItems takes the first actual row's location, rather than looking
+      // the office up again. Ship-bay projections identify their enclosing
+      // active ship separately from the projected item rows.
+      const sourceID = row.locationID ?? (place.kind === "shipBay" ? inventoryAt(place).liesIn : null);
+      if (!sourceID) throw new Error("The source inventory did not identify where the item is located.");
+      return { rows, sourceID };
+    },
+    activeShipID: () => store.inventory.get().activeShipID,
+    restrictions: async types => {
+      const lists: Record<number, readonly number[] | null> = {};
+      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142], callOptions));
+      return lists;
+    },
+    volumes: async types => (await api.loadTypeVolumes(types, callOptions)).volumes,
     confirm: key => askDialog(key, null, key === "ConfirmCancelTrade" ? "Cancel this trade?" : "Accept the offer containing a ship?", "okcancel"),
     say: sayDialog,
     report: error => { if (failureCode(error) !== "SESSION_REQUEST_RETIRED" && !sayRefusalDialog(error, "The trade could not be updated.")) sayDialog("CustomNotify", { type: "dict", entries: [["notify", errorWords(error)]] }, errorWords(error)); },

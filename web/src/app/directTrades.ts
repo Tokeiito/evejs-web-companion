@@ -3,9 +3,11 @@
 // service/window/two inventory consumers (the concurrent inventory List coalesces).
 import type { Ask } from "../bridge/ask.ts";
 import { abortDirectTrade, initiateDirectTrade, listDirectTrade, makeDirectTradeOffer,
-  offerDirectTradeMoney, tradeMonikerOf, type DirectTradeState, type TradeMoniker } from "../bridge/directTrade.ts";
+  offerDirectTradeMoney, addDirectTradeItem, addDirectTradeItems, tradeMonikerOf, type DirectTradeState, type TradeMoniker } from "../bridge/directTrade.ts";
 import { isListValue, readRowField, type JsonValue } from "../bridge/wire.ts";
 import { createSignal, readonlySignal } from "../store/signals.ts";
+import type { InventoryItemRow, InventoryPlace } from "../store/types.ts";
+import { intSetOf } from "../bridge/py27DictOrder.ts";
 
 export interface DirectTradeWindow {
   readonly moniker: TradeMoniker;
@@ -24,6 +26,11 @@ interface Dependencies {
   manifestMismatch(): string;
   wealth(): Promise<number>;
   quantity(min: number, max: number): Promise<number | null>;
+  itemQuantity(max: number): Promise<number | null>;
+  source(itemID: number, place: InventoryPlace): Promise<{ rows: readonly InventoryItemRow[]; sourceID: number }>;
+  activeShipID(): number | null;
+  restrictions(types: readonly number[]): Promise<Readonly<Record<number, readonly number[] | null>>>;
+  volumes(types: readonly number[]): Promise<Readonly<Record<number, number | null>>>;
   confirm(key: string): Promise<boolean>;
   say(key: string, values: JsonValue | null, fallback: string): void;
   report(error: unknown): void;
@@ -164,10 +171,44 @@ export function createDirectTrades(deps: Dependencies) {
     const amount = await deps.quantity(w.state.money[index]!, await deps.wealth());
     if (amount !== null && get(id)) await offerDirectTradeMoney(deps.act, w.moniker, amount);
   }
+  async function offerItems(id: number, itemID: number, place: InventoryPlace, shift: boolean): Promise<void> {
+    const w = get(id); if (!w?.abortOnClose) return;
+    const { rows, sourceID } = await deps.source(itemID, place);
+    // PlayerTrade.AddItems1672-1687: all local prechecks precede Add/MultiAdd.
+    for (const row of rows) {
+      if (row.itemID === deps.activeShipID()) { deps.say("PeopleAboardShip", null, "That ship is currently being piloted."); return; }
+      if (row.typeID === 60) { deps.say("CannotTradeAssetSafety", null, "Asset safety wraps cannot be traded."); return; }
+    }
+    const types = [...new Set(rows.map(row => row.typeID))], lists = await deps.restrictions(types);
+    const restricted = types.filter(typeID => {
+      const holding = lists[typeID];
+      if (!holding) throw new Error("The installed client has no trade restriction data for this item type.");
+      return holding.includes(36) || holding.includes(142);
+    });
+    if (restricted.length) {
+      // The native local error takes a Python set. Keep its iteration order
+      // when supplying the browser's type-list formatter with those entries.
+      deps.say("CannotTradeNonTradable", { type: "dict", entries: [["itemList", [29, { type: "list", items: intSetOf(restricted).keys() }]]] }, "These items cannot be traded.");
+      return;
+    }
+    if (rows.length === 1) {
+      const row = rows[0]!, quantity = shift && row.quantity > 1 ? await deps.itemQuantity(row.quantity) : row.quantity;
+      if (!quantity || !get(id)) return;
+      await addDirectTradeItem(deps.act, w.moniker, row.itemID, sourceID, quantity);
+    } else if (rows.length > 1) {
+      const volumes = await deps.volumes(types);
+      const items = rows.map(row => {
+        const volume = volumes[row.typeID];
+        if (typeof volume !== "number") throw new Error("The installed client has no volume for this item type.");
+        return { itemID: row.itemID, stacksize: row.quantity, unitVolume: volume };
+      });
+      if (get(id)) await addDirectTradeItems(deps.act, w.moniker, items, sourceID);
+    }
+  }
   function reset(abort = false): void {
     const old = windows.get(); generation++; windows.set([]); opening.clear();
     if (abort) for (const w of old) if (w.abortOnClose) void abortDirectTrade(deps.act, w.moniker).catch(deps.report);
   }
-  return { windows: readonlySignal(windows), start, receive, cancel, accept, offerMoney, reset, report: deps.report };
+  return { windows: readonlySignal(windows), start, receive, cancel, accept, offerMoney, offerItems, reset, report: deps.report };
 }
 export type DirectTrades = ReturnType<typeof createDirectTrades>;
