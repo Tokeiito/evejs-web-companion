@@ -2303,8 +2303,19 @@ object. Cold production AppFlow evidence cdx2980 verified two rounds with identi
 distinct containers/references, repeated List on each source object, receiver List and cancellation.
 Actual wire2987 contains four carried List binds, two subsequent List calls, two InitiateTrade and
 two Abort calls, no trade address-resolution request and no unmatched replies. A reference received
-by the other pilot is refused before native dispatch. Browser controls, nonempty exchange state,
-window lifecycle and inventory/money/manifests remain separate work.
+by the other pilot is refused before native dispatch.
+
+The exchange bridge now sends single Add with `qty` and `flag=None`, and MultiAdd with the
+Python list of IDs sorted by type volume times stacksize and `flag=0`, as the original compiled
+inventory methods confirmed in cdx2995. OfferMoney carries a float even at zero; MakeOffer carries
+the native KeyVal with money list and Python set of both sides' packed rows. Production AppFlow
+cdx3003 staged a partial stack then two remaining stacks, offered0.25/0.50, read the manifest/None
+state, accepted both manifests and received completion for both pilots. Wallets changed by the
+expected net0.25 and close Abort remained valid. Decoded wire3007 confirms the argument kinds;
+actual zero-money call3008 uses PyZeroReal0x0b. The TQ offer packet itself is LARGE PAYLOAD; the
+client's decoded scatter at968 exposes its manifest fields, not exact packet bytes. No TQ money
+offer was found. Browser controllers, window lifecycle, drop restrictions, ship-warning and money
+dialogs, notice-driven exchange state and guest-gated menus remain separate work.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by

@@ -73,3 +73,22 @@ export async function listDirectTrade(ask: Ask, moniker: TradeMoniker): Promise<
 export async function abortDirectTrade(act: Ask, moniker: TradeMoniker): Promise<void> {
   await act("trademgr", "Abort", [], null, moniker.reference);
 }
+
+/** BaseInvContainer.__AddItem193-226: PlayerTrade.locationFlag is inherited None. */
+export async function addDirectTradeItem(act: Ask, moniker: TradeMoniker, itemID: number, sourceLocationID: number, quantity: number): Promise<void> {
+  await act("trademgr", "Add", [itemID, sourceLocationID], { qty: quantity, flag: null }, moniker.reference);
+}
+/** AddItems489 onward sorts the selected stacks by total type volume before MultiAdd. */
+export async function addDirectTradeItems(act: Ask, moniker: TradeMoniker,
+  items: readonly { readonly itemID: number; readonly stacksize: number; readonly unitVolume: number }[], sourceLocationID: number): Promise<void> {
+  const ids = [...items].sort((a, b) => a.unitVolume * a.stacksize - b.unitVolume * b.stacksize).map(item => item.itemID);
+  await act("trademgr", "MultiAdd", [ids, sourceLocationID], { flag: 0 }, moniker.reference);
+}
+export async function offerDirectTradeMoney(act: Ask, moniker: TradeMoniker, amount: number): Promise<void> {
+  await act("trademgr", "OfferMoney", [amount], null, moniker.reference);
+}
+/** OnClickAccept92-115: the native UI's ship-warning gate precedes this write. */
+export async function makeDirectTradeOffer(act: Ask, moniker: TradeMoniker, state: DirectTradeState): Promise<void> {
+  const items: JsonValue = { type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items: state.items }]], list: [], dict: [] };
+  await act("trademgr", "MakeOffer", [{ tradeContainerID: state.containerID, money: state.money, tradeItems: items }], null, moniker.reference);
+}

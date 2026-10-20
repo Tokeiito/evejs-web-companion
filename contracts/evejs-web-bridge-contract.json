@@ -729,8 +729,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 427,
-    "sha256": "4f58d5d28b3ff98dd6072b2594b15ab4e88813a87a03f8b942120d19520b5933",
+    "count": 431,
+    "sha256": "79618a4b2c7d8541d5b2bfde82b9c4b2d528582c9b61ef1f4118751ac1ff50dc",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -1149,7 +1149,11 @@
       "structureDocking.Undock",
       "structureJumpBridgeMgr.CmdJumpThroughStructureStargate",
       "trademgr.Abort",
+      "trademgr.Add",
       "trademgr.InitiateTrade",
+      "trademgr.MakeOffer",
+      "trademgr.MultiAdd",
+      "trademgr.OfferMoney",
       "warRegistry.AcceptAllyNegotiation",
       "warRegistry.AcceptSurrender",
       "warRegistry.CreateSurrenderNegotiation",
@@ -1405,7 +1409,11 @@
       "structureDocking.Undock",
       "structureJumpBridgeMgr.CmdJumpThroughStructureStargate",
       "trademgr.Abort",
-      "trademgr.InitiateTrade"
+      "trademgr.Add",
+      "trademgr.InitiateTrade",
+      "trademgr.MakeOffer",
+      "trademgr.MultiAdd",
+      "trademgr.OfferMoney"
     ],
     "browserSessionFields": [
       "languageID",
