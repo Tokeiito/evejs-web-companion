@@ -2529,6 +2529,8 @@ const RETAIL_CALLS = Object.freeze({
     shape: ownersContracts,
   }),
   "crimewatch.GetClientStates": same(`${CRIMEWATCH_SVC}:89`, "CharGetCrimewatchLocation().GetClientStates(), no arguments, on a moniker made for the call. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "crimewatch.StartDuelChallenge": same(`${CRIMEWATCH_SVC}:583-588`, "CharGetCrimewatchLocation().StartDuelChallenge(charID), after the local engagement guard; one selected other player, high/low security. No exact TQ call recording found."),
+  "crimewatch.RespondToDuelChallenge": same(`${CRIMEWATCH_SVC}:562-579`, "RespondToDuelChallenge(fromCharID, expiryTime, accept): exact notice FILETIME long and bool, only after an explicit accept/decline result; timeout/close sends nothing."),
   "crimewatch.SetSafetyLevel": judged(`${CRIMEWATCH_SVC}:343`, oneSafetyLevel,
     "CharGetCrimewatchLocation().SetSafetyLevel(safetyLevel): one of the three levels, from the safety button's selector, at once for a level no lower than the one now and after its Confirm for a lower one (shipSafetyButton.py 464, 660). The service keeps the level it set and asks nothing. In none of the recordings."),
   "crimewatch.GetMySecurityStatus": same(`${CRIMEWATCH_SVC}:592`, "CharGetCrimewatchLocation().GetMySecurityStatus(), no arguments: asked once and kept. Recorded on Tranquility as the call a bind of crimewatch carried."),

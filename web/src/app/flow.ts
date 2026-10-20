@@ -216,6 +216,7 @@ import {
   type AssetSearchOption,
 } from "../bridge/assetSearch.ts";
 import { shownSecurity } from "../bridge/systemSecurity.ts";
+import { duelChallengeOf, startDuelChallenge, respondToDuelChallenge, type DuelInvitation } from "../bridge/duel.ts";
 import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
@@ -1436,6 +1437,11 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
+  startDuel(characterID: number): Promise<void>;
+  answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
+  expireDuel(n: number): void;
+  closeDuel(n: number): void;
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
   retryDroneRecovery(): Promise<void>;
   requireAutomationReady(): void;
@@ -5179,6 +5185,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    if (method === "OnDuelChallenge") {
+      const incoming = duelChallengeOf(args);
+      if (incoming) {
+        duelInvitationSignal.set({ ...incoming, n: ++duelInvitationN, expired: false, clockOffsetMs: serverNow() - Date.now() });
+        requestNames([incoming.characterID, incoming.corporationID, ...(incoming.allianceID ? [incoming.allianceID] : [])].map(id => ({ kind: "owner" as const, id })));
+        requestWords(["UI/Crimewatch/Duel/InvitationWindowCaption", "UI/Crimewatch/Duel/DuelDecleration", "UI/Crimewatch/Duel/Accept", "UI/Crimewatch/Duel/Decline", "UI/Crimewatch/Duel/BlockCommunications", "UI/Common/Corporation", "UI/Common/Alliance"]);
+      }
+    }
+    if (method === "OnCrimewatchEngagementCreated" && duelInvitationSignal.get()?.characterID === Number(args[0])) duelInvitationSignal.set(null);
+    if (method && ["OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"].includes(method)) {
+      const held = store.flight.get().crimewatch, id = Number(args[0]);
+      const expiry = method === "OnCrimewatchEngagementStopTimeout" ? -1n : unwrapLong(args[1]);
+      if (held && Number.isSafeInteger(id) && (method === "OnCrimewatchEngagementEnded" || expiry !== null)) {
+        const others = held.states.engagements.filter(entry => Number(entry.characterID) !== id);
+        const engagements = method === "OnCrimewatchEngagementEnded" ? others : [...others, { characterID: id, expiry: String(expiry) }];
+        store.apply({ type: "flight/crimewatch", crimewatch: { ...held, states: { ...held.states, engagements } } });
+      }
+    }
     if (method === "OnCorporationMedalAdded") corporationDecorationsChangedSignal.set(corporationDecorationsChangedSignal.get() + 1);
     if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
       corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
@@ -5587,6 +5611,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) duelInvitationSignal.set(null);
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -6720,6 +6745,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+  const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
+  let duelInvitationN = 0;
+  async function startDuel(characterID: number): Promise<void> {
+    // Native StartDuel's guard tests dictionary membership, including ongoing -1.
+    if (store.flight.get().crimewatch?.states.engagements.some(entry => Number(entry.characterID) === characterID)) return;
+    try { await startDuelChallenge(bridgeDo, characterID); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
+  }
+  function expireDuel(n: number): void {
+    const invitation = duelInvitationSignal.get();
+    if (invitation?.n === n) duelInvitationSignal.set({ ...invitation, expired: true });
+  }
+  function closeDuel(n: number): void { if (duelInvitationSignal.get()?.n === n) duelInvitationSignal.set(null); }
+  async function answerDuel(n: number, accept: boolean, block: boolean): Promise<void> {
+    const invitation = duelInvitationSignal.get();
+    if (!invitation || invitation.n !== n || invitation.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    const current = callOptions.captureRequestGuard!();
+    if (accept && !await askDialog("AskConfirmDuel", null, "Are you sure you want to accept the duel?", "yesno", { suppressAnswer: "yes" })) return;
+    current();
+    if (duelInvitationSignal.get()?.n !== n || duelInvitationSignal.get()?.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    duelInvitationSignal.set(null);
+    if (block) void blockOwners([invitation.characterID]).catch(cause => { if (failureCode(cause) === "SESSION_REQUEST_RETIRED") return; if (!sayRefusalDialog(cause, errorWords(cause))) sayDialog("CustomInfo", { type: "dict", entries: [["info", errorWords(cause)]] }, errorWords(cause)); });
+    try { await respondToDuelChallenge(api.bridgeDo({ ...callOptions, captureRequestGuard: () => current }), invitation, accept); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
   }
 
   // clone_grade_svc: the client asks the account's clone grade as it logs in,
@@ -28336,6 +28388,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      duelInvitationSignal.set(null);
       requestGeneration++;
       cancelCorporationCEOChoice();
       cancelCorporationAward();
@@ -29629,6 +29682,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    duelInvitation: readonlySignal(duelInvitationSignal),
+    startDuel,
+    answerDuel,
+    expireDuel,
+    closeDuel,
     capturePortraits,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
@@ -30319,6 +30377,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
@@ -30352,6 +30411,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
