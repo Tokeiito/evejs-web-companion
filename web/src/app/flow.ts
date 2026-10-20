@@ -13,7 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
-import { readSafetyDeliveries, acceptSafetyRecovery, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -1518,6 +1518,7 @@ export interface AppFlow {
   clearSelection(): void;
   /** Open a container and read its contents; null closes it. */
   openContainer(containerID: number | null): Promise<void>;
+  selectSafetyDivision(divisionID: number): void;
   /** Goal R40 — expand a ship in the Ships card and read its bays; null closes it. */
   openShipBays(shipID: number | null): Promise<void>;
   /** Project the latest loaded fit/dogma/bay observations; performs no IO or actions. */
@@ -5602,6 +5603,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
         ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
+      if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
+        containerReadGeneration += 1;
+        if (store.inventory.get().container?.safety) store.apply({ type: "inventory/container", container: null });
+        void loadSafetyDeliveries().catch(() => {});
+      }
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
@@ -6090,6 +6096,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    containerReadGeneration += 1;
     safetyDeliveriesSignal.set(null);
     safetyWrapNames.clear();
     safetyReadGeneration += 1;
@@ -6222,16 +6229,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let safetyReadGeneration = 0;
   async function loadSafetyDeliveries(): Promise<void> {
     const characterID = onlineCharacterID(), locationID = dockedNow();
+    const online = store.station.get().online, corporationID = online?.corporationID ?? null, corpRole = online?.corpRole ?? "0";
     const generation = ++safetyReadGeneration;
     if (!characterID || !locationID) { safetyDeliveriesSignal.set(null); return; }
     let wraps: SafetyDeliveries["wraps"] = [], error: string | null = null;
-    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames); }
+    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames, corporationID, corpRole); }
     catch (cause) {
       if (isSessionLost(cause)) throw cause;
       error = errorWords(cause);
     }
-    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID) {
-      safetyDeliveriesSignal.set({ characterID, locationID, wraps, error });
+    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID
+      && store.station.get().online?.corporationID === corporationID && (store.station.get().online?.corpRole ?? "0") === corpRole) {
+      safetyDeliveriesSignal.set({ characterID, corporationID, corpRole, locationID, wraps, error });
     }
   }
 
@@ -6504,7 +6513,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
-    if (current.container) {
+    if (current.container && store.inventory.get().container?.itemID === current.container.itemID) {
       const safety = safetyDeliveriesSignal.get();
       await openContainer(current.container.typeID === 60 && safety && !safety.error
         && !safety.wraps.some(wrap => wrap.row.itemID === current.container!.itemID) ? null : current.container.itemID);
@@ -6637,7 +6646,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await refreshOpenPlaces();
   }
 
+  let containerReadGeneration = 0;
   async function openContainer(containerID: number | null): Promise<void> {
+    const generation = ++containerReadGeneration;
     if (containerID === null) {
       store.apply({ type: "inventory/container", container: null });
       return;
@@ -6663,6 +6674,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         : inSpace?.typeID ?? 0;
     const ownName = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.name
       ?? (current.container?.itemID === containerID ? current.container.name : undefined);
+    const safetyRow = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row;
+    const online = store.station.get().online;
+    if (knownTypeID === 60 && safetyRow && online?.corporationID && safetyRow.ownerID === online.corporationID) {
+      try {
+        // Original corporate tree/controller(None): one full List, no capacity query.
+        const raw = await bridgeAsk("invbroker", "List", [], null, containerID);
+        const listed = decodeInventoryRowsChecked(raw);
+        if (listed === null) throw new Error("The corporation Asset Safety inventory could not be read.");
+        const knownVolumes = (await api.loadTypeVolumes([...new Set(listed.map(row => row.typeID))], callOptions)).volumes;
+        const volumes: Record<string, number> = {};
+        for (const [typeID, volume] of Object.entries(knownVolumes)) if (typeof volume === "number") volumes[typeID] = volume;
+        const rows = decodeInventoryRows(raw, volumes);
+        const corporation = rows.length ? await bridgeAsk("corpRegistry", "GetCorporation", []) : null;
+        if (rows.length) await wordsNow(SAFETY_DIVISION_LABELS);
+        const divisions = safetyDivisionRows(rows, containerID, online.corporationID!, corporation, (key, own) => templateWords(key, {}, own));
+        const keptDivision = current.container?.itemID === containerID ? current.container.safety?.divisionID ?? null : null;
+        const selected = divisions.find(division => division.divisionID === keptDivision);
+        if (generation !== containerReadGeneration || store.station.get().online?.characterID !== online.characterID
+          || store.station.get().online?.corporationID !== online.corporationID || store.station.get().online?.corpRole !== online.corpRole
+          || dockedNow() !== safetyRow.locationID) return;
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: selected?.name ? selected.rows : [], capacity: null, hasCapacity: false, error: null,
+          safety: { corporationID: online.corporationID!, divisionID: selected?.divisionID ?? null, divisions } } });
+      } catch (cause) {
+        if (isSessionLost(cause)) throw cause;
+        if (generation !== containerReadGeneration) return;
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: [], capacity: null, hasCapacity: false, error: errorWords(cause) } });
+      }
+      return;
+    }
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -6672,6 +6714,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      if (generation !== containerReadGeneration) return;
       store.apply({
         type: "inventory/container",
         container: {
@@ -6685,6 +6728,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
+    if (generation !== containerReadGeneration) return;
     store.apply({
       type: "inventory/container",
       container: {
@@ -28644,6 +28688,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openContainer,
+    selectSafetyDivision(divisionID) {
+      const container = store.inventory.get().container;
+      const division = container?.safety?.divisions.find(division => division.divisionID === divisionID);
+      if (!container?.safety || !division) return;
+      store.apply({ type: "inventory/container", container: { ...container,
+        rows: division.name === null ? [] : division.rows,
+        error: division.name === null ? "This corporation delivery division could not be named." : null,
+        safety: { ...container.safety, divisionID } } });
+    },
     openShipBays,
     readMiningSupportCapabilities,
     readMiningSupportServices,

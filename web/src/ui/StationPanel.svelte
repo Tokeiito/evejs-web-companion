@@ -184,7 +184,9 @@
   // svelte-ignore state_referenced_locally
   const safetyDeliveries = flow.safetyDeliveries;
   const localSafety = $derived(isDocked && $safetyDeliveries?.characterID === $station.online?.characterID
-    && $safetyDeliveries?.locationID === ($inventory.stationID ?? $inventory.structureID) ? $safetyDeliveries : null);
+    && $safetyDeliveries?.locationID === ($inventory.stationID ?? $inventory.structureID)
+    && $safetyDeliveries?.corporationID === $station.online?.corporationID
+    && $safetyDeliveries?.corpRole === ($station.online?.corpRole ?? "0") ? $safetyDeliveries : null);
 
   // --- a filament's Activate (bridge/abyssalKeys.ts) -------------------------
   //
@@ -565,6 +567,8 @@
     if (!open) {
       return "Container";
     }
+    const safetyDivision = open.safety?.divisions.find(division => division.divisionID === open.safety?.divisionID);
+    if (safetyDivision?.name) return `${open.name ?? ""} / ${safetyDivision.name}`;
     if (open.name !== undefined) return open.name;
     return resolvedName($names.resolved, "type", open.typeID) || "Container";
   }
@@ -1892,7 +1896,7 @@
               await flow.openContainer(wrap.row.itemID);
               view = "container";
               clearSelection();
-            })}>{wrap.name}</button></li>
+            })}>{wrap.name}{#if wrap.row.ownerID === $station.online?.corporationID} <span class="stn-badge">Corporation</span>{/if}</button></li>
           {/each}
         </ul>
       {/if}
@@ -1954,7 +1958,23 @@
             ← Back to {container?.typeID === 60 && localSafety?.wraps.length ? "Asset Deliveries" : "the item hangar"}
           </button>
         </p>
-        {@render group(containerGroup)}
+        {#if container?.safety}
+          <div class="stn-divisions" aria-label="Asset Safety divisions">
+            {#each container.safety.divisions as division (division.divisionID)}
+              <button type="button" class="stn-chip" class:on={container.safety.divisionID === division.divisionID}
+                disabled={busy} onclick={() => { clearPending(); flow.selectSafetyDivision(division.divisionID); }}>
+                {division.name ?? "Unavailable delivery division"} <span class="stn-badge">({division.rows.length})</span>
+              </button>
+            {/each}
+          </div>
+          {#if container.safety.divisionID === null}
+            <p class="stn-note">Choose a division to view its assets.</p>
+          {:else}
+            {@render group(containerGroup)}
+          {/if}
+        {:else}
+          {@render group(containerGroup)}
+        {/if}
       {/if}
     </section>
 
