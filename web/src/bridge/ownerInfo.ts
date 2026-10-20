@@ -108,6 +108,18 @@ export function assertCorpAggressionStatusMethod(result: JsonValue): void {
   // unmarshalling, before this consumer. Do not infer their failure here.
 }
 
+/** Native ASCII attribute names compare equally to Unicode/byte-string keys. */
+function aggressionStateKey(value: JsonValue): string | null {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return null;
+  if (value.type === "wstring" && typeof value.value === "string") return value.value;
+  if (value.type === "Buffer" && Array.isArray(value.data)
+    && value.data.every(byte => typeof byte === "number" && Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    return value.data.map(byte => String.fromCharCode(byte as number)).join("");
+  }
+  return null;
+}
+
 /** corpmgr.GetAggressionSettings: the object's two times (its state dict); null for anything else. */
 export function aggressionSettingsOf(result: JsonValue | null | undefined): AggressionSettings | null {
   if (!isRecord(result) || result.type !== "object" || typeof result.name !== "string" || !result.name.endsWith("AggressionSettings")) {
@@ -116,14 +128,27 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
   const args = result.args;
   const entries = isRecord(args) && Array.isArray(args.entries) ? args.entries : null;
   if (entries === null) return null;
+  const canonical = result.name === "crimewatch.corp_aggression.settings.AggressionSettings";
+  const state = new Map<string, JsonValue>();
+  let onlyTextKeys = true;
+  if (canonical) for (const entry of entries) {
+    if (!Array.isArray(entry)) { onlyTextKeys = false; continue; }
+    const key = aggressionStateKey(entry[0]);
+    if (key === null) { onlyTextKeys = false; continue; }
+    // ReadObjectDict sets entries in wire order. ASCII str/unicode aliases
+    // coalesce in the native dict, with the last value retained.
+    state.set(key, entry[1]);
+  }
+  const read = (key: string): JsonValue | undefined => canonical
+    ? state.get(key) : entries.find(candidate => Array.isArray(candidate) && candidate[0] === key)?.[1];
   // The compiled settings methods read disable first, then enable. Instance
   // unmarshalling installs the state without __init__; an absent field is not
   // None. Preserve the native consumer failure after the raw reply is cached.
   // Other classes/state shapes still need their own native consumer audit.
-  if (result.name === "crimewatch.corp_aggression.settings.AggressionSettings") {
+  if (canonical) {
     const requireCallable = (method: string): void => {
-      const shadow = entries.find(candidate => Array.isArray(candidate) && candidate[0] === method);
-      if (Array.isArray(shadow) && (shadow[1] === null || isAggressionBuiltin(shadow[1]))) {
+      const shadow = state.get(method);
+      if (state.has(method) && shadow !== undefined && (shadow === null || isAggressionBuiltin(shadow))) {
         throw Object.assign(new TypeError("The aggression status method is not callable."), { code: "INFO_CORPORATION_AGGRESSION_NOT_CALLABLE" });
       }
     };
@@ -131,28 +156,28 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
     // fails before any settings field is read, even if those fields are absent.
     requireCallable("IsFriendlyFireLegalAtTime");
     for (const key of ["_disableAfter", "_enableAfter"]) {
-      if (!entries.some((candidate) => Array.isArray(candidate) && candidate[0] === key)) {
-        throw Object.assign(new Error(`'AggressionSettings' object has no attribute '${key}'`), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_MISSING_FIELD" });
+      if (!state.has(key)) {
+        throw Object.assign(new Error(`AggressionSettings instance has no attribute '${key}'`), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_MISSING_FIELD" });
       }
     }
     // The second call follows the first method's field reads. Limit this
     // boundary to its original method/helpers and known numeric state; custom
     // callables, helper shadows and other state types need their own audit.
-    const firstUnmodified = entries.every(candidate => Array.isArray(candidate) && typeof candidate[0] === "string"
-      && !["IsFriendlyFireLegalAtTime", "_IsDisableTimeInPast", "_IsEnableTimeInPast"].includes(candidate[0]));
+    const firstUnmodified = onlyTextKeys
+      && !["IsFriendlyFireLegalAtTime", "_IsDisableTimeInPast", "_IsEnableTimeInPast"].some(key => state.has(key));
     const numericTimes = ["_disableAfter", "_enableAfter"].every(key => {
-      const value = entries.find(candidate => Array.isArray(candidate) && candidate[0] === key)?.[1];
+      const value = read(key);
       return value === null || typeof value === "boolean" || (typeof value === "number" && Number.isSafeInteger(value))
         || (isRecord(value) && value.type === "long" && /^-?\d+$/.test(longToDecimalString(value) ?? ""));
     });
     if (firstUnmodified && numericTimes) requireCallable("GetNextPendingChangeTime");
   }
   const time = (key: string): bigint | null => {
-    const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === key);
+    const value = read(key);
     // Native settings retain the value, and bool is an int in these numeric
     // comparisons. False/True timestamps are 0/1, distinct from None.
-    if (Array.isArray(entry) && typeof entry[1] === "boolean") return entry[1] ? 1n : 0n;
-    const text = Array.isArray(entry) ? longToDecimalString(entry[1]) : null;
+    if (typeof value === "boolean") return value ? 1n : 0n;
+    const text = longToDecimalString(value);
     return text === null ? null : BigInt(text);
   };
   return { enableAfter: time("_enableAfter"), disableAfter: time("_disableAfter") };

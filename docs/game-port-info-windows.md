@@ -360,13 +360,31 @@ AttributeErrors are logged; native diagnostic wording is not claimed where
 the bridge loses Python type identity. TQ records canonical settings objects,
 not these controlled malformed replies.
 
+Canonical state lookups recognize Unicode and byte-string equivalents of the
+known ASCII attribute names. ReadObjectDict sets entries in wire order, so
+equivalent keys retain the last value. The decoder applies that identity to
+time fields and status-method shadows only for the canonical settings class;
+other classes keep their existing decode policy. Original compiled module
+execution constructs the native old-style class itself, with logging/profile/
+NPC import boundaries. Native dictionary and full window/status execution
+confirm Unicode field lookup, mixed equivalent-key overwrite, method-shadow
+order and the missing-field diagnostic: AggressionSettings instance has no
+attribute. Instance-dict installation remains an explicit boundary; complete
+native unmarshalling is not claimed.
+
+Live controlled actual canonical replies verify ten state-key cases twice,
+raw-cache boundaries and normal expiry recovery. The default-socket browser
+completes with Unicode time keys, then uses a later equivalent Unicode key's
+None value over an earlier False value, changing Illegal to Legal with zero
+console errors. Normal unmodified recovery is verified through the live API.
+
 Canonical instance state may shadow a class status method with a non-callable
 builtin or None. Original compiled window/cache/settings/status methods in the
 native runtime establish TypeError before field reads when
 IsFriendlyFireLegalAtTime is shadowed. GetNextPendingChangeTime is called after
 the first method reads its fields, so an absent time field still raises first.
 The decoder preserves these boundaries. The second-method guard is limited to
-the original first method/helpers, string state keys and recognized numeric/
+the original first method/helpers, recognized text state keys and numeric/
 None/bool time values. Custom callables, helper shadows and other states remain
 separate audits. The oracle installs state with __new__/dict.update as an
 explicit boundary, following CCP Marshal.cpp's instance-dict update path;
