@@ -149,6 +149,14 @@
   // Native OpenMemberDetails raises the requested window on the phone as well.
   // svelte-ignore state_referenced_locally
   const memberDetails = flow.memberDetailsShown;
+  // svelte-ignore state_referenced_locally
+  const medalDesigner = flow.medalDesignerShown;
+  let servedMedalDesigner = 0;
+  $effect(() => {
+    const request = $medalDesigner;
+    if (!request || request.n === servedMedalDesigner) return;
+    servedMedalDesigner = request.n; selected = "medalDesigner";
+  });
   let servedMemberDetails = 0;
   $effect(() => {
     const request = $memberDetails;
@@ -170,6 +178,12 @@
        hands it the whole box. Every other panel, in space included, keeps the
        scrolling padded column it has always had. -->
   <main class="mobile-main" style:position="relative" bind:this={infoSurface} class:mobile-main-station={effective === null && isDocked}>
+    {#if $medalDesigner !== null}
+      <div hidden={effective !== "medalDesigner"}>
+        <PanelHost {store} {flow} tab="medalDesigner" onClose={() => { flow.closeMedalDesigner(); selected = null; }} {sessions} />
+      </div>
+    {/if}
+    {#if effective !== "medalDesigner"}
     {#if effective !== null}
       <PanelHost {store} {flow} tab={effective} onOpen={(id) => (selected = id)} onClose={() => selected = null} {sessions} />
     {:else if isDocked}
@@ -237,6 +251,7 @@
           </ErrorBoundary>
         </MobileCard>
       {/each}
+    {/if}
     {/if}
   </main>
 

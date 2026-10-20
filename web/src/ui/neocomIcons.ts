@@ -107,6 +107,7 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   // --- the app itself ---
   settings: ["M5 7h14M5 12h14M5 17h14", "M9 7h.01M15 12h.01M11 17h.01"],
   memberDetails: ["M5 3h14v18H5z", "M12 8a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M8 18a4 4 0 0 1 8 0"],
+  medalDesigner: ["M8 3h8l-1 8-3 4-3-4z", "M9 15l-2 6 5-2 5 2-2-6"],
   // The route window, contextual too: a list of places and an arrow along it.
   routeWindow: ["M4 6h10M4 12h10M4 18h6", "M19 5v14", "M16 16l3 3 3-3"],
   // The mission tracker: a list with a tick against its first line.

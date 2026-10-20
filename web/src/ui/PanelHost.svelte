@@ -43,6 +43,7 @@
   import CharacterSheet from "./CharacterSheet.svelte";
   import CorporationWindow from "./CorporationWindow.svelte";
   import CorporationMemberDetails from "./CorporationMemberDetails.svelte";
+  import CorporationMedalDesigner from "./CorporationMedalDesigner.svelte";
   import Settings from "./Settings.svelte";
   import NoticeLog from "./NoticeLog.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
@@ -92,6 +93,8 @@
   const stationSlice = store.station;
   // svelte-ignore state_referenced_locally
   const memberDetails = flow.memberDetailsShown;
+  // svelte-ignore state_referenced_locally
+  const medalDesigner = flow.medalDesignerShown;
 
   /**
    * Whether the pilot is docked, from the AUTHORITATIVE flag.
@@ -191,6 +194,8 @@
   <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "memberDetails"}
   {#key $memberDetails?.characterID}<CorporationMemberDetails {store} {flow} {onClose} />{/key}
+{:else if tab === "medalDesigner"}
+  {#key $medalDesigner?.instance}<CorporationMedalDesigner {store} {flow} />{/key}
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}

@@ -2126,6 +2126,10 @@ export interface AppFlow {
   readonly corporationApplicationsChanged: ReadableSignal<number>;
   readonly corporationDecorationsChanged: ReadableSignal<number>;
   corporationDecorations(): Promise<CorporationDecorations>;
+  corporationDecorationCreationEnabled(): Promise<boolean>;
+  readonly medalDesignerShown: ReadableSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>;
+  showMedalDesigner(): void;
+  closeMedalDesigner(): void;
   /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
   createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
   corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
@@ -15118,6 +15122,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let configEnabledValues: Promise<readonly string[]> | null = null;
   const corporationApplicationsChangedSignal = createSignal(0);
   const corporationDecorationsChangedSignal = createSignal(0);
+  const medalDesignerSignal = createSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>(null);
+  let medalDesignerRequests = 0;
+  function showMedalDesigner(): void {
+    const online = store.station.get().online;
+    if (!online?.corporationID) return;
+    const previous = medalDesignerSignal.get(), n = ++medalDesignerRequests;
+    medalDesignerSignal.set({ n, instance: previous?.characterID === online.characterID ? previous.instance : n, characterID: online.characterID, corporationID: online.corporationID });
+  }
+  function closeMedalDesigner(): void { medalDesignerSignal.set(null); }
+  async function corporationDecorationCreationEnabled(): Promise<boolean> {
+    // CorpDecorations.Load39-43 and globalConfig.GetGlobalConfigBooleanValue:
+    // PersonnelManager specifically, then the held login config (default off).
+    if ((BigInt(store.station.get().online?.corpRole ?? "0") & 128n) === 0n) return false;
+    const key = "content_compliance_control_system_enabled";
+    const config = await api.getGlobalConfig([key], callOptions);
+    const value = config.values[key];
+    return value == null || !/^[+-]?\d+$/.test(String(value).trim()) || BigInt(String(value).trim()) === 0n;
+  }
   const corporationApplicationsRequestedSignal = createSignal(0);
   function personalApplicationSetting(name: string): string {
     return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
@@ -22798,6 +22820,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function beginSessionClose(): void {
     if (sessionClosing) throw new Error("This pilot session is already being released.");
     sessionClosing = true;
+    closeMedalDesigner();
     sessionCloseGeneration += 1;
     // Stop producers before attempting release. A refused or ambiguous release
     // keeps the token and pilot held, with automation stopped for reconciliation.
@@ -29365,6 +29388,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
     corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
     corporationDecorations,
+    corporationDecorationCreationEnabled,
+    medalDesignerShown: readonlySignal(medalDesignerSignal),
+    showMedalDesigner,
+    closeMedalDesigner,
     createCorporationMedal,
     corporationMedalAwardees,
     medalShowInfo,

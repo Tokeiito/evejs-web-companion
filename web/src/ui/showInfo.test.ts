@@ -51,7 +51,8 @@ test("no subject, no typeID", () => {
 // The Mining Command Center is out too, and is not a window at all: its door is a
 // link from that strip to the standalone '/mining-command-center' page,
 // pinned by miningOperationsPanel.test.ts.
-const NOT_IN_THE_RAIL = new Set(["botBuilder", "bots", "companion", "botManager", "piManager", "industryManager", "miningOperations"]);
+// CorpDecorations.CreateDecorationForm50 opens the contextual picker window.
+const NOT_IN_THE_RAIL = new Set(["botBuilder", "bots", "companion", "botManager", "piManager", "industryManager", "miningOperations", "medalDesigner"]);
 
 test("every OTHER tab is still launchable", () => {
   // ⚠ `launchable` is absent on every pre-existing tab and absent means yes. A

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MedalLayer } from "../bridge/corporationDecorations.ts";
-  let { layers, title, size = 26, width }: { layers: readonly MedalLayer[]; title: string; size?: number; width?: number } = $props();
+  let { layers, title, size = 26, width, singlePart = false }: { layers: readonly MedalLayer[]; title: string; size?: number; width?: number; singlePart?: boolean } = $props();
   const uid = $props.id();
   // MedalRibbon.Startup244-268: two half-size parts, with a 20/128 overlap
   // and Python int truncation of the medal's vertical offset.
@@ -14,13 +14,13 @@
   }
 </script>
 
-<svg width={width ?? size} height={size} viewBox={`0 0 ${width ?? size} ${size}`} role="img" aria-label={title}>
+<svg width={width ?? size} height={singlePart ? half : size} viewBox={`0 0 ${width ?? size} ${singlePart ? half : size}`} role="img" aria-label={title}>
   <title>{title}</title>
   <defs>{#each layers as layer, i}
     <filter id={`${uid}-${i}`} color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values={tint(layer.color)} /></filter>
   {/each}</defs>
   {#each layers as layer, i}
-    <svg x="0" y={layer.part === 1 ? 0 : medalTop} width={half} height={half} viewBox={`${layer.left} ${layer.top} 128 128`} overflow="hidden">
+    <svg x="0" y={singlePart || layer.part === 1 ? 0 : medalTop} width={half} height={half} viewBox={`${layer.left} ${layer.top} 128 128`} overflow="hidden">
       <image href={layer.url} x="0" y="0" width="256" height="256" filter={`url(#${uid}-${i})`} />
     </svg>
   {/each}

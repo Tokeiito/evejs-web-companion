@@ -95,7 +95,7 @@
   // Only the ones actually on the surface get drawn.
   const shown = $derived(openHere.filter((w) => !w.minimized));
   // OpenMemberDetails maximizes the existing dialog, preserving its unsubmitted edits.
-  const mounted = $derived(openHere.filter((w) => !w.minimized || w.id === "memberDetails"));
+  const mounted = $derived(openHere.filter((w) => !w.minimized || w.id === "memberDetails" || w.id === "medalDesigner"));
 
   let deskEl = $state<HTMLElement | null>(null);
   // svelte-ignore state_referenced_locally
@@ -177,6 +177,7 @@
       onToggleMinimize={() => onToggleMinimize(win.id)}
       onMove={(x, y) => onMove(win.id, x, y)}
       onResize={(w, h) => onResize(win.id, w, h)}
+      resizable={win.id !== "medalDesigner"}
     >
       <PanelHost {store} {flow} tab={win.id} onOpen={onOpen} onClose={() => onClose(win.id)} {sessions} />
     </DesktopWindow>

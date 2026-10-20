@@ -93,12 +93,15 @@
   let previewErrors = $state(new Map<number, string>());
   let awardeeLoading = $state(new Set<number>());
   let error = $state("");
+  let canCreate = $state(false);
   let disposed = false, serial = 0, lastRevision = -1, wasActive = false;
   async function load(): Promise<void> {
     const request = ++serial;
     error = "";
     awardeeLoading = new Set();
     try {
+      const enabled = await flow.corporationDecorationCreationEnabled();
+      if (!disposed && request === serial) canCreate = enabled;
       const answer = await flow.corporationDecorations();
       if (!disposed && request === serial) {
         rows = answer.medals; graphics = answer.graphics;
@@ -122,7 +125,7 @@
     if (reload) untrack(() => { void load(); });
   });
   onMount(() => {
-    flow.requestWords([TITLE, EMPTY, AWARDEES, INFO, NO_ITEM, DATE_LABELS.ss!, ...HEADERS.map(([label]) => label!)]);
+    flow.requestWords([TITLE, EMPTY, AWARDEES, INFO, NO_ITEM, PREFIX + "CreateDecorationButton", DATE_LABELS.ss!, ...HEADERS.map(([label]) => label!)]);
     void document.fonts.ready.then(() => { if (!disposed) measureColumns(); });
     return () => { disposed = true; ++serial; };
   });
@@ -212,9 +215,11 @@
       {/each}</tbody>
     </table>{#if resizing}<div class="column-guide" style:left={`${resizing.guide}px`}></div>{/if}</div>
   {/if}
+  {#if canCreate}<div class="creation"><button type="button" onclick={() => flow.showMedalDesigner()}>{word(PREFIX + "CreateDecorationButton", "Create Decoration")}</button></div>{/if}
 </section>
 
 <style>
+  .creation { display: flex; justify-content: center; margin-top: 16px; }
   .table-scroll { overflow: auto; position: relative; }
   table { border-collapse: collapse; table-layout: fixed; }
   th, td { padding: 7px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }

@@ -82,16 +82,22 @@ export function medalLayersOf(graphics: readonly CorporationDecorationGraphic[])
     const rows = graphics.filter(row => row.part === part);
     if (!rows.length) throw new Error("The medal has no graphics for one of its parts.");
     for (const row of rows) {
-      const match = /^([a-z0-9_-]+)\.([0-9]+)_([0-9]+)$/i.exec(row.graphic);
-      if (!match || Number(match[2]) < 1) throw new Error("The medal's graphic mapping could not be read.");
-      const file = String(Number(match[2])).padStart(2, "0"), quadrant = Number(match[3]);
-      result.push({ url: `/client-res/ui/texture/medals/${part === 1 ? "ribbons" : "medals"}/${match[1]!.toLowerCase()}${file}.dds`,
-        left: quadrant === 2 || quadrant === 4 ? 128 : 0, top: quadrant > 2 ? 128 : 0, part, color: row.color });
+      result.push(medalGraphicLayer(part, row.graphic, row.color));
     }
   }
   // PyChildrenList appends at idx=-1. Trinity's container gathers children
   // in reverse order (Tr2Sprite2dContainer.cpp312-318): first row is on top.
   return result.reverse();
+}
+
+// The designer can display an incomplete part; catalogue validation above
+// still requires both. Share only the native MapLogo atlas mapping.
+export function medalGraphicLayer(part: number, graphic: string, color: number): MedalLayer {
+  const match = /^([a-z0-9_-]+)\.([0-9]+)_([0-9]+)$/i.exec(graphic);
+  if (!match || Number(match[2]) < 1) throw new Error("The medal's graphic mapping could not be read.");
+  const file = String(Number(match[2])).padStart(2, "0"), quadrant = Number(match[3]);
+  return { url: `/client-res/ui/texture/medals/${part === 1 ? "ribbons" : "medals"}/${match[1]!.toLowerCase()}${file}.dds`,
+    left: quadrant === 2 || quadrant === 4 ? 128 : 0, top: quadrant > 2 ? 128 : 0, part, color };
 }
 
 function rowsOf(value: JsonValue): readonly unknown[] {

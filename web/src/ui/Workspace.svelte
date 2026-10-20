@@ -203,7 +203,8 @@
     expandPreferred = false;
     const registered = places[id];
     const desktop = desktopView?.surfaceSize() ?? null;
-    wins = openWindow(wins, id, undefined, registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null);
+    const place = registered ? placeOnDesktop(registered, desktop ?? { w: registered.dw, h: registered.dh }) : null;
+    wins = openWindow(wins, id, id === "medalDesigner" ? { w: 465, h: 630 } : undefined, id === "medalDesigner" && place ? { ...place, w: 465, h: 630 } : place);
     const z = topZ() + 1; wins = wins.map(w => w.id === id ? { ...w, z } : w);
   };
   // The Neocom pick, with one de-dupe: while docked, Inventory & Ship IS the
@@ -247,6 +248,7 @@
       return;
     }
     wins = closeWindow(wins, id);
+    if (id === "medalDesigner") flow.closeMedalDesigner();
     // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
     // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
     if (id === "industry") void flow.industryWindowClosed();
@@ -265,7 +267,7 @@
     if (online && loadedFor !== online.characterID) {
       const saved = loadLayout(online.characterID);
       // Member Details opens for a character (memberDetails.OpenMemberDetails); keep its place, not an empty window.
-      wins = saved ? saved.wins.filter(win => win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) : [];
+      wins = saved ? saved.wins.filter(win => (win.id !== "memberDetails" || flow.memberDetailsShown.get() !== null) && (win.id !== "medalDesigner" || flow.medalDesignerShown.get() !== null)) : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
       dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
       targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
@@ -463,6 +465,15 @@
   // memberDetails.OpenMemberDetails: one per pilot; repeat requests raise the same member's window.
   // svelte-ignore state_referenced_locally
   const memberDetailsShown = flow.memberDetailsShown;
+  // svelte-ignore state_referenced_locally
+  const medalDesignerShown = flow.medalDesignerShown;
+  let servedMedalDesigner = 0;
+  $effect(() => {
+    const request = $medalDesignerShown;
+    if (request === null) { untrack(() => { wins = closeWindow(wins, "medalDesigner"); }); return; }
+    if (request.n === servedMedalDesigner) return;
+    servedMedalDesigner = request.n; openFromPopup("medalDesigner");
+  });
   let servedMemberDetails = memberDetailsShown.get()?.n ?? 0;
   $effect(() => {
     const request = $memberDetailsShown;

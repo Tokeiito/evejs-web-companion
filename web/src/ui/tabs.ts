@@ -50,6 +50,7 @@ export type TabID =
   | "characterSheet"
   | "corporation"
   | "memberDetails"
+  | "medalDesigner"
   | "routeWindow"
   | "missionTracker"
   | "log"
@@ -205,6 +206,7 @@ export const TABS: readonly TabDef[] = [
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.
   { id: "memberDetails", label: "Member Details", where: "both", launchable: false },
+  { id: "medalDesigner", label: "Create Decoration", where: "both", launchable: false },
   // The client's route window (autopilotSettings.py AutopilotSettings): the waypoints in their order and the avoidance
   // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does
   // the page, from Travel.
