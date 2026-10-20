@@ -17,6 +17,7 @@
 
 import { readKeyVal, type JsonValue } from "./wire.ts";
 import { isRecord, longToDecimalString, toNum, toNumOrNull, toStr } from "./allianceInfo.ts";
+import { unicodeIntText } from "./py27UnicodeInt.ts";
 
 /** inventorycommon/const.py: the NPC corporations' numbers (idCheckers.IsNPCCorporation). */
 export function isNpcCorporation(ownerID: number): boolean {
@@ -151,7 +152,7 @@ export function warPermitLabel(allowWar: boolean | null): string {
 function enlistmentOwnerKey(value: JsonValue): number {
   let key: number;
   const text = typeof value === "string" ? value
-    : isRecord(value) && value.type === "wstring" && typeof value.value === "string" ? value.value : null;
+    : isRecord(value) && value.type === "wstring" && typeof value.value === "string" ? unicodeIntText(value.value) : null;
   if (text !== null) {
     if (!/^[ \t\n\r\f\v]*[+-]?[0-9]+[ \t\n\r\f\v]*$/.test(text)) {
       throw Object.assign(new Error("Invalid enlistment owner key for int()."), { name: "ValueError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_KEY" });
@@ -163,8 +164,8 @@ function enlistmentOwnerKey(value: JsonValue): number {
   else {
     throw Object.assign(new TypeError("int() requires a string or number for an enlistment owner key."), { code: "INFO_CORPORATION_ENLISTMENT_OWNER_KEY" });
   }
-  // Do not send a rounded identifier. Lossless larger keys and non-ASCII
-  // Unicode int parsing need a wider owner-key representation.
+  // Do not send a rounded identifier. Lossless larger keys need a wider
+  // owner-key representation.
   if (!Number.isSafeInteger(key)) throw Object.assign(new RangeError("The enlistment owner key exceeds this transport's integer range."), { code: "INFO_CORPORATION_ENLISTMENT_OWNER_RANGE" });
   return key === 0 ? 0 : key;
 }
@@ -184,19 +185,22 @@ export function enlistmentFactionsOf(result: JsonValue | null | undefined): Iter
     || (isRecord(result) && (result.type === "long" || result.type === "real" || result.type === "float"))) {
     throw Object.assign(new TypeError("The corporation enlistment answer is not iterable."), { code: "INFO_CORPORATION_ENLISTMENT_NOT_ITERABLE" });
   }
-  const text = typeof result === "string" ? result
-    : isRecord(result) && result.type === "wstring" && typeof result.value === "string" ? result.value : null;
+  const unicode = isRecord(result) && result.type === "wstring" && typeof result.value === "string" ? result.value : null;
+  const text = typeof result === "string" ? result : null;
   // UpdateDataCorp iterates str/unicode, rather than treating the entire text
   // as one Recordset.Get key. Keep conversion lazy so earlier characters can
-  // prime owners before a later invalid character raises ValueError. Native
-  // non-ASCII byte/code-unit behavior remains a separate transport audit.
-  const items = text !== null && /^[\u0000-\u007f]*$/.test(text)
-    ? text
-    : Array.isArray(result)
-      ? result
-      : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)
-        ? result.items
-        : null;
+  // prime owners before a later invalid character raises. Typed Unicode uses
+  // narrow UTF16 units and keeps its type at int(key). Untyped non-ASCII byte
+  // text still needs a lossless representation before it can be iterated.
+  const items = unicode !== null
+    ? unicode.split("").map(value => ({ type: "wstring", value }))
+    : text !== null && /^[\u0000-\u007f]*$/.test(text)
+      ? text
+      : Array.isArray(result)
+        ? result
+        : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)
+          ? result.items
+          : null;
   if (items === null) return null;
   return (function* () { for (const item of items) yield enlistmentOwnerKey(item); })();
 }

@@ -379,7 +379,7 @@ replacement after actual successful replies verifies all six empty forms;
 the browser displays Permitted Faction Enlistments: None for the empty dict,
 with normal public/aggression/enlistment order and no console errors. The
 sequential owner-read and bounded ASCII string ports are described below;
-native dict/set ordering and non-ASCII string behavior remain separate audits.
+native dict/set ordering and untyped non-ASCII byte strings remain separate audits.
 
 The owner-read layer is available through the existing names endpoint's
 eveowners recordset mode and api.readEveOwners. It seeds only the native
@@ -421,7 +421,23 @@ and row-installation boundaries are explicit. Live controlled successful Enlist
 deliveries verify byte/Unicode ASCII digits, invalid later characters and leading
 whitespace, repeated construction/cache order and unmodified recovery. The
 default single-socket browser shows the duplicate names and header-only failure.
-Non-ASCII string semantics and native dict/set iteration order remain separate.
+Typed Unicode extends this through the measured narrow Stackless2.7 rules.
+An exhaustive BMP walk of the client's python27.dll finds 35 ten-digit ranges,
+the additional U+19DA value 1, and 30 whitespace characters accepted by
+int(unicode). py27UnicodeInt.ts encodes those to decimal parser text, retaining
+Latin1 characters and raising UnicodeEncodeError for other code units before
+parsing. Modern Unicode assignments are not substituted. Wstring iteration
+uses UTF16 units and preserves the Unicode type at each owner-key conversion;
+an astral digit fails on its first surrogate in the native narrow build.
+
+Original compiled UpdateDataCorp/Recordset methods and live controlled actual
+successful deliveries agree for Arabic-Indic/full-width digits, Unicode
+whitespace/signs in a list item, U+19DA, later invalid characters, superscript
+digits, surrogates and a BMP digit assigned after the native Unicode version.
+The default-socket browser renders the duplicate Arabic-Indic owner names,
+retains the old caption/header-only state on UnicodeEncodeError and recovers
+with the unmodified server reply. Untyped non-ASCII byte strings and native
+dict/set iteration order remain separate; native error wording is not claimed.
 
 Friendly-fire status also retains its time before enlistment and owner reads.
 Original compiled status plus UpdateDataCorp keeps the earlier LegalWithChangeTime
@@ -455,7 +471,7 @@ registered view, never revives either closed view, and reopens from the correct
 completed owner cache with zero console errors. Native UI/RPC/row-installation
 boundaries are explicit; this is not a claim of a complete native renderer.
 
-Other iterable ordering, non-ASCII int parsing, larger-than-safe-integer keys and
+Other iterable ordering, untyped non-ASCII byte strings, larger-than-safe-integer keys and
 complete ancillary header priming remain separate audits. Numeric range limits
 fail explicitly rather than sending a rounded identifier; error diagnostics do
 not claim native wording where the bridge lost Python type information.
