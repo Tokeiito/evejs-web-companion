@@ -8730,6 +8730,8 @@
 
   .stn-group-head {
     display: flex;
+    /* Keep capacity and Stack all reachable beside long container names in the narrow dock. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     width: 100%;

@@ -98,6 +98,7 @@
   } from "../bridge/repairQuotes.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { GROUP_CORVETTE } from "../bridge/shipWrites.ts";
+  import { ordinaryContainerStackPlace } from "../bridge/inventoryWrites.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { resolvedName, nameKey, type NameKind, type NameRef } from "../store/names.ts";
   import { formatIsk } from "./isk.ts";
@@ -960,6 +961,7 @@
       title: containerName(),
       place: { kind: "container", itemID: open.itemID },
       rows: open.error ? null : open.rows,
+      stackKey: isDocked ? ordinaryContainerStackPlace($inventory, $station.online?.characterID ?? null) : null,
       // A wreck has no capacity in the client (ItemWreck): no gauge, and the volume of what is in it
       // (container.py UpdateLabel, UI/Inventory/ContainerCapacity); not known where a row's volume is not.
       capacity: open.hasCapacity === false ? usedOnly(open.rows) : open.capacity,

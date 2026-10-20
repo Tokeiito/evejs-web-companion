@@ -43,6 +43,7 @@
 // refusals (CannotTrashItem) where it destroys nothing.
 
 import type { Ask } from "./ask.ts";
+import type { InventoryState } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** `of`, for the hangar of where the pilot is docked: invCache.GetInventory(const.containerHangar). */
@@ -203,12 +204,30 @@ const STACK_FLAGS = { hangar: 4, cargo: 5 } as const;
 
 export type StackPlace = keyof typeof STACK_FLAGS
   | { readonly kind: "shipBay"; readonly bay: string }
-  | { readonly kind: "corp"; readonly division: number };
+  | { readonly kind: "corp"; readonly division: number }
+  | { readonly kind: "container"; readonly itemID: number };
 
-/** BaseInvContainer.StackAll382-388: a bay or corporation division stacks its own locationFlag. */
+/**
+ * First supported StationContainer scope: an assembled ordinary cargo container (group12) directly in the docked
+ * pilot's hangar or active cargo. StationContainer.oneWay1559-1574 is falsey for these personally owned rows.
+ * Corporate/nested/space/secure containers need their own controller confirmation/password handling before exposure.
+ */
+export function ordinaryContainerStackPlace(inventory: InventoryState, characterID: number | null): Extract<StackPlace, { kind: "container" }> | null {
+  const open = inventory.container;
+  if (!open || open.error || characterID === null) return null;
+  const row = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === open.itemID);
+  if (!row || row.groupID !== 12 || !row.singleton || row.ownerID !== characterID) return null;
+  const dockedAt = inventory.structureID ?? inventory.stationID;
+  if (dockedAt === null) return null;
+  const atHangar = row.locationID === dockedAt && row.flagID === 4;
+  const atCargo = row.locationID === inventory.activeShipID && row.flagID === 5;
+  return atHangar || atCargo ? { kind: "container", itemID: open.itemID } : null;
+}
+
+/** BaseInvContainer.StackAll382-393: a bay/division passes its flag; an unflagged StationContainer calls StackAll(). */
 export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: StackPlace): Promise<void> {
   const flag = typeof place === "string" ? STACK_FLAGS[place] : moveFlagOf(place);
-  await act("invbroker", "StackAll", [flag], null, inventory);
+  await act("invbroker", "StackAll", typeof place !== "string" && place.kind === "container" ? [] : [flag], null, inventory);
 }
 
 /** The refusals TrashItems answered, as the wire spelled the list; none for an answer of None. */

@@ -664,7 +664,7 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace, type StackPlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, ordinaryContainerStackPlace, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace, type StackPlace } from "../bridge/inventoryWrites.ts";
 import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
@@ -1483,7 +1483,7 @@ export interface AppFlow {
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
   readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
-  /** Stack loose stacks in the hangar, an active-ship hold or the current corporation division, then refresh. */
+  /** Stack loose stacks in the hangar, an active-ship hold, a corporation division or an ordinary container, then refresh. */
   stackContainer(target: StackPlace): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
@@ -6602,16 +6602,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Stack All of the hangar, a ship hold or a corporation division, on its own inventory (bridge/inventoryWrites.ts),
+   * Stack All of the hangar, a ship hold, a corporation division or an ordinary container, on its own inventory,
    * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
   async function stackPlaceNow(target: StackPlace): Promise<void | false> {
     const place = typeof target === "string" ? { kind: target } as const : target;
+    if (place.kind === "container" && (dockedNow() === null || ordinaryContainerStackPlace(store.inventory.get(), store.station.get().online?.characterID ?? null)?.itemID !== place.itemID)) return false;
     // BaseInvContainer.StackAll383 checks BaseCorpContainer.oneWay before office/cache lookup.
     if (place.kind === "corp" && !await askOneWayMove()) return false;
     const destination = place.kind === "corp" ? await inventoryOfPlace(place) : inventoryAt(place);
     await stackAllCall(inventoryMoves.act, destination.inventory, target);
     if (place.kind === "corp") await loadCorpHangar();
+    if (place.kind === "container" && store.inventory.get().container?.itemID === place.itemID) await openContainer(place.itemID);
     if (place.kind === "shipBay") {
       const open = store.inventory.get().openShip;
       if (open?.itemID === store.inventory.get().activeShipID) await openShipBays(open.itemID);
@@ -28794,8 +28796,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      // invControllers.StackAll (382 to 388): PermissionDenied asks for the container's password, which the page
-      // does not ask yet; any other refusal goes to the client's handler.
+      // invControllers.StackAll382-407 has a distinct legacy PermissionDenied branch; its installed popup
+      // composition is broken. Secure containers' working EnterPassword proxy is a separate pending unit.
       await runMutation(() => stackPlaceNow(target), STACK_KEPT);
     },
 
