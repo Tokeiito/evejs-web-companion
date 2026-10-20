@@ -306,8 +306,6 @@
       "crimewatch.GetClientStates",
       "crimewatch.GetMySecurityStatus",
       "crimewatch.GetSecurityStatusTransactions",
-      "crimewatch.RespondToDuelChallenge",
-      "crimewatch.StartDuelChallenge",
       "crimewatch.SetSafetyLevel",
       "dogmaIM.Activate",
       "dogmaIM.AddTarget",
@@ -731,8 +729,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 423,
-    "sha256": "f5e7a8568abcb0c3238177e56fd2c8af0e513f423933c49888d454d349562df5",
+    "count": 427,
+    "sha256": "4f58d5d28b3ff98dd6072b2594b15ab4e88813a87a03f8b942120d19520b5933",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -918,8 +916,8 @@
       "corporationSvc.CreateMedal",
       "corporationSvc.GiveMedalToCharacters",
       "crimewatch.RespondToDuelChallenge",
-      "crimewatch.StartDuelChallenge",
       "crimewatch.SetSafetyLevel",
+      "crimewatch.StartDuelChallenge",
       "dogmaIM.Activate",
       "dogmaIM.AddTarget",
       "dogmaIM.CancelAddTarget",
@@ -1150,6 +1148,8 @@
       "structureDocking.Dock",
       "structureDocking.Undock",
       "structureJumpBridgeMgr.CmdJumpThroughStructureStargate",
+      "trademgr.Abort",
+      "trademgr.InitiateTrade",
       "warRegistry.AcceptAllyNegotiation",
       "warRegistry.AcceptSurrender",
       "warRegistry.CreateSurrenderNegotiation",
@@ -1266,8 +1266,8 @@
       "corporationSvc.CreateMedal",
       "corporationSvc.GiveMedalToCharacters",
       "crimewatch.RespondToDuelChallenge",
-      "crimewatch.StartDuelChallenge",
       "crimewatch.SetSafetyLevel",
+      "crimewatch.StartDuelChallenge",
       "dogmaIM.Activate",
       "dogmaIM.AddTarget",
       "dogmaIM.CancelAddTarget",
@@ -1403,7 +1403,9 @@
       "slash.SlashCmd",
       "structureDocking.Dock",
       "structureDocking.Undock",
-      "structureJumpBridgeMgr.CmdJumpThroughStructureStargate"
+      "structureJumpBridgeMgr.CmdJumpThroughStructureStargate",
+      "trademgr.Abort",
+      "trademgr.InitiateTrade"
     ],
     "browserSessionFields": [
       "languageID",

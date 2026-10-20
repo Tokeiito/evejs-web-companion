@@ -2239,6 +2239,73 @@ an already applied activation changes neither issued shares nor the holding and 
 The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
 The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
 
+### Direct station trade: source audit and implementation slices
+
+The receiver-side Tranquility recording `Archive/In station trade.txt` is the primary packet
+reference. Lines41-48 show `OnTradeInitiate(initiatorCharID, Moniker)` with `idtype="charid"`.
+The moniker state is `(trademgr, nodeID, (dockedLocationID, solarSystemID, traders, clientIDs), None)`.
+Its first call is carried by `MachoBindObject(params, ('List', (), {}))`. The inline answer is a
+`carbon.common.script.sys.row.Row` with headers `tradeContainerID, traders, state, money, items`:
+the traders are a tuple, state and money are lists, and items is a Python set. The empty state is
+`[None, None]`, not numeric flags. Repeated List reads are visible during window construction.
+
+Original compiled `pvptradesvc.StartTradeSession` calls `InitiateTrade(charID)` and then List
+twice on the path that opens a new window: once in `_ShowTradeSessionWindow`, once in
+`OnTradeInitiate`. An incoming invitation starts at the latter and reads List once before
+opening. `PVPTrade.ApplyAttributes` reads again, as do its two inventory controllers through
+`invControllers.PlayerTrade._GetItems`. Reuse the same moniker; do not repeat InitiateTrade
+to refresh the window. `CharacterChecker.OfferTradeWithCharacter281-290` requires one other
+non-NPC character who is a guest of the current station or structure (`IsGuest403-408`).
+
+`pvptradewnd.Cancel80-89` asks `ConfirmCancelTrade({}, OKCANCEL)`; refusal sends nothing and
+confirmation clears the window's session reference before Abort. `_OnClose67-78` otherwise
+attempts Abort, including after completion. The recorded completion path returns True from
+MakeOffer and the close-time Abort. Accept constructs a KeyVal manifest containing the container,
+both money offers and the union of both item sets; `OnTradeOffer` carries manifests/None, not
+boolean state flags. OfferMoney and cancellation are client-code-backed but not exercised by
+this successful item-only recording. Ship warnings, item restrictions, offer resets and completion
+notifications must be ported with the exchange controls, before exposing a usable trade action.
+
+The installed Python27 oracle executed the original compiled menu, outgoing/incoming controller
+and Cancel methods (loop evidence cdx2924, with UI/RPC boundaries recorded). A cold live native
+two-account probe cdx2923/cdx2931 verified the existing server's returned/received monikers,
+carried List and subsequent bound List row shapes, True Abort and bilateral OnTradeCancel.
+The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or complete a trade.
+The full store baseline was restored byte for byte afterward. No browser trade UI exists yet.
+
+The same recording's lines386/388 prove corporate source inventory: a staged item changes from
+owner98826653/location1052880078604/flag115 to the offering pilot's trade row. Server commit
+`f17205f03` replaces the old personal-only gate for direct rows in the acting corporation's local,
+non-impounded office division, using existing Hangar Take permissions. Staged ownership becomes
+the offering pilot's; saved original custody remains available for cancellation. Native cold
+before/after probes verified the authorized refusal before, then staging, exact abort restoration,
+re-staging and bilateral manifest completion to the recipient afterward. Another corporation and
+a division without Take remain refused. Nested corporate source containers remain unsupported.
+
+Commit `16649b126` also sends the partial source stack's quantity debit to the acting pilot.
+Native `invCache.OnItemsChanged219-307` and its container's `_ProcessItemChange1327-1430` consume
+that row to update cached office inventory. A measured split of quantity2 into1 previously sent
+only the new trade row; the corrected call also sends the remaining office row quantity1 with
+old quantity2 to the source pilot. The counterparty receives the trade row. Server ledger
+`f6f383aca` records those real packet probes, full fixture restoration and remaining limits;
+interrupted-stage recovery, lockdown and impound cases were not exercised live.
+
+Implementation order: carry returned and notified trade
+monikers through the browser transport; port inventory/money/manifests and cancel/complete
+controllers; then wire the guest-gated member menus and verify both pilots in the browser.
+The generic returned-bound-object helper recognizes remote substructs. Direct Trade now has an
+explicit transport path for its returned/notified Moniker: the BFF retains its actual node and
+parameters and gives the browser a pilot-scoped carriage reference for that received object.
+The reference is additional browser/BFF metadata and never goes to EveJS. List and Abort bind that
+same retained object lazily; Trade is absent from the location-derived `MONIKER_SERVICES` table.
+Consecutive trades can reuse identical parameters, so parameter equality cannot identify a trade
+object. Cold production AppFlow evidence cdx2980 verified two rounds with identical params and
+distinct containers/references, repeated List on each source object, receiver List and cancellation.
+Actual wire2987 contains four carried List binds, two subsequent List calls, two InitiateTrade and
+two Abort calls, no trade address-resolution request and no unmatched replies. A reference received
+by the other pilot is refused before native dispatch. Browser controls, nonempty exchange state,
+window lifecycle and inventory/money/manifests remain separate work.
+
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
 read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
