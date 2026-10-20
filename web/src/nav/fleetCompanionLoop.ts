@@ -10212,6 +10212,7 @@ function dronesTrace(
   }
   return {
     rotation: step.reason,
+    cap: obs.droneLimits?.maxActive ?? null,
     rows,
     launching: step.memory.launching.map((row) => ({ hurtID: row.hurtID, via: row.via, stackID: row.stackID })),
   };
