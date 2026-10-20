@@ -148,13 +148,29 @@ export function warPermitLabel(allowWar: boolean | null): string {
   return allowWar ? "UI/WarPermit/CorpStatusWarAllowed" : "UI/WarPermit/CorpStatusWarNotAllowed";
 }
 
+const byteEncoder = new TextEncoder();
+
+/** The bridge's exact UTF8 text or explicit byte array, restored to native str. */
+function enlistmentByteText(value: JsonValue | null | undefined): string | null {
+  const bytes = typeof value === "string" ? byteEncoder.encode(value)
+    : isRecord(value) && value.type === "Buffer" && Array.isArray(value.data)
+      && value.data.every(byte => typeof byte === "number" && Number.isInteger(byte) && byte >= 0 && byte <= 255)
+      ? value.data as number[] : null;
+  if (bytes === null) return null;
+  let text = "";
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return text;
+}
+
 /** Recordset.Get's int(key), within the owner IDs this transport represents. */
 function enlistmentOwnerKey(value: JsonValue): number {
   let key: number;
-  const text = typeof value === "string" ? value
-    : isRecord(value) && value.type === "wstring" && typeof value.value === "string" ? unicodeIntText(value.value) : null;
+  const text = isRecord(value) && value.type === "wstring" && typeof value.value === "string"
+    ? unicodeIntText(value.value) : enlistmentByteText(value);
   if (text !== null) {
-    if (!/^[ \t\n\r\f\v]*[+-]?[0-9]+[ \t\n\r\f\v]*$/.test(text)) {
+    // The client runtime's byte int parser also accepts native byte0xA0 as
+    // whitespace. UTF8 text containing NBSP remains bytes C2 A0 and fails.
+    if (!/^[ \t\n\r\f\v\u00a0]*[+-]?[0-9]+[ \t\n\r\f\v\u00a0]*$/.test(text)) {
       throw Object.assign(new Error("Invalid enlistment owner key for int()."), { name: "ValueError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_KEY" });
     }
     key = Number(text);
@@ -186,16 +202,16 @@ export function enlistmentFactionsOf(result: JsonValue | null | undefined): Iter
     throw Object.assign(new TypeError("The corporation enlistment answer is not iterable."), { code: "INFO_CORPORATION_ENLISTMENT_NOT_ITERABLE" });
   }
   const unicode = isRecord(result) && result.type === "wstring" && typeof result.value === "string" ? result.value : null;
-  const text = typeof result === "string" ? result : null;
+  const bytes = enlistmentByteText(result);
   // UpdateDataCorp iterates str/unicode, rather than treating the entire text
   // as one Recordset.Get key. Keep conversion lazy so earlier characters can
   // prime owners before a later invalid character raises. Typed Unicode uses
-  // narrow UTF16 units and keeps its type at int(key). Untyped non-ASCII byte
-  // text still needs a lossless representation before it can be iterated.
+  // narrow UTF16 units and keeps its type at int(key). Byte text restores the
+  // bridge's exact UTF8 bytes or Bufferdata, retaining each byte's identity.
   const items = unicode !== null
     ? unicode.split("").map(value => ({ type: "wstring", value }))
-    : text !== null && /^[\u0000-\u007f]*$/.test(text)
-      ? text
+    : bytes !== null
+      ? bytes.split("").map(value => ({ type: "Buffer", data: [value.charCodeAt(0)] }))
       : Array.isArray(result)
         ? result
         : isRecord(result) && (result.type === "list" || result.type === "tuple" || result.type === "set") && Array.isArray(result.items)

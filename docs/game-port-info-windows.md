@@ -379,7 +379,7 @@ replacement after actual successful replies verifies all six empty forms;
 the browser displays Permitted Faction Enlistments: None for the empty dict,
 with normal public/aggression/enlistment order and no console errors. The
 sequential owner-read and bounded ASCII string ports are described below;
-native dict/set ordering and untyped non-ASCII byte strings remain separate audits.
+native dict/set ordering remains a separate audit.
 
 The owner-read layer is available through the existing names endpoint's
 eveowners recordset mode and api.readEveOwners. It seeds only the native
@@ -436,8 +436,25 @@ whitespace/signs in a list item, U+19DA, later invalid characters, superscript
 digits, surrogates and a BMP digit assigned after the native Unicode version.
 The default-socket browser renders the duplicate Arabic-Indic owner names,
 retains the old caption/header-only state on UnicodeEncodeError and recovers
-with the unmodified server reply. Untyped non-ASCII byte strings and native
-dict/set iteration order remain separate; native error wording is not claimed.
+with the unmodified server reply. Native dict/set iteration order remains
+separate; native error wording is not claimed.
+
+Byte strings also retain their native identity. bridgeJson.asText accepts only
+an exact UTF8 roundtrip; re-encoding its plain JSON text recovers those bytes.
+Its Buffer.data alternative keeps bytes directly. Both are iterated as bytes,
+and a Buffer list item is parsed as one whole byte key. The client's exhaustive
+0..255 byte-int walk accepts ASCII digits and whitespace9..13,32,160; a raw
+0xA0-padded integer works, whereas UTF8 C2 A0 padding fails. Unicode remains
+the separate typed path above. CCP Marshal.cpp's buffer reader returns bytes;
+original compiled Recordset and UpdateDataCorp plus native str/buffer int calls
+establish conversion, iteration and failure order.
+
+Live controlled successful deliveries verify UTF8 multibyte text, raw invalid
+bytes, control/NUL bytes, digit buffers, empty buffers, padded list keys and
+raw NBSP versus its UTF8 form. Earlier owners prime before a later invalid
+byte; NUL in a whole key stops before lookup. The default-socket browser shows
+Item12 from the padded byte key, retains its prior caption/header on the first
+invalid UTF8 byte after reading owners1,2, and recovers with ordinary data.
 
 Friendly-fire status also retains its time before enlistment and owner reads.
 Original compiled status plus UpdateDataCorp keeps the earlier LegalWithChangeTime
@@ -471,7 +488,7 @@ registered view, never revives either closed view, and reopens from the correct
 completed owner cache with zero console errors. Native UI/RPC/row-installation
 boundaries are explicit; this is not a claim of a complete native renderer.
 
-Other iterable ordering, untyped non-ASCII byte strings, larger-than-safe-integer keys and
+Other iterable ordering, larger-than-safe-integer keys and
 complete ancillary header priming remain separate audits. Numeric range limits
 fail explicitly rather than sending a rounded identifier; error diagnostics do
 not claim native wording where the bridge lost Python type information.
