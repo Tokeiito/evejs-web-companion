@@ -664,7 +664,7 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
@@ -4053,6 +4053,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       dockedAt: dockedNow(),
       structureID: store.station.get().online?.structureID ?? null,
       now: serverNow,
+      corporationRole: BigInt(store.station.get().online?.corpRole ?? "0"),
+      isCorporationOwner: async ownerID => {
+        const online = store.station.get().online;
+        if (ownerID === online?.characterID) return false;
+        if (ownerID === online?.corporationID || (ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 98_999_999)) return true;
+        if (ownerID < 100_000_000 || ownerID > 2_099_999_999) return false;
+        // Original IsPlayerCorporation consults cfg.eveowners for pre-Inv64 IDs.
+        await memberNames({ current, options: { ...scoped, captureRequestGuard: () => current } }, [{ kind: "ownerType", id: ownerID }]); current();
+        const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)) ?? 0);
+        if (!typeID) return false; // cfg.eveowners KeyError / generic type0.
+        const facts = await infoTypeFacts([typeID]); current();
+        if (!facts[typeID]) throw new Error("The stack owner's type could not be read.");
+        return facts[typeID].groupID === 2;
+      },
       blankLockValues: async when => {
         const reasonLabel = "UI/Generic/NoReasonWasSpecified", dateLabel = DATE_LABELS.ll!;
         await wordsNow([reasonLabel, dateLabel]); current();
@@ -6588,12 +6602,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /**
    * Stack All of the hangar or the ship's hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
-   * and only where the panel's rows of it have two stacks of a type, as the client asks nothing otherwise.
+   * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
   async function stackPlaceNow(target: "hangar" | "cargo"): Promise<void> {
-    const inventory = store.get().inventory;
-    if (!hasSomethingToStack(target === "hangar" ? inventory.hangar.rows : inventory.cargo.rows)) return;
-    await stackAllCall(bridgeDo, inventoryAt({ kind: target }).inventory, target);
+    await stackAllCall(inventoryMoves.act, inventoryAt({ kind: target }).inventory, target);
   }
 
   // Reload whatever places are currently on screen. A mutation can touch the

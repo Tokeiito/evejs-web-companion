@@ -1,10 +1,11 @@
-// Ordinary numeric inventory moves through invCacheContainer.Add998-1025/MultiAdd1027-1063/MultiMerge1100-1128.
+// Ordinary numeric inventory moves through invCacheContainer.Add998-1025/MultiAdd1027-1063/StackAll1065-1098/MultiMerge1100-1128.
 // PlayerTrade returns a direct moniker (invControllers1691) and does not use this wrapper.
 // Fitted/tuple sublocations and their pre-try dogma unload path are separate producers.
 import type { Ask } from "./ask.ts";
 import { BridgeCallError } from "./callMethod.ts";
+import { inventoryRowList } from "./inventoryShip.ts";
 import { hashedSetOrder, wholeHashOf } from "./py27DictOrder.ts";
-import { readDictPairs, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import { isListValue, readDictPairs, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
 
 interface Scope {
   readonly ask: Ask;
@@ -14,6 +15,8 @@ interface Scope {
   readonly dockedAt: number | null;
   readonly structureID: number | null;
   readonly now: () => number;
+  readonly corporationRole: bigint;
+  readonly isCorporationOwner: (ownerID: number) => Promise<boolean>;
   /** Original RaiseLockError's blank reason and already-formatted FmtDate string. */
   readonly blankLockValues: (when: JsonValue) => Promise<JsonValue>;
 }
@@ -66,17 +69,45 @@ export function createCachedInventoryMoves(capture: () => Scope) {
     return pending;
   }
 
+  // Original ItemLocking.IsItemLocked42-64 takes a ROW, unlike Add/MultiAdd/MultiMerge's ID check.
+  async function rowLocked(scope: Scope, row: JsonValue): Promise<boolean> {
+    const owner = readRowField(row, "ownerID");
+    if (!exactID(owner)) throw new Error("The stack's owner could not be read.");
+    if (!await scope.isCorporationOwner(owner)) { scope.current(); return false; }
+    scope.current();
+    const id = readRowField(row, "itemID"), location = readRowField(row, "locationID"), flag = readRowField(row, "flagID");
+    if (!exactID(id) || !exactID(location) || typeof flag !== "number") throw new Error("The stack's custody could not be read.");
+    if (location === scope.dockedAt) {
+      if (flag === 62 && !(scope.corporationRole & (256n | 18014398509481984n))) return true;
+      if (flag === 187 && !(scope.corporationRole & (1n | 1152921504606846976n))) return true;
+    }
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []); scope.current();
+    const officeRows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    for (const office of officeRows) {
+      const field = (name: string) => readRowField(office, name) ?? (office as Readonly<Record<string, JsonValue>>)[name];
+      if (unwrapLong(field("officeID")) !== BigInt(location)) continue;
+      const station = unwrapLong(field("stationID"));
+      if (station === null || station <= 0n || station > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("The corporation office's station could not be read.");
+      const persistent = await at(scope, Number(station)); scope.current();
+      if (persistent.has(String(id))) return true;
+    }
+    if (scope.dockedAt === null) return false;
+    const persistent = await at(scope, scope.dockedAt); scope.current();
+    return persistent.has(String(id));
+  }
+
   const act: Ask = async (service, method, args, kwargs, of) => {
     const scope = capture();
     // A whole pilot lifetime is isolated; same-pilot InvalidateCache replaces this broker's current map.
     const lifetime = broker;
-    if (service !== "invbroker" || !["Add", "MultiAdd", "MultiMerge"].includes(method)) return scope.act(service, method, args, kwargs, of);
+    if (service !== "invbroker" || !["Add", "MultiAdd", "MultiMerge", "StackAll"].includes(method)) return scope.act(service, method, args, kwargs, of);
+    const stacking = method === "StackAll";
     const merging = method === "MultiMerge";
     const ops = merging ? args[0] : null;
     if (merging && (!Array.isArray(ops) || !ops.every(op => Array.isArray(op) && op.length === 3 && exactID(op[0]) && exactID(op[1]) && typeof op[2] === "number" && Number.isSafeInteger(op[2])))) {
       throw new Error("Ordinary inventory merges require numeric stack operations.");
     }
-    const ids = merging ? (ops as JsonValue[][]).map(op => op[0]) : method === "Add" ? [args[0]] : args[0];
+    const ids = stacking ? [] : merging ? (ops as JsonValue[][]).map(op => op[0]) : method === "Add" ? [args[0]] : args[0];
     if (!Array.isArray(ids) || !ids.every(id => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) {
       throw new Error("Ordinary inventory moves require exact numeric item IDs.");
     }
@@ -99,6 +130,38 @@ export function createCachedInventoryMoves(capture: () => Scope) {
     const hold = (id: number, error: string, values: JsonValue) => lifetime.locks.set(id, {
       when: { type: "long", value: (BigInt(Math.trunc(scope.now())) * 10000n + 116444736000000000n).toString() }, error, values,
     });
+    if (stacking) {
+      own ??= await readOwn();
+      // IsFakeItem's threshold is 9e18: every supported exact numeric inventory ID lies below it.
+      const list = inventoryRowList(await scope.ask(service, "List", args, kwargs, of)); scope.current();
+      if (!isListValue(list)) throw new Error("The inventory's stacks could not be read.");
+      const types = new Set<number>(); let hasDuplicates = false;
+      for (const row of list.items) {
+        const id = readRowField(row, "itemID");
+        if (!exactID(id)) throw new Error("An inventory stack's ID could not be read.");
+        if (id === own.itemID) continue;
+        const quantity = readRowField(row, "quantity");
+        if (typeof quantity !== "number" || !Number.isSafeInteger(quantity)) throw new Error("An inventory stack's quantity could not be read.");
+        if (quantity < 0 || await rowLocked(scope, row)) continue;
+        // Type detection precedes busy-lock checks; maxInt stacks still acquire locks.
+        if (!hasDuplicates && quantity !== 2147483647) {
+          const typeID = readRowField(row, "typeID");
+          if (typeof typeID !== "number" || !Number.isSafeInteger(typeID)) throw new Error("An inventory stack's type could not be read.");
+          if (types.has(typeID)) hasDuplicates = true;
+          types.add(typeID);
+        }
+        if (lifetime.locks.has(id)) continue;
+        hold(id, "", { type: "dict", entries: [] }); acquired.push(id);
+      }
+      // Original scan is outside try. A scan failure does not release already-acquired locks.
+      if (!acquired.length) return null;
+      try {
+        scope.current();
+        return hasDuplicates ? await scope.act(service, method, args, kwargs, of) : null;
+      } finally {
+        for (const id of acquired) lifetime.locks.delete(id);
+      }
+    }
     if (merging) {
       // Original compiled MultiMerge evaluates itemID INSIDE the loop; an empty list never primes it.
       // These guards choose locks only. With any acquired source, send ALL original numeric operations.

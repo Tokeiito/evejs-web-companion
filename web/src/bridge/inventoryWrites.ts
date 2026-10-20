@@ -193,23 +193,13 @@ export async function moveItems(
 // STACK ALL. Until 2026-10-14 a route (POST /api/bridge/inventory/stack) sent StackAll(flag) on the hangar's or the
 // ship's binding. The client's window's Stack All (invControllers.StackAll, 382 to 388) asks its container's own
 // inventory, StackAll(self.locationFlag): the hangar's with flagHangar, the ship's with flagCargo; and invCache's
-// container asks nothing where what it lists has no two stacks of a type (invCache.py 1065 to 1093: a singleton,
-// its quantity below nothing, is passed over). The server merges per type, owner and flag, each merge by the
-// custody's own check with the session's character as the actor (invBrokerService.Handle_StackAll, 11605 on).
+// container acquires shared locks while scanning its own List (cachedInventoryMoves, original compiled
+// invCache.py1065-1098). Only eligible duplicate types with an acquired lock reach the remote. The server merges
+// per type, owner and flag, each merge by custody's own check with the session's character as the actor
+// (invBrokerService.Handle_StackAll, 11955 on).
 
 /** inventorycommon/const.py flagHangar and flagCargo: the flag a hangar's and a ship's hold's Stack All names. */
 const STACK_FLAGS = { hangar: 4, cargo: 5 } as const;
-
-/** Whether rows have something to stack, as invCache's container asks before it calls: two stacks of a type. */
-export function hasSomethingToStack(rows: readonly { readonly typeID: number; readonly singleton: boolean; readonly quantity: number }[]): boolean {
-  const types = new Set<number>();
-  for (const row of rows) {
-    if (row.singleton || row.quantity < 0) continue;
-    if (types.has(row.typeID)) return true;
-    types.add(row.typeID);
-  }
-  return false;
-}
 
 /** Stacks all of a hangar or a ship's hold, on its own inventory (the hangar's, or the ship's by its number). */
 export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: keyof typeof STACK_FLAGS): Promise<void> {

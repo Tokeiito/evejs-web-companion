@@ -66,6 +66,9 @@ function unwrapRowList(result: JsonValue): JsonValue {
   return result;
 }
 
+/** Raw inventory rows in the supplied cache order, retaining signed quantities and identities. */
+export { unwrapRowList as inventoryRowList };
+
 /** typeID → m³ per unit, keyed by the string the wire sends; null when unknown. */
 /**
  * A type's volume by its typeID; and, under "p" and the typeID, a packaged stack's where the client's packaged volume
