@@ -103,7 +103,7 @@
         {#if expanded.has(row.medalID)}
           {#if previewErrors.has(row.medalID)}<tr><td colspan="5" class="error">{previewErrors.get(row.medalID)}</td></tr>
           {:else}
-            <tr><td colspan="5"><div class="medal-entry"><MedalPreview layers={previews.get(row.medalID) ?? []} title={plainText(row.title)} /><div><strong>{plainText(row.title)}</strong><div class="description">{plainText(row.description)}</div></div></div></td></tr>
+            <tr><td colspan="5"><div class="medal-entry"><MedalPreview layers={previews.get(row.medalID) ?? []} title={plainText(row.title)} /><div><strong>{plainText(row.title)}</strong><div class="description">{plainText(row.description)}</div></div><button type="button" class="minor" aria-label={`${word(INFO, "Show Info")}: ${plainText(row.title)}`} onclick={() => showInfo({ kind: "medal", typeID: 29496, itemID: row.medalID, graphics: graphics.filter(g => g.medalID === row.medalID) })}>i</button></div></td></tr>
             <tr><td colspan="5" class="awardee-group"><button type="button" class="group" aria-expanded={awardeesOpen.has(row.medalID)} onclick={() => { void expandAwardees(row.medalID); }}>{awardeesOpen.has(row.medalID) ? "▾" : "▸"} {word(AWARDEES, "View Awardees")}</button></td></tr>
             {#if awardeesOpen.has(row.medalID)}
               {#if awardeeLoading.has(row.medalID)}<tr><td colspan="5" class="note">Loading…</td></tr>

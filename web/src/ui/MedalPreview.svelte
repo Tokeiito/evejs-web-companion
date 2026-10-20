@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MedalLayer } from "../bridge/corporationDecorations.ts";
-  let { layers, title, size = 26 }: { layers: readonly MedalLayer[]; title: string; size?: number } = $props();
+  let { layers, title, size = 26, width }: { layers: readonly MedalLayer[]; title: string; size?: number; width?: number } = $props();
   const uid = $props.id();
   // MedalRibbon.Startup244-268: two half-size parts, with a 20/128 overlap
   // and Python int truncation of the medal's vertical offset.
@@ -14,7 +14,7 @@
   }
 </script>
 
-<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={title}>
+<svg width={width ?? size} height={size} viewBox={`0 0 ${width ?? size} ${size}`} role="img" aria-label={title}>
   <title>{title}</title>
   <defs>{#each layers as layer, i}
     <filter id={`${uid}-${i}`} color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values={tint(layer.color)} /></filter>

@@ -6,6 +6,7 @@
   import { portal } from "./portal.ts";
   import DesktopWindow from "./DesktopWindow.svelte";
   import ShowInfo from "./ShowInfo.svelte";
+  import MedalInfo from "./MedalInfo.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { infoWindowLabel } from "./infoWindowLabel.ts";
   import { plainText } from "../bridge/clientWords.ts";
@@ -74,7 +75,10 @@
 
 {#snippet contents(w: InfoWindowState)}
   {#key w.reconstruction}
-    <div use:reconstructed>{#if w.contentConstructed}<ErrorBoundary name={infoWindowLabel(w, $names.resolved)}><ShowInfo store={session.store} flow={session.flow} subject={w.subject} corporationResult={w.visibleCorporationResult} /></ErrorBoundary>{/if}</div>
+    <div use:reconstructed>{#if w.contentConstructed}<ErrorBoundary name={infoWindowLabel(w, $names.resolved)}>
+      {#if w.entry.subject.kind === "medal"}<MedalInfo store={session.store} flow={session.flow} subject={w.entry.subject} reads={w.reads} />
+      {:else}<ShowInfo store={session.store} flow={session.flow} subject={w.subject} corporationResult={w.visibleCorporationResult} />{/if}
+    </ErrorBoundary>{/if}</div>
   {/key}
 {/snippet}
 

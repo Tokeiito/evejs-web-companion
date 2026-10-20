@@ -1,8 +1,11 @@
+import type { CorporationDecorationGraphic } from "./corporationDecorations.ts";
+
 /** Subjects whose content the browser currently implements. */
 export type InfoSubject =
   | { readonly kind: "type"; readonly typeID: number }
   | { readonly kind: "spaceObject"; readonly itemID: number; readonly typeID: number | null }
   | { readonly kind: "module"; readonly itemID: number; readonly typeID: number }
+  | { readonly kind: "medal"; readonly typeID: 29496; readonly itemID: number; readonly graphics: readonly CorporationDecorationGraphic[] }
   | { readonly kind: "character"; readonly characterID: number }
   | { readonly kind: "corporation"; readonly corporationID: number }
   | { readonly kind: "alliance"; readonly allianceID: number }

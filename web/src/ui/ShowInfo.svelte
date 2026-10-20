@@ -1149,6 +1149,8 @@
         return "Alliance";
       case "type":
         return "Item";
+      case "medal":
+        return "Medal";
       case "mapLocation":
         return mapTypeName(current.typeID);
       case "faction":

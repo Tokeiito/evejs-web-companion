@@ -428,7 +428,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
-import { corporationDecorationsOf, corporationMedalAwardeesOf, type CorporationDecorations, type CorporationMedalAwardee } from "../bridge/corporationDecorations.ts";
+import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
@@ -2125,6 +2125,7 @@ export interface AppFlow {
   readonly corporationDecorationsChanged: ReadableSignal<number>;
   corporationDecorations(): Promise<CorporationDecorations>;
   corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
+  medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo>;
   readonly corporationApplicationsRequested: ReadableSignal<number>;
   requestCorporationApplications(): void;
   serveCorporationApplicationsRequest(n: number): void;
@@ -15211,6 +15212,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await memberNames(scope, [{ kind: "owner", id: row.issuerID }]);
     }
     scope.current(); return awardees;
+  }
+  async function medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo> {
+    const pilot = callOptions.captureRequestGuard!();
+    const current = () => { pilot(); reads.assertCurrent(); };
+    const options = { ...callOptions, captureRequestGuard: () => current };
+    const ask = api.bridgeAsk(options), finish = reads.begin();
+    try {
+      current(); reads.identify();
+      const caption = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      // Native reconstruction updates caption/description, builds the supplied
+      // abstract icon, then reads the header independently. Do not collapse
+      // these calls into a page cache that the native service does not have.
+      const header = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      let ticker: string | null = null;
+      if (header.ownerID) {
+        requestCorpLogos([header.ownerID]);
+        if (!isNpcCorporation(header.ownerID)) {
+          const result = await api.corpTickers([header.ownerID], true, options); current();
+          ticker = result.tickers[String(header.ownerID)] ?? null;
+          await memberNames({ current, options }, [{ kind: "owner", id: header.ownerID }]);
+        }
+      }
+      current(); reads.complete();
+      return { title: caption.title, description: caption.description, ownerID: header.ownerID, awarded: header.awarded, ticker };
+    } finally { finish(); }
   }
   async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
     const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
@@ -29281,6 +29307,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
     corporationDecorations,
     corporationMedalAwardees,
+    medalShowInfo,
     corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
     requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
     serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },

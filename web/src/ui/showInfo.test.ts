@@ -11,6 +11,8 @@ import { TABS, isLaunchable, launchableTabsFor, visibleTabsFor } from "./tabs.ts
 test("a subject's typeID is what it can be pictured by", () => {
   assert.equal(subjectTypeID({ kind: "type", typeID: 34 }), 34);
   assert.equal(subjectTypeID({ kind: "module", itemID: 1, typeID: 483 }), 483);
+  // inventorycommon.const.typeMedal1592; MedalRibbonEntry.ShowInfo869-872.
+  assert.equal(subjectTypeID({ kind: "medal", typeID: 29496, itemID: 2, graphics: [] }), 29496);
   assert.equal(subjectTypeID({ kind: "spaceObject", itemID: 1, typeID: 1230 }), 1230);
 });
 

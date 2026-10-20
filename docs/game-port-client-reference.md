@@ -2110,7 +2110,7 @@ group and a fresh read on reopening. Wire capture shows no recipient call for th
 one per recipient-group opening, and no award write from the observer. Data survives a full
 EveJS restart. No new recipient wire-shape claim is made against TQ: the recursive corpus
 search contains no such reply. The current server rows satisfy the compiled consumer.
-Medal Show Info, list sorting preferences and the creation window remain separate units.
+List sorting preferences and the creation window remain separate units.
 
 The installed medal atlases use uncompressed BGRA32 DDS. `/client-res/ui/texture/…dds`
 now converts that indexed format to RGBA PNG while retaining the existing PNG route.
@@ -2125,6 +2125,20 @@ CCP TriColor.PyFromInt302-316 and carbonui.util.color.HextoiRGBA256-275; the SVG
 channel multiplication. CCP Tr2Sprite2dContainer.cpp312-318 gathers children in reverse order,
 so the first graphic is drawn on top. This is a minimal browser rendering; exact GPU sampling,
 color-space settings and pixel equality with a full retail UI have not been measured.
+
+The medal entry's Show Info passes type29496, medalID and held graphics, as
+`MedalRibbonEntry.ShowInfo`869-872. Original compiled `InfoWindowMonolith` methods
+read `GetMedalDetails(medalID).info[0]` twice: first title/description1450-1453,
+then ownerID/numberOfRecipients675-687. The issuer header builds its logo, then
+looks up a player corporation's ticker and owner name in that order. The icon uses
+the supplied abstract graphics at render size256 in a 128×256 frame1347-1352.
+The page preserves that sequence and ordinary window history/reuse. Live browser
+verification showed accented text, correct large icon, count3/count0, issuer logo
+navigation and history back to the medal. Wire capture has two details calls for
+each reconstruction and none for minimize/restore. The existing EveJS details
+reply supplies all consumed fields; no additional handler change was supported.
+There is no GetMedalDetails reply in the recursive TQ corpus search, so its exact
+TQ container/descriptor/cache policy remains unverified.
 
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then

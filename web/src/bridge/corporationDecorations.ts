@@ -1,6 +1,6 @@
 // corp_ui_member_decorations.LoadDecorations55-87 and medals.GetAllCorpMedals60-62.
 // TQ's cached value is a list of catalogue and graphics CRowsets (admin panels1249).
-import { isListValue, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
+import { isListValue, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
 import { unwrapCachedResult } from "./market.ts";
 import { intDictOrder } from "./py27DictOrder.ts";
 
@@ -53,6 +53,22 @@ export interface MedalLayer {
   readonly top: number;
   readonly part: number;
   readonly color: number;
+}
+
+export interface MedalInfo {
+  readonly title: string;
+  readonly description: string;
+  readonly ownerID: number;
+  readonly awarded: number;
+  readonly ticker: string | null;
+}
+
+// InfoWindowMonolith uses GetMedalDetails(...).info[0] for its caption and
+// again for its corporation header (infoContentBase1450-1453,675-687).
+export function medalDetailsInfoOf(answer: JsonValue): Omit<MedalInfo, "ticker"> {
+  const info = readKeyVal(unwrapCachedResult(answer), "info");
+  const row = Array.isArray(info) ? info[0] : isListValue(info) ? info.items[0] : undefined;
+  return { title: text(row, "title"), description: text(row, "description"), ownerID: integer(row, "ownerID"), awarded: integer(row, "numberOfRecipients") };
 }
 
 // uix.FormatMedalData777-794 ignores layer numbers and preserves row order.
