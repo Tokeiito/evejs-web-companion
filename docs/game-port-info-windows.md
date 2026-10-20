@@ -543,7 +543,7 @@ Registered info scopes now pass their abort signal through the owner-record
 request, HTTP/socket/in-process carriage and the BFF owner/RPC waiters. Retiring
 an owning RPC clears its pending/throttled wait without caching its late reply;
 retiring a sharing waiter leaves the live owner's call intact. Cancellation is
-limited to native owner reads. Issued gameplay operations keep their existing
+limited to native owner and scalar aggression reads. Issued gameplay operations keep their existing
 semantics, and no cancellation packet is sent to EveJS.
 
 Live TCP holds before BFF decoding verify two native queries after a registered
@@ -552,6 +552,26 @@ socket, and in-process fetch. The browser sends cancellation only for the
 registered view, never revives either closed view, and reopens from the correct
 completed owner cache with zero console errors. Native UI/RPC/row-installation
 boundaries are explicit; this is not a claim of a complete native renderer.
+
+The scalar corpmgr.GetAggressionSettings(corporationID) cache follows the same
+caller lifetime. Original compiled BaseInfoWindow.Close, base_corporation's
+GetAggressionSettings256-261, ExpiringDict and ThrottledCall/TempLock, executed
+with native Stackless tasklets, establish two RPCs after a registered kill inside
+the RPC, one after a kill following Get, and one for unregistered history.
+machoNet._BlockingCall3592-3660 removes pending channel entries in finally;
+the packet already sent is unaffected. Only this scalar read receives the Info
+scope signal through the generic bridge route and HTTP/socket/in-process paths.
+The no-argument own-corporation read retains its existing behavior.
+
+Actual native replies held before BFF decoding reproduce the former dead-caller
+sharing and verify its removal: registered close/new caller sends two scalar
+queries, unregistered history sends one, and later views reuse only completed
+live cache fills. The collision check reuses the prior actual successful public
+info payload at the client boundary because the proxy buffers following server
+frames; it makes no second-public-reply wire claim. Aggression frames stay real.
+The default-socket browser also verifies actual Previous history, one cancellation
+for registered close and none for history, normal completed content, no revival
+and no console errors. Native UI/RPC/state-installation boundaries remain explicit.
 
 Other iterable ordering, larger-than-safe-integer keys and
 complete ancillary header priming remain separate audits. Numeric range limits

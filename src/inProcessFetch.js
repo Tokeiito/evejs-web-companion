@@ -29,7 +29,7 @@
 //
 // A REQUEST GIVEN UP ON (its signal aborted) rejects with the signal's reason,
 // as a fetch does. The route can observe its operation signal: native owner
-// priming uses it to release its caller's lock without publishing a late row.
+// priming and scalar aggression reads use it to release their caller's locks.
 // An event stream given up on is let go: its request
 // is told it has closed, which is what its route waits for.
 

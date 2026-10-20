@@ -2420,12 +2420,16 @@ function createGamePortPilots({
   }
 
   /** A service's own method: at the proxy node for a service the client reaches with sm.ProxySvc, by the name alone for any other. */
-  const byName = (session, service, method, form, beforeDispatch) => (form.proxy
+  const byName = (session, service, method, form, beforeDispatch, signal) => (form.proxy
     ? session.proxyCall(service, method, argumentsToWire(form.args), form.kwargs)
-    : session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch));
+    : signal ? session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch, signal)
+      : session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch));
 
-  async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
+  async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined, callerSignal = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
+    const signal = service === "corpmgr" && method === "GetAggressionSettings" && Array.isArray(args) && args.length === 1
+      && Number.isSafeInteger(args[0]) && args[0] > 0 ? callerSignal : undefined;
+    if (signal?.aborted) throw fail("SESSION_REQUEST_RETIRED", "The scalar aggression caller has retired.");
     // A pending corporation action still names the corporation it was opened for.
     // Check at native dispatch too: preparation/binding can yield across a change.
     const expectedCorporationID = positive(sessionFields.expectedCorporationID);
@@ -2704,7 +2708,7 @@ function createGamePortPilots({
       return form.moniker
         ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs, dispatchCurrent)
         : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
-        : byName(entry.session, service, method, form, dispatchCurrent);
+        : byName(entry.session, service, method, form, dispatchCurrent, signal);
     }).finally(() => {
       forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();

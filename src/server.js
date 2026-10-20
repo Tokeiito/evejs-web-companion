@@ -1157,6 +1157,14 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // session, like retail. A browser-supplied bridgeSessionID is ignored; only
   // the server-held handle is ever forwarded.
   const heldBridgeSession = bridgeSessions.get(req.webSessionID) || null;
+  // The native scalar cache is filled by its caller after this RPC. Retiring
+  // that tasklet releases its pending/throttled wait; the issued packet remains.
+  const scalarController = !write && body.pilot === true && body.service === "corpmgr" && body.method === "GetAggressionSettings"
+    && Array.isArray(body.args) && body.args.length === 1 && Number.isSafeInteger(body.args[0]) && body.args[0] > 0
+    && heldBridgeSession && isGamePortHandle(heldBridgeSession.bridgeSessionID) ? new AbortController() : null;
+  const scalarClosed = () => { if (!res.writableEnded) scalarController?.abort(); };
+  if (scalarController) res.once("close", scalarClosed);
+  const scalarSignal = scalarController ? req.operationSignal ?? scalarController.signal : undefined;
   try {
     // With no pilot held this is the account asking (the hangar's roster is the client's character selection
     // screen), and the seam sends what the retail client asks there to where the account is (pilotTransport.js).
@@ -1241,6 +1249,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         body.kwargs,
         { ...clientSessionFields, userid: Number(req.account.accountID) },
         heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
+        ...(scalarSignal ? [scalarSignal] : []),
       );
     res.json({
       ok: true,
@@ -1257,8 +1266,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     if (heldBridgeSession && error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID, heldBridgeSession);
     }
+    if (scalarSignal?.aborted) {
+      if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The scalar aggression caller has retired." });
+      return;
+    }
     next(error);
-  }
+  } finally { if (scalarController) res.removeListener("close", scalarClosed); }
 });
 
 /**

@@ -12382,9 +12382,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const finish = reads?.begin();
     // Fence dispatch in the shared lane, but keep the pilot's notification sink:
     // retiring one window must not discard notices accompanying an in-flight RPC.
-    const ask = reads ? api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
-      reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
-    } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); }) : bridgeAsk;
+    const infoAsk = (signal?: AbortSignal): Ask => api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
+      reads?.assertCurrent();
+      // Keep this call's existing transport deadline. Only a native scalar
+      // cache owner receives tasklet retirement, not every operation of a view.
+      return (callOptions.fetch ?? pageFetch())(input, signal
+        ? { ...init, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) } : init);
+    } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); });
+    const ask = reads ? infoAsk() : bridgeAsk;
     try {
       reads?.assertCurrent();
       let answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
@@ -12412,7 +12417,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
       // Neither read catches RPC exceptions: construction and caption/history
       // completion stop, and the window's exception handler receives the error.
-      const aggressionAnswer = await corporationAggression.get(ask, corporationID, () => reads?.assertCurrent());
+      const aggressionAnswer = await corporationAggression.get(reads ? infoAsk(reads.signal) : ask, corporationID, () => reads?.assertCurrent());
       // The native status consumer calls methods on the cached raw object.
       // A cached None fails there on every attempt; it is not an omitted row.
       if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
