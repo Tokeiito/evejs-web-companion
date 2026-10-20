@@ -838,11 +838,8 @@
     readonly emptyText: string;
     /** Where this place's contents may be sent. Excludes the place itself. */
     readonly targets: readonly MoveDestination[];
-    /**
-     * The place `stackContainer` can re-stack, or null. The bridge knows only
-     * "hangar" and "cargo", so those are the only two groups that offer it.
-     */
-    readonly stackKey: "hangar" | "cargo" | null;
+    /** BaseInvContainer.StackAll382-388 applies to each actionable ship bay's own locationFlag. */
+    readonly stackKey: Parameters<AppFlow["stackContainer"]>[0] | null;
   }
 
   function stackCount(g: Group): string {
@@ -900,10 +897,9 @@
         collapsed: collapsedBays[bay.key] === true,
         readOnly: !bayIsActionable(ship.itemID, bay, $inventory.activeShipID),
         error: bay.error,
-        stackKey:
-          bay.key === "cargo" && bayIsActionable(ship.itemID, bay, $inventory.activeShipID)
-            ? "cargo"
-            : null,
+        stackKey: bayIsActionable(ship.itemID, bay, $inventory.activeShipID)
+          ? bay.key === "cargo" ? "cargo" : { kind: "shipBay", bay: bay.key }
+          : null,
       }),
     );
   });

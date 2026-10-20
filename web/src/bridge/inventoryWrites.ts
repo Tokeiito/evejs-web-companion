@@ -198,12 +198,15 @@ export async function moveItems(
 // per type, owner and flag, each merge by custody's own check with the session's character as the actor
 // (invBrokerService.Handle_StackAll, 11955 on).
 
-/** inventorycommon/const.py flagHangar and flagCargo: the flag a hangar's and a ship's hold's Stack All names. */
+/** inventorycommon/const.py flagHangar and flagCargo. Other ship bays use their controller's own flag. */
 const STACK_FLAGS = { hangar: 4, cargo: 5 } as const;
 
-/** Stacks all of a hangar or a ship's hold, on its own inventory (the hangar's, or the ship's by its number). */
-export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: keyof typeof STACK_FLAGS): Promise<void> {
-  await act("invbroker", "StackAll", [STACK_FLAGS[place]], null, inventory);
+export type StackPlace = keyof typeof STACK_FLAGS | { readonly kind: "shipBay"; readonly bay: string };
+
+/** BaseInvContainer.StackAll382-388: each ship bay stacks its locationFlag on the ship's cached inventory. */
+export async function stackAll(act: Ask, inventory: number | typeof THE_HANGAR, place: StackPlace): Promise<void> {
+  const flag = typeof place === "string" ? STACK_FLAGS[place] : moveFlagOf(place);
+  await act("invbroker", "StackAll", [flag], null, inventory);
 }
 
 /** The refusals TrashItems answered, as the wire spelled the list; none for an answer of None. */

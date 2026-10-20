@@ -664,7 +664,7 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace, type StackPlace } from "../bridge/inventoryWrites.ts";
 import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
@@ -1483,8 +1483,8 @@ export interface AppFlow {
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
   readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
-  /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
-  stackContainer(target: "hangar" | "cargo"): Promise<void>;
+  /** Stack loose stacks in the hangar or an active-ship hold, then refresh. */
+  stackContainer(target: StackPlace): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
   /**
@@ -6601,11 +6601,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Stack All of the hangar or the ship's hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
+   * Stack All of the hangar or a ship hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
    * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
-  async function stackPlaceNow(target: "hangar" | "cargo"): Promise<void> {
-    await stackAllCall(inventoryMoves.act, inventoryAt({ kind: target }).inventory, target);
+  async function stackPlaceNow(target: StackPlace): Promise<void> {
+    const place = typeof target === "string" ? { kind: target } as const : target;
+    await stackAllCall(inventoryMoves.act, inventoryAt(place).inventory, target);
+    if (typeof target !== "string") {
+      const open = store.inventory.get().openShip;
+      if (open?.itemID === store.inventory.get().activeShipID) await openShipBays(open.itemID);
+    }
   }
 
   // Reload whatever places are currently on screen. A mutation can touch the

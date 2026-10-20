@@ -407,15 +407,14 @@ test("merging two stacks is still wired to the model's ordering", () => {
   assert.match(SOURCE, /Merge the two stacks/);
 });
 
-test("stack-all still exists, beside the two places that can be re-stacked", () => {
-  // The bridge's `stackContainer` knows only "hangar" and "cargo", so those are
-  // the only two groups that offer it — and it now sits in the group's own
-  // header, beside the thing it acts on, rather than in the location row.
+test("stack-all is offered in the hangar and actionable ship holds", () => {
+  // Original invControllers.BaseInvContainer.StackAll382-388 passes each bay's
+  // locationFlag to the same cached ship inventory; ore is not excluded.
   const hangar = locationView(panel(), "hangar");
   assert.match(visibleText(hangar), /Stack all/);
   const bays = locationView(panel(), "ship");
   const ore = bays.slice(bays.indexOf("Ore hold"), bays.indexOf("Gas hold"));
-  assert.doesNotMatch(visibleText(ore), /Stack all/, "an ore hold cannot be re-stacked");
+  assert.match(visibleText(ore), /Stack all/, "the mining hold has its own StackAll flag");
 });
 
 test("a container can still be opened, and browsed as its own location", () => {
