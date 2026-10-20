@@ -94,11 +94,14 @@ export interface AggressionSettings {
   readonly disableAfter: bigint | null;
 }
 
+function isAggressionBuiltin(result: JsonValue): boolean {
+  return typeof result === "number" || typeof result === "boolean" || typeof result === "string"
+    || Array.isArray(result) || (isRecord(result) && ["long", "real", "float", "wstring", "Buffer", "list", "tuple", "dict", "set"].includes(String(result.type)));
+}
+
 /** GetCorpFriendlyFireStatus280-282 calls this method on the cached raw reply. */
 export function assertCorpAggressionStatusMethod(result: JsonValue): void {
-  const builtin = typeof result === "number" || typeof result === "boolean" || typeof result === "string"
-    || Array.isArray(result) || (isRecord(result) && ["long", "real", "float", "wstring", "Buffer", "list", "tuple", "dict", "set"].includes(String(result.type)));
-  if (builtin) throw Object.assign(new Error("The aggression reply has no attribute 'IsFriendlyFireLegalAtTime'."), {
+  if (isAggressionBuiltin(result)) throw Object.assign(new Error("The aggression reply has no attribute 'IsFriendlyFireLegalAtTime'."), {
     name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_METHOD_MISSING",
   });
   // Unknown classes and malformed instance states can fail during native
@@ -118,11 +121,31 @@ export function aggressionSettingsOf(result: JsonValue | null | undefined): Aggr
   // None. Preserve the native consumer failure after the raw reply is cached.
   // Other classes/state shapes still need their own native consumer audit.
   if (result.name === "crimewatch.corp_aggression.settings.AggressionSettings") {
+    const requireCallable = (method: string): void => {
+      const shadow = entries.find(candidate => Array.isArray(candidate) && candidate[0] === method);
+      if (Array.isArray(shadow) && (shadow[1] === null || isAggressionBuiltin(shadow[1]))) {
+        throw Object.assign(new TypeError("The aggression status method is not callable."), { code: "INFO_CORPORATION_AGGRESSION_NOT_CALLABLE" });
+      }
+    };
+    // Instance dict state can shadow a class method. The first status call
+    // fails before any settings field is read, even if those fields are absent.
+    requireCallable("IsFriendlyFireLegalAtTime");
     for (const key of ["_disableAfter", "_enableAfter"]) {
       if (!entries.some((candidate) => Array.isArray(candidate) && candidate[0] === key)) {
         throw Object.assign(new Error(`'AggressionSettings' object has no attribute '${key}'`), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_MISSING_FIELD" });
       }
     }
+    // The second call follows the first method's field reads. Limit this
+    // boundary to its original method/helpers and known numeric state; custom
+    // callables, helper shadows and other state types need their own audit.
+    const firstUnmodified = entries.every(candidate => Array.isArray(candidate) && typeof candidate[0] === "string"
+      && !["IsFriendlyFireLegalAtTime", "_IsDisableTimeInPast", "_IsEnableTimeInPast"].includes(candidate[0]));
+    const numericTimes = ["_disableAfter", "_enableAfter"].every(key => {
+      const value = entries.find(candidate => Array.isArray(candidate) && candidate[0] === key)?.[1];
+      return value === null || typeof value === "boolean" || (typeof value === "number" && Number.isSafeInteger(value))
+        || (isRecord(value) && value.type === "long" && /^-?\d+$/.test(longToDecimalString(value) ?? ""));
+    });
+    if (firstUnmodified && numericTimes) requireCallable("GetNextPendingChangeTime");
   }
   const time = (key: string): bigint | null => {
     const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === key);

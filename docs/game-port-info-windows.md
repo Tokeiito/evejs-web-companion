@@ -360,8 +360,25 @@ AttributeErrors are logged; native diagnostic wording is not claimed where
 the bridge loses Python type identity. TQ records canonical settings objects,
 not these controlled malformed replies.
 
-For the canonical crimewatch.corp_aggression.settings.AggressionSettings object,
-boolean timestamp fields retain their native numeric values: False is 0 and
+Canonical instance state may shadow a class status method with a non-callable
+builtin or None. Original compiled window/cache/settings/status methods in the
+native runtime establish TypeError before field reads when
+IsFriendlyFireLegalAtTime is shadowed. GetNextPendingChangeTime is called after
+the first method reads its fields, so an absent time field still raises first.
+The decoder preserves these boundaries. The second-method guard is limited to
+the original first method/helpers, string state keys and recognized numeric/
+None/bool time values. Custom callables, helper shadows and other states remain
+separate audits. The oracle installs state with __new__/dict.update as an
+explicit boundary, following CCP Marshal.cpp's instance-dict update path;
+complete native unmarshalling is not claimed.
+
+Live controlled canonical replies verify 21 shadow/missing-field cases twice,
+raw-cache repeat/no-enlistment and normal expiry recovery. The default-socket
+browser shows the ordinary TypeError, cached repeat without another aggression
+read and complete recovery, with only the two expected errors.
+
+Canonical AggressionSettings boolean timestamp fields retain their native
+numeric values: False is 0 and
 True is 1, each distinct from None. Original compiled settings constructor,
 past/future comparisons, status consumer and complete window chain confirm
 all twelve bool/None/0/1 combinations and the completed friendly-fire labels.
