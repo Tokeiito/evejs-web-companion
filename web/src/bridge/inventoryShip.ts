@@ -92,6 +92,8 @@ function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap |
   const singleton = fields.singleton === true || toNumber(fields.singleton) === 1;
   return {
     itemID: toNumber(fields.itemID),
+    ...(toNumberOrNull(fields.ownerID) !== null ? { ownerID: toNumber(fields.ownerID) } : {}),
+    ...(toNumberOrNull(fields.locationID) !== null ? { locationID: toNumber(fields.locationID) } : {}),
     typeID,
     groupID: toNumberOrNull(fields.groupID),
     categoryID: toNumberOrNull(fields.categoryID),

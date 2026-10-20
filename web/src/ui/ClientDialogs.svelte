@@ -103,6 +103,8 @@
   const progressWnd = flow.progressWnd;
   // svelte-ignore state_referenced_locally
   const corporationCEOChoice = flow.corporationCEOChoice;
+  // svelte-ignore state_referenced_locally
+  const corporationWalletChoice = flow.corporationWalletChoice;
   const corporationAwardAsk = flow.corporationAwardAsk;
   const moneyTransfer = flow.moneyTransfer;
   // svelte-ignore state_referenced_locally
@@ -1002,14 +1004,23 @@
     const ask = $asked;
     if (ask === null) return;
     // A field left empty is no answer (the client's field is required).
-    if (ok && !/^\d+$/.test(typed)) return;
+    if (ok && (ask.digits ? typed.trim() === "" || !Number.isFinite(Number(typed)) : !/^\d+$/.test(typed))) return;
     flow.answerQuantity(ask.n, ok ? Number(typed) : null);
+  }
+  function filterQuantity(): void {
+    const digits = $asked?.digits ?? 0;
+    if (!digits) { typed = typed.replace(/\D+/g, ""); return; }
+    // SingleLineEditFloat.ValidateNewText29-41 trims excess decimal text.
+    typed = typed.replace(/[^-\de.]/g, "");
+    const dot = typed.indexOf(".");
+    if (dot >= 0) typed = typed.slice(0, dot + 1) + typed.slice(dot + 1).replace(/\./g, "").slice(0, digits);
   }
 </script>
 
 <svelte:window onkeydown={event => {
   if (event.key !== "Escape" || !inFront) return;
-  if ($corporationAwardAsk !== null) { event.preventDefault(); flow.answerCorporationAward($corporationAwardAsk.n, false); }
+  if ($corporationWalletChoice !== null) { event.preventDefault(); flow.answerCorporationWallet($corporationWalletChoice.n, false); }
+  else if ($corporationAwardAsk !== null) { event.preventDefault(); flow.answerCorporationAward($corporationAwardAsk.n, false); }
   else if ($corporationCEOChoice !== null) { event.preventDefault(); flow.answerCorporationCEO($corporationCEOChoice.n, false); }
 }} />
 
@@ -1042,6 +1053,24 @@
         {/key}
         {#if ask.selectionError}<span class="ceo-choice-error" role="status">{ask.selectionError}</span>{/if}
       {/if}
+    </div>
+  </div>
+{/if}
+
+{#if $corporationWalletChoice !== null}
+  {@const choice = $corporationWalletChoice}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog ceo-choice" role="dialog" aria-modal={inFront} aria-label={wordOf("UI/Wallet/WalletWindow/SelectDivision", "Select Division")} data-dialog="SelectDivision" data-in-front={inFront}>
+      <form class="quantity" onsubmit={event => { event.preventDefault(); flow.answerCorporationWallet(choice.n, true); }}>
+        <strong>{wordOf("UI/Wallet/WalletWindow/SelectDivision", "Select Division")}</strong>
+        <div class="ceo-choices" role="listbox" aria-label={wordOf("UI/Wallet/WalletWindow/SelectDivision", "Select Division")}>
+          {#each choice.rows as row, index (row.accountKey)}
+            <button type="button" role="option" aria-selected={choice.selectedIndex === index} class:selected={choice.selectedIndex === index} onclick={() => flow.selectCorporationWallet(choice.n, index)} ondblclick={() => { flow.selectCorporationWallet(choice.n, index); flow.answerCorporationWallet(choice.n, true); }}>{plainText(row.name)}</button>
+          {:else}<p>{wordOf("/Carbon/UI/Controls/Common/NoItem", "No Item")}</p>{/each}
+        </div>
+        {#if choice.selectionError}<span class="ceo-choice-error" role="status">{plainText(choice.selectionError)}</span>{/if}
+        <span class="answers"><button type="submit">{wordOf("UI/Common/Buttons/OK", "OK")}</button><button type="button" onclick={() => flow.answerCorporationWallet(choice.n, false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button></span>
+      </form>
     </div>
   </div>
 {/if}
@@ -1090,10 +1119,10 @@
         {#if labelText !== ""}<p class="body quantity-label">{labelText}</p>{/if}
         <input
           type="text"
-          inputmode="numeric"
+          inputmode={$asked.digits ? "decimal" : "numeric"}
           aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")}
           bind:value={typed}
-          oninput={() => (typed = typed.replace(/\D+/g, ""))}
+          oninput={filterQuantity}
           bind:this={field}
           use:focusAll
         />

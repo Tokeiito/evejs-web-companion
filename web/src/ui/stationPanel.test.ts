@@ -68,7 +68,8 @@ const OFFICE_CORP_ELYSIAN = 98000000;
 const OFFICE_CORP_ABLE = 98000003;
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // AssetSafetyDeliveries is a readable of the dock-local native flag36 source.
+  return new Proxy({}, { get: (_, key) => key === "safetyDeliveries" ? { subscribe(fn: (value: null) => void) { fn(null); return () => {}; } } : async () => {} });
 }
 
 function visibleText(body: string): string {

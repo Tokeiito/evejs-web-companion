@@ -64,6 +64,22 @@ export interface WalletJournalRead {
   readonly error: string | null;
 }
 
+export interface CorpWalletJournalRead extends WalletJournalRead {
+  readonly accountKey: number;
+  readonly corporationID: number | null;
+}
+
+/** CorpISKPanel.GetMainTabs/ConstructPanels: Accountant or Junior Accountant. */
+export function canViewCorporateJournal(corpRole: string | null | undefined): boolean {
+  try { return (BigInt(corpRole ?? "0") & (256n | 4503599627370496n)) !== 0n; }
+  catch { return false; }
+}
+
+/** Corporate GetTransactions does not run the personal derived-tax pass. */
+export function corporateJournalLines(entries: readonly JournalEntry[]): readonly JournalLine[] {
+  return entries.map(entry => ({ ...entry, sortValue: entry.transactionID, derived: false }));
+}
+
 /** appConst's entry kinds used here. */
 const REF = Object.freeze({
   undefined: 0,

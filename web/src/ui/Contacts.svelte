@@ -100,6 +100,8 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import { showInfo } from "./showInfo.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
+  import { showOwnerInfo } from "./ownerInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import { notify } from "./notices.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
@@ -656,14 +658,14 @@
     const isContact = contactIDs.has(ownerID);
     if (organization) {
       const editable = canManage && !npc;
-      return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
+      return { showInfo: true, mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
     }
     const isBlocked = blockedIDs.has(ownerID);
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
       // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
-      // Its Show Info the page's info window does not show yet (it shows a character, a type and an object).
-      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
+      // Show Info2297 carries the actual owner type, including NPC owners.
+      return { showInfo: true, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
     }
     return {
       // OfferShowInfo (350 to 353): every character's (an aura agent's aside, which no address book holds).
@@ -683,11 +685,14 @@
     };
   }
 
-  /** Show Info from an owner's menu (menusvc.py 579 to 580): the character's information window. */
+  function ownerSearchResult(resultType: number): boolean {
+    return resultType === RESULT_TYPE.character || resultType === RESULT_TYPE.corporation || resultType === RESULT_TYPE.alliance || resultType === RESULT_TYPE.faction;
+  }
+  /** Show Info from an owner's menu (menusvc.py 579 to 580). */
   function ownerInfo(ownerID: number): void {
     menuFor = null;
     searchMenuFor = null;
-    showInfo({ kind: "character", characterID: ownerID });
+    void run(() => showOwnerInfo(flow, ownerID));
   }
 
   /** Send Pilot EVEMail from an owner's menu (menusvc.py 590 to 591): the mail window, a new message to the pilot. */
@@ -1434,7 +1439,7 @@
 
   /**
    * Show Info of several (menuMerge._ExecMulti: not one of menu/__init__.py's MULTI_FUNCTIONS, so each agent's own is
-   * run): the page has one information window, which is left on the last.
+   * run): each request follows infosvc's reuse/new-window policy, in order.
    */
   function severalInfo(): void {
     agentMenuFor = null;
@@ -2238,7 +2243,7 @@
                 {#if group.resultType === RESULT_TYPE.agent}
                   {@const line = agentLineOf(owner.id, owner.name)}
                   <!-- An agent's entry (AgentEntry), as in the Agents tab. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={line.nameLine} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) agentDoubleClick(owner.id); }}>
                     <div>
                       <strong>{line.nameLine}</strong>
                       {#if line.missionState !== null}
@@ -2285,7 +2290,7 @@
                 {:else}
                   {@const offers = offersOf(owner.id)}
                   <!-- An owner's entry (User): its name, and the address book's part of its menu. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={owner.name} ondblclick={event => { if (ownerSearchResult(group.resultType) && !(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, owner.id)); }}>
                     <div>
                       {owner.name}
                       {#if blockedIDs.has(owner.id)}<span class="badge">{word(WORDS.blocked, "Blocked")}</span>{/if}
@@ -2449,7 +2454,7 @@
           </thead>
           <tbody>
             {#each shown.rows as row (row.id)}
-              <tr class:selected={selectedIDs.includes(row.id)}>
+              <tr class:selected={selectedIDs.includes(row.id)} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, row.id)); }}>
                 <td>
                   <!-- The entry selected or not (the scroll's multiSelect), which the page has as a box. -->
                   <input type="checkbox" aria-label={`Select ${row.name}`} checked={selectedIDs.includes(row.id)} onchange={() => toggleSelected(row.id)} />

@@ -146,6 +146,9 @@ export interface StationGuest {
  * these game IDs.
  */
 export interface InventoryItemRow {
+  /** Native inventory custody, retained when the List row supplies it. */
+  readonly ownerID?: number;
+  readonly locationID?: number;
   readonly itemID: number;
   readonly typeID: number;
   readonly groupID: number | null;
@@ -288,6 +291,14 @@ export type InventoryPlace =
 export interface OpenContainerState {
   readonly itemID: number;
   readonly typeID: number;
+  /** AssetSafetySvc's wrap name, rather than the generic type name. */
+  readonly name?: string;
+  /** The corporation safety tree's populated divisions, from its single full List. */
+  readonly safety?: {
+    readonly corporationID: number;
+    readonly divisionID: number | null;
+    readonly divisions: readonly { readonly divisionID: number; readonly name: string | null; readonly rows: readonly InventoryItemRow[] }[];
+  };
   readonly rows: readonly InventoryItemRow[];
   readonly capacity: CapacityInfo | null;
   /**

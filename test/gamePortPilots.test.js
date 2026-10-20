@@ -1063,16 +1063,23 @@ test("what goes wrong in a call is reported in the gateway's terms", async () =>
     "account.GetCashBalance": () => { throw sessionError("CALL_TIMEOUT", "account.GetCashBalance got no answer"); },
     // Asked by the service's name, a call of the corporation registry is made on the registry's moniker.
     "bound:GetTitles": () => { throw new Error("Cannot marshal value: object {\"bare\":1}"); },
-    "dogmaIM.ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
+    // eve_exception_handler.handle_exception (3396210): an ordinary
+    // exception logs rather than prompting, even if its argument is a dialog key.
+    "dogmaIM.ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", { className: "exceptions.RuntimeError", key: "InfoNoCorpWithID", values: {}, reason: "InfoNoCorpWithID" }); },
     // Asked by the service's name, a dogma call is made on the dogma location (below).
-    "bound:ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
+    "bound:ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", { className: "exceptions.RuntimeError", key: "InfoNoCorpWithID", values: {}, reason: "InfoNoCorpWithID" }); },
   } });
   const who = { userid: ACCOUNT };
   await rejects(pilots.callMethod("station", "GetGuests", [], null, who, handle), "CALL_REFUSED", /^That industry job is not ready yet\.$/);
   await rejects(pilots.callMethod("account", "GetCashBalance", [], null, who, handle), "EVE_GATEWAY_TIMEOUT");
   await rejects(pilots.callMethod("corpRegistry", "GetTitles", [], null, who, handle), "CALL_INVALID", /cannot be sent/);
-  // An exception that is not a game refusal is a failure, with the call named.
-  await rejects(pilots.callMethod("dogmaIM", "ShipGetInfo", [], null, who, handle), "CALL_FAILED", /^dogmaIM\.ShipGetInfo failed: /);
+  // A remote RuntimeError is not the client's UserError and carries no dialog.
+  await assert.rejects(pilots.callMethod("dogmaIM", "ShipGetInfo", [], null, who, handle), error => {
+    assert.equal(error.code, "CALL_FAILED");
+    assert.match(error.message, /^dogmaIM\.ShipGetInfo failed: /);
+    assert.equal(error.refusal, undefined);
+    return true;
+  });
   // None of those ended the session.
   assert.equal(pilots.size, 1);
   assert.equal((await rejects(pilots.callMethod("machoNet", "x", [], null, who, handle), "CALL_NOT_ALLOWED")), undefined);
@@ -2342,16 +2349,20 @@ test("a question the server will wait a day for still lapses in this client's ow
 
 // ── a refusal, by name ───────────────────────────────────────────────────────
 
-test("a refusal keeps the server's name for it and its values, beside the words", async () => {
-  const values = { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]]] };
-  const { pilots } = build({ answers: { "bound:Undock": () => { throw sessionError("GAME_CALL_REFUSED", "refused", { className: "eveexceptions.UserError", key: "ShipContrabandWarningUndock", values, reason: "ShipContrabandWarningUndock" }); } } });
-  const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
-  await assert.rejects(pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle), (error) => {
-    assert.equal(error.code, "CALL_REFUSED");
-    assert.equal(error.message, "ShipContrabandWarningUndock");
-    assert.deepEqual(error.refusal, { key: "ShipContrabandWarningUndock", values });
-    return true;
-  });
+test("native UserError keeps its message key and dict for the client's dialog", async () => {
+  // eveexceptions.UserError.__guid__ and eve_exception_handler._IsUserError:
+  // the wire guid and package name identify the same native UserError class.
+  for (const className of ["exceptions.UserError", "eveexceptions.UserError"]) {
+    const values = { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]]] };
+    const { pilots } = build({ answers: { "bound:Undock": () => { throw sessionError("GAME_CALL_REFUSED", "refused", { className, key: "ShipContrabandWarningUndock", values, reason: "ShipContrabandWarningUndock" }); } } });
+    const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+    await assert.rejects(pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle), (error) => {
+      assert.equal(error.code, "CALL_REFUSED");
+      assert.equal(error.message, "ShipContrabandWarningUndock");
+      assert.deepEqual(error.refusal, { key: "ShipContrabandWarningUndock", values });
+      return true;
+    });
+  }
 });
 
 // ── the scanner in space ─────────────────────────────────────────────────────
@@ -3962,7 +3973,9 @@ test("owners are named as the client's cfg.eveowners names them: those not known
   const first = await pilots.ownersNamed([A_CORPORATION, AN_ALLIANCE], WHO, handle);
   assert.deepEqual([...first], [[A_CORPORATION, { name: "Made-up Industries", typeID: 2 }], [AN_ALLIANCE, { name: "Made-up", typeID: 16159 }]]);
   assert.deepEqual(ownersAsked(session), [["GetMultiOwnersEx", [{ type: "list", items: [A_CORPORATION, AN_ALLIANCE] }], null]]);
-  // Asked about again among others: only what is not known is asked for, each owner once however often it is named.
+  // The display-name helper filters to positive IDs. Native Recordset.Get also
+  // permits zero/negative int(key) (carbon cfg.py630-645, compiled Get);
+  // its dedicated caller passes nativeKeys=true instead of this UI filter.
   const second = await pilots.ownersNamed([AN_ALLIANCE, A_CHARACTER, A_CORPORATION, A_CHARACTER, 0, null, "nobody"], WHO, handle);
   assert.deepEqual([...second], [[AN_ALLIANCE, { name: "Made-up", typeID: 16159 }], [A_CHARACTER, { name: "Someone Else", typeID: 1380 }], [A_CORPORATION, { name: "Made-up Industries", typeID: 2 }]]);
   assert.deepEqual(ownersAsked(session).slice(1), [["GetMultiOwnersEx", [{ type: "list", items: [A_CHARACTER] }], null]]);

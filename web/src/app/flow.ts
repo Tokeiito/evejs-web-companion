@@ -13,6 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, safetyWrapAncestor, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -216,6 +217,7 @@ import {
   type AssetSearchOption,
 } from "../bridge/assetSearch.ts";
 import { shownSecurity } from "../bridge/systemSecurity.ts";
+import { duelChallengeOf, startDuelChallenge, respondToDuelChallenge, type DuelInvitation } from "../bridge/duel.ts";
 import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
@@ -269,7 +271,18 @@ import {
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
-import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
+import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
+import { memberQuerySetting } from "./memberQuerySetting.ts";
+import { memberQueryArguments, type MemberQueryCriterion, type MemberQueryContext, type CorporationAdministration } from "../bridge/corporationMemberQuery.ts";
+import { infoWindowSetting } from "./infoWindowSetting.ts";
+import { scrollSortSetting, type ScrollSortSetting } from "./scrollSortSetting.ts";
+import { scrollWidthsSetting, type ScrollWidthsSetting } from "./scrollWidthsSetting.ts";
+import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
+import type { InfoReadScope } from "./infoReadScope.ts";
+import { createCorporationRecords } from "../bridge/corporationRecords.ts";
+import { createCorporationAggression } from "../bridge/corporationAggression.ts";
+import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
+import { characterCorporationOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -418,10 +431,11 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, iskWords } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { REMOTE_MESSAGE, remoteDialogOf } from "../bridge/serverDialogs.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
+import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
@@ -686,7 +700,8 @@ import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl,
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
 import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
-import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { aggressionSettingsOf, assertCorpAggressionStatusMethod, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationPublicInfo, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { toNumOrNull as corporationShareNumber } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -708,7 +723,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
-import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, corporateJournalLines, canViewCorporateJournal, type WalletJournalRead, type CorpWalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
@@ -785,6 +800,8 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
+import { createDirectTrades, type DirectTrades, type FittedTradeSource } from "./directTrades.ts";
+import { fmtAmt } from "../bridge/pyNumbers.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
 import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
@@ -1082,11 +1099,13 @@ export type RackMenuEntry =
   | { readonly kind: "rule" };
 
 /**
- * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a number
  * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
  * own words for it (`hint`).
  */
 export interface QuantityAsk {
+  /** QtyPopup's floatonly precision; the default is an integer field. */
+  readonly digits?: number;
   readonly n: number;
   readonly min: number;
   readonly max: number;
@@ -1108,6 +1127,13 @@ export interface QuantityAsk {
 export interface CorporationCEOChoice {
   readonly n: number;
   readonly rows: readonly { readonly characterID: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+}
+
+export interface CorporationWalletChoice {
+  readonly n: number;
+  readonly rows: readonly { readonly accountKey: number; readonly name: string }[];
   readonly selectedIndex: number | null;
   readonly selectionError: string;
 }
@@ -1417,6 +1443,13 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly directTrades: DirectTrades;
+  startDirectTrade(characterID: number): Promise<void>;
+  readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
+  startDuel(characterID: number): Promise<void>;
+  answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
+  expireDuel(n: number): void;
+  closeDuel(n: number): void;
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
   retryDroneRecovery(): Promise<void>;
   requireAutomationReady(): void;
@@ -1449,6 +1482,7 @@ export interface AppFlow {
   refreshStationPanel(): Promise<void>;
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
+  readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
   /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
@@ -1485,6 +1519,7 @@ export interface AppFlow {
   clearSelection(): void;
   /** Open a container and read its contents; null closes it. */
   openContainer(containerID: number | null): Promise<void>;
+  selectSafetyDivision(divisionID: number): void;
   /** Goal R40 — expand a ship in the Ships card and read its bays; null closes it. */
   openShipBays(shipID: number | null): Promise<void>;
   /** Project the latest loaded fit/dogma/bay observations; performs no IO or actions. */
@@ -2114,6 +2149,21 @@ export interface AppFlow {
   selectCorporationAward(n: number, index: number): void;
   answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
   readonly corporationApplicationsChanged: ReadableSignal<number>;
+  readonly corporationDecorationsChanged: ReadableSignal<number>;
+  corporationDecorations(): Promise<CorporationDecorations>;
+  corporationDecorationCreationEnabled(): Promise<boolean>;
+  readonly medalDesignerShown: ReadableSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>;
+  showMedalDesigner(): void;
+  closeMedalDesigner(): void;
+  medalColourPaletteOpened(): void;
+  readonly corporationWalletChoice: ReadableSignal<CorporationWalletChoice | null>;
+  selectCorporationWallet(n: number, index: number): void;
+  answerCorporationWallet(n: number, confirmed: boolean): void;
+  prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused">;
+  /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
+  createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
+  corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
+  medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo>;
   readonly corporationApplicationsRequested: ReadableSignal<number>;
   requestCorporationApplications(): void;
   serveCorporationApplicationsRequest(n: number): void;
@@ -2125,9 +2175,16 @@ export interface AppFlow {
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(current?: () => void): Promise<number | null>;
   corporationMemberIDs(): Promise<readonly number[]>;
+  corporationAdministration(current?: () => void): Promise<CorporationAdministration>;
+  corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext>;
+  corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]>;
+  corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]>;
+  corporationMemberQueryNeedsValue(current?: () => void): Promise<void>;
+  memberQueryPreference(name: "FMBQincludeImplied" | "FMBQsearchTitles"): { readonly value: ReadableSignal<boolean>; set(value: boolean): void };
   corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
+  corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean;
   saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
   giveCorporationShares(characterID: number, current?: () => void): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
@@ -2187,6 +2244,7 @@ export interface AppFlow {
   readonly imageServer: ReadableSignal<string | null>;
   /** The image server's address read from the pilot's global config, once. */
   loadImageServer(): void;
+  capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void>;
   /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
   readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
   /** The library read once, and the logos of these corporations asked for where they are not had. */
@@ -2417,6 +2475,15 @@ export interface AppFlow {
   readonly corporationWealthChanged: ReadableSignal<CorporationWealthChange | null>;
   corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null>;
   readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
+  readonly ownerDoubleClickPreference: ReadableSignal<0 | 1>;
+  readonly infoWindows: InfoWindows;
+  readonly infoWindowReusePreference: ReadableSignal<boolean>;
+  scrollSortPreference(scrollID: string): ScrollSortSetting;
+  scrollWidthsPreference(scrollID: string): ScrollWidthsSetting;
+  setInfoWindowReusePreference(value: boolean): void;
+  setOwnerDoubleClickPreference(value: 0 | 1): void;
+  ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
+  ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
   openMoneyTransfer(toID: number, corporate?: boolean): Promise<void>;
   confirmMoneyTransfer(n: number, amount: string, reason: string): Promise<void>;
   closeMoneyTransfer(n?: number): void;
@@ -2518,6 +2585,8 @@ export interface AppFlow {
    */
   readonly walletJournal: ReadableSignal<WalletJournalRead>;
   loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  readonly corpWalletJournal: ReadableSignal<CorpWalletJournalRead>;
+  loadCorpWalletJournal(accountKey?: number, year?: number | null, month?: number | null): Promise<void>;
   /**
    * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
    * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
@@ -2867,7 +2936,7 @@ export interface AppFlow {
   npcCorporationHeadquarters(corporationID: number): Promise<{ readonly itemID: number; readonly typeID: number } | null>;
   /** A character's corporation (charMgr.GetPublicInfo), or null. */
   characterCorporation(characterID: number): Promise<number | null>;
-  /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
+  /** A corporation's alliance from corp.GetCorporation's shared record cache, or null. */
   corporationAlliance(corporationID: number): Promise<number | null>;
   /** A character's Show Info header's reads (construct_header_character): its Bio, bloodline, start, militia, corporation, titles and security status. */
   characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
@@ -2977,7 +3046,7 @@ export interface AppFlow {
    * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
    * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
    */
-  corporationShowInfo(corporationID: number): Promise<CorporationShowInfo | null>;
+  corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): Promise<CorporationShowInfo | null>;
   /**
    * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
    * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
@@ -4005,6 +4074,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const baseCycleTimesOfTypes = keptByType((typeIDs: readonly number[]) => api.loadBaseCycleTimes(typeIDs, callOptions).then((answered) => answered.baseCycleMs));
   // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
+  const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
+  const corporationRecords = createCorporationRecords(() => store.station.get().online?.corporationID ?? null);
+  const corporationAggression = createCorporationAggression();
+  const infoWindows = createInfoWindows({
+    readCorporation: corporationShowInfo,
+    // eve_exception_handler handles a native UserError by its dialog and dict.
+    // The structured bridge refusal preserves that exception identity.
+    reportError: error => error instanceof BridgeCallError && error.refusal !== null && sayRefusalDialog(error, errorWords(error)),
+    reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
+    shift: () => false, // UI snapshots the live modifier into each command.
+    resolve: async (subject: InfoSubject): Promise<InfoIdentity | null> => {
+      const current = callOptions.captureRequestGuard!(); current();
+      let typeID: number | null = null, itemID: number | null = null;
+      if (subject.kind === "character") {
+        await ownerEntryInfo(subject.characterID, (type, item) => { typeID = type; itemID = item; });
+      } else if (subject.kind === "corporation") { typeID = 2; itemID = subject.corporationID; }
+      else if (subject.kind === "alliance") { typeID = 16159; itemID = subject.allianceID; }
+      else if (subject.kind === "faction") { typeID = 30; itemID = subject.factionID; }
+      else { typeID = subject.typeID; if (subject.kind !== "type") itemID = subject.itemID; }
+      current();
+      if (typeID === null || typeID <= 0) return null;
+      if (itemID === 500021) { sayDialog("KillerOfUnknownFaction", null, "The killer belongs to an unknown faction."); return null; }
+      const facts = await infoTypeFacts([typeID]); current();
+      const fact = facts[typeID];
+      if (!fact || fact.categoryID === null) throw new Error("The information type's category could not be read.");
+      // Original GetInfoWindowContentClass196-203: category first, then
+      // idCheckers.IsCharacter/IsCorporation. Dynamic old item IDs consult
+      // cfg.eveowners; a type-only window has no owner ID to classify.
+      if (fact.categoryID === 6) return { typeID, itemID, content: "ship" };
+      if (itemID !== null) {
+        if ((itemID >= 3_000_000 && itemID <= 3_999_999) ||
+            (itemID >= 90_000_000 && itemID <= 97_999_999) ||
+            (itemID >= 2_100_000_000 && itemID <= 2_129_999_999)) return { typeID, itemID, content: "character" };
+        if (itemID >= 100_000_000 && itemID <= 2_099_999_999) {
+          const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+          await memberNames(scope, [{ kind: "ownerType", id: itemID }]); current();
+          const ownerType = nameCache.get(nameKey("ownerType", itemID));
+          if (ownerType !== null && ownerType !== undefined) {
+            // The installed client's types.fsdbinary contains type0/group0.
+            // EveJS's generic non-owner row is valid and is no character/corp.
+            if (Number(ownerType) === 0) return { typeID, itemID, content: "legacy" };
+            const owners = await infoTypeFacts([Number(ownerType)]); current();
+            const owner = owners[Number(ownerType)];
+            if (!owner) throw new Error("The owner's type could not be read from the client data.");
+            if (owner.groupID === 1) return { typeID, itemID, content: "character" };
+            if (owner.groupID === 2) return { typeID, itemID, content: "corporation" };
+          }
+        } else if ((itemID >= 1_000_000 && itemID <= 1_999_999) ||
+                   (itemID >= 98_000_000 && itemID <= 98_999_999)) return { typeID, itemID, content: "corporation" };
+      }
+      return { typeID, itemID, content: "legacy" };
+    },
+  });
   const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
@@ -4820,6 +4942,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
+        infoWindows.reset();
+        corporationRecords.reset();
+        corporationAggression.reset();
         store.apply({ type: "character/offline" });
       }
     }
@@ -5030,6 +5155,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    // Keep already observed parents current for invCache's removal-tax walk.
+    // The notice contains the complete current item, including a changed owner.
+    for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
+      if (!safetyItemCache.has(row.itemID)) continue;
+      if (row.quantity <= 0 || !row.locationID) safetyItemCache.delete(row.itemID);
+      else safetyItemCache.set(row.itemID, row);
+    }
     // ONE item's move comes by this name, and several by OnItemsChanged: the
     // server sends this one unless a batch is asked for. A drone landing in
     // its bay is one item, and with only the batch's own refresh heard the window
@@ -5049,6 +5181,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // reckoned again where they are the page's, as the client's drone panel takes its drones again
     // (clientDogmaLocation.GetActiveDrones).
     const fittingNow = store.fitting.get();
+    // FittingController.OnDogmaItemChange344-365 updates slots when flag or
+    // location changes on an item entering/leaving the displayed ship. Trade
+    // cancellation can restore a fitted item without a fitting-window action.
+    if (fittingNow.activeShipID !== null && readDictPairs(args[1]).some(([key]) => Number(key) === 3 || Number(key) === 4)
+        && itemChangeLocations(args)?.includes(fittingNow.activeShipID)) scheduleFittingRefresh();
     if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
     // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
     // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
@@ -5072,6 +5209,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    directTrades.receive(method, args);
+    if (method === "OnDuelChallenge") {
+      const incoming = duelChallengeOf(args);
+      if (incoming) {
+        duelInvitationSignal.set({ ...incoming, n: ++duelInvitationN, expired: false, clockOffsetMs: serverNow() - Date.now() });
+        requestNames([incoming.characterID, incoming.corporationID, ...(incoming.allianceID ? [incoming.allianceID] : [])].map(id => ({ kind: "owner" as const, id })));
+        requestWords(["UI/Crimewatch/Duel/InvitationWindowCaption", "UI/Crimewatch/Duel/DuelDecleration", "UI/Crimewatch/Duel/Accept", "UI/Crimewatch/Duel/Decline", "UI/Crimewatch/Duel/BlockCommunications", "UI/Common/Corporation", "UI/Common/Alliance"]);
+      }
+    }
+    if (method === "OnCrimewatchEngagementCreated" && duelInvitationSignal.get()?.characterID === Number(args[0])) duelInvitationSignal.set(null);
+    if (method && ["OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"].includes(method)) {
+      const held = store.flight.get().crimewatch, id = Number(args[0]);
+      const expiry = method === "OnCrimewatchEngagementStopTimeout" ? -1n : unwrapLong(args[1]);
+      if (held && Number.isSafeInteger(id) && (method === "OnCrimewatchEngagementEnded" || expiry !== null)) {
+        const others = held.states.engagements.filter(entry => Number(entry.characterID) !== id);
+        const engagements = method === "OnCrimewatchEngagementEnded" ? others : [...others, { characterID: id, expiry: String(expiry) }];
+        store.apply({ type: "flight/crimewatch", crimewatch: { ...held, states: { ...held.states, engagements } } });
+      }
+    }
+    if (method === "OnCorporationMedalAdded") corporationDecorationsChangedSignal.set(corporationDecorationsChangedSignal.get() + 1);
     if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
       corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
       // base_corporation_ui204-209: the docked station lobby reloads its
@@ -5321,6 +5478,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
     if (method === "OnCorporationChanged") {
+      try { corporationRecords.changed(Number(unwrapLong(args[0] as JsonValue)), args[1] as JsonValue); }
+      catch (error) { console.error(error); }
       walletReads.corporationChanged();
     }
     // standingsvc keeps the pilot's standings as the server changes them (OnStandingSet, OnStandingsModified),
@@ -5427,7 +5586,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
+    if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
+    if (sessionNames?.includes("corpid")) {
+      const value = sessionChangeValue(method, args, "corpid");
+      corporationRecords.membershipChanged(value === null ? null : Number(unwrapLong(value)));
+    }
+    if (sessionNames?.includes("charid") && sessionChangeValue(method, args, "charid") === null) infoWindows.reset();
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationWalletChoice(); cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -5461,6 +5626,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
         ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
+      if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
+        corpWalletJournalGeneration += 1;
+        corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+        walletReads.corporationChanged();
+        containerReadGeneration += 1;
+        const open = store.inventory.get().container;
+        if (open && (open.safety || safetyWrapAncestor(open.itemID, safetyItemCache) !== null)) store.apply({ type: "inventory/container", container: null });
+        safetyCacheGeneration += 1;
+        safetyItemCache.clear();
+        void loadSafetyDeliveries().catch(() => {});
+      }
+    }
+    // invCache.ProcessSessionChange143-170: these place changes invalidate
+    // cached parent inventories as well as any read still coming from them.
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      containerReadGeneration += 1;
+      safetyCacheGeneration += 1;
+      safetyReadGeneration += 1;
+      safetyItemCache.clear();
+      safetyDeliveriesSignal.set(null);
+      store.apply({ type: "inventory/container", container: null });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
@@ -5479,6 +5665,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) {
+        duelInvitationSignal.set(null);
+        directTrades.reset(true);
+      }
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -5802,12 +5992,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const INVENTORY_REFRESH_COALESCE_MS = 400;
   let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let fittingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleFittingRefresh(): void {
+    if (fittingRefreshTimer !== null) return;
+    const current = callOptions.captureRequestGuard!();
+    fittingRefreshTimer = setTimeout(() => {
+      fittingRefreshTimer = null;
+      try { current(); } catch { return; }
+      void loadFitting().catch(() => {});
+    }, HOLD_REFRESH_COALESCE_MS);
+  }
   function inventoryShowsItemChange(args: readonly unknown[]): boolean {
     const inventory = store.inventory.get();
     if (!inventory.loaded) return false;
     const places = itemChangeLocations(args);
     if (places === null) return true;
-    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.container?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
     return places.some((placeID) => shown.includes(placeID));
   }
   function scheduleInventoryRefresh(): void {
@@ -5816,6 +6016,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       inventoryRefreshTimer = null;
       void (async () => {
         await loadInventory();
+        // invCache.OnItemChange updates both the old and new cached container.
+        // Read the open view from that cache too, including a Trade source.
+        const container = store.inventory.get().container;
+        if (container) await openContainer(container.itemID);
         const open = store.inventory.get().openShip;
         if (open) await openShipBays(open.itemID);
       })().catch(() => {});
@@ -5941,6 +6145,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
+    fittingRefreshTimer = null;
+    containerReadGeneration += 1;
+    safetyCacheGeneration += 1;
+    safetyItemCache.clear();
+    safetyDeliveriesSignal.set(null);
+    safetyWrapNames.clear();
+    safetyReadGeneration += 1;
     if (liveStream) {
       liveStream.close();
       liveStream = null;
@@ -6065,7 +6277,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // independently (their own error is preserved) so one failed read never
   // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
+  const safetyDeliveriesSignal = createSignal<SafetyDeliveries | null>(null);
+  const safetyWrapNames = new Map<number, string | null>();
+  const safetyItemCache = new Map<number, InventoryItemRow>();
+  let safetyCacheGeneration = 0;
+  function rememberSafetyParents(rows: readonly InventoryItemRow[]): void {
+    for (const row of rows) safetyItemCache.set(row.itemID, row);
+  }
+  let safetyReadGeneration = 0;
+  async function loadSafetyDeliveries(): Promise<void> {
+    const characterID = onlineCharacterID(), locationID = dockedNow();
+    const online = store.station.get().online, corporationID = online?.corporationID ?? null, corpRole = online?.corpRole ?? "0";
+    const generation = ++safetyReadGeneration;
+    if (!characterID || !locationID) { safetyDeliveriesSignal.set(null); return; }
+    let wraps: SafetyDeliveries["wraps"] = [], error: string | null = null;
+    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames, corporationID, corpRole); }
+    catch (cause) {
+      if (isSessionLost(cause)) throw cause;
+      error = errorWords(cause);
+    }
+    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID
+      && store.station.get().online?.corporationID === corporationID && (store.station.get().online?.corpRole ?? "0") === corpRole) {
+      safetyDeliveriesSignal.set({ characterID, corporationID, corpRole, locationID, wraps, error });
+      if (!error) {
+        const present = new Set(wraps.map(wrap => wrap.row.itemID));
+        for (const [id, row] of safetyItemCache) if (row.typeID === 60 && row.locationID === locationID && !present.has(id)) safetyItemCache.delete(id);
+        rememberSafetyParents(wraps.map(wrap => wrap.row));
+      }
+    }
+  }
+
   async function loadInventory(): Promise<void> {
+    const cacheGeneration = safetyCacheGeneration;
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
     try {
       panel = await api.loadInventory(callOptions);
@@ -6087,6 +6330,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error, panel.volumes),
       cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
+    await loadSafetyDeliveries();
+    if (cacheGeneration === safetyCacheGeneration) rememberSafetyParents([...store.inventory.get().hangar.rows, ...store.inventory.get().cargo.rows]);
   }
 
   // Run a mutation, then refresh the panel. A lost session is rethrown to
@@ -6333,8 +6578,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
-    if (current.container) {
-      await openContainer(current.container.itemID);
+    if (current.container && store.inventory.get().container?.itemID === current.container.itemID) {
+      const safety = safetyDeliveriesSignal.get();
+      await openContainer(current.container.typeID === 60 && safety && !safety.error
+        && !safety.wraps.some(wrap => wrap.row.itemID === current.container!.itemID) ? null : current.container.itemID);
     }
     if (current.corp.loaded) {
       await loadCorpHangar();
@@ -6464,7 +6711,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await refreshOpenPlaces();
   }
 
+  let containerReadGeneration = 0;
   async function openContainer(containerID: number | null): Promise<void> {
+    const generation = ++containerReadGeneration;
     if (containerID === null) {
       store.apply({ type: "inventory/container", container: null });
       return;
@@ -6475,6 +6724,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const owningRow =
       current.hangar.rows.find((row) => row.itemID === containerID) ??
       current.cargo.rows.find((row) => row.itemID === containerID) ??
+      current.container?.rows.find((row) => row.itemID === containerID) ??
+      safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row ??
+      safetyItemCache.get(containerID) ??
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
@@ -6486,6 +6738,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : current.container && current.container.itemID === containerID
         ? current.container.typeID
         : inSpace?.typeID ?? 0;
+    const ownName = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.name
+      ?? (current.container?.itemID === containerID ? current.container.name : undefined);
+    const safetyRow = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row;
+    const online = store.station.get().online;
+    if (owningRow) rememberSafetyParents([owningRow]);
+    if (knownTypeID === 60 && safetyRow && online?.corporationID && safetyRow.ownerID === online.corporationID) {
+      try {
+        // Original corporate tree/controller(None): one full List, no capacity query.
+        const raw = await bridgeAsk("invbroker", "List", [], null, containerID);
+        const listed = decodeInventoryRowsChecked(raw);
+        if (listed === null) throw new Error("The corporation Asset Safety inventory could not be read.");
+        const knownVolumes = (await api.loadTypeVolumes([...new Set(listed.map(row => row.typeID))], callOptions)).volumes;
+        const volumes: Record<string, number> = {};
+        for (const [typeID, volume] of Object.entries(knownVolumes)) if (typeof volume === "number") volumes[typeID] = volume;
+        const rows = decodeInventoryRows(raw, volumes);
+        const corporation = rows.length ? await bridgeAsk("corpRegistry", "GetCorporation", []) : null;
+        if (rows.length) await wordsNow(SAFETY_DIVISION_LABELS);
+        const divisions = safetyDivisionRows(rows, containerID, online.corporationID!, corporation, (key, own) => templateWords(key, {}, own));
+        const keptDivision = current.container?.itemID === containerID ? current.container.safety?.divisionID ?? null : null;
+        const selected = divisions.find(division => division.divisionID === keptDivision);
+        if (generation !== containerReadGeneration || store.station.get().online?.characterID !== online.characterID
+          || store.station.get().online?.corporationID !== online.corporationID || store.station.get().online?.corpRole !== online.corpRole
+          || dockedNow() !== safetyRow.locationID) return;
+        rememberSafetyParents(rows);
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: selected?.name ? selected.rows : [], capacity: null, hasCapacity: false, error: null,
+          safety: { corporationID: online.corporationID!, divisionID: selected?.divisionID ?? null, divisions } } });
+      } catch (cause) {
+        if (isSessionLost(cause)) throw cause;
+        if (generation !== containerReadGeneration) return;
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: [], capacity: null, hasCapacity: false, error: errorWords(cause) } });
+      }
+      return;
+    }
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
       reads = await api.openContainer(containerID, callOptions, knownTypeID);
@@ -6495,11 +6782,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      if (generation !== containerReadGeneration) return;
       store.apply({
         type: "inventory/container",
         container: {
           itemID: containerID,
           typeID: knownTypeID,
+          name: ownName,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -6507,13 +6796,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
+    if (generation !== containerReadGeneration) return;
+    const rows = decodeInventoryRows(reads.list, reads.volumes);
+    rememberSafetyParents(rows);
     store.apply({
       type: "inventory/container",
       container: {
         itemID: containerID,
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
-        rows: decodeInventoryRows(reads.list, reads.volumes),
+        name: ownName,
+        rows,
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         hasCapacity: reads.hasCapacity,
         error: null,
@@ -6612,6 +6905,145 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+  function fittedTradeSlot(source: FittedTradeSource): FittingSlot {
+    if (!dockedNow()) throw new Error("Dock before offering fitted items in a trade.");
+    const fitting = store.fitting.get();
+    if (fitting.activeShipID !== store.inventory.get().activeShipID) throw new Error("The active ship's fitting changed.");
+    const slot = fitting.slots.find(slot => slot.module?.itemID === (source.kind === "fittedModule" ? source.itemID : source.moduleID));
+    if (!slot?.module || slot.present === false) throw new Error("That module is no longer fitted to this ship.");
+    if (source.kind === "fittedCharge") {
+      if (slotFlagOf(slot.family, slot.index) !== source.flagID || slot.module.charge?.typeID !== source.typeID) throw new Error("That charge is no longer loaded in this slot.");
+    } else if (slot.module.typeID !== source.typeID) throw new Error("That fitted module changed.");
+    return slot;
+  }
+  const directTrades = createDirectTrades({
+    ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
+    name: id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot"),
+    requestNames: ids => {
+      requestNames(ids.map(id => ({ kind: "owner" as const, id })));
+      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/PVPTrade/TypeNameAndItemName", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
+    },
+    primeItems: ids => requestNames(ids.map(id => ({ kind: "evelocation" as const, id }))),
+    manifestMismatch: () => store.words.get().templates["UI/Messages/DirectTradeManifestMismatch"] ?? "The trade contents changed.",
+    wealth: async () => {
+      const wealth = Number(toAmountString(await walletReads.wealth()));
+      if (!Number.isFinite(wealth)) throw new Error("The wallet did not provide the pilot's ISK balance.");
+      return wealth;
+    },
+    quantity: (min, max) => askQuantity({ min, max, value: 100, digits: 2, hintLabel: "UI/Common/SetQtyBetween", hint: "", hintArgs: { min: fmtAmt(min), max: fmtAmt(max) } }),
+    itemQuantity: max => askQuantity({ min: 0, max, value: max, hintLabel: "UI/Common/NoMoreUnits", hint: "There are no more units available." }),
+    source: async (itemID, place) => {
+      if (!dockedNow()) throw new Error("Dock before offering inventory in a trade.");
+      if (place.kind === "container") {
+        // invCache.AcceptPossibleRemovalTax754-780 walks cached parents before
+        // asking for a recovery price. A personal container directly in the
+        // current hangar/active cargo has no asset-wrap ancestor and asks none.
+        // Keep deeper/corporate sources unavailable until their ancestry and
+        // server recovery/access paths have been ported and verified.
+        const inventory = store.inventory.get(), dockedAt = dockedNow();
+        const parent = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === place.itemID);
+        if (!parent || parent.ownerID !== onlineCharacterID()
+            || ![dockedAt, inventory.activeShipID].includes(parent.locationID ?? null)) {
+          throw new Error("Trading from this container's ancestry is not available yet.");
+        }
+        if (parent.typeID === 60) throw new Error("Trading directly from Asset Safety is not available yet. Recover these items to your hangar first.");
+      }
+      const all = rowsAt(place);
+      const row = all?.find(row => row.itemID === itemID);
+      if (!row) throw new Error("That item is no longer in the source inventory.");
+      const selected = store.inventory.get().selection;
+      const rows = selected.includes(itemID) ? all!.filter(row => selected.includes(row.itemID)) : [row];
+      // AddItems takes the first actual row's location, rather than looking
+      // the office up again. Ship-bay projections identify their enclosing
+      // active ship separately from the projected item rows.
+      const sourceID = row.locationID ?? (place.kind === "shipBay" ? inventoryAt(place).liesIn : null);
+      if (!sourceID) throw new Error("The source inventory did not identify where the item is located.");
+      return { rows, sourceID };
+    },
+    fittedType: source => {
+      const module = fittedTradeSlot(source).module!;
+      return source.kind === "fittedCharge" ? module.charge!.typeID : module.typeID;
+    },
+    unloadFitted: async (containerID, source, current) => {
+      const guard = callOptions.captureRequestGuard!(), slot = fittedTradeSlot(source), place = ammoSession();
+      const valid = () => { guard(); return current() && ammoSession().shipID === place.shipID && dockedNow() === place.dockedAt; };
+      if (source.kind === "fittedModule") {
+        // DogmaLocation1077-1104 binds the destination inventory and reads its
+        // self item before UnloadAmmo, then Add has no kwargs for Trade.
+        await unloadModuleToContainerCall(bridgeDo, fittedNow, place, source.itemID, heldWeaponBanks(), askClearGroup,
+          { inventory: containerID, containerItemID: containerID, flag: null }, async () => {
+            if (!valid()) return false;
+            const item = await bridgeAsk("invbroker", "GetSelfInvItem", [], null, containerID);
+            if (!valid()) return false;
+            if (Number(unwrapLong(readRowField(item, "itemID"))) !== containerID) throw new Error("The trade inventory did not identify itself.");
+            fittedTradeSlot(source);
+            return true;
+          });
+      } else {
+        // UnloadAmmoToContainer1106-1134 resolves the module in the source
+        // slot before unloading to (tradeID, offering owner, None), quantityNone.
+        const flag = slotFlagOf(slot.family, slot.index)!;
+        // Slot listings also contain tuple-identified charges. The ordinary
+        // inventory decoder drops those; only the exact numeric module is
+        // needed here, rather than certifying every row as an inventory stack.
+        const listed = decodeInventoryRows(await bridgeAsk("invbroker", "List", [], { flag }, place.shipID));
+        if (!valid()) return;
+        if (!listed.some(row => row.itemID === source.moduleID && row.flagID === flag && row.typeID === slot.module!.typeID && row.locationID === place.shipID)) throw new Error("The source slot did not identify its module.");
+        fittedTradeSlot(source);
+        const outcome = await unloadChargeToContainerCall(bridgeDo, place, source.moduleID, heldWeaponBanks(),
+          error => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", [containerID, place.characterID, null]);
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");
+      }
+      if (!valid()) return;
+      await loadFitting();
+      await refreshOpenPlaces();
+    },
+    activeShipID: () => store.inventory.get().activeShipID,
+    restrictions: async types => {
+      const lists: Record<number, readonly number[] | null> = {};
+      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142, 338], callOptions));
+      return lists;
+    },
+    volumes: async types => (await api.loadTypeVolumes(types, callOptions)).volumes,
+    confirm: key => askDialog(key, null, key === "ConfirmCancelTrade" ? "Cancel this trade?" : "Accept the offer containing a ship?", "okcancel"),
+    say: sayDialog,
+    report: error => { if (failureCode(error) !== "SESSION_REQUEST_RETIRED" && !sayRefusalDialog(error, "The trade could not be updated.")) sayDialog("CustomNotify", { type: "dict", entries: [["notify", errorWords(error)]] }, errorWords(error)); },
+  });
+  async function startDirectTrade(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    // CharacterChecker.OfferTradeWithCharacter281-290 / IsGuest403-408.
+    if (!online || !dockedNow() || characterID === online.characterID || isNpcOwner(characterID)
+        || !store.station.get().guests.some(guest => guest.characterID === characterID)) return;
+    try { await directTrades.start(characterID); }
+    catch (error) { if (!sayRefusalDialog(error, "The trade could not be started.")) throw error; }
+  }
+  const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
+  let duelInvitationN = 0;
+  async function startDuel(characterID: number): Promise<void> {
+    // Native StartDuel's guard tests dictionary membership, including ongoing -1.
+    if (store.flight.get().crimewatch?.states.engagements.some(entry => Number(entry.characterID) === characterID)) return;
+    try { await startDuelChallenge(bridgeDo, characterID); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
+  }
+  function expireDuel(n: number): void {
+    const invitation = duelInvitationSignal.get();
+    if (invitation?.n === n) duelInvitationSignal.set({ ...invitation, expired: true });
+  }
+  function closeDuel(n: number): void { if (duelInvitationSignal.get()?.n === n) duelInvitationSignal.set(null); }
+  async function answerDuel(n: number, accept: boolean, block: boolean): Promise<void> {
+    const invitation = duelInvitationSignal.get();
+    if (!invitation || invitation.n !== n || invitation.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    const current = callOptions.captureRequestGuard!();
+    if (accept && !await askDialog("AskConfirmDuel", null, "Are you sure you want to accept the duel?", "yesno", { suppressAnswer: "yes" })) return;
+    current();
+    if (duelInvitationSignal.get()?.n !== n || duelInvitationSignal.get()?.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    duelInvitationSignal.set(null);
+    if (block) void blockOwners([invitation.characterID]).catch(cause => { if (failureCode(cause) === "SESSION_REQUEST_RETIRED") return; if (!sayRefusalDialog(cause, errorWords(cause))) sayDialog("CustomInfo", { type: "dict", entries: [["info", errorWords(cause)]] }, errorWords(cause)); });
+    try { await respondToDuelChallenge(api.bridgeDo({ ...callOptions, captureRequestGuard: () => current }), invitation, accept); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
   }
 
   // clone_grade_svc: the client asks the account's clone grade as it logs in,
@@ -9505,7 +9937,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
-  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  /** QtyPopup: an integer by default, or a float with digits; null on Cancel. */
   function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
     quantityAnswer?.(null);
     dialogsSaidCount += 1;
@@ -9514,7 +9946,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       quantityAnswer = (quantity) => {
         quantityAnswer = null;
         quantityAskedSignal.set(null);
-        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+        const value = (ask.digits ?? 0) === 0 ? Math.trunc(quantity ?? 0) : quantity ?? 0;
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, value)));
       };
       quantityAskedSignal.set({ n, ...ask });
     });
@@ -12307,21 +12740,91 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } else await buyFitOf(open.fitting);
   }
 
-  /**
-   * _get_save_sub_menu_data (123 to 131): whether the Save menu offers Save for Alliance, a pilot in an alliance whose
-   * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
-   * the alliance's moniker).
-   */
-  async function corporationShowInfo(corporationID: number): ReturnType<AppFlow["corporationShowInfo"]> {
-    const info = corporationPublicInfoOf(await bridgeAsk("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
-    if (info === null) return null;
-    const [aggression, enlistmentFactions] = await Promise.all([
-      bridgeAsk("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null),
-      isNpcCorporation(corporationID)
-        ? Promise.resolve(null)
-        : bridgeAsk("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null),
-    ]);
-    return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+  /** CorporationInfoWindow.reconstruct_info_window49-51 and infosvc.UpdateDataCorp's attributes. */
+  async function corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): ReturnType<AppFlow["corporationShowInfo"]> {
+    const finish = reads?.begin();
+    // Fence dispatch in the shared lane, but keep the pilot's notification sink:
+    // retiring one window must not discard notices accompanying an in-flight RPC.
+    const infoAsk = (signal?: AbortSignal): Ask => api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
+      reads?.assertCurrent();
+      // Keep this call's existing transport deadline. Only a native scalar
+      // cache owner receives tasklet retirement, not every operation of a view.
+      return (callOptions.fetch ?? pageFetch())(input, signal
+        ? { ...init, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) } : init);
+    } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); });
+    const ask = reads ? infoAsk() : bridgeAsk;
+    try {
+      reads?.assertCurrent();
+      let answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+      // CorporationInfoWindow49-51 calls its parent only after a successful
+      // public-info reply; that parent assigns even if the returned record is None.
+      reads?.identify();
+      let shares: JsonValue | undefined;
+      let retried = false;
+      if (answer === null) {
+        // Corporation.update_description185-204 retries a None public record.
+        // The assignment evaluates its shares RHS even if that retry is None.
+        answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+        const row = await corporationRecords.get(ask, corporationID, () => reads?.assertCurrent());
+        shares = row.fields.shares;
+        if (answer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'shares'"), { name: "AttributeError", code: "INFO_CORPORATION_SHARES_UNASSIGNED" });
+        retried = true;
+      }
+      let info = corporationPublicInfoOf(answer);
+      if (info === null) throw Object.assign(new Error("The corporation public record has no corporationID."), { code: "INFO_CORPORATION_PUBLIC_INVALID" });
+      if (retried) info = { ...info, shares: typeof shares === "string" ? shares : corporationShareNumber(shares) };
+      // InfoWindowMonolith1102-1114 constructs the header before UpdateWindowData;
+      // the hidden scroll/edit do not become main tabs if an attribute read fails.
+      header?.(info);
+      reads?.construct();
+      // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
+      // Neither read catches RPC exceptions: construction and caption/history
+      // completion stop, and the window's exception handler receives the error.
+      const aggressionAnswer = await corporationAggression.get(reads ? infoAsk(reads.signal) : ask, corporationID, () => reads?.assertCurrent());
+      // The native status consumer calls methods on the cached raw object.
+      // A cached None fails there on every attempt; it is not an omitted row.
+      if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
+      // GetCorpFriendlyFireStatus captures now before either status method,
+      // including their conditional helper calls and any decoding failures.
+      const readAt = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      assertCorpAggressionStatusMethod(aggressionAnswer);
+      const aggression = aggressionSettingsOf(aggressionAnswer, readAt);
+      reads?.assertCurrent();
+      let enlistmentFactions: readonly number[] | null = null;
+      let enlistmentFactionNames: readonly (string | null)[] | null = null;
+      if (!isNpcCorporation(corporationID)) {
+        const answer = await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]);
+        // UpdateDataCorp iterates this answer directly, without a None fallback.
+        if (answer === null) throw Object.assign(new TypeError("'NoneType' object is not iterable"), { code: "INFO_CORPORATION_ENLISTMENT_NONE" });
+        const keys = enlistmentFactionsOf(answer);
+        if (keys !== null) {
+          const ids: number[] = [], names: (string | null)[] = [];
+          for (const id of keys) {
+            // UpdateDataCorp's list comprehension performs Get/int/Prime for
+            // one owner before converting the next key. Never filter failures
+            // or batch later owners ahead of a bad key or missing record.
+            reads?.assertCurrent();
+            const records = await api.readEveOwners([id], reads ? { ...callOptions, signal: reads.signal, fetch: (input, init) => {
+              reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
+            } } : callOptions);
+            reads?.assertCurrent();
+            const row = records[String(id)];
+            if (row === null) throw Object.assign(new Error(`('RecordNotFound', ${id})`), { name: "KeyError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_MISSING", args: ["RecordNotFound", id] });
+            ids.push(id); names.push(row!.name);
+          }
+          enlistmentFactions = ids;
+          // Native sorted: None precedes strings; an empty/None name remains
+          // a row, whereas only an empty iterable gets the no-factions label.
+          enlistmentFactionNames = names.sort((a, b) => a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1);
+        }
+      }
+      reads?.complete();
+      return { stage: "complete", info, aggression, enlistmentFactions, enlistmentFactionNames, readAt };
+    } finally {
+      finish?.();
+      // An expected retirement is not an empty or partially successful read.
+      reads?.assertCurrent();
+    }
   }
 
   async function allianceShowInfo(allianceID: number): ReturnType<AppFlow["allianceShowInfo"]> {
@@ -14221,6 +14724,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
   const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
   let walletJournalGeneration = 0;
+  const NO_CORP_WALLET_JOURNAL: CorpWalletJournalRead = { ...NO_WALLET_JOURNAL, accountKey: 1000, corporationID: null };
+  const corpWalletJournalSignal = createSignal<CorpWalletJournalRead>(NO_CORP_WALLET_JOURNAL);
+  let corpWalletJournalGeneration = 0;
   let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
   const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
     journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
@@ -14251,6 +14757,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
+  }
+
+  function corporateJournalAccountKey(): number {
+    try {
+      const key = Number(settingsStorage?.getItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`) ?? 1000);
+      return Number.isInteger(key) && key >= 1000 && key <= 1006 ? key : 1000;
+    } catch { return 1000; }
+  }
+
+  async function loadCorpWalletJournal(accountKey: number = corporateJournalAccountKey(),
+    year: number | null = corpWalletJournalSignal.get().year, month: number | null = corpWalletJournalSignal.get().month): Promise<void> {
+    const online = store.station.get().online, generation = ++corpWalletJournalGeneration;
+    if (!online?.corporationID || !canViewCorporateJournal(online.corpRole)) {
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+      return;
+    }
+    if (!Number.isInteger(accountKey) || accountKey < 1000 || accountKey > 1006) throw new Error("Choose a corporation wallet division.");
+    // CorpTransactionsPanel's accountkey is a user setting, independent of
+    // the active spending division (session.corpAccountKey).
+    try { settingsStorage?.setItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`, String(accountKey)); } catch { /* Keep the live choice. */ }
+    const held = corpWalletJournalSignal.get();
+    if (held.accountKey !== accountKey || held.year !== year || held.month !== month || held.corporationID !== online.corporationID) {
+      corpWalletJournalSignal.set({ ...NO_CORP_WALLET_JOURNAL, accountKey, year, month, corporationID: online.corporationID });
+    }
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.corporateJournal(accountKey, year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== corpWalletJournalGeneration || store.station.get().online?.corporationID !== online.corporationID
+      || store.station.get().online?.corpRole !== online.corpRole) return;
+    for (const each of [entries, kinds]) if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    const readable = entries.status === "fulfilled" && isListValue(entries.value);
+    corpWalletJournalSignal.set({ accountKey, corporationID: online.corporationID, year, month, loaded: true,
+      lines: entries.status === "fulfilled" ? corporateJournalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : held.kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? errorWords(entries.reason) : !readable ? "The corporation journal could not be read." : kinds.status === "rejected" ? errorWords(kinds.reason) : null });
   }
 
   // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
@@ -14964,6 +15504,95 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
   const corporationApplicationsChangedSignal = createSignal(0);
+  const corporationDecorationsChangedSignal = createSignal(0);
+  const medalDesignerSignal = createSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>(null);
+  let medalDesignerRequests = 0;
+  function showMedalDesigner(): void {
+    const online = store.station.get().online;
+    if (!online?.corporationID) return;
+    const previous = medalDesignerSignal.get(), n = ++medalDesignerRequests;
+    medalDesignerSignal.set({ n, instance: previous?.characterID === online.characterID ? previous.instance : n, characterID: online.characterID, corporationID: online.corporationID });
+  }
+  function closeMedalDesigner(): void { cancelCorporationWalletChoice(); medalDesignerSignal.set(null); }
+  async function corporationDecorationCreationEnabled(): Promise<boolean> {
+    // CorpDecorations.Load39-43 and globalConfig.GetGlobalConfigBooleanValue:
+    // PersonnelManager specifically, then the held login config (default off).
+    if ((BigInt(store.station.get().online?.corpRole ?? "0") & 128n) === 0n) return false;
+    const key = "content_compliance_control_system_enabled";
+    const config = await api.getGlobalConfig([key], callOptions);
+    const value = config.values[key];
+    return value == null || !/^[+-]?\d+$/.test(String(value).trim()) || BigInt(String(value).trim()) === 0n;
+  }
+  const corporationWalletChoiceSignal = createSignal<CorporationWalletChoice | null>(null);
+  let corporationWalletAnswer: ((accountKey: number | null) => void) | null = null;
+  function cancelCorporationWalletChoice(): void { corporationWalletAnswer?.(null); }
+  function selectCorporationWallet(n: number, index: number): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !Number.isInteger(index) || !choice.rows[index]) return;
+    corporationWalletChoiceSignal.set({ ...choice, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationWallet(n: number, confirmed: boolean): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !corporationWalletAnswer) return;
+    if (!confirmed) { corporationWalletAnswer(null); return; }
+    if (choice.selectedIndex !== null) corporationWalletAnswer(choice.rows[choice.selectedIndex]!.accountKey);
+  }
+  // walletConst.corpWalletRoles, appConst340-346: take1..take7, not Director
+  // or Accountant as an implicit substitute for these division access bits.
+  function accessibleCorporationWallets(): number[] {
+    const roles = BigInt(store.station.get().online?.corpRole ?? "0");
+    return Array.from({ length: 7 }, (_, index) => index).filter(index => (roles & 1n << BigInt(27 + index)) !== 0n).map(index => index + 1000);
+  }
+  async function selectCorporationWalletDivision(scope: MemberOperation): Promise<void> {
+    const accounts = accessibleCorporationWallets();
+    // Native list comprehension reads division names only when it has choices.
+    const corporation = accounts.length ? await scope.ask("corpRegistry", "GetCorporation", []) : null; scope.current();
+    const ordinals = ["Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
+    const labels = ["UI/Corporations/Common/CorporateDivisionMasterWallet", ...ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`)];
+    await wordsNow([...labels, "UI/Wallet/WalletWindow/SelectDivision", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "/Carbon/UI/Controls/Common/NoItem", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]); scope.current();
+    const rows = accounts.map(accountKey => {
+      const raw = accountKey === 1000 ? null : memberField(corporation, `walletDivision${accountKey - 999}`);
+      const name = typeof raw === "string" ? raw : raw && typeof raw === "object" && "value" in raw && typeof raw.value === "string" ? raw.value : "";
+      return { accountKey, name: name || templateWords(labels[accountKey - 1000]!, {}, accountKey === 1000 ? "Master Wallet" : `Wallet Division ${accountKey - 999}`) };
+    });
+    const missing = templateWords("UI/Control/ListWindow/MustSelectError", { num: 1 }, "Select one item.");
+    const selectionError = templateWords("UI/Control/ListWindow/DisplayError", { errorMessage: missing }, missing);
+    cancelCorporationWalletChoice();
+    const accountKey = await new Promise<number | null>(resolve => {
+      corporationWalletAnswer = key => { corporationWalletAnswer = null; corporationWalletChoiceSignal.set(null); resolve(key); };
+      // uix.ListWnd defaults ordered0; walletUtil sorts by account ID, not name.
+      corporationWalletChoiceSignal.set({ n: ++dialogsSaidCount, rows, selectedIndex: null, selectionError });
+    });
+    scope.current();
+    if (accountKey !== null) { await scope.write("corpRegistry", "SetAccountKey", [accountKey], null, scope.online.corporationID); scope.current(); }
+  }
+  async function prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused"> {
+    const scope = captureMemberOperation(current), prefix = "UI/Corporations/CreateDecorationWindow/";
+    try {
+      await wordsNow([...["DecorationName", "Description", "Ribbon", "Medal", "ActiveWalletDivision"].map(key => prefix + key), "UI/Map/StarMap/lblBoldName"]); scope.current();
+      const missing: string[] = [];
+      if (!title) missing.push(templateWords(prefix + "DecorationName", {}, "Name"));
+      if (!description) missing.push(templateWords(prefix + "Description", {}, "Description"));
+      if (!graphics.some(row => row[0] === 1)) missing.push(templateWords(prefix + "Ribbon", {}, "Ribbon"));
+      if (!graphics.some(row => row[0] === 2)) missing.push(templateWords(prefix + "Medal", {}, "Medal"));
+      const activeLabel = templateWords(prefix + "ActiveWalletDivision", {}, "Active Wallet Division");
+      const key = store.station.get().online?.corpAccountKey ?? null;
+      if (key !== null && (key < 1000 || key > 1006)) throw new Error("The active corporation wallet division is unknown.");
+      if (key === null || !accessibleCorporationWallets().includes(key)) {
+        if (await askDialog("SelectWalletDivision", null, "Select an active corporation wallet division?")) { scope.current(); await selectCorporationWalletDivision(scope); }
+        else missing.push(activeLabel);
+      }
+      scope.current();
+      // SubmitData checks only None after the selector. Cancelling with a
+      // non-None inaccessible key does not add another access refusal.
+      if (store.station.get().online?.corpAccountKey == null && !missing.includes(activeLabel)) missing.push(activeLabel);
+      if (missing.length) {
+        const fields = formatTemplate(store.words.get().templates["UI/Map/StarMap/lblBoldName"] ?? "<b>{name}</b>", { name: missing.join(", ") }, { nameOf: () => "" });
+        sayDialog("GenericMissingInfo", { type: "dict", entries: [["fields", fields]] }, `Missing information: ${missing.join(", ")}`); return "missing";
+      }
+      return "ready";
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return "refused"; throw error; }
+  }
   const corporationApplicationsRequestedSignal = createSignal(0);
   function personalApplicationSetting(name: string): string {
     return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
@@ -15047,6 +15676,154 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function corporationAdministration(current?: () => void): Promise<CorporationAdministration> {
+    const scope = captureMemberOperation(current), roles = BigInt(scope.online.corpRole ?? "0");
+    // corporationWindow470-476, corporation.common.roles: administration is
+    // any admin role OR any of the four locally computed grantable masks.
+    const admin = (roles & 34359744897n) !== 0n;
+    if ((roles & 128n) !== 0n) return { visible: true, findMembers: true, director: (roles & 1n) !== 0n };
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const rawMember = await readCorporationMember(scope.online.characterID, scope);
+    // bco_members.GetMyGrantableRoles also accepts an absent member row.
+    if (rawMember === null) return { visible: admin, findMembers: false, director: (roles & 1n) !== 0n };
+    const mine = corporationMemberOf(rawMember);
+    const ceo = memberInteger(corporation, "ceoID") === BigInt(scope.online.characterID);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    const titles = !ceo && (mine.masks.roles & 1n) === 0n && mine.titleMask ? await readMemberTitles(scope.online.corporationID, scope) : new Map<number, RoleMasks>();
+    const grantable = Object.values(myGrantableRoles(mine, ceo, (roles & 1n) !== 0n, data, titles)).some(mask => mask !== 0n);
+    scope.current(); return { visible: admin || grantable, findMembers: grantable, director: (roles & 1n) !== 0n };
+  }
+  async function corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext> {
+    const scope = captureMemberOperation(current);
+    memberReadKey(scope.online.characterID);
+    // CorpQueryMembersForm.__init__138-146: titles, then local role metadata.
+    const titles = await readMemberTitles(scope.online.corporationID, scope);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    await wordsNow(Object.values(data.roles).map(role => `#${role.nameID}`)); scope.current();
+    const locational = new Set(data.locationalRoles), now = new Date(serverNow());
+    const roles = Object.entries(data.roles).map(([bit, role]) => {
+      const value = 1n << BigInt(bit);
+      return { value, name: plainText(store.words.get().templates[`#${role.nameID}`] ?? ""), locational: locational.has(String(value)) };
+    }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return { roles, titles: intDictOrder([...titles.keys()]).map(id => titles.get(id)!), today: [now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate()] };
+  }
+  async function corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]> {
+    const scope = captureMemberOperation(current);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []); scope.current();
+    const rows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const ids = rows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    for (const id of ids) await memberNames(scope, [{ kind: "station", id }]);
+    scope.current(); return ids.map(stationID => ({ stationID, name: resolvedName(store.names.get().resolved, "station", stationID, "") }));
+  }
+  async function corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]> {
+    const scope = captureMemberOperation(current);
+    const includeImplied = memberQuerySetting(store.session.get().accountID, "FMBQincludeImplied", settingsStorage).value.get();
+    const searchTitles = memberQuerySetting(store.session.get().accountID, "FMBQsearchTitles", settingsStorage).value.get();
+    const result = await scope.ask("corpRegistry", "GetMemberIDsByQuery", memberQueryArguments(criteria, includeImplied, searchTitles)); scope.current();
+    const values = isListValue(result) ? result.items : Array.isArray(result) ? result : null;
+    if (values === null) throw new Error("The corporation member query could not be read.");
+    const ids = values.map(value => {
+      const id = Number(unwrapLong(value));
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A member in the query result could not be read.");
+      return id;
+    });
+    // SimpleView.PopulateView primes all returned owners before slicing pages.
+    await memberNames(scope, ids.map(id => ({ kind: "owner" as const, id }))); scope.current();
+    return ids;
+  }
+  async function corporationDecorations(): Promise<CorporationDecorations> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
+    const catalogue = corporationDecorationsOf(raw);
+    // LoadDecorations resolves each creator as its row is built. The shared
+    // owner cache makes repeated creators free without changing this order.
+    for (const medal of catalogue.medals) await memberNames(scope, [{ kind: "owner", id: medal.creatorID }]);
+    scope.current(); return catalogue;
+  }
+  async function createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean> {
+    const scope = captureMemberOperation(current);
+    // Original compiled medals.CreateMedal31-53. Window missing-field/wallet
+    // checks precede this service; do not add them to the service operation.
+    if ((BigInt(scope.online.corpRole ?? "0") & 129n) === 0n) {
+      await wordsNow(["UI/Corporations/CreateDecorationWindow/NeedRolesError"]); scope.current();
+      const reason = templateWords("UI/Corporations/CreateDecorationWindow/NeedRolesError", {}, "You need corporation roles to create decorations.");
+      sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", reason]] }, reason); return false;
+    }
+    if (title.length > 100) {
+      sayDialog("MedalNameTooLong", { type: "dict", entries: [["maxLength", "100"]] }, "The decoration name is too long."); return false;
+    }
+    if (description.length > 1000) {
+      sayDialog("MedalDescriptionTooLong", { type: "dict", entries: [["maxLength", "1000"]] }, "The decoration description is too long."); return false;
+    }
+    const args: JsonValue[] = [title, description, graphics.map(row => [...row])];
+    try {
+      try { await scope.write("corporationSvc", "CreateMedal", args, null, scope.online.corporationID); scope.current(); }
+      catch (error) {
+        scope.current();
+        const refusal = error instanceof BridgeCallError ? error.refusal : null;
+        if (refusal?.key !== "ConfirmCreatingMedal") throw error;
+        const boldLabel = "UI/Map/StarMap/lblBoldName";
+        await wordsNow([boldLabel, "UI/Util/FmtIsk"]); scope.current();
+        const rawCost = readDictEntry(refusal.values, "cost"), cost = typeof rawCost === "number" ? rawCost : Number(unwrapLong(rawCost) ?? 0n);
+        const costText = iskWords(cost, 2, store.words.get().templates, () => "") ?? `${cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+        const boldCost = formatTemplate(store.words.get().templates[boldLabel] ?? "<b>{name}</b>", { name: costText }, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        // No returns normally from the native service; SubmitData still closes
+        // its window. Only an accepted server question adds the fourth True.
+        if (!await askDialog(refusal.key, { type: "dict", entries: [["cost", boldCost]] }, `Create this decoration for ${costText}?`, "yesno", { suppressAnswer: "yes" })) { scope.current(); return true; }
+        scope.current(); await scope.write("corporationSvc", "CreateMedal", [...args, true], null, scope.online.corporationID); scope.current();
+      }
+      return true;
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return false; throw error; }
+  }
+  async function corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetRecipientsOfMedal", [medalID]); scope.current();
+    const awardees = corporationMedalAwardeesOf(raw);
+    for (const row of awardees) {
+      await memberNames(scope, [{ kind: "owner", id: row.recipientID }]);
+      await memberNames(scope, [{ kind: "owner", id: row.issuerID }]);
+    }
+    scope.current(); return awardees;
+  }
+  async function medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo> {
+    const pilot = callOptions.captureRequestGuard!();
+    const current = () => { pilot(); reads.assertCurrent(); };
+    const options = { ...callOptions, captureRequestGuard: () => current };
+    const ask = api.bridgeAsk(options), finish = reads.begin();
+    try {
+      current(); reads.identify();
+      const caption = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      // Native reconstruction updates caption/description, builds the supplied
+      // abstract icon, then reads the header independently. Do not collapse
+      // these calls into a page cache that the native service does not have.
+      const header = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      let ticker: string | null = null;
+      if (header.ownerID) {
+        requestCorpLogos([header.ownerID]);
+        if (!isNpcCorporation(header.ownerID)) {
+          const result = await api.corpTickers([header.ownerID], true, options); current();
+          ticker = result.tickers[String(header.ownerID)] ?? null;
+          await memberNames({ current, options }, [{ kind: "owner", id: header.ownerID }]);
+        }
+      }
+      current(); reads.complete();
+      return { title: caption.title, description: caption.description, ownerID: header.ownerID, awarded: header.awarded, ticker };
+    } finally { finish(); }
+  }
+  async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
+    const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
+    // Compiled User.OnDblClick: this path has no menu IsMe/IsNPC gate. Invite
+    // itself supplies ChtCannotInviteSelf/ErrorNotAPlayerCharacter as native.
+    if (preference === 1) { await conversations.start(ownerID); return; }
+    await ownerEntryInfo(ownerID, onInfo);
+  }
+  async function ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
+    const current = callOptions.captureRequestGuard!();
+    const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+    await memberNames(scope, [{ kind: "ownerType", id: ownerID }]); current();
+    const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)));
+    if (Number.isSafeInteger(typeID) && typeID > 0) onInfo(typeID, ownerID);
+  }
   async function memberNames(scope: Pick<MemberOperation, "current" | "options">, refs: readonly NameRef[]): Promise<void> {
     scope.current();
     const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
@@ -15234,9 +16011,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scope.current();
       try {
         const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
-        const tuple = Array.isArray(raw) ? raw : isListValue(raw) ? raw.items : [];
-        if (tuple.length !== 2) throw new Error("The corporation's decorations could not be read.");
-        const rows = readRowsetRows(tuple[0]!).map(row => ({ medalID: Number(unwrapLong(row.medalID)), name: typeof row.title === "string" ? row.title : "" }));
+        const rows = corporationDecorationsOf(raw).medals.map(row => ({ medalID: row.medalID, name: row.title }));
         if (!rows.length) { sayDialog("MedalCreateToAward", null, "Create a decoration before awarding one."); return; }
         if (rows.some(row => !Number.isSafeInteger(row.medalID) || row.medalID <= 0 || !row.name)) throw new Error("A corporation decoration could not be read.");
         await memberNames(scope, [...new Set(targets)].map(id => ({ kind: "owner" as const, id })));
@@ -15447,6 +16222,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try { const raw: unknown = JSON.parse(charUiSetting("corpRolesSummaryGroups") ?? "{}"); if (raw && typeof raw === "object" && !Array.isArray(raw)) groups = raw as Record<string, boolean>; } catch { /* Invalid stored preference: closed. */ }
     if (open !== undefined) { groups[String(groupID)] = open; setCharUiSetting("corpRolesSummaryGroups", JSON.stringify(groups)); }
     return groups[String(groupID)] === true;
+  }
+  const decorationGroupMemory = new Map<number, Record<string, unknown>>();
+  function corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean {
+    // registry.Get/SetListGroupOpenState553-575: character listgroups,
+    // Unicode list/group keys. Parent closure never changes the child's state.
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return false;
+    const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    let groups = decorationGroupMemory.get(characterID) ?? {};
+    const kept = charUiSetting("listgroups");
+    try { if (kept !== null) groups = record(JSON.parse(kept)); } catch { /* Keep this character's in-memory state. */ }
+    const listID = recipients ? "corpdecorationdetails" : "corpdecorations", groupID = String(medalID);
+    const list = record(groups[listID]), group = record(list[groupID]);
+    if (open !== undefined) groups = { ...groups, [listID]: { ...list, [groupID]: { ...group, open } } };
+    decorationGroupMemory.set(characterID, groups);
+    if (open !== undefined || kept === null) setCharUiSetting("listgroups", JSON.stringify(groups));
+    return open ?? !!group.open;
   }
   async function readCorporationMember(characterID: number, scope = captureMemberOperation()): Promise<JsonValue> {
     scope.current();
@@ -15695,6 +16487,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      // CreateContactLabel (1015-1020) lets UserError reach the ordinary client
+      // dialog handler. A refused creation has no label ID and changes no book.
+      if (method === "CreateLabel" && sayRefusalDialog(error, "The contact label could not be created.")) return null;
       throw new Error(mailRefusalMessage(error));
     }
   }
@@ -15985,6 +16780,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         imageServerSignal.set(typeof value === "string" ? value : null);
       })
       .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
+  }
+  const capturedPortraitCache = new Map<string, { readonly image: { readonly base64: string; readonly contentType: string }; readonly modified: number }>();
+  async function capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void> {
+    // Original photo.SavePortraits/_SavePortraits437-453: merged list, one size
+    // read, forced refresh of each image, byte copy, and progress even if absent.
+    const current = callOptions.captureRequestGuard!();
+    const options = { ...callOptions, priority: "user" as const, captureRequestGuard: () => current };
+    current(); progress(0, characterIDs.length);
+    const config = await api.getGlobalConfig(["defaultPortraitSaveSize"], options); current();
+    const configured = config.values.defaultPortraitSaveSize;
+    const size = configured === null || configured === undefined ? 1024 : Math.trunc(Number(configured));
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error("The image server supplied an invalid portrait save size.");
+    for (const [index, id] of characterIDs.entries()) {
+      const key = `${id}:${size}`, cached = capturedPortraitCache.get(key);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        current(); const reply = await api.readCapturePortrait(id, size, cached?.modified ?? null, options); current();
+        if (!reply.transportError) {
+          const image = reply.notModified ? cached?.image : reply.image;
+          if (image) { capturedPortraitCache.set(key, { image, modified: Date.now() }); received(id, image); }
+          break;
+        }
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+      }
+      current(); progress(index + 1, characterIDs.length);
+    }
+    progress(characterIDs.length, characterIDs.length);
   }
 
   // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
@@ -22533,6 +23354,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function beginSessionClose(): void {
     if (sessionClosing) throw new Error("This pilot session is already being released.");
     sessionClosing = true;
+    closeMedalDesigner();
     sessionCloseGeneration += 1;
     // Stop producers before attempting release. A refused or ambiguous release
     // keeps the token and pilot held, with automation stopped for reconciliation.
@@ -27593,7 +28415,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return characterCorporationOf(bridgeAsk, characterID);
     },
     corporationAlliance(corporationID) {
-      return corporationAllianceOf(bridgeAsk, corporationID);
+      return corporationRecords.get(bridgeAsk, corporationID).then(row => {
+        const allianceID = Number(unwrapLong(row.fields.allianceID));
+        return allianceID > 0 ? allianceID : null;
+      });
     },
     characterInfoHeader(characterID) {
       return readCharacterInfoHeader(bridgeAsk, characterID);
@@ -27855,8 +28680,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationWealthReads.forget();
       corporationWealthSignal.set(null);
       closeMoneyTransfer();
+      infoWindows.reset();
+      corporationRecords.reset();
+      corporationAggression.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
+      corpWalletJournalGeneration += 1;
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
@@ -27870,6 +28700,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      directTrades.reset();
+      duelInvitationSignal.set(null);
       requestGeneration++;
       cancelCorporationCEOChoice();
       cancelCorporationAward();
@@ -28014,6 +28846,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openContainer,
+    selectSafetyDivision(divisionID) {
+      const container = store.inventory.get().container;
+      const division = container?.safety?.divisions.find(division => division.divisionID === divisionID);
+      if (!container?.safety || !division) return;
+      store.apply({ type: "inventory/container", container: { ...container,
+        rows: division.name === null ? [] : division.rows,
+        error: division.name === null ? "This corporation delivery division could not be named." : null,
+        safety: { ...container.safety, divisionID } } });
+    },
     openShipBays,
     readMiningSupportCapabilities,
     readMiningSupportServices,
@@ -28050,9 +28891,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
-        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
-        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
-        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -28063,6 +28901,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           const present = (rowsAt(from) ?? []).filter((row) => itemIDs.includes(row.itemID));
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
+          }
+          // Native AddItems asks for the full-stack recovery price BEFORE its quantity and one-way prompts.
+          const sourceWrap = present[0]?.locationID === undefined ? null : safetyWrapAncestor(present[0].locationID, safetyItemCache);
+          if (sourceWrap !== null && !(await acceptSafetyRecovery(bridgeAsk, sourceWrap, present.map(row => row.itemID), async tax => {
+            await wordsNow(["UI/Common/Confirm", "UI/Inventory/AssetSafetyRecoveryConfirmation", "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"]);
+            const template = store.words.get().templates["UI/Inventory/AssetSafetyRecoveryConfirmation"];
+            const writeIsk = (value: number, places: number) => iskWords(value, places, store.words.get().templates, () => "")
+              ?? `${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+            const question = typeof template === "string" ? plainText(formatTemplate(template, { tax }, {
+              nameOf: () => "", writeIsk,
+            })) : `Recovering the selected items will cost ${writeIsk(tax, 2)}. Do you wish to continue?`;
+            return askDialog("CustomQuestion", { type: "dict", entries: [["header", templateWords("UI/Common/Confirm", {}, "Confirm")], ["question", question]] }, question);
+          }))) return null;
+          // BaseCorpContainer's one-way prompt follows recovery acceptance (AddItems529).
+          if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
+          if (to.kind === "container" && store.inventory.get().container?.itemID === to.itemID && store.inventory.get().container?.typeID === 60) {
+            throw new Error("Items cannot be added to Asset Safety deliveries.");
           }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
           // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
@@ -29092,6 +29947,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerCorporationCEO,
     corporationRoleAllowance,
     corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
+    corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
+    corporationDecorations,
+    corporationDecorationCreationEnabled,
+    medalDesignerShown: readonlySignal(medalDesignerSignal),
+    showMedalDesigner,
+    closeMedalDesigner,
+    medalColourPaletteOpened() { if (store.station.get().online) sayDialog("ComboExpand", null, ""); },
+    corporationWalletChoice: readonlySignal(corporationWalletChoiceSignal),
+    selectCorporationWallet,
+    answerCorporationWallet,
+    prepareCorporationMedal,
+    createCorporationMedal,
+    corporationMedalAwardees,
+    medalShowInfo,
     corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
     requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
     serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },
@@ -29103,9 +29972,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberDetails,
     corporationMemberRoleBase,
     corporationMemberIDs,
+    corporationAdministration,
+    corporationMemberQueryContext,
+    corporationMemberQueryBases,
+    corporationMemberQuery,
+    async corporationMemberQueryNeedsValue(current) {
+      const scope = captureMemberOperation(current);
+      const text = "UI/Shared/PleaseTypeSomething";
+      await wordsNow([text]); scope.current();
+      const info = templateWords(text, {}, "Please type something.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    },
+    memberQueryPreference: name => memberQuerySetting(store.session.get().accountID, name, settingsStorage),
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
+    corporationDecorationGroupOpen,
     saveCorporationMember,
     giveCorporationShares,
     primeContactsOnline,
@@ -29136,6 +30018,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    directTrades,
+    safetyDeliveries: readonlySignal(safetyDeliveriesSignal),
+    startDirectTrade,
+    duelInvitation: readonlySignal(duelInvitationSignal),
+    startDuel,
+    answerDuel,
+    expireDuel,
+    closeDuel,
+    capturePortraits,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
     loadOwnerLogos,
@@ -29248,6 +30139,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     cachedCorporationWealth: accountKey => corporationWealthReads.cached(accountKey),
     corporationWealthChanged: readonlySignal(corporationWealthSignal),
     corporationCashMenu,
+    get ownerDoubleClickPreference() { return ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value; },
+    infoWindows,
+    get infoWindowReusePreference() { return infoWindowSetting(store.session.get().accountID, settingsStorage).value; },
+    scrollSortPreference: scrollID => scrollSortSetting(store.session.get().accountID, scrollID, settingsStorage),
+    scrollWidthsPreference: scrollID => scrollWidthsSetting(store.session.get().accountID, scrollID, settingsStorage),
+    setInfoWindowReusePreference: value => infoWindowSetting(store.session.get().accountID, settingsStorage).set(value),
+    setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
+    ownerEntryDoubleClick,
+    ownerEntryInfo,
     openMoneyTransfer,
     confirmMoneyTransfer,
     closeMoneyTransfer,
@@ -29410,6 +30310,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMarketTransactions,
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
+    corpWalletJournal: readonlySignal(corpWalletJournalSignal),
+    loadCorpWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
     abyssalTimer: readonlySignal(abyssalTimerSignal),
     collapseWarning: readonlySignal(collapseWarningSignal),
@@ -29816,9 +30718,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        directTrades.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
+        infoWindows.reset();
+        corporationRecords.reset();
+        corporationAggression.reset();
         requestGeneration++;
         cancelCorporationCEOChoice();
         cancelCorporationAward();
@@ -29846,10 +30753,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        directTrades.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
+        infoWindows.reset();
         requestGeneration++;
+        corporationRecords.reset();
+        corporationAggression.reset();
         cancelCorporationCEOChoice();
         cancelCorporationAward();
         recoveryGeneration++;

@@ -181,6 +181,12 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const safetyDeliveries = flow.safetyDeliveries;
+  const localSafety = $derived(isDocked && $safetyDeliveries?.characterID === $station.online?.characterID
+    && $safetyDeliveries?.locationID === ($inventory.stationID ?? $inventory.structureID)
+    && $safetyDeliveries?.corporationID === $station.online?.corporationID
+    && $safetyDeliveries?.corpRole === ($station.online?.corpRole ?? "0") ? $safetyDeliveries : null);
 
   // --- a filament's Activate (bridge/abyssalKeys.ts) -------------------------
   //
@@ -258,7 +264,7 @@
 
   // --- what is on screen ----------------------------------------------------
 
-  type View = "ship" | "ships" | "hangar" | "corp" | "container" | "services";
+  type View = "ship" | "ships" | "hangar" | "corp" | "safety" | "container" | "services";
 
   let view = $state<View>("ship");
   let query = $state("");
@@ -459,7 +465,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey, CONFIRM_MOVE_TO_NEWBIE_SHIP, ASSEMBLE_CONTAINER_LABEL]);
+    flow.requestWords([ABYSS_WINDOW_LABELS.activateKey, CONFIRM_MOVE_TO_NEWBIE_SHIP, ASSEMBLE_CONTAINER_LABEL, "UI/Inventory/AssetSafety/AssetSafetyDeliveries"]);
     void run(async () => {
       await flow.loadInventory();
       await flow.loadCorpHangar();
@@ -561,6 +567,9 @@
     if (!open) {
       return "Container";
     }
+    const safetyDivision = open.safety?.divisions.find(division => division.divisionID === open.safety?.divisionID);
+    if (safetyDivision?.name) return `${open.name ?? ""} / ${safetyDivision.name}`;
+    if (open.name !== undefined) return open.name;
     return resolvedName($names.resolved, "type", open.typeID) || "Container";
   }
 
@@ -1007,6 +1016,9 @@
     if (isDocked) {
       list.push({ id: "ships", label: "Ship hangar", badge: `${ships.length}` });
       list.push({ id: "hangar", label: "Item hangar", badge: `${hangarThings($inventory).length}` });
+      if (localSafety && (localSafety.wraps.length || localSafety.error)) {
+        list.push({ id: "safety", label: $words.templates["UI/Inventory/AssetSafety/AssetSafetyDeliveries"] ?? "Asset Deliveries", badge: `${localSafety.wraps.length}` });
+      }
       // The badge counts what is in the division on screen, the way every other
       // location's does; WHICH division is named by the chips inside the view,
       // where there is room for it.
@@ -1337,7 +1349,7 @@
           type="button"
           class="stn-btn stn-btn-quick"
           disabled={busy}
-          onclick={() => run(() => flow.openContainer(row.itemID))}
+          onclick={() => run(async () => { await flow.openContainer(row.itemID); view = "container"; })}
         >
           Open
         </button>
@@ -1816,7 +1828,8 @@
         <ul class="stn-rows">
           {#each ships as ship (ship.itemID)}
             {@const flying = ship.itemID === $inventory.activeShipID}
-            <li class="stn-row stn-ship-row" class:flying class:picked={openShip?.itemID === ship.itemID}>
+            <li class="stn-row stn-ship-row" class:flying class:picked={openShip?.itemID === ship.itemID}
+              draggable="true" ondragstart={event => startDrag(event, ship, { kind: "hangar" })}>
               <span class="stn-cell-render">
                 <TypeIcon typeID={ship.typeID} name={nameOf(ship)} size="md" />
               </span>
@@ -1873,6 +1886,22 @@
     </section>
 
     <!-- ------------------------------------------------ corporation hangar -->
+    <section class="stn-view" id="stn-view-safety" role="tabpanel" aria-labelledby="stn-tab-safety" hidden={view !== "safety"}>
+      {#if localSafety?.error}
+        <p class="stn-note bad">Asset deliveries could not be read: {localSafety.error}</p>
+      {:else if localSafety}
+        <ul class="stn-controls">
+          {#each localSafety.wraps.filter(wrap => wrap.name.toLowerCase().includes(query.toLowerCase())) as wrap (wrap.row.itemID)}
+            <li><button type="button" class="stn-btn" disabled={busy} onclick={() => void run(async () => {
+              await flow.openContainer(wrap.row.itemID);
+              view = "container";
+              clearSelection();
+            })}>{wrap.name}{#if wrap.row.ownerID === $station.online?.corporationID} <span class="stn-badge">Corporation</span>{/if}</button></li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
     <section class="stn-view" id="stn-view-corp" role="tabpanel" aria-labelledby="stn-tab-corp" hidden={view !== "corp"}>
       {#if !$inventory.corp.loaded}
         <p class="stn-note">Loading the corporation hangar…</p>
@@ -1921,14 +1950,31 @@
             class="stn-btn"
             disabled={busy}
             onclick={() => {
+              const backToSafety = container?.typeID === 60 && localSafety?.wraps.length;
               void run(() => flow.openContainer(null));
-              view = "hangar";
+              view = backToSafety ? "safety" : "hangar";
             }}
           >
-            ← Back to the item hangar
+            ← Back to {container?.typeID === 60 && localSafety?.wraps.length ? "Asset Deliveries" : "the item hangar"}
           </button>
         </p>
-        {@render group(containerGroup)}
+        {#if container?.safety}
+          <div class="stn-divisions" aria-label="Asset Safety divisions">
+            {#each container.safety.divisions as division (division.divisionID)}
+              <button type="button" class="stn-chip" class:on={container.safety.divisionID === division.divisionID}
+                disabled={busy} onclick={() => { clearPending(); flow.selectSafetyDivision(division.divisionID); }}>
+                {division.name ?? "Unavailable delivery division"} <span class="stn-badge">({division.rows.length})</span>
+              </button>
+            {/each}
+          </div>
+          {#if container.safety.divisionID === null}
+            <p class="stn-note">Choose a division to view its assets.</p>
+          {:else}
+            {@render group(containerGroup)}
+          {/if}
+        {:else}
+          {@render group(containerGroup)}
+        {/if}
       {/if}
     </section>
 

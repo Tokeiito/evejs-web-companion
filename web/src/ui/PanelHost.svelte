@@ -43,8 +43,8 @@
   import CharacterSheet from "./CharacterSheet.svelte";
   import CorporationWindow from "./CorporationWindow.svelte";
   import CorporationMemberDetails from "./CorporationMemberDetails.svelte";
+  import CorporationMedalDesigner from "./CorporationMedalDesigner.svelte";
   import Settings from "./Settings.svelte";
-  import ShowInfo from "./ShowInfo.svelte";
   import NoticeLog from "./NoticeLog.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { deriveDocked, tabLabel, type TabID } from "./tabs.ts";
@@ -93,6 +93,8 @@
   const stationSlice = store.station;
   // svelte-ignore state_referenced_locally
   const memberDetails = flow.memberDetailsShown;
+  // svelte-ignore state_referenced_locally
+  const medalDesigner = flow.medalDesignerShown;
 
   /**
    * Whether the pilot is docked, from the AUTHORITATIVE flag.
@@ -192,6 +194,8 @@
   <CorporationWindow {store} {flow} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "memberDetails"}
   {#key $memberDetails?.characterID}<CorporationMemberDetails {store} {flow} {onClose} />{/key}
+{:else if tab === "medalDesigner"}
+  {#key $medalDesigner?.instance}<CorporationMedalDesigner {store} {flow} {onClose} />{/key}
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}
@@ -205,14 +209,6 @@
     hide the same way.
   -->
   <NoticeLog />
-{:else if tab === "showInfo"}
-  <!--
-    ⚠ THE SECOND ONE, FOUND BY THE SAME TEST. Show Info was imported here and
-    never rendered either — and the workspace OPENS this tab itself whenever a
-    panel asks to show info about something, so every one of those fell
-    through the same way. Nothing anywhere reported it.
-  -->
-  <ShowInfo {store} {flow} />
 {:else if tab === "chat"}
   <!-- A skill plan link in a message, followed (link.py handle_link): the Skills window opens on it. -->
   <Chat {store} {flow} openSkillPlanLink={(url) => { flow.openSkillPlanLink(url); onOpen?.("skills"); }} />

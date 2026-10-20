@@ -30,9 +30,10 @@ function fakeFlow(journal: WalletJournalRead = NOT_READ): unknown {
   // The journal the Transactions tab reads (flow.walletJournal), as the client's account service keeps it; and what
   // the Overview tab, which the window opens on, reads (flow.walletOverview, flow.marketTransactions), not read yet.
   const walletJournal = signal(journal);
+  const corpWalletJournal = signal({ ...NOT_READ, accountKey: 1000, corporationID: null });
   const walletOverview = signal({ loaded: false, lines: [], kinds: new Map(), error: null });
   const marketTransactions = signal({ loaded: false, transactions: [], error: null });
-  return new Proxy({ walletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  return new Proxy({ walletJournal, corpWalletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 function visibleText(body: string): string {
@@ -76,8 +77,16 @@ test("Wallet renders the personal balance as grouped ISK", () => {
 
 // --- Corp Wallet ------------------------------------------------------------
 
-test("CorpWallet renders each division by name with its balance", () => {
+function accountantStore() {
   const store = createClientStore();
+  // CorpISKPanel.GetMainTabs exposes divisions/journal to Accountant or Junior Accountant.
+  store.apply({ type: "character/online", character: { characterID: 140000002, characterName: "Test Two",
+    stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000000, corpRole: "256" }, station: null });
+  return store;
+}
+
+test("CorpWallet renders each division by name with its balance", () => {
+  const store = accountantStore();
   store.apply({
     type: "wallet/loaded",
     cashBalance: "10",
@@ -100,7 +109,7 @@ test("CorpWallet renders each division by name with its balance", () => {
 });
 
 test("CorpWallet shows an honest empty message for a real 'no divisions'", () => {
-  const store = createClientStore();
+  const store = accountantStore();
   store.apply({
     type: "wallet/loaded",
     cashBalance: "10",
@@ -115,7 +124,7 @@ test("CorpWallet shows an honest empty message for a real 'no divisions'", () =>
 });
 
 test("CorpWallet shows the error, NOT the empty message, when the read failed", () => {
-  const store = createClientStore();
+  const store = accountantStore();
   store.apply({
     type: "wallet/loaded",
     cashBalance: "10",

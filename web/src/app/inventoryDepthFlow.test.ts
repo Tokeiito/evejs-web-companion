@@ -558,7 +558,7 @@ test("selectCorpDivision switches the shown division and clears the selection", 
   );
 });
 
-test("a move into the corporation's hangar asks the client's one-way question first, and Cancel moves nothing", async () => {
+test("an ordinary hangar move asks the client's one-way question before moving, and Cancel moves nothing", async () => {
   // invControllers BaseCorpContainer.oneWay (820) and PromptOneWayMove (595 and 596): ConfirmOneWayItemMove, OK and
   // Cancel, before anything from elsewhere is put into the corporation's hangar (__AddItem 197 to 202, AddItems 529).
   // (Until 2026-10-18 this test named the division by ordinal on /api/bridge/inventory/transfer, a route the page no
@@ -566,6 +566,9 @@ test("a move into the corporation's hangar asks the client's one-way question fi
   const store = createClientStore();
   const { fetch, requests } = standardFetch();
   const flow = createAppFlow(store, { fetch });
+  // AddItems verifies the actual source rows before its one-way question. Asset Safety
+  // sources ask their recovery question first (invControllers.AddItems506-529).
+  await flow.loadInventory();
   const before = requests.length;
 
   const moving = flow.transferItems([100], { kind: "hangar" }, { kind: "corp", division: 2 });

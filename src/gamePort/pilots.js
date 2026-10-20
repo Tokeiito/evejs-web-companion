@@ -1298,8 +1298,13 @@ function createGamePortPilots({
   function toPilotError(error, service, method) {
     if (error instanceof GamePortPilotError) return error;
     const code = error && error.code;
+    if (code === "CALL_RETIRED") return fail("SESSION_REQUEST_RETIRED", "The calling tasklet has retired.");
     const detail = String((error && error.message) || error).slice(0, 300);
-    if (code === "GAME_CALL_REFUSED" && error.refusal && error.refusal.reason) {
+    // eveexceptions.UserError's native __guid__ is exceptions.UserError.
+    // eve_exception_handler prompts only that class; other remote exceptions
+    // must stay failures even when their first argument resembles a dialog key.
+    const userError = error?.refusal?.className === "exceptions.UserError" || error?.refusal?.className === "eveexceptions.UserError";
+    if (code === "GAME_CALL_REFUSED" && userError && error.refusal.reason) {
       // What the server refused with, by name and with its values: the client acts on some of them
       // (ShipContrabandWarningUndock is a question, not a failure), and the words alone do not say which.
       return Object.assign(fail("CALL_REFUSED", String(error.refusal.reason)), {
@@ -1722,6 +1727,9 @@ function createGamePortPilots({
       bound: new Map(),
       /** fleetSvc's self.fleet: the one object the client keeps for the pilot's fleet, as it is held in `bound`; null with none. */
       fleet: null,
+      /** pvptradesvc: only trade Monikers received from this pilot's server connection. */
+      trades: new Map(),
+      tradeReferences: new WeakMap(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
       /** The monikers the client keeps for where the pilot is, by service: the "N=..." each is bound to (monikerCall). */
@@ -2036,7 +2044,11 @@ function createGamePortPilots({
       if (COLONY_NOTICES.has(notification.method)) forgetColonies(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
-      record(entry, notificationToBridgeJson(notification));
+      const carried = notificationToBridgeJson(notification);
+      if (notification.method === "OnTradeInitiate" && Array.isArray(carried.args)) {
+        carried.args[1] = tradeMonikerToBridge(entry, notification.args?.[1]);
+      }
+      record(entry, carried);
     });
     session.onSessionChange((changes) => {
       // What the client's own services tell its object cache to forget on this change.
@@ -2415,12 +2427,16 @@ function createGamePortPilots({
   }
 
   /** A service's own method: at the proxy node for a service the client reaches with sm.ProxySvc, by the name alone for any other. */
-  const byName = (session, service, method, form, beforeDispatch) => (form.proxy
+  const byName = (session, service, method, form, beforeDispatch, signal) => (form.proxy
     ? session.proxyCall(service, method, argumentsToWire(form.args), form.kwargs)
-    : session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch));
+    : signal ? session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch, signal)
+      : session.call(service, method, argumentsToWire(form.args), form.kwargs, beforeDispatch));
 
-  async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
+  async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined, callerSignal = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
+    const signal = service === "corpmgr" && method === "GetAggressionSettings" && Array.isArray(args) && args.length === 1
+      && Number.isSafeInteger(args[0]) && args[0] > 0 ? callerSignal : undefined;
+    if (signal?.aborted) throw fail("SESSION_REQUEST_RETIRED", "The scalar aggression caller has retired.");
     // A pending corporation action still names the corporation it was opened for.
     // Check at native dispatch too: preparation/binding can yield across a change.
     const expectedCorporationID = positive(sessionFields.expectedCorporationID);
@@ -2699,7 +2715,7 @@ function createGamePortPilots({
       return form.moniker
         ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs, dispatchCurrent)
         : park !== null ? entry.session.callBound(park, method, argumentsToWire(form.args), form.kwargs)
-        : byName(entry.session, service, method, form, dispatchCurrent);
+        : byName(entry.session, service, method, form, dispatchCurrent, signal);
     }).finally(() => {
       forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();
@@ -2743,7 +2759,8 @@ function createGamePortPilots({
     return {
       service,
       method,
-      result: HANDED_BACK_AS_ANSWERED.has(`${service}.${method}`) ? longKeptToBridgeJson(result) : wireToBridgeJson(result === undefined ? null : result),
+      result: service === "trademgr" && method === "InitiateTrade" ? tradeMonikerToBridge(entry, result)
+        : HANDED_BACK_AS_ANSWERED.has(`${service}.${method}`) ? longKeptToBridgeJson(result) : wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
   }
@@ -2977,23 +2994,42 @@ function createGamePortPilots({
    * Answers a Map of each owner asked about to { name, typeID }, or to null for one with no row. The type says
    * what the owner is. Fails as the call fails, with nothing kept of it.
    */
-  async function ownersNamed(ownerIDs, sessionFields = {}, bridgeSessionID = undefined) {
+  async function ownersNamed(ownerIDs, sessionFields = {}, bridgeSessionID = undefined, nativeKeys = false, signal = null) {
     const entry = held(bridgeSessionID, sessionFields);
-    const wanted = [...new Set((Array.isArray(ownerIDs) ? ownerIDs : []).map(positive).filter((ownerID) => ownerID !== null))];
+    const current = () => { if (signal?.aborted) throw fail("SESSION_REQUEST_RETIRED", "The owner priming tasklet has retired."); };
+    const cancellable = async work => {
+      if (!signal) return work;
+      current();
+      let abort;
+      const interrupted = new Promise((resolve, reject) => {
+        abort = () => reject(fail("SESSION_REQUEST_RETIRED", "The owner priming tasklet has retired."));
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      try { return await Promise.race([work, interrupted]); }
+      finally { signal.removeEventListener("abort", abort); }
+    };
+    // Recordset.Get int(key) also accepts zero/negative keys; the ordinary
+    // display-name caller keeps its existing positive-ID input filter.
+    const ownerKey = value => { const whole = wholeOf(value); return whole !== null && whole >= BigInt(Number.MIN_SAFE_INTEGER) && whole <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(whole) : null; };
+    const wanted = [...new Set((Array.isArray(ownerIDs) ? ownerIDs : []).map(nativeKeys ? ownerKey : positive).filter((ownerID) => ownerID !== null))];
     const priming = entry.ownersWork.then(() => run(entry, "config", "GetMultiOwnersEx", async () => {
+      current();
       const unknown = wanted.filter((ownerID) => !entry.owners.has(ownerID));
       if (unknown.length > 0) {
         ledger.note("config", "GetMultiOwnersEx", OWNERS_AS_THE_CLIENT_ASKS);
-        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiOwnersEx", [{ type: "list", items: unknown }], null));
+        // Recordset.Prime's native tasklet kill unwinds its lock immediately.
+        // The issued RPC may still answer, but must not publish a cache row.
+        const [header, rows] = itemsOf(await cancellable(entry.session.call("config", "GetMultiOwnersEx", [{ type: "list", items: unknown }], null, undefined, signal)));
+        current();
         const columns = itemsOf(header).map(textOf);
         const [ownerID, ownerName, typeID] = ["ownerID", "ownerName", "typeID"].map((column) => columns.indexOf(column));
-        for (const row of itemsOf(rows).map(itemsOf)) entry.owners.set(positive(row[ownerID]), { name: textOf(row[ownerName]), typeID: positive(row[typeID]) ?? 0 });
+        for (const row of itemsOf(rows).map(itemsOf)) entry.owners.set(ownerKey(row[ownerID]), { name: textOf(row[ownerName]), typeID: positive(row[typeID]) ?? 0 });
         for (const each of unknown) if (!entry.owners.has(each)) entry.owners.set(each, null);
       }
       return new Map(wanted.map((each) => [each, entry.owners.get(each)]));
     }));
     entry.ownersWork = priming.catch(() => {});
-    return priming;
+    return cancellable(priming);
   }
 
   /**
@@ -6060,9 +6096,32 @@ function createGamePortPilots({
     return journal ? wireToBridgeJson(journal) : null;
   }
 
+  // A returned/notified Moniker names its own node and bind parameters (moniker.__setstate__).
+  // Keep only the server's trade references; an arbitrary page-supplied address is not a new trade.
+  function tradeMonikerToBridge(entry, value) {
+    const moniker = monikerOf(value);
+    if (!moniker || moniker.service !== "trademgr" || !Array.isArray(moniker.params)) return wireToBridgeJson(value);
+    if (moniker.nodeID !== null) entry.session.setNodeOfAddress(moniker.service, moniker.params, moniker.nodeID);
+    // Consecutive trades can reuse params; each received Moniker is a distinct object.
+    let reference = entry.tradeReferences.get(value);
+    if (!reference) {
+      reference = randomBytes(24).toString("base64url");
+      entry.tradeReferences.set(value, reference);
+      entry.trades.set(reference, { objectID: null, service: "trademgr", params: moniker.params, key: "trade:" + reference });
+    }
+    return { ...wireToBridgeJson(value), tradeReference: reference };
+  }
+
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    if (service === "trademgr" && method === "MachoBindObject") {
+      const object = entry.trades.get(Array.isArray(args) ? args[0] : null);
+      if (!object) throw fail("CALL_REFUSED", "This pilot has not received that trade session.");
+      const boundHandle = randomBytes(24).toString("base64url");
+      entry.bound.set(boundHandle, object);
+      return { boundHandle, service, method, notifications: drain(entry) };
+    }
     // fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked. So
     // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
