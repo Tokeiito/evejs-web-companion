@@ -2418,6 +2418,22 @@ items stayed at source, or "No items moved", without attributing a local skip to
 All276 calls succeed; cold restart3611 preserves both corporate locked originals and the
 personal cargo original, with unchanged cash and no replay. Full staged baseline is restored.
 Shared locking with single Add and other inventory writers remains follow-up work.
+The prerequisite container metadata cache now keeps the actual backing self row separately
+from listed contents and from a public own-item notice override. Original compiled
+`invCache` constructor913-936, properties942-975 and List/ListByFlags1131-1205 show why:
+a cold station hangar lists first, then lazily fetches its itemID/typeID; a numeric inventory
+already has its ID, so listing it needs no self RPC. Canonical backing `GetSelfInvItem()`
+reads reuse that reply until the container is dropped. A public own-item notice does not
+prime a cold backing type. Owner/group consumers prefer the public notice, then backing
+self, then an already-listed row (OnItemChange295-300, GetCorpKeys645-657).
+Actual production transport3628 verifies both empty listing forms, one self read per
+container lifetime, numeric listing without self, and fresh metadata after reselection.
+Closed wire3630 has252 successful calls including100 from the real browser; its empty item
+hangar and populated Badger cargo render normally. Lifecycle3634 verifies incoming corporate
+contents without a parent listing or relist, ownership notices, and real role resignation:
+the now-personal container stays held while the still-corporate container is rebound and
+receives the server's access refusal. The raw metadata route represents backing
+`_SetItemData`, not every native public `GetItem(force)` behavior or a capacity cache.
 The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
 actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
 and lane are not established by a Tranquility lock-change capture.
