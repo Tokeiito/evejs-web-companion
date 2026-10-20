@@ -6508,7 +6508,8 @@ test("in another ship the listings are asked for again, and a listing the server
 
 test("a whole stack is moved with its quantity, from what the pilot's listings hold of it: the stack's size, and 1 for a thing that is one of a kind", async () => {
   const rows = (...items) => ({ type: "list", items: items.map((fields) => ({ type: "packedrow", fields })) });
-  const held = rows({ itemID: 501, typeID: 34, quantity: 3822, flagID: 4 }, { itemID: 502, typeID: 648, quantity: -1, singleton: 1, flagID: 4 }, { itemID: 503, typeID: 35, quantity: 5, stacksize: 7, flagID: 4 }, { itemID: 504, typeID: 36, flagID: 4 }, { itemID: 506, typeID: 38, quantity: 0, flagID: 4 }, { typeID: 37, quantity: 9, flagID: 4 });
+  // Original invCache.List1138 keys every DBRow by itemID; a row without that field is not a native cache input.
+  const held = rows({ itemID: 501, typeID: 34, quantity: 3822, flagID: 4 }, { itemID: 502, typeID: 648, quantity: -1, singleton: 1, flagID: 4 }, { itemID: 503, typeID: 35, quantity: 5, stacksize: 7, flagID: 4 }, { itemID: 504, typeID: 36, flagID: 4 }, { itemID: 506, typeID: 38, quantity: 0, flagID: 4 });
   const { pilots, session, handle, hangar, ship } = await withContainers({ "bound:List": () => held });
   const listed = () => pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, hangar);
   const added = async (itemID, kwargs = { flag: 5 }) => {
@@ -6531,7 +6532,7 @@ test("a whole stack is moved with its quantity, from what the pilot's listings h
   assert.deepEqual([await added(504), await added(999)], [{ flag: 5 }, { flag: 5 }], "a row with no quantity, and an item in no listing: as they came");
   await listed();
   assert.deepEqual(await added(506), { flag: 5, qty: 0 }, "a stack of nothing is a stack of nothing, as the client would send it");
-  // No item named: the row that names none is not taken for it.
+  // An item ID not held by the native cache cannot supply a quantity.
   await listed();
   assert.deepEqual(await added(0), { flag: 5 });
   const tally = pilots.callLedger().find((row) => row.pair === "invbroker.Add").statuses;

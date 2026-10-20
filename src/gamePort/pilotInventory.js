@@ -1,5 +1,7 @@
 "use strict";
 
+const { InventoryItems } = require("./inventoryItems");
+
 // The client's inventory cache, kept for one pilot (eve/client/script/environment/invCache.py).
 //
 // The client holds one container for each key, as invCache.GetInventory and GetInventoryFromId make them: the
@@ -26,6 +28,10 @@
 // No capacity is kept here (the page reckons a container's capacity from what is listed).
 // The cargo containers among a batch of changed items, which the client
 // asks the server to validate (ValidateLocationCacheForItems), are not asked about.
+// cachedItems retains its Python2 dictionary table across inserts/deletes;
+// List scans that table, not insertion order. The input is each row ingress
+// sequence: a remote DBRow set's allocator-dependent iteration is a separate
+// boundary (CCP PyRowSet.cpp hashes object pointers), not an item-ID sort.
 
 /** The columns of an inventory row by their index in it, as a change is given (const.ixItemID ... ixCustomInfo). */
 const COLUMN_BY_IX = ["itemID", "typeID", "ownerID", "locationID", "flagID", "quantity", "groupID", "categoryID", "customInfo"];
@@ -88,7 +94,7 @@ function createPilotInventory({ rowFields, session }) {
   const hold = (key, objectID) => {
     const [location, owner] = key.split("|");
     if (!containers.has(key)) {
-      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new Map(), listed: new Set(), work: Promise.resolve() });
+      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new InventoryItems(), listed: new Set(), work: Promise.resolve() });
     } else {
       containers.get(key).objectID = objectID;
     }
@@ -209,7 +215,12 @@ function createPilotInventory({ rowFields, session }) {
         items.delete(id);
         return;
       }
-      if (item.ownerID === s.corpid) items.set(id, row);
+      if (item.ownerID === s.corpid) {
+        // Original compiled _ProcessItemChange1390-1399 deletes then reinserts
+        // valid delivery rows even when custody is unchanged; retain the dummy slot history.
+        if (items.has(id)) items.delete(id);
+        items.set(id, row);
+      }
     } else if (item.locationID !== location || item.stacksize === 0) {
       items.delete(id);
     } else if (old.locationID !== location && item.locationID === location) {
