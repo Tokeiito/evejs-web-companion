@@ -270,6 +270,8 @@ import {
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
 import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
+import { memberQuerySetting } from "./memberQuerySetting.ts";
+import { memberQueryArguments, type MemberQueryCriterion, type MemberQueryContext, type CorporationAdministration } from "../bridge/corporationMemberQuery.ts";
 import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { scrollSortSetting, type ScrollSortSetting } from "./scrollSortSetting.ts";
 import { scrollWidthsSetting, type ScrollWidthsSetting } from "./scrollWidthsSetting.ts";
@@ -2157,6 +2159,11 @@ export interface AppFlow {
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(current?: () => void): Promise<number | null>;
   corporationMemberIDs(): Promise<readonly number[]>;
+  corporationAdministration(current?: () => void): Promise<CorporationAdministration>;
+  corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext>;
+  corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]>;
+  corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]>;
+  memberQueryPreference(name: "FMBQincludeImplied" | "FMBQsearchTitles"): { readonly value: ReadableSignal<boolean>; set(value: boolean): void };
   corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
@@ -15305,6 +15312,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function corporationAdministration(current?: () => void): Promise<CorporationAdministration> {
+    const scope = captureMemberOperation(current), roles = BigInt(scope.online.corpRole ?? "0");
+    // corporationWindow470-476, corporation.common.roles: administration is
+    // any admin role OR any of the four locally computed grantable masks.
+    const admin = (roles & 34359744897n) !== 0n;
+    if ((roles & 128n) !== 0n) return { visible: true, findMembers: true, director: (roles & 1n) !== 0n };
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const rawMember = await readCorporationMember(scope.online.characterID, scope);
+    // bco_members.GetMyGrantableRoles also accepts an absent member row.
+    if (rawMember === null) return { visible: admin, findMembers: false, director: (roles & 1n) !== 0n };
+    const mine = corporationMemberOf(rawMember);
+    const ceo = memberInteger(corporation, "ceoID") === BigInt(scope.online.characterID);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    const titles = !ceo && (mine.masks.roles & 1n) === 0n && mine.titleMask ? await readMemberTitles(scope.online.corporationID, scope) : new Map<number, RoleMasks>();
+    const grantable = Object.values(myGrantableRoles(mine, ceo, (roles & 1n) !== 0n, data, titles)).some(mask => mask !== 0n);
+    scope.current(); return { visible: admin || grantable, findMembers: grantable, director: (roles & 1n) !== 0n };
+  }
+  async function corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext> {
+    const scope = captureMemberOperation(current);
+    memberReadKey(scope.online.characterID);
+    // CorpQueryMembersForm.__init__138-146: titles, then local role metadata.
+    const titles = await readMemberTitles(scope.online.corporationID, scope);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    await wordsNow(Object.values(data.roles).map(role => `#${role.nameID}`)); scope.current();
+    const locational = new Set(data.locationalRoles), now = new Date(serverNow());
+    const roles = Object.entries(data.roles).map(([bit, role]) => {
+      const value = 1n << BigInt(bit);
+      return { value, name: plainText(store.words.get().templates[`#${role.nameID}`] ?? ""), locational: locational.has(String(value)) };
+    }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return { roles, titles: intDictOrder([...titles.keys()]).map(id => titles.get(id)!), today: [now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate()] };
+  }
+  async function corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]> {
+    const scope = captureMemberOperation(current);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []); scope.current();
+    const rows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const ids = rows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    for (const id of ids) await memberNames(scope, [{ kind: "station", id }]);
+    scope.current(); return ids.map(stationID => ({ stationID, name: resolvedName(store.names.get().resolved, "station", stationID, "") }));
+  }
+  async function corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]> {
+    const scope = captureMemberOperation(current);
+    const includeImplied = memberQuerySetting(store.session.get().accountID, "FMBQincludeImplied", settingsStorage).value.get();
+    const searchTitles = memberQuerySetting(store.session.get().accountID, "FMBQsearchTitles", settingsStorage).value.get();
+    const result = await scope.ask("corpRegistry", "GetMemberIDsByQuery", memberQueryArguments(criteria, includeImplied, searchTitles)); scope.current();
+    const values = isListValue(result) ? result.items : Array.isArray(result) ? result : null;
+    if (values === null) throw new Error("The corporation member query could not be read.");
+    const ids = values.map(value => {
+      const id = Number(unwrapLong(value));
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A member in the query result could not be read.");
+      return id;
+    });
+    // SimpleView.PopulateView primes all returned owners before slicing pages.
+    await memberNames(scope, ids.map(id => ({ kind: "owner" as const, id }))); scope.current();
+    return ids;
+  }
   async function corporationDecorations(): Promise<CorporationDecorations> {
     const scope = captureMemberOperation();
     const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
@@ -29493,6 +29555,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberDetails,
     corporationMemberRoleBase,
     corporationMemberIDs,
+    corporationAdministration,
+    corporationMemberQueryContext,
+    corporationMemberQueryBases,
+    corporationMemberQuery,
+    memberQueryPreference: name => memberQuerySetting(store.session.get().accountID, name, settingsStorage),
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
