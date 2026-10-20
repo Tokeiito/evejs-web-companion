@@ -443,6 +443,31 @@ Cached retry makes no aggression read; ordinary data after expiry completes.
 Exactly two expected TypeErrors and no other console errors were observed.
 TCP confirms the corresponding public/aggression/enlistment boundaries.
 
+Timestamp audit findings, still awaiting a consumer port: original compiled
+settings preserve finite fractions and exact float/long comparison, including
+adjacent integers beyond 2^53. A pending zero, including -0.0, takes the
+GetCorpFriendlyFireStatus no-date branch; it can mask a later pending enable.
+The 38 native cases distinguish 29 completed no-date windows from nine runs
+deliberately stopped at the date formatter boundary. Those nine are not native
+formatter failures and establish no rendered pending-time text.
+
+The installed _evelocalization.dll (SHA256
+005ab2fb8d1d41106e630fb3963b100f0dccc490b8c8aa402fa3c362ecd4f6dd)
+does have a distinct float path: formattedtime interprets floats as Unix
+seconds and longs as FILETIME. REA/Ghidra pseudocode for 0x18000d3e0 shows the
+float-to-int64/_gmtime64_s path and the long/TimeAsDateTime path; this is static
+evidence, not execution. Native Parse through the installed python27.dll,
+with an explicitly installed empty language and manually installed token
+state matching parser._Tokenize, verifies 3601.5 renders 01:00, while str,
+Unicode str, int and bool raise TypeError. That probe bypasses the outer
+localization service and does not establish its exception fallback.
+
+An isolated Parse call with float 1.3e17 terminates its host process with
+0xC0000409; it returns no Python exception or rendered text. This was a native
+library probe, not a launched retail-client session. A browser policy for this
+malformed pending float is an operator decision, separate from the valid
+finite comparison port. Current timestamp decoding does not claim that port.
+
 Numeric and boolean enlistment answers now raise TypeError before construction
 can complete. The original compiled UpdateDataCorp directly iterates them and
 raises for int, long, float and bool, including zero and False; the helper does
