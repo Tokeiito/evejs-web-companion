@@ -2102,6 +2102,13 @@ An ordinary member read all three decorations after a full server restart, with 
 Medal preview/awardee expansion, list sorting preferences and the creation window remain separate
 units; the catalogue view does not claim those interactions.
 
+The installed medal atlases use uncompressed BGRA32 DDS. `/client-res/ui/texture/…dds`
+now converts that indexed format to RGBA PNG while retaining the existing PNG route.
+The masks and DDS header layout agree with CCP `trinityal/tests/WithValidRenderContextFixture.cpp`
+60-87,111-132. Live Amarr ribbon and Compass medal output matched an independent DDS
+decoder in every RGBA pixel and loaded in the browser at 256×256. Other DDS formats
+(including DXT5) remain unsupported. This supplies assets; the layered medal preview is next.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

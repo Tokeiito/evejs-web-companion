@@ -17417,10 +17417,17 @@ app.post("/api/icons/cache", requireAuth, (req, res) => {
 // to the catch-all, the browser receives index.html with a 200, `<img onerror>`
 // never fires, and every uncached icon becomes a permanently broken image.
 // The client's own textures by their res: path, for the page to draw what the client draws with them (a skill
-// group's icon, a skill book's mark): /client-res/ui/texture/... answers the PNG the install's index names for
-// res:/ui/texture/..., or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
+// group's icon, a skill book's mark): /client-res/ui/texture/... answers an indexed PNG or a supported DDS
+// converted to PNG, or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
 // player. Above the catch-all, for the same reason as the icon cache below.
-app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.png)$/, (req, res) => {
+app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.(?:png|dds))$/, (req, res) => {
+  if (/\.dds$/i.test(req.params[0])) {
+    const png = clientTextures.pngFor?.(`res:/${req.params[0]}`);
+    if (!png) { res.status(404).end(); return; }
+    res.set("Cache-Control", "public, max-age=2592000, immutable");
+    res.type("png").send(png);
+    return;
+  }
   const file = clientTextures.fileFor(`res:/${req.params[0]}`);
   if (!file) {
     res.status(404).end();
