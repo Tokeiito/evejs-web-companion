@@ -1004,8 +1004,16 @@
     const ask = $asked;
     if (ask === null) return;
     // A field left empty is no answer (the client's field is required).
-    if (ok && !/^\d+$/.test(typed)) return;
+    if (ok && (ask.digits ? typed.trim() === "" || !Number.isFinite(Number(typed)) : !/^\d+$/.test(typed))) return;
     flow.answerQuantity(ask.n, ok ? Number(typed) : null);
+  }
+  function filterQuantity(): void {
+    const digits = $asked?.digits ?? 0;
+    if (!digits) { typed = typed.replace(/\D+/g, ""); return; }
+    // SingleLineEditFloat.ValidateNewText29-41 trims excess decimal text.
+    typed = typed.replace(/[^-\de.]/g, "");
+    const dot = typed.indexOf(".");
+    if (dot >= 0) typed = typed.slice(0, dot + 1) + typed.slice(dot + 1).replace(/\./g, "").slice(0, digits);
   }
 </script>
 
@@ -1111,10 +1119,10 @@
         {#if labelText !== ""}<p class="body quantity-label">{labelText}</p>{/if}
         <input
           type="text"
-          inputmode="numeric"
+          inputmode={$asked.digits ? "decimal" : "numeric"}
           aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")}
           bind:value={typed}
-          oninput={() => (typed = typed.replace(/\D+/g, ""))}
+          oninput={filterQuantity}
           bind:this={field}
           use:focusAll
         />

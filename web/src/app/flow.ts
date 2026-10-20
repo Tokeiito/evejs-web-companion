@@ -798,6 +798,8 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
+import { createDirectTrades, type DirectTrades } from "./directTrades.ts";
+import { fmtAmt } from "../bridge/pyNumbers.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
 import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
@@ -1095,11 +1097,13 @@ export type RackMenuEntry =
   | { readonly kind: "rule" };
 
 /**
- * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a number
  * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
  * own words for it (`hint`).
  */
 export interface QuantityAsk {
+  /** QtyPopup's floatonly precision; the default is an integer field. */
+  readonly digits?: number;
   readonly n: number;
   readonly min: number;
   readonly max: number;
@@ -1437,6 +1441,8 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly directTrades: DirectTrades;
+  startDirectTrade(characterID: number): Promise<void>;
   readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
   startDuel(characterID: number): Promise<void>;
   answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
@@ -5185,6 +5191,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    directTrades.receive(method, args);
     if (method === "OnDuelChallenge") {
       const incoming = duelChallengeOf(args);
       if (incoming) {
@@ -5611,7 +5618,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
-      if (sessionNames?.some(name => name === "locationid" || name === "charid")) duelInvitationSignal.set(null);
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) {
+        duelInvitationSignal.set(null);
+        directTrades.reset(true);
+      }
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -6745,6 +6755,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+  const directTrades = createDirectTrades({
+    ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
+    name: id => resolvedName(store.names.get().resolved, "owner", id, String(id)),
+    requestNames: ids => {
+      requestNames(ids.map(id => ({ kind: "owner" as const, id })));
+      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
+    },
+    primeItems: ids => requestNames(ids.map(id => ({ kind: "evelocation" as const, id }))),
+    manifestMismatch: () => store.words.get().templates["UI/Messages/DirectTradeManifestMismatch"] ?? "The trade contents changed.",
+    wealth: async () => {
+      const wealth = Number(toAmountString(await walletReads.wealth()));
+      if (!Number.isFinite(wealth)) throw new Error("The wallet did not provide the pilot's ISK balance.");
+      return wealth;
+    },
+    quantity: (min, max) => askQuantity({ min, max, value: 100, digits: 2, hintLabel: "UI/Common/SetQtyBetween", hint: "", hintArgs: { min: fmtAmt(min), max: fmtAmt(max) } }),
+    confirm: key => askDialog(key, null, key === "ConfirmCancelTrade" ? "Cancel this trade?" : "Accept the offer containing a ship?", "okcancel"),
+    say: sayDialog,
+    report: error => { if (failureCode(error) !== "SESSION_REQUEST_RETIRED" && !sayRefusalDialog(error, "The trade could not be updated.")) sayDialog("CustomNotify", { type: "dict", entries: [["notify", errorWords(error)]] }, errorWords(error)); },
+  });
+  async function startDirectTrade(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    // CharacterChecker.OfferTradeWithCharacter281-290 / IsGuest403-408.
+    if (!online || !dockedNow() || characterID === online.characterID || isNpcOwner(characterID)
+        || !store.station.get().guests.some(guest => guest.characterID === characterID)) return;
+    try { await directTrades.start(characterID); }
+    catch (error) { if (!sayRefusalDialog(error, "The trade could not be started.")) throw error; }
   }
   const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
   let duelInvitationN = 0;
@@ -9665,7 +9702,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
-  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  /** QtyPopup: an integer by default, or a float with digits; null on Cancel. */
   function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
     quantityAnswer?.(null);
     dialogsSaidCount += 1;
@@ -9674,7 +9711,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       quantityAnswer = (quantity) => {
         quantityAnswer = null;
         quantityAskedSignal.set(null);
-        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+        const value = (ask.digits ?? 0) === 0 ? Math.trunc(quantity ?? 0) : quantity ?? 0;
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, value)));
       };
       quantityAskedSignal.set({ n, ...ask });
     });
@@ -28388,6 +28426,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      directTrades.reset();
       duelInvitationSignal.set(null);
       requestGeneration++;
       cancelCorporationCEOChoice();
@@ -29682,6 +29721,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    directTrades,
+    startDirectTrade,
     duelInvitation: readonlySignal(duelInvitationSignal),
     startDuel,
     answerDuel,
@@ -30377,6 +30418,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        directTrades.reset();
         duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
@@ -30411,6 +30453,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        directTrades.reset();
         duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);

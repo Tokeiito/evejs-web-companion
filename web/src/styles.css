@@ -10110,3 +10110,5 @@
 .chat-invitation-stack > * { pointer-events: auto; }
 .duel-invitation-stack { position: fixed; right: 1rem; top: calc(var(--char-bar-h) + 1rem); z-index: 39; display: flex; flex-direction: column; gap: 0.5rem; max-height: calc(100dvh - var(--char-bar-h) - 2rem); overflow: auto; pointer-events: none; }
 .duel-invitation-stack > * { pointer-events: auto; }
+.trade-window-layer { position: fixed; inset: var(--char-bar-h) 0 0; pointer-events: none; z-index: 37; }
+.trade-window-layer .win { pointer-events: auto; }

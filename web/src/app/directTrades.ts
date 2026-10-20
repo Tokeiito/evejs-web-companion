@@ -1,0 +1,173 @@
+// pvptradesvc26-121 / pvptradewnd37-178: each received session owns a window.
+// Inventory and offers follow notifications; opening reads follow the native
+// service/window/two inventory consumers (the concurrent inventory List coalesces).
+import type { Ask } from "../bridge/ask.ts";
+import { abortDirectTrade, initiateDirectTrade, listDirectTrade, makeDirectTradeOffer,
+  offerDirectTradeMoney, tradeMonikerOf, type DirectTradeState, type TradeMoniker } from "../bridge/directTrade.ts";
+import { isListValue, readRowField, type JsonValue } from "../bridge/wire.ts";
+import { createSignal, readonlySignal } from "../store/signals.ts";
+
+export interface DirectTradeWindow {
+  readonly moniker: TradeMoniker;
+  readonly state: DirectTradeState;
+  readonly acceptEnabled: boolean;
+  readonly abortOnClose: boolean;
+  readonly raised: number;
+}
+interface Dependencies {
+  readonly ask: Ask;
+  readonly act: Ask;
+  characterID(): number | null;
+  name(id: number): string;
+  requestNames(ids: readonly number[]): void;
+  primeItems(ids: readonly number[]): void;
+  manifestMismatch(): string;
+  wealth(): Promise<number>;
+  quantity(min: number, max: number): Promise<number | null>;
+  confirm(key: string): Promise<boolean>;
+  say(key: string, values: JsonValue | null, fallback: string): void;
+  report(error: unknown): void;
+}
+const pair = (value: unknown): readonly JsonValue[] | null => {
+  const items = isListValue(value) ? value.items : Array.isArray(value) ? value as JsonValue[] : null;
+  return items?.length === 2 ? items : null;
+};
+// These native offer slots contain KeyVal manifests or None, not numeric flags.
+export const tradeAccepted = (value: JsonValue): boolean => value !== null && value !== false && value !== 0;
+
+export function createDirectTrades(deps: Dependencies) {
+  const windows = createSignal<readonly DirectTradeWindow[]>([]);
+  let generation = 0, raised = 0;
+  const opening = new Map<string, { task: Promise<void>; notices: [string, readonly unknown[]][] }>();
+  const get = (id: number) => windows.get().find(w => w.state.containerID === id);
+  function amend(id: number, update: (w: DirectTradeWindow) => DirectTradeWindow): void {
+    windows.update(all => all.map(w => w.state.containerID === id ? update(w) : w));
+  }
+  function close(w: DirectTradeWindow): void {
+    windows.update(all => all.filter(other => other.state.containerID !== w.state.containerID));
+    // _OnClose also calls Abort after completion. OnCancel/Cancel clear the
+    // native reference first, so those paths must not send a second Abort.
+    if (w.abortOnClose) void abortDirectTrade(deps.act, w.moniker).catch(deps.report);
+  }
+  function resetOffers(id: number): void {
+    amend(id, w => ({ ...w, acceptEnabled: true, state: { ...w.state, offers: [null, null] } }));
+  }
+  function itemChanged(row: JsonValue): void {
+    const itemID = Number(readRowField(row, "itemID")), locationID = Number(readRowField(row, "locationID"));
+    for (const w of windows.get()) {
+      const present = w.state.items.some(item => Number(readRowField(item, "itemID")) === itemID);
+      const here = locationID === w.state.containerID && w.state.traders.includes(Number(readRowField(row, "ownerID")))
+        && Number(readRowField(row, "quantity")) !== 0;
+      if (!present && !here) continue;
+      const items = w.state.items.filter(item => Number(readRowField(item, "itemID")) !== itemID);
+      if (here) items.push(row);
+      amend(w.state.containerID, current => ({ ...current, state: { ...current.state, items } }));
+      // PlayerTrade.AddItem219-223 resets only when a new entry is added.
+      if (!present && here) resetOffers(w.state.containerID);
+    }
+  }
+  function apply(method: string, args: readonly unknown[]): void {
+    if (method === "OnItemChange") { itemChanged(args[0] as JsonValue); return; }
+    if (method === "OnItemsChanged") {
+      const rows = isListValue(args[0]) ? args[0].items : Array.isArray(args[0]) ? args[0] : [];
+      for (const row of rows) itemChanged(row as JsonValue);
+      return;
+    }
+    const id = Number(args[0]), w = get(id);
+    if (!w) return;
+    if (method === "OnTradeOffer") {
+      const states = pair(args[1]); if (!states) return;
+      const offers: readonly [JsonValue, JsonValue] = [states[0]!, states[1]!];
+      const myIndex = w.state.traders.indexOf(deps.characterID() ?? 0);
+      amend(id, current => ({ ...current, acceptEnabled: !tradeAccepted(offers[myIndex]!), state: { ...current.state, offers } }));
+      if (offers.every(tradeAccepted)) close(get(id)!);
+    } else if (method === "OnTradeMoneyOffer") {
+      const values = pair(args[1]);
+      if (values?.every(value => typeof value === "number")) {
+        amend(id, current => ({ ...current, state: { ...current.state, money: [values[0] as number, values[1] as number] } }));
+        resetOffers(id);
+      }
+    } else if (method === "OnTradeOfferReset") {
+      resetOffers(id);
+      if (args[1]) deps.say("CustomNotify", { type: "dict", entries: [["notify", deps.manifestMismatch()]] }, "The trade contents changed.");
+      else deps.say("ItemExchangeFailed", null, "The item exchange failed.");
+    } else if (method === "OnTradeCancel" || method === "OnTradeComplete") {
+      const other = w.state.traders.find(id => id !== deps.characterID())!;
+      deps.say(method === "OnTradeCancel" ? "TradeCancel" : "TradeComplete",
+        { type: "dict", entries: [["name", deps.name(other)]] }, method === "OnTradeCancel" ? "Trade canceled." : "Trade completed.");
+      close(method === "OnTradeCancel" ? { ...w, abortOnClose: false } : w);
+    }
+  }
+  async function open(moniker: TradeMoniker): Promise<void> {
+    const pending = opening.get(moniker.reference); if (pending) return pending.task;
+    const captured = generation, notices: [string, readonly unknown[]][] = [];
+    const task = (async () => {
+      const service = await listDirectTrade(deps.ask, moniker);
+      if (captured !== generation) return;
+      const existing = get(service.containerID);
+      if (existing) return;
+      const window = await listDirectTrade(deps.ask, moniker);
+      // Each native PlayerTrade inventory calls _GetItems. The simultaneous
+      // requests share one GenericCall result in TQ In station trade220-226.
+      const inventory = await listDirectTrade(deps.ask, moniker);
+      if (captured !== generation) return;
+      const characterID = deps.characterID();
+      if (characterID === null || !window.traders.includes(characterID)) return;
+      deps.requestNames(window.traders);
+      windows.update(all => [...all, { moniker, state: { ...window, items: inventory.items, money: [0, 0], offers: [null, null] },
+        acceptEnabled: true, abortOnClose: true, raised: ++raised }]);
+      for (const [method, args] of notices) apply(method, args);
+    })();
+    opening.set(moniker.reference, { task, notices });
+    try { await task; } finally { opening.delete(moniker.reference); }
+  }
+  async function start(characterID: number): Promise<void> {
+    const captured = generation, moniker = await initiateDirectTrade(deps.act, characterID);
+    if (captured !== generation) return;
+    // _ShowTradeSessionWindow performs its own List before OnTradeInitiate.
+    const state = await listDirectTrade(deps.ask, moniker);
+    if (captured !== generation) return;
+    if (get(state.containerID)) { amend(state.containerID, w => ({ ...w, raised: ++raised })); return; }
+    await open(moniker);
+  }
+  function receive(method: string | null, args: readonly unknown[]): void {
+    if (!method) return;
+    if (method === "OnPrimingNeededForTradeItems") {
+      const ids = isListValue(args[0]) ? args[0].items : Array.isArray(args[0]) ? args[0] : [];
+      deps.primeItems(ids.map(Number));
+    }
+    for (const pending of opening.values()) pending.notices.push([method, args]);
+    if (method === "OnTradeInitiate") {
+      const moniker = tradeMonikerOf(args[1] as JsonValue);
+      if (moniker) void open(moniker).catch(deps.report);
+    } else apply(method, args);
+  }
+  async function cancel(id: number): Promise<void> {
+    const w = get(id); if (!w || !w.abortOnClose || !await deps.confirm("ConfirmCancelTrade")) return;
+    if (!get(id)?.abortOnClose) return;
+    amend(id, current => ({ ...current, abortOnClose: false }));
+    await abortDirectTrade(deps.act, w.moniker);
+  }
+  async function accept(id: number): Promise<void> {
+    const w = get(id); if (!w?.acceptEnabled) return;
+    amend(id, current => ({ ...current, acceptEnabled: false }));
+    const foreignShip = w.state.items.some(row => Number(readRowField(row, "categoryID")) === 6
+      && Number(readRowField(row, "ownerID")) !== deps.characterID());
+    if (foreignShip && !await deps.confirm("TradeShipWarning")) { resetOffers(id); return; }
+    if (!get(id)) return;
+    try { await makeDirectTradeOffer(deps.act, w.moniker, w.state); }
+    catch (error) { resetOffers(id); throw error; }
+  }
+  async function offerMoney(id: number): Promise<void> {
+    const w = get(id); if (!w) return;
+    const index = w.state.traders.indexOf(deps.characterID() ?? 0);
+    const amount = await deps.quantity(w.state.money[index]!, await deps.wealth());
+    if (amount !== null && get(id)) await offerDirectTradeMoney(deps.act, w.moniker, amount);
+  }
+  function reset(abort = false): void {
+    const old = windows.get(); generation++; windows.set([]); opening.clear();
+    if (abort) for (const w of old) if (w.abortOnClose) void abortDirectTrade(deps.act, w.moniker).catch(deps.report);
+  }
+  return { windows: readonlySignal(windows), start, receive, cancel, accept, offerMoney, reset, report: deps.report };
+}
+export type DirectTrades = ReturnType<typeof createDirectTrades>;

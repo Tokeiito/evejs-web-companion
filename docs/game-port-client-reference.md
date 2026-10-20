@@ -2271,7 +2271,7 @@ and Cancel methods (loop evidence cdx2924, with UI/RPC boundaries recorded). A c
 two-account probe cdx2923/cdx2931 verified the existing server's returned/received monikers,
 carried List and subsequent bound List row shapes, True Abort and bilateral OnTradeCancel.
 The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or complete a trade.
-The full store baseline was restored byte for byte afterward. No browser trade UI exists yet.
+The full store baseline was restored byte for byte afterward. Later slices below add the browser UI.
 
 The same recording's lines386/388 prove corporate source inventory: a staged item changes from
 owner98826653/location1052880078604/flag115 to the offering pilot's trade row. Server commit
@@ -2314,8 +2314,31 @@ state, accepted both manifests and received completion for both pilots. Wallets 
 expected net0.25 and close Abort remained valid. Decoded wire3007 confirms the argument kinds;
 actual zero-money call3008 uses PyZeroReal0x0b. The TQ offer packet itself is LARGE PAYLOAD; the
 client's decoded scatter at968 exposes its manifest fields, not exact packet bytes. No TQ money
-offer was found. Browser controllers, window lifecycle, drop restrictions, ship-warning and money
-dialogs, notice-driven exchange state and guest-gated menus remain separate work.
+offer was found.
+
+The browser now owns each exchange in `app/directTrades.ts`, keyed by container and received
+moniker. It opens the native-sized window for incoming trades even when that pilot is inactive.
+The two native inventory requests share one List result (TQ220-226); actual cold browser capture
+cdx3043 shows four opening List calls for the source and three for the recipient, without polling.
+Money, manifests, item rows and closure follow the native notifications. Cancel asks the installed
+ConfirmCancelTrade question and clears its close-time reference before Abort; OnTradeCancel
+closes without another call. Completion closes with Abort. Both flows were observed in the browser:
+a .25/.50 ISK exchange completed with a net .25 transfer, then a new exchange canceled after first
+declining the confirmation. The actual wire contains two close-time Aborts for completion and one
+for cancellation, all True. Self and non-guest member menus omit Trade; a present guest gets it.
+
+Offer Money uses the current offer as minimum, wallet wealth as maximum, initial100 and digits2.
+The native float field trims excess decimals (original compiled SingleLineEditFloat29-41).
+Displayed offers use eveformat.isk's default zero decimals, while the manifest retains fractions;
+QtyPopup's hint uses FmtAmt's grouped whole bounds. Original compiled currency13-18 and FmtAmt
+confirm these separate display rules. The browser's first screenshot caught a clipped money label;
+its corrected 64px header and whole-ISK labels were then checked visually (cdx3045).
+
+Item drops and their native ownership, access and type gates remain the next controller slice.
+Rows update from item notices, but nonempty rows, ship warnings and offer resets have not yet
+been verified through this window. Inventory view controls, item menus/tooltips, drag behavior,
+splitter persistence, and additional character-menu placements remain follow-up work. The native
+ship-warning gate is implemented before MakeOffer; this unit's live exchange contained no ship.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
