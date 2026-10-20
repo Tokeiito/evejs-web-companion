@@ -15849,6 +15849,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      // CreateContactLabel (1015-1020) lets UserError reach the ordinary client
+      // dialog handler. A refused creation has no label ID and changes no book.
+      if (method === "CreateLabel" && sayRefusalDialog(error, "The contact label could not be created.")) return null;
       throw new Error(mailRefusalMessage(error));
     }
   }

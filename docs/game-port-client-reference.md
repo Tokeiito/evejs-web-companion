@@ -2064,6 +2064,22 @@ The recursive TQ corpus has an empty corporate `GetLabels` reply but no matching
 recording, so this establishes compiled-client behavior and local wire parity, not a TQ write
 default. CCP `blue/src/PyRowSet.cpp` 1151-1180 supports None in numeric DBRow columns.
 
+Contact label IDs must fit the native signed mask: positive powers of two through bit 62.
+The original `appConst.pyc` defines `maxLong = 9223372036854775807`; executing compiled
+`addressbookService.DeleteContactLabel` 1072-1089 in all three scopes clears bit 62 but
+leaves bit 63 assigned. CCP `blue/src/PyRowSet.cpp` 1208-1213 uses signed `PyLong_AsLongLong`
+for the corporate label ID's DBTYPE_I8 column. Ordinary EveJS create/delete cycles previously
+advanced a historical allocation hint to bit 63 and failed to marshal the reply after persisting
+the label. Server fix `79e033278` reuses a free valid bit when the hint exhausts the range and
+refuses a full 63-label book with the installed `LabelCantCreateMore` dialog. TQ allocation order
+and the exact capacity refusal are not recorded; choosing the free bit is an emulator policy.
+Live native calls covered 70 create/delete cycles per scope, full books, refusal without mutation,
+bit-62 reuse after deletion, retained bit 60 and a full server restart. The page now sends a label
+creation UserError through its ordinary client-dialog handler, matching compiled
+`eve_exception_handler.handle_exception` 34-38. Refused creation adds no label and retires no
+held label table. The browser shows the installed capacity wording and can create again after
+deleting a staged label. These checks used actual server replies without a response hook.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
