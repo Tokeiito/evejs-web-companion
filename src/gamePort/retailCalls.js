@@ -512,13 +512,16 @@ const FLAG_HANGAR = 4;
 const FLAG_CARGO = 5;
 /**
  * Is an Add the fitting's own unfitting of a module (fittingSlotController.UnfitModule, 238 and 241): a thing in a
- * slot of the pilot's ship, moved out of that ship to the hangar with no quantity named, or to the ship's own hold
- * with a quantity of None.
+ * slot of the pilot's ship. UnloadModuleToContainer1077-1104 also names qty=None
+ * with any destination flag, or omits both kwargs for a flagless container such
+ * as Trade. Preserve those forms as well as UnfitModule's hangar/cargo forms.
  */
 const unfitsAModule = (args, kwargs, context) => {
   if (!context || typeof context.slotOf !== "function" || args.length !== 2 || args[1] !== context.shipID) return false;
   if (context.slotOf(args[0]) === null) return false;
-  return kwargs.flag === FLAG_HANGAR ? !Object.hasOwn(kwargs, "qty") : kwargs.flag === FLAG_CARGO && kwargs.qty === null;
+  return !Object.hasOwn(kwargs, "qty")
+    ? kwargs.flag === FLAG_HANGAR || !Object.hasOwn(kwargs, "flag")
+    : kwargs.qty === null && Object.hasOwn(kwargs, "flag");
 };
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
@@ -661,6 +664,10 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "invbroker.EnterPassword",
+  "invbroker.GetPriceForItems",
+  "invbroker.GetSelfInvItem",
+  "itemLocking.GetItemsByLocation",
   // A server-returned direct-trade Moniker; the page binds it lazily with List.
   "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort", "trademgr.Add", "trademgr.MultiAdd", "trademgr.OfferMoney", "trademgr.MakeOffer",
   // xmppchatsvc.py 1197-1208 / 1257-1261: private allocation and elevated addition, both on the proxy.
@@ -1888,9 +1895,9 @@ function loading(args, kwargs, context) {
 }
 
 /**
- * clientDogmaLocation.UnloadAmmoFromModules and UnloadAmmoToContainer. With no
- * quantity the client sends the modules as a list; with one it names a single
- * module, the one the charge is in. The ship is the one the session is flying.
+ * clientDogmaLocation.UnloadAmmoFromModules sends a list; the module-container
+ * path sends one scalar module with three arguments. UnloadAmmoToContainer
+ * names one module and a fourth quantity (including None).
  */
 function unloading(args, kwargs, context) {
   const [shipID, modules, destination, quantity] = args;
@@ -1898,7 +1905,7 @@ function unloading(args, kwargs, context) {
   // Three: UnloadAmmoFromModules (1136), the modules a list; UnloadModuleToContainer (1095, 1097), one module and the
   // container, as Tranquility recorded it (UnloadAmmo(ship, module, ship)). Four: UnloadAmmoToContainer (1127), one
   // module, where, and the quantity, None where none is named, which goes as None.
-  if (args.length < 4) return { args: [shipID, list(modules), destination], kwargs, ...whose };
+  if (args.length < 4) return { args: [shipID, Array.isArray(modules) || modules?.type === "list" ? list(modules) : modules, destination], kwargs, ...whose };
   const several = Array.isArray(modules) ? modules : modules && Array.isArray(modules.items) ? modules.items : null;
   if (several === null) return { args: [shipID, modules, destination, quantity], kwargs, ...whose };
   if (several.length === 1) return { args: [shipID, several[0], destination, quantity], kwargs, ...whose };
@@ -2030,17 +2037,22 @@ const RETAIL_CALLS = Object.freeze({
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
+  "invbroker.EnterPassword": typing(same(`${INV_CACHE}:1442-1477`, "PasswordHandlerCallWrapper sends EnterPassword(passwordType, scalar text from NamePopup) on the SAME underlying bound inventory; type1 is general, type2 configuration. The return is ignored before retrying the original operation. Nonempty edit text is Unicode. No Tranquility capture established."), [1]),
+  "invbroker.GetSelfInvItem": judged(`${INV_CACHE}:966-975`, sentWithNothing, "invCacheContainer.GetItem reads its inventory's GetSelfInvItem(), as DogmaLocation.UnloadModuleToContainer1087-1088 requires before unloading to a Trade inventory."),
+  "itemLocking.GetItemsByLocation": same("eve/client/script/ui/services/corporation/itemLocking.py:30-34,57-64", "GetItemsByLocation(current station or docked structure), cached per location until OnLockedItemChange. invCacheContainer.MultiAdd1044 checks every ordinary item ID before acquiring a local broker lock."),
+  "invbroker.GetPriceForItems": reshaped(`${INV_CACHE}:769`, (args, kwargs) => ({ args: [list(args[0] ?? [])], kwargs }), "Asset Safety wrap GetPriceForItems([itemIDs]), before the recovery question and quantity popup."),
+  "structureAssetSafety.GetWrapNames": reshaped("eve/client/script/ui/shared/assets/assetSafetySvc.py:79", (args, kwargs) => ({ args: [list(args[0] ?? [])], kwargs }), "GetWrapNames(wrapIDs), a list of all requested wraps when any name is uncached."),
   "invbroker.GetAvailableTurretSlots": judged("achievements/client/eventHandler.py:427", sentWithNothing, "invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots(), nothing sent, on the ship's own inventory: how many of its turret hardpoints are free. The achievements' event handler asks it at every change of the session's ship to a ship (251 to 260, 419 to 429: godma's item of the ship first, and only for one of the ship category) and when what is fitted high changes (inventorysvc.py 124). Tranquility's recordings have it in 20: at a login, an ejection, a boarding."),
   "invbroker.List": reshaped(
     `${INV_CACHE}:1138`,
-    // self.moniker.List(flag=flag): the flag is always a keyword, None when there is none.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: kwargs.flag !== undefined ? kwargs.flag : args[0] ?? null } }),
+    // Local List1131-1138: the first positional flag wins, even 0/None. Keep local filters until listedRead consumes them.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: args.length > 0 ? args[0] : kwargs.flag ?? null } }),
     "List(flag=flag)",
   ),
   "invbroker.ListByFlags": reshaped(
     `${INV_CACHE}:1174`,
-    // self.moniker.ListByFlags(flags=uncachedFlags): a keyword, and a list.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(kwargs.flags !== undefined ? kwargs.flags : args[0] ?? []) } }),
+    // Local ListByFlags1167: positional flagIDs wins; listedRead sends only the uncached flags remotely.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(args.length > 0 ? args[0] ?? [] : kwargs.flags ?? []) } }),
     "ListByFlags(flags=[...])",
   ),
   "invbroker.GetCapacity": webOnly(
@@ -2121,7 +2133,9 @@ const RETAIL_CALLS = Object.freeze({
     // (fittingSlotController.UnfitModule): docked, of the hangar's inventory with no qty at all (238:
     // Add(moduleID, shipID, flag=const.flagHangar)), and in space, of the ship's own with a qty of None (241:
     // Add(moduleID, shipID, qty=None, flag=const.flagCargo)). A call of either form, of a thing a listing has in a
-    // slot of the pilot's ship, goes as it is said.
+    // slot of the pilot's ship, goes as it is said. DogmaLocation1077-1104
+    // additionally omits both kwargs for a flagless destination such as Trade,
+    // and names qty=None with other destination flags.
     (args, kwargs, context) => {
       if (kwargs.qty !== undefined && kwargs.qty !== null) return { status: "same" };
       if (unfitsAModule(args, kwargs, context)) return { status: "same" };

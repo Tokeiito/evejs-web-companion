@@ -66,7 +66,8 @@ export function decodeCorpDivisions(
     rows.push({
       key,
       division,
-      name: typeof name === "string" && name.trim() !== "" ? name : null,
+      // bco_corporations.GetDivisionNames uses truthiness, not whitespace trimming.
+      name: typeof name === "string" && name !== "" ? name : null,
       balance,
     });
   }
@@ -92,11 +93,10 @@ export function normalizeDivisionNames(
 
 // --- R54 Wallet ledger (journal + transactions) -----------------------------
 //
-// Two calls, one row shape. account.GetJournal answers a util.Rowset — a
-// header list + positional line lists (`buildJournalRowset`); account.
-// GetTransactions answers a list<util.KeyVal> (`buildTransactionList`). Both
-// carry the SAME twelve fields, so both decode through the shared `readRowField`
-// (a journal line is adapted into a positional packedrow view first) into one
+// account.GetJournal is a compatibility util.Rowset; the native GetTransactions
+// path answers a list of DBRows. Historical emulator KeyVals remain readable.
+// All decode through the shared `readRowField`
+// (a positional journal line is adapted into a packedrow view first) into one
 // LedgerEntry. Ref-types come from account.GetEntryTypes (a cached list), turned
 // into a entryTypeID -> human label map.
 //

@@ -1,5 +1,7 @@
 "use strict";
 
+const { InventoryItems } = require("./inventoryItems");
+
 // The client's inventory cache, kept for one pilot (eve/client/script/environment/invCache.py).
 //
 // The client holds one container for each key, as invCache.GetInventory and GetInventoryFromId make them: the
@@ -20,11 +22,16 @@
 // What the containers are forgotten at is the client's too (ProcessSessionChange 143 to 168, DoBallRemove 135): all
 // of them in another station, structure or solar system; the ship left behind in space; a ball that leaves the park.
 //
-// Not kept here: the container's own item (`self.item`, GetSelfInvItem asked of the server where it is not held),
-// which the client reads for a corporation's item in a container of one of the container groups and for the
-// capacity it keeps; here such an item is cached only by the other rules, and no capacity is kept (the page reckons
-// a container's capacity from what is listed). The cargo containers among a batch of changed items, which the client
+// The container's own item is kept separately, as _SetItemData966-975 does. A first station hangar List needs it
+// for the lazy itemID property; numeric container IDs are seeded by their bind, so their List does not fetch it.
+// Its public item can separately be replaced by OnItemChange; that does not prime the backing typeID property.
+// No capacity is kept here (the page reckons a container's capacity from what is listed).
+// The cargo containers among a batch of changed items, which the client
 // asks the server to validate (ValidateLocationCacheForItems), are not asked about.
+// cachedItems retains its Python2 dictionary table across inserts/deletes;
+// List scans that table, not insertion order. The input is each row ingress
+// sequence: a remote DBRow set's allocator-dependent iteration is a separate
+// boundary (CCP PyRowSet.cpp hashes object pointers), not an item-ID sort.
 
 /** The columns of an inventory row by their index in it, as a change is given (const.ixItemID ... ixCustomInfo). */
 const COLUMN_BY_IX = ["itemID", "typeID", "ownerID", "locationID", "flagID", "quantity", "groupID", "categoryID", "customInfo"];
@@ -87,7 +94,7 @@ function createPilotInventory({ rowFields, session }) {
   const hold = (key, objectID) => {
     const [location, owner] = key.split("|");
     if (!containers.has(key)) {
-      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new Map(), listed: new Set(), work: Promise.resolve() });
+      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new InventoryItems(), listed: new Set(), work: Promise.resolve() });
     } else {
       containers.get(key).objectID = objectID;
     }
@@ -121,6 +128,9 @@ function createPilotInventory({ rowFields, session }) {
     return null;
   };
 
+  /** Public .item notice override, then the lazy backing row, then an already-listed parent row. */
+  const ownRowOf = (container) => container.ownItem ?? container.selfItem ?? rowOf(container.location);
+
   /** What a container answers for what is listed in it: its rows that `keep` keeps, as a list. */
   const answerOf = (container, keep) => ({
     type: "list",
@@ -147,6 +157,23 @@ function createPilotInventory({ rowFields, session }) {
     }
   };
 
+  /** Original _SetItemData keeps itemID/typeID/item together, independently of cachedItems. */
+  function selfItem(key, ask) {
+    const container = containers.get(key);
+    if (!container) return ask();
+    if (container.selfItem !== undefined) return Promise.resolve(container.selfItem);
+    if (container.selfWork) return container.selfWork;
+    const work = Promise.resolve().then(ask).then((row) => {
+      const own = fieldsOf(row);
+      if (!own || own.itemID == null || own.typeID == null) throw new Error("The inventory did not return its own item and type.");
+      if (containers.get(key) === container) container.selfItem = row;
+      return row;
+    });
+    container.selfWork = work;
+    void work.finally(() => { if (container.selfWork === work) container.selfWork = null; }).catch(() => {});
+    return work;
+  }
+
   /** invCacheContainer._ProcessItemChange, for one container. */
   function processItemChange(container, row, item, old, change, s) {
     const { location, owner } = container;
@@ -160,9 +187,10 @@ function createPilotInventory({ rowFields, session }) {
       if (QUERY_ROLE_BY_FLAG.has(item.flagID)) role = QUERY_ROLE_BY_FLAG.get(item.flagID);
       else {
         // self.item.groupID in const.containerGroupIDs: the container's own row, where one is held.
-        const own = fieldsOf(rowOf(location) ?? null);
+        const own = fieldsOf(ownRowOf(container));
         if (own && CONTAINER_GROUP_IDS.has(own.groupID) && !(item.locationID < MIN_PLAYER_OWNER)) {
-          const holder = fieldsOf(rowOf(item.locationID) ?? null);
+          const held = containers.get(containerKey(item.locationID, null));
+          const holder = fieldsOf(held ? ownRowOf(held) : rowOf(item.locationID));
           if (holder && QUERY_ROLE_BY_FLAG.has(holder.flagID)) role = QUERY_ROLE_BY_FLAG.get(holder.flagID);
         }
       }
@@ -187,7 +215,12 @@ function createPilotInventory({ rowFields, session }) {
         items.delete(id);
         return;
       }
-      if (item.ownerID === s.corpid) items.set(id, row);
+      if (item.ownerID === s.corpid) {
+        // Original compiled _ProcessItemChange1390-1399 deletes then reinserts
+        // valid delivery rows even when custody is unchanged; retain the dummy slot history.
+        if (items.has(id)) items.delete(id);
+        items.set(id, row);
+      }
     } else if (item.locationID !== location || item.stacksize === 0) {
       items.delete(id);
     } else if (old.locationID !== location && item.locationID === location) {
@@ -212,6 +245,7 @@ function createPilotInventory({ rowFields, session }) {
   }
 
   return {
+    selfItem,
     /** Every row any container holds. */
     rows: () => [...containers.values()].flatMap((container) => [...container.items.values()]),
     /** The key of the container (location, owner). */
@@ -246,10 +280,11 @@ function createPilotInventory({ rowFields, session }) {
     },
     /**
      * invCacheContainer.List(flag): the flag's items, asked for (`ask()`) where the flag has not been listed, and
-     * answered from what the container holds. `typeID` narrows it as the client's keyword does. Where no container
+     * answered from what the container holds. `typeID` narrows it when present, including None/0 (List1159).
+     * Undefined alone means no type filter. Where no container
      * is held for the key, it is asked and nothing is kept.
      */
-    list(key, flag, ask, typeID = null) {
+    list(key, flag, ask, typeID, askSelf = null) {
       const container = containers.get(key);
       if (!container) return ask();
       return inTurn(container, async () => {
@@ -257,16 +292,18 @@ function createPilotInventory({ rowFields, session }) {
           const answer = await ask();
           if (containers.get(key) !== container) return answer;
           takeListed(container, answer);
+          // List1145 evaluates self.itemID after the remote listing, even when that listing is empty.
+          if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
           container.listed.add(flag);
         }
-        return answerOf(container, (fields) => (flag === null || fields.flagID === flag) && (typeID === null || fields.typeID === typeID));
+        return answerOf(container, (fields) => (flag === null || fields.flagID === flag) && (typeID === undefined || fields.typeID === typeID));
       });
     },
     /**
      * invCacheContainer.ListByFlags(flags): the flags not listed yet asked for (`ask(unlisted)`), alone, and the
      * flags' items answered from what the container holds.
      */
-    listByFlags(key, flags, ask, typeID = null) {
+    listByFlags(key, flags, ask, typeID, askSelf = null) {
       const container = containers.get(key);
       if (!container) return ask(flags);
       return inTurn(container, async () => {
@@ -276,9 +313,10 @@ function createPilotInventory({ rowFields, session }) {
           const answer = await ask(unlisted);
           if (containers.get(key) !== container) return answer;
           takeListed(container, answer);
+          if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
           for (const flag of unlisted) container.listed.add(flag);
         }
-        return answerOf(container, (fields) => flags.includes(fields.flagID) && (typeID === null || fields.typeID === typeID));
+        return answerOf(container, (fields) => flags.includes(fields.flagID) && (typeID === undefined || fields.typeID === typeID));
       });
     },
     /**
@@ -297,7 +335,12 @@ function createPilotInventory({ rowFields, session }) {
       if (containers.has(was)) processItemChange(containers.get(was), row, item, old, change, s);
       if ((is !== was || change.has(IX.FLAG)) && containers.has(is)) processItemChange(containers.get(is), row, item, old, change, s);
       const itself = containerKey(item.itemID, null);
-      if (containers.has(itself) && old.ownerID === s.charid && s.charid !== item.ownerID) containers.delete(itself);
+      if (containers.has(itself)) {
+        if (old.ownerID === s.charid && s.charid !== item.ownerID) containers.delete(itself);
+        // Original OnItemChange295-300 replaces public .item, independently of _item/_typeID.
+        // A cold notice must not suppress a later lazy typeID's GetSelfInvItem.
+        else containers.get(itself).ownItem = row;
+      }
     },
     /** One container let go (DoBallRemove; a ship left in space). */
     drop(key) {
@@ -309,7 +352,7 @@ function createPilotInventory({ rowFields, session }) {
      */
     dropOwnedBy(ownerID) {
       for (const [key, container] of containers) {
-        const own = fieldsOf(rowOf(container.location));
+        const own = fieldsOf(ownRowOf(container));
         if (own && own.ownerID === num(ownerID)) containers.delete(key);
       }
     },

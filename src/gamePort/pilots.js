@@ -5525,14 +5525,25 @@ function createGamePortPilots({
    * was bound to, asked only for what it has not listed (pilotInventory.js); a handle bound to no container held, as
    * the listing it asked was answered (INVENTORY_LISTINGS).
    */
-  function listedRead(entry, object, boundHandle, method, form, sent) {
+  function listedRead(entry, object, boundHandle, method, form, sent, selfRead) {
     if (object.container === undefined) return entry.listings.read(listingKeptAs(boundHandle, form), sent);
     const kwargs = form.kwargs ?? {};
-    const typeID = kwargs.typeID === undefined ? null : positive(kwargs.typeID);
-    if (method === "List") return entry.inventory.list(object.container, flagOf(kwargs.flag), () => sent(), typeID);
-    const flags = itemsOf(kwargs.flags).map(flagOf).filter((flag) => flag !== null);
-    // self.moniker.ListByFlags(flags=uncachedFlags): only the flags not listed are asked.
-    return entry.inventory.listByFlags(object.container, flags, (unlisted) => sent({ ...form, kwargs: { ...kwargs, flags: { type: "list", items: unlisted } } }), typeID);
+    // Python numeric equality for the row's integer fields; preserve None and strings as distinct filters.
+    // Keep the caller's wire values separately: local equality must not change remote int/long/bool representation.
+    const filterValue = (value) => {
+      if (typeof value === "boolean" || typeof value === "bigint") return Number(value);
+      if (value?.type === "long" && /^-?\d+$/.test(String(value.value))) return Number(BigInt(value.value));
+      return value;
+    };
+    const typeID = filterValue(kwargs.typeID);
+    // Original List1138 consumes typeID/securityCode/other kwargs locally, fetching all types with only flag.
+    if (method === "List") return entry.inventory.list(object.container, filterValue(kwargs.flag), () => sent({ ...form, kwargs: { flag: kwargs.flag } }), typeID, selfRead);
+    const rawFlags = itemsOf(kwargs.flags), flags = rawFlags.map(filterValue);
+    // Original ListByFlags1174 sends only uncachedFlags, preserving their input order, duplicates and None.
+    return entry.inventory.listByFlags(object.container, flags, (unlisted) => {
+      const cold = new Set(unlisted);
+      return sent({ ...form, kwargs: { flags: { type: "list", items: rawFlags.filter((_, i) => cold.has(flags[i])) } } });
+    }, typeID, selfRead);
   }
 
   /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
@@ -6237,12 +6248,22 @@ function createGamePortPilots({
     };
     // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
     const listing = service === "invbroker" && INVENTORY_LISTINGS.has(method);
+    // A lazy property read on the same container, with its own native method/ledger entry.
+    const selfRead = async () => {
+      const ownForm = shape("invbroker", "GetSelfInvItem", [], null, contextFor(entry));
+      ledger.note("invbroker", "GetSelfInvItem", ownForm);
+      return object.params === undefined
+        ? entry.session.callBound(object.objectID, "GetSelfInvItem", argumentsToWire(ownForm.args), ownForm.kwargs)
+        : handleCall(entry, String(boundHandle), object, "GetSelfInvItem", argumentsToWire(ownForm.args), ownForm.kwargs);
+    };
     // A planet's colony and what the planet carries are kept by the planet, where they are asked as the client asks them.
     const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
     const allianceVersionForCall = entry.allianceVersion;
     try {
-      result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
+      result = await run(entry, service, method, () => (listing ? listedRead(entry, object, boundHandle, method, form, sent, selfRead)
+        : service === "invbroker" && method === "GetSelfInvItem" && object.container !== undefined && form.args.length === 0 && form.kwargs === null ? entry.inventory.selfItem(object.container, sent)
+          : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
       if (mayChangeContents(service, method)) entry.listings.forget();
       forgetKeptAfter(entry, service, method);
