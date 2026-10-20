@@ -722,7 +722,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
-import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, corporateJournalLines, canViewCorporateJournal, type WalletJournalRead, type CorpWalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
@@ -2584,6 +2584,8 @@ export interface AppFlow {
    */
   readonly walletJournal: ReadableSignal<WalletJournalRead>;
   loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  readonly corpWalletJournal: ReadableSignal<CorpWalletJournalRead>;
+  loadCorpWalletJournal(accountKey?: number, year?: number | null, month?: number | null): Promise<void>;
   /**
    * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
    * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
@@ -5611,6 +5613,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
       if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
+        corpWalletJournalGeneration += 1;
+        corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+        walletReads.corporationChanged();
         containerReadGeneration += 1;
         const open = store.inventory.get().container;
         if (open && (open.safety || safetyWrapAncestor(open.itemID, safetyItemCache) !== null)) store.apply({ type: "inventory/container", container: null });
@@ -14644,6 +14649,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
   const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
   let walletJournalGeneration = 0;
+  const NO_CORP_WALLET_JOURNAL: CorpWalletJournalRead = { ...NO_WALLET_JOURNAL, accountKey: 1000, corporationID: null };
+  const corpWalletJournalSignal = createSignal<CorpWalletJournalRead>(NO_CORP_WALLET_JOURNAL);
+  let corpWalletJournalGeneration = 0;
   let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
   const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
     journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
@@ -14674,6 +14682,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
+  }
+
+  function corporateJournalAccountKey(): number {
+    try {
+      const key = Number(settingsStorage?.getItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`) ?? 1000);
+      return Number.isInteger(key) && key >= 1000 && key <= 1006 ? key : 1000;
+    } catch { return 1000; }
+  }
+
+  async function loadCorpWalletJournal(accountKey: number = corporateJournalAccountKey(),
+    year: number | null = corpWalletJournalSignal.get().year, month: number | null = corpWalletJournalSignal.get().month): Promise<void> {
+    const online = store.station.get().online, generation = ++corpWalletJournalGeneration;
+    if (!online?.corporationID || !canViewCorporateJournal(online.corpRole)) {
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+      return;
+    }
+    if (!Number.isInteger(accountKey) || accountKey < 1000 || accountKey > 1006) throw new Error("Choose a corporation wallet division.");
+    // CorpTransactionsPanel's accountkey is a user setting, independent of
+    // the active spending division (session.corpAccountKey).
+    try { settingsStorage?.setItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`, String(accountKey)); } catch { /* Keep the live choice. */ }
+    const held = corpWalletJournalSignal.get();
+    if (held.accountKey !== accountKey || held.year !== year || held.month !== month || held.corporationID !== online.corporationID) {
+      corpWalletJournalSignal.set({ ...NO_CORP_WALLET_JOURNAL, accountKey, year, month, corporationID: online.corporationID });
+    }
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.corporateJournal(accountKey, year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== corpWalletJournalGeneration || store.station.get().online?.corporationID !== online.corporationID
+      || store.station.get().online?.corpRole !== online.corpRole) return;
+    for (const each of [entries, kinds]) if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    const readable = entries.status === "fulfilled" && isListValue(entries.value);
+    corpWalletJournalSignal.set({ accountKey, corporationID: online.corporationID, year, month, loaded: true,
+      lines: entries.status === "fulfilled" ? corporateJournalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : held.kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? errorWords(entries.reason) : !readable ? "The corporation journal could not be read." : kinds.status === "rejected" ? errorWords(kinds.reason) : null });
   }
 
   // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
@@ -28568,6 +28610,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationAggression.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
+      corpWalletJournalGeneration += 1;
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
@@ -30191,6 +30235,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMarketTransactions,
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
+    corpWalletJournal: readonlySignal(corpWalletJournalSignal),
+    loadCorpWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
     abyssalTimer: readonlySignal(abyssalTimerSignal),
     collapseWarning: readonlySignal(collapseWarningSignal),

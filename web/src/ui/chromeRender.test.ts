@@ -71,7 +71,9 @@ function fakeFlow(): unknown {
   // And the HUD's buff bar (BuffBar) the buffs on the ship: none.
   const noBuffs = { incoming: new Map(), clockOffsetMs: 0, facts: new Map(), iconFiles: new Map(), percentUnitName: "", jammers: new Map(), activeJams: [], jamTimers: new Map(), shipEffects: [] };
   const buffBar = { get: () => noBuffs, subscribe: (listener: (value: typeof noBuffs) => void) => (listener(noBuffs), () => {}) };
-  return new Proxy({ walletJournal, walletOverview, marketTransactions, autopilotOn, buffBar } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  const corporate = { ...unread, accountKey: 1000, corporationID: null };
+  const corpWalletJournal = { get: () => corporate, subscribe: (listener: (value: typeof corporate) => void) => (listener(corporate), () => {}) };
+  return new Proxy({ walletJournal, corpWalletJournal, walletOverview, marketTransactions, autopilotOn, buffBar } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 const SHIP_ID = 9001;
