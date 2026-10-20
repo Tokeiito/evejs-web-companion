@@ -9,7 +9,8 @@
   import { resolvedName } from "../store/names.ts";
   import { showOwnerInfo } from "./ownerInfo.ts";
   import { doubleClickOwner } from "./ownerDoubleClick.ts";
-  let { store, flow, active = false }: { store: ClientStore; flow: AppFlow; active?: boolean } = $props();
+  import MemberUserActions from "./MemberUserActions.svelte";
+  let { store, flow, active = false, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; active?: boolean; openMail?: () => void; openWatchlist?: () => void } = $props();
   // svelte-ignore state_referenced_locally
   const words = store.words;
   // svelte-ignore state_referenced_locally
@@ -33,6 +34,8 @@
   let ids = $state<readonly number[]>([]), viewFrom = $state(0), perPage = $state(10), pending = $state(0);
   const pageIDs = $derived(ids.slice(viewFrom, viewFrom + perPage));
   let chosen = $state<number[]>([]);
+  let menuFor = $state<number | null>(null);
+  const selectedIDs = $derived(pageIDs.filter(id => chosen.includes(id)));
   let anchor: number | null = null, disposed = false;
   const current = () => { if (disposed) throw new Error("This member query window has closed."); };
   const word = (key: string, fallback = key) => plainText($words.templates[key.includes("/") ? key : P + key] ?? fallback);
@@ -115,11 +118,12 @@
   }
   async function execute(): Promise<void> {
     pending++; error = "";
-    try { const result = await flow.corporationMemberQuery(nodes.map(n => n.row), current); if (!disposed) { ids = result; chosen = []; } }
+    try { const result = await flow.corporationMemberQuery(nodes.map(n => n.row), current); if (!disposed) { ids = result; chosen = []; menuFor = null; } }
     catch (cause) { if (!disposed) error = cause instanceof Error ? cause.message : String(cause); }
     finally { if (!disposed) pending--; }
   }
   function select(event: MouseEvent | KeyboardEvent, id: number): void {
+    menuFor = null;
     // SimpleView slices before Scroll.Load: selection operates on this page's nodes.
     const at = pageIDs.indexOf(id), ctrl = event.ctrlKey || event.metaKey;
     const ranged = anchor !== null && anchor !== at;
@@ -129,6 +133,11 @@
     else if (ctrl) chosen = chosen.includes(id) ? chosen.filter(n => n !== id) : [...chosen, id];
     else chosen = [id];
     anchor = at;
+  }
+  function openMenu(event: MouseEvent | KeyboardEvent, id: number): void {
+    event.preventDefault();
+    if (!chosen.includes(id)) select(event, id);
+    menuFor = id;
   }
   function info(id: number, double = false): void {
     void (double ? doubleClickOwner(flow, id) : showOwnerInfo(flow, id)).catch(cause => { if (!disposed) error = String(cause); });
@@ -186,14 +195,16 @@
       {#if showOptions}<div class="query-options"><label><input type="checkbox" checked={$titlesValue} onchange={e => titles.set(e.currentTarget.checked)} />{word("SearchTitles")}</label><label><input type="checkbox" checked={$impliedValue} onchange={e => implied.set(e.currentTarget.checked)} />{word("IncludeImpliedRoles")}</label></div>{/if}
     </div>
     <h3>{word("SimpleList")}</h3>
-    <div class="browse"><select aria-label="Members per page" bind:value={perPage} onchange={() => chosen = []}>{#each [10, 25, 50, 100, 500] as count}<option value={count}>{formatted("SimpleView/MembersPerPage", { num: count }, "{num} members per page")}</option>{/each}</select><span>{pending ? "…" : ""}</span>
-      {#if viewFrom > 0}<button type="button" onclick={() => { viewFrom = Math.max(0, viewFrom - perPage); chosen = []; }}>{word("UI/Common/Previous", "Previous")}</button>{/if}
-      {#if viewFrom + perPage < ids.length}<button type="button" onclick={() => { viewFrom += perPage; chosen = []; }}>{word("UI/Common/ViewMore", "View More")}</button>{/if}
+    <div class="browse"><select aria-label="Members per page" bind:value={perPage} onchange={() => { chosen = []; menuFor = null; }}>{#each [10, 25, 50, 100, 500] as count}<option value={count}>{formatted("SimpleView/MembersPerPage", { num: count }, "{num} members per page")}</option>{/each}</select><span>{pending ? "…" : ""}</span>
+      {#if viewFrom > 0}<button type="button" onclick={() => { viewFrom = Math.max(0, viewFrom - perPage); chosen = []; menuFor = null; }}>{word("UI/Common/Previous", "Previous")}</button>{/if}
+      {#if viewFrom + perPage < ids.length}<button type="button" onclick={() => { viewFrom += perPage; chosen = []; menuFor = null; }}>{word("UI/Common/ViewMore", "View More")}</button>{/if}
     </div>
     <ul class="query-results" aria-label="Member query results">{#each pageIDs as id}
       {@const name = resolvedName($names.resolved, "owner", id, String(id))}
-      <li class:selected={chosen.includes(id)}><button type="button" class="member-name" aria-pressed={chosen.includes(id)} onclick={event => select(event, id)} ondblclick={() => info(id, true)} onkeydown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); chosen = [...pageIDs]; } }}>{name}</button><button type="button" aria-label={`Show Info: ${name}`} onclick={() => info(id)}>ⓘ</button></li>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions (the name button also offers keyboard selection and a context menu) -->
+      <li class:selected={chosen.includes(id)} oncontextmenu={event => openMenu(event, id)}><button type="button" class="member-name" aria-pressed={chosen.includes(id)} onclick={event => select(event, id)} ondblclick={() => info(id, true)} onkeydown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); chosen = [...pageIDs]; menuFor = null; } else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") openMenu(event, id); }}>{name}</button><button type="button" aria-label={`Show Info: ${name}`} onclick={() => info(id)}>ⓘ</button><button type="button" aria-label={`Menu: ${name}`} aria-expanded={menuFor === id} onclick={event => openMenu(event, id)}>⋯</button></li>
     {:else}<li>{word("UI/Wallet/WalletWindow/SearchNoResults", "No results found")}</li>{/each}</ul>
+    <MemberUserActions {store} {flow} ownerIDs={selectedIDs} active={active && menuFor !== null} onDone={() => menuFor = null} {openMail} {openWatchlist} />
   {/if}
 </section>
 {/if}

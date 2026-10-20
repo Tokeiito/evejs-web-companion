@@ -121,7 +121,7 @@
         {#key $station.online.allianceID}<Contacts {store} {flow} contactType="alliancecontact" {openWatchlist} />{/key}
       {/if}
       {/if}
-      {#if administration.findMembers}<div hidden={panel !== "find"}><CorporationFindMembers {store} {flow} active={panel === "find"} /></div>{/if}
+      {#if administration.findMembers}<div hidden={panel !== "find"}><CorporationFindMembers {store} {flow} active={panel === "find"} {openMail} {openWatchlist} /></div>{/if}
       {/key}
     </div>
   </div>
