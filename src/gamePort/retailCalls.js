@@ -51,6 +51,8 @@ const { NO_OPTIONAL_MATERIAL } = require("../../web/src/bridge/industryReckoning
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
+// Compiled MedalRibbonPickerWindow.SubmitData553-560 builds nested lists.
+const medalGraphics = (value) => Array.isArray(value) ? list(value.map(list)) : value?.type === "list" && Array.isArray(value.items) ? { ...value, items: value.items.map(list) } : value;
 
 /**
  * A market order's ID as the client has it: a number, off the order's row. The BFF's routes have it as the text the
@@ -770,8 +772,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A pilot's employment record and character transfers, which the client's History panel's employment tab asks
   // (infosvc.py 2842). The gateway's list has nothing of the corporation service's.
   "corporationSvc.GetEmployementRecordAndCharacterTransfers",
-  // medals.py60/87/108: catalogue, received medals and awards on RemoteSvc.
-  "corporationSvc.GetAllCorpMedals", "corporationSvc.GetMedalsReceived", "corporationSvc.GiveMedalToCharacters",
+  // medals.py60/64/87/89/108: catalogue, recipients, received medals, details and awards on RemoteSvc.
+  "corporationSvc.GetAllCorpMedals", "corporationSvc.GetRecipientsOfMedal", "corporationSvc.GetMedalDetails", "corporationSvc.GetMedalsReceived", "corporationSvc.CreateMedal", "corporationSvc.GiveMedalToCharacters",
   // A folder of the mail window marked read, trashed, and the trash restored (evemail.py StaticMenu). The gateway's
   // list has the mail manager's others, not these.
   "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
@@ -2770,13 +2772,17 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
   "corpRegistry.GetMemberTrackingInfo": same(`${CORP_SVC}/base_corporation.py:865`, "GetCorpRegistry().GetMemberTrackingInfo(), no arguments, for a Director. Recorded bound in Archive/Opening all corp admin panels and assets search.txt:1033; cached for five minutes."),
   "corpRegistry.GetMemberTrackingInfoSimple": same(`${CORP_SVC}/base_corporation.py:867`, "GetCorpRegistry().GetMemberTrackingInfoSimple(), no arguments, for other members. CorpMemberTracking.ShowMemberTracking asks again as filters change."),
+  "corpRegistry.SetAccountKey": same(`${CORP_SVC}/bco_members.py:249`, "One unchanged wallet account key on the corporation moniker. base_corporation.SetAccountKey165 uses PerformSessionChange with violateSafetyTimer=True. TQ Receiving Corp Roles1899/1918/2107 records key1000, corpAccountKey notification and True reply."),
   "corpRegistry.GetMember": same(`${CORP_SVC}/bco_members.py:168`, "GetCorpRegistry().GetMember(charID), positional on the corporation moniker. EditMemberDialog reads the viewer's grantable state and the target member."),
   "corpRegistry.MoveCompanyShares": same(`${CORP_SVC}/bco_shares.py:43`, "Compiled EditMemberDialog.OnGiveShares526 uses QtyPopup(2147483647,1,'1',HowManySharesToGive(player=charID),GiveShares), then MoveCompanyShares(session.corpid,charID,qty); Cancel sends nothing, no role gate or profile Apply. Wallet GiveSharesDialog.TransferShares104 passes the holding's issuerID as first argument; CorpSharesPanel.GetOwnerID supplies session.corpid as owner. Both send three unchanged positional arguments on the current corporation moniker; no TQ transfer recording found."),
   "charMgr.GetPrivateInfo": same("eve/client/script/ui/shared/neocom/corporation/corp_dlg_edit_member.py:148", "RemoteSvc('charMgr').GetPrivateInfo(charID), the one positional character ID, when Member Details loads the character."),
   "corpRegistry.UpdateMember": same(`${CORP_SVC}/bco_members.py:243`, "UpdateMember(charID,title,divisionID,squadronID,roles,grantableRoles,rolesAtHQ,grantableRolesAtHQ,rolesAtBase,grantableRolesAtBase,rolesAtOther,grantableRolesAtOther,baseID,titleMask,blockRoles), all 15 positional. Member Details General preserves role masks, titleMask=None, blockRoles=None; typed title Unicode."),
   "corpRegistry.KickOutMembers": reshaped(`${CORP_SVC}/base_corporation.py:469`, ownersListed, "Compiled KickOutMultipleMembers forwards the merged Python list of character IDs as one argument. Preserve list type on the native wire; a JS array alone would marshal as a tuple. The originating registry and result handling are unchanged. No exact plural-expulsion recording was found."),
   "corporationSvc.GetAllCorpMedals": same("eve/client/script/ui/services/medals.py:60", "RemoteSvc('corporationSvc').GetAllCorpMedals(corpID), catalogue and graphics rowsets; recorded as a cached object in Archive/Opening all corp admin panels and assets search.txt:1242-1261."),
+  "corporationSvc.GetRecipientsOfMedal": same("eve/client/script/ui/services/medals.py:64", "RemoteSvc('corporationSvc').GetRecipientsOfMedal(medalID), lazily from corp_ui_member_decorations.GetMedalSubContent112-149; repeated recepientID rows form one awardee entry."),
+  "corporationSvc.GetMedalDetails": same("eve/client/script/ui/services/medals.py:89", "RemoteSvc('corporationSvc').GetMedalDetails(medalID); infoContentBase1450-1453 and675-687 read info[0] separately for caption/description and corporation/count header."),
   "corporationSvc.GetMedalsReceived": same("eve/client/script/ui/services/medals.py:87", "GetMedalsReceived(characterID), received medal and graphics rowsets, invalidated by OnMedalIssued/OnMedalStatusChanged."),
+  "corporationSvc.CreateMedal": typing(reshaped("eve/client/script/ui/services/medals.py:31-53", ([title, description, graphics, ...rest], kwargs) => ({ args: [title, description, medalGraphics(graphics), ...rest], kwargs }), "Unicode title/description and nested Python graphics lists from MedalRibbonPickerWindow.SubmitData553-560. Initial three arguments; fourth True only after ConfirmCreatingMedal and Yes. No recorded TQ fee or confirmation policy."), [0, 1]),
   "corporationSvc.GiveMedalToCharacters": typing(reshaped("eve/client/script/ui/services/medals.py:108", ([medalID, recipients, ...rest], kwargs) => ({ args: [medalID, list(recipients), ...rest], kwargs }), "Scalar medal ID, Python list of recipients, Unicode reason; fourth True only after a ConfirmGivingMedal* refusal and Yes. Top-level RemoteSvc, not the corporation moniker. No TQ award capture found."), [2]),
   "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
   "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),

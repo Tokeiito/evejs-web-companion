@@ -1813,9 +1813,12 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureDocking.Dock", "structureDocking.Undock",
     // A pilot's employment record and transfers, by the client's History panel. The gateway's list has nothing of the corporation service's.
     "corporationSvc.GetEmployementRecordAndCharacterTransfers",
-    // Original compiled medals.py60,87,108-116: catalogue, received medals and
-    // native top-level award; no gateway aliases or corporation moniker.
-    "corporationSvc.GetAllCorpMedals", "corporationSvc.GetMedalsReceived", "corporationSvc.GiveMedalToCharacters",
+    // Original compiled medals.py31-53,60,64,87,89,108-116: catalogue, lazy recipients,
+    // details, received medals, creation and award; no corporation moniker.
+    "corporationSvc.GetAllCorpMedals", "corporationSvc.GetRecipientsOfMedal", "corporationSvc.GetMedalDetails", "corporationSvc.GetMedalsReceived", "corporationSvc.CreateMedal", "corporationSvc.GiveMedalToCharacters",
+    // bco_members.SetAccountKey249: one key on the corporation moniker;
+    // TQ Receiving Corp Roles1899/1918/2107 records key1000 and True.
+    "corpRegistry.SetAccountKey",
     // A folder of the mail window marked read, trashed, and the trash restored. The gateway's list has the mail manager's others, not these.
     "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
     // A mailing list's mails marked read and trashed, and its owner's delete of it. The gateway's list has none of them.

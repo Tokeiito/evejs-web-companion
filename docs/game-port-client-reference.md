@@ -1574,6 +1574,57 @@ third participant. A real successful preflight held across a change of pilot ret
 or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
 verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
 
+Owner double-click (read 2026-10-19). `userentry.User.OnDblClick` (565-588),
+`chat/client/member_list_entry` (343-355) and `xmppchatuserentry2` (335-347) honor a
+custom node callback first. Ordinary rows read `settings.user.ui.dblClickUser`,
+default0: ShowInfo takes cfg.eveowners' actual typeID and ownerID; choice1 enters
+the chat Invite path above without the character menu's self/NPC gate. The chat
+service supplies the corresponding native refusals. `ConstructChatSettings`
+(systemmenu1197-1206) offers Show Info0/Start Conversation1; SettingsSvc keys the
+user section by userid, separately from character settings. Contacts and member
+tracking supply ordinary User entries. Search selects User for owner categories,
+but AgentEntry for agents. Its OnDblClick966-978 retains the agent conversation
+callback while docked and ignores this choice.
+
+The original compiled three owner methods confirmed both choices, actual owner
+type arguments, custom overrides and destroyed entries. The browser now shares
+the setting between one account's pilots, separately from other accounts, and
+uses it for contact/search/member/chat roster rows. Actual AppFlow and browser
+sessions verified these scopes, persistence, info versus chat dispatch and agent
+callback precedence. Native recorded traffic contained the expected private
+channel creations and elevated AddCharacterToChannel calls, with NPC DoAction
+separate. Recursive corpus searches found no dblClickUser or CreatePrivateChannel
+capture; unrelated space-double-click telemetry is not evidence of this gesture.
+
+Explicit owner Show Info (read2026-10-19). User.ShowInfo549-552 and menusvc579-580
+use cfg.eveowners' actual type; GetMenuFromItemIDTypeID2281-2297 offers it for
+corporation/alliance/faction owners too. Their shared Contacts menu now does so,
+independently of the configured double-click action. Missing local ownerType
+resolution for NPC/faction rows is fixed: LoadEveOwners548-584 preloads faction30,
+NPC corporation2 and NPC character1373. Known rows use local tables; player types
+retain the native GetMultiOwnersEx read. Original compiled User.ShowInfo, actual
+AppFlow types and desktop/phone typed corporation/faction windows verified this.
+Recorded owner-type reads contain player owners only, no NPC/faction lookup and
+no private-chat creation. The compiled ShowInfo window selection policy and the
+window-manager port and remaining asynchronous reconstruction unit are recorded in
+[game-port-info-windows.md](game-port-info-windows.md).
+
+Independent info windows (c6b1,2026-10-19). Original compiled ShowInfo412-454,
+its bucket/registration helpers, HistoryBuffer and InfoWindow.NavigateHistory
+confirm newest-created reuse, duplicate modern no-op, legacy reconstruction,
+new/addNewWindow/Shift/user preference, modal decisions and history routing.
+Original idCheckers and installed type/group data determine ship/ordinary and
+character/corporation/legacy content; generic type0 has group0 and is valid.
+The browser now keeps per-pilot windows, components, history and geometry, with
+desktop focus and phone instance selectors. It snapshots asynchronous owner
+gestures and dispatches every synchronous multi-owner request. Captured stable
+component handles prevent focus/layout changes from rereading info. Live native
+counts were unchanged through minimize/restore, desktop/phone changes and pilot
+switching. Actual native account replacement cleared the old pilot's windows.
+The old global-target and contextual-tab assertions were retired, not skipped.
+Native loading guards, thread cancellation and ship pendingLoadData behavior
+remain required c6b2 work; the window manager does not claim those complete.
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config
@@ -1998,6 +2049,166 @@ Live TCP instrumentation also preserved bit 60 through low-bit removal and multi
 after an injected server refusal, and published no local event for a real reply held until after session release.
 The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
 this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
+
+Corporation and alliance labels preserve no color (`None`) independently of explicit white (`0`).
+Original compiled `addressbookService.CreateContactLabel` 1015-1020 and `GetLabelText` 1189-1202,
+executed through the installed Python 2.7 DLL, keep None and render plain label text; explicit 0
+adds a white color tag (`mailSvc.py` 31). EveJS previously changed a newly created uncolored label
+to 0 on the next session's `GetLabels`; server fix `76299b459` preserves null in both organization
+registries. Native game-port writes, rename, fresh sessions and a full server restart retain
+None alongside explicit 0/2, assigned label masks and standing 2.5. Captured replies show None in
+corporate CIndexedRowset packed rows and alliance KeyVals. The unmodified Corporation Contacts
+and Alliance Contacts panels display those actual persisted labels; orange is colored, while
+the existing browser swatch policy renders white and uncolored labels in its own text color.
+The recursive TQ corpus has an empty corporate `GetLabels` reply but no matching label-write
+recording, so this establishes compiled-client behavior and local wire parity, not a TQ write
+default. CCP `blue/src/PyRowSet.cpp` 1151-1180 supports None in numeric DBRow columns.
+
+Contact label IDs must fit the native signed mask: positive powers of two through bit 62.
+The original `appConst.pyc` defines `maxLong = 9223372036854775807`; executing compiled
+`addressbookService.DeleteContactLabel` 1072-1089 in all three scopes clears bit 62 but
+leaves bit 63 assigned. CCP `blue/src/PyRowSet.cpp` 1208-1213 uses signed `PyLong_AsLongLong`
+for the corporate label ID's DBTYPE_I8 column. Ordinary EveJS create/delete cycles previously
+advanced a historical allocation hint to bit 63 and failed to marshal the reply after persisting
+the label. Server fix `79e033278` reuses a free valid bit when the hint exhausts the range and
+refuses a full 63-label book with the installed `LabelCantCreateMore` dialog. TQ allocation order
+and the exact capacity refusal are not recorded; choosing the free bit is an emulator policy.
+Live native calls covered 70 create/delete cycles per scope, full books, refusal without mutation,
+bit-62 reuse after deletion, retained bit 60 and a full server restart. The page now sends a label
+creation UserError through its ordinary client-dialog handler, matching compiled
+`eve_exception_handler.handle_exception` 34-38. Refused creation adds no label and retires no
+held label table. The browser shows the installed capacity wording and can create again after
+deleting a staged label. These checks used actual server replies without a response hook.
+
+Corporation > Members > Decorations now has its catalogue view (`corp_ui_member_decorations`
+55-87): `corporationSvc.GetAllCorpMedals(corpID)`, then each creator's owner name, with title,
+creator, `FmtDate(date, 'ss')`, the catalogue's blank reason column and `noRecepients` count.
+Descriptions are row hints. The recursive TQ search finds the admin-panel capture at 1242-1249:
+one-hour CachedMethodCallResult, CachedObject/GetCachableObject, then a Python list containing
+two empty CRowsets. EveJS `a71777f32` now matches that recorded container and both typed descriptors;
+the previous result was a tuple of generic rowsets and omitted graphics `layer`. Catalogue
+title/description are WSTR, the date is FILETIME, and graphics preserve signed I4 color bits.
+Populated layer values are unrecorded; preserving an explicit stored layer or using input ordinal
+within each medal/part is an emulator policy. Other medal endpoint shapes remain unchanged.
+
+The shared page decoder reads both CRowsets and legacy generic rows, including Unicode wrappers;
+the existing member-menu Award Decoration selector uses it too. Native creation notices already
+invalidate the BFF's object cache (`medals.OnCorporationMedalAdded` 122-132); the page now reloads
+an initialized catalogue on that notice, including while hidden. Returning to it uses the held
+native cache. Live empty payloads exactly matched the decoded TQ value. Native writes and the
+browser verified Unicode titles/hints, dates, count 3, signed ARGB and graphics order, visible
+and hidden notice refresh, and the existing award-selection list without a write on Cancel.
+An ordinary member read all three decorations after a full server restart, with no award action.
+Expanding a medal now builds its preview locally from those held graphics and adds the native
+ViewAwardees group (`GetDecorationSubContent`90-110, `infosvc.GetMedalEntry`529-561).
+Opening the second group calls `corporationSvc.GetRecipientsOfMedal(medalID)`; repeated
+`recepientID` rows are grouped in Python integer-dict order, retaining the first issuer, date
+and reason and counting every award (`GetMedalSubContent`112-149). Names are resolved recipient
+then issuer in that order. The recipient's Show Info action opens the character window.
+The live ordinary-member browser showed two and one awards, accented text, an empty recipient
+group and a fresh read on reopening. Wire capture shows no recipient call for the preview,
+one per recipient-group opening, and no award write from the observer. Data survives a full
+EveJS restart. No new recipient wire-shape claim is made against TQ: the recursive corpus
+search contains no such reply. The current server rows satisfy the compiled consumer.
+List sorting preferences and the creation window remain separate units.
+
+The installed medal atlases use uncompressed BGRA32 DDS. `/client-res/ui/texture/…dds`
+now converts that indexed format to RGBA PNG while retaining the existing PNG route.
+The masks and DDS header layout agree with CCP `trinityal/tests/WithValidRenderContextFixture.cpp`
+60-87,111-132. Live Amarr ribbon and Compass medal output matched an independent DDS
+decoder in every RGBA pixel and loaded in the browser at 256×256. Other DDS formats
+(including DXT5) remain unsupported. The browser preview crops the native 128px quadrants,
+preserves input order (ignoring the catalogue's layer field), and uses the native half-size
+parts and truncated 20/128 overlap. Original compiled MapLogo/MedalRibbon.Startup/LoadData
+execution confirms the mapping, sizes and untinted -1 sentinel. Signed ARGB channels follow
+CCP TriColor.PyFromInt302-316 and carbonui.util.color.HextoiRGBA256-275; the SVG tint uses sRGB
+channel multiplication. CCP Tr2Sprite2dContainer.cpp312-318 gathers children in reverse order,
+so the first graphic is drawn on top. This is a minimal browser rendering; exact GPU sampling,
+color-space settings and pixel equality with a full retail UI have not been measured.
+
+The medal entry's Show Info passes type29496, medalID and held graphics, as
+`MedalRibbonEntry.ShowInfo`869-872. Original compiled `InfoWindowMonolith` methods
+read `GetMedalDetails(medalID).info[0]` twice: first title/description1450-1453,
+then ownerID/numberOfRecipients675-687. The issuer header builds its logo, then
+looks up a player corporation's ticker and owner name in that order. The icon uses
+the supplied abstract graphics at render size256 in a 128×256 frame1347-1352.
+The page preserves that sequence and ordinary window history/reuse. Live browser
+verification showed accented text, correct large icon, count3/count0, issuer logo
+navigation and history back to the medal. Wire capture has two details calls for
+each reconstruction and none for minimize/restore. The original browser check
+established field availability, but a later native encoding check found a server
+defect: details title/description and recipient/received reasons were UTF-8 PyString.
+Installed `eveprefs`7,205-206 sets CP1252; original compiled
+`LabelCore._Layout`669 -> `stringManip.GetAsUnicode`39-44 therefore corrupts those
+bytes. EveJS now explicitly returns PyUnicode for these persisted user texts.
+Actual before/after replies run through the original compiled label and recipient
+consumers show mojibake before and preserved accented text after (cdx2531).
+
+Received-medal rows also need title/description: `charSheetUtil.GetMedalScrollEntries`
+29-57 passes them directly to compiled `infosvc.GetMedalEntry`529-561, which reads
+both without a details lookup. EveJS appends the missing Unicode fields after
+its original seven columns. The actual old row raises AttributeError in that
+original consumer; the fixed row constructs the entry and held graphics.
+This establishes required named fields, not an exact TQ received-row descriptor.
+There is no GetMedalDetails reply in the recursive TQ corpus search, so its exact
+TQ container/descriptor/cache policy remains unverified.
+
+Decorations uses ordinary `Scroll` with sortGroups/reverseGroupSortEnabled false
+(`corp_ui_member_decorations.Load`39-49). Compiled `Scroll.SortAsRoot`914-951 keeps
+medal groups in server order, places nested groups before preview entries, and
+sorts recipient rows by the selected column key then the lowercase full label.
+`_GetSortValue`721-758 strips only `font.DeTag`'s color/alignment tags, attempts
+the native numeric/unit conversion, otherwise appends the remaining columns
+without lowercasing them. Python 2 numeric keys precede text. Descending reverses
+the completed list, including ties. The page follows this order and saves
+`scrollsortby_3[corp_decorations_scroll] = [localizedHeader, reversed]` in the
+account's user settings (`GetSortBy`674-689, `ChangeSortBy`966-992). A new column
+starts ascending; clicking the current column flips direction. An unavailable
+saved header falls back to the first header (`__LoadHeaders`1106-1125).
+An empty opened recipient group shows the native NoItem label
+(`PrepareSubContent`1314-1339). Live counts2/10, numeric/text reasons, group order
+and preference survival across a full page reload were verified.
+
+Every Decorations column, including the last, can resize. `Scroll`452-472 saves
+`columnWidths_3[corp_decorations_scroll][localizedHeader]` in user settings and
+clamps manual widths to24; an unmoved handle saves nothing. Double-clicking a
+header or its handle fits the loaded column and saves the result
+(`ResetColumnWidth`1133-1177, `ColumnHeader`353/158). Automatic measurement considers
+headers and loaded tabbed rows, their indentation and two8px margins; native
+`font.MeasureTabstops`306-343 starts at32. The browser measures its rendered font
+and controls, so these are behavior/measurement-boundary matches rather than
+native glyph-pixel equality. Saved widths remain fixed as groups load/collapse;
+unsaved widths fit the current loaded text. Header click dispatch follows compiled
+`uilib._TryExecuteClickHandler`957-981: first click sorts, second fits, with no
+second sort toggle. This ordinary scroll has no column hide/reorder menu.
+
+Group-open state belongs to the character's `listgroups`, rather than the user
+section used for widths and sorting. Compiled `registry.Get/SetListGroupOpenState`
+553-575 stores `listgroups[listID][str(medalID)].open`. The native identities are
+`corpdecorations` for the medal and `corpdecorationdetails` for recipients
+(`corp_ui_member_decorations`69-108). Compiled `ListGroup.Toggle`935-960 persists
+the toggled group before reconstructing subcontent; closing a parent preserves
+its child's preference. `Scroll.AddNode/PrepareSubContent`1300-1339 reconstructs
+saved-open groups in catalogue order, including recipient reads for saved-open
+children. A closed parent or child suppresses that read. The page keeps these
+identities and character scope, reconstructs remembered groups after catalogue
+loads, and re-reads a remembered-open recipient group when reopening its parent.
+
+Creation is being built in three parts: the native medals service operation,
+the layer designer, then window submission/wallet selection. The service operation
+is `medals.CreateMedal`31-53: Director OR Personnel Manager, name length at most100,
+description length at most1000, then top-level `corporationSvc.CreateMedal` with
+three arguments. Title/description are Unicode, graphics are nested Python lists
+from `MedalRibbonPickerWindow.SubmitData`553-560. Only an exact
+`ConfirmCreatingMedal` refusal prompts with formatted bold cost and Yes suppression;
+only Yes retries with fourth True. No returns normally, so the future window
+still closes; role/length/other refusals keep it open. The flow's boolean reports
+normal completion versus a displayed refusal, rather than a newly allocated ID.
+Original compiled execution confirms these branches. No creation/confirmation
+reply was found in the recursive TQ search; neither a mandatory confirmation nor
+a fee amount is established. The current EveJS success path returns immediately.
+The designer and wallet checks remain separate work; this service operation does
+not add the window's missing-field or wallet checks to the service.
 
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then

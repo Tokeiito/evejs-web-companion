@@ -1141,7 +1141,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   const placeChange = placeChangeOf(body.service, body.method, body.args);
   if (objectKind === "corporationExpected") {
     if (body.service === "account") await dispatchCorporationCashWrite(req, res, next, body);
-    else if (body.service === "corporationSvc") await dispatchCorporationAwardWrite(req, res, next, body);
+    else if (body.service === "corporationSvc") await dispatchCorporationMedalWrite(req, res, next, body);
     else if (["UpdateApplicationOffer", "InsertInvitation"].includes(body.method)) await dispatchCorporationRecruitmentWrite(req, res, next, body);
     else await dispatchCorporationMemberWrite(req, res, next, body);
     return;
@@ -1157,6 +1157,14 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // session, like retail. A browser-supplied bridgeSessionID is ignored; only
   // the server-held handle is ever forwarded.
   const heldBridgeSession = bridgeSessions.get(req.webSessionID) || null;
+  // The native scalar cache is filled by its caller after this RPC. Retiring
+  // that tasklet releases its pending/throttled wait; the issued packet remains.
+  const scalarController = !write && body.pilot === true && body.service === "corpmgr" && body.method === "GetAggressionSettings"
+    && Array.isArray(body.args) && body.args.length === 1 && Number.isSafeInteger(body.args[0]) && body.args[0] > 0
+    && heldBridgeSession && isGamePortHandle(heldBridgeSession.bridgeSessionID) ? new AbortController() : null;
+  const scalarClosed = () => { if (!res.writableEnded) scalarController?.abort(); };
+  if (scalarController) res.once("close", scalarClosed);
+  const scalarSignal = scalarController ? req.operationSignal ?? scalarController.signal : undefined;
   try {
     // With no pilot held this is the account asking (the hangar's roster is the client's character selection
     // screen), and the seam sends what the retail client asks there to where the account is (pilotTransport.js).
@@ -1241,6 +1249,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         body.kwargs,
         { ...clientSessionFields, userid: Number(req.account.accountID) },
         heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
+        ...(scalarSignal ? [scalarSignal] : []),
       );
     res.json({
       ok: true,
@@ -1257,8 +1266,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     if (heldBridgeSession && error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID, heldBridgeSession);
     }
+    if (scalarSignal?.aborted) {
+      if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The scalar aggression caller has retired." });
+      return;
+    }
     next(error);
-  }
+  } finally { if (scalarController) res.removeListener("close", scalarClosed); }
 });
 
 /**
@@ -6648,9 +6661,9 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const corporationID = strictPositiveID(body.of), args = body.args;
-  const multiple = body.method === "KickOutMembers", resigning = body.method === "ResignFromCEO";
-  if (!Array.isArray(args) || args.length !== 1 || (multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : !(resigning && args[0] === null) && strictPositiveID(args[0]) === null) || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: resigning ? "ResignFromCEO names one successor ID or None, with no keyword arguments." : multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
+  const multiple = body.method === "KickOutMembers", resigning = body.method === "ResignFromCEO", walletSwitch = body.method === "SetAccountKey";
+  if (!Array.isArray(args) || args.length !== 1 || (walletSwitch ? !Number.isInteger(args[0]) || args[0] < 1000 || args[0] > 1006 : multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : !(resigning && args[0] === null) && strictPositiveID(args[0]) === null) || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: walletSwitch ? "SetAccountKey names one corporation wallet division1000 through1006, with no keyword arguments." : resigning ? "ResignFromCEO names one successor ID or None, with no keyword arguments." : multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
     return;
   }
   let mutation = null;
@@ -6681,7 +6694,7 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       return;
     }
     held.corporationID = corporationID;
-    if (resigning || !multiple && Number(args[0]) === Number(held.characterID)) {
+    if (walletSwitch || resigning || !multiple && Number(args[0]) === Number(held.characterID)) {
       if (resigning) {
         if (args[0] === null) held.corporationCEOSelection = null;
         else {
@@ -6697,11 +6710,11 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       }
       // Native PerformSessionChange(wait=0): an active cooldown refuses rather
       // than queueing a quit that could later target a different corporation.
-      if (held.transition && held.transition.phase !== "ready" || Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
+      if (held.transition && held.transition.phase !== "ready" || !walletSwitch && Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
         res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
         return;
       }
-      if (!beginRouteTransition(res, held, "other-session", { nativeReason: resigning ? "corp.resignceo" : "corp.kickself" })) return;
+      if (!beginRouteTransition(res, held, "other-session", { nativeReason: walletSwitch ? "corp.setaccountkey" : resigning ? "corp.resignceo" : "corp.kickself", ...(walletSwitch ? { violateSafetyTimer: true } : {}) })) return;
       mutation = held.transition;
     }
     if (resigning && args[0] === null) {
@@ -6752,14 +6765,19 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
   }
 }
 
-// medals.py108/116 uses a top-level RemoteSvc. `of` is only our original-dialog
+// medals.py38/49/108/116 use a top-level RemoteSvc. `of` is only our original-dialog
 // fence; it must never turn this into a corpRegistry call or another RPC argument.
-async function dispatchCorporationAwardWrite(req, res, next, body) {
+async function dispatchCorporationMedalWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const args = body.args, corporationID = strictPositiveID(body.of);
-  if (!Array.isArray(args) || ![3, 4].includes(args.length) || strictPositiveID(args[0]) === null || !Array.isArray(args[1]) || !args[1].length || args[1].some(id => strictPositiveID(id) === null) || typeof args[2] !== "string" || (args.length === 4 && args[3] !== true) || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
+  const creating = body.method === "CreateMedal";
+  const validCommon = Array.isArray(args) && [3, 4].includes(args.length) && (args.length === 3 || args[3] === true) && body.kwargs == null;
+  const validArguments = validCommon && (creating ?
+    typeof args[0] === "string" && typeof args[1] === "string" && Array.isArray(args[2]) && args[2].every(row => Array.isArray(row) && row.length === 3 && Number.isSafeInteger(row[0]) && typeof row[1] === "string" && Number.isSafeInteger(row[2])) :
+    body.method === "GiveMedalToCharacters" && strictPositiveID(args[0]) !== null && Array.isArray(args[1]) && args[1].length > 0 && args[1].every(id => strictPositiveID(id) !== null) && typeof args[2] === "string");
+  if (!validArguments) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: creating ? "Creation names a title, description, graphics list and optional confirmed True." : "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
   }
   try {
     assertCurrentHeldSession(held, req.webSessionID);
@@ -6773,7 +6791,7 @@ async function dispatchCorporationAwardWrite(req, res, next, body) {
       context = { corporationID: answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")] };
     }
     assertCurrentHeldSession(held, req.webSessionID);
-    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This award belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This decoration operation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
     const outcome = await heldTopLevelCall(held, req.webSessionID, body.service, body.method, args, null, corporationID, context.version);
     res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: [...notifications, ...(outcome.notifications ?? [])], ...pilotClock(held) });
   } catch (error) { next(error); }
@@ -13347,8 +13365,8 @@ const OWNER_NAME_KINDS = Object.freeze({
   alliance: (typeID) => typeID === OWNER_TYPE.alliance,
   character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
   owner: (typeID) => typeID > 0,
-  // cfg.eveowners.typeID for evelink.character_link: retain the native owner's actual character type.
-  ownerType: (typeID) => typeID > 0,
+  // cfg.eveowners' actual type, including valid generic type0/group0 rows.
+  ownerType: (typeID) => Number.isSafeInteger(typeID) && typeID >= 0,
   // An owner's group, by name (a mailing list's access lists): any owner's row, its type's group named.
   ownerGroup: (typeID) => typeID > 0,
 });
@@ -14585,6 +14603,43 @@ app.get("/api/client-data/notification-formats", requireAuth, async (req, res, n
 app.post("/api/names", requireAuth, async (req, res, next) => {
   try {
     const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    if (req.body?.recordset === "eveowners") {
+      // Native cfg.Recordset.Get callers need the row/missing distinction and
+      // propagated failures, rather than the display resolver's best effort.
+      // eveCfg.LoadEveOwners545-583 seeds only NPCs, factions and system owner1;
+      // player rows must come from the session's native config cache.
+      const wanted = [...new Set(items.filter(item => item && item.kind === "owner" && Number.isSafeInteger(item.id)).map(item => item.id))].slice(0, 200);
+      const owners = {}, unknown = [];
+      const seeded = staticData.resolveNames({ items: wanted.filter(id => id > 1 && id < MIN_PLAYER_OWNER_ID).flatMap(id => [{ kind: "owner", id }, { kind: "ownerType", id }]) }).names;
+      for (const id of wanted) {
+        if (id === OWNER_SYSTEM_ID) {
+          const name = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
+          if (typeof name !== "string") throw Object.assign(new Error("The client's EVE System name is unavailable."), { code: "CLIENT_DATA_UNAVAILABLE", statusCode: 503 });
+          owners[id] = { name, typeID: 0 };
+        } else if (seeded[`ownerType:${id}`] != null) {
+          owners[id] = { name: seeded[`owner:${id}`] ?? null, typeID: Number(seeded[`ownerType:${id}`]) };
+        } else unknown.push(id);
+      }
+      if (unknown.length) {
+        const held = bridgeSessions.get(req.webSessionID) || null;
+        if (!gamePortPilots || !held || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("A game-port pilot is required to read owner records."), { code: "NO_LIVE_SESSION", statusCode: 409 });
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", closed);
+        const signal = req.operationSignal ?? controller.signal;
+        let named;
+        try {
+          named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(unknown, { userid: held.accountID }, held.bridgeSessionID, true, signal));
+        } catch (error) {
+          if (!signal.aborted) throw error;
+          if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The owner priming tasklet has retired." });
+          return;
+        } finally { res.removeListener("close", closed); }
+        for (const id of unknown) owners[id] = named.get(id) ?? null;
+      }
+      res.json({ ok: true, source: "cfg.eveowners", owners });
+      return;
+    }
     const result = staticData.resolveNames({ items });
     const names = { ...result.names };
 
@@ -17367,10 +17422,17 @@ app.post("/api/icons/cache", requireAuth, (req, res) => {
 // to the catch-all, the browser receives index.html with a 200, `<img onerror>`
 // never fires, and every uncached icon becomes a permanently broken image.
 // The client's own textures by their res: path, for the page to draw what the client draws with them (a skill
-// group's icon, a skill book's mark): /client-res/ui/texture/... answers the PNG the install's index names for
-// res:/ui/texture/..., or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
+// group's icon, a skill book's mark): /client-res/ui/texture/... answers an indexed PNG or a supported DDS
+// converted to PNG, or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
 // player. Above the catch-all, for the same reason as the icon cache below.
-app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.png)$/, (req, res) => {
+app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.(?:png|dds))$/, (req, res) => {
+  if (/\.dds$/i.test(req.params[0])) {
+    const png = clientTextures.pngFor?.(`res:/${req.params[0]}`);
+    if (!png) { res.status(404).end(); return; }
+    res.set("Cache-Control", "public, max-age=2592000, immutable");
+    res.type("png").send(png);
+    return;
+  }
   const file = clientTextures.fileFor(`res:/${req.params[0]}`);
   if (!file) {
     res.status(404).end();
