@@ -639,6 +639,8 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  // A server-returned direct-trade Moniker; the page binds it lazily with List.
+  "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort",
   // xmppchatsvc.py 1197-1208 / 1257-1261: private allocation and elevated addition, both on the proxy.
   "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
   "charMgr.GetPrivateInfo",
@@ -2529,6 +2531,9 @@ const RETAIL_CALLS = Object.freeze({
     shape: ownersContracts,
   }),
   "crimewatch.GetClientStates": same(`${CRIMEWATCH_SVC}:89`, "CharGetCrimewatchLocation().GetClientStates(), no arguments, on a moniker made for the call. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "trademgr.InitiateTrade": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:38-41", "RemoteSvc InitiateTrade(charID) returns the trade Moniker. Its node/params are retained unchanged; no location-derived moniker is invented."),
+  "trademgr.List": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:28-51", "List() on the returned or notified trade Moniker, first carried by its lazy bind. TQ In station trade41-48 records the receiver path and inline Row."),
+  "trademgr.Abort": same("eve/client/script/ui/station/pvptrade/pvptradewnd.py:67-89", "Abort() on that same trade object after confirmed Cancel or during close, including after completion. TQ In station trade1268/1432 records close-time Abort -> True."),
   "crimewatch.StartDuelChallenge": same(`${CRIMEWATCH_SVC}:583-588`, "CharGetCrimewatchLocation().StartDuelChallenge(charID), after the local engagement guard; one selected other player, high/low security. No exact TQ call recording found."),
   "crimewatch.RespondToDuelChallenge": same(`${CRIMEWATCH_SVC}:562-579`, "RespondToDuelChallenge(fromCharID, expiryTime, accept): exact notice FILETIME long and bool, only after an explicit accept/decline result; timeout/close sends nothing."),
   "crimewatch.SetSafetyLevel": judged(`${CRIMEWATCH_SVC}:343`, oneSafetyLevel,

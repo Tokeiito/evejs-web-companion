@@ -2293,9 +2293,18 @@ interrupted-stage recovery, lockdown and impound cases were not exercised live.
 Implementation order: carry returned and notified trade
 monikers through the browser transport; port inventory/money/manifests and cancel/complete
 controllers; then wire the guest-gated member menus and verify both pilots in the browser.
-The generic returned-bound-object helper currently recognizes remote substructs, not this returned
-Moniker. A trade session therefore needs explicit moniker handling with lazy first-call binding;
-it must not be added to the location-derived `MONIKER_SERVICES` table.
+The generic returned-bound-object helper recognizes remote substructs. Direct Trade now has an
+explicit transport path for its returned/notified Moniker: the BFF retains its actual node and
+parameters and gives the browser a pilot-scoped carriage reference for that received object.
+The reference is additional browser/BFF metadata and never goes to EveJS. List and Abort bind that
+same retained object lazily; Trade is absent from the location-derived `MONIKER_SERVICES` table.
+Consecutive trades can reuse identical parameters, so parameter equality cannot identify a trade
+object. Cold production AppFlow evidence cdx2980 verified two rounds with identical params and
+distinct containers/references, repeated List on each source object, receiver List and cancellation.
+Actual wire2987 contains four carried List binds, two subsequent List calls, two InitiateTrade and
+two Abort calls, no trade address-resolution request and no unmatched replies. A reference received
+by the other pilot is refused before native dispatch. Browser controls, nonempty exchange state,
+window lifecycle and inventory/money/manifests remain separate work.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
