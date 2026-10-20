@@ -2368,13 +2368,35 @@ sources, restores exact contents on Abort, then completes delivery of Acolyte3/H
 leaving both containers with their original owner/location/flag. The browser's open-container
 view now follows item notices through the existing native inventory cache; it clears on offering
 and refills on cancellation. Stopped custody3125 agrees with the recipient's hangar screenshot3118.
-Deeper/corporate container ancestry and asset-safety recovery remain explicitly unavailable;
-the server's delivered-wrap and charged-withdrawal lifecycle is the immediate next server work.
+That capture did not exercise deeper/corporate ancestry or charged asset-safety recovery.
+The later recovery, corporation and nested-container cases are recorded separately in the loop journal.
 
-The remaining ancestry/removal-tax paths, fitted-item unloads, live Shift quantity proof,
-inventory view controls, item menus/tooltips, splitter persistence and additional
-character-menu placements remain follow-up work. Corporate and active-ship-bay sources are
-wired but were not exercised through this window in the current drop verification.
+Single active fitted-source drags now follow the original compiled AddItems489-525 and
+DogmaLocation1077-1134 (web `f85b40b0`, server `2eedd415b`). A loaded slot supplies its charge;
+that path lists the source flag and sends UnloadAmmo(ship,module,(tradeID,actor,None),None).
+A module binds/reads the destination self item, sends scalar UnloadAmmo and then inventory Add
+without qty or flag, after any bank confirmation/breakup. Cold browser capture3469 offers
+EMP20, both original guns and shield377, including a drop on the peer half. Abort restores the
+loaded charge and original gun slot automatically; a new completed trade retains all four
+original IDs in the recipient's personal Jita hangar across cold restart3481. The native charge
+tuple previously failed the server's scalar-only preflight. No exact fitted-Trade TQ capture
+or launched retail UI is claimed; multiple fitted selection is a distinct native producer.
+
+Original compiled PlayerTrade.AddItems and BaseInvContainer._AddItem/__AddItem/
+PromptUserForQuantity193-327 confirm the ordinary single-stack quantity branch: Shift asks
+QtyPopup(max,0,max,NoMoreUnits), Cancel or zero sends no Add, and a stack of one bypasses the
+popup. The browser's production dialog and native partial offer were checked cold with an
+explicit DOM drop shiftKey boundary using the actual captured inventory drag payload: Cancel
+and zero retain an empty Trade, choosing3 from50 leaves47 at source and offers3, and Pyerite1
+offers without a question. Actual browser buttons accept the dialog and completed trade;
+native custody reads confirm the source remainder and recipient split. This checks the
+production handler, dialog and RPC, not a physical Shift gesture: the available drag input
+reset the modifier, as retained event observations show. Physical Shift remains unverified.
+
+The remaining ancestry/removal-tax paths, inventory view controls, item menus/tooltips,
+splitter persistence, native MultiAdd cache locks/set traversal and additional character-menu
+placements remain follow-up work. Corporate and active-ship-bay source coverage is recorded
+per case in the ignored loop journal; the older drop verification above covers its own fixture.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by
