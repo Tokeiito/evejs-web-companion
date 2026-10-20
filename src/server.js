@@ -14605,7 +14605,18 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       if (unknown.length) {
         const held = bridgeSessions.get(req.webSessionID) || null;
         if (!gamePortPilots || !held || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("A game-port pilot is required to read owner records."), { code: "NO_LIVE_SESSION", statusCode: 409 });
-        const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(unknown, { userid: held.accountID }, held.bridgeSessionID, true));
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", closed);
+        const signal = req.operationSignal ?? controller.signal;
+        let named;
+        try {
+          named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(unknown, { userid: held.accountID }, held.bridgeSessionID, true, signal));
+        } catch (error) {
+          if (!signal.aborted) throw error;
+          if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The owner priming tasklet has retired." });
+          return;
+        } finally { res.removeListener("close", closed); }
         for (const id of unknown) owners[id] = named.get(id) ?? null;
       }
       res.json({ ok: true, source: "cfg.eveowners", owners });

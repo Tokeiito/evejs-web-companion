@@ -423,8 +423,27 @@ A later invalid key retains the header without main content; a real permission
 refusal via controlled read redirection opens the native dialog. A None-name
 delivery produces a blank value and an unmodified retry restores None permitted.
 Closing after an already successful owner read prevents a late view revival.
-Cancellation during the native priming operation, shared owner-cache publication,
-other iterable ordering, non-ASCII int parsing, larger-than-safe-integer keys and
+Closing during native owner priming also retires its caller. Original Stackless
+tasklet.kill, BaseInfoWindow.Close, Recordset.Get/Prime/_Prime and the native
+machobase.ThrottledCall/locks.TempLock establish that a kill inside the RPC
+leaves no cached row and releases the locks. A kill after Get preserves the row;
+an unregistered history tasklet continues and publishes its completed row.
+
+Registered info scopes now pass their abort signal through the owner-record
+request, HTTP/socket/in-process carriage and the BFF owner/RPC waiters. Retiring
+an owning RPC clears its pending/throttled wait without caching its late reply;
+retiring a sharing waiter leaves the live owner's call intact. Cancellation is
+limited to native owner reads. Issued gameplay operations keep their existing
+semantics, and no cancellation packet is sent to EveJS.
+
+Live TCP holds before BFF decoding verify two native queries after a registered
+close and one after an unregistered history close, over HTTP, the default single
+socket, and in-process fetch. The browser sends cancellation only for the
+registered view, never revives either closed view, and reopens from the correct
+completed owner cache with zero console errors. Native UI/RPC/row-installation
+boundaries are explicit; this is not a claim of a complete native renderer.
+
+Other iterable ordering, non-ASCII int parsing, larger-than-safe-integer keys and
 complete ancillary header priming remain separate audits. Numeric range limits
 fail explicitly rather than sending a rounded identifier; error diagnostics do
 not claim native wording where the bridge lost Python type information.

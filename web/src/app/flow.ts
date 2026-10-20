@@ -12434,7 +12434,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // one owner before converting the next key. Never filter failures
             // or batch later owners ahead of a bad key or missing record.
             reads?.assertCurrent();
-            const records = await api.readEveOwners([id], reads ? { ...callOptions, fetch: (input, init) => {
+            const records = await api.readEveOwners([id], reads ? { ...callOptions, signal: reads.signal, fetch: (input, init) => {
               reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
             } } : callOptions);
             reads?.assertCurrent();

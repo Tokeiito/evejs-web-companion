@@ -6,6 +6,8 @@ import type { InfoIdentity } from "../bridge/infoWindow.ts";
 export interface InfoReadScope {
   readonly loading: ReadableSignal<boolean>;
   readonly identity: ReadableSignal<InfoIdentity | null>;
+  /** Native registered tasklet death, for service work that owns cache publication. */
+  readonly signal: AbortSignal;
   identify(): void;
   construct(): void;
   complete(): void;
@@ -30,12 +32,13 @@ export function createInfoReadScope(pilotCurrent: () => boolean, options: {
   let pending = 0;
   const loading = createSignal(false);
   const identity = createSignal<InfoIdentity | null>(initialIdentity);
+  const controller = new AbortController();
   const assertCurrent = (): void => {
     if (!retired && pilotCurrent()) return;
     throw Object.assign(new Error("This information reconstruction has retired."), { code: "INFO_RECONSTRUCTION_RETIRED" });
   };
   return {
-    loading: readonlySignal(loading), identity: readonlySignal(identity), assertCurrent,
+    loading: readonlySignal(loading), identity: readonlySignal(identity), signal: controller.signal, assertCurrent,
     identify(): void { assertCurrent(); identity.set(requested); options.onIdentify?.(); },
     construct(): void { assertCurrent(); options.onConstruct?.(); },
     complete(): void { assertCurrent(); if (!completed) { completed = true; options.onComplete?.(); } },
@@ -45,7 +48,10 @@ export function createInfoReadScope(pilotCurrent: () => boolean, options: {
       return () => { if (finished) return; finished = true; if (--pending === 0) loading.set(false); };
     },
     retireRegistered(withHistory = true): void {
-      if (registered && !retired) { options.onRetire?.(withHistory); retired = true; loading.set(false); }
+      if (registered && !retired) {
+        options.onRetire?.(withHistory); retired = true; loading.set(false);
+        controller.abort(Object.assign(new Error("This information reconstruction has retired."), { code: "INFO_RECONSTRUCTION_RETIRED" }));
+      }
     },
   };
 }

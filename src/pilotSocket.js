@@ -27,6 +27,13 @@
 //   browser -> BFF   { "id": 7, "method": "POST", "path": "/api/bridge/select", "body": { ... } }
 //   BFF -> browser   { "id": 7, "status": 200, "body": { ... } }
 //
+//   browser -> BFF   { "cancel": 7 }
+// Only POST /api/names with recordset=eveowners accepts cancellation. It
+// retires native owner priming and releases its caller's RPC/recordset locks;
+// an already-issued packet still reaches the server, but its late reply cannot
+// publish a row. Other operations retain their existing delivery semantics.
+// Unknown or completed cancellation IDs are ignored.
+//
 //   BFF -> browser   { "id": 7, "error": { "code": "BAD_FRAME", "message": "..." } }
 //
 // The hello is first, and is the only place the token travels: never in the
@@ -198,6 +205,7 @@ function requestInProcess(request) {
   req.push(null);
   // The whole of it is here: said so, or the request is taken for one cut off when its body has been read.
   req.complete = true;
+  req.operationSignal = request.signal;
   return { req, res: new http.ServerResponse(req) };
 }
 
@@ -351,9 +359,16 @@ function attachPilotSocket(server, app, options = {}) {
     /** Operations of this socket at work now, and those asked past the bound, in the order asked. */
     let running = 0;
     const turns = [];
+    // BaseInfoWindow.Close kills a registered owner-priming tasklet. Only
+    // these read operations accept cancellation; already-issued gameplay
+    // operations keep their existing outcome/delivery behavior.
+    const ownerReads = new Map();
+    const isOwnerRead = request => request.method === "POST" && request.path === "/api/names" && request.body?.recordset === "eveowners";
     const run = (id, request) => {
       running += 1;
-      dispatchInProcess(app, request)
+      const controller = isOwnerRead(request) ? new AbortController() : null;
+      if (controller) ownerReads.set(id, controller);
+      dispatchInProcess(app, controller ? { ...request, signal: controller.signal } : request)
         .then(
           (answer) => say({ id, status: answer.status, body: replyBody(answer.body) }),
           (error) => {
@@ -362,6 +377,7 @@ function attachPilotSocket(server, app, options = {}) {
           },
         )
         .finally(() => {
+          if (ownerReads.get(id) === controller) ownerReads.delete(id);
           running -= 1;
           const next = turns.shift();
           if (next) run(next.id, next.request);
@@ -405,6 +421,7 @@ function attachPilotSocket(server, app, options = {}) {
       letEventsGo();
       // What was waiting its turn is not run for a tab that has gone.
       turns.length = 0;
+      for (const controller of ownerReads.values()) controller.abort();
     });
     ws.on("error", (error) => onError(error));
     ws.on("message", (data, isBinary) => {
@@ -443,6 +460,12 @@ function attachPilotSocket(server, app, options = {}) {
         if (frame.events === "open") attachEvents(typeof frame.n === "number" ? frame.n : null);
         else if (frame.events === "close") letEventsGo();
         else say({ id: null, error: { code: "BAD_FRAME", message: "The event stream is asked to open or to close." } });
+        return;
+      }
+      if (typeof frame.cancel === "number" || typeof frame.cancel === "string") {
+        ownerReads.get(frame.cancel)?.abort();
+        const queued = turns.findIndex(turn => turn.id === frame.cancel && isOwnerRead(turn.request));
+        if (queued >= 0) turns.splice(queued, 1);
         return;
       }
       const id = typeof frame.id === "number" || typeof frame.id === "string" ? frame.id : null;

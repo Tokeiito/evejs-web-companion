@@ -85,6 +85,8 @@ export interface SelectResult {
 }
 
 export interface ApiOptions {
+  /** An owning native tasklet may retire independently of the pilot session. */
+  readonly signal?: AbortSignal;
   /** Base URL prefix; default "" (same-origin against the BFF). */
   readonly baseUrl?: string;
   /** Injectable fetch for tests; default globalThis.fetch. */
@@ -182,7 +184,8 @@ async function requestJson(
     };
     response = await bridgeLane.run(options.priority ?? "read", path, () => {
       assertCurrent?.();
-      return doFetch(url, { signal: AbortSignal.timeout(REQUEST_DEADLINE_MS), ...request });
+      const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
+      return doFetch(url, { signal: options.signal ? AbortSignal.any([deadline, options.signal]) : deadline, ...request });
       // A request that goes on the tab's open socket holds none of the browser's connections, and so no lane.
     }, { carried: options.fetch === undefined && pageCarries(url, request) });
   } catch (cause) {

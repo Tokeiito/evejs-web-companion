@@ -444,7 +444,15 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
           // Given up on by the asker: its reply, if one comes, has nobody waiting.
           const queuedAt = current.queued.indexOf(waiting);
           if (queuedAt >= 0) current.queued.splice(queuedAt, 1);
-          for (const [id, each] of current.sent) if (each === waiting) current.sent.delete(id);
+          for (const [id, each] of current.sent) if (each === waiting) {
+            current.sent.delete(id);
+            // Native owner priming belongs to its caller. A registered info
+            // tasklet killed inside the RPC must release the lock and keep no
+            // row. Other operations retain their existing delivery semantics.
+            if (waiting.operation.path === "/api/names" && (waiting.operation.body as { recordset?: unknown } | null)?.recordset === "eveowners" && current.state === "open") {
+              try { current.socket?.send(JSON.stringify({ cancel: id })); } catch { /* The connection is already gone. */ }
+            }
+          }
           waiting.forget();
           reject(signal.reason);
         };

@@ -953,6 +953,9 @@ test("a call given to a bind rides along with it: (method, arguments, keywords) 
 // the same call made again while it is out (the same service or object, method, str(args) and str(kwargs)) is not
 // sent. It waits for the one that is out and takes its answer. A recording of a pilot joining a fleet has it:
 // "Sharing result for call ('N=...', 'GetInitState', '()', '{}') ... for 1 waiting threads".
+// These cases keep the owning caller alive. Native TaskletExit unwinds
+// ThrottledCall's TempLock without a result (machobase.py94-111); an explicitly
+// scoped owner read also retires its pending call and throttler entry.
 
 /** Every call the session has sent since `from`, as [target, method, callID]. */
 const callsSince = (transport, from) => transport.sent.slice(from).map((bytes) => {
