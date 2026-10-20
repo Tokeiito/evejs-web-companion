@@ -1122,6 +1122,13 @@ export interface CorporationCEOChoice {
   readonly selectionError: string;
 }
 
+export interface CorporationWalletChoice {
+  readonly n: number;
+  readonly rows: readonly { readonly accountKey: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+}
+
 /** AwardDecoration's generic ListWnd and the following native NamePopup. */
 export type CorporationAwardAsk = {
   readonly n: number;
@@ -2131,6 +2138,10 @@ export interface AppFlow {
   showMedalDesigner(): void;
   closeMedalDesigner(): void;
   medalColourPaletteOpened(): void;
+  readonly corporationWalletChoice: ReadableSignal<CorporationWalletChoice | null>;
+  selectCorporationWallet(n: number, index: number): void;
+  answerCorporationWallet(n: number, confirmed: boolean): void;
+  prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused">;
   /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
   createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
   corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
@@ -5515,7 +5526,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       corporationRecords.membershipChanged(value === null ? null : Number(unwrapLong(value)));
     }
     if (sessionNames?.includes("charid") && sessionChangeValue(method, args, "charid") === null) infoWindows.reset();
-    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationWalletChoice(); cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -15131,7 +15142,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const previous = medalDesignerSignal.get(), n = ++medalDesignerRequests;
     medalDesignerSignal.set({ n, instance: previous?.characterID === online.characterID ? previous.instance : n, characterID: online.characterID, corporationID: online.corporationID });
   }
-  function closeMedalDesigner(): void { medalDesignerSignal.set(null); }
+  function closeMedalDesigner(): void { cancelCorporationWalletChoice(); medalDesignerSignal.set(null); }
   async function corporationDecorationCreationEnabled(): Promise<boolean> {
     // CorpDecorations.Load39-43 and globalConfig.GetGlobalConfigBooleanValue:
     // PersonnelManager specifically, then the held login config (default off).
@@ -15140,6 +15151,76 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const config = await api.getGlobalConfig([key], callOptions);
     const value = config.values[key];
     return value == null || !/^[+-]?\d+$/.test(String(value).trim()) || BigInt(String(value).trim()) === 0n;
+  }
+  const corporationWalletChoiceSignal = createSignal<CorporationWalletChoice | null>(null);
+  let corporationWalletAnswer: ((accountKey: number | null) => void) | null = null;
+  function cancelCorporationWalletChoice(): void { corporationWalletAnswer?.(null); }
+  function selectCorporationWallet(n: number, index: number): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !Number.isInteger(index) || !choice.rows[index]) return;
+    corporationWalletChoiceSignal.set({ ...choice, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationWallet(n: number, confirmed: boolean): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !corporationWalletAnswer) return;
+    if (!confirmed) { corporationWalletAnswer(null); return; }
+    if (choice.selectedIndex !== null) corporationWalletAnswer(choice.rows[choice.selectedIndex]!.accountKey);
+  }
+  // walletConst.corpWalletRoles, appConst340-346: take1..take7, not Director
+  // or Accountant as an implicit substitute for these division access bits.
+  function accessibleCorporationWallets(): number[] {
+    const roles = BigInt(store.station.get().online?.corpRole ?? "0");
+    return Array.from({ length: 7 }, (_, index) => index).filter(index => (roles & 1n << BigInt(27 + index)) !== 0n).map(index => index + 1000);
+  }
+  async function selectCorporationWalletDivision(scope: MemberOperation): Promise<void> {
+    const accounts = accessibleCorporationWallets();
+    // Native list comprehension reads division names only when it has choices.
+    const corporation = accounts.length ? await scope.ask("corpRegistry", "GetCorporation", []) : null; scope.current();
+    const ordinals = ["Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
+    const labels = ["UI/Corporations/Common/CorporateDivisionMasterWallet", ...ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`)];
+    await wordsNow([...labels, "UI/Wallet/WalletWindow/SelectDivision", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "/Carbon/UI/Controls/Common/NoItem", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]); scope.current();
+    const rows = accounts.map(accountKey => {
+      const raw = accountKey === 1000 ? null : memberField(corporation, `walletDivision${accountKey - 999}`);
+      const name = typeof raw === "string" ? raw : raw && typeof raw === "object" && "value" in raw && typeof raw.value === "string" ? raw.value : "";
+      return { accountKey, name: name || templateWords(labels[accountKey - 1000]!, {}, accountKey === 1000 ? "Master Wallet" : `Wallet Division ${accountKey - 999}`) };
+    });
+    const missing = templateWords("UI/Control/ListWindow/MustSelectError", { num: 1 }, "Select one item.");
+    const selectionError = templateWords("UI/Control/ListWindow/DisplayError", { errorMessage: missing }, missing);
+    cancelCorporationWalletChoice();
+    const accountKey = await new Promise<number | null>(resolve => {
+      corporationWalletAnswer = key => { corporationWalletAnswer = null; corporationWalletChoiceSignal.set(null); resolve(key); };
+      // uix.ListWnd defaults ordered0; walletUtil sorts by account ID, not name.
+      corporationWalletChoiceSignal.set({ n: ++dialogsSaidCount, rows, selectedIndex: null, selectionError });
+    });
+    scope.current();
+    if (accountKey !== null) { await scope.write("corpRegistry", "SetAccountKey", [accountKey], null, scope.online.corporationID); scope.current(); }
+  }
+  async function prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused"> {
+    const scope = captureMemberOperation(current), prefix = "UI/Corporations/CreateDecorationWindow/";
+    try {
+      await wordsNow([...["DecorationName", "Description", "Ribbon", "Medal", "ActiveWalletDivision"].map(key => prefix + key), "UI/Map/StarMap/lblBoldName"]); scope.current();
+      const missing: string[] = [];
+      if (!title) missing.push(templateWords(prefix + "DecorationName", {}, "Name"));
+      if (!description) missing.push(templateWords(prefix + "Description", {}, "Description"));
+      if (!graphics.some(row => row[0] === 1)) missing.push(templateWords(prefix + "Ribbon", {}, "Ribbon"));
+      if (!graphics.some(row => row[0] === 2)) missing.push(templateWords(prefix + "Medal", {}, "Medal"));
+      const activeLabel = templateWords(prefix + "ActiveWalletDivision", {}, "Active Wallet Division");
+      const key = store.station.get().online?.corpAccountKey ?? null;
+      if (key !== null && (key < 1000 || key > 1006)) throw new Error("The active corporation wallet division is unknown.");
+      if (key === null || !accessibleCorporationWallets().includes(key)) {
+        if (await askDialog("SelectWalletDivision", null, "Select an active corporation wallet division?")) { scope.current(); await selectCorporationWalletDivision(scope); }
+        else missing.push(activeLabel);
+      }
+      scope.current();
+      // SubmitData checks only None after the selector. Cancelling with a
+      // non-None inaccessible key does not add another access refusal.
+      if (store.station.get().online?.corpAccountKey == null && !missing.includes(activeLabel)) missing.push(activeLabel);
+      if (missing.length) {
+        const fields = formatTemplate(store.words.get().templates["UI/Map/StarMap/lblBoldName"] ?? "<b>{name}</b>", { name: missing.join(", ") }, { nameOf: () => "" });
+        sayDialog("GenericMissingInfo", { type: "dict", entries: [["fields", fields]] }, `Missing information: ${missing.join(", ")}`); return "missing";
+      }
+      return "ready";
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return "refused"; throw error; }
   }
   const corporationApplicationsRequestedSignal = createSignal(0);
   function personalApplicationSetting(name: string): string {
@@ -29394,6 +29475,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     showMedalDesigner,
     closeMedalDesigner,
     medalColourPaletteOpened() { if (store.station.get().online) sayDialog("ComboExpand", null, ""); },
+    corporationWalletChoice: readonlySignal(corporationWalletChoiceSignal),
+    selectCorporationWallet,
+    answerCorporationWallet,
+    prepareCorporationMedal,
     createCorporationMedal,
     corporationMedalAwardees,
     medalShowInfo,

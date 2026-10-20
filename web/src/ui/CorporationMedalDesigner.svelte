@@ -1,24 +1,43 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { plainText } from "../bridge/clientWords.ts";
-  import { emptyMedalDesign, selectMedalDesign, resetMedalDesignLayer, setMedalDesignColour, medalDesignPreview, ribbonShapes, RIBBON_BASES, MEDAL_BASES, MEDAL_ELEMENTS } from "../bridge/medalDesigner.ts";
+  import { emptyMedalDesign, selectMedalDesign, resetMedalDesignLayer, setMedalDesignColour, medalDesignPreview, medalDesignGraphics, ribbonShapes, RIBBON_BASES, MEDAL_BASES, MEDAL_ELEMENTS } from "../bridge/medalDesigner.ts";
   import MedalPreview from "./MedalPreview.svelte";
   import MedalDesignSlider from "./MedalDesignSlider.svelte";
   import MedalColourPicker from "./MedalColourPicker.svelte";
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, onClose }: { store: ClientStore; flow: AppFlow; onClose?: () => void } = $props();
   // svelte-ignore state_referenced_locally
   const words = store.words;
   const P = "UI/Corporations/CreateDecorationWindow/";
   const word = (key: string, fallback: string) => plainText($words.templates[key] ?? fallback);
   let design = $state(emptyMedalDesign()), name = $state(""), description = $state(""), reset = $state(0);
   const preview = $derived(medalDesignPreview(design));
+  let submitting = $state(false), error = $state("");
+  let disposed = false;
+  const current = () => { if (disposed) throw new Error("This decoration window has closed."); };
+  onDestroy(() => { disposed = true; });
+  async function submit(): Promise<void> {
+    if (submitting) return;
+    submitting = true; error = "";
+    const title = name, desc = description, graphics = medalDesignGraphics(design);
+    let ready: "ready" | "missing" | "refused";
+    try { ready = await flow.prepareCorporationMedal(title, desc, graphics, current); }
+    catch (cause) { if (!disposed) error = cause instanceof Error ? cause.message : String(cause); return; }
+    if (ready !== "ready") { if (ready === "missing") submitting = false; return; }
+    // Native SubmitData's finally covers CreateMedal only. A preflight wallet
+    // exception leaves its submitting fence set until the window is closed.
+    try { if (await flow.createCorporationMedal(title, desc, graphics, current)) onClose?.(); }
+    catch (cause) { if (!disposed) error = cause instanceof Error ? cause.message : String(cause); }
+    finally { submitting = false; }
+  }
   function resetAll(): void { design = emptyMedalDesign(); name = ""; description = ""; reset++; }
-  onMount(() => { flow.requestWords(["UI/Contracts/BasicInfo", ...["Title", "DecorationName", "Description", "Ribbon", "Medal", "Reset", "ResetItem", "PreviousItem", "NextItem"].map(key => P + key)]); });
+  onMount(() => { flow.requestWords(["UI/Contracts/BasicInfo", ...["Title", "DecorationName", "Description", "Ribbon", "Medal", "Submit", "Reset", "ResetItem", "PreviousItem", "NextItem"].map(key => P + key)]); });
 </script>
 
-<section class="designer" aria-label={word(P + "Title", "Create Decoration")}>
+<section class="designer" aria-label={word(P + "Title", "Create Decoration")} aria-busy={submitting}>
+  {#if error}<p class="error">{error}</p>{/if}
   <div class="design-body">
     <div class="preview"><MedalPreview layers={preview} title={name || word(P + "Title", "Create Decoration")} size={256} width={128} /></div>
     <div class="controls">
@@ -40,7 +59,7 @@
       {/key}
     </div>
   </div>
-  <div class="buttons"><button type="button" onclick={resetAll}>{word(P + "Reset", "Reset")}</button></div>
+  <div class="buttons"><button type="button" onclick={() => { void submit(); }}>{word(P + "Submit", "Submit")}</button><button type="button" onclick={resetAll}>{word(P + "Reset", "Reset")}</button></div>
 </section>
 
 <style>
@@ -57,6 +76,6 @@
   .hidden { display: none; }
   .reset-item, .reset-spacer { width: 16px; flex-shrink: 0; padding: 0; }
   .reset-item { height: 32px; border: 1px solid var(--border); background: #0004; color: inherit; cursor: pointer; }
-  .buttons { display: flex; justify-content: center; padding-top: 8px; }
+  .buttons { display: flex; justify-content: center; padding-top: 8px; gap: 8px; }
   .buttons button { font-size: 12px; line-height: 16px; padding: 4px 12px; }
 </style>

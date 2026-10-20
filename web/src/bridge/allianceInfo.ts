@@ -43,7 +43,10 @@ export function toNum(value: JsonValue | undefined): number {
 }
 
 export function toStr(value: JsonValue | undefined): string {
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string") return value;
+  // Native human text can be Unicode; GetPublicInfo now preserves it instead
+  // of sending UTF8 bytes to the retail client's CP1252 label conversion.
+  return isRecord(value) && value.type === "wstring" && typeof value.value === "string" ? value.value : "";
 }
 
 /**

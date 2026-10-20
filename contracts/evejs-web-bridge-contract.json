@@ -1256,6 +1256,7 @@
       "corpRegistry.RemoveCorporateContacts",
       "corpRegistry.RemoveLabels",
       "corpRegistry.ResignFromCEO",
+      "corpRegistry.SetAccountKey",
       "corpRegistry.UpdateApplicationOffer",
       "corpRegistry.UpdateMember",
       "corporationSvc.CreateMedal",

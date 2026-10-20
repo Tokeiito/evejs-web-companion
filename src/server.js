@@ -6661,9 +6661,9 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) return;
   const corporationID = strictPositiveID(body.of), args = body.args;
-  const multiple = body.method === "KickOutMembers", resigning = body.method === "ResignFromCEO";
-  if (!Array.isArray(args) || args.length !== 1 || (multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : !(resigning && args[0] === null) && strictPositiveID(args[0]) === null) || body.kwargs != null) {
-    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: resigning ? "ResignFromCEO names one successor ID or None, with no keyword arguments." : multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
+  const multiple = body.method === "KickOutMembers", resigning = body.method === "ResignFromCEO", walletSwitch = body.method === "SetAccountKey";
+  if (!Array.isArray(args) || args.length !== 1 || (walletSwitch ? !Number.isInteger(args[0]) || args[0] < 1000 || args[0] > 1006 : multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : !(resigning && args[0] === null) && strictPositiveID(args[0]) === null) || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: walletSwitch ? "SetAccountKey names one corporation wallet division1000 through1006, with no keyword arguments." : resigning ? "ResignFromCEO names one successor ID or None, with no keyword arguments." : multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
     return;
   }
   let mutation = null;
@@ -6694,7 +6694,7 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       return;
     }
     held.corporationID = corporationID;
-    if (resigning || !multiple && Number(args[0]) === Number(held.characterID)) {
+    if (walletSwitch || resigning || !multiple && Number(args[0]) === Number(held.characterID)) {
       if (resigning) {
         if (args[0] === null) held.corporationCEOSelection = null;
         else {
@@ -6710,11 +6710,11 @@ async function dispatchCorporationMemberWrite(req, res, next, body) {
       }
       // Native PerformSessionChange(wait=0): an active cooldown refuses rather
       // than queueing a quit that could later target a different corporation.
-      if (held.transition && held.transition.phase !== "ready" || Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
+      if (held.transition && held.transition.phase !== "ready" || !walletSwitch && Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
         res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
         return;
       }
-      if (!beginRouteTransition(res, held, "other-session", { nativeReason: resigning ? "corp.resignceo" : "corp.kickself" })) return;
+      if (!beginRouteTransition(res, held, "other-session", { nativeReason: walletSwitch ? "corp.setaccountkey" : resigning ? "corp.resignceo" : "corp.kickself", ...(walletSwitch ? { violateSafetyTimer: true } : {}) })) return;
       mutation = held.transition;
     }
     if (resigning && args[0] === null) {

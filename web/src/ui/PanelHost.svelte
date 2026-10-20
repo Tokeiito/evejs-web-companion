@@ -195,7 +195,7 @@
 {:else if tab === "memberDetails"}
   {#key $memberDetails?.characterID}<CorporationMemberDetails {store} {flow} {onClose} />{/key}
 {:else if tab === "medalDesigner"}
-  {#key $medalDesigner?.instance}<CorporationMedalDesigner {store} {flow} />{/key}
+  {#key $medalDesigner?.instance}<CorporationMedalDesigner {store} {flow} {onClose} />{/key}
 {:else if tab === "watchlist"}
   <Watchlist {store} {flow} />
 {:else if tab === "settings"}

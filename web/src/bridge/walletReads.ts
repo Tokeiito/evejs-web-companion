@@ -166,8 +166,11 @@ export function divisionNamesOf(corporation: JsonValue): Record<string, string |
   const names: Record<string, string | null> = {};
   for (let division = 1; division <= CORP_DIVISION_COUNT; division += 1) {
     const at = division === 1 ? -1 : header.indexOf(`walletDivision${division}`);
-    const value = at >= 0 ? line[at] : null;
-    names[String(division)] = typeof value === "string" && value.trim() !== "" ? value : null;
+    const raw = at >= 0 ? line[at] : null;
+    const value = raw && typeof raw === "object" && "type" in raw && raw.type === "wstring" && "value" in raw ? raw.value : raw;
+    // bco_corporations.GetDivisionNames138-154 uses truthiness, retaining a
+    // nonempty whitespace name as well as the native Unicode row value.
+    names[String(division)] = typeof value === "string" && value !== "" ? value : null;
   }
   return names;
 }
