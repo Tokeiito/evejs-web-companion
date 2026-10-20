@@ -2182,6 +2182,18 @@ unsaved widths fit the current loaded text. Header click dispatch follows compil
 `uilib._TryExecuteClickHandler`957-981: first click sorts, second fits, with no
 second sort toggle. This ordinary scroll has no column hide/reorder menu.
 
+Group-open state belongs to the character's `listgroups`, rather than the user
+section used for widths and sorting. Compiled `registry.Get/SetListGroupOpenState`
+553-575 stores `listgroups[listID][str(medalID)].open`. The native identities are
+`corpdecorations` for the medal and `corpdecorationdetails` for recipients
+(`corp_ui_member_decorations`69-108). Compiled `ListGroup.Toggle`935-960 persists
+the toggled group before reconstructing subcontent; closing a parent preserves
+its child's preference. `Scroll.AddNode/PrepareSubContent`1300-1339 reconstructs
+saved-open groups in catalogue order, including recipient reads for saved-open
+children. A closed parent or child suppresses that read. The page keeps these
+identities and character scope, reconstructs remembered groups after catalogue
+loads, and re-reads a remembered-open recipient group when reopening its parent.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

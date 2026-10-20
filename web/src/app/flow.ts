@@ -2142,6 +2142,7 @@ export interface AppFlow {
   corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
+  corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean;
   saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
   giveCorporationShares(characterID: number, current?: () => void): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
@@ -15654,6 +15655,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try { const raw: unknown = JSON.parse(charUiSetting("corpRolesSummaryGroups") ?? "{}"); if (raw && typeof raw === "object" && !Array.isArray(raw)) groups = raw as Record<string, boolean>; } catch { /* Invalid stored preference: closed. */ }
     if (open !== undefined) { groups[String(groupID)] = open; setCharUiSetting("corpRolesSummaryGroups", JSON.stringify(groups)); }
     return groups[String(groupID)] === true;
+  }
+  const decorationGroupMemory = new Map<number, Record<string, unknown>>();
+  function corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean {
+    // registry.Get/SetListGroupOpenState553-575: character listgroups,
+    // Unicode list/group keys. Parent closure never changes the child's state.
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return false;
+    const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    let groups = decorationGroupMemory.get(characterID) ?? {};
+    const kept = charUiSetting("listgroups");
+    try { if (kept !== null) groups = record(JSON.parse(kept)); } catch { /* Keep this character's in-memory state. */ }
+    const listID = recipients ? "corpdecorationdetails" : "corpdecorations", groupID = String(medalID);
+    const list = record(groups[listID]), group = record(list[groupID]);
+    if (open !== undefined) groups = { ...groups, [listID]: { ...list, [groupID]: { ...group, open } } };
+    decorationGroupMemory.set(characterID, groups);
+    if (open !== undefined || kept === null) setCharUiSetting("listgroups", JSON.stringify(groups));
+    return open ?? !!group.open;
   }
   async function readCorporationMember(characterID: number, scope = captureMemberOperation()): Promise<JsonValue> {
     scope.current();
@@ -29326,6 +29344,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
+    corporationDecorationGroupOpen,
     saveCorporationMember,
     giveCorporationShares,
     primeContactsOnline,

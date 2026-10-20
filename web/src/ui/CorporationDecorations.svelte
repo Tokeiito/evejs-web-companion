@@ -104,6 +104,12 @@
         rows = answer.medals; graphics = answer.graphics;
         expanded = new Set(); previews = new Map(); previewErrors = new Map();
         awardeesOpen = new Set(); awardees = new Map(); awardeeErrors = new Map(); awardeeLoading = new Set();
+        // Scroll.AddNode/PrepareSubContent1300-1339 reconstruct remembered
+        // groups in catalogue order; nested remembered groups read lazily here.
+        for (const row of answer.medals) {
+          if (disposed || request !== serial) break;
+          if (flow.corporationDecorationGroupOpen(row.medalID, false)) await expand(row.medalID, false);
+        }
       }
     } catch (cause) {
       if (!disposed && request === serial) error = cause instanceof Error ? cause.message : String(cause);
@@ -130,16 +136,28 @@
       date(row.date), row.reason, String(row.awarded),
     ].join("<t>"), sortIndex, $sortPreference.reversed);
   }
-  function expand(medalID: number): void {
-    if (expanded.has(medalID)) { expanded = new Set([...expanded].filter(id => id !== medalID)); return; }
+  async function expand(medalID: number, remember = true): Promise<void> {
+    const opening = !expanded.has(medalID);
+    if (remember) flow.corporationDecorationGroupOpen(medalID, false, opening);
+    if (!opening) {
+      expanded = new Set([...expanded].filter(id => id !== medalID));
+      awardeesOpen = new Set([...awardeesOpen].filter(id => id !== medalID));
+      return;
+    }
     try {
       const layers = medalLayersOf(graphics.filter(row => row.medalID === medalID));
       previews = new Map(previews).set(medalID, layers);
     } catch (cause) { previewErrors = new Map(previewErrors).set(medalID, String(cause instanceof Error ? cause.message : cause)); }
     expanded = new Set(expanded).add(medalID);
+    if (!previewErrors.has(medalID) && flow.corporationDecorationGroupOpen(medalID, true)) await openAwardees(medalID);
   }
   async function expandAwardees(medalID: number): Promise<void> {
-    if (awardeesOpen.has(medalID)) { awardeesOpen = new Set([...awardeesOpen].filter(id => id !== medalID)); return; }
+    const opening = !awardeesOpen.has(medalID);
+    flow.corporationDecorationGroupOpen(medalID, true, opening);
+    if (!opening) { awardeesOpen = new Set([...awardeesOpen].filter(id => id !== medalID)); return; }
+    await openAwardees(medalID);
+  }
+  async function openAwardees(medalID: number): Promise<void> {
     awardeesOpen = new Set(awardeesOpen).add(medalID);
     if (awardeeLoading.has(medalID)) return;
     awardeeLoading = new Set(awardeeLoading).add(medalID);
