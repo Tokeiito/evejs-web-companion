@@ -2080,6 +2080,28 @@ creation UserError through its ordinary client-dialog handler, matching compiled
 held label table. The browser shows the installed capacity wording and can create again after
 deleting a staged label. These checks used actual server replies without a response hook.
 
+Corporation > Members > Decorations now has its catalogue view (`corp_ui_member_decorations`
+55-87): `corporationSvc.GetAllCorpMedals(corpID)`, then each creator's owner name, with title,
+creator, `FmtDate(date, 'ss')`, the catalogue's blank reason column and `noRecepients` count.
+Descriptions are row hints. The recursive TQ search finds the admin-panel capture at 1242-1249:
+one-hour CachedMethodCallResult, CachedObject/GetCachableObject, then a Python list containing
+two empty CRowsets. EveJS `a71777f32` now matches that recorded container and both typed descriptors;
+the previous result was a tuple of generic rowsets and omitted graphics `layer`. Catalogue
+title/description are WSTR, the date is FILETIME, and graphics preserve signed I4 color bits.
+Populated layer values are unrecorded; preserving an explicit stored layer or using input ordinal
+within each medal/part is an emulator policy. Other medal endpoint shapes remain unchanged.
+
+The shared page decoder reads both CRowsets and legacy generic rows, including Unicode wrappers;
+the existing member-menu Award Decoration selector uses it too. Native creation notices already
+invalidate the BFF's object cache (`medals.OnCorporationMedalAdded` 122-132); the page now reloads
+an initialized catalogue on that notice, including while hidden. Returning to it uses the held
+native cache. Live empty payloads exactly matched the decoded TQ value. Native writes and the
+browser verified Unicode titles/hints, dates, count 3, signed ARGB and graphics order, visible
+and hidden notice refresh, and the existing award-selection list without a write on Cancel.
+An ordinary member read all three decorations after a full server restart, with no award action.
+Medal preview/awardee expansion, list sorting preferences and the creation window remain separate
+units; the catalogue view does not claim those interactions.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button

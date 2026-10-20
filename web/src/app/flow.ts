@@ -428,6 +428,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
+import { corporationDecorationsOf, type CorporationDecorations } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
@@ -2121,6 +2122,8 @@ export interface AppFlow {
   selectCorporationAward(n: number, index: number): void;
   answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
   readonly corporationApplicationsChanged: ReadableSignal<number>;
+  readonly corporationDecorationsChanged: ReadableSignal<number>;
+  corporationDecorations(): Promise<CorporationDecorations>;
   readonly corporationApplicationsRequested: ReadableSignal<number>;
   requestCorporationApplications(): void;
   serveCorporationApplicationsRequest(n: number): void;
@@ -5142,6 +5145,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    if (method === "OnCorporationMedalAdded") corporationDecorationsChangedSignal.set(corporationDecorationsChangedSignal.get() + 1);
     if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
       corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
       // base_corporation_ui204-209: the docked station lobby reloads its
@@ -15104,6 +15108,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
   const corporationApplicationsChangedSignal = createSignal(0);
+  const corporationDecorationsChangedSignal = createSignal(0);
   const corporationApplicationsRequestedSignal = createSignal(0);
   function personalApplicationSetting(name: string): string {
     return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
@@ -15187,6 +15192,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function corporationDecorations(): Promise<CorporationDecorations> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
+    const catalogue = corporationDecorationsOf(raw);
+    // LoadDecorations resolves each creator as its row is built. The shared
+    // owner cache makes repeated creators free without changing this order.
+    for (const medal of catalogue.medals) await memberNames(scope, [{ kind: "owner", id: medal.creatorID }]);
+    scope.current(); return catalogue;
+  }
   async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
     const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
     // Compiled User.OnDblClick: this path has no menu IsMe/IsNPC gate. Invite
@@ -15388,9 +15402,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scope.current();
       try {
         const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
-        const tuple = Array.isArray(raw) ? raw : isListValue(raw) ? raw.items : [];
-        if (tuple.length !== 2) throw new Error("The corporation's decorations could not be read.");
-        const rows = readRowsetRows(tuple[0]!).map(row => ({ medalID: Number(unwrapLong(row.medalID)), name: typeof row.title === "string" ? row.title : "" }));
+        const rows = corporationDecorationsOf(raw).medals.map(row => ({ medalID: row.medalID, name: row.title }));
         if (!rows.length) { sayDialog("MedalCreateToAward", null, "Create a decoration before awarding one."); return; }
         if (rows.some(row => !Number.isSafeInteger(row.medalID) || row.medalID <= 0 || !row.name)) throw new Error("A corporation decoration could not be read.");
         await memberNames(scope, [...new Set(targets)].map(id => ({ kind: "owner" as const, id })));
@@ -29255,6 +29267,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     answerCorporationCEO,
     corporationRoleAllowance,
     corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
+    corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
+    corporationDecorations,
     corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
     requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
     serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },
