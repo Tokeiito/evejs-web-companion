@@ -2099,15 +2099,32 @@ native cache. Live empty payloads exactly matched the decoded TQ value. Native w
 browser verified Unicode titles/hints, dates, count 3, signed ARGB and graphics order, visible
 and hidden notice refresh, and the existing award-selection list without a write on Cancel.
 An ordinary member read all three decorations after a full server restart, with no award action.
-Medal preview/awardee expansion, list sorting preferences and the creation window remain separate
-units; the catalogue view does not claim those interactions.
+Expanding a medal now builds its preview locally from those held graphics and adds the native
+ViewAwardees group (`GetDecorationSubContent`90-110, `infosvc.GetMedalEntry`529-561).
+Opening the second group calls `corporationSvc.GetRecipientsOfMedal(medalID)`; repeated
+`recepientID` rows are grouped in Python integer-dict order, retaining the first issuer, date
+and reason and counting every award (`GetMedalSubContent`112-149). Names are resolved recipient
+then issuer in that order. The recipient's Show Info action opens the character window.
+The live ordinary-member browser showed two and one awards, accented text, an empty recipient
+group and a fresh read on reopening. Wire capture shows no recipient call for the preview,
+one per recipient-group opening, and no award write from the observer. Data survives a full
+EveJS restart. No new recipient wire-shape claim is made against TQ: the recursive corpus
+search contains no such reply. The current server rows satisfy the compiled consumer.
+Medal Show Info, list sorting preferences and the creation window remain separate units.
 
 The installed medal atlases use uncompressed BGRA32 DDS. `/client-res/ui/texture/…dds`
 now converts that indexed format to RGBA PNG while retaining the existing PNG route.
 The masks and DDS header layout agree with CCP `trinityal/tests/WithValidRenderContextFixture.cpp`
 60-87,111-132. Live Amarr ribbon and Compass medal output matched an independent DDS
 decoder in every RGBA pixel and loaded in the browser at 256×256. Other DDS formats
-(including DXT5) remain unsupported. This supplies assets; the layered medal preview is next.
+(including DXT5) remain unsupported. The browser preview crops the native 128px quadrants,
+preserves input order (ignoring the catalogue's layer field), and uses the native half-size
+parts and truncated 20/128 overlap. Original compiled MapLogo/MedalRibbon.Startup/LoadData
+execution confirms the mapping, sizes and untinted -1 sentinel. Signed ARGB channels follow
+CCP TriColor.PyFromInt302-316 and carbonui.util.color.HextoiRGBA256-275; the SVG tint uses sRGB
+channel multiplication. CCP Tr2Sprite2dContainer.cpp312-318 gathers children in reverse order,
+so the first graphic is drawn on top. This is a minimal browser rendering; exact GPU sampling,
+color-space settings and pixel equality with a full retail UI have not been measured.
 
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then

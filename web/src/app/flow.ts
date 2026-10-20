@@ -428,7 +428,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
 import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
-import { corporationDecorationsOf, type CorporationDecorations } from "../bridge/corporationDecorations.ts";
+import { corporationDecorationsOf, corporationMedalAwardeesOf, type CorporationDecorations, type CorporationMedalAwardee } from "../bridge/corporationDecorations.ts";
 import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
@@ -2124,6 +2124,7 @@ export interface AppFlow {
   readonly corporationApplicationsChanged: ReadableSignal<number>;
   readonly corporationDecorationsChanged: ReadableSignal<number>;
   corporationDecorations(): Promise<CorporationDecorations>;
+  corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
   readonly corporationApplicationsRequested: ReadableSignal<number>;
   requestCorporationApplications(): void;
   serveCorporationApplicationsRequest(n: number): void;
@@ -15200,6 +15201,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // owner cache makes repeated creators free without changing this order.
     for (const medal of catalogue.medals) await memberNames(scope, [{ kind: "owner", id: medal.creatorID }]);
     scope.current(); return catalogue;
+  }
+  async function corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetRecipientsOfMedal", [medalID]); scope.current();
+    const awardees = corporationMedalAwardeesOf(raw);
+    for (const row of awardees) {
+      await memberNames(scope, [{ kind: "owner", id: row.recipientID }]);
+      await memberNames(scope, [{ kind: "owner", id: row.issuerID }]);
+    }
+    scope.current(); return awardees;
   }
   async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
     const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
@@ -29269,6 +29280,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
     corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
     corporationDecorations,
+    corporationMedalAwardees,
     corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
     requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
     serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },

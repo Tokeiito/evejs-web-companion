@@ -2,6 +2,7 @@
 // TQ's cached value is a list of catalogue and graphics CRowsets (admin panels1249).
 import { isListValue, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "./wire.ts";
 import { unwrapCachedResult } from "./market.ts";
+import { intDictOrder } from "./py27DictOrder.ts";
 
 export interface CorporationDecoration {
   readonly medalID: number;
@@ -22,6 +23,56 @@ export interface CorporationDecorationGraphic {
 export interface CorporationDecorations {
   readonly medals: readonly CorporationDecoration[];
   readonly graphics: readonly CorporationDecorationGraphic[];
+}
+
+export interface CorporationMedalAwardee {
+  readonly recipientID: number;
+  readonly issuerID: number;
+  readonly date: bigint;
+  readonly reason: string;
+  readonly awarded: number;
+}
+
+// GetMedalSubContent112-149: first award supplies the fields; repeats only
+// increase the count. Iteration follows the native integer-key dict.
+export function corporationMedalAwardeesOf(answer: JsonValue): readonly CorporationMedalAwardee[] {
+  const grouped = new Map<number, CorporationMedalAwardee>();
+  for (const row of rowsOf(unwrapCachedResult(answer))) {
+    const recipientID = integer(row, "recepientID"), previous = grouped.get(recipientID);
+    if (previous) { grouped.set(recipientID, { ...previous, awarded: previous.awarded + 1 }); continue; }
+    const date = unwrapLong(field(row, "date"));
+    if (date === null) throw new Error("A medal award's date could not be read.");
+    grouped.set(recipientID, { recipientID, issuerID: integer(row, "issuerID"), date, reason: text(row, "reason"), awarded: 1 });
+  }
+  return intDictOrder([...grouped.keys()]).map(id => grouped.get(id)!);
+}
+
+export interface MedalLayer {
+  readonly url: string;
+  readonly left: number;
+  readonly top: number;
+  readonly part: number;
+  readonly color: number;
+}
+
+// uix.FormatMedalData777-794 ignores layer numbers and preserves row order.
+// MapLogo196-236 selects a 128px quadrant of an installed 256px atlas.
+export function medalLayersOf(graphics: readonly CorporationDecorationGraphic[]): readonly MedalLayer[] {
+  const result: MedalLayer[] = [];
+  for (const part of [1, 2]) {
+    const rows = graphics.filter(row => row.part === part);
+    if (!rows.length) throw new Error("The medal has no graphics for one of its parts.");
+    for (const row of rows) {
+      const match = /^([a-z0-9_-]+)\.([0-9]+)_([0-9]+)$/i.exec(row.graphic);
+      if (!match || Number(match[2]) < 1) throw new Error("The medal's graphic mapping could not be read.");
+      const file = String(Number(match[2])).padStart(2, "0"), quadrant = Number(match[3]);
+      result.push({ url: `/client-res/ui/texture/medals/${part === 1 ? "ribbons" : "medals"}/${match[1]!.toLowerCase()}${file}.dds`,
+        left: quadrant === 2 || quadrant === 4 ? 128 : 0, top: quadrant > 2 ? 128 : 0, part, color: row.color });
+    }
+  }
+  // PyChildrenList appends at idx=-1. Trinity's container gathers children
+  // in reverse order (Tr2Sprite2dContainer.cpp312-318): first row is on top.
+  return result.reverse();
 }
 
 function rowsOf(value: JsonValue): readonly unknown[] {
