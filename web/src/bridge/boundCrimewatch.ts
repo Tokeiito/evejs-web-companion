@@ -1,12 +1,13 @@
-// R78 — the 4 RB-CRIME BOUND reads (crimewatch / security status), decoded from
-// REAL captured bytes (PLUMBING ONLY — no UI, no writes).
+// Crimewatch/security reads, including the native engagement dictionary.
+// The original quiet capture below is one case, not a populated-state contract.
 //
 // These are the raw retail crimewatch reads on service "crimewatch". Retail
 // obtains crimewatch as a bound Moniker (CrimewatchService defines MachoBindObject
-// and it is NOT in machoNet's serviceInfo table), but the gateway dispatches
+// and it is NOT in machoNet's serviceInfo table). The game-port transport uses
+// that location-bound moniker. The historical gateway fallback dispatches
 // serviceManager.lookup("crimewatch") directly — a real registered service
 // (super("crimewatch")) — and all four handlers are session/arg-derived with NO
-// bound-state dependency, so the BFF dispatches each as heldTopLevelCall
+// bound-state dependency, so that fallback dispatches each as heldTopLevelCall
 // ("crimewatch", <method>) on the ORDINARY top-level /call seam (mirrors R73
 // skillHandler / R76 jumpCloneSvc), NOT a bound two-step.
 //
@@ -30,7 +31,9 @@
 //        [[100,null],[200,null],[400,null],[300,null],[500,null]] (weapon/pvp/npc/
 //        criminal/disapproval, all idle). An IDLE timer is [code, null]; an ACTIVE
 //        one is [code+2, {type:"long", value:<FILETIME>}] (server buildTimerTuple).
-//    [1] {type:"dict", entries:[]} — a reserved/always-empty dict.
+//    [1] engagements dict: other character -> FILETIME timeout, or -1 ongoing.
+//        crimewatchSvc.ProcessSessionChange96-104 keeps this as myEngagements;
+//        Farmer's captured clean state happened to have none.
 //    [2] flagged-character sets: [criminalsSet, suspectsSet] — each a Python set
 //        objectex1 {type:"objectex1", header:[{token:"__builtin__.set"},
 //        [{type:"list", items:[<charID>, …]}]], …}; members ride header[1][0].items
@@ -43,7 +46,7 @@
 //    EMPTY (the handler returns buildList([]) unconditionally; no history persisted).
 //
 // This module decodes the raw marshaled reads for GET /api/bridge/bound-crimewatch;
-// NO UI consumes it yet.
+// The HUD, security panels and native Duel guard consume these decoded values.
 
 import { isListValue, unwrapLong, type JsonValue } from "./wire.ts";
 
@@ -142,6 +145,7 @@ export interface CrimewatchFlaggedSet {
 
 export interface CrimewatchClientStates {
   readonly timers: readonly CrimewatchTimer[];
+  readonly engagements: readonly { readonly characterID: number | string; readonly expiry: string }[];
   readonly criminals: CrimewatchFlaggedSet;
   readonly suspects: CrimewatchFlaggedSet;
   /** The client-safety level (0 none / 1 partial / 2 full), a bare int. */
@@ -181,13 +185,17 @@ function decodeTimer(tuple: JsonValue): CrimewatchTimer {
   };
 }
 
-/** Decode GetClientStates — timers + flagged-character sets + safety level. */
+/** Decode GetClientStates — timers, engagements, flags and safety. */
 export function decodeClientStates(result: JsonValue | undefined): CrimewatchClientStates {
   const tuple = asArray(result);
   const timers = asArray(tuple[0]).map(decodeTimer);
   const flagged = asArray(tuple[2]);
   return {
     timers,
+    engagements: asArray(asObject(tuple[1]).entries).flatMap(value => {
+      const pair = asArray(value), characterID = idData(pair[0]), expiry = exactInt(pair[1]);
+      return characterID === null || expiry === null ? [] : [{ characterID, expiry }];
+    }),
     criminals: decodeFlaggedSet(flagged[0]),
     suspects: decodeFlaggedSet(flagged[1]),
     safetyLevel: smallInt(tuple[3], 0),

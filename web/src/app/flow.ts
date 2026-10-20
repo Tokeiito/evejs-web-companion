@@ -216,6 +216,7 @@ import {
   type AssetSearchOption,
 } from "../bridge/assetSearch.ts";
 import { shownSecurity } from "../bridge/systemSecurity.ts";
+import { duelChallengeOf, startDuelChallenge, respondToDuelChallenge, type DuelInvitation } from "../bridge/duel.ts";
 import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
@@ -270,6 +271,8 @@ import {
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
 import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
 import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
+import { memberQuerySetting } from "./memberQuerySetting.ts";
+import { memberQueryArguments, type MemberQueryCriterion, type MemberQueryContext, type CorporationAdministration } from "../bridge/corporationMemberQuery.ts";
 import { infoWindowSetting } from "./infoWindowSetting.ts";
 import { scrollSortSetting, type ScrollSortSetting } from "./scrollSortSetting.ts";
 import { scrollWidthsSetting, type ScrollWidthsSetting } from "./scrollWidthsSetting.ts";
@@ -1437,6 +1440,11 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
+  startDuel(characterID: number): Promise<void>;
+  answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
+  expireDuel(n: number): void;
+  closeDuel(n: number): void;
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
   retryDroneRecovery(): Promise<void>;
   requireAutomationReady(): void;
@@ -2160,6 +2168,12 @@ export interface AppFlow {
   corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
   corporationMemberRoleBase(current?: () => void): Promise<number | null>;
   corporationMemberIDs(): Promise<readonly number[]>;
+  corporationAdministration(current?: () => void): Promise<CorporationAdministration>;
+  corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext>;
+  corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]>;
+  corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]>;
+  corporationMemberQueryNeedsValue(current?: () => void): Promise<void>;
+  memberQueryPreference(name: "FMBQincludeImplied" | "FMBQsearchTitles"): { readonly value: ReadableSignal<boolean>; set(value: boolean): void };
   corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
@@ -2223,6 +2237,7 @@ export interface AppFlow {
   readonly imageServer: ReadableSignal<string | null>;
   /** The image server's address read from the pilot's global config, once. */
   loadImageServer(): void;
+  capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void>;
   /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
   readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
   /** The library read once, and the logos of these corporations asked for where they are not had. */
@@ -5182,6 +5197,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    if (method === "OnDuelChallenge") {
+      const incoming = duelChallengeOf(args);
+      if (incoming) {
+        duelInvitationSignal.set({ ...incoming, n: ++duelInvitationN, expired: false, clockOffsetMs: serverNow() - Date.now() });
+        requestNames([incoming.characterID, incoming.corporationID, ...(incoming.allianceID ? [incoming.allianceID] : [])].map(id => ({ kind: "owner" as const, id })));
+        requestWords(["UI/Crimewatch/Duel/InvitationWindowCaption", "UI/Crimewatch/Duel/DuelDecleration", "UI/Crimewatch/Duel/Accept", "UI/Crimewatch/Duel/Decline", "UI/Crimewatch/Duel/BlockCommunications", "UI/Common/Corporation", "UI/Common/Alliance"]);
+      }
+    }
+    if (method === "OnCrimewatchEngagementCreated" && duelInvitationSignal.get()?.characterID === Number(args[0])) duelInvitationSignal.set(null);
+    if (method && ["OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"].includes(method)) {
+      const held = store.flight.get().crimewatch, id = Number(args[0]);
+      const expiry = method === "OnCrimewatchEngagementStopTimeout" ? -1n : unwrapLong(args[1]);
+      if (held && Number.isSafeInteger(id) && (method === "OnCrimewatchEngagementEnded" || expiry !== null)) {
+        const others = held.states.engagements.filter(entry => Number(entry.characterID) !== id);
+        const engagements = method === "OnCrimewatchEngagementEnded" ? others : [...others, { characterID: id, expiry: String(expiry) }];
+        store.apply({ type: "flight/crimewatch", crimewatch: { ...held, states: { ...held.states, engagements } } });
+      }
+    }
     if (method === "OnCorporationMedalAdded") corporationDecorationsChangedSignal.set(corporationDecorationsChangedSignal.get() + 1);
     if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
       corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
@@ -5596,6 +5629,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) duelInvitationSignal.set(null);
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -6729,6 +6763,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+  const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
+  let duelInvitationN = 0;
+  async function startDuel(characterID: number): Promise<void> {
+    // Native StartDuel's guard tests dictionary membership, including ongoing -1.
+    if (store.flight.get().crimewatch?.states.engagements.some(entry => Number(entry.characterID) === characterID)) return;
+    try { await startDuelChallenge(bridgeDo, characterID); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
+  }
+  function expireDuel(n: number): void {
+    const invitation = duelInvitationSignal.get();
+    if (invitation?.n === n) duelInvitationSignal.set({ ...invitation, expired: true });
+  }
+  function closeDuel(n: number): void { if (duelInvitationSignal.get()?.n === n) duelInvitationSignal.set(null); }
+  async function answerDuel(n: number, accept: boolean, block: boolean): Promise<void> {
+    const invitation = duelInvitationSignal.get();
+    if (!invitation || invitation.n !== n || invitation.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    const current = callOptions.captureRequestGuard!();
+    if (accept && !await askDialog("AskConfirmDuel", null, "Are you sure you want to accept the duel?", "yesno", { suppressAnswer: "yes" })) return;
+    current();
+    if (duelInvitationSignal.get()?.n !== n || duelInvitationSignal.get()?.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    duelInvitationSignal.set(null);
+    if (block) void blockOwners([invitation.characterID]).catch(cause => { if (failureCode(cause) === "SESSION_REQUEST_RETIRED") return; if (!sayRefusalDialog(cause, errorWords(cause))) sayDialog("CustomInfo", { type: "dict", entries: [["info", errorWords(cause)]] }, errorWords(cause)); });
+    try { await respondToDuelChallenge(api.bridgeDo({ ...callOptions, captureRequestGuard: () => current }), invitation, accept); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
   }
 
   // clone_grade_svc: the client asks the account's clone grade as it logs in,
@@ -15323,6 +15384,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
   }
   type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function corporationAdministration(current?: () => void): Promise<CorporationAdministration> {
+    const scope = captureMemberOperation(current), roles = BigInt(scope.online.corpRole ?? "0");
+    // corporationWindow470-476, corporation.common.roles: administration is
+    // any admin role OR any of the four locally computed grantable masks.
+    const admin = (roles & 34359744897n) !== 0n;
+    if ((roles & 128n) !== 0n) return { visible: true, findMembers: true, director: (roles & 1n) !== 0n };
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const rawMember = await readCorporationMember(scope.online.characterID, scope);
+    // bco_members.GetMyGrantableRoles also accepts an absent member row.
+    if (rawMember === null) return { visible: admin, findMembers: false, director: (roles & 1n) !== 0n };
+    const mine = corporationMemberOf(rawMember);
+    const ceo = memberInteger(corporation, "ceoID") === BigInt(scope.online.characterID);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    const titles = !ceo && (mine.masks.roles & 1n) === 0n && mine.titleMask ? await readMemberTitles(scope.online.corporationID, scope) : new Map<number, RoleMasks>();
+    const grantable = Object.values(myGrantableRoles(mine, ceo, (roles & 1n) !== 0n, data, titles)).some(mask => mask !== 0n);
+    scope.current(); return { visible: admin || grantable, findMembers: grantable, director: (roles & 1n) !== 0n };
+  }
+  async function corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext> {
+    const scope = captureMemberOperation(current);
+    memberReadKey(scope.online.characterID);
+    // CorpQueryMembersForm.__init__138-146: titles, then local role metadata.
+    const titles = await readMemberTitles(scope.online.corporationID, scope);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    await wordsNow(Object.values(data.roles).map(role => `#${role.nameID}`)); scope.current();
+    const locational = new Set(data.locationalRoles), now = new Date(serverNow());
+    const roles = Object.entries(data.roles).map(([bit, role]) => {
+      const value = 1n << BigInt(bit);
+      return { value, name: plainText(store.words.get().templates[`#${role.nameID}`] ?? ""), locational: locational.has(String(value)) };
+    }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return { roles, titles: intDictOrder([...titles.keys()]).map(id => titles.get(id)!), today: [now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate()] };
+  }
+  async function corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]> {
+    const scope = captureMemberOperation(current);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []); scope.current();
+    const rows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const ids = rows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    for (const id of ids) await memberNames(scope, [{ kind: "station", id }]);
+    scope.current(); return ids.map(stationID => ({ stationID, name: resolvedName(store.names.get().resolved, "station", stationID, "") }));
+  }
+  async function corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]> {
+    const scope = captureMemberOperation(current);
+    const includeImplied = memberQuerySetting(store.session.get().accountID, "FMBQincludeImplied", settingsStorage).value.get();
+    const searchTitles = memberQuerySetting(store.session.get().accountID, "FMBQsearchTitles", settingsStorage).value.get();
+    const result = await scope.ask("corpRegistry", "GetMemberIDsByQuery", memberQueryArguments(criteria, includeImplied, searchTitles)); scope.current();
+    const values = isListValue(result) ? result.items : Array.isArray(result) ? result : null;
+    if (values === null) throw new Error("The corporation member query could not be read.");
+    const ids = values.map(value => {
+      const id = Number(unwrapLong(value));
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A member in the query result could not be read.");
+      return id;
+    });
+    // SimpleView.PopulateView primes all returned owners before slicing pages.
+    await memberNames(scope, ids.map(id => ({ kind: "owner" as const, id }))); scope.current();
+    return ids;
+  }
   async function corporationDecorations(): Promise<CorporationDecorations> {
     const scope = captureMemberOperation();
     const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
@@ -16372,6 +16488,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         imageServerSignal.set(typeof value === "string" ? value : null);
       })
       .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
+  }
+  const capturedPortraitCache = new Map<string, { readonly image: { readonly base64: string; readonly contentType: string }; readonly modified: number }>();
+  async function capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void> {
+    // Original photo.SavePortraits/_SavePortraits437-453: merged list, one size
+    // read, forced refresh of each image, byte copy, and progress even if absent.
+    const current = callOptions.captureRequestGuard!();
+    const options = { ...callOptions, priority: "user" as const, captureRequestGuard: () => current };
+    current(); progress(0, characterIDs.length);
+    const config = await api.getGlobalConfig(["defaultPortraitSaveSize"], options); current();
+    const configured = config.values.defaultPortraitSaveSize;
+    const size = configured === null || configured === undefined ? 1024 : Math.trunc(Number(configured));
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error("The image server supplied an invalid portrait save size.");
+    for (const [index, id] of characterIDs.entries()) {
+      const key = `${id}:${size}`, cached = capturedPortraitCache.get(key);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        current(); const reply = await api.readCapturePortrait(id, size, cached?.modified ?? null, options); current();
+        if (!reply.transportError) {
+          const image = reply.notModified ? cached?.image : reply.image;
+          if (image) { capturedPortraitCache.set(key, { image, modified: Date.now() }); received(id, image); }
+          break;
+        }
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+      }
+      current(); progress(index + 1, characterIDs.length);
+    }
+    progress(characterIDs.length, characterIDs.length);
   }
 
   // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
@@ -28308,6 +28450,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      duelInvitationSignal.set(null);
       requestGeneration++;
       cancelCorporationCEOChoice();
       cancelCorporationAward();
@@ -29556,6 +29699,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberDetails,
     corporationMemberRoleBase,
     corporationMemberIDs,
+    corporationAdministration,
+    corporationMemberQueryContext,
+    corporationMemberQueryBases,
+    corporationMemberQuery,
+    async corporationMemberQueryNeedsValue(current) {
+      const scope = captureMemberOperation(current);
+      const text = "UI/Shared/PleaseTypeSomething";
+      await wordsNow([text]); scope.current();
+      const info = templateWords(text, {}, "Please type something.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    },
+    memberQueryPreference: name => memberQuerySetting(store.session.get().accountID, name, settingsStorage),
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
@@ -29590,6 +29745,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    duelInvitation: readonlySignal(duelInvitationSignal),
+    startDuel,
+    answerDuel,
+    expireDuel,
+    closeDuel,
+    capturePortraits,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
     loadOwnerLogos,
@@ -30282,6 +30443,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
@@ -30315,6 +30477,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        duelInvitationSignal.set(null);
         corporationWealthReads.forget();
         corporationWealthSignal.set(null);
         closeMoneyTransfer();
