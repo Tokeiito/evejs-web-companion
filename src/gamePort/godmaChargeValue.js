@@ -138,4 +138,4 @@ function evaluateGodmaCharge(amount, oldTime, tau, capacity, newTime) {
   return record(result, REAL_KIND);
 }
 
-module.exports = { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords };
+module.exports = { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords, ZeroDivisionError };

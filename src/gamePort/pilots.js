@@ -1149,6 +1149,7 @@ function createGamePortPilots({
   nativeEffectData = null,
   nativeAttributeData = null,
   nativeTypeNames = null,
+  onNumericChargeError = () => {},
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
   // consume); none read where it is not given.
   gatewayNotices = null,
@@ -1770,6 +1771,7 @@ function createGamePortPilots({
         nativeEffectData,
         nativeAttributeData,
         nativeTypeNames,
+        onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
         onFitted: (item) => onlineIfApplicable(entry, item),
         // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the

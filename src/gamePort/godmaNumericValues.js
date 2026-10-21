@@ -110,7 +110,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
       if (name === cap) {
         if (charged.get(itemID)?.has(id)) {
           if (evaluateCharge) {
-            let current = record(itemID, id);
+            let current = readAttributeRecord(itemID, id);
             // Native computes float(new)/old even when charge != old.
             const ratio = floatDivide(cell(amount, kind), cell(old, undefined));
             if (equal(current.value, old)) current = scaleReal(current, ratio);
@@ -124,7 +124,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
           }
         } else if (chargeOperandPresent(values.get(tau)) && chargeOperandPresent(values.get(cap))) createCharged(itemID, id, values.get(id), time, pairs, kinds.get(itemID)?.get(id));
       } else if (name === tau && charged.get(itemID)?.has(id)) {
-        const current = record(itemID, id);
+        const current = readAttributeRecord ? readAttributeRecord(itemID, id) : record(itemID, id);
         createCharged(itemID, id, current.value, time, pairs, current.kind);
       }
     }

@@ -296,6 +296,7 @@ function createPilotDogma({
   // Installed attribute ID/name identity; raw readers retain their ID cache.
   nativeAttributeData = null,
   nativeTypeNames = null,
+  onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
@@ -337,6 +338,11 @@ function createPilotDogma({
     inventoryItem: itemID => primeInventory.get(itemID),
     typeFacts: typeID => typeFacts(number(typeID)),
     fieldsOf: row => new Map(Object.entries(rowFields(row) ?? {})),
+    typeName: typeID => {
+      if (!nativeTypeNames) throw new GodmaTypeNamesNotReadyError();
+      return nativeTypeNames.name(typeID);
+    },
+    logException: onNumericChargeError,
   }) : null;
   function nativeAttributeRecord(itemID, attributeID, at) {
     if (!nativeAttributeGetter) throw new GodmaAttributeDataNotReadyError("Native numeric getter requires installed attribute definitions.");

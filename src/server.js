@@ -234,6 +234,9 @@ const gamePortPilots = options.gamePortPilots !== undefined
         messages: ids => clientWords.messages(ids),
         language: () => clientWords.status().language,
       }),
+      onNumericChargeError: (message, error, characterID) => {
+        console.error(`[game-port] pilot ${characterID}:`, message, error);
+      },
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
