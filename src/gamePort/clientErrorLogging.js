@@ -28,6 +28,7 @@ function createClientErrorLogging({ provider, logging, standardLogging, taskletT
     const call = name => (...args) => { assertCurrent(); return module.getAttr(name).call(...args); };
     return Object.freeze({
       module: logging.module, localizationLogger: module.getAttr("localization_logger"), UserError: module.getAttr("UserError"),
+      exceptions: module.getAttr("exceptions"),
       settings: module.getAttr("settings"), startup: module.getAttr("startup"), arguments: argumentsSnapshot,
       logging, standardLogging, taskletTimer, sessionContext, identity: runtime.identity, assertCurrent,
       LogTraceback: call("traceback_entry"), LogException: call("exception_entry"),

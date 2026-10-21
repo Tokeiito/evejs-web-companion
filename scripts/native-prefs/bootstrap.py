@@ -53,6 +53,9 @@ def _client_scoped_import(name, globals=None, locals=None, fromlist=(), level=-1
     bindings = globals.get('_CLIENT_IMPORT_BINDINGS') if type(globals) is dict else None
     if level in (-1, 0) and bindings is not None and name in bindings:
         return bindings[name]
+    importer = globals.get('_CLIENT_MODULE_IMPORTER') if type(globals) is dict else None
+    if importer is not None:
+        return importer(name, globals, locals, fromlist, level)
     relative = globals.get('_CLIENT_RELATIVE_IMPORT_BINDINGS') if type(globals) is dict else None
     if level == 1 and relative is not None and name in relative:
         return relative[name]
@@ -62,6 +65,88 @@ def _client_scoped_import(name, globals=None, locals=None, fromlist=(), level=-1
 
 
 __builtin__.__import__ = _client_scoped_import
+
+
+def _create_original_module_graph(suffixes, bindings, seeds=None):
+    # Owned ORIGINAL package bodies, including their real relative imports and
+    # reentrant partial modules. No empty parent shells stand in for execution.
+    # Unadmitted application dependencies still fail through the real installed
+    # module policy; original optional ImportError handlers decide what follows.
+    import types, os
+    result = types.ModuleType('companion.original_module_graph')
+    modules, codes = dict(seeds or {}), {}
+    result.modules, result.codes = modules, codes
+    result.complete, result.error = False, None
+
+    def load(name):
+        parent_name, _, child = name.rpartition('.')
+        parent = load(parent_name) if parent_name else None
+        if name in modules:
+            module = modules[name]
+            if parent is not None:
+                setattr(parent, child, module)
+            return module
+        if name not in suffixes:
+            raise ImportError('Original module is outside the prepared graph: ' + name)
+        prefix = parent_name.replace('.', '/')
+        importer = zipimport.zipimporter(_archive + ('/' + prefix if prefix else ''))
+        code = importer.get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffixes[name]):
+            raise ImportError('Not the installed original module: ' + name)
+        module = types.ModuleType(name)
+        filename, package = importer.get_filename(name), importer.is_package(name)
+        module.__file__, module.__loader__ = filename, importer
+        module.__package__ = name if package else parent_name
+        if package:
+            module.__path__ = [os.path.dirname(filename)]
+        module.__dict__.update({'__builtins__': __builtin__.__dict__,
+                                '_CLIENT_IMPORT_BINDINGS': bindings,
+                                '_CLIENT_MODULE_IMPORTER': import_module})
+        # Original exceptions code resolves strx as a builtin when present.
+        # The actual effective builtin owner is separate from VM builtins.
+        effective = bindings.get('__builtin__')
+        if effective is not None and hasattr(effective, 'strx'):
+            module.strx = effective.strx
+        modules[name], codes[name] = module, code
+        try:
+            types.FunctionType(code, module.__dict__)()
+        except BaseException:
+            del modules[name]
+            result.error = sys.exc_info()
+            raise
+        if parent is not None:
+            setattr(parent, child, module)
+        return module
+
+    def import_module(name, globals=None, locals=None, fromlist=(), level=-1):
+        package = globals.get('__package__', '') if type(globals) is dict else ''
+        fullname, relative_prefix = name, ''
+        if level > 0:
+            parts = package.split('.') if package else []
+            if level > len(parts):
+                raise ValueError('Attempted relative import beyond top-level package')
+            relative_prefix = '.'.join(parts[:len(parts) - level + 1])
+            fullname = relative_prefix + ('.' + name if name else '')
+        elif level == -1 and package:
+            candidate = package + '.' + name
+            if candidate in suffixes or candidate in modules:
+                fullname, relative_prefix = candidate, package
+        if fullname not in suffixes and fullname not in modules:
+            if level > 0:
+                raise ImportError('Relative module is outside the prepared graph: ' + fullname)
+            return _client_import_fallback(name, globals, locals, fromlist, 0)
+        module = load(fullname)
+        if fromlist:
+            for child in fromlist:
+                candidate = fullname + '.' + child
+                if child != '*' and not hasattr(module, child) and (candidate in suffixes or candidate in modules):
+                    load(candidate)
+            return module
+        root = name.split('.')[0]
+        return load(relative_prefix + '.' + root if relative_prefix and root else root or fullname)
+
+    result.load = load
+    return result
 
 
 def _create_preferences(root):
@@ -869,12 +954,18 @@ def _attach_error_logging(logmodule, stdlogutils, context, tasklet_timer, argume
     settings = bunch_module.Bunch()
     context.builtins.settings = settings
 
-    error_globals = {'__name__': 'eveexceptions', '__builtins__': __builtin__.__dict__, 'types': types}
-    # Preserve the original conditional strx selection, not stringutil.strx.
-    error_globals['strx'] = getattr(context.builtins, 'strx', str)
-    error_source = module_code('eveexceptions', '/packages/eveexceptions/__init__.py')
-    user_error = type('UserError', (StandardError,), types.FunctionType(definition(error_source, 'UserError'), error_globals)())
-    error_globals['UserError'] = user_error
+    # Execute the complete original exception package once for this client.
+    # Its subclasses and later appConst consumers must share this SAME UserError,
+    # rather than materializing another selected class with a different identity.
+    exceptions = _create_original_module_graph({
+        'eveexceptions': '/packages/eveexceptions/__init__.py',
+        'eveexceptions.const': '/packages/eveexceptions/const.py',
+        'eveexceptions.exceptionEater': '/packages/eveexceptions/exceptionEater.py',
+    }, {'__builtin__': context.builtins,
+        'logging': stdlogutils.__dict__['_CLIENT_IMPORT_BINDINGS']['logging']})
+    exception_package = exceptions.load('eveexceptions')
+    exceptions.complete = True
+    user_error = exception_package.UserError
 
     namespace = logmodule.__dict__
     namespace.update({'__builtins__': __builtin__.__dict__, '__builtin__': context.builtins,
@@ -913,6 +1004,9 @@ def _attach_error_logging(logmodule, stdlogutils, context, tasklet_timer, argume
     types.FunctionType(module_code('localization.logger', '/packages/localization/logger.py'), logger.__dict__)()
     result = types.ModuleType('companion.error_logging_owner')
     result.logmodule, result.localization_logger, result.UserError = logmodule, logger, user_error
+    result.exceptions, result.exceptions_owner = exception_package, exceptions
+    # The log module is already the shared error consumer passed to rowsets.
+    logmodule._client_exceptions_owner = exceptions
     result.settings, result.startup, result.blue = settings, startup, blue_inputs
     result.assert_profile, result.context, result.stdlogutils = assert_profile, context, stdlogutils
 
@@ -1888,6 +1982,78 @@ def _create_godma_rowset_types(owner, rows, error_log):
     return result
 
 
+def _prepare_godma_state_manager(owner, rowsets):
+    # Construction preparation only. Original GetStateManager publishes onto
+    # this SAME Godma slot; these empty source caches are not active gameplay
+    # stores. InitializeData/Prime, notices and native cold RPC yielding remain
+    # separate demands, never a second populated authority beside pilotDogma.
+    import types
+    if getattr(owner, 'rowset_types', None) is not rowsets or not rowsets.complete:
+        raise TypeError('StateManager requires the same complete original rowset types')
+    existing = getattr(owner, 'constants_owner', None)
+    if existing is not None:
+        if existing.error is not None:
+            raise existing.error[0], existing.error[1], existing.error[2]
+        if not existing.complete:
+            raise ImportError('Original Godma constants preparation is incomplete')
+        return existing
+    exceptions = rowsets.error_log._client_exceptions_owner
+    if not exceptions.complete or exceptions.modules['eveexceptions'].UserError is not rowsets.error_log.UserError:
+        raise TypeError('Godma constants must share the actual error consumer exception classes')
+    suffixes = {}
+    for name in ('carbon', 'carbon.common', 'carbon.common.lib', 'eve', 'eve.common', 'eve.common.lib',
+                 'eve.common.script', 'eve.common.script.util'):
+        suffixes[name] = '/' + name.replace('.', '/') + '/__init__.py'
+    for name in ('crimewatch', 'dogma', 'eveexceptions', 'evefleet', 'eveuniverse', 'inventorycommon',
+                 'itertoolsext', 'marketutil', 'probescanning', 'utillib', 'brennivin', 'caching'):
+        suffixes[name] = '/packages/' + name + '/__init__.py'
+    for name in ('carbon.common.lib.const', 'carbon.common.lib.session', 'eve.common.lib.appConst',
+                 'eve.common.lib.infoEventConst', 'eve.common.script.util.notificationconst'):
+        suffixes[name] = '/' + name.replace('.', '/') + '.py'
+    for name in ('inventorycommon.const', 'dogma.const', 'crimewatch.const', 'eveexceptions.const',
+                 'eveexceptions.exceptionEater', 'probescanning.const', 'evefleet.const', 'evefleet.error',
+                 'evefleet.util', 'eveuniverse.security', 'marketutil.const', 'marketutil.skilllimits',
+                 'caching.memoize', 'caching.lazy', 'brennivin.compat', 'brennivin.dochelpers',
+                 'brennivin.itertoolsext'):
+        suffixes[name] = '/packages/' + name.replace('.', '/') + '.py'
+    # Reuse already executed actual VM helpers and the existing descriptor
+    # constant owner. Do not extend carbon.const with hand-copied EVE values.
+    seeds = dict(exceptions.modules)
+    seeds['carbon.common.lib.const'] = rowsets.rows.descriptors.constants
+    for name in suffixes:
+        if (name == 'caching' or name.startswith('caching.') or name == 'brennivin' or name.startswith('brennivin.')) and name in sys.modules:
+            seeds[name] = sys.modules[name]
+    package = exceptions.modules['eveexceptions']
+    graph = _create_original_module_graph(suffixes, {
+        '__builtin__': package.__dict__['__builtin__'],
+        'logging': exceptions.modules['eveexceptions.exceptionEater'].logging,
+    }, seeds)
+    graph.codes.update(exceptions.codes)
+    owner.constants_owner = graph
+    try:
+        graph.appConst = graph.load('eve.common.lib.appConst')
+        namespace = type(owner.instance).__dict__['__init__'].func_globals
+        namespace['const'] = graph.appConst
+        methods = [v for v in owner.source.co_consts if type(v) is types.CodeType and v.co_name == 'GetStateManager']
+        if len(methods) != 1:
+            raise ImportError('Ambiguous installed Godma.GetStateManager')
+        type(owner.instance).GetStateManager = types.FunctionType(methods[0], namespace)
+
+        def get_warm():
+            # This guard does not execute arbitrary ==None twice. Header RPC
+            # demand is explicit preparation, outside the original lazy call.
+            if owner.instance.stateManager is None and owner.needs_remote('itemrd'):
+                raise rowsets.rows.descriptors.DomainError('StateManager requires explicit asynchronous header preparation')
+            return owner.instance.GetStateManager()
+
+        owner.get_state_manager_warm = get_warm
+        graph.complete = True
+    except BaseException:
+        graph.error = sys.exc_info()
+        raise
+    return graph
+
+
 def _create_inventory_header_owner(service_types):
     # Core construction and the ONE Initialize108 field only. This selected
     # capability does not run invCache.Initialize's semaphore/service graph.
@@ -2000,4 +2166,5 @@ def _create_godma_header_owner(service_types, inventory_header, protocol):
     result = types.ModuleType('companion.godma_header_owner')
     result.instance, result.needs_remote, result.read_warm = instance, needs_remote, read_warm
     result.dependencies, result.construction = services, construction
+    result.source = source
     return result
