@@ -38,6 +38,23 @@ sys.modules['blue'] = _client_prefs_io
 import eveprefs
 from eveprefs.iniformat import IniIniFile
 
+# CPython2 marks frames using a copied builtins dictionary as restricted;
+# original old-style classes (including Sissy) then cannot use __dict__.
+# Keep the REAL shared builtins dictionary and route only explicit module-local
+# import bindings. No per-client session/boot/preferences replace shared values.
+import __builtin__
+_client_import_fallback = __builtin__.__import__
+
+
+def _client_scoped_import(name, globals=None, locals=None, fromlist=(), level=-1):
+    bindings = globals.get('_CLIENT_IMPORT_BINDINGS') if type(globals) is dict else None
+    if level in (-1, 0) and bindings is not None and name in bindings:
+        return bindings[name]
+    return _client_import_fallback(name, globals, locals, fromlist, level)
+
+
+__builtin__.__import__ = _client_scoped_import
+
 
 def _create_preferences(root):
     owner = eveprefs.Handler(IniIniFile('prefs', root))
@@ -534,4 +551,46 @@ def _prepare_localization_data(extension, main_filename, english_filename):
     backend.LoadMessageData(*english)
     result = types.ModuleType('companion.native_localization_data')
     result.backend, result.main, result.english = backend, main, english
+    return result
+
+
+def _create_session_context():
+    # Original localstorage/Sissy, with actual Stackless getcurrent and a
+    # PRIVATE builtin namespace. The bounded transport-field object is not a
+    # constructed CoreSession, its default policy or engine lifecycle.
+    import types, __builtin__, stackless
+    if hasattr(stackless.getcurrent(), 'localStorage'):
+        raise RuntimeError('Per-tasklet shared localStorage requires an owned entry context')
+    owned_builtins = types.ModuleType('__builtin__')
+    owned_builtins.__dict__.update(__builtin__.__dict__)
+    source = zipimport.zipimporter(_archive).get_code('localstorage')
+    if source is None or not source.co_filename.replace('\\', '/').endswith('/packages/localstorage/__init__.py'):
+        raise ImportError('Not the installed localstorage module')
+    storage = types.ModuleType('localstorage')
+    storage.__dict__.update({'__builtins__': __builtin__.__dict__, '__package__': '',
+                             '_CLIENT_IMPORT_BINDINGS': {'__builtin__': owned_builtins}})
+    types.FunctionType(source, storage.__dict__)()
+    fields = type('CurrentTransportSessionFields', (object,), {'__module__': 'companion.transport_session_fields'})()
+
+    def assert_entry():
+        # Stackless creates a new current tasklet at separate embedding calls.
+        # The native addon enforces one Node environment/Windows owner thread;
+        # ORIGINAL GetLocalStorage uses this namespace's real main fallback.
+        if hasattr(stackless.getcurrent(), 'localStorage'):
+            raise RuntimeError('Session context requires native owner entries without shared tasklet storage')
+
+    def publish(values):
+        assert_entry()
+        fields.__dict__.clear()
+        fields.__dict__.update(values)
+        storage.GetLocalStorage()['base.session'] = fields
+
+    def retire():
+        assert_entry()
+        storage.GetLocalStorage().pop('base.session', None)
+
+    result = types.ModuleType('companion.session_context')
+    result.localstorage, result.builtins = storage, owned_builtins
+    result.session, result.fields = owned_builtins.session, fields
+    result.publish, result.retire, result.assert_entry = publish, retire, assert_entry
     return result

@@ -14,11 +14,13 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * localization settings preparation retains real boot/preferences and original
  * cleaner methods; it does not load messages or initialize localization. The
  * separate localization data preparation retains the actual shared native
- * English backend, without publishing the settings/session/Get chain. No full
+ * English backend, without publishing the settings/session/Get chain.
+ * prepareSessionContext() binds original Sissy to raw typed transport fields;
+ * it does not apply CoreSession defaults or remote-change policy. No full
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -33,6 +35,19 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let phases = null, pendingPhases = null;
   let localizationSettings = null, pendingLocalizationSettings = null;
   let nativeLocalization = null, pendingLocalizationData = null;
+  let sessionContext = null, pendingSessionContext = null;
+  function prepareSessionContext() {
+    if (sessionContext !== null) return Promise.resolve(sessionContext);
+    if (pendingSessionContext !== null) return pendingSessionContext;
+    if (typeof createSessionContext !== "function" || !transportSession) throw new Error("Actual typed transport session context is not configured.");
+    const reading = Promise.resolve().then(createSessionContext).then(owner => {
+      if (!owner?.session || !owner.localstorage || owner.transport !== transportSession || typeof owner.assertCurrent !== "function") throw new Error("The native session context must share this client's actual transport.");
+      sessionContext = owner; return owner;
+    });
+    pendingSessionContext = reading;
+    const forget = () => { if (pendingSessionContext === reading) pendingSessionContext = null; };
+    reading.then(forget, forget); return reading;
+  }
   function prepareLocalizationData() {
     if (nativeLocalization !== null) return Promise.resolve(nativeLocalization);
     if (pendingLocalizationData !== null) return pendingLocalizationData;
@@ -104,7 +119,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.

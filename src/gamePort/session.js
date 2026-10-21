@@ -28,7 +28,7 @@
 
 const zlib = require("node:zlib");
 const crypto = require("node:crypto");
-const { marshalDecode } = require("../gameProtocol/marshal");
+const { marshalDecode, getDecodedNumberKind } = require("../gameProtocol/marshal");
 const { encodeClient, long } = require("./clientMarshal");
 const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
@@ -359,12 +359,17 @@ class GamePortSession {
     this.handshakeAnswer = null;
     /** The session attributes, kept current from session-change packets. */
     this.attributes = {};
+    // Last wire values, distinct from a full native CoreSession and its
+    // ComputeNotifySets/default/dependent-attribute policy. Capture scalar
+    // provenance before copying values out of their decoded parent slots.
+    this.sessionAttributeRecords = new Map();
+    this.sessionAttributeRevision = 0;
     /** Server clock minus ours, in milliseconds, from the last clock sync. */
     this.clockOffsetMs = 0;
     this.lastSentAt = this.now();
     this.counters = { sent: 0, received: 0, compressedSent: 0, compressedReceived: 0, unknownPackets: 0 };
 
-    this.listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), packet: new Set(), clientCall: new Set() };
+    this.listeners = { notification: new Set(), sessionChange: new Set(), sessionAttributes: new Set(), close: new Set(), packet: new Set(), clientCall: new Set() };
     this.backgroundTimers = new Set();
 
     transport.onFrame = (payload) => this._onFrame(payload);
@@ -380,6 +385,20 @@ class GamePortSession {
   onNotification(listener) { return this._listen("notification", listener); }
   /** fn(changes, attributes): changes is {name: [old, new]}. */
   onSessionChange(listener) { return this._listen("sessionChange", listener); }
+  /** Typed raw attribute ingress, including the login snapshot; before public change listeners. */
+  onSessionAttributeUpdate(listener) { return this._listen("sessionAttributes", listener); }
+  readSessionAttribute(name) {
+    return this.sessionAttributeRecords.get(name) ?? Object.freeze({ present: false });
+  }
+  sessionLifecycle() {
+    return Object.freeze({ closed: this.closed, loggedIn: this.loggedIn, revision: this.sessionAttributeRevision });
+  }
+  _captureSessionAttribute(name, container, slot, source) {
+    this.sessionAttributeRecords.set(name, Object.freeze({
+      present: true, value: container[slot], kind: getDecodedNumberKind(container, slot),
+      source, revision: this.sessionAttributeRevision,
+    }));
+  }
   /** fn(error) once, when the connection is gone. The character is logged off. */
   onClose(listener) { return this._listen("close", listener); }
   /** fn(packet, direction) for every packet, "in" or "out". For recording. */
@@ -478,11 +497,17 @@ class GamePortSession {
       throw this._fail(new GamePortError("LOGIN_REFUSED", "The game server's login answer carried no session."));
     }
     if (sessionInit && sessionInit.type === "dict") {
-      for (const [name, value] of sessionInit.entries) this.attributes[text(name)] = value;
+      this.sessionAttributeRevision++;
+      for (const entry of sessionInit.entries) {
+        const key = text(entry[0]);
+        this._captureSessionAttribute(key, entry, 1, "login");
+        this.attributes[key] = entry[1];
+      }
     }
 
     // From here every frame is a packet.
     this.loggedIn = true;
+    this._emit("sessionAttributes", { source: "login", revision: this.sessionAttributeRevision });
     for (const value of this.handshakeInbox.splice(0)) this._dispatch(value);
 
     // machoNet.ConnectToServer's first call, then connectionService.Connect.
@@ -999,6 +1024,7 @@ class GamePortSession {
   _onClosed(error) {
     if (this.closed) return;
     this.closed = true;
+    this.sessionAttributeRevision++;
     this.closeReason = error;
     for (const timer of this.backgroundTimers) this.timers.clearTimeout(timer);
     this.backgroundTimers.clear();
@@ -1244,24 +1270,30 @@ class GamePortSession {
     const changes = Array.isArray(change) ? change[1] : null;
     if (!changes || changes.type !== "dict") return;
     const applied = {};
+    this.sessionAttributeRevision++;
     for (const [name, pair] of changes.entries) {
       const key = text(name);
       if (key === null || !Array.isArray(pair)) continue;
       applied[key] = [pair[0], pair[1]];
+      this._captureSessionAttribute(key, pair, 1, "change");
       this.attributes[key] = pair[1];
     }
+    this._emit("sessionAttributes", { source: "change", revision: this.sessionAttributeRevision });
     this._emit("sessionChange", applied, this.attributes);
   }
 
   _applyInitialState(initialState) {
     if (!initialState || initialState.type !== "dict") return;
     const applied = {};
-    for (const [name, value] of initialState.entries) {
-      const key = text(name);
+    this.sessionAttributeRevision++;
+    for (const entry of initialState.entries) {
+      const key = text(entry[0]), value = entry[1];
       if (key === null) continue;
       applied[key] = [this.attributes[key] ?? null, value];
+      this._captureSessionAttribute(key, entry, 1, "initial");
       this.attributes[key] = value;
     }
+    this._emit("sessionAttributes", { source: "initial", revision: this.sessionAttributeRevision });
     this._emit("sessionChange", applied, this.attributes);
   }
 }

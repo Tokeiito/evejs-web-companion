@@ -1792,7 +1792,8 @@ function createGamePortPilots({
         createNativeClientLog,
         createNativeClientLogModule,
         createNativeClientTaskletTimer,
-        createNativeClientStaticConstructor,
+        createNativeClientStaticConstructor: typeof createNativeClientStaticConstructor === "function"
+          ? owners => createNativeClientStaticConstructor({ ...owners, session }) : null,
         createNativeClientPreferences,
         nativeTypeNames,
         onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
