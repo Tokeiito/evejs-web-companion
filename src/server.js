@@ -28,6 +28,7 @@ const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
+const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -211,6 +212,16 @@ const gamePortPilots = options.gamePortPilots !== undefined
         dogmaEffects: async (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
         categoryOf: (typeID) => (staticData.getType(typeID) || {}).categoryID ?? null,
       }).ewarTypeOf,
+      // godma's named effect rows use the installed client's ordered default
+      // relationships and definitions. A failed read is not an empty table.
+      nativeEffectData: createGodmaEffectData({
+        typeDogma: async (typeID) => {
+          const rows = await clientBuiltData.rows("typeDogma", [typeID]);
+          return rows ? rows[String(typeID)] : undefined;
+        },
+        dogmaEffects: (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
+        messages: (messageIDs) => clientWords.messages(messageIDs),
+      }),
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;

@@ -1144,6 +1144,9 @@ function createGamePortPilots({
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
+  // Original installed type-effect relations/definitions, distinct from the
+  // server SDE summaries used by the existing fitting projection.
+  nativeEffectData = null,
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
   // consume); none read where it is not given.
   gatewayNotices = null,
@@ -1523,6 +1526,14 @@ function createGamePortPilots({
     entry.itemWork = Promise.all([entry.itemWork, settled]).then(() => {});
   }
 
+  // Local static-data work may finish asynchronously in this host. Keep raw
+  // socket dispatch free to receive replies; readers wait on its completion.
+  function keepDogmaWork(entry, work) {
+    if (!work || typeof work.then !== "function") return;
+    const settled = work.catch(() => {});
+    entry.itemWork = Promise.all([entry.itemWork, settled]).then(() => {});
+  }
+
   /**
    * The fleet the pilot is in, as the session says: session.fleetid, which the server sets with a session change
    * and the client's fleet service goes by for everything it asks of a fleet (fleetSvc.py). Null in none. And
@@ -1754,6 +1765,7 @@ function createGamePortPilots({
         characterID,
         now: () => filetime(clock.simTime()),
         effectCategory,
+        nativeEffectData,
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
         onFitted: (item) => onlineIfApplicable(entry, item),
         // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
@@ -1975,7 +1987,7 @@ function createGamePortPilots({
       }
       entry.clock.feed(notification);
       if (entry.space) entry.space.feed(notification);
-      if (!ITEM_NOTICES.has(notification.method)) entry.dogma.feed(notification);
+      if (!ITEM_NOTICES.has(notification.method)) keepDogmaWork(entry, entry.dogma.feed(notification));
       entry.scanner.feed(notification);
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
@@ -4683,7 +4695,8 @@ function createGamePortPilots({
           }
           // Original PrimeLocation updates godma first, then passively binds.
           // allInfo does not populate cachedItems, listed or backing self/type.
-          updateRows();
+          await updateRows();
+          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
           await cachedInventoryObject(entry, "GetInventoryFromId", [stage.itemID, 1]);
           if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
           entry.godmaLocations.set(stage.itemID, {
@@ -4747,7 +4760,7 @@ function createGamePortPilots({
       // warfare's and the jams' (OnEwarStart and OnEwarEnd for tactical, OnJamStart and OnJamEnd for godma and shipUI,
       // which Tranquility sends this way) are handed on to the page so.
       entry.space.park.onMultiEvent = (messages) => {
-        entry.dogma.multiEvent(messages);
+        keepDogmaWork(entry, entry.dogma.multiEvent(messages));
         if (!sessions.has(entry.handle)) return;
         for (const pair of itemsOf(messages)) {
           const event = itemsOf(Array.isArray(pair) ? pair[0] : null);
