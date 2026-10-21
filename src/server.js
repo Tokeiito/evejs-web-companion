@@ -43,6 +43,7 @@ const { createClientFileLogger } = require("./gamePort/clientFileLogger");
 const { createClientPreferencesProvider } = require("./gamePort/clientPreferences");
 const { createClientLogModule } = require("./gamePort/clientLogModule");
 const { createClientStdLogging } = require("./gamePort/clientStdLogging");
+const { createClientErrorLogging } = require("./gamePort/clientErrorLogging");
 const { createClientTaskletTimer } = require("./gamePort/clientTaskletTimer");
 const { createClientSessionOwners } = require("./gamePort/clientEffectiveSessionContext");
 const { createClientStaticService } = require("./gamePort/clientStaticService");
@@ -292,6 +293,10 @@ const gamePortPilots = options.gamePortPilots !== undefined
         createStdLogging: ({ sessionContext, localizationSettings }) => createClientStdLogging({
           provider: nativePreferencesProvider, logging: owners.logging, preferences: owners.preferences,
           sessionContext, boot: localizationSettings.boot,
+        }),
+        createErrorLogging: ({ standardLogging, sessionContext }) => createClientErrorLogging({
+          provider: nativePreferencesProvider, logging: owners.logging, standardLogging,
+          taskletTimer: owners.taskletTimer, sessionContext,
         }),
       }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),

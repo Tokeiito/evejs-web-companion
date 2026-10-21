@@ -22,7 +22,7 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -39,6 +39,20 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let nativeLocalization = null, pendingLocalizationData = null;
   let sessionContext = null, pendingSessionContext = null;
   let stdLogging = null, pendingStdLogging = null;
+  let errorLogging = null, pendingErrorLogging = null;
+  function prepareErrorLogging() {
+    if (errorLogging !== null) return Promise.resolve(errorLogging);
+    if (pendingErrorLogging !== null) return pendingErrorLogging;
+    if (typeof createErrorLogging !== "function" || !taskletTimer) throw new Error("Actual original error graph and timer inputs are not configured.");
+    const reading = prepareStdLogging().then(standardLogging => createErrorLogging({ standardLogging, sessionContext })).then(owner => {
+      if (!owner?.module || !owner.localizationLogger || owner.logging !== logging || owner.standardLogging !== stdLogging || owner.taskletTimer !== taskletTimer || owner.sessionContext !== sessionContext) throw new Error("Error logging must retain the same native client owners.");
+      owner.assertCurrent();
+      errorLogging = owner; return owner;
+    });
+    pendingErrorLogging = reading;
+    const forget = () => { if (pendingErrorLogging === reading) pendingErrorLogging = null; };
+    reading.then(forget, forget); return reading;
+  }
   function prepareStdLogging() {
     if (stdLogging !== null) return Promise.resolve(stdLogging);
     if (pendingStdLogging !== null) return pendingStdLogging;
@@ -138,7 +152,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.

@@ -804,3 +804,124 @@ def _create_std_logging(logmodule, preferences, context):
     result.formatter, result.root = stdlogutils.Fmt.FMT_EVE, logging.root
     result.context, result.preferences, result.boot = context, preferences, context.boot
     return result
+
+
+def _attach_error_logging(logmodule, stdlogutils, context, tasklet_timer, arguments):
+    # Original selected error graph on the EXISTING logmodule and owners.
+    # This is the client/pre-UI profile, not SettingsSvc/ServiceManager startup,
+    # scheduler/popups/alerts, memory diagnostics or a constructed Blue engine.
+    import types, __builtin__, datetime, traceback2, cStringIO
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed error logging dependency: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts if type(value) is types.CodeType and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed error logging definition: ' + name)
+        return matches[0]
+
+    if type(arguments) is not list or not arguments or any(type(arg) is not unicode for arg in arguments):
+        raise TypeError('Actual companion startup arguments must be a nonempty Unicode list')
+    startup_args = tuple(arguments)
+    startup_map = {}
+    # Source-backed companion input port: BlueOS.SetStartupArgs2080+, skip argv0,
+    # remove ONE slash, split FIRST '=', case-sensitive names. Real host inputs,
+    # not empty/always-false flags or ExeFile/@ expansion/BlueOS construction.
+    for arg in startup_args[1:]:
+        name = arg[1:] if arg.startswith(u'/') else arg
+        name, separator, value = name.partition(u'=')
+        startup_map[name] = value
+
+    def get_args():
+        # BluePython.PyGetArg1544 returns a fresh Unicode list. The append/slice
+        # also copies native Unicode contents without changing surrogate units.
+        return [(arg + u'\0')[:-1] for arg in startup_args]
+
+    def has_argument(name):
+        return name in startup_map
+
+    startup = types.ModuleType('companion.log_startup_inputs')
+    startup.arguments, startup.map = startup_args, startup_map
+    startup.GetArg, startup.HasStartupArg = get_args, has_argument
+    pyos = types.ModuleType('companion.error_pyos_inputs')
+    pyos.taskletTimer, pyos.GetArg = tasklet_timer, get_args
+    os_inputs = types.ModuleType('companion.error_os_inputs')
+    os_inputs.HasStartupArg = has_argument
+    blue_inputs = types.ModuleType('companion.error_blue_inputs')
+    blue_inputs.pyos, blue_inputs.os = pyos, os_inputs
+
+    bunch_module = types.ModuleType('carbonui.util.bunch')
+    bunch_module.__dict__['__builtins__'] = __builtin__.__dict__
+    types.FunctionType(module_code('carbonui.util.bunch', '/packages/carbonui/util/bunch.py'), bunch_module.__dict__)()
+    # Actual SettingsSvc.LoadSettings prefix creates Bunch before section load.
+    # Do not invent/alias public.generic as top-level generic or claim files,
+    # YAML, autotimers, settings services or browser dialog initialization.
+    if hasattr(context.builtins, 'settings'):
+        raise RuntimeError('Existing settings namespace needs its actual source owner')
+    settings = bunch_module.Bunch()
+    context.builtins.settings = settings
+
+    error_globals = {'__name__': 'eveexceptions', '__builtins__': __builtin__.__dict__, 'types': types}
+    # Preserve the original conditional strx selection, not stringutil.strx.
+    error_globals['strx'] = getattr(context.builtins, 'strx', str)
+    error_source = module_code('eveexceptions', '/packages/eveexceptions/__init__.py')
+    user_error = type('UserError', (StandardError,), types.FunctionType(definition(error_source, 'UserError'), error_globals)())
+    error_globals['UserError'] = user_error
+
+    namespace = logmodule.__dict__
+    namespace.update({'__builtins__': __builtin__.__dict__, '__builtin__': context.builtins,
+                      '_CLIENT_IMPORT_BINDINGS': dict(stdlogutils.__dict__['_CLIENT_IMPORT_BINDINGS']),
+                      'blue': blue_inputs, 'localstorage': context.localstorage,
+                      'session': context.session, 'settings': settings,
+                      'sys': sys, 'datetime': datetime, 'traceback2': traceback2,
+                      'StringIO': cStringIO.StringIO, 'UserError': user_error,
+                      'GetStack': stdlogutils.GetStack, 'NextTraceID': stdlogutils.NextTraceID,
+                      'DATETIME_FORMAT_STR': '%m/%d/%Y %H:%M:%S', '_WIN_EBADF': 9,
+                      'logExceptionLevel': 0, 'sentry_client': None, 'postStackTraceAll': None})
+    namespace['_CLIENT_IMPORT_BINDINGS'].update({'blue': blue_inputs, 'localstorage': context.localstorage, 'logmodule': logmodule})
+    source = module_code('logmodule', '/packages/logmodule/__init__.py')
+    for name in ('Multiplex', 'MsgWindowStream', 'LogAlertServiceStream'):
+        namespace[name] = type(name, (object,), types.FunctionType(definition(source, name), namespace)())
+    for name in ('GetMultiplex', '_LogThreadLocals', 'MsgWindowStreamToMsgWindow', '_LogException',
+                 'LogException', 'LogTraceback', 'DumpMemoryStatus', 'DumpMemHistory'):
+        defaults = None
+        if name == 'LogException':
+            defaults = ('', 'general', 1, 1, None, 1, None, None, None, None, 1)
+        elif name == 'LogTraceback':
+            defaults = ('', 'general', 1, None, 1, 0, None, logmodule.LGERR, 1, None)
+        namespace[name] = types.FunctionType(definition(source, name), namespace, name, defaults)
+
+    def assert_profile():
+        context.assert_entry()
+        if hasattr(context.builtins, 'sm') or settings.has_key('generic'):
+            raise RuntimeError('Active settings/service-manager logging needs its real loaded providers')
+        if logmodule.MsgWindowStreamToMsgWindow():
+            raise RuntimeError('Enabled exception popups require a real scheduler/UI producer')
+
+    assert_profile()
+    logger = types.ModuleType('localization.logger')
+    logger.__dict__.update({'__builtins__': __builtin__.__dict__, '__package__': '',
+                            '_CLIENT_IMPORT_BINDINGS': namespace['_CLIENT_IMPORT_BINDINGS']})
+    types.FunctionType(module_code('localization.logger', '/packages/localization/logger.py'), logger.__dict__)()
+    result = types.ModuleType('companion.error_logging_owner')
+    result.logmodule, result.localization_logger, result.UserError = logmodule, logger, user_error
+    result.settings, result.startup, result.blue = settings, startup, blue_inputs
+    result.assert_profile, result.context, result.stdlogutils = assert_profile, context, stdlogutils
+
+    def traceback_entry(*args):
+        # A genuine companion entry frame for original extract_stack(up=1).
+        # The installed function and its defaults/caller traversal stay intact.
+        assert_profile()
+        return logmodule.LogTraceback(*args)
+
+    def exception_entry(*args):
+        assert_profile()
+        return logmodule.LogException(*args)
+
+    result.traceback_entry, result.exception_entry = traceback_entry, exception_entry
+    return result
