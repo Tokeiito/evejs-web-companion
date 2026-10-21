@@ -31,6 +31,7 @@ const { createEwarTypes } = require("./gamePort/ewarTypes");
 const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
 const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
 const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
+const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaStaticAttributes");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -193,6 +194,9 @@ app.locals.gatewayLedger = gatewayLedger;
 const pilotSetting = options.pilotTransportFor ? null : pilotTransportSetting(options.env || process.env);
 const someoneOnGamePort = pilotSetting !== null &&
   (pilotSetting.fallback === "gameport" || [...pilotSetting.overrides.values()].includes("gameport"));
+const nativeAttributeData = createGodmaAttributeData({
+  dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
+});
 const gamePortPilots = options.gamePortPilots !== undefined
   ? options.gamePortPilots
   : someoneOnGamePort && !options.eveGatewayClient
@@ -224,8 +228,19 @@ const gamePortPilots = options.gamePortPilots !== undefined
         dogmaEffects: (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
         messages: (messageIDs) => clientWords.messages(messageIDs),
       }),
-      nativeAttributeData: createGodmaAttributeData({
-        dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
+      nativeAttributeData,
+      // Local type values for the future native attribute-object factory.
+      // Preparing them never registers an item or supplies an accurate value.
+      nativeTypeAttributes: createClientDogmaStaticAttributes({
+        attributeData: nativeAttributeData,
+        typeDogma: async id => {
+          const rows = await clientBuiltData.rows("typeDogma", [id]);
+          return rows ? rows[id] : undefined;
+        },
+        types: async id => {
+          const rows = await clientBuiltData.rows("types", [id]);
+          return rows ? rows[id] : undefined;
+        },
       }),
       // Installed primary-English type names, prepared before synchronous
       // diagnostic reads. Alternate important-language/QA policy is separate.

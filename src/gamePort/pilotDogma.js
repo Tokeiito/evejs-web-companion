@@ -10,6 +10,7 @@ const { createGodmaAttributeGetter } = require("./godmaAttributeGetter");
 const { GodmaAttributeDataNotReadyError } = require("./godmaAttributeData");
 const { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords } = require("./godmaChargeValue");
 const { GodmaTypeNamesNotReadyError } = require("./godmaTypeNames");
+const { ClientDogmaStaticAttributesNotReadyError } = require("./clientDogmaStaticAttributes");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -295,6 +296,7 @@ function createPilotDogma({
   nativeEffectData = null,
   // Installed attribute ID/name identity; raw readers retain their ID cache.
   nativeAttributeData = null,
+  nativeTypeAttributes = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
@@ -1231,6 +1233,20 @@ function createPilotDogma({
     processAllInfo,
     beginPrime: primeChannel.begin,
     initializeNativeAttributes: () => nativeAttributeData?.ready(),
+    // Explicit local preparation only. Native activation/loaded-node admission
+    // must choose its own types; GetAllInfo does not seed that registry here.
+    initializeNativeTypeAttributes: typeID => {
+      if (!nativeTypeAttributes) throw new ClientDogmaStaticAttributesNotReadyError(typeID);
+      return nativeTypeAttributes.ready(typeID);
+    },
+    nativeTypeAttributeRecord: (typeID, attributeID) => {
+      if (!nativeTypeAttributes) throw new ClientDogmaStaticAttributesNotReadyError(typeID);
+      return nativeTypeAttributes.record(typeID, attributeID);
+    },
+    nativeTypeAttributeEntries: typeID => {
+      if (!nativeTypeAttributes) throw new ClientDogmaStaticAttributesNotReadyError(typeID);
+      return nativeTypeAttributes.entries(typeID);
+    },
     initializeNativeTypeNames: () => nativeTypeNames?.ready(),
     nativeTypeName: typeID => {
       if (!nativeTypeNames) throw new GodmaTypeNamesNotReadyError();

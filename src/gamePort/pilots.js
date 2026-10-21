@@ -1148,6 +1148,7 @@ function createGamePortPilots({
   // server SDE summaries used by the existing fitting projection.
   nativeEffectData = null,
   nativeAttributeData = null,
+  nativeTypeAttributes = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
@@ -1770,6 +1771,7 @@ function createGamePortPilots({
         effectCategory,
         nativeEffectData,
         nativeAttributeData,
+        nativeTypeAttributes,
         nativeTypeNames,
         onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
