@@ -61,6 +61,11 @@ function createClientDogmaNumericMap({ missing } = {}) {
 
 function numericHas(map, key) { return call(map, "has", key === null ? null : clientDogmaItemID(key)); }
 function numericGet(map, key) { return call(map, "get", key === null ? null : clientDogmaItemID(key)); }
+function numericAt(map, key) {
+  // Full Base value maps separate native defaultdict brackets from .get.
+  // The earlier numeric-only component exposed brackets through .get.
+  return call(map, typeof map.at === "function" ? "at" : "get", key === null ? null : clientDogmaItemID(key));
+}
 function numericRequiredGet(map, key) {
   if (!numericHas(map, key)) throw keyError(key);
   return numericGet(map, key);
@@ -152,7 +157,7 @@ class ClientSlimDogmaItem {
       if (locationID !== null) {
         const worldLocationID = field(world, "locationID");
         if (worldLocationID === null || clientDogmaItemID(locationID) !== clientDogmaItemID(worldLocationID)) {
-          call(numericGet(field(world, "itemsMissingLocation"), locationID), "add", this);
+          call(numericAt(field(world, "itemsMissingLocation"), locationID), "add", this);
         }
       }
     }
@@ -174,7 +179,7 @@ class ClientSlimDogmaItem {
     } catch (error) {
       if (error?.name !== "KeyError") throw error;
       this.owner = null;
-      if (ownerID !== null && clientDogmaItemID(ownerID) >= 2) call(numericGet(field(world, "itemsMissingOwner"), ownerID), "add", this);
+      if (ownerID !== null && clientDogmaItemID(ownerID) >= 2) call(numericAt(field(world, "itemsMissingOwner"), ownerID), "add", this);
     }
   }
 

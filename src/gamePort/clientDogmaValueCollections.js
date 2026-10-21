@@ -105,21 +105,29 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
     sets.set(view, table);
     return view;
   }
-  function map({ defaultFactory } = {}) {
+  function map({ defaultFactory, absentNoneLookups = false } = {}) {
     if (defaultFactory !== undefined && typeof defaultFactory !== "function") throw notReady("value-map default factory");
+    if (typeof absentNoneLookups !== "boolean" || (absentNoneLookups && defaultFactory !== undefined)) {
+      throw notReady("plain value-map None-miss policy");
+    }
     const table = newTable("map");
+    // A typed registry can prove None absent without knowing its heap hash:
+    // admitted keys have pure numeric/string/tuple equality, never equal None,
+    // and set(None) remains unavailable. No None slot/order is synthesized.
+    // This policy is only for plain maps, never a creating defaultdict.
+    const entryFor = key => absentNoneLookups && key === null ? undefined : table.entry(prepare(key));
     const required = key => {
-      const entry = table.entry(prepare(key));
+      const entry = entryFor(key);
       if (entry === undefined) throw keyError(key);
       return entry.value;
     };
     return Object.freeze({
       set(key, value) { table.set(prepare(key), value); },
-      has(key) { return table.entry(prepare(key)) !== undefined; },
-      get(key, fallback = null) { const entry = table.entry(prepare(key)); return entry === undefined ? fallback : entry.value; },
+      has(key) { return entryFor(key) !== undefined; },
+      get(key, fallback = null) { const entry = entryFor(key); return entry === undefined ? fallback : entry.value; },
       required,
       at(key) {
-        const entry = table.entry(prepare(key));
+        const entry = entryFor(key);
         if (entry !== undefined) return entry.value;
         if (defaultFactory === undefined) throw keyError(key);
         const value = defaultFactory(); // defaultdict, NOT keydefaultdict.
@@ -129,12 +137,16 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
       },
       // Explicit JS loader-facade operation, NOT Python del's return shape.
       delete(key) {
+        if (absentNoneLookups && key === null) return false;
         const original = prepare(key);
         if (table.entry(original) === undefined) return false;
         table.remove(original, false);
         return true;
       },
-      remove(key) { remove(table, key); },
+      remove(key) {
+        if (absentNoneLookups && key === null) throw keyError(key);
+        remove(table, key);
+      },
       clear() { table.clear(); },
       get size() { return table.used; },
       iterkeys() { return table.iterator(entry => entry.key); },

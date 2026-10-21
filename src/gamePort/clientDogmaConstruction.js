@@ -1,10 +1,9 @@
 "use strict";
 
 // A NEW native item-construction context, deliberately stopping at pre-fit.
-// These source-backed cold maps belong to this context, not an assertion that
-// an existing pilot's modifier world is empty. This is not the complete
-// Base/ClientDogmaLocation constructor or activation. AttachItemLoader adds
-// the explicit bounded wrapper; it does not complete those remaining phases.
+// CreateBasePhase separately implements the ordered Base-local initializer.
+// Both create NEW worlds; neither completes the Client service constructor or
+// activation. AttachItemLoader shares their explicitly supported wrapper state.
 // cdxnodecreationagent1 / cdxprefitcontractagent1 define the item boundary.
 const { createClientDogmaIdentity } = require("./clientDogmaIdentity");
 const { ClientBaseDogmaItem, ClientDogmaItemContinuationNotReadyError, createClientDogmaNumericMap, clientDogmaItemID } = require("./clientDogmaItem");
@@ -17,6 +16,8 @@ const { ClientDogmaItemLoader, ClientDogmaLoadPolicyNotReadyError } = require(".
 const { ClientDogmaEventCount, ClientDogmaBrainUpdate, ClientDogmaMessageMgr, ClientDogmaConstructorPrimitiveNotReadyError } = require("./clientDogmaConstructorPrimitives");
 const { ClientDogmaBrainLiteralCache } = require("./clientDogmaBrainLiteralCache");
 const { CLIENT_DOGMA_INSTANCE_SCHEMA, createClientDogmaConstructorRowApi } = require("./clientDogmaConstructorRow");
+const { createClientDogmaValueCollections } = require("./clientDogmaValueCollections");
+const { initializeClientDogmaBase } = require("./clientDogmaBaseConstructor");
 
 const field = (object, name) => {
   if (object === null || object === undefined || !(name in Object(object))) throw Object.assign(new Error(`Object has no ${name} attribute.`), { name: "AttributeError" });
@@ -31,13 +32,7 @@ class ClientDogmaConstruction {
    * installed-data read, metadata row admission or ghost fitting registry is
    * hidden in this constructor. The caller owns this context's lifecycle. */
   constructor(providers) {
-    this.providers = providers;
-    this.collections = createClientDogmaIdentity(providers.identityPolicy);
-    this.attributeData = providers.attributeData;
-    this.attributeConstructors = new Map([
-      ["StackingNurfedAttribute", ClientDogmaStackingAttribute],
-      ["ChargedAttribute", ClientDogmaChargedAttribute],
-    ]);
+    this._InitializeProviders(providers);
     this.dogmaItems = createClientDogmaNumericMap();
     this.shipsByPilotID = createClientDogmaNumericMap();
     this.pilotsByShipID = createClientDogmaNumericMap();
@@ -68,6 +63,68 @@ class ClientDogmaConstruction {
     this.brainLiterals = new ClientDogmaBrainLiteralCache({ keyPolicy: providers.brainLiteralKeys, format: providers.formatBrainLiteral });
     this.scarecrows = createClientDogmaNumericMap();
     this.brainUpdate = new ClientDogmaBrainUpdate(this.CheckPowerCpuRequirementForOnlineModules.bind(this));
+  }
+
+  /** Prepare emulator adapters, then run the complete ordered BASE-LOCAL
+   * initializer on one NEW world. Client service acquisition, notifications,
+   * IM readiness and activation remain separate, unsupported phases. */
+  static CreateBasePhase(providers, broker) {
+    const world = Object.create(ClientDogmaConstruction.prototype);
+    world._InitializeProviders(providers);
+    world.valueCollections = createClientDogmaValueCollections();
+    initializeClientDogmaBase(world, {
+      broker, valueCollections: world.valueCollections, identityCollections: world.collections,
+      get constructorRows() {
+        // Preserve descriptor-phase failure ordering, including explicit null.
+        world.constructorRows = Object.hasOwn(providers, "constructorRows") ? providers.constructorRows : createClientDogmaConstructorRowApi();
+        return world.constructorRows;
+      },
+      get brainLiteralKeys() { return providers.brainLiteralKeys; },
+      get formatBrainLiteral() { return providers.formatBrainLiteral; },
+      get pendingModifiers() { return providers.pendingModifiers; },
+    });
+    return world;
+  }
+
+  _InitializeProviders(providers) {
+    this.providers = providers;
+    this.collections = createClientDogmaIdentity(providers.identityPolicy);
+    this.attributeData = providers.attributeData;
+    this.attributeConstructors = new Map([
+      ["StackingNurfedAttribute", ClientDogmaStackingAttribute],
+      ["ChargedAttribute", ClientDogmaChargedAttribute],
+    ]);
+  }
+
+  CreateItemLoaderState(scheduling) {
+    if (!this.valueCollections || !this.loadingItems || !this.failedLoadingItems || !this.crits || !this.modifiersAwaitingTarget) {
+      throw new ClientDogmaLoadPolicyNotReadyError("completed Base-local loader fields");
+    }
+    const registry = this.crits, values = this.valueCollections;
+    // The supported Base callers use only LoadItem. This keyed view shares
+    // its criticals; the full structural registry remains on the world.
+    const crits = Object.freeze({
+      has: key => registry.has(values.criticalKey("LoadItem", key)),
+      get: key => registry.required(values.criticalKey("LoadItem", key)),
+      set: (key, critical) => registry.set(values.criticalKey("LoadItem", key), critical),
+      delete: key => registry.delete(values.criticalKey("LoadItem", key)),
+      get size() { return registry.size; },
+    });
+    return Object.freeze({ scheduling, loadingItems: this.loadingItems, failedLoadingItems: this.failedLoadingItems,
+      crits, modifiersAwaitingTarget: this.modifiersAwaitingTarget });
+  }
+
+  RegisterCallback(attributeID, callback) {
+    // Numeric cold Base registrations do not demand clientStatic. String
+    // classes/lookup and duplicate native func_name formatting need adapters.
+    if (typeof attributeID !== "number" && typeof attributeID !== "bigint") {
+      throw new ClientDogmaConstructorPrimitiveNotReadyError("numeric callback attribute identity");
+    }
+    if (this.attributeChangeCallbacksByAttributeID.has(attributeID)) {
+      throw new ClientDogmaConstructorPrimitiveNotReadyError("native callback overwrite formatting and logging");
+    }
+    // Original RegisterCallback does not validate callback callability.
+    this.attributeChangeCallbacksByAttributeID.set(attributeID, callback);
   }
 
   requiredSkills(typeID) { return this.providers.requiredSkills(typeID); }
