@@ -33,24 +33,50 @@ class ClientDogmaItemLoader {
    * pendingModifiers supplies native live callable-tuple sets/order/formatting
    * when demanded. Unavailable nonempty tuple support cannot be skipped.
    */
-  constructor({ world, loadItem, exceptionPolicy, logging, pendingModifiers, scheduling = createClientDogmaLoadScheduling() }) {
+  constructor(options) {
+    const { world, loadItem, exceptionPolicy, logging, pendingModifiers } = options;
+    let { scheduling } = options;
     if (typeof loadItem !== "function") throw new TypeError("The genuine _LoadItem phase is required.");
     for (const name of ["isException", "argsLength", "firstArgStartsWith", "strx"]) method(exceptionPolicy, name);
     method(logging, "LogException");
+    let state;
+    if (Object.hasOwn(options, "sharedState")) {
+      // Emulator attachment contract, not an extra phase in native LoadItem.
+      // Full Base owns these exact maps; crits is its numeric LoadItem view
+      // over the SAME structural registry. Never copy or reset their entries.
+      state = options.sharedState;
+      if (state === null || typeof state !== "object" || scheduling === undefined || state.scheduling !== scheduling) {
+        throw new ClientDogmaLoadPolicyNotReadyError("shared-state scheduling identity");
+      }
+      for (const name of ["run", "createCritical", "createChannel"]) method(scheduling, name);
+      for (const name of ["loadingItems", "failedLoadingItems", "crits", "modifiersAwaitingTarget"]) {
+        const map = state[name];
+        for (const operation of ["has", "get", "set", "delete"]) {
+          if (typeof map?.[operation] !== "function") throw new ClientDogmaLoadPolicyNotReadyError(`shared ${name}.${operation}`);
+        }
+      }
+    } else {
+      if (scheduling === undefined) scheduling = createClientDogmaLoadScheduling();
+      state = {
+        loadingItems: createClientDogmaNumericMap(),
+        failedLoadingItems: createClientDogmaNumericMap(),
+        // ONLY ('LoadItem', numericKey), not the full Base.crits dictionary.
+        crits: createClientDogmaNumericMap(),
+        modifiersAwaitingTarget: createClientDogmaNumericMap({
+          missing: () => method(this.pendingModifiers, "createSet")(),
+        }),
+      };
+    }
     this.world = world;
     this.loadItem = loadItem;
     this.exceptions = exceptionPolicy;
     this.logging = logging;
     this.pendingModifiers = pendingModifiers;
     this.scheduling = scheduling;
-    this.loadingItems = createClientDogmaNumericMap();
-    this.failedLoadingItems = createClientDogmaNumericMap();
-    // This map represents ONLY the ('LoadItem', numericKey) critical sections.
-    // It is not the full Base.crits dictionary for all other operations.
-    this.crits = createClientDogmaNumericMap();
-    this.modifiersAwaitingTarget = createClientDogmaNumericMap({
-      missing: () => method(this.pendingModifiers, "createSet")(),
-    });
+    this.loadingItems = state.loadingItems;
+    this.failedLoadingItems = state.failedLoadingItems;
+    this.crits = state.crits;
+    this.modifiersAwaitingTarget = state.modifiersAwaitingTarget;
   }
 
   IsItemLoaded(itemKey) { return !this.loadingItems.has(itemKey) && this.world.dogmaItems.has(itemKey); }

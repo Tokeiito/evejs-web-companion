@@ -278,4 +278,13 @@ function createClientDogmaIdentity({ hash: suppliedHash, addressStart = 0x100000
   });
 }
 
-module.exports = { createClientDogmaIdentity };
+// Narrow shared core for separately validated VALUE-key policies. This does
+// not change identity hashing/equality or imply that dict.copy == set.copy.
+function createClientDogmaKeyTable({ hash, equal, iterationError }) {
+  if (typeof hash !== "function" || typeof equal !== "function" || typeof iterationError !== "string") {
+    throw new TypeError("A key hash/equality and iterator error policy are required.");
+  }
+  return new IdentityTable(hash, equal, iterationError);
+}
+
+module.exports = { createClientDogmaIdentity, createClientDogmaKeyTable };

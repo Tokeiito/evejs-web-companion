@@ -13,7 +13,7 @@ const { ClientDogmaChargedAttribute } = require("./clientDogmaChargedAttribute")
 const { ClientDogmaStackingAttribute } = require("./clientDogmaStackingAttribute");
 const { sortClientDogmaAttributeFactors } = require("./clientDogmaFactorSort");
 const { applyAttributeOperator, attributeRecordLessThan } = require("./clientDogmaArithmetic");
-const { ClientDogmaItemLoader } = require("./clientDogmaItemLoader");
+const { ClientDogmaItemLoader, ClientDogmaLoadPolicyNotReadyError } = require("./clientDogmaItemLoader");
 const { ClientDogmaEventCount, ClientDogmaBrainUpdate, ClientDogmaMessageMgr, ClientDogmaConstructorPrimitiveNotReadyError } = require("./clientDogmaConstructorPrimitives");
 const { ClientDogmaBrainLiteralCache } = require("./clientDogmaBrainLiteralCache");
 const { CLIENT_DOGMA_INSTANCE_SCHEMA, createClientDogmaConstructorRowApi } = require("./clientDogmaConstructorRow");
@@ -59,9 +59,11 @@ class ClientDogmaConstruction {
     this.fakeInstanceRow = this.constructorRows.DBRow(this.instanceRowDescriptor, Array.from({ length: this.instanceRowDescriptor.length }, () => zero));
     // Base.__init__153-155 really registers these three callbacks. The client
     // inherits ShouldMessageItemEvent=False; it does not erase this map.
-    this.attributeChangeCallbacksByAttributeID.set(49, (...args) => this.OnCpuAttributeChanged(...args));
-    this.attributeChangeCallbacksByAttributeID.set(15, (...args) => this.OnPowerAttributeChanged(...args));
-    this.attributeChangeCallbacksByAttributeID.set(978, (...args) => this.OnMaxGroupOnlineChanged(...args));
+    // Native attribute lookup captures each bound method at registration.
+    // Later method replacement must not change an already stored callback.
+    this.attributeChangeCallbacksByAttributeID.set(49, this.OnCpuAttributeChanged.bind(this));
+    this.attributeChangeCallbacksByAttributeID.set(15, this.OnPowerAttributeChanged.bind(this));
+    this.attributeChangeCallbacksByAttributeID.set(978, this.OnMaxGroupOnlineChanged.bind(this));
     this.msgMgr = new ClientDogmaMessageMgr(this.collections);
     this.brainLiterals = new ClientDogmaBrainLiteralCache({ keyPolicy: providers.brainLiteralKeys, format: providers.formatBrainLiteral });
     this.scarecrows = createClientDogmaNumericMap();
@@ -153,14 +155,25 @@ class ClientDogmaConstruction {
     return this._ConstructAndLoadResolved(itemKey, found, newInstance);
   }
 
-  AttachItemLoader({ sessionLocationID, exceptionPolicy, pendingModifiers, scheduling } = {}) {
+  AttachItemLoader(options = {}) {
+    const { sessionLocationID, exceptionPolicy, pendingModifiers, scheduling } = options;
     // Explicit extension of this NEW partial context, never retrofitting or
     // clearing an existing loaded registry. This is not the complete native
     // Base/Client constructor or the pilot IM attachment/activation tail.
     if (this.itemLoader || this.dogmaItems.size) throw new Error("Attach the item loader once, before constructing nodes.");
     if (typeof sessionLocationID !== "function") throw new TypeError("The actual session location provider is required.");
-    const loader = new ClientDogmaItemLoader({ world: this, loadItem: (key, options) => this.LoadItemPhase(key, options),
-      exceptionPolicy, pendingModifiers, scheduling, logging: this.providers.logging });
+    const loaderOptions = { world: this, loadItem: (key, options) => this.LoadItemPhase(key, options),
+      exceptionPolicy, pendingModifiers, scheduling, logging: this.providers.logging };
+    const shared = Object.hasOwn(options, "sharedState");
+    if (shared) loaderOptions.sharedState = options.sharedState;
+    for (const name of ["loadingItems", "failedLoadingItems", "modifiersAwaitingTarget"]) {
+      if (Object.hasOwn(this, name) && (!shared || this[name] !== options.sharedState?.[name])) {
+        throw new ClientDogmaLoadPolicyNotReadyError(`existing ${name} alias`);
+      }
+    }
+    // A future full Base keeps its structural this.crits object. The injected
+    // loader.crits is only a numeric view; do not replace the world registry.
+    const loader = new ClientDogmaItemLoader(loaderOptions);
     this.itemLoader = loader;
     this.loadingItems = loader.loadingItems;
     this.failedLoadingItems = loader.failedLoadingItems;
