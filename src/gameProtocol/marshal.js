@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 6c963ca08, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js 865c11737, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -111,14 +111,14 @@ const packedNumberKinds = new Map([
   ...[DBTYPE.I1, DBTYPE.UI1, DBTYPE.I2, DBTYPE.UI2, DBTYPE.I4,
     DBTYPE.UI4, DBTYPE.I8, DBTYPE.UI8, DBTYPE.FILETIME]
     .map((dbType) => [dbType, Object.freeze({ kind: "integer", dbType })]),
-  ...[DBTYPE.R4, DBTYPE.R8]
+  ...[DBTYPE.R4, DBTYPE.R8, DBTYPE.CY]
     .map((dbType) => [dbType, Object.freeze({ kind: "real", dbType })]),
   [DBTYPE.BOOL, Object.freeze({ kind: "boolean", dbType: DBTYPE.BOOL })],
 ]);
 
 /** Read original opt-in scalar provenance, or undefined when unknown.
  * Slots are array indices/object property names. Booleans remain distinct.
- * Packed CY and generated virtual fields are deliberately unsupported.
+ * Generated packed virtual fields are deliberately unsupported.
  */
 function getDecodedNumberKind(container, slot) {
   if (!container || typeof container !== "object" ||
@@ -905,7 +905,15 @@ function normalizePackedBoolean(value) {
 
 function encodePackedNumericValue(type, value) {
   switch (type) {
-    case DBTYPE.CY:
+    case DBTYPE.CY: {
+      // CCP PyRowSet.cpp:1223-1228 rounds to cents, then stores 1/10000 units.
+      // Keep double arithmetic and signed rounding; the buffer checks int64 range.
+      const amount = normalizePackedNumber(value, 0);
+      const scaled = Math.trunc(Math.floor(amount * 100.0 + 0.5) * 100.0);
+      const buf = Buffer.alloc(8);
+      buf.writeBigInt64LE(BigInt(scaled), 0);
+      return buf;
+    }
     case DBTYPE.I8:
     case DBTYPE.UI8:
     case DBTYPE.FILETIME: {
@@ -1089,6 +1097,8 @@ function coerceDecodedPackedInteger(value) {
 function decodePackedFixedValue(type, buffer, offset) {
   switch (type) {
     case DBTYPE.CY:
+      // CCP PyRowSet.cpp:1102-1103 returns a real currency amount.
+      return Number(buffer.readBigInt64LE(offset)) / 10000.0;
     case DBTYPE.I8:
     case DBTYPE.UI8:
     case DBTYPE.FILETIME:
@@ -1175,8 +1185,6 @@ function decodePackedRowFields(rowHeader, rleData, state) {
       ? null
       : decodePackedFixedValue(entry.type, packedByteData, offset);
     if (state.preserveNumberKinds && !isNull) {
-      // CY's existing unscaled integer representation is not CCP's real
-      // currency getter; do not claim a matching class until that is fixed.
       setDecodedNumberKind(values, entry.index, packedNumberKinds.get(entry.type));
     }
     offset += entry.size >> 3;
