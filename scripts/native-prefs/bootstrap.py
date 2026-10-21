@@ -21,6 +21,8 @@ class InstalledPreferencesModules(object):
         filename = code.co_filename.replace('\\', '/')
         if name in ('eveprefs', 'eveprefs.filebased', 'eveprefs.iniformat'):
             allowed = '/packages/eveprefs/' in filename
+        elif name in ('caching', 'caching.lazy', 'caching.memoize'):
+            allowed = '/packages/caching/' in filename
         else:
             allowed = '/stdlib/' in filename
         if not allowed:
@@ -223,3 +225,76 @@ def _create_static_service_types(wallclock, logging, preferences, high, low, med
     result = types.ModuleType('companion.static_constructor_types')
     result.CoreService, result.BaseDogmaStaticSvc, result.ClientDogmaStaticSvc = core, base, client
     return result
+
+
+def _load_cfsd(name, pyd, data):
+    # Called only with the JS provider's indexed, hashed local inputs. Keep the
+    # original extension and its real heap wrappers; no JSON row projection.
+    import imp, os
+    module = imp.load_dynamic(name, pyd)
+    if os.path.normcase(os.path.abspath(module.__file__)) != os.path.normcase(os.path.abspath(pyd)):
+        raise ImportError('Installed cFSD module path differs: ' + name)
+    result = module.load(data)
+    if result is None:
+        raise IOError('Installed cFSD loader returned no data: ' + name)
+    return result
+
+
+def _attach_static_attribute_data(service_types, raw, constant_values):
+    import types
+    from collections import defaultdict
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed static data module: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts
+                   if isinstance(value, types.CodeType) and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed static data definition: ' + name)
+        return matches[0]
+
+    # Execute the ORIGINAL memoizer, including its real native time/stdlib
+    # cache semantics. Its optional locks import follows its own ImportError
+    # path here; MemoizeWithLock is not selected or fabricated as available.
+    from caching.memoize import Memoize as memoize
+
+    loader_globals = {'__name__': 'fsdBuiltData.common.base',
+                      '__builtins__': __builtins__, 'NO_BINARY_LOADER': object()}
+    loader_code = definition(module_code('fsdBuiltData.common.base',
+                                        '/packages/fsdBuiltData/common/base.py'), 'BuiltDataLoader')
+    loader = type('BuiltDataLoader', (object,), types.FunctionType(loader_code, loader_globals)())
+    # Prepare the real binary, then use the ORIGINAL cached GetData path. The
+    # resource/autobuild/engine load and disk-watching paths remain unconfigured;
+    # they are not replaced with a successful fake loader or a reload callback.
+    data_source = module_code('dogma.data', '/packages/dogma/data.py')
+    data = types.ModuleType('dogma.data')
+    namespace = data.__dict__
+    namespace.update({'__builtins__': __builtins__, 'defaultdict': defaultdict,
+                      'dogmaAttributesLoader': sys.modules['dogmaAttributesLoader']})
+    attributes_body = types.FunctionType(definition(data_source, 'DogmaAttributes'), namespace)
+    attributes = type('DogmaAttributes', (loader,), attributes_body())
+    attributes.__binary__ = raw
+    namespace['DogmaAttributes'] = attributes
+    namespace['attributeDataTypeTypeDamage'] = constant_values['attributeDataTypeTypeDamage']
+    memoized = ('get_all_attributes_by_name', 'get_attribute_list_by_data_type',
+                'get_charge_recharge_time_attributes_by_id')
+    for name in ('_get_dogma_attributes', 'get_all_attributes', 'get_all_attributes_by_id',
+                 'get_all_attributes_by_name', 'get_attribute_list_by_data_type',
+                 'get_charge_recharge_time_attributes_by_id', 'get_attributes_by_charge_recharge_time_id'):
+        function = types.FunctionType(definition(data_source, name), namespace)
+        namespace[name] = memoize(function) if name in memoized else function
+    base = service_types.BaseDogmaStaticSvc
+    globals = base.__dict__['__init__'].func_globals
+    for name, value in constant_values.iteritems():
+        setattr(globals['const'], name, value)
+    globals['dogma_data'] = data
+    base_source = module_code('eve.common.script.dogma.baseDogmaStaticSvc',
+                              '/eve/common/script/dogma/baseDogmaStaticSvc.py')
+    base.LoadAttributes = types.FunctionType(definition(definition(base_source, 'BaseDogmaStaticSvc'),
+                                                       'LoadAttributes'), globals)
+    return data

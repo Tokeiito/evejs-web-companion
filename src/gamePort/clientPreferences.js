@@ -96,7 +96,8 @@ function valueRuntime(binding) {
  * The process hosts one main-owner Python2 VM, shared stdlib, original cPickle
  * and real heap refs. It is not separate engines/subinterpreters/tasklets or a
  * promise of arbitrary application-module/extension imports. The importer
- * admits installed stdlib and the three real eveprefs modules only.
+ * admits installed stdlib, the three real eveprefs modules and the original
+ * caching package/lazy/memoize modules used by native static data.
  */
 function createClientPreferencesProvider({ clientRoot, python = "python", settingsRoot, cacheRoot = path.resolve(__dirname, "../../data/native-preferences") }) {
   let pending = null;
