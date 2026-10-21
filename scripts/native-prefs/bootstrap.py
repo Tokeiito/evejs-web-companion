@@ -2100,6 +2100,95 @@ def _attach_godma_state_manager_data(owner, data):
     return result
 
 
+def _attach_godma_type_wrappers(owner, full_load):
+    # Complete original TypeWrapper class and its selected original helpers on
+    # the SAME static/data/localization/Godma owners. These are per-type static
+    # definitions; runtime item/effect maps remain unprimed and inactive.
+    import types
+    data_owner = getattr(owner, 'manager_data', None)
+    if data_owner is None or full_load.types is not owner.service_types or full_load.data is not data_owner.data:
+        raise TypeError('TypeWrapper must share the same prepared static data owner')
+    existing = getattr(owner, 'type_wrappers', None)
+    if existing is not None:
+        if existing.full_load is not full_load:
+            raise TypeError('TypeWrapper cannot change its actual static/localization owners')
+        if existing.error is not None:
+            raise existing.error[0], existing.error[1], existing.error[2]
+        if not existing.complete:
+            raise ImportError('Original TypeWrapper preparation is incomplete')
+        return existing
+    data, evetypes = full_load.data, full_load.evetypes
+    base_globals = owner.service_types.BaseDogmaStaticSvc.__dict__['__init__'].func_globals
+    if base_globals['evetypes'] is not evetypes or data.evetypes is not evetypes:
+        raise TypeError('TypeWrapper requires the same existing phased evetypes namespace')
+    result = types.ModuleType('companion.godma_type_wrappers')
+    result.full_load, result.data, result.evetypes = full_load, data, evetypes
+    result.complete, result.error = False, None
+    owner.type_wrappers = result
+    try:
+        def source(name, suffix):
+            prefix = name.rpartition('.')[0].replace('.', '/')
+            code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+            if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+                raise ImportError('Not the installed TypeWrapper dependency: ' + name)
+            return code
+
+        def definition(code, name):
+            matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+            if len(matches) != 1:
+                raise ImportError('Ambiguous installed TypeWrapper definition: ' + name)
+            return matches[0]
+
+        graph = owner.constants_owner
+        if 'evetypes' in graph.modules and graph.modules['evetypes'] is not evetypes:
+            raise TypeError('Original module graph already has another evetypes owner')
+        graph.modules['evetypes'] = evetypes
+        localization = full_load.localized.localization
+        bindings = data.__dict__.setdefault('_CLIENT_IMPORT_BINDINGS', {})
+        if 'localization' in bindings and bindings['localization'] is not localization:
+            raise TypeError('Original data helpers already use another localization owner')
+        bindings['localization'] = localization
+        code = source('dogma.data', '/packages/dogma/data.py')
+        for name in ('get_attribute', 'get_attribute_data_type', 'get_attribute_display_name',
+                     'get_effect', 'get_type_effects'):
+            if name not in data.__dict__:
+                setattr(data, name, types.FunctionType(definition(code, name), data.__dict__))
+        evetypes.GetLocalizedTypeName = full_load.localized.GetLocalizedTypeName
+        code = source('evetypes', '/packages/evetypes/__init__.py')
+        for name in ('GetNameID', 'GetName', 'GetAttributeForType'):
+            if name not in evetypes.__dict__:
+                defaults = (None, True) if name == 'GetName' else None
+                setattr(evetypes, name, types.FunctionType(definition(code, name), evetypes.__dict__, name, defaults))
+        namespace = type(owner.instance).__dict__['__init__'].func_globals
+        constants = graph.modules['dogma.const']
+        for name in ('attributeDataTypeInstanceBoolean', 'attributeDataTypeInstanceInteger',
+                     'attributeDataTypeTypeAttributeId', 'attributeDataTypeTypeBoolean',
+                     'attributeDataTypeTypeDamage', 'attributeDataTypeTypeGroupId',
+                     'attributeDataTypeTypeInteger', 'attributeDataTypeTypeMirror', 'attributeDataTypeTypeTypeId'):
+            namespace[name] = getattr(constants, name)
+        namespace['evetypes'] = evetypes
+        namespace['CRowset'] = owner.rowset_types.crowset.CRowset
+        code = source('eve.client.script.environment.godma', '/eve/client/script/environment/godma.py')
+        cls = type('TypeWrapper', (object,), types.FunctionType(definition(code, 'TypeWrapper'), namespace)())
+        namespace['TypeWrapper'] = result.TypeWrapper = cls
+
+        def get_warm(type_id):
+            return owner.get_state_manager_warm().GetType(type_id)
+
+        def read_warm(type_id, name):
+            return getattr(get_warm(type_id), name)
+
+        def attribute_exists_warm(type_id, name):
+            return get_warm(type_id).AttributeExists(name)
+
+        result.get_warm, result.read_warm, result.attribute_exists_warm = get_warm, read_warm, attribute_exists_warm
+        result.complete = True
+    except BaseException:
+        result.error = sys.exc_info()
+        raise
+    return result
+
+
 def _create_inventory_header_owner(service_types):
     # Core construction and the ONE Initialize108 field only. This selected
     # capability does not run invCache.Initialize's semaphore/service graph.

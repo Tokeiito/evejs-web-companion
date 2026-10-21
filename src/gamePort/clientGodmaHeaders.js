@@ -29,6 +29,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   let rowsets = null;
   let managerPreparation = null;
   let managerDataPreparation = null;
+  let typeWrapperPreparation = null;
   function prepareStateManager() {
     assertCurrent();
     return managerPreparation ??= (async () => {
@@ -47,6 +48,20 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
       });
     })();
   }
+  function prepareStateManagerData() {
+    assertCurrent();
+    return managerDataPreparation ??= (async () => {
+      const [manager, attributes] = await Promise.all([
+        prepareStateManager(), inventoryHeader.staticService.prepareAttributes(),
+      ]);
+      assertCurrent();
+      const dataOwner = runtime.values.global("_attach_godma_state_manager_data").call(module, attributes.data);
+      return Object.freeze({
+        module: dataOwner, manager, attributes, context,
+        initializeWarm() { assertCurrent(); return dataOwner.getAttr("initialize_warm").call(); },
+      });
+    })();
+  }
   return Object.freeze({
     module, instance, inventoryHeader, context,
     prepareRowsets() {
@@ -54,17 +69,22 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
       return rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader });
     },
     prepareStateManager,
-    prepareStateManagerData() {
+    prepareStateManagerData,
+    prepareTypeWrappers() {
       assertCurrent();
-      return managerDataPreparation ??= (async () => {
-        const [manager, attributes] = await Promise.all([
-          prepareStateManager(), inventoryHeader.staticService.prepareAttributes(),
+      return typeWrapperPreparation ??= (async () => {
+        const [managerData, fullLoad] = await Promise.all([
+          prepareStateManagerData(), inventoryHeader.staticService.prepareFullLoad(),
         ]);
         assertCurrent();
-        const dataOwner = runtime.values.global("_attach_godma_state_manager_data").call(module, attributes.data);
+        fullLoad.localization.assertCurrent();
+        const typeOwner = runtime.values.global("_attach_godma_type_wrappers").call(module, fullLoad.module);
+        function assertTypes() { assertCurrent(); fullLoad.localization.assertCurrent(); }
         return Object.freeze({
-          module: dataOwner, manager, attributes, context,
-          initializeWarm() { assertCurrent(); return dataOwner.getAttr("initialize_warm").call(); },
+          module: typeOwner, managerData, fullLoad, context, TypeWrapper: typeOwner.getAttr("TypeWrapper"),
+          getWarm(typeID) { assertTypes(); return typeOwner.getAttr("get_warm").call(typeID); },
+          readWarm(typeID, name) { assertTypes(); return typeOwner.getAttr("read_warm").call(typeID, name); },
+          attributeExistsWarm(typeID, name) { assertTypes(); return typeOwner.getAttr("attribute_exists_warm").call(typeID, name); },
         });
       })();
     },
