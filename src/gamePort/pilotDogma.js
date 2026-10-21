@@ -1,6 +1,6 @@
 "use strict";
 
-const { marshalDecode } = require("../gameProtocol/marshal");
+const { marshalDecode, getDecodedNumberKind } = require("../gameProtocol/marshal");
 const { InventoryItems } = require("./inventoryItems");
 const { createGodmaInventoryRows } = require("./godmaInventoryRows");
 const { createGodmaNumericValues } = require("./godmaNumericValues");
@@ -301,11 +301,12 @@ function createPilotDogma({
   const lastChange = new Map();
   const numericValues = createGodmaNumericValues({
     fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange,
+    numberKind: getDecodedNumberKind,
     ...(nativeAttributeData ? {
       attributeKey: id => nativeAttributeData.name(id),
       // Blue Marshal.ReadObjectDict1330-1345 inserts into a new Python dict;
       // RefreshItemAttributes iterates that receiving table, not wire order.
-      attributeEntries: entries => orderEntries(entries.map(([id, value]) => [number(id), value])),
+      attributeEntries: entries => orderEntries(entries.map(([id, value, kind]) => [number(id), value, kind])),
     } : {}),
   });
   const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated }) : null;
@@ -814,7 +815,7 @@ function createPilotDogma({
    * godma.OnModuleAttributeChange_: one change, as it arrives inside
    * OnModuleAttributeChanges: (tag, ownerID, itemID, attributeID, time, new, old[, wallclockTime]).
    */
-  function change(each) {
+  function change(each, kind = getDecodedNumberKind(each, 5)) {
     const [, ownerID, itemKey, attributeID, time, newValue, , wallclock] = each;
     // A charge loaded in a module is keyed by a tuple, and is changed like anything else that is held.
     const id = key(itemKey);
@@ -825,7 +826,7 @@ function createPilotDogma({
     if (stamp && last !== undefined && last > stamp) return false;
     if (stamp) lastChange.set(`${id}:${attribute_}`, stamp);
     if (characterID !== null && number(ownerID) !== characterID && id !== characterID) return false; // not mine
-    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue);
+    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue, kind);
     // clientDogmaLocation.OnModuleAttributeChanges: a rack's heat is set to what the server says, as of now
     // (HeatAttribute.SetBaseValue). The client leaves it alone when it is that already, going by the value its
     // gauges last worked out; here that is the heat as of now, which in space is the same to within a gauge's
@@ -970,7 +971,8 @@ function createPilotDogma({
       return true;
     }
     if (notification.method === "OnModuleAttributeChange") {
-      const work = primeChannel.receive(() => withAttributes(() => change(["OnModuleAttributeChange", ...notification.args])));
+      const kind = getDecodedNumberKind(notification.args, 4);
+      const work = primeChannel.receive(() => withAttributes(() => change(["OnModuleAttributeChange", ...notification.args], kind)));
       if (work && typeof work.then === "function") return work.then(() => true);
       return true;
     }
@@ -1213,6 +1215,10 @@ function createPilotDogma({
     // Cache-only numeric value lookup; undefined is a cache miss. Static
     // defaults and the complete native ItemWrapper GetAttribute are separate.
     numericValue: (itemID, attributeID, at = now()) => numericValues.value(key(itemID), attributeID, at),
+    // Internal immutable source records, never bridge JSON or a guessed class
+    // from Number.isInteger. Derived recharge results have unknown kind here.
+    numericValueRecord: (itemID, attributeID, at = now()) => numericValues.record(key(itemID), attributeID, at),
+    numericChargeInputs: (itemID, attributeID) => numericValues.chargeInputs(key(itemID), attributeID),
     // Named backing fields only, not EffectWrapper methods, native eventbus
     // completion or clientDogmaLocation passive/registered-node state.
     numericEffectRow: (itemID, effectName) => numericEffects?.get(itemID, effectName) ?? null,
