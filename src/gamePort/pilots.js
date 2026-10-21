@@ -1757,6 +1757,13 @@ function createGamePortPilots({
         },
         typeFacts,
         registeredLocations: () => entry.godmaLocations.keys(),
+        sessionState: () => ({
+          charid: entry.characterID, shipid: attribute(entry, "shipid"),
+          structureid: attribute(entry, "structureid"), solarsystemid: attribute(entry, "solarsystemid"),
+          locationid: attribute(entry, "locationid"),
+          controllingStructure: attribute(entry, "structureid") !== null && attribute(entry, "shipid") === attribute(entry, "structureid"),
+        }),
+        onMetadataUnregistered: (itemID) => entry.godmaLocations.delete(itemID),
       }),
       dogmaLoaded: null,
       /** Only godma ProcessAllInfo's structure/ship/character guards; not the full native invByID/starbase registry.
@@ -1960,7 +1967,7 @@ function createGamePortPilots({
       }
       entry.clock.feed(notification);
       if (entry.space) entry.space.feed(notification);
-      entry.dogma.feed(notification);
+      if (!ITEM_NOTICES.has(notification.method)) entry.dogma.feed(notification);
       entry.scanner.feed(notification);
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
@@ -2035,9 +2042,18 @@ function createGamePortPilots({
         if (itemID !== null) entry.locations.set(itemID, textOf(row[1]));
       }
       // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
-      if (notification.method === "OnItemChange") entry.inventory.itemChanged((notification.args ?? [])[0], (notification.args ?? [])[1]);
-      if (notification.method === "OnItemsChanged") {
-        for (const row of itemsOf((notification.args ?? [])[0])) entry.inventory.itemChanged(row, (notification.args ?? [])[1]);
+      if (ITEM_NOTICES.has(notification.method)) {
+        // invCache.OnItemChange229-307 processes its cache, then calls godma
+        // in finally. Godma's own StateManager/IM forwarding is another finally.
+        for (const row of notification.method === "OnItemsChanged" ? itemsOf(notification.args?.[0]) : [notification.args?.[0]]) {
+          try {
+            entry.inventory.itemChanged(row, notification.args?.[1]);
+          } finally {
+            entry.dogma.feed(notification.method === "OnItemChange" ? notification : {
+              ...notification, method: "OnItemChange", args: [row, notification.args?.[1], notification.args?.[2]],
+            });
+          }
+        }
       }
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));

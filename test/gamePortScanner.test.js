@@ -272,8 +272,10 @@ test("a real flight: the count in the launcher follows the server's word, and la
 });
 
 const row = (fields) => ({ type: "packedrow", fields });
+// Raw recording-reader fixtures also supply numeric prime fields required by
+// original godma.UpdateItem1553-1657 / RefreshItemAttributes1686-1704.
 const item = (itemID, { typeID = 17938, groupID = LAUNCHER_GROUP, flagID = 27, locationID = 5001, online = 1, inventory = true } = {}) =>
-  [BigInt(itemID), keyVal({ itemID: BigInt(itemID), invItem: inventory ? row({ itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID, categoryID: 7 }) : null, time: 134359220000000000n, attributes: { type: "dict", entries: [[ATTRIBUTE.IS_ONLINE, online]] }, activeEffects: { type: "dict", entries: [] } })];
+  [BigInt(itemID), keyVal({ itemID: BigInt(itemID), invItem: inventory ? row({ itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID, categoryID: 7, singleton: 1, stacksize: 1 }) : null, time: 134359220000000000n, wallclockTime: 134359220000000000n, attributes: { type: "dict", entries: [[ATTRIBUTE.IS_ONLINE, online]] }, activeEffects: { type: "dict", entries: [] } })];
 const charge = (shipID, flagID, typeID, quantity) =>
   [[BigInt(shipID), flagID, typeID], keyVal({ itemID: [BigInt(shipID), flagID, typeID], invItem: null, time: 134359220000000000n, attributes: { type: "dict", entries: [[ATTRIBUTE.QUANTITY, quantity]] }, activeEffects: { type: "dict", entries: [] } })];
 const shipWith = (...rows) => {

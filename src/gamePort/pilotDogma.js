@@ -276,6 +276,10 @@ function createPilotDogma({
   typeFacts = () => null,
   // ProcessAllInfo's registered numeric inventories; no second binding store.
   registeredLocations = () => [],
+  // Native numeric notice metadata needs the actual session, not inferred
+  // fitting/attribute membership. Raw recording readers leave this absent.
+  sessionState = null,
+  onMetadataUnregistered = () => {},
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
@@ -289,8 +293,8 @@ function createPilotDogma({
   const identity = new Map();
   /** item key -> { itemID, row }: each held item's GET-INFO row as GetAllInfo, OnGodmaPrimeItem or ItemGetInfo last gave it. */
   const rows = new Map();
-  // Numeric prime metadata is independent of refreshed GET-INFO rows and of
-  // clientDogmaLocation loaded nodes. Notice-driven metadata is a later port.
+  // Numeric backing metadata is independent of refreshed GET-INFO rows and of
+  // clientDogmaLocation loaded nodes. GetItem's fresh wrapper is not stored here.
   const primeInventory = createGodmaInventoryRows({ rowFields, registeredLocations });
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
@@ -541,17 +545,47 @@ function createPilotDogma({
     effects.set(key(itemID), active);
   }
 
-  /**
-   * godma.OnGodmaPrimeItem(locationID, row): an item in a location that is
-   * held. One for a ship that is not held is left alone.
-   */
+  /** Numeric StateManager.OnGodmaPrimeItem creates a cold location bucket.
+   * Tuple state and the service wrapper's local inventory event are separate. */
   function primeItem(args) {
     const [locationID, row] = args;
-    if (!attributes.has(key(locationID))) return false;
     const itemID = fieldsOf(row).get("itemID");
     if (itemID === undefined || itemID === null) return false;
+    if (!Array.isArray(itemID)) {
+      // StateManager.OnGodmaPrimeItem1289 creates the bucket even when
+      // UpdateItem will reject the row. It does not bind an inventory.
+      primeInventory.ensureLocation(locationID);
+      updatePrimeRow(itemID, row);
+      return true;
+    }
+    // The existing tuple reader remains separate from numeric metadata and
+    // the service wrapper's DBRow/OnItemChange emission.
+    if (!attributes.has(key(locationID))) return false;
     loadRow(itemID, row);
     return true;
+  }
+
+  function numericMetadataChanged(row, change) {
+    if (!sessionState || Array.isArray(rowFields(row)?.itemID)) return;
+    // This slice follows backing metadata only. UpdateItem's refresh/scatter
+    // intents are not new RPCs or a complete native eventbus here; the existing
+    // reader below still owns its narrower ItemGetInfo/online callbacks.
+    primeInventory.notice(row, new Map((change?.entries ?? []).map(([index, value]) => [number(index), value])), sessionState());
+  }
+
+  function flushNumericMetadata(locationID) {
+    const { dropped, unregistered } = primeInventory.flush(locationID);
+    for (const id of dropped) {
+      attributes.delete(id);
+      charged.delete(id);
+      effects.delete(id);
+      identity.delete(id);
+      rows.delete(id);
+    }
+    if (characterID !== null && unregistered.has(key(characterID))) characterPrimed = false;
+    for (const id of unregistered) onMetadataUnregistered(id);
+    // Pending primes, tuple cleanup, profile flush and capacity-event listeners
+    // are separate native lifetimes, not inferred from numeric cleanup.
   }
 
   /**
@@ -884,6 +918,10 @@ function createPilotDogma({
       primeItem(Array.isArray(notification.args) ? notification.args : []);
       return true;
     }
+    if (notification.method === "OnGodmaFlushLocation") {
+      flushNumericMetadata((notification.args ?? [])[0]);
+      return true;
+    }
     if (notification.method === "OnServerBrainUpdated") {
       try {
         brainUpdated(Array.isArray(notification.args) ? notification.args[0] : null);
@@ -894,7 +932,16 @@ function createPilotDogma({
     }
     if (notification.method === "OnItemsChanged" || notification.method === "OnItemChange") {
       const first = Array.isArray(notification.args) ? notification.args[0] : null;
-      for (const row of notification.method === "OnItemsChanged" ? items(first) : [first]) itemChanged(row);
+      for (const row of notification.method === "OnItemsChanged" ? items(first) : [first]) {
+        // Godma.OnItemChange569 forwards to clientDogmaIM in finally even
+        // when StateManager metadata raises. This reader's client-node work
+        // remains narrower than the native clientDogmaLocation implementation.
+        try {
+          numericMetadataChanged(row, notification.args?.[1]);
+        } finally {
+          itemChanged(row);
+        }
+      }
       return true;
     }
     return false;
@@ -1063,9 +1110,10 @@ function createPilotDogma({
     feed,
     loadAllInfo,
     processAllInfo,
-    // Initial numeric prime metadata only. This is not a general godma.GetItem
-    // or a clientDogmaLocation loaded-node API; notice lifetime is separate.
-    primeInventoryItem: (itemID) => primeInventory.get(itemID),
+    // Raw numeric backing row, not GetItem's freshly allocated ItemWrapper or
+    // a clientDogmaLocation loaded-node/index. Tuple metadata is separate.
+    inventoryItem: (itemID) => primeInventory.get(itemID),
+    inventoryLocationLoaded: (locationID) => primeInventory.locationLoaded(locationID),
     multiEvent,
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),

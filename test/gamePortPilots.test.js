@@ -43,6 +43,12 @@ const godmaInfoRow = (itemID, invItem, attributes = [], activeEffects = []) => k
 const shipInfo = (typeID = 588, groupID = 237, itemID = SHIP, locationID = STATION) => ({ type: "dict", entries: [[itemID,
   godmaInfoRow(itemID, godmaInvItem(itemID, typeID, groupID, 6, locationID, locationID === SYSTEM ? 0 : 4)),
 ]] });
+// A single-row notice reaches invCache229-307 -> godma1208-1270 even before godma is primed.
+// Use an ordinary personal Tritanium stack for unrelated cache/transport consumers, not a malformed DBRow.
+const hangarItemChange = () => [{
+  type: "packedrow", header: null, columns: [], values: [],
+  fields: { itemID: 1, typeID: 34, ownerID: PILOT, locationID: STATION, flagID: 4, quantity: 1, stacksize: 1, singleton: 0, groupID: 18, categoryID: 4, customInfo: "" },
+}, { type: "dict", entries: [[9, 2]] }, null];
 
 /** What GetAllInfo answers with those rows for the ship's items: godma's priming. */
 const godmaOf = (rows) => keyVal([["shipInfo", rows]]);
@@ -4345,9 +4351,9 @@ test("the ship's own dogma entry is the row godma was primed with, its attribute
 // OnlineModule). Recorded on Tranquility in that order, both calls on the dogma location godma was primed from.
 
 const CAN_BE_ONLINE = 3009;
-const fittedNow = (itemID, { typeID = CAN_BE_ONLINE, flagID = 30, locationID = SHIP, categoryID = 7 } = {}) => [
-  { type: "list", items: [{ type: "packedrow", header: null, columns: [], fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID: 53, categoryID, customInfo: "", stacksize: 1, singleton: 1 }, values: [] }] },
-  { type: "dict", entries: [[3, STATION], [4, 4]] },
+const fittedNow = (itemID, { typeID = CAN_BE_ONLINE, flagID = 30, locationID = SHIP, categoryID = 7, groupID = 53, change = [[3, STATION], [4, 4]] } = {}) => [
+  { type: "list", items: [{ type: "packedrow", header: null, columns: [], fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID, categoryID, customInfo: "", stacksize: 1, singleton: 1 }, values: [] }] },
+  { type: "dict", entries: change },
   null,
 ];
 /** What the server answers ItemGetInfo with: the item's row, as GetAllInfo lists one. */
@@ -4384,12 +4390,13 @@ test("a module fitted while the ship is held is asked about and then put online,
   assert.deepEqual(ownCalls(session).slice(2), [["ItemGetInfo", [SHIP + 10]]]);
   // One godma holds already that moves to another slot is asked about again, and is not fitted anew.
   serverHasOnline.add(SHIP + 9);
-  session.notify("OnItemsChanged", fittedNow(SHIP + 9, { flagID: 32 }));
-  session.notify("OnItemsChanged", fittedNow(SHIP + 2, { flagID: 33 }));
+  // Same-ship slot moves carry their old flag, without pretending the item came from the station.
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9, { flagID: 32, change: [[4, 30]] }));
+  session.notify("OnItemsChanged", fittedNow(SHIP + 2, { flagID: 33, change: [[4, 28]] }));
   assert.deepEqual((await pilots.shipInfo(FIELDS, handle)).online, [SHIP + 1, SHIP + 9, SHIP + 10]);
   assert.deepEqual(ownCalls(session).slice(3), [["ItemGetInfo", [SHIP + 9]], ["ItemGetInfo", [SHIP + 2]]]);
   // A drone put in the drone bay is not asked about, and its type has no being online to it.
-  session.notify("OnItemsChanged", fittedNow(SHIP + 11, { typeID: 3010, flagID: 87, categoryID: 18 }));
+  session.notify("OnItemsChanged", fittedNow(SHIP + 11, { typeID: 2488, flagID: 87, categoryID: 18, groupID: 100 }));
   await pilots.shipInfo(FIELDS, handle);
   assert.equal(ownCalls(session).length, 5);
 });
@@ -6458,7 +6465,7 @@ test("what a container lists is asked for once and kept: by container, by flag, 
 test("the server's word of an item changed forgets every listing, and what is asked for after it is kept again", async () => {
   const { session, hangar, ship, list, asked } = await withContainers();
   assert.deepEqual([await list(hangar), await list(ship)], [1, 2]);
-  session.notify("OnItemChange", [{ type: "packedrow", fields: { itemID: 1 } }, { type: "dict", entries: [] }, null]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual([await list(hangar), await list(ship), await list(hangar), await list(ship)], [3, 4, 3, 4]);
   session.notify("OnItemsChanged", [{ type: "list", items: [] }, { type: "dict", entries: [] }, null]);
   assert.deepEqual([await list(ship), await list(ship)], [5, 5]);
@@ -6499,7 +6506,7 @@ test("in another ship the listings are asked for again, and a listing the server
   session.attributes.shipid = SHIP + 7;
   session.change({ shipid: [SHIP, SHIP + 7] });
   assert.deepEqual([await list(hangar), await list(hangar)], [2, 2]);
-  session.notify("OnItemChange", [null, null, null]);
+  session.notify("OnItemChange", hangarItemChange());
   refuse = true;
   await rejects(list(hangar), "CALL_REFUSED");
   refuse = false;
@@ -6751,7 +6758,7 @@ test("on a notice the client's code names cached calls on, the session forgets t
   const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": 1, "stationSvc.GetStation.[60000004]": 2 });
   const sent = () => session.calls.filter((call) => call.service === "stationSvc" && call.method === "GetStation").length;
   const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   session.notify("OnSomethingElse", [60003760]);
   assert.deepEqual(named, []);
   // station/base.py OnStationInformationUpdated(stationID): that station's, and no other's.
@@ -8283,7 +8290,7 @@ test("the server's word of a timer, of who is flagged or of an engagement is wor
   session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
   // Nor does a notice that is none of crimewatch's.
   session.notify("OnSecurityStatusUpdate", [1.5]);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual([await states(), asked], [[timers({ 0: [101, null] }), aWireDict([8, 7000]), [aWireSet(7), aWireSet()], 2], 1]);
   // A notice that cannot be worked in (the client's handler takes two) lets the states go, and the next read asks.
   session.notify("OnWeaponsTimerUpdate", [102]);
@@ -8320,7 +8327,7 @@ test("states kept in a form that is not read are let go at the server's word of 
   }
   // Another notice leaves them kept, and so does the one of who is disapproved of, which changes nothing they say.
   session.notify("OnSecurityStatusUpdate", [1.5]);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
   assert.deepEqual([await states(), asked.states], [expected, expected]);
   // crimewatchSvc.SetSafetyLevel lets nothing go: the client keeps the level it set and asks nothing (the next test).
@@ -10106,7 +10113,7 @@ test("the reprocessing plant's quote goes with each item's own row from what the
   // Nor is an item whose row is no packed row one the quote can be handed the row of.
   assert.deepEqual(await quoted([503]), [[503]]);
   // The server's word of an item's change lets the listings go, and the rows with them, until they are listed again.
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual(await quoted([501]), [[501]]);
   await listed();
   assert.equal((await quoted([501]))[0].type, "dict");
