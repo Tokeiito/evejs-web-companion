@@ -1218,3 +1218,131 @@ def _attach_static_load(service_types, data, evetypes, raw_groups, raw_categorie
 
     result.load = load
     return result
+
+
+def _attach_static_run(full_load, logging, helpers, context, logmodule):
+    # Original Run/weak callbacks over the existing owner. Snapshot adoption
+    # below is explicitly local; it is NOT ReloadDataFromDisk or a disk watcher.
+    import types, __builtin__, inspect, weakref
+    if full_load.localization.context is not context or full_load.localization.langutils.comfylang.logging is not logging:
+        raise ValueError('Static Run must retain the same current-session/logging owners')
+
+    def assert_profile():
+        context.assert_entry()
+        # ORIGINAL Sissy over real private storage, not a hardcoded None or a
+        # fabricated LogSessionHistory. The effective field phase never ran
+        # __ChangeAttribute's character-history publication/clock lifecycle.
+        if context.builtins.charsession:
+            raise RuntimeError('Character history logging needs its real Session producer')
+
+    assert_profile()
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        importer = zipimport.zipimporter(_archive + ('/' + prefix if prefix else ''))
+        code = importer.get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed static Run dependency: ' + name)
+        return importer, code
+
+    def definition(code, name):
+        found = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(found) != 1:
+            raise ImportError('Ambiguous installed static Run definition: ' + name)
+        return found[0]
+
+    # Application modules are private to the real per-client logging owner.
+    # Reusing its utility modules avoids duplicate NullHandlers/class identities
+    # if another static-service owner is explicitly constructed on that client.
+    if not hasattr(logging, '_companion_static_run_modules'):
+        logging._companion_static_run_modules = {}
+    modules = logging._companion_static_run_modules
+    bindings = dict(helpers.__dict__['_CLIENT_IMPORT_BINDINGS'])
+    bindings.update({'logging': logging, 'logmodule': logmodule, 'stdlogutils': helpers,
+                     '__builtin__': context.builtins, 'inspect': inspect, 'sys': sys, 'weakref': weakref})
+
+    def original_module(name, suffix):
+        if name in modules:
+            previous = modules[name]
+            if previous['error'] is not None:
+                raise previous['error'][0], previous['error'][1], previous['error'][2]
+            if not previous['complete']:
+                raise ImportError('An owned utility module is still initializing: ' + name)
+            return previous['module']
+        importer, code = module_code(name, suffix)
+        module = types.ModuleType(name)
+        module.__file__, module.__loader__, module.__package__ = importer.get_filename(name), importer, ''
+        module.__dict__.update({'__builtins__': __builtin__.__dict__, '_CLIENT_IMPORT_BINDINGS': bindings})
+        slot = {'module': module, 'complete': False, 'error': None}
+        modules[name] = slot
+        try:
+            types.FunctionType(code, module.__dict__)()
+        except BaseException:
+            slot['error'] = sys.exc_info()  # Preserve the actual failed prefix.
+            raise
+        slot['complete'] = True
+        return module
+
+    signal = original_module('signals.signal', '/packages/signals/signal.py')
+    # logUtil's actual dotted import returns the root package for an empty
+    # fromlist. Execute the four original package initializers and pure export
+    # helper, then retain their real hierarchy rather than inventing exports.
+    parent = None
+    for name in ('carbon', 'carbon.common', 'carbon.common.script', 'carbon.common.script.util'):
+        package = original_module(name, '/' + name.replace('.', '/') + '/__init__.py')
+        if parent is not None:
+            setattr(parent, name.rsplit('.', 1)[1], package)
+        parent = package
+    parent.autoexport = original_module('carbon.common.script.util.autoexport', '/carbon/common/script/util/autoexport.py')
+    bindings['carbon.common.script.util.autoexport'] = modules['carbon']['module']
+    log_util = original_module('carbon.common.script.util.logUtil', '/carbon/common/script/util/logUtil.py')
+    core = full_load.types.CoreService
+    core_globals = core.__dict__['__init__'].func_globals
+    core_globals.update({'charsession': context.builtins.charsession, 'boot': context.boot, 'sys': sys,
+                         'supersafestr': log_util.supersafestr, 'LineWrap': helpers.LineWrap})
+    _, source = module_code('carbon.common.script.sys.service', '/carbon/common/script/sys/service.py')
+    source = definition(source, 'CoreService')
+    for name in ('LogError', 'LogInfo'):
+        setattr(core, name, types.FunctionType(definition(source, name), core_globals))
+    data = full_load.data
+    data.logger = logging.getLogger('dogma.data')
+    _, source = module_code('dogma.data', '/packages/dogma/data.py')
+    data.refresh_dogma = types.FunctionType(definition(source, 'refresh_dogma'), data.__dict__)
+    loader = data.DogmaAttributes.__bases__[0]
+    loader.ConnectToOnReload.im_func.func_globals['Signal'] = signal.Signal
+    base = full_load.types.BaseDogmaStaticSvc
+    namespace = base.__dict__['__init__'].func_globals
+    _, source = module_code('eve.common.script.dogma.baseDogmaStaticSvc', '/eve/common/script/dogma/baseDogmaStaticSvc.py')
+    source = definition(source, 'BaseDogmaStaticSvc')
+    for name in ('Run', '_MonitorStaticDataChanges', '_ReloadDogmaData'):
+        setattr(base, name, types.FunctionType(definition(source, name), namespace))
+    loaders = {name: getattr(data, name) for name in ('DogmaAttributes', 'DogmaEffects', 'TypeDogma')}
+
+    def run(instance, *args):
+        assert_profile()
+        if not isinstance(instance, full_load.types.ClientDogmaStaticSvc):
+            raise TypeError('Run instance belongs to another static owner')
+        return instance.Run(*args)
+
+    def emit(name):
+        assert_profile()
+        cls = loaders[name]
+        if cls.onReload:
+            cls.onReload()
+
+    def adopt_snapshot(name, raw):
+        assert_profile()
+        cls = loaders[name]
+        if type(raw) is not type(cls.__binary__):
+            raise TypeError('Snapshot must be the same actual native loader data type')
+        cls.__binary__ = raw
+        # Re-read current source signal AFTER publication; preserve all partial
+        # fields and the new binary if callbacks or their logger raise.
+        if cls.onReload:
+            cls.onReload()
+
+    result = types.ModuleType('companion.static_run_owner')
+    result.full_load, result.context, result.signal = full_load, context, signal
+    result.log_util, result.loaders = log_util, loaders
+    result.assert_profile, result.run, result.emit, result.adopt_snapshot = assert_profile, run, emit, adopt_snapshot
+    return result

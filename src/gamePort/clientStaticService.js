@@ -22,8 +22,9 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * pre-UI error graph; prepareLocalizationLookup() extends the same settings
  * instance with original Get/Important methods and actual main-label data.
  * prepareFullLoad() binds the original timed Load and its native group/cfg tail.
- * Run, reload monitors, ServiceManager state, generic config/counter services
- * and full client/IM readiness remain separate.
+ * prepareRun() binds original Run, weak reload monitors and cache refresh on
+ * that same owner. Disk watching, ServiceManager state, generic config/counter
+ * services and full client/IM readiness remain separate.
  */
 async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, loadTailConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null, createLocalizationLookup = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
@@ -45,6 +46,26 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let errorLogging = null, pendingErrorLogging = null;
   let lookup = null, pendingLookup = null;
   let fullLoad = null, pendingFullLoad = null;
+  let runOwner = null, pendingRun = null;
+  function prepareRun() {
+    if (runOwner !== null) return Promise.resolve(runOwner);
+    if (pendingRun !== null) return pendingRun;
+    pendingRun = Promise.all([prepareFullLoad(), prepareStdLogging(), prepareSessionContext()]).then(([fullLoad, standardLogging, sessionContext]) => {
+      fullLoad.localization.assertCurrent();
+      const module = values.global("_attach_static_run").call(fullLoad.module, standardLogging.module, standardLogging.helpers, sessionContext.module, logging.module);
+      function assertCurrent() { fullLoad.localization.assertCurrent(); module.getAttr("assert_profile").call(); }
+      runOwner = Object.freeze({
+        module, fullLoad, standardLogging, sessionContext, signal: module.getAttr("signal"),
+        run(instance, ...args) { assertCurrent(); return module.getAttr("run").call(instance, ...args); },
+        emit(name) { assertCurrent(); return module.getAttr("emit").call(Buffer.from(name)); },
+        // Explicitly adopted fresh native snapshots, not original disk loading.
+        adoptSnapshot(name, raw) { assertCurrent(); return module.getAttr("adopt_snapshot").call(Buffer.from(name), raw); },
+        assertCurrent,
+      });
+      return runOwner;
+    });
+    return pendingRun; // Failed native attachment retains its prefix.
+  }
   function prepareFullLoad() {
     if (fullLoad !== null) return Promise.resolve(fullLoad);
     if (pendingFullLoad !== null) return pendingFullLoad;
@@ -196,7 +217,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging, prepareLocalizationLookup, prepareFullLoad,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging, prepareLocalizationLookup, prepareFullLoad, prepareRun,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.
