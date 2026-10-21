@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inventoryPasswordText } from "../bridge/inventoryPasswords.ts";
   // The client's name popup (utilWindows.NamePopup, namedPopup.py NamePopupWnd): its caption, the field's word and the
   // field (with what it starts with and how long it may be), OK and Cancel. OK takes what was typed unless the
   // window's check refuses it (CheckName by default: nothing but spaces is refused, with UI/Common/PleaseTypeSomething,
@@ -8,6 +9,7 @@
     label,
     value = "",
     maxLength = null,
+    password = false,
     refusal,
     okWord,
     cancelWord,
@@ -18,6 +20,7 @@
     label: string;
     value?: string;
     maxLength?: number | null;
+    password?: boolean;
     /** What an empty name is refused with; null where the check refuses nothing. */
     refusal: string | null;
     okWord: string;
@@ -31,7 +34,8 @@
   let refused = $state("");
 
   function confirm(): void {
-    if (refusal !== null && typed.trim().length < 1) {
+    if (password && maxLength !== null) typed = typed.slice(0, maxLength);
+    if (refusal !== null && (password ? inventoryPasswordText(typed) === null : typed.trim().length < 1)) {
       refused = refusal;
       return;
     }
@@ -44,7 +48,7 @@
   <form class="controls" onsubmit={(event) => { event.preventDefault(); confirm(); }}>
     <label>
       {label}
-      <input type="text" bind:value={typed} maxlength={maxLength ?? undefined} />
+      <input type={password ? "password" : "text"} bind:value={typed} maxlength={maxLength ?? undefined} autocomplete={password ? "off" : undefined} />
     </label>
     <button type="submit">{okWord}</button>
     <button type="button" class="minor" onclick={oncancel}>{cancelWord}</button>

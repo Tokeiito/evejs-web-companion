@@ -16,6 +16,8 @@
 //   itemAttributeFactory       which class an attribute is (here: the stacking one where the static record is not
 //                              stackable; the skill level, charged, heat, security and TiDi attributes are later parts)
 
+import { pyRound } from "../pyNumbers.ts";
+
 /** dogma/const.py: the operators (dgmAss*). */
 export const OP_PRE_ASSIGNMENT = -1;
 export const OP_PRE_MUL = 0;
@@ -133,11 +135,11 @@ export interface AttributeFacts {
   readonly floor?: number | null;
 }
 
-/** Python's round(x, 2): to two places, halves away from nought (Python 2). */
+/** Attribute.Update: round the actual binary float, not a rounded x*100.
+ * Original installed Python27: 2.675 -> 2.67, 1.125 -> 1.13; retain -0.0.
+ * cdxattributeroundagent1 corroborates places1/2 against native binary output. */
 function round2(value: number): number {
-  const scaled = Math.abs(value) * 100;
-  const rounded = Math.floor(scaled + 0.5);
-  return (Math.sign(value) * rounded) / 100;
+  return value === 0 ? value : pyRound(value, 2);
 }
 
 /**

@@ -95,6 +95,8 @@ const TABLES = Object.freeze({
   marketGroupParents: Object.freeze({ loader: "marketGroupsLoader", resource: "res:/staticdata/marketgroups.fsdbinary", attribute: "parentGroupID" }),
   typeMarketGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "marketGroupID" }),
   typeGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "groupID" }),
+  // evetypes.GetNameID: every installed type, including type0, has this field.
+  typeNameIDs: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "typeNameID" }),
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
   typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
   raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),
@@ -119,6 +121,10 @@ const TABLES = Object.freeze({
   // an attribute is drawn with (skillsPanelUtil.AttributeCont: get_attribute_icon_id, then GetIconFile).
   iconFiles: Object.freeze({ loader: "iconIDsLoader", resource: "res:/staticdata/iconids.fsdbinary", attribute: "iconFile" }),
   dogmaAttributes: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary" }),
+  // Native godma's by-name map overwrites duplicate names in loader order.
+  // The walker also retains the actual None getters that dir() omits for
+  // charge/cap/floor links; these are needed by the native attribute factory.
+  dogmaAttributesOrdered: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary", keyOrder: true }),
   // A type's dogma attributes (dogma/data.py get_type_dogma: typeDogma.fsdbinary, its dogmaAttributes), and a type's
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).

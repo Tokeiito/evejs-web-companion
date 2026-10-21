@@ -28,6 +28,10 @@ const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
+const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
+const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
+const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
+const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaStaticAttributes");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -190,6 +194,9 @@ app.locals.gatewayLedger = gatewayLedger;
 const pilotSetting = options.pilotTransportFor ? null : pilotTransportSetting(options.env || process.env);
 const someoneOnGamePort = pilotSetting !== null &&
   (pilotSetting.fallback === "gameport" || [...pilotSetting.overrides.values()].includes("gameport"));
+const nativeAttributeData = createGodmaAttributeData({
+  dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
+});
 const gamePortPilots = options.gamePortPilots !== undefined
   ? options.gamePortPilots
   : someoneOnGamePort && !options.eveGatewayClient
@@ -211,6 +218,40 @@ const gamePortPilots = options.gamePortPilots !== undefined
         dogmaEffects: async (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
         categoryOf: (typeID) => (staticData.getType(typeID) || {}).categoryID ?? null,
       }).ewarTypeOf,
+      // godma's named effect rows use the installed client's ordered default
+      // relationships and definitions. A failed read is not an empty table.
+      nativeEffectData: createGodmaEffectData({
+        typeDogma: async (typeID) => {
+          const rows = await clientBuiltData.rows("typeDogma", [typeID]);
+          return rows ? rows[String(typeID)] : undefined;
+        },
+        dogmaEffects: (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
+        messages: (messageIDs) => clientWords.messages(messageIDs),
+      }),
+      nativeAttributeData,
+      // Local type values for the future native attribute-object factory.
+      // Preparing them never registers an item or supplies an accurate value.
+      nativeTypeAttributes: createClientDogmaStaticAttributes({
+        attributeData: nativeAttributeData,
+        typeDogma: async id => {
+          const rows = await clientBuiltData.rows("typeDogma", [id]);
+          return rows ? rows[id] : undefined;
+        },
+        types: async id => {
+          const rows = await clientBuiltData.rows("types", [id]);
+          return rows ? rows[id] : undefined;
+        },
+      }),
+      // Installed primary-English type names, prepared before synchronous
+      // diagnostic reads. Alternate important-language/QA policy is separate.
+      nativeTypeNames: createGodmaPrimaryTypeNames({
+        typeNameIDs: () => clientBuiltData.table("typeNameIDs"),
+        messages: ids => clientWords.messages(ids),
+        language: () => clientWords.status().language,
+      }),
+      onNumericChargeError: (message, error, characterID) => {
+        console.error(`[game-port] pilot ${characterID}:`, message, error);
+      },
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
@@ -2008,6 +2049,11 @@ async function inventoryCall(held, webSessionID, of, method, args, kwargs) {
     spec = hangarBindSpec(held);
   } else if (Number(of) === Number(held.activeShipID)) {
     spec = cargoBindSpec(held, held.activeShipID);
+  } else if (method === "EnterPassword" && held.boundHandles.has(`container:${Number(of)}`)) {
+    // invCache1450-1477 enters on the challenged moniker, without an office discovery read.
+    spec = containerBindSpec(Number(of));
+  } else if (method === "EnterPassword" && held.boundHandles.has(`corpOffice:${Number(of)}`)) {
+    spec = corpOfficeBindSpec(Number(of));
   } else {
     // The corporation's office where the pilot is docked is bound as the corporation hangar's read binds it, so that
     // the two are one bind (the client's invCache keeps one inventory a thing) and a write to it is held to the office

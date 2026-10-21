@@ -109,11 +109,12 @@ test("every entry names a pair the web client may call, a status, and where it w
   const haveClient = fs.existsSync(clientRoot);
   for (const [pair, entry] of Object.entries(RETAIL_CALLS)) {
     assert.ok(allowed.has(pair), `${pair} is on the allowlist`);
-    assert.ok(["same", "reshaped", "differs", "web-only"].includes(entry.status), `${pair} has a status`);
+    // invCache.FetchItem693-702/InvalidateLocationCache596-605 are client-local operations, not remote calls.
+    assert.ok(["same", "reshaped", "differs", "web-only", "local"].includes(entry.status), `${pair} has a status`);
     // Feature citations may name one line or a native method's source span.
     assert.match(entry.source, /\.py(?::\d+(?:-\d+)?)?$/, `${pair} names a client file`);
     if (entry.status === "reshaped") assert.equal(typeof entry.shape, "function", `${pair} says how`);
-    if (entry.status === "differs" || entry.status === "web-only") assert.ok(entry.note, `${pair} says what differs`);
+    if (entry.status === "differs" || entry.status === "web-only" || entry.status === "local") assert.ok(entry.note, `${pair} says what differs or stays local`);
     // Where the decompiled client is on this machine, the file each entry cites is really there.
     if (haveClient) assert.ok(fs.existsSync(path.join(clientRoot, entry.source.replace(/:\d+(?:-\d+)?$/, ""))), `${pair}: ${entry.source} exists`);
   }
@@ -1731,8 +1732,11 @@ test("what goes up into a customs office, and comes down from one, goes as the c
   }
 });
 
-test("the game port carries native direct trade and the other calls absent from the web gateway", () => {
+test("the game-port client permits native trade, local inventory helpers and calls absent from the web gateway", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    // Original invCache693-702/596-605 are LOCAL; PasswordHandlerCallWrapper1450-1477 enters on its moniker.
+    // Compiled cdxfitguardagent1/cdxpasswordinvalidateagent1/cdxcontainerpasswordagent1; no local-helper RPC.
+    "invCache.FetchItem", "invCache.InvalidateLocationCache", "invbroker.EnterPassword",
     // invCache769 removal-tax quote and966-975 inventory self-item read.
     "invbroker.GetPriceForItems", "invbroker.GetSelfInvItem",
     // ItemLocking30-34/57-64: cached dictionary for the current station/structure.

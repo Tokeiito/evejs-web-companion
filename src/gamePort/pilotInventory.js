@@ -250,6 +250,12 @@ function createPilotInventory({ rowFields, session }) {
     rows: () => [...containers.values()].flatMap((container) => [...container.items.values()]),
     /** The key of the container (location, owner). */
     keyOf: containerKey,
+    /** invCache.FetchItem693-702: exact retained source only; never bind, list or fetch remotely. */
+    fetchItem(itemID, fromLocationID) {
+      const location = num(fromLocationID);
+      const key = containerKey(location >= 60000000 && location < 64000000 ? CONTAINER_HANGAR : location, null);
+      return containers.get(key)?.items.get(itemKey(itemID)) ?? null;
+    },
     /**
      * The bound object of a container held, or of one being bound now, as a promise (null where the binding failed);
      * null where neither: asked for again, it is the one given (GetInventoryFromId 553).
@@ -345,6 +351,14 @@ function createPilotInventory({ rowFields, session }) {
     /** One container let go (DoBallRemove; a ship left in space). */
     drop(key) {
       containers.delete(key);
+    },
+    /**
+     * InvalidateLocationCache596-605 removes one published guard. A pending-only
+     * bind is absent to the original client and may still publish afterwards.
+     * Retained Python guard objects are not exposed by this cache API.
+     */
+    invalidateLocation(key) {
+      return containers.delete(key);
     },
     /**
      * invCache.InvalidateCorpCache at a change of the pilot's corporation roles, docked: the containers that are the

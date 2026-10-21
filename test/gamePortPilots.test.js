@@ -30,7 +30,26 @@ const characterRow = (overrides = {}) => keyVal(Object.entries({
 }));
 /** GetCharacterSelectionData: (userDetails, trainingDetails, characterDetails, wars), as the wire decodes it. */
 const selectionData = (rows = [characterRow()]) => [{ type: "list", items: [] }, [null, null], { type: "list", items: rows }, { type: "list", items: [] }];
-const shipInfo = (typeID = 588, groupID = 237) => ({ type: "dict", entries: [[SHIP, keyVal([["itemID", SHIP], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID, groupID }, values: [] }]])]] });
+const GODMA_TIME = 134359220000000000n;
+// Numeric UpdateItem1553-1657 reads custody/type/flag/singleton before refreshing a GET-INFO row;
+// RefreshItemAttributes1686-1704 reads time, wallclockTime and the explicit attribute dictionary.
+const godmaInvItem = (itemID, typeID, groupID, categoryID, locationID, flagID) => ({
+  type: "packedrow", header: null, columns: [], values: [],
+  fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID, categoryID, customInfo: "", singleton: 1, stacksize: 1 },
+});
+const godmaInfoRow = (itemID, invItem, attributes = [], activeEffects = []) => keyVal([
+  ["itemID", itemID], ["invItem", invItem], ["activeEffects", { type: "dict", entries: activeEffects }],
+  ["time", GODMA_TIME], ["attributes", { type: "dict", entries: attributes }], ["wallclockTime", GODMA_TIME],
+]);
+const shipInfo = (typeID = 588, groupID = 237, itemID = SHIP, locationID = STATION) => ({ type: "dict", entries: [[itemID,
+  godmaInfoRow(itemID, godmaInvItem(itemID, typeID, groupID, 6, locationID, locationID === SYSTEM ? 0 : 4)),
+]] });
+// A single-row notice reaches invCache229-307 -> godma1208-1270 even before godma is primed.
+// Use an ordinary personal Tritanium stack for unrelated cache/transport consumers, not a malformed DBRow.
+const hangarItemChange = () => [{
+  type: "packedrow", header: null, columns: [], values: [],
+  fields: { itemID: 1, typeID: 34, ownerID: PILOT, locationID: STATION, flagID: 4, quantity: 1, stacksize: 1, singleton: 0, groupID: 18, categoryID: 4, customInfo: "" },
+}, { type: "dict", entries: [[9, 2]] }, null];
 
 /** What GetAllInfo answers with those rows for the ship's items: godma's priming. */
 const godmaOf = (rows) => keyVal([["shipInfo", rows]]);
@@ -353,7 +372,7 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     "charUnboundMgr.GetCharacterSelectionData": selectionData(),
     "charUnboundMgr.GetCharacterLockType": null,
     "dogmaIM.ShipGetInfo": shipInfo(),
-    "bound:GetAllInfo": godmaOf(shipInfo()),
+    "bound:GetAllInfo": godmaOf(shipInfo(588, 237, SHIP, sessionOptions.inSpace ? SYSTEM : STATION)),
     ...(sessionOptions.answers || {}),
   };
   const pilots = createGamePortPilots({
@@ -1382,7 +1401,7 @@ test("a capsule is a capsule by its group, and a new ship is asked about again",
   const capsule = (await pilots.readFlightStatus(handle)).flight;
   assert.deepEqual([capsule.shipIsCapsule, capsule.shipGroupID], [true, 29]);
   session.attributes.shipid = 555;
-  info = { type: "dict", entries: [[555, keyVal([["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: 555, typeID: 603, groupID: 25 }, values: [] }]])]] };
+  info = shipInfo(603, 25, 555);
   const { flight } = await pilots.readFlightStatus(handle);
   assert.deepEqual([flight.shipID, flight.shipTypeID, flight.shipGroupID, flight.shipIsCapsule], [555, 603, 25, false]);
   // Godma primed again for the new ship; ShipGetInfo for neither.
@@ -1405,7 +1424,7 @@ test("a corvette asked for by the service's name goes by that name as it came, a
   assert.deepEqual(row().statuses, { differs: 1 });
   // In another hull it is the client's own call.
   session.attributes.shipid = 555;
-  info = { type: "dict", entries: [[555, keyVal([["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: 555, typeID: 603, groupID: 25 }, values: [] }]])]] };
+  info = shipInfo(603, 25, 555);
   assert.equal((await pilots.readFlightStatus(handle)).flight.shipGroupID, 25);
   await board(555);
   assert.deepEqual(row().statuses, { differs: 1, same: 1 });
@@ -1440,21 +1459,18 @@ test("docked, the space snapshot and the scanner are the gateway's docked answer
 });
 
 /** A GetAllInfo answer holding the pilot's ship: 50 of 125 capacitor at the moment T. */
-const DOGMA_T = 134359220000000000n;
+const DOGMA_T = GODMA_TIME;
 const DOGMA_T_MS = 1791448400000;
 const FITTED_MODULE = SHIP + 1;
-const shipAllInfo = (charge = 50) => keyVal([["shipInfo", { type: "dict", entries: [
-  [BigInt(SHIP), keyVal([
-    ["itemID", BigInt(SHIP)], ["time", DOGMA_T],
-    ["attributes", { type: "dict", entries: [[18, charge], [482, 125], [55, 62500], [263, 175], [265, 150], [9, 151]] }],
-  ])],
-  [BigInt(FITTED_MODULE), keyVal([["itemID", BigInt(FITTED_MODULE)], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[9, 40]] }], ["activeEffects", { type: "dict", entries: [] }]])],
+const shipAllInfo = (charge = 50, locationID = STATION) => keyVal([["shipInfo", { type: "dict", entries: [
+  [BigInt(SHIP), godmaInfoRow(BigInt(SHIP), godmaInvItem(SHIP, 588, 237, 6, locationID, locationID === SYSTEM ? 0 : 4), [[18, charge], [482, 125], [55, 62500], [263, 175], [265, 150], [9, 151]])],
+  [BigInt(FITTED_MODULE), godmaInfoRow(BigInt(FITTED_MODULE), godmaInvItem(FITTED_MODULE, 21857, 46, 7, SHIP, 19), [[9, 40]])],
 ] }]]);
 
 test("the ship's capacitor and capacities are dogma's, loaded once for a ship in a place as godma loads them", async () => {
   const hand = handTicked();
   let clockMs = DOGMA_T_MS;
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": shipAllInfo() } }, { ...hand.options, now: () => clockMs, effectCategory: (effectID) => (effectID === 6731 ? 1 : null) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": shipAllInfo(50, SYSTEM) } }, { ...hand.options, now: () => clockMs, effectCategory: (effectID) => (effectID === 6731 ? 1 : null) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
   for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
@@ -1467,8 +1483,8 @@ test("the ship's capacitor and capacities are dogma's, loaded once for a ship in
   assert.ok(Math.abs(first.ship.capacitorRatio - 0.4) < 1e-12);
   assert.equal(first.entities.find((row) => row.isSelf).capacitorRatio, first.ship.capacitorRatio);
   // The dogma location bound for where the pilot is, and asked as godma's Prime asks: a character, a ship, no structure.
-  assert.deepEqual(session.binds.at(-1), { service: "dogmaIM", params: [SYSTEM, 5] });
-  assert.deepEqual(asked().map((call) => [call.objectID, call.args]), [[`N=1:${session.objects}`, [true, true, null]]]);
+  assert.deepEqual(session.binds.find((bind) => bind.service === "dogmaIM"), { service: "dogmaIM", params: [SYSTEM, 5] });
+  assert.deepEqual(asked().map((call) => [call.objectID, call.args]), [["N=1:2", [true, true, null]]]);
   assert.deepEqual(built.pilots.callLedger().find((row) => row.pair === "dogmaIM.GetAllInfo").statuses, { same: 1 });
 
   // Ten seconds on, nothing asked again: the capacitor has recharged by itself.
@@ -1532,9 +1548,10 @@ test("undocking is sent; reaching space makes the ballpark, docking lets it go, 
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
   // With the client's keyword: its online modules by slot, of which this ship's dogma names none. Godma's dogma
-  // location was bound first, to be primed; the ship's moniker binds with the undock itself.
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
-  assert.deepEqual([session.binds.map((bind) => bind.service), session.carried], [["dogmaIM", "ship"], ["GetAllInfo", "Undock"]]);
+  // location was bound first, then PrimeLocation registers the passive ship guard (godma.py 2380 to 2397);
+  // the ship's moniker binds with the undock itself.
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:4", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
+  assert.deepEqual([session.binds.map((bind) => bind.service), session.carried], [["dogmaIM", "invbroker", "ship"], ["GetAllInfo", "GetInventoryFromId", "Undock"]]);
   assert.equal(hand.parks.length, 0, "docked: no ballpark");
 
   // The session reaches space.
@@ -1597,10 +1614,10 @@ test("the hangar is bound as invCache binds it: the station's manager, then GetI
   await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, bound.boundHandle);
   assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "StackAll", args: [4], kwargs: null });
 
-  // The manager is a moniker the client keeps: bound once, asked again.
+  // GetInventory501-531 keeps the hangar guard itself, so a repeated lookup asks neither guard nor manager again.
   await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
   assert.equal(session.binds.length, 1);
-  assert.equal(session.boundCalls.filter((call) => call.method === "GetInventory").length, 2);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetInventory").length, 1);
 });
 
 test("in a structure the hangars are the structure's own inventory, bound as godma has bound it: GetInventoryFromId(structureID, 1), from the manager for where the pilot is", async () => {
@@ -1913,12 +1930,13 @@ test("when the server says a bound object is gone, its handle is forgotten, as t
   await rejects(pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, agent), "BOUND_HANDLE_NOT_FOUND");
   await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, hangar);
 
-  // The inventory manager going takes nothing else with it, but the next hangar bind makes a new one.
+  // The inventory manager going takes nothing else with it. GetInventory's retained hangar guard is still held
+  // (invCache.py 501 to 531); an existing guard needs no call on the replacement manager.
   session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:1"), 1065450, null]);
   await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, hangar);
   const binds = session.binds.length;
   await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
-  assert.equal(session.binds.length, binds + 1, "the manager is bound afresh");
+  assert.equal(session.binds.length, binds, "the retained hangar guard is reused");
 
   // The notice still reaches the browser, as on the gateway, and an object nobody holds is no trouble.
   session.notify("OnMachoObjectDisconnect", [Buffer.from("N=9:9"), 1065450, null]);
@@ -2470,7 +2488,7 @@ test("a launcher holding something that is not a scan probe has nothing to launc
   const other = await scanning({ typeGroup: () => 100 });
   assert.deepEqual((await other.scanner()).launcher, { moduleID: probeFlight.moduleID, typeID: 17938, online: true, chargeTypeID: null, loadedCount: 0, launchCount: 0 });
   // The ship of the earlier tests: one module, no launcher.
-  const bare = await scanning({}, () => shipAllInfo());
+  const bare = await scanning({}, () => shipAllInfo(50, SYSTEM));
   assert.deepEqual(await bare.scanner(), { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [], scanning: false });
   // godma could not be asked: no launcher is known, and the probes the server told of are still there.
   const unasked = await scanning({}, () => { throw new Error("not now"); });
@@ -2602,12 +2620,12 @@ test("docked, the scanner is the docked answer whatever probes were out", async 
 
 test("the snapshot's weapon banks and module damage are dogma's, and the banks follow the client's own grouping calls", async () => {
   // The ship of the capacitor test, with what GetAllInfo says of its state: one bank, and a damaged module.
-  const allInfo = shipAllInfo();
+  const allInfo = shipAllInfo(50, SYSTEM);
   const fields = allInfo.args.entries;
   fields.push([Buffer.from("activeShipID"), BigInt(SHIP)]);
   fields.push([Buffer.from("shipState"), [{ type: "dict", entries: [] }, { type: "dict", entries: [] }, { type: "dict", entries: [[BigInt(FITTED_MODULE), { type: "list", items: [BigInt(SHIP + 2)] }]] }, { type: "dict", entries: [] }]]);
   const moduleRow = fields.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries;
-  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 3636, locationID: SHIP, flagID: 27, groupID: 53, categoryID: 7 } }]);
+  moduleRow.find(([name]) => name.toString() === "invItem")[1] = godmaInvItem(FITTED_MODULE, 3636, 53, 7, SHIP, 27);
   moduleRow.find(([name]) => name.toString() === "attributes")[1].entries.push([3, 10]);
 
   const hand = handTicked();
@@ -2650,7 +2668,7 @@ test("the snapshot's weapon banks and module damage are dogma's, and the banks f
 test("the banks follow a grouping asked of the service by its name too, as the page asks it: the client sets them from the answer itself", async () => {
   // clientDogmaLocation.LinkAllWeapons and UnlinkAllWeapons (793 to 803): once the server has answered, the
   // client's own banks are the answer (OnWeaponBanksChanged(shipID, info)), and none (OnWeaponBanksChanged(shipID, {})).
-  const allInfo = shipAllInfo();
+  const allInfo = shipAllInfo(50, SYSTEM);
   const fields = allInfo.args.entries;
   fields.push([Buffer.from("activeShipID"), BigInt(SHIP)]);
   fields.push([Buffer.from("shipState"), [{ type: "dict", entries: [] }, { type: "dict", entries: [] }, { type: "dict", entries: [[BigInt(FITTED_MODULE), { type: "list", items: [BigInt(SHIP + 2)] }]] }, { type: "dict", entries: [] }]]);
@@ -2688,10 +2706,9 @@ test("the banks follow a grouping asked of the service by its name too, as the p
 
 test("the snapshot's rack heat is dogma's: the server's word for a rack, and the client's reckoning from there", async () => {
   // The ship of the capacitor test with its racks' capacities and rates, and its module one that heats.
-  const allInfo = shipAllInfo();
+  const allInfo = shipAllInfo(50, SYSTEM);
   const [shipRow, moduleRow] = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries.map(([, row]) => row.args.entries);
   shipRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1178, 100], [1199, 100], [1200, 100], [1179, 0.01], [1196, 0.01], [1198, 0.01], [1224, 1]);
-  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 21857, locationID: SHIP, flagID: 19, groupID: 46, categoryID: 7 } }]);
   moduleRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1180, 0.04]);
 
   const hand = handTicked();
@@ -2830,7 +2847,7 @@ test("an align is remembered as the client's menu remembers it, until the ship i
 
 /** A pilot in space on the real clock of the test, its park shown that clock when the test says: frames[0]() is one frame. */
 async function clockedPilot(sessionOptions = {}) {
-  const allInfo = shipAllInfo();
+  const allInfo = shipAllInfo(50, SYSTEM);
   const [shipRow] = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries.map(([, row]) => row.args.entries);
   shipRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1178, 100], [1199, 100], [1200, 100], [1179, 0.01], [1196, 0.01], [1198, 0.01], [1224, 1]);
   const state = { now: DOGMA_T_MS, frames: [], spaces: [], errors: [] };
@@ -2946,10 +2963,9 @@ test("between two ticks a pilot's snapshot moves: the ship is where the client d
 // ── calls the client makes on a moniker ──────────────────────────────────────
 
 /** The ship of the capacitor test with its module online in the first medium slot, and what godma is told a module is. */
-function fittedAllInfo({ online = true } = {}) {
-  const allInfo = shipAllInfo();
+function fittedAllInfo({ online = true, locationID = STATION } = {}) {
+  const allInfo = shipAllInfo(50, locationID);
   const moduleRow = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries;
-  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 21857, locationID: SHIP, flagID: 19, groupID: 46, categoryID: 7 } }]);
   // An active effect, as godma.RefreshItemEffects reads one: the effect's ID, then its environment; whether it runs is in the sixth place.
   const line = [BigInt(FITTED_MODULE), PILOT, BigInt(SHIP), null, null, [], 16, DOGMA_T, 0, 0];
   if (online) moduleRow.find(([name]) => name.toString() === "activeEffects")[1].entries.push([16, line]);
@@ -2972,17 +2988,18 @@ test("undock is made as the client makes it: on the ship object bound for the st
   // The BFF's route asks the service by name, with an empty list.
   await pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, handle);
   assert.equal(session.calls.some((call) => call.service === "ship"), false, "nothing was asked of the service by name");
-  // godma primed first, from the dogma location bound for the station; then the ship bound for the station, and Undock on it.
-  assert.deepEqual(session.binds, [{ service: "dogmaIM", params: [STATION, 15] }, { service: "ship", params: [STATION, 15] }]);
-  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method]), [["N=1:1", "GetAllInfo"], ["N=1:2", "Undock"]]);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  // godma PrimeLocation registers the passive ship inventory after its rows (godma.py 2380 to 2397),
+  // before the ship's moniker carries Undock. Registration does not List or fetch its self row.
+  assert.deepEqual(session.binds, [{ service: "dogmaIM", params: [STATION, 15] }, { service: "invbroker", params: [STATION, 15] }, { service: "ship", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls.filter((call) => call.method !== "GetAvailableTurretSlots").map((call) => [call.objectID, call.method]), [["N=1:1", "GetAllInfo"], ["N=1:2", "GetInventoryFromId"], ["N=1:4", "Undock"]]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:4", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
   assert.deepEqual(pilots.callLedger().find((row) => row.pair === "ship.Undock").statuses, { reshaped: 1 });
 
   // Asked again (the contraband question answered, say): while the pilot is docked in a station gameui makes the ship's
   // moniker anew each time, so the ship is bound again, carrying the call. Godma's dogma location is kept, and not primed again.
   await pilots.callMethod("ship", "Undock", [SHIP, true], { onlineModules: [] }, FIELDS, handle);
-  assert.deepEqual([session.binds.length, session.binds.at(-1), session.carried], [3, { service: "ship", params: [STATION, 15] }, ["GetAllInfo", "Undock", "Undock"]]);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:3", method: "Undock", args: [SHIP, true], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.deepEqual([session.binds.length, session.binds.at(-1), session.carried], [4, { service: "ship", params: [STATION, 15] }, ["GetAllInfo", "GetInventoryFromId", "Undock", "Undock"]]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:5", method: "Undock", args: [SHIP, true], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
   assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
 });
 
@@ -3003,7 +3020,7 @@ test("a module whose online effect is not running is not among the online module
 test("a module is overloaded and cooled as the client does it: on the dogma location, with the module's own overload effect", async () => {
   const hand = handTicked();
   const allowed = new Set([...MODULE_PAIRS, "dogmaIM.Overload", "dogmaIM.StopOverload"]);
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo() } }, { ...hand.options, ...moduleOptions({ allowed }) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo({ locationID: SYSTEM }) } }, { ...hand.options, ...moduleOptions({ allowed }) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const made = () => session.boundCalls.findLast((call) => call.method === "Overload" || call.method === "StopOverload");
@@ -3040,7 +3057,7 @@ test("a module is overloaded and cooled as the client does it: on the dogma loca
 test("a module's repair is begun and ended as godma does both: on the dogma location, the module alone", async () => {
   const hand = handTicked();
   const allowed = new Set([...MODULE_PAIRS, "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair"]);
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo(), "bound:InitiateModuleRepair": true, "bound:StopModuleRepair": true } }, { ...hand.options, ...moduleOptions({ allowed }) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo({ locationID: SYSTEM }), "bound:InitiateModuleRepair": true, "bound:StopModuleRepair": true } }, { ...hand.options, ...moduleOptions({ allowed }) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const made = () => session.boundCalls.findLast((call) => call.method.endsWith("ModuleRepair"));
@@ -3066,7 +3083,7 @@ test("a module's repair is begun and ended as godma does both: on the dogma loca
 test("ammunition is loaded and unloaded as the client does both: on the dogma location, the modules and the charges as lists, naming the ship the session is flying", async () => {
   const hand = handTicked();
   const allowed = new Set([...MODULE_PAIRS, "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo"]);
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo(), "bound:LoadAmmo": null, "bound:UnloadAmmo": null } }, { ...hand.options, ...moduleOptions({ allowed }) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo({ locationID: SYSTEM }), "bound:LoadAmmo": null, "bound:UnloadAmmo": null } }, { ...hand.options, ...moduleOptions({ allowed }) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const made = () => session.boundCalls.findLast((call) => call.method === "LoadAmmo" || call.method === "UnloadAmmo");
@@ -3100,7 +3117,7 @@ test("ammunition is loaded and unloaded as the client does both: on the dogma lo
 test("the weapons are linked and unlinked as the client does both: on the dogma location, naming the ship the session is flying", async () => {
   const hand = handTicked();
   const allowed = new Set([...MODULE_PAIRS, "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules"]);
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo(), "bound:LinkAllWeapons": { type: "dict", entries: [] }, "bound:UnlinkAllModules": null } }, { ...hand.options, ...moduleOptions({ allowed }) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo({ locationID: SYSTEM }), "bound:LinkAllWeapons": { type: "dict", entries: [] }, "bound:UnlinkAllModules": null } }, { ...hand.options, ...moduleOptions({ allowed }) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const made = () => session.boundCalls.findLast((call) => call.method === "LinkAllWeapons" || call.method === "UnlinkAllModules");
@@ -3123,7 +3140,7 @@ test("the weapons are linked and unlinked as the client does both: on the dogma 
 
 test("a module is switched on and off as the client does it: on the dogma location bound for where the pilot is, its effect named", async () => {
   const hand = handTicked();
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo() } }, { ...hand.options, ...moduleOptions() });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo({ locationID: SYSTEM }) } }, { ...hand.options, ...moduleOptions() });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const binds = () => session.binds.filter((bind) => bind.service === "dogmaIM");
@@ -3169,7 +3186,7 @@ test("which effect a module is switched on by, and whether it repeats, are the m
     7004: [{ effectID: 16, name: "online", effectCategoryID: 1, durationAttributeID: null }, { effectID: 12, name: "hiPower", effectCategoryID: 0, durationAttributeID: null }],
   };
   const fits = async (typeID, more = {}) => {
-    const allInfo = fittedAllInfo();
+    const allInfo = fittedAllInfo({ locationID: SYSTEM });
     allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries.find(([name]) => name.toString() === "invItem")[1].fields.typeID = typeID;
     const hand = handTicked();
     const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": allInfo } }, { ...hand.options, typeEffects: (id) => effects[id] ?? [], typeAttribute: () => null, allowed: MODULE_PAIRS, ...more });
@@ -3206,7 +3223,7 @@ test("a call on a handle the BFF bound itself is shaped with what the pilot know
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": fittedAllInfo() } }, moduleOptions());
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:4", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
 });
 
 test("whatever is asked of ship or dogmaIM by name is made on the moniker, read against the client or not", async () => {
@@ -4256,7 +4273,7 @@ test("the account's own connection addresses a call the same way: the proxy's se
 // ── a ship's attribute, as godma holds it ────────────────────────────────────
 
 const holdsAllInfo = () => keyVal([["shipInfo", { type: "dict", entries: [
-  [BigInt(SHIP), keyVal([["itemID", BigInt(SHIP)], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[38, 3900], [283, 25], [1556, 0]] }]])],
+  [BigInt(SHIP), godmaInfoRow(BigInt(SHIP), godmaInvItem(SHIP, 588, 237, 6, STATION, 4), [[38, 3900], [283, 25], [1556, 0]])],
 ] }]]);
 
 test("a ship's attribute is godma's: held from the one GetAllInfo, and never asked for by itself", async () => {
@@ -4267,7 +4284,7 @@ test("a ship's attribute is godma's: held from the one GetAllInfo, and never ask
   // Nought is a value; an attribute the ship has not is not known.
   assert.equal(await pilots.shipAttribute(1556, FIELDS, handle), 0);
   assert.equal(await pilots.shipAttribute(1557, FIELDS, handle), null);
-  // Godma primed once, as the client primes it, and nothing else asked of the server.
+  // Godma primed once; its passive inventory registration does not ask for another dogma value.
   assert.deepEqual(session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args), [[true, true, null]]);
   assert.deepEqual(session.calls, []);
   // A session is its account's own.
@@ -4282,7 +4299,7 @@ test("with dogma not answering, a ship's attribute is not known", async () => {
 
 test("the pilot's ship and its type are what the session and godma already hold", async () => {
   const typed = keyVal([["shipInfo", { type: "dict", entries: [
-    [BigInt(SHIP), keyVal([["itemID", BigInt(SHIP)], ["time", DOGMA_T], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID: 77002, groupID: 901 }, values: [] }], ["attributes", { type: "dict", entries: [[38, 3900]] }]])],
+    [BigInt(SHIP), godmaInfoRow(BigInt(SHIP), godmaInvItem(SHIP, 77002, 901, 6, STATION, 4), [[38, 3900]])],
   ] }]]);
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": typed } });
   session.calls.length = 0;
@@ -4301,18 +4318,11 @@ test("the pilot's ship and its type are what the session and godma already hold"
 
 const EFFECT_OF_BEING_ONLINE = 16;
 const ownShipAllInfo = () => keyVal([["shipInfo", { type: "dict", entries: [
-  [BigInt(SHIP + 3), keyVal([["itemID", BigInt(SHIP + 3)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 3, typeID: 3003, groupID: 53, categoryID: 7, flagID: 29, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 7]] }], ["activeEffects", { type: "dict", entries: [] }]])],
-  [BigInt(SHIP), keyVal([
-    ["itemID", BigInt(SHIP)],
-    ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID: 588, groupID: 237, categoryID: 6 }, values: [] }],
-    ["activeEffects", { type: "dict", entries: [] }],
-    ["time", DOGMA_T],
-    ["attributes", { type: "dict", entries: [[48, 130], [11, 40], [38, 120]] }],
-    ["wallclockTime", DOGMA_T],
-  ])],
+  [BigInt(SHIP + 3), godmaInfoRow(BigInt(SHIP + 3), godmaInvItem(SHIP + 3, 3003, 53, 7, SHIP, 29), [[50, 7]])],
+  [BigInt(SHIP), godmaInfoRow(BigInt(SHIP), godmaInvItem(SHIP, 588, 237, 6, STATION, 4), [[48, 130], [11, 40], [38, 120]])],
   // Two modules fitted in the ship: one online, one not.
-  [BigInt(SHIP + 1), keyVal([["itemID", BigInt(SHIP + 1)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 1, typeID: 3001, groupID: 53, categoryID: 7, flagID: 27, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 12]] }], ["activeEffects", { type: "dict", entries: [[EFFECT_OF_BEING_ONLINE, [SHIP + 1, EFFECT_OF_BEING_ONLINE, null, null, null, null, null, DOGMA_T, -1, 0]]] }]])],
-  [BigInt(SHIP + 2), keyVal([["itemID", BigInt(SHIP + 2)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 2, typeID: 3002, groupID: 53, categoryID: 7, flagID: 28, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 9]] }], ["activeEffects", { type: "dict", entries: [] }]])],
+  [BigInt(SHIP + 1), godmaInfoRow(BigInt(SHIP + 1), godmaInvItem(SHIP + 1, 3001, 53, 7, SHIP, 27), [[50, 12]], [[EFFECT_OF_BEING_ONLINE, [SHIP + 1, EFFECT_OF_BEING_ONLINE, null, null, null, null, null, DOGMA_T, -1, 0]]])],
+  [BigInt(SHIP + 2), godmaInfoRow(BigInt(SHIP + 2), godmaInvItem(SHIP + 2, 3002, 53, 7, SHIP, 28), [[50, 9]])],
 ] }]]);
 
 test("the ship's own dogma entry is the row godma was primed with, its attributes as godma holds them now, and the modules that are online", async () => {
@@ -4342,19 +4352,14 @@ test("the ship's own dogma entry is the row godma was primed with, its attribute
 // OnlineModule). Recorded on Tranquility in that order, both calls on the dogma location godma was primed from.
 
 const CAN_BE_ONLINE = 3009;
-const fittedNow = (itemID, { typeID = CAN_BE_ONLINE, flagID = 30, locationID = SHIP, categoryID = 7 } = {}) => [
-  { type: "list", items: [{ type: "packedrow", header: null, columns: [], fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID: 53, categoryID, customInfo: "", stacksize: 1, singleton: 1 }, values: [] }] },
-  { type: "dict", entries: [[3, STATION], [4, 4]] },
+const fittedNow = (itemID, { typeID = CAN_BE_ONLINE, flagID = 30, locationID = SHIP, categoryID = 7, groupID = 53, change = [[3, STATION], [4, 4]] } = {}) => [
+  { type: "list", items: [{ type: "packedrow", header: null, columns: [], fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID, categoryID, customInfo: "", stacksize: 1, singleton: 1 }, values: [] }] },
+  { type: "dict", entries: change },
   null,
 ];
 /** What the server answers ItemGetInfo with: the item's row, as GetAllInfo lists one. */
-const itemRow = (itemID, online = false) => keyVal([
-  ["itemID", BigInt(itemID)],
-  ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID, typeID: CAN_BE_ONLINE, groupID: 53, categoryID: 7, flagID: 30, locationID: SHIP }, values: [] }],
-  ["time", DOGMA_T],
-  ["attributes", { type: "dict", entries: [[50, 7]] }],
-  ["activeEffects", { type: "dict", entries: online ? [[EFFECT_OF_BEING_ONLINE, [itemID, EFFECT_OF_BEING_ONLINE, null, null, null, null, null, DOGMA_T, -1, 0]]] : [] }],
-]);
+const itemRow = (itemID, online = false) => godmaInfoRow(BigInt(itemID), godmaInvItem(itemID, CAN_BE_ONLINE, 53, 7, SHIP, 30), [[50, 7]],
+  online ? [[EFFECT_OF_BEING_ONLINE, [itemID, EFFECT_OF_BEING_ONLINE, null, null, null, null, null, DOGMA_T, -1, 0]]] : []);
 const onlineByType = { typeEffects: (typeID) => (typeID === CAN_BE_ONLINE ? [{ effectID: 11 }, { effectID: EFFECT_OF_BEING_ONLINE }] : [{ effectID: 11 }]) };
 /** The calls the client makes of its own accord after an item change, in the order they were made. */
 const ownCalls = (session) => session.boundCalls.filter((call) => call.method === "ItemGetInfo" || call.method === "SetModuleOnline").map((call) => [call.method, call.args]);
@@ -4375,7 +4380,7 @@ test("a module fitted while the ship is held is asked about and then put online,
   // godma was primed from, and nothing else asked.
   assert.deepEqual(ownCalls(session), [["ItemGetInfo", [SHIP + 9]], ["SetModuleOnline", [SHIP, SHIP + 9]]]);
   const primedFrom = session.boundCalls.find((call) => call.method === "GetAllInfo").objectID;
-  assert.deepEqual(session.boundCalls.filter((call) => call.method !== "GetAllInfo").map((call) => [call.objectID, call.kwargs]), [[primedFrom, null], [primedFrom, null]]);
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "ItemGetInfo" || call.method === "SetModuleOnline").map((call) => [call.objectID, call.kwargs]), [[primedFrom, null], [primedFrom, null]]);
   assert.deepEqual([session.calls, session.boundCalls.filter((call) => call.method === "GetAllInfo").length], [[], 1]);
   const noted = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual([noted["dogmaIM.ItemGetInfo"], noted["dogmaIM.SetModuleOnline"]], [{ same: 1 }, { same: 1 }]);
@@ -4386,12 +4391,13 @@ test("a module fitted while the ship is held is asked about and then put online,
   assert.deepEqual(ownCalls(session).slice(2), [["ItemGetInfo", [SHIP + 10]]]);
   // One godma holds already that moves to another slot is asked about again, and is not fitted anew.
   serverHasOnline.add(SHIP + 9);
-  session.notify("OnItemsChanged", fittedNow(SHIP + 9, { flagID: 32 }));
-  session.notify("OnItemsChanged", fittedNow(SHIP + 2, { flagID: 33 }));
+  // Same-ship slot moves carry their old flag, without pretending the item came from the station.
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9, { flagID: 32, change: [[4, 30]] }));
+  session.notify("OnItemsChanged", fittedNow(SHIP + 2, { flagID: 33, change: [[4, 28]] }));
   assert.deepEqual((await pilots.shipInfo(FIELDS, handle)).online, [SHIP + 1, SHIP + 9, SHIP + 10]);
   assert.deepEqual(ownCalls(session).slice(3), [["ItemGetInfo", [SHIP + 9]], ["ItemGetInfo", [SHIP + 2]]]);
   // A drone put in the drone bay is not asked about, and its type has no being online to it.
-  session.notify("OnItemsChanged", fittedNow(SHIP + 11, { typeID: 3010, flagID: 87, categoryID: 18 }));
+  session.notify("OnItemsChanged", fittedNow(SHIP + 11, { typeID: 2488, flagID: 87, categoryID: 18, groupID: 100 }));
   await pilots.shipInfo(FIELDS, handle);
   assert.equal(ownCalls(session).length, 5);
 });
@@ -4420,19 +4426,22 @@ test("a module the server would not say anything of is put online all the same",
   assert.deepEqual(await outcome(null), [[SHIP + 1, SHIP + 9], ["ItemGetInfo", "SetModuleOnline"]]);
 });
 
-test("several modules fitted at once are each asked about and put online in turn, one call at a time, and a read of the ship waits for them", async () => {
+test("different modules fitted at once can refresh independently, and a read of the ship waits for both", async () => {
   let answer;
   const waiting = new Promise((resolve) => { answer = resolve; });
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:ItemGetInfo": ([itemID]) => itemRow(Number(itemID)), "bound:SetModuleOnline": () => waiting } }, onlineByType);
   await pilots.shipInfo(FIELDS, handle);
   session.notify("OnItemsChanged", [{ type: "list", items: [...fittedNow(SHIP + 9)[0].items, ...fittedNow(SHIP + 8, { flagID: 31 })[0].items] }, { type: "dict", entries: [[3, STATION], [4, 4]] }, null]);
   await settled();
-  // The server has yet to answer for the first: nothing is asked of the second.
-  assert.deepEqual(ownCalls(session), [["ItemGetInfo", [SHIP + 9]], ["SetModuleOnline", [SHIP, SHIP + 9]]]);
+  // invCache229-307 locks by itemID across cache/godma/IM, not across different modules.
+  // Original cdxrefreshorderagent1-locks executes the same-item waiter and independent other-item continuation.
+  assert.deepEqual([SHIP + 9, SHIP + 8].map((itemID) => ownCalls(session).filter(([, args]) => args.at(-1) === itemID)), [
+    [["ItemGetInfo", [SHIP + 9]], ["SetModuleOnline", [SHIP, SHIP + 9]]],
+    [["ItemGetInfo", [SHIP + 8]], ["SetModuleOnline", [SHIP, SHIP + 8]]],
+  ]);
   const reading = pilots.shipInfo(FIELDS, handle);
   answer(null);
-  assert.deepEqual((await reading).online, [SHIP + 1, SHIP + 9, SHIP + 8]);
-  assert.deepEqual(ownCalls(session).slice(2), [["ItemGetInfo", [SHIP + 8]], ["SetModuleOnline", [SHIP, SHIP + 8]]]);
+  assert.deepEqual((await reading).online.sort((a, b) => a - b), [SHIP + 1, SHIP + 8, SHIP + 9]);
 });
 
 test("the undock hands over the modules that are online once the one just fitted has been answered for", async () => {
@@ -4449,14 +4458,15 @@ test("the undock hands over the modules that are online once the one just fitted
   assert.deepEqual(session.boundCalls.find((call) => call.method === "Undock").kwargs, { onlineModules: { type: "dict", entries: [[27, SHIP + 1], [30, SHIP + 9]] } });
 });
 
-test("a module fitted to a ship the pilot is no longer in is neither asked about nor put online", async () => {
+test("a retained old ship can demand an item refresh, but its newly fitted module is not put online", async () => {
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo() } }, onlineByType);
   await pilots.shipInfo(FIELDS, handle);
-  // The session is in another ship; godma still holds the one before, until it is next read.
+  // No ProcessSessionChange is supplied here: godma still has the old registered guard until the next prime.
+  // OnItemChange1208-1270/UpdateItem1553-1657 demands refresh from that guard independently of IM's current ship.
   session.attributes.shipid = 555;
   session.notify("OnItemsChanged", fittedNow(SHIP + 9));
   await settled();
-  assert.deepEqual(ownCalls(session), []);
+  assert.deepEqual(ownCalls(session), [["ItemGetInfo", [SHIP + 9]]]);
 });
 
 // ── how a Moniker the client keeps is bound ──────────────────────────────────
@@ -4468,22 +4478,26 @@ test("a module fitted to a ship the pilot is no longer in is neither asked about
 
 test("a call that finds its Moniker unbound goes with the bind, and the calls after it to the object", async () => {
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:ItemGetInfo": ([itemID]) => itemRow(Number(itemID)) } }, onlineByType);
+  // The achievements service's independent hardpoint read is outside this moniker sequence.
+  const monikerCalls = () => session.boundCalls.filter((call) => call.method !== "GetAvailableTurretSlots");
   assert.deepEqual([session.binds, session.carried], [[], []]);
   // godma's dogma location: the first thing asked of it is GetAllInfo, and its bind carries that.
   await pilots.shipInfo(FIELDS, handle);
-  assert.deepEqual([session.binds, session.carried], [[{ service: "dogmaIM", params: [STATION, 15] }], ["GetAllInfo"]]);
-  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs]), [["N=1:1", "GetAllInfo", [true, true, null], null]]);
+  // PrimeLocation updates the ship's rows, then retains GetInventoryFromId(ship,1) (godma.py 2380 to 2397).
+  assert.deepEqual([session.binds, session.carried], [[{ service: "dogmaIM", params: [STATION, 15] }, { service: "invbroker", params: [STATION, 15] }], ["GetAllInfo", "GetInventoryFromId"]]);
+  assert.deepEqual(monikerCalls().map((call) => [call.objectID, call.method, call.args, call.kwargs]), [["N=1:1", "GetAllInfo", [true, true, null], null], ["N=1:2", "GetInventoryFromId", [SHIP, 1], null]]);
   // Bound now: what is asked of it next goes to the object, and nothing is bound.
   session.notify("OnItemsChanged", fittedNow(SHIP + 9));
   await pilots.shipInfo(FIELDS, handle);
-  assert.deepEqual([session.binds.length, session.boundCalls.slice(1).map((call) => [call.objectID, call.method])], [1, [["N=1:1", "ItemGetInfo"], ["N=1:1", "SetModuleOnline"]]]);
-  // invCache's two managers, each bound by the first thing asked of it and by nothing after.
+  assert.deepEqual([session.binds.length, monikerCalls().slice(2).map((call) => [call.objectID, call.method])], [2, [["N=1:1", "ItemGetInfo"], ["N=1:1", "SetModuleOnline"]]]);
+  // invCache's two managers; numeric (itemID,None) and hangar guards are retained (invCache.py 501 to 562).
+  // The ship's passive guard is reused even when the later caller supplies passive=0; the hangar is reused too.
   await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
   await pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, handle);
   await pilots.bindObject("invbroker", "GetInventoryFromId", [77], { passive: 1 }, WHO, handle);
   await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
-  assert.deepEqual(session.carried, ["GetAllInfo", "GetInventory", "GetInventoryFromId"]);
-  assert.deepEqual(session.boundCalls.slice(3).map((call) => [call.method, call.args]), [["GetInventory", [10004, null]], ["GetInventoryFromId", [SHIP, 0]], ["GetInventoryFromId", [77, 1]], ["GetInventory", [10004, null]]]);
+  assert.deepEqual(session.carried, ["GetAllInfo", "GetInventoryFromId", "GetInventory"]);
+  assert.deepEqual(monikerCalls().slice(4).map((call) => [call.method, call.args]), [["GetInventory", [10004, null]], ["GetInventoryFromId", [77, 1]]]);
   // A named call on a service's moniker: the ship's is bound by the undock, with its keyword.
   await pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, handle);
   assert.deepEqual([session.carried.at(-1), session.binds.at(-1)], ["Undock", { service: "ship", params: [STATION, 15] }]);
@@ -4856,7 +4870,8 @@ const keptShort = (kept) => {
   const entries = Object.fromEntries(kept.GetInitState.args.entries);
   return [entries.members.entries.map(([charID]) => Number(charID)), kept.GetWings.entries.length, kept.GetMotd];
 };
-const everyFleetCall = (session) => session.boundCalls.filter((call) => call.method !== "GetAllInfo").map((call) => `${call.objectID} ${call.method}`);
+// Fleet type reads prime godma and register its passive guard (godma.py 2380-2397); neither is a fleet call.
+const everyFleetCall = (session) => session.boundCalls.filter((call) => !["GetAllInfo", "GetInventoryFromId", "GetAvailableTurretSlots"].includes(call.method)).map((call) => `${call.objectID} ${call.method}`);
 /** Those calls, but for the two windows' own reads, which have tests of their own (windowCalls). */
 const fleetCalls = (session) => everyFleetCall(session).filter((call) => !/ (GetJoinRequests|GetFleetComposition)$/.test(call));
 
@@ -6455,7 +6470,7 @@ test("what a container lists is asked for once and kept: by container, by flag, 
 test("the server's word of an item changed forgets every listing, and what is asked for after it is kept again", async () => {
   const { session, hangar, ship, list, asked } = await withContainers();
   assert.deepEqual([await list(hangar), await list(ship)], [1, 2]);
-  session.notify("OnItemChange", [{ type: "packedrow", fields: { itemID: 1 } }, { type: "dict", entries: [] }, null]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual([await list(hangar), await list(ship), await list(hangar), await list(ship)], [3, 4, 3, 4]);
   session.notify("OnItemsChanged", [{ type: "list", items: [] }, { type: "dict", entries: [] }, null]);
   assert.deepEqual([await list(ship), await list(ship)], [5, 5]);
@@ -6496,7 +6511,7 @@ test("in another ship the listings are asked for again, and a listing the server
   session.attributes.shipid = SHIP + 7;
   session.change({ shipid: [SHIP, SHIP + 7] });
   assert.deepEqual([await list(hangar), await list(hangar)], [2, 2]);
-  session.notify("OnItemChange", [null, null, null]);
+  session.notify("OnItemChange", hangarItemChange());
   refuse = true;
   await rejects(list(hangar), "CALL_REFUSED");
   refuse = false;
@@ -6553,9 +6568,9 @@ test("an attribute of an item godma holds is answered from what it holds, and th
     { allowed: new Set(["dogmaIM.QueryAttributeValue", "dogmaIM.MachoBindObject", "dogmaIM.Overload"]) },
   );
   const value = async (...args) => (await pilots.callMethod("dogmaIM", "QueryAttributeValue", args, null, FIELDS, handle)).result;
-  // godma is primed first, as the client's is from the moment it has a ship: one GetAllInfo, and nothing else.
+  // PrimeLocation retains the passive ship guard after GetAllInfo (godma.py 2380 to 2397), without a List/self read.
   assert.equal(await value(FITTED_MODULE, 9), 40);
-  assert.deepEqual(session.boundCalls.map((call) => call.method), ["GetAllInfo"]);
+  assert.deepEqual(session.boundCalls.filter((call) => call.method !== "GetAvailableTurretSlots").map((call) => [call.method, call.args]), [["GetAllInfo", [true, true, null]], ["GetInventoryFromId", [SHIP, 1]]]);
   assert.deepEqual([await value(SHIP, 482), await value(SHIP, 9), await value(BigInt(SHIP), 265)], [125, 151, 150]);
   assert.equal(asked, 0);
   // The server's word of a change is what is answered after it.
@@ -6586,10 +6601,7 @@ test("an attribute of an item godma holds is answered from what it holds, and th
  */
 const withCharacter = (attributes, shipModified = null) => keyVal([
   ...shipAllInfo().args.entries.map(([name, value]) => [name.toString(), value]),
-  ["charInfo", [{ type: "dict", entries: [[BigInt(PILOT), keyVal([
-    ["itemID", BigInt(PILOT)], ["time", DOGMA_T], ["wallclockTime", DOGMA_T], ["activeEffects", { type: "dict", entries: [] }],
-    ["attributes", { type: "dict", entries: attributes }],
-  ])]] }, [0, [], [], []]]],
+  ["charInfo", [{ type: "dict", entries: [[BigInt(PILOT), godmaInfoRow(BigInt(PILOT), godmaInvItem(PILOT, 1373, 1, 3, SHIP, 57), attributes)]] }, [0, [], [], []]]],
   ["shipModifiedCharAttribs", shipModified],
 ]);
 
@@ -6608,7 +6620,8 @@ test("the pilot's own character is among what godma holds, so an attribute of it
   assert.equal(await value(PILOT, 352), 7);
   // The ship's are held as they were.
   assert.equal(await value(SHIP, 482), 125);
-  assert.deepEqual([asked, session.boundCalls.map((call) => call.method)], [0, ["GetAllInfo"]]);
+  // ProcessAllInfo primes ship then character, retaining each passive guard (godma.py 2435 to 2452).
+  assert.deepEqual([asked, session.boundCalls.filter((call) => call.method !== "GetAvailableTurretSlots").map((call) => [call.method, call.args])], [0, [["GetAllInfo", [true, true, null]], ["GetInventoryFromId", [SHIP, 1]], ["GetInventoryFromId", [PILOT, 1]]]]);
   // The server's word of a change to the character's is what is answered after it (a skill trained).
   session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, PILOT, 219, DOGMA_T + 10000000n, 0.64, 0.68, DOGMA_T + 10000000n]] }]);
   assert.deepEqual([await value(PILOT, 219), asked], [0.64, 0]);
@@ -6750,7 +6763,7 @@ test("on a notice the client's code names cached calls on, the session forgets t
   const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": 1, "stationSvc.GetStation.[60000004]": 2 });
   const sent = () => session.calls.filter((call) => call.service === "stationSvc" && call.method === "GetStation").length;
   const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   session.notify("OnSomethingElse", [60003760]);
   assert.deepEqual(named, []);
   // station/base.py OnStationInformationUpdated(stationID): that station's, and no other's.
@@ -8282,7 +8295,7 @@ test("the server's word of a timer, of who is flagged or of an engagement is wor
   session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
   // Nor does a notice that is none of crimewatch's.
   session.notify("OnSecurityStatusUpdate", [1.5]);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual([await states(), asked], [[timers({ 0: [101, null] }), aWireDict([8, 7000]), [aWireSet(7), aWireSet()], 2], 1]);
   // A notice that cannot be worked in (the client's handler takes two) lets the states go, and the next read asks.
   session.notify("OnWeaponsTimerUpdate", [102]);
@@ -8319,7 +8332,7 @@ test("states kept in a form that is not read are let go at the server's word of 
   }
   // Another notice leaves them kept, and so does the one of who is disapproved of, which changes nothing they say.
   session.notify("OnSecurityStatusUpdate", [1.5]);
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
   assert.deepEqual([await states(), asked.states], [expected, expected]);
   // crimewatchSvc.SetSafetyLevel lets nothing go: the client keeps the level it set and asks nothing (the next test).
@@ -8528,7 +8541,7 @@ test("the names of a wallet entry's kinds are asked of the account service once,
 test("where godma cannot be primed again, the snapshot is still given and the ship's readings say unknown: never the ones from before", async () => {
   const hand = handTicked();
   let fails = false;
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => { if (fails) throw new Error("not now"); return shipAllInfo(); } } },
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => { if (fails) throw new Error("not now"); return shipAllInfo(50, SYSTEM); } } },
     { ...hand.options, now: () => DOGMA_T_MS, effectCategory: () => null });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
@@ -10105,7 +10118,7 @@ test("the reprocessing plant's quote goes with each item's own row from what the
   // Nor is an item whose row is no packed row one the quote can be handed the row of.
   assert.deepEqual(await quoted([503]), [[503]]);
   // The server's word of an item's change lets the listings go, and the rows with them, until they are listed again.
-  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnItemChange", hangarItemChange());
   assert.deepEqual(await quoted([501]), [[501]]);
   await listed();
   assert.equal((await quoted([501]))[0].type, "dict");
