@@ -119,6 +119,8 @@ const TABLES = Object.freeze({
   // an attribute is drawn with (skillsPanelUtil.AttributeCont: get_attribute_icon_id, then GetIconFile).
   iconFiles: Object.freeze({ loader: "iconIDsLoader", resource: "res:/staticdata/iconids.fsdbinary", attribute: "iconFile" }),
   dogmaAttributes: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary" }),
+  // Native godma's by-name map overwrites duplicate names in loader order.
+  dogmaAttributesOrdered: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary", keyOrder: true }),
   // A type's dogma attributes (dogma/data.py get_type_dogma: typeDogma.fsdbinary, its dogmaAttributes), and a type's
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).

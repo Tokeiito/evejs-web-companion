@@ -3,8 +3,11 @@
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
 // This is cached numeric value/charge state, not GetAttribute's static defaults,
 // effect rows, ItemWrapper, inventory metadata or clientDogmaLocation nodes.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange }) {
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries }) {
   const attributes = new Map(), charged = new Map();
+  // Native caches are name-keyed: distinct installed IDs can share a name.
+  // Freshness remains keyed by the incoming ID, before this mapping.
+  const namedPairs = () => new Map([...chargedPairs].map(([id, pair]) => [attributeKey(id), pair.map(attributeKey)]));
   // Python int/long/float/bool equality also covers numeric wire aliases.
   function equal(a, b) {
     if (typeof a === "boolean") a = Number(a);
@@ -14,13 +17,16 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     return a === b;
   }
   function value(itemID, attributeID, at = now()) {
-    const state = charged.get(itemID)?.get(attributeID);
-    return state ? chargeValue(...state, at) : attributes.get(itemID)?.get(attributeID);
+    return read(itemID, attributeKey(attributeID), at);
   }
-  function createCharged(itemID, attributeID, amount, time) {
-    const [tau, cap] = chargedPairs.get(attributeID);
+  function read(itemID, name, at = now()) {
+    const state = charged.get(itemID)?.get(name);
+    return state ? chargeValue(...state, at) : attributes.get(itemID)?.get(name);
+  }
+  function createCharged(itemID, name, amount, time, pairs) {
+    const [tau, cap] = pairs.get(name);
     if (!charged.has(itemID)) charged.set(itemID, new Map());
-    charged.get(itemID).set(attributeID, [Number(amount), time, Number(value(itemID, tau)) / 5.0, Number(value(itemID, cap))]);
+    charged.get(itemID).set(name, [Number(amount), time, Number(read(itemID, tau)) / 5.0, Number(read(itemID, cap))]);
   }
   function refresh(itemID, info, doUpdate) {
     const fields = fieldsOf(info);
@@ -30,37 +36,39 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     const given = fields.get("attributes");
     if (!given || !Array.isArray(given.entries)) throw new TypeError("Godma numeric refresh requires an attribute dictionary.");
     const values = doUpdate ? attributes.get(itemID) ?? new Map() : new Map();
-    for (const [attributeID, amount] of given.entries) {
+    for (const [attributeID, amount] of attributeEntries(given.entries)) {
       const id = number(attributeID), last = lastChange.get(`${itemID}:${id}`);
       if (wallclock && last !== undefined && last > wallclock) continue;
-      values.set(id, amount);
+      values.set(attributeKey(id), amount);
     }
     attributes.set(itemID, values);
     // UpdateAttribute never clears old charged tuples. Even a stale value's
     // retained charge is recreated with this snapshot's time when tau/cap exist.
+    const pairs = namedPairs();
     for (const [id, amount] of values) {
-      if (!chargedPairs.has(id)) continue;
+      if (!pairs.has(id)) continue;
       if (!charged.has(itemID)) charged.set(itemID, new Map());
-      const [tau, cap] = chargedPairs.get(id);
-      if (values.get(tau) && values.get(cap)) createCharged(itemID, id, amount, time);
+      const [tau, cap] = pairs.get(id);
+      if (values.get(tau) && values.get(cap)) createCharged(itemID, id, amount, time, pairs);
     }
   }
   function change(itemID, attributeID, time, amount) {
     const values = attributes.get(itemID);
     if (!values) return false;
-    const old = value(itemID, attributeID);
+    const name = attributeKey(attributeID), pairs = namedPairs();
+    const old = read(itemID, name);
     if (equal(old, amount)) return false;
-    values.set(attributeID, amount);
-    if (chargedPairs.has(attributeID)) createCharged(itemID, attributeID, amount, time);
-    else for (const [id, [tau, cap]] of chargedPairs) {
-      if (attributeID === cap) {
+    values.set(name, amount);
+    if (pairs.has(name)) createCharged(itemID, name, amount, time, pairs);
+    else for (const [id, [tau, cap]] of pairs) {
+      if (name === cap) {
         if (charged.get(itemID)?.has(id)) {
-          let amountNow = value(itemID, id);
+          let amountNow = read(itemID, id);
           if (equal(amountNow, old)) amountNow *= Number(amount) / Number(old);
           if (amountNow > amount) amountNow = amount;
-          createCharged(itemID, id, amountNow, time);
-        } else if (values.get(tau) && values.get(cap)) createCharged(itemID, id, values.get(id), time);
-      } else if (attributeID === tau && charged.get(itemID)?.has(id)) createCharged(itemID, id, value(itemID, id), time);
+          createCharged(itemID, id, amountNow, time, pairs);
+        } else if (values.get(tau) && values.get(cap)) createCharged(itemID, id, values.get(id), time, pairs);
+      } else if (name === tau && charged.get(itemID)?.has(id)) createCharged(itemID, id, read(itemID, id), time, pairs);
     }
     return true;
   }

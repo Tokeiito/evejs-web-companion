@@ -6,6 +6,7 @@ const { createGodmaInventoryRows } = require("./godmaInventoryRows");
 const { createGodmaNumericValues } = require("./godmaNumericValues");
 const { createGodmaNumericEffects } = require("./godmaNumericEffects");
 const { createGodmaPrimeChannel } = require("./godmaPrimeChannel");
+const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
@@ -288,6 +289,8 @@ function createPilotDogma({
   // Installed definitions for native numeric named effect rows. Raw recording
   // readers keep their existing summary without claiming native effect state.
   nativeEffectData = null,
+  // Installed attribute ID/name identity; raw readers retain their ID cache.
+  nativeAttributeData = null,
   onNumericEffectActivated = () => {},
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
@@ -296,9 +299,18 @@ function createPilotDogma({
   const charged = new Map();
   /** "itemID:attributeID" -> the time of the last change taken for it. */
   const lastChange = new Map();
-  const numericValues = createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange });
+  const numericValues = createGodmaNumericValues({
+    fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange,
+    ...(nativeAttributeData ? {
+      attributeKey: id => nativeAttributeData.name(id),
+      // Blue Marshal.ReadObjectDict1330-1345 inserts into a new Python dict;
+      // RefreshItemAttributes iterates that receiving table, not wire order.
+      attributeEntries: entries => orderEntries(entries.map(([id, value]) => [number(id), value])),
+    } : {}),
+  });
   const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated }) : null;
   const primeChannel = createGodmaPrimeChannel();
+  const withAttributes = work => !nativeAttributeData || nativeAttributeData.isReady() ? work() : nativeAttributeData.ready().then(work);
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
   /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
@@ -469,12 +481,15 @@ function createPilotDogma({
     const id = updated.itemID;
     identity.set(id, { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
     if (updated.refresh) {
-      numericValues.refresh(id, row, updated.doUpdate);
-      if (numericEffects) return numericEffects.refresh(inventory.itemID, number(inventory.typeID), row, updated.doUpdate).then(() => {
+      return withAttributes(() => {
+        numericValues.refresh(id, row, updated.doUpdate);
+        if (numericEffects) return numericEffects.refresh(inventory.itemID, number(inventory.typeID), row, updated.doUpdate).then(() => {
+          loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
+          return id;
+        });
         loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
         return id;
       });
-      loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
     }
     return id;
   }
@@ -605,6 +620,7 @@ function createPilotDogma({
         if (!fetchItemInfo) throw new TypeError("A numeric godma ItemGetInfo provider is required.");
         info = await fetchItemInfo(refresh.itemID);
         if (info !== null) {
+          if (nativeAttributeData) await nativeAttributeData.ready();
           numericValues.refresh(refresh.itemID, info, refresh.doUpdate);
           if (numericEffects) {
             const captured = rowFields(refresh.row);
@@ -879,7 +895,7 @@ function createPilotDogma({
   }
 
   function attributeChanges(changes) {
-    return primeChannel.receive(() => {
+    return primeChannel.receive(() => withAttributes(() => {
       // The batch receives once, then calls OnModuleAttributeChange_ directly.
       const ofACharge = each => Array.isArray(each) && Array.isArray(each[2]);
       const emptied = new Set(changes.filter(each => ofACharge(each) && number(each[3]) === ATTRIBUTE.QUANTITY && number(each[5]) === 0).map(each => key(each[2])));
@@ -889,7 +905,7 @@ function createPilotDogma({
           // Native ExceptionEater isolates each change inside this receiver.
         }
       }
-    });
+    }));
   }
 
   /**
@@ -954,7 +970,7 @@ function createPilotDogma({
       return true;
     }
     if (notification.method === "OnModuleAttributeChange") {
-      const work = primeChannel.receive(() => change(["OnModuleAttributeChange", ...notification.args]));
+      const work = primeChannel.receive(() => withAttributes(() => change(["OnModuleAttributeChange", ...notification.args])));
       if (work && typeof work.then === "function") return work.then(() => true);
       return true;
     }
@@ -1185,6 +1201,7 @@ function createPilotDogma({
     loadAllInfo,
     processAllInfo,
     beginPrime: primeChannel.begin,
+    initializeNativeAttributes: () => nativeAttributeData?.ready(),
     finishPrimeBody: primeChannel.finishBody,
     releasePrimeReceivers: primeChannel.release,
     primeState: primeChannel.state,

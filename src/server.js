@@ -29,6 +29,7 @@ const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = requir
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
 const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
+const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -221,6 +222,9 @@ const gamePortPilots = options.gamePortPilots !== undefined
         },
         dogmaEffects: (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
         messages: (messageIDs) => clientWords.messages(messageIDs),
+      }),
+      nativeAttributeData: createGodmaAttributeData({
+        dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
       }),
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
