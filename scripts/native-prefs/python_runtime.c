@@ -52,9 +52,13 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(Py_ssize_t, PyTuple_Size, (PyObject*)) \
  X(PyObject*, PyTuple_GetItem, (PyObject*, Py_ssize_t)) \
  X(int, PyTuple_SetItem, (PyObject*, Py_ssize_t, PyObject*)) \
+ X(PyObject*, PyList_New, (Py_ssize_t)) \
+ X(int, PyList_SetItem, (PyObject*, Py_ssize_t, PyObject*)) \
  X(int, PyArg_ParseTuple, (PyObject*, const char*, ...)) \
  X(int, PyType_IsSubtype, (PyObject*, PyObject*)) \
  X(PyObject*, PyString_FromStringAndSize, (const char*, Py_ssize_t)) \
+ X(PyObject*, PyString_InternFromString, (const char*)) \
+ X(Py_ssize_t, PyNumber_AsSsize_t, (PyObject*, PyObject*)) \
  X(int, PyString_AsStringAndSize, (PyObject*, char**, Py_ssize_t*)) \
  X(PyObject*, PyUnicodeUCS2_FromUnicode, (const uint16_t*, Py_ssize_t)) \
  X(uint16_t*, PyUnicodeUCS2_AsUnicode, (PyObject*)) \
@@ -79,7 +83,7 @@ BINDINGS(DECLARE)
 #undef DECLARE
 
 static PyObject *none_object, *int_type, *long_type, *float_type, *bool_type, *str_type, *unicode_type;
-static PyObject **exc_type, **exc_value, **exc_runtime, **exc_io, **exc_memory;
+static PyObject **exc_type, **exc_value, **exc_runtime, **exc_io, **exc_memory, **exc_key, **exc_index;
 static PyObject** exc_windows;
 static HMODULE python_dll;
 static PyObject* globals;
@@ -388,12 +392,105 @@ static PyObject* row_descriptor_layout(PyObject* self, PyObject* args) {
 failed:
   free(rows); decref(kind); decref(tuple_type); decref(columns); decref(answer); return NULL;
 }
+
+// Source-port descriptor protocols over the named Python wrapper's own state.
+// Shipped3396210: Keys2fa940, Index2faa80, Size2fa6e0, SequenceGet2fb0f0.
+// Public C API only; no access to a PyObject/Blue type's memory layout.
+static PyObject* descriptor_keys(PyObject* self, PyObject* unused) {
+  PyObject* columns = PyObject_GetAttrString(self, "_columns"); if (!columns) return NULL;
+  Py_ssize_t count = PyTuple_Size(columns); if (count < 0) { decref(columns); return NULL; }
+  PyObject* answer = PyList_New(count); if (!answer) { decref(columns); return NULL; }
+  for (Py_ssize_t i = 0; i < count; ++i) {
+    PyObject* row = PyTuple_GetItem(columns, i), *name = row ? PyTuple_GetItem(row, 0) : NULL;
+    char* text; Py_ssize_t length;
+    if (!name || PyString_AsStringAndSize(name, &text, &length) != 0) { decref(columns); decref(answer); return NULL; }
+    PyObject* copy = PyString_FromStringAndSize(text, (Py_ssize_t)strlen(text));
+    if (!copy) { decref(columns); decref(answer); return NULL; }
+    PyList_SetItem(answer, i, copy);
+  }
+  decref(columns); return answer;
+}
+static PyObject* descriptor_index(PyObject* self, PyObject* key) {
+  // A captured bound method must enforce the same boundary as its property.
+  PyObject* setting = PyObject_GetAttrString(self, "_setting"); if (!setting) return NULL;
+  int active = PyObject_IsTrue(setting); decref(setting); if (active < 0) return NULL;
+  if (active) {
+    PyObject* name = PyString_FromStringAndSize("_unsafe", 7), *yes = PyBool_FromLong(1);
+    if (!name || !yes) { decref(name); decref(yes); return NULL; }
+    int status = PyObject_SetAttr(self, name, yes); decref(name); decref(yes);
+    if (status < 0) return NULL;
+    PyObject* error = PyObject_GetAttrString(self, "_domain_error"); if (!error) return NULL;
+    PyErr_SetString(error, "Reentrant native column-map access is outside this capability");
+    decref(error); return NULL;
+  }
+  PyObject* kind = PyObject_Type(key); if (!kind) return NULL;
+  int is_str = PyType_IsSubtype(kind, str_type); decref(kind);
+  if (!is_str) { PyErr_SetString(*exc_type, "string key required"); return NULL; }
+  char* target; Py_ssize_t length;
+  if (PyString_AsStringAndSize(key, &target, &length) != 0) return NULL;
+  PyObject* columns = PyObject_GetAttrString(self, "_columns"); if (!columns) return NULL;
+  Py_ssize_t count = PyTuple_Size(columns); if (count < 0) { decref(columns); return NULL; }
+  for (Py_ssize_t i = 0; i < count; ++i) {
+    PyObject* row = PyTuple_GetItem(columns, i), *name = row ? PyTuple_GetItem(row, 0) : NULL;
+    char* text;
+    if (!name || PyString_AsStringAndSize(name, &text, &length) != 0) { decref(columns); return NULL; }
+    if (!strcmp(text, target)) { decref(columns); return PyInt_FromLong((long)i); }
+  }
+  decref(columns); return PyErr_Format(*exc_key, "key %s not found", target);
+}
+static PyObject* descriptor_size(PyObject* self, PyObject* unused) {
+  PyObject* storage = PyObject_GetAttrString(self, "_storage"); if (!storage) return NULL;
+  PyObject* answer = PyTuple_New(2); if (!answer) { decref(storage); return NULL; }
+  for (int i = 0; i < 2; ++i) {
+    PyObject* value = PyTuple_GetItem(storage, i); if (!value) { decref(storage); decref(answer); return NULL; }
+    long number = PyInt_AsLong(value);
+    if (number == -1 && PyErr_Occurred()) { decref(storage); decref(answer); return NULL; }
+    value = PyInt_FromLong(number); if (!value) { decref(storage); decref(answer); return NULL; }
+    PyTuple_SetItem(answer, i, value);
+  }
+  decref(storage); return answer;
+}
+static PyObject* descriptor_item(PyObject* self, PyObject* key) {
+  Py_ssize_t index = PyNumber_AsSsize_t(key, *exc_index);
+  if (index == -1 && PyErr_Occurred()) return NULL;
+  PyObject* columns = PyObject_GetAttrString(self, "_columns"); if (!columns) return NULL;
+  Py_ssize_t count = PyTuple_Size(columns); if (count < 0) { decref(columns); return NULL; }
+  if (index < 0) index += count; // CPython bracket normalization, once.
+  if (index < 0 || index >= count) { decref(columns); return PyErr_Format(*exc_index, "index %d out of range", (int)index); }
+  PyObject* row = PyTuple_GetItem(columns, index), *name = row ? PyTuple_GetItem(row, 0) : NULL;
+  char* text; Py_ssize_t length;
+  if (!name || PyString_AsStringAndSize(name, &text, &length) != 0) { decref(columns); return NULL; }
+  PyObject* answer = PyTuple_New(3); if (!answer) { decref(columns); return NULL; }
+  name = PyString_InternFromString(text); if (!name) { decref(columns); decref(answer); return NULL; }
+  PyTuple_SetItem(answer, 0, name);
+  for (int i = 1; i < 3; ++i) {
+    PyObject* value = PyTuple_GetItem(row, i); if (!value) { decref(columns); decref(answer); return NULL; }
+    long number = PyInt_AsLong(value);
+    if (number == -1 && PyErr_Occurred()) { decref(columns); decref(answer); return NULL; }
+    value = PyInt_FromLong(number); if (!value) { decref(columns); decref(answer); return NULL; }
+    PyTuple_SetItem(answer, i, value);
+  }
+  decref(columns); return answer;
+}
+static PyMethodDef descriptor_methods[] = {
+  {"Keys", descriptor_keys, 4, "Source-port byte column names."},
+  {"Index", descriptor_index, 8, "Source-port first byte-name index."},
+  {"Size", descriptor_size, 4, "Source-port data bytes and object count."},
+  {"_item", descriptor_item, 8, "Source-port normalized integer sequence access."}
+};
+static PyObject* descriptor_method(PyObject* self, PyObject* args) {
+  PyObject* owner; int index;
+  if (!PyArg_ParseTuple(args, "Oi:descriptor_method", &owner, &index)) return NULL;
+  if (index < 0 || index >= 4) { PyErr_SetString(*exc_value, "Unknown source-port descriptor method"); return NULL; }
+  return PyCFunction_NewEx(&descriptor_methods[index], owner, NULL);
+}
 static PyMethodDef io_methods[] = {
   {"read", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"write", io_write, 1, "Actual synchronous Win32 atomic write."},
   {"AtomicFileRead", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"AtomicFileWrite", io_write, 1, "Actual synchronous Win32 atomic write."},
-  {"row_descriptor_layout", row_descriptor_layout, 1, "Source-port descriptor layout; not a Blue heap type."}
+  {"row_descriptor_layout", row_descriptor_layout, 1, "Source-port descriptor layout; not a Blue heap type."},
+  {"row_descriptor_method", descriptor_method, 1, "Bind source-port descriptor protocol to its named wrapper."}
 };
 static int install_io(void) {
   PyObject* module = PyModule_New("_client_prefs_io"); if (!module) return 0;
@@ -432,6 +529,7 @@ static int bind_api(napi_env env, HMODULE dll) {
   EXC(exc_type, "PyExc_TypeError") EXC(exc_value, "PyExc_ValueError") EXC(exc_runtime, "PyExc_RuntimeError")
   EXC(exc_io, "PyExc_IOError") EXC(exc_memory, "PyExc_MemoryError")
   EXC(exc_windows, "PyExc_WindowsError")
+  EXC(exc_key, "PyExc_KeyError") EXC(exc_index, "PyExc_IndexError")
 #undef EXC
   if (!prefs_log_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 logging C API export missing."); return 0; }
   if (!prefs_timer_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 tasklet timer C API export missing."); return 0; }

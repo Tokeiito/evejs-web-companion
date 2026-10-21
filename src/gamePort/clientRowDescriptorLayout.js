@@ -16,7 +16,7 @@ async function createClientRowDescriptorLayout({ provider }) {
   const calculate = values.global("_client_prefs_io").getAttr("row_descriptor_layout");
   const builtins = values.global("__builtin__"), list = builtins.getAttr("list"), tuple = builtins.getAttr("tuple");
   function layout(schema) { return calculate.call(schema); }
-  function inventoryHeader(wire) {
+  function inventorySchema(wire) {
     if (wire?.type !== "objectex1" || wire.header?.[0]?.value !== "blue.DBRowDescriptor" ||
         !Array.isArray(wire.header[1]) || wire.header[1].length !== 1 || !Array.isArray(wire.header[1][0])) {
       throw new TypeError("An actual decoded inventory DBRowDescriptor is required.");
@@ -48,10 +48,13 @@ async function createClientRowDescriptorLayout({ provider }) {
       if (column.length === 3) entry.getAttr("append").call(null);
       columns.getAttr("append").call(tuple.call(entry));
     }
-    const schema = tuple.call(columns), result = layout(schema);
-    return Object.freeze({ wire, schema, layout: result, virtualState: wire.header[2] });
+    return Object.freeze({ wire, schema: tuple.call(columns), virtualState: wire.header[2] });
   }
-  return Object.freeze({ layout, inventoryHeader, identity: runtime.identity });
+  function inventoryHeader(wire) {
+    const prepared = inventorySchema(wire);
+    return Object.freeze({ ...prepared, layout: layout(prepared.schema) });
+  }
+  return Object.freeze({ layout, inventorySchema, inventoryHeader, identity: runtime.identity });
 }
 
 module.exports = { createClientRowDescriptorLayout };

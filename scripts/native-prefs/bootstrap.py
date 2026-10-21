@@ -1346,3 +1346,177 @@ def _attach_static_run(full_load, logging, helpers, context, logmodule):
     result.log_util, result.loaders = log_util, loaders
     result.assert_profile, result.run, result.emit, result.adopt_snapshot = assert_profile, run, emit, adopt_snapshot
     return result
+
+
+def _create_row_descriptor_protocol():
+    # Explicit companion SOURCE PORT over the C layout, never a Blue heap type
+    # or fake entry in sys.modules['blue']. Types/pure getters are VM-wide;
+    # each descriptor owns its columns/virtual references on the Python heap.
+    import types
+    existing = globals().get('_companion_descriptor_protocol')
+    if existing is not None:
+        if existing.error is not None:
+            raise existing.error[0], existing.error[1], existing.error[2]
+        if not existing.complete:
+            raise ImportError('Descriptor protocol initialization is incomplete')
+        return existing
+    module = types.ModuleType('companion.row_descriptor')
+    module.complete, module.error = False, None
+    globals()['_companion_descriptor_protocol'] = module
+    try:
+        class DescriptorDomainError(RuntimeError):
+            pass
+
+        class CompanionRowDescriptor(object):
+            __slots__ = ('_columns', '_storage', '_virtual', '_setting', '_unsafe')
+            __module__ = module.__name__
+            _domain_error = DescriptorDomainError
+
+            def __init__(self, *args, **ignored_keywords):
+                # The shipped C constructor ignores its keyword dict; its
+                # positional argument parser and tuple layout stay native.
+                layout = _client_prefs_io.row_descriptor_layout(*args)
+                self._columns, self._storage = layout[0], layout[1:]
+                self._virtual, self._setting, self._unsafe = None, False, False
+
+            def _rebuild(self):
+                layout = _client_prefs_io.row_descriptor_layout(tuple((c[0], c[1]) for c in self._columns))
+                self._columns, self._storage = layout[0], layout[1:]
+
+            def __len__(self):
+                return len(self._columns)
+
+            def __getitem__(self, index):
+                # Canonical builtin-integer bracket domain only. A Python
+                # wrapper cannot reproduce BOTH distinct native sq_item and
+                # method-wrapper diagnostics for arbitrary objects/slices.
+                if not isinstance(index, (int, long)):
+                    raise DescriptorDomainError('Descriptor index needs a builtin integer')
+                return _client_prefs_io.row_descriptor_method(self, 3)(index)
+
+            @property
+            def Keys(self):
+                return _client_prefs_io.row_descriptor_method(self, 0)
+
+            @property
+            def Index(self):
+                if self._setting:
+                    self._unsafe = True
+                    raise DescriptorDomainError('Reentrant native column-map access is outside this capability')
+                return _client_prefs_io.row_descriptor_method(self, 1)
+
+            @property
+            def Size(self):
+                return _client_prefs_io.row_descriptor_method(self, 2)
+
+            def __repr__(self):
+                return '<DBRowDescriptor object %s %d>' % (repr(list(self)), self._storage[2])
+
+            def __eq__(self, other):
+                if type(other) is not type(self):
+                    return NotImplemented
+                return self._columns == other._columns
+
+            def __ne__(self, other):
+                result = self.__eq__(other)
+                return NotImplemented if result is NotImplemented else not result
+
+            def __cmp__(self, other):
+                if type(other) is type(self) and self._columns == other._columns:
+                    return 0
+                raise DescriptorDomainError('Native descriptor pointer ordering is outside this capability')
+
+            def __hash__(self):
+                raise DescriptorDomainError('Native descriptor pointer hashing is outside this capability')
+
+            @property
+            def virtual(self):
+                return [] if self._virtual is None else list(self._virtual)
+
+            @virtual.setter
+            def virtual(self, value):
+                if self._setting or self._unsafe:
+                    self._unsafe = True
+                    raise DescriptorDomainError('Unsafe native virtual-setter continuation is outside this capability')
+                if not isinstance(value, list):
+                    raise TypeError('list required')
+                old = self._columns
+                old_length = 0 if self._virtual is None else len(self._virtual)
+                basic = len(old) - old_length
+                if basic < 0:
+                    raise DescriptorDomainError('Native virtual backing exceeds current columns')
+                count, collected = list.__len__(value), []
+                self._setting = True
+                self._columns = old[:basic]
+                try:
+                    for i in xrange(count):
+                        if list.__len__(value) < count:
+                            self._unsafe = True
+                            raise DescriptorDomainError('Input shrink during native virtual conversion is outside this capability')
+                        entry = list.__getitem__(value, i)
+                        if not isinstance(entry, tuple) or tuple.__len__(entry) != 2:
+                            self._columns = old
+                            self._rebuild()
+                            raise TypeError('expected list of tuples of size two')
+                        try:
+                            name = str(tuple.__getitem__(entry, 0))
+                        except BaseException:
+                            self._columns = old
+                            self._rebuild()
+                            raise
+                        if list.__len__(value) < count:
+                            self._unsafe = True
+                        if self._unsafe:
+                            raise DescriptorDomainError('Unsafe native virtual-setter continuation is outside this capability')
+                        # PyObject_Str followed by std::string(char*) in the
+                        # shipped setter, distinct from constructor 's' parse.
+                        name = str.split(name, '\x00', 1)[0]
+                        self._columns += ((name, 0, 0, 0),)
+                        try:
+                            collected.append(entry)  # SAME tuple/getter objects.
+                        except BaseException:
+                            self._columns = old
+                            self._rebuild()
+                            raise
+                    self._rebuild()
+                    if count:
+                        self._virtual = collected
+                    elif old_length:
+                        # Preserve the observed stale backing after []. Never
+                        # pretend a later unsafe subtraction is a normal set.
+                        self._unsafe = True
+                finally:
+                    self._setting = False
+
+            def __getstate__(self):
+                return self.virtual
+
+            def __setstate__(self, value):
+                self.virtual = value
+
+        def code_for(name, suffix):
+            prefix = name.rpartition('.')[0].replace('.', '/')
+            code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+            if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+                raise ImportError('Not the installed descriptor dependency: ' + name)
+            return code
+
+        # Execute the actual constant module. Its source import/pyos branch is
+        # evaluated against the real current host; no fabricated ix values.
+        constants = types.ModuleType('companion.descriptor_constants')
+        constants.__dict__['__builtins__'] = __builtins__
+        types.FunctionType(code_for('carbon.common.lib.const', '/carbon/common/lib/const.py'), constants.__dict__)()
+        source = code_for('eve.common.script.sys.eveCfg', '/eve/common/script/sys/eveCfg.py')
+        namespace = {'__name__': 'eve.common.script.sys.eveCfg', '__file__': source.co_filename,
+                     '__builtins__': __builtins__, 'const': constants}
+        for name in ('StackSize', 'Singleton'):
+            matches = [v for v in source.co_consts if type(v) is types.CodeType and v.co_name == name]
+            if len(matches) != 1:
+                raise ImportError('Ambiguous original descriptor getter: ' + name)
+            setattr(module, name, types.FunctionType(matches[0], namespace))
+        module.Descriptor, module.DomainError, module.constants = CompanionRowDescriptor, DescriptorDomainError, constants
+        module.complete = True
+    except BaseException:
+        module.error = sys.exc_info()
+        raise
+    return module
