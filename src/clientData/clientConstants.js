@@ -40,6 +40,11 @@ const DOGMA_STATIC_ATTRIBUTE_NAMES = Object.freeze([
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  dogmaStaticEffects: Object.freeze({
+    module: "dogma/const.pyj",
+    given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"])]),
+    names: Object.freeze(["effectHiPower", "effectLoPower", "effectMedPower", "effectSkillEffect", "dgmEffPassive", "dgmEffSystem"]),
+  }),
   // BaseDogmaStaticSvc.LoadAttributes79-147 and dogma.data's charge filter.
   dogmaStaticAttributes: Object.freeze({
     module: "dogma/const.pyj",
@@ -206,6 +211,13 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
 
   return {
     available,
+    dogmaStaticEffects: () => read("dogmaStaticEffects", values => {
+      const names = CONSTANTS.dogmaStaticEffects.names;
+      for (const name of names) {
+        if (!Object.hasOwn(values, name) || !Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not an integer constant.`);
+      }
+      return Object.freeze(Object.fromEntries(names.map(name => [name, values[name]])));
+    }),
     dogmaStaticAttributes: () => read("dogmaStaticAttributes", values => {
       for (const name of DOGMA_STATIC_ATTRIBUTE_NAMES) {
         if (!Object.hasOwn(values, name) || !Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not an integer constant.`);

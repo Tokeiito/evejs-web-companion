@@ -129,6 +129,9 @@ const TABLES = Object.freeze({
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
   // whole, so read by the rows asked for only (rows(), never table()).
   typeDogma: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", rowsOnly: true }),
+  // Full raw effect vectors in native OUTER loader order for static indexes;
+  // preserve empty vectors and their relation order, not only warmed types.
+  typeDogmaEffectsOrdered: Object.freeze({ loader: "typeDogmaLoader", resource: "res:/staticdata/typedogma.fsdbinary", attribute: "dogmaEffects", keyOrder: true }),
   // A type's materials (typematerials/data.py get_type_materials_by_id: typeMaterials.fsdbinary, its materials), which
   // inventoryUtil.GetComputedBasePrice prices a type by. Read by the rows asked for only.
   typeMaterials: Object.freeze({ loader: "typeMaterialsLoader", resource: "res:/staticdata/typematerials.fsdbinary", rowsOnly: true }),
@@ -140,6 +143,7 @@ const TABLES = Object.freeze({
   // modifierInfo: what the client's effect compiler makes a type's passive effects of (baseEffectCompiler
   // SetupDogmaEffects, dogma/effects/modifiers.py). Read by the rows asked for only.
   dogmaEffects: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", rowsOnly: true }),
+  dogmaEffectsOrdered: Object.freeze({ loader: "dogmaEffectsLoader", resource: "res:/staticdata/dogmaeffects.fsdbinary", keyOrder: true }),
 });
 
 // The ship tree's groups (eveCfg.LoadCfgData: fsdlite.EveStorage(data='infoBubbleElements', cache='infoBubbles.static'),

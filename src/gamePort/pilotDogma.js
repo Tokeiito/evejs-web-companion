@@ -303,11 +303,13 @@ function createPilotDogma({
   nativeTypeAttributes = null,
   nativeClientStaticTypeData = null,
   createNativeClientStaticAttributeData = null,
+  createNativeClientStaticEffectData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
 } = {}) {
   const clientStaticAttributeData = createNativeClientStaticAttributeData ? createNativeClientStaticAttributeData() : null;
+  const clientStaticEffectData = createNativeClientStaticEffectData ? createNativeClientStaticEffectData() : null;
   // One pilot's local lookup prerequisite. Creating this facade is not native
   // service Run/LoadTypeAttributes, service acquisition or IM publication.
   const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
@@ -1267,6 +1269,20 @@ function createPilotDogma({
     nativeClientStaticAttributeData: () => {
       if (!clientStaticAttributeData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static definition helpers");
       return clientStaticAttributeData;
+    },
+    initializeNativeClientStaticEffects: async world => {
+      if (!clientStaticEffectData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed effect helpers");
+      await clientStaticEffectData.prepareEffects();
+      return clientStaticEffectData.loadEffects(world);
+    },
+    initializeNativeClientStaticTypeEffects: async (world, run) => {
+      if (!clientStaticEffectData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed type-effect helpers");
+      await clientStaticEffectData.prepareTypeEffects();
+      return clientStaticEffectData.loadTypeEffects(world, run);
+    },
+    nativeClientStaticEffectData: () => {
+      if (!clientStaticEffectData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed effect helpers");
+      return clientStaticEffectData;
     },
     nativeClientStaticTypeLookup: () => {
       if (!clientStaticTypeLookup) throw new ClientDogmaStaticTypeDataNotReadyError();
