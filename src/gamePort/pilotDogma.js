@@ -307,6 +307,7 @@ function createPilotDogma({
   createNativeClientStaticGroupData = null,
   createNativeClientStaticLoadData = null,
   createNativeClientClock = null,
+  createNativeClientLog = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
@@ -316,6 +317,20 @@ function createPilotDogma({
   const clientStaticGroupData = createNativeClientStaticGroupData ? createNativeClientStaticGroupData() : null;
   const clientStaticLoadData = createNativeClientStaticLoadData ? createNativeClientStaticLoadData({ groupData: clientStaticGroupData, definitionData: clientStaticAttributeData, typeData: nativeClientStaticTypeData }) : null;
   let clientClock = null, pendingClientClock = null;
+  let clientLog = null, pendingClientLog = null;
+  function initializeNativeClientLog() {
+    if (clientLog !== null) return Promise.resolve(clientLog);
+    if (pendingClientLog !== null) return pendingClientLog;
+    if (typeof createNativeClientLog !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("native client log backend");
+    const reading = Promise.resolve().then(createNativeClientLog).then(log => {
+      if (!log || typeof log.domain?.createChannel !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("native client log backend");
+      clientLog = log;
+      return log;
+    });
+    pendingClientLog = reading;
+    const forget = () => { if (pendingClientLog === reading) pendingClientLog = null; };
+    reading.then(forget, forget); return reading;
+  }
   function initializeNativeClientClock() {
     if (clientClock !== null) return Promise.resolve(clientClock);
     if (pendingClientClock !== null) return pendingClientClock;
@@ -1314,6 +1329,13 @@ function createPilotDogma({
     // Explicit prerequisite only: no CoreService construction, server clock
     // synchronization, cached frame clock or simulation-time publication.
     initializeNativeClientClock,
+    // Backend prerequisite only. logmodule's GetChannel/ChannelWrapper and
+    // real prefs ownership must precede CoreService construction.
+    initializeNativeClientLog,
+    nativeClientLog: () => {
+      if (clientLog === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("native client log backend");
+      return clientLog;
+    },
     nativeClientClock: () => {
       if (clientClock === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("native Windows wallclock");
       return clientClock;

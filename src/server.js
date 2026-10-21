@@ -39,6 +39,7 @@ const { createClientDogmaStaticGroupData } = require("./gamePort/clientDogmaStat
 const { createClientDogmaStaticLoadData } = require("./gamePort/clientDogmaStaticLoadData");
 const { loadClientWindowsClockPrimitives } = require("./gamePort/clientWindowsClockPrimitives");
 const { createClientBlueWallclock } = require("./gamePort/clientBlueWallclock");
+const { createClientFileLogger } = require("./gamePort/clientFileLogger");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -256,6 +257,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
         language: () => clientWords.status().language,
       }),
       createNativeClientClock: async () => createClientBlueWallclock({ primitives: await loadClientWindowsClockPrimitives() }),
+      createNativeClientLog: () => createClientFileLogger({ directory: path.resolve(config.dataDir, "native-client-logs") }),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
         ...readers,
         constants: () => clientConstants.dogmaStaticLoadTail(),
