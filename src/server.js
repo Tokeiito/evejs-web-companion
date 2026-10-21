@@ -49,6 +49,7 @@ const { createClientTaskletTimer } = require("./gamePort/clientTaskletTimer");
 const { createClientSessionOwners } = require("./gamePort/clientEffectiveSessionContext");
 const { createClientStaticService } = require("./gamePort/clientStaticService");
 const { createClientInventoryHeader } = require("./gamePort/clientInventoryHeader");
+const { createClientGodmaHeaders } = require("./gamePort/clientGodmaHeaders");
 const { createClientNativeBuiltData } = require("./clientData/clientNativeBuiltData");
 const { createClientNativeLocalization } = require("./clientData/clientNativeLocalization");
 const { createMapLocationInfo } = require("./mapLocationInfo");
@@ -280,6 +281,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
       createNativeClientTaskletTimer: owners => createClientTaskletTimer({ provider: nativePreferencesProvider, ...owners }),
       prepareNativeClientSession: session => createClientSessionOwners({ provider: nativePreferencesProvider, session, clientRoot: config.clientRoot }),
       createNativeClientInventoryHeader: owners => createClientInventoryHeader({ provider: nativePreferencesProvider, ...owners }),
+      createNativeClientGodmaHeaders: owners => createClientGodmaHeaders({ provider: nativePreferencesProvider, ...owners }),
       createNativeClientStaticConstructor: owners => createClientStaticService({
         provider: nativePreferencesProvider, ...owners,
         constants: () => clientConstants.dogmaStaticEffects(),

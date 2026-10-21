@@ -1160,6 +1160,7 @@ function createGamePortPilots({
   createNativeClientTaskletTimer = null,
   createNativeClientStaticConstructor = null,
   createNativeClientInventoryHeader = null,
+  createNativeClientGodmaHeaders = null,
   createNativeClientPreferences = null,
   prepareNativeClientSession = null,
   nativeTypeNames = null,
@@ -1812,6 +1813,8 @@ function createGamePortPilots({
         createNativeClientTaskletTimer,
         createNativeClientStaticConstructor: typeof createNativeClientStaticConstructor === "function"
           ? owners => createNativeClientStaticConstructor({ ...owners, session, nativeSessionOwner: nativeSessionOwners.get(session) }) : null,
+        createNativeClientGodmaHeaders: typeof createNativeClientGodmaHeaders === "function"
+          ? async () => createNativeClientGodmaHeaders({ inventoryHeader: await entry.inventory.prepareItemHeader() }) : null,
         createNativeClientPreferences: nativeSessionOwners.has(session)
           ? () => nativeSessionOwners.get(session).preferences : createNativeClientPreferences,
         nativeTypeNames,
@@ -6593,6 +6596,7 @@ function createGamePortPilots({
     // Explicit prerequisite, shared with this pilot's EXISTING inventory.
     // Preparing it does not demand a remote header or construct a StateManager.
     prepareInventoryHeader: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).inventory.prepareItemHeader(),
+    prepareGodmaHeaders: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).dogma.initializeNativeGodmaHeaders(),
     chatConnection,
     globalConfigValues,
     chatSecret,

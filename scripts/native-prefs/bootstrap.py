@@ -1553,3 +1553,85 @@ def _create_inventory_header_owner(service_types):
     instance = cls()
     instance._invCache__itemhdr = None
     return instance
+
+
+def _create_godma_header_owner(service_types, inventory_header, protocol):
+    # Selected original constructor/fields/properties on the existing pilot's
+    # capability. No full Godma Run, StateManager or Blue heap type is supplied.
+    import types, dis
+    name = 'eve.client.script.environment.godma'
+    prefix = name.rpartition('.')[0].replace('.', '/')
+    source = zipimport.zipimporter(_archive + '/' + prefix).get_code(name)
+    if source is None or not source.co_filename.replace('\\', '/').endswith('/eve/client/script/environment/godma.py'):
+        raise ImportError('Not the installed Godma source')
+    def definition(code, name):
+        matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed Godma definition: ' + name)
+        return matches[0]
+    source = definition(source, 'Godma')
+    rows, cursor = [], 0
+    while cursor < len(source.co_code):
+        opcode = ord(source.co_code[cursor])
+        cursor += 1
+        argument = None
+        if opcode >= dis.HAVE_ARGUMENT:
+            argument = ord(source.co_code[cursor]) | ord(source.co_code[cursor + 1]) << 8
+            cursor += 2
+        if opcode == dis.EXTENDED_ARG:
+            raise ImportError('Unsupported Godma class instruction')
+        rows.append((dis.opname[opcode], argument))
+    def literal(name):
+        stores = [i for i, (op, arg) in enumerate(rows) if op == 'STORE_NAME' and source.co_names[arg] == name]
+        if len(stores) != 1:
+            raise ImportError('Ambiguous Godma class literal: ' + name)
+        end = stores[0]
+        op, arg = rows[end - 1]
+        if op == 'LOAD_CONST':
+            return source.co_consts[arg]
+        if op == 'BUILD_LIST':
+            operands = rows[end - 1 - arg:end - 1]
+            if len(operands) == arg and all(op == 'LOAD_CONST' for op, _ in operands):
+                return [source.co_consts[value] for _, value in operands]
+        raise ImportError('Godma metadata is not a closed literal: ' + name)
+    core = service_types.CoreService
+    if not isinstance(inventory_header, core) or inventory_header.__guid__ != 'svc.invCache':
+        raise TypeError('Godma headers require the same Core inventory header owner')
+    services = types.ModuleType('companion.godma_header_dependencies')
+    def get_service(name):
+        if name != 'invCache':
+            raise RuntimeError('Godma header dependency is unavailable: ' + name)
+        return inventory_header
+    services.GetService = get_service
+    construction = types.ModuleType('companion.godma_descriptor_construction')
+    construction.DBRowDescriptor = protocol.Descriptor
+    namespace = {'__name__': name, '__builtins__': __builtins__, 'sm': services,
+                 'blue': construction, 'const': protocol.constants}
+    attributes = {'__module__': 'companion.godma_headers'}
+    for name in ('__guid__', '__dependencies__', '__startupdependencies__'):
+        attributes[name] = literal(name)
+    for name in ('__init__', 'Initialize', 'ReleaseStateManager', 'OnSessionReset'):
+        attributes[name] = types.FunctionType(definition(source, name), namespace)
+    for name in ('itemrd', 'sublocrd', 'subloc_internalrd'):
+        attributes[name] = property(types.FunctionType(definition(source, name), namespace))
+    cls = type('CompanionGodmaHeaders', (core,), attributes)
+    namespace['Godma'] = cls  # Original __init__ uses this exact global in super.
+    instance = cls()
+    fields = {'itemrd': '_Godma__itemrd', 'sublocrd': '_Godma__sublocrd',
+              'subloc_internalrd': '_Godma__subloc_internalrd'}
+    def needs_remote(name):
+        if name not in fields:
+            raise KeyError(name)
+        # Only source descriptor state is preflighted. Its length/truth is a
+        # pure read; the untouched original property rechecks its current slot.
+        if name != 'itemrd' and getattr(instance, fields[name]):
+            return False
+        return instance._Godma__itemrd is None and inventory_header._invCache__itemhdr is None
+    def read_warm(name):
+        if needs_remote(name):
+            raise protocol.DomainError('Godma header requires real asynchronous inventory demand before native warm access')
+        return getattr(instance, name)
+    result = types.ModuleType('companion.godma_header_owner')
+    result.instance, result.needs_remote, result.read_warm = instance, needs_remote, read_warm
+    result.dependencies, result.construction = services, construction
+    return result

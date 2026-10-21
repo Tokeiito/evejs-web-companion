@@ -311,6 +311,7 @@ function createPilotDogma({
   createNativeClientLogModule = null,
   createNativeClientTaskletTimer = null,
   createNativeClientStaticConstructor = null,
+  createNativeClientGodmaHeaders = null,
   createNativeClientPreferences = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
@@ -326,6 +327,17 @@ function createPilotDogma({
   let clientTaskletTimer = null, pendingClientTaskletTimer = null;
   let clientStaticConstructor = null, pendingClientStaticConstructor = null;
   let clientPreferences = null, pendingClientPreferences = null;
+  let godmaHeaders = null, pendingGodmaHeaders = null;
+  function initializeNativeGodmaHeaders() {
+    if (godmaHeaders !== null) return Promise.resolve(godmaHeaders);
+    if (pendingGodmaHeaders !== null) return pendingGodmaHeaders;
+    if (typeof createNativeClientGodmaHeaders !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("original Godma header properties");
+    pendingGodmaHeaders = Promise.resolve().then(createNativeClientGodmaHeaders).then(owner => {
+      if (!owner?.instance || typeof owner.read !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("original Godma header owner");
+      godmaHeaders = owner; return owner;
+    });
+    return pendingGodmaHeaders; // Preserve a failed native constructor prefix.
+  }
   function initializeNativeClientPreferences() {
     if (clientPreferences !== null) return Promise.resolve(clientPreferences);
     if (pendingClientPreferences !== null) return pendingClientPreferences;
@@ -1403,6 +1415,7 @@ function createPilotDogma({
       return clientTaskletTimer;
     },
     initializeNativeClientStaticConstructor,
+    initializeNativeGodmaHeaders,
     nativeClientStaticConstructor: () => {
       if (clientStaticConstructor === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static constructor types");
       return clientStaticConstructor;
