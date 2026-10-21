@@ -89,6 +89,7 @@
   const skillsRequired = flow.skillsRequired;
   // svelte-ignore state_referenced_locally
   const shipNameAsked = flow.shipNameAsked;
+  const inventoryPasswordAsked = flow.inventoryPasswordAsked;
   // svelte-ignore state_referenced_locally
   const skillBooksAsked = flow.skillBooksAsked;
   // svelte-ignore state_referenced_locally
@@ -1053,6 +1054,20 @@
         {/key}
         {#if ask.selectionError}<span class="ceo-choice-error" role="status">{ask.selectionError}</span>{/if}
       {/if}
+    </div>
+  </div>
+{/if}
+
+{#if $inventoryPasswordAsked !== null}
+  {@const ask = $inventoryPasswordAsked}
+  {@const caption = ask.type === 1 ? wordOf("UI/Inventory/ItemActions/AccessPasswordRequiredCaption", "Access Password Required") : wordOf("UI/Inventory/ItemActions/ConfigurationPasswordRequiredCaption", "Configuration Password Required")}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" data-dialog="InventoryPassword" data-in-front={inFront}>
+      {#key ask.n}
+        <NamePopup {caption} label={ask.type === 1 ? wordOf("UI/Inventory/ItemActions/PleaseEnterAccessPassword", "Please enter access password") : wordOf("UI/Inventory/ItemActions/PleaseEnterConfigurationPassword", "Please enter configuration password")} password={true} maxLength={16}
+          refusal={wordOf("UI/Common/PleaseTypeSomething", "Please type something.")} okWord={wordOf("UI/Common/Buttons/OK", "OK")} cancelWord={wordOf("UI/Common/Buttons/Cancel", "Cancel")}
+          onok={text => flow.answerInventoryPassword(ask.n, text)} oncancel={() => flow.answerInventoryPassword(ask.n, null)} />
+      {/key}
     </div>
   </div>
 {/if}

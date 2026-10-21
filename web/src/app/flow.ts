@@ -219,6 +219,7 @@ import {
 import { shownSecurity } from "../bridge/systemSecurity.ts";
 import { duelChallengeOf, startDuelChallenge, respondToDuelChallenge, type DuelInvitation } from "../bridge/duel.ts";
 import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
+import { inventoryPasswords, inventoryPasswordText, type InventoryPasswordType } from "../bridge/inventoryPasswords.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
@@ -1160,6 +1161,12 @@ export interface ShipNameAsk {
   readonly currentName: string;
   /** Whether the window offers Do Not Ask Again (show_suppress: on an assembly, not on Change Name). */
   readonly suppress: boolean;
+}
+
+/** NamePopup's inventory password request; entered text is never put in a signal. */
+export interface InventoryPasswordAsk {
+  readonly n: number;
+  readonly type: InventoryPasswordType;
 }
 
 /** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
@@ -3456,6 +3463,8 @@ export interface AppFlow {
   readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
   /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
   answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
+  readonly inventoryPasswordAsked: ReadableSignal<InventoryPasswordAsk | null>;
+  answerInventoryPassword(n: number, text: string | null): void;
   /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
   assembleShip(shipID: number, board: boolean): Promise<void>;
   /** An assembled ship of the pilot's renamed, as the client's Change Name does: its name asked, then named. */
@@ -4050,20 +4059,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // one has said: then the browser's own is all there is. (It is the server's clock, whichever pilot's answer
   // said it: it is not forgotten when another pilot is chosen. Through the web gateway it is the BFF's own.)
   let serverClockAheadMs: number | null = null;
-  const bridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
+  const rawBridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
   const serverNow = (): number => Date.now() + (serverClockAheadMs ?? 0);
   // A write the page makes for its pilot, the same way, with its meaning it said (api.bridgeDo).
-  const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
+  const rawBridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
-  const inventoryMoves = createCachedInventoryMoves(() => {
+  let inventoryPasswordEpoch = 0, inventoryPasswordSwitching = false;
+  function inventoryPasswordScope() {
     const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
-    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => current, captureNotificationSink: () => sink };
-    return {
+    const epoch = inventoryPasswordEpoch, characterID = store.station.get().online?.characterID ?? null;
+    const passwordCurrent = () => {
+      current();
+      if (sessionClosing || inventoryPasswordSwitching || epoch !== inventoryPasswordEpoch || characterID !== (store.station.get().online?.characterID ?? null))
+        throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This inventory request belongs to a retired pilot session.", 0);
+    };
+    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => passwordCurrent, captureNotificationSink: () => sink };
+    const passwords = inventoryPasswords({
       ask: api.bridgeAsk(scoped, now => { serverClockAheadMs = now - Date.now(); }),
-      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }), current,
+      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      current: passwordCurrent, prompt: type => askInventoryPassword(type, passwordCurrent),
+    });
+    return { current: passwordCurrent, options: scoped, ...passwords };
+  }
+  const bridgeAsk: Ask = (service, method, args, kwargs, of) => service === "invbroker" && of != null
+    ? inventoryPasswordScope().ask(service, method, args, kwargs, of) : rawBridgeAsk(service, method, args, kwargs, of);
+  const bridgeDo: Ask = (service, method, args, kwargs, of) => service === "invbroker" && of != null
+    ? inventoryPasswordScope().act(service, method, args, kwargs, of) : rawBridgeDo(service, method, args, kwargs, of);
+  const inventoryMoves = createCachedInventoryMoves(() => {
+    const passwordScope = inventoryPasswordScope(), current = passwordScope.current, scoped = passwordScope.options;
+    return {
+      ask: passwordScope.ask, act: passwordScope.act, current,
       activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
       dockedAt: dockedNow(),
       structureID: store.station.get().online?.structureID ?? null,
@@ -6428,7 +6456,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ]);
   /** And CannotAddToQtyLimit (275 to 279), with what may yet be added: the refusals noRoomForAll answers. */
   const ONE_STACK_ANSWERED: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
-  /** invControllers.StackAll (393 to 407): a container's password asked for. */
+  /** invControllers.StackAll393-407: the distinct legacy PermissionDenied branch (not the SC password proxy). */
   const STACK_KEPT: ReadonlySet<string> = new Set(["PermissionDenied"]);
 
   /** Used and capacity of a place as the page last read them; null where it has none, or has not read it. */
@@ -6764,6 +6792,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "inventory/action-error", message: null });
       if (outcome === null) return;
     } catch (error) {
+      if (failureCode(error) === "SESSION_REQUEST_RETIRED") throw error;
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -6844,8 +6873,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
-      reads = await api.openContainer(containerID, callOptions, knownTypeID);
+      const scope = inventoryPasswordScope();
+      reads = await scope.retry(() => api.openContainer(containerID, scope.options, knownTypeID), "List", [], containerID);
     } catch (error) {
+      if (failureCode(error) === "SESSION_REQUEST_RETIRED") throw error;
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -10032,6 +10063,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client's ship naming window (shipNameDialog.py, prompt_rename_ship), one at a time; a newer one ends it.
   const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
+  const inventoryPasswordAskedSignal = createSignal<InventoryPasswordAsk | null>(null);
+  const inventoryPasswordWaiters = new Set<(text: string | null) => void>();
+  let inventoryPasswordAnswer: ((text: string | null) => void) | null = null;
+
+  function retireInventoryPasswords(): void {
+    inventoryPasswordEpoch++;
+    inventoryPasswordAskedSignal.set(null);
+    inventoryPasswordAnswer = null;
+    for (const finish of inventoryPasswordWaiters) finish(null);
+  }
+
+  async function askInventoryPassword(type: InventoryPasswordType, current: () => void): Promise<string | null> {
+    current();
+    await wordsNow(["UI/Inventory/ItemActions/AccessPasswordRequiredCaption", "UI/Inventory/ItemActions/PleaseEnterAccessPassword",
+      "UI/Inventory/ItemActions/ConfigurationPasswordRequiredCaption", "UI/Inventory/ItemActions/PleaseEnterConfigurationPassword",
+      "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel", "UI/Common/PleaseTypeSomething"]);
+    current();
+    return new Promise(resolve => {
+      const finish = (text: string | null) => { inventoryPasswordWaiters.delete(finish); resolve(text); };
+      inventoryPasswordWaiters.add(finish);
+      // Window.Open3186/ShowDialog: reuse setNewName's field/caption; the most recent modal waiter receives Confirm.
+      // Older overlapping waiters remain pending until this pilot retires, rather than inventing a queue or fanout.
+      inventoryPasswordAnswer = finish;
+      if (inventoryPasswordAskedSignal.get() === null) inventoryPasswordAskedSignal.set({ n: ++dialogsSaidCount, type });
+    });
+  }
+
+  function answerInventoryPassword(n: number, text: string | null): void {
+    if (inventoryPasswordAskedSignal.get()?.n !== n || inventoryPasswordAnswer === null) return;
+    const accepted = text === null ? null : inventoryPasswordText(text);
+    if (text !== null && accepted === null) return;
+    const finish = inventoryPasswordAnswer;
+    inventoryPasswordAnswer = null;
+    inventoryPasswordAskedSignal.set(null);
+    finish(accepted);
+  }
   // The client's books window (MissingSkillbooksWnd), one at a time; and what it has bought, which its end answers.
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
   const gatewayNoticesSignal = createSignal<GatewayNotice | null>(null);
@@ -23493,6 +23560,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function beginSessionClose(): void {
     if (sessionClosing) throw new Error("This pilot session is already being released.");
     sessionClosing = true;
+    retireInventoryPasswords();
     closeMedalDesigner();
     sessionCloseGeneration += 1;
     // Stop producers before attempting release. A refused or ambiguous release
@@ -28733,6 +28801,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deleteFitting,
     deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
+    inventoryPasswordAsked: readonlySignal(inventoryPasswordAskedSignal),
+    answerInventoryPassword,
     answerShipName,
     setDestination,
     addWaypoint,
@@ -28811,9 +28881,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async selectCharacter(characterID) {
       if (sessionClosing) throw new Error("This pilot session is being released.");
+      retireInventoryPasswords();
+      inventoryPasswordSwitching = true;
       // A refused switch leaves the previous pilot held. Keep its recovery
       // proof and live state until the server actually selects the new one.
-      const result = await api.selectCharacter(characterID, callOptions);
+      const result = await (async () => {
+        try { return await api.selectCharacter(characterID, callOptions); }
+        finally { inventoryPasswordSwitching = false; }
+      })();
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
       corporationWealthReads.forget();

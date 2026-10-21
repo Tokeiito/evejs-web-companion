@@ -78,7 +78,14 @@ def walk(value, depth):
     if isinstance(value, (list, tuple)) or hasattr(value, '__iter__') or hasattr(value, '__getitem__') and hasattr(value, '__len__'):
         return '[' + ','.join([walk(item, depth + 1) for item in value]) + ']'
     parts = []
-    for name in dir(value):
+    names = dir(value)
+    if LOADER == 'dogmaAttributesLoader' and hasattr(value, 'attributeID'):
+        # The installed cFSD accessor returns None for these optional fields
+        # even when dir() omits them. Native factory/cap selection reads them
+        # directly. Preserve the ACTUAL getter value, not a fabricated False.
+        # cdxdefinitionaccessagent1: all2855 rows, zero direct getter failures.
+        names = sorted(set(names) | set(('chargeRechargeTimeID', 'maxAttributeID', 'minAttributeID')))
+    for name in names:
         if name.startswith('_'):
             continue
         try:

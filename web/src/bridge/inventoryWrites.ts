@@ -208,15 +208,16 @@ export type StackPlace = keyof typeof STACK_FLAGS
   | { readonly kind: "container"; readonly itemID: number };
 
 /**
- * First supported StationContainer scope: an assembled ordinary cargo container (group12) directly in the docked
- * pilot's hangar or active cargo. StationContainer.oneWay1559-1574 is falsey for these personally owned rows.
- * Corporate/nested/space/secure containers need their own controller confirmation/password handling before exposure.
+ * Supported StationContainer scope: assembled ordinary cargo containers (group12) and station containers
+ * (17366/17367/17368), directly in the docked pilot's hangar or active cargo. StationContainer.oneWay1559-1574
+ * is falsey for these personally owned rows; the raw inventory password proxy stays below the writer guards.
+ * Corporate/nested/space containers need their own controller handling before exposure.
  */
 export function ordinaryContainerStackPlace(inventory: InventoryState, characterID: number | null): Extract<StackPlace, { kind: "container" }> | null {
   const open = inventory.container;
   if (!open || open.error || characterID === null) return null;
   const row = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === open.itemID);
-  if (!row || row.groupID !== 12 || !row.singleton || row.ownerID !== characterID) return null;
+  if (!row || (row.groupID !== 12 && ![17366, 17367, 17368].includes(row.typeID)) || !row.singleton || row.ownerID !== characterID) return null;
   const dockedAt = inventory.structureID ?? inventory.stationID;
   if (dockedAt === null) return null;
   const atHangar = row.locationID === dockedAt && row.flagID === 4;

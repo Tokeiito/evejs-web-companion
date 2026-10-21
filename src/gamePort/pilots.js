@@ -1144,6 +1144,13 @@ function createGamePortPilots({
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
+  // Original installed type-effect relations/definitions, distinct from the
+  // server SDE summaries used by the existing fitting projection.
+  nativeEffectData = null,
+  nativeAttributeData = null,
+  nativeTypeAttributes = null,
+  nativeTypeNames = null,
+  onNumericChargeError = () => {},
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
   // consume); none read where it is not given.
   gatewayNotices = null,
@@ -1482,38 +1489,53 @@ function createGamePortPilots({
   }
 
   /**
-   * godma.UpdateItem, for a module the server says is in a slot of the ship the pilot is in: the client asks what
-   * dogma has of it, ItemGetInfo(itemID), and holds the answer. With no answer the module is held as it was.
-   */
-  function askAbout(entry, item) {
-    if (item.locationID !== attribute(entry, "shipid")) return;
-    entry.itemWork = entry.itemWork.then(async () => {
-      try {
-        entry.dogma.updateItem(item.itemID, await ownDogmaCall(entry, "ItemGetInfo", [item.itemID]));
-      } catch {
-        // The client's item change carries on to its dogma location whatever came of this.
-      }
-    });
-  }
-
-  /**
    * clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule: a module newly fitted to the ship the pilot is
    * in is put online by the client itself, where its type can be online at all. The effect is running from then
    * and the server is told, SetModuleOnline(the ship, the module). A server that has it online already says so
    * (EffectAlreadyActive2), and that is no failure; refused for any other reason, or not answered, the effect is
    * not running after all. It comes after godma's asking, as it does on the client.
    */
-  function onlineIfApplicable(entry, item) {
+  async function onlineIfApplicable(entry, item) {
     if (item.locationID !== attribute(entry, "shipid")) return;
     if (!typeEffects(item.typeID).some((effect) => effect.effectID === EFFECT_ONLINE)) return;
-    entry.itemWork = entry.itemWork.then(async () => {
-      entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
+    entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
+    try {
+      await ownDogmaCall(entry, "SetModuleOnline", [item.locationID, item.itemID]);
+    } catch (error) {
+      if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
+    }
+  }
+
+  /** invCache229-307 holds its per-item lock across cache, godma's demanded
+   * RPC and IM-finally work. Different items do not share that lock. Keep the
+   * aggregate only as the existing reader's completion barrier, not a global
+   * inventory lock or a native tasklet scheduler. */
+  function inventoryItemChanged(entry, row, change) {
+    const itemID = rowFields(row)?.itemID;
+    const lockKey = positive(itemID) ?? itemID;
+    const run = async () => {
       try {
-        await ownDogmaCall(entry, "SetModuleOnline", [item.locationID, item.itemID]);
-      } catch (error) {
-        if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
+        entry.inventory.itemChanged(row, change);
+      } finally {
+        await entry.dogma.processItemChange(row, change);
       }
-    });
+    };
+    const previous = entry.inventoryItemWork.get(lockKey);
+    const work = previous ? previous.then(run) : run();
+    // Event-handler failures do not reject an unrelated window read. The
+    // native service dispatch also releases its lock after a handler failure.
+    const settled = work.catch(() => {});
+    entry.inventoryItemWork.set(lockKey, settled);
+    settled.then(() => { if (entry.inventoryItemWork.get(lockKey) === settled) entry.inventoryItemWork.delete(lockKey); });
+    entry.itemWork = Promise.all([entry.itemWork, settled]).then(() => {});
+  }
+
+  // Local static-data work may finish asynchronously in this host. Keep raw
+  // socket dispatch free to receive replies; readers wait on its completion.
+  function keepDogmaWork(entry, work) {
+    if (!work || typeof work.then !== "function") return;
+    const settled = work.catch(() => {});
+    entry.itemWork = Promise.all([entry.itemWork, settled]).then(() => {});
   }
 
   /**
@@ -1747,7 +1769,12 @@ function createGamePortPilots({
         characterID,
         now: () => filetime(clock.simTime()),
         effectCategory,
-        onSlotted: (item) => askAbout(entry, item),
+        nativeEffectData,
+        nativeAttributeData,
+        nativeTypeAttributes,
+        nativeTypeNames,
+        onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
+        fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
         onFitted: (item) => onlineIfApplicable(entry, item),
         // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
         // inventory cache takes as it takes the server's.
@@ -1756,10 +1783,23 @@ function createGamePortPilots({
           entry.inventory.itemChanged(row, change);
         },
         typeFacts,
+        registeredLocations: () => entry.godmaLocations.keys(),
+        sessionState: () => ({
+          charid: entry.characterID, shipid: attribute(entry, "shipid"),
+          structureid: attribute(entry, "structureid"), solarsystemid: attribute(entry, "solarsystemid"),
+          locationid: attribute(entry, "locationid"),
+          controllingStructure: attribute(entry, "structureid") !== null && attribute(entry, "shipid") === attribute(entry, "structureid"),
+        }),
+        onMetadataUnregistered: (itemID) => entry.godmaLocations.delete(itemID),
       }),
       dogmaLoaded: null,
-      /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
+      /** Only godma ProcessAllInfo's structure/ship/character guards; not the full native invByID/starbase registry.
+       * The inventory cache owns each binding. These references keep its key and godma's public location only. */
+      godmaLocations: new Map(),
+      godmaPrimeVersion: 0,
+      /** Completion barrier for independent per-item notice/refresh/online work. */
       itemWork: Promise.resolve(),
+      inventoryItemWork: new Map(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
       /** The pilot's fleet as the client's fleet service keeps it (pilotFleet.js): read once, kept right by the server's notices. */
@@ -1955,7 +1995,7 @@ function createGamePortPilots({
       }
       entry.clock.feed(notification);
       if (entry.space) entry.space.feed(notification);
-      entry.dogma.feed(notification);
+      if (!ITEM_NOTICES.has(notification.method)) keepDogmaWork(entry, entry.dogma.feed(notification));
       entry.scanner.feed(notification);
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
@@ -2030,9 +2070,12 @@ function createGamePortPilots({
         if (itemID !== null) entry.locations.set(itemID, textOf(row[1]));
       }
       // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
-      if (notification.method === "OnItemChange") entry.inventory.itemChanged((notification.args ?? [])[0], (notification.args ?? [])[1]);
-      if (notification.method === "OnItemsChanged") {
-        for (const row of itemsOf((notification.args ?? [])[0])) entry.inventory.itemChanged(row, (notification.args ?? [])[1]);
+      if (ITEM_NOTICES.has(notification.method)) {
+        // Each item's lock spans cache -> godma RPC -> IM-finally. The
+        // original server notice is still recorded below without alteration.
+        for (const row of notification.method === "OnItemsChanged" ? itemsOf(notification.args?.[0]) : [notification.args?.[0]]) {
+          inventoryItemChanged(entry, row, notification.args?.[1]);
+        }
       }
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
@@ -2061,6 +2104,7 @@ function createGamePortPilots({
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
+        entry.godmaPrimeVersion += 1;
         entry.listings.forget();
       }
       // invCache.ProcessSessionChange (143 to 168) and OnSessionChanged (173 to 181): the corporation's containers let
@@ -2463,6 +2507,52 @@ function createGamePortPilots({
       return { service, method, result: wireToBridgeJson(row === undefined ? null : row), notifications: drain(entry) };
     }
     assertAllowed(service, method);
+    if (service === "invCache" && method === "FetchItem") {
+      // Native CheckCanFit1143-1150 consults its source cache, with no remote fallback.
+      // This page seam currently supports exact numeric items/sources; tuple charge writers are separate.
+      const idOf = value => value && typeof value === "object" && !Array.isArray(value) &&
+        value.type === "long" && typeof value.value === "string" && /^\d+$/.test(value.value)
+        ? positive(BigInt(value.value)) : positive(value);
+      const itemID = Array.isArray(args) && args.length === 2 ? idOf(args[0]) : null;
+      const sourceID = Array.isArray(args) && args.length === 2 ? idOf(args[1]) : null;
+      if (!itemID || !sourceID || kwargs !== null &&
+          (typeof kwargs !== "object" || Array.isArray(kwargs) || Object.keys(kwargs).length !== 0)) {
+        throw fail("CALL_INVALID", "FetchItem requires exact numeric item and source IDs, with no keywords.");
+      }
+      ledger.note(service, method, shape(service, method, args, kwargs, contextFor(entry)));
+      return { service, method, result: wireToBridgeJson(entry.inventory.fetchItem(itemID, sourceID)), notifications: drain(entry) };
+    }
+    if (service === "invCache" && method === "InvalidateLocationCache") {
+      // Client-local invCache596-605, not a game service or a moniker RPC.
+      // Support current numeric locations and exact native (location, owner)
+      // keys; notably a station ID does not alias (containerHangar, None).
+      const numericID = (value) => {
+        if (value && typeof value === "object" && !Array.isArray(value) &&
+            value.type === "long" && typeof value.value === "string" && /^\d+$/.test(value.value)) {
+          return positive(BigInt(value.value));
+        }
+        return positive(value);
+      };
+      const target = Array.isArray(args) && args.length === 1 ? args[0] : undefined;
+      const tuple = Array.isArray(target) ? target
+        : target && typeof target === "object" && target.type === "tuple" && Array.isArray(target.items) ? target.items : null;
+      const location = numericID(tuple ? tuple[0] : target);
+      const owner = tuple && tuple[1] !== null ? numericID(tuple[1]) : null;
+      if (!location || tuple && (tuple.length !== 2 || tuple[1] !== null && !owner) ||
+          kwargs !== null && (typeof kwargs !== "object" || Array.isArray(kwargs) || Object.keys(kwargs).length !== 0)) {
+        throw fail("CALL_INVALID", "InvalidateLocationCache requires one numeric location or (location, owner-or-None) key, with no keywords.");
+      }
+      ledger.note(service, method, shape(service, method, args, kwargs, contextFor(entry)));
+      const key = entry.inventory.keyOf(location, owner);
+      if (entry.inventory.invalidateLocation(key)) {
+        // Every local alias of this guard retires. Generic numeric-of callers
+        // hit boundCall's existing handle reaper and bind the replacement once.
+        for (const [handle, object] of entry.bound) {
+          if (object.service === "invbroker" && object.container === key) entry.bound.delete(handle);
+        }
+      }
+      return { service, method, result: null, notifications: drain(entry) };
+    }
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
@@ -4334,9 +4424,7 @@ function createGamePortPilots({
       if (place.shipID === null) return;
       const item = entry.dogma.item(place.shipID);
       if (!item || positive(item.categoryID) !== CATEGORY_SHIP) return;
-      // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
-      ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-      const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
+      const shipInventory = await cachedInventoryObject(entry, "GetInventoryFromId", [place.shipID, 0]);
       ledger.note("invbroker", "GetAvailableTurretSlots", shape("invbroker", "GetAvailableTurretSlots", [], null, contextFor(entry)));
       await entry.session.callBound(shipInventory, "GetAvailableTurretSlots", [], null);
     });
@@ -4582,20 +4670,61 @@ function createGamePortPilots({
 
   /** The asking itself. True where godma is primed for the ship in the place; false where dogma could not be asked; fails where the session is lost. */
   async function primeGodma(entry, place, loadedFor) {
+    const version = ++entry.godmaPrimeVersion;
+    const current = () => !entry.ended && entry.godmaPrimeVersion === version && primedFor(entry, whereabouts(entry)) === loadedFor;
     try {
-      // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
-      ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
-      // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character
-      // is held from the priming that brought it; the ship is let go at every change that primes again
-      // (ProcessSessionChange, 1154 to 1170: `del self.invByID[session.shipid]`), and so is the structure, which is
-      // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
-      // where the session has none. So a session's first priming is (True, True, None), and each after it
-      // (False, True, None); in a structure the third is True.
-      const asking = [!entry.dogma.holdsCharacter(), place.shipID ? true : null, place.structureID ? true : null];
-      const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
-      // What godma let go before it asked: every inventory but the character's.
-      entry.dogma.purge();
-      entry.dogma.loadAllInfo(allInfo);
+      entry.dogma.beginPrime();
+      let allInfo;
+      try {
+        await entry.dogma.initializeNativeAttributes();
+        await entry.dogma.initializeNativeTypeNames();
+        // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
+        ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
+        // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character
+        // is held from the priming that brought it; the ship is let go at every change that primes again
+        // (ProcessSessionChange, 1154 to 1170: `del self.invByID[session.shipid]`), and so is the structure, which is
+        // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
+        // where the session has none. So a session's first priming is (True, True, None), and each after it
+        // (False, True, None); in a structure the third is True.
+        const asking = [!entry.godmaLocations.has(entry.characterID), place.shipID ? true : null, place.structureID ? true : null];
+        allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
+        if (!current()) return false;
+        // What godma let go before it asked: every inventory but the character's.
+        entry.dogma.purge({ keepShipID: place.shipID });
+        // This follows the existing managed purge scope only. Native invByID also
+        // has solar-system/starbase lifetimes which are not modeled by this registry.
+        for (const itemID of entry.godmaLocations.keys()) if (itemID !== entry.characterID) entry.godmaLocations.delete(itemID);
+        await entry.dogma.processAllInfo(allInfo, {
+          shipID: place.shipID,
+          structureID: place.structureID,
+          solarSystemID: attribute(entry, "solarsystemid"),
+          stationID: place.stationID,
+          primeLocation: async (stage, updateRows) => {
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            const kept = entry.godmaLocations.get(stage.itemID);
+            if (kept && !stage.force) {
+              kept.locationID = stage.locationID;
+              return;
+            }
+            // Original PrimeLocation updates godma first, then passively binds.
+            // allInfo does not populate cachedItems, listed or backing self/type.
+            await updateRows();
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            await cachedInventoryObject(entry, "GetInventoryFromId", [stage.itemID, 1]);
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            entry.godmaLocations.set(stage.itemID, {
+              container: entry.inventory.keyOf(stage.itemID, null),
+              locationID: stage.locationID,
+            });
+          },
+        });
+        if (!current()) return false;
+      } finally {
+        // Native Prime clears its flag even on failure; only success reaches
+        // the channel sends below. Retired managed bodies also skip release.
+        entry.dogma.finishPrimeBody();
+      }
+      await entry.dogma.releasePrimeReceivers();
       entry.allInfo = allInfo;
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
@@ -4650,7 +4779,7 @@ function createGamePortPilots({
       // warfare's and the jams' (OnEwarStart and OnEwarEnd for tactical, OnJamStart and OnJamEnd for godma and shipUI,
       // which Tranquility sends this way) are handed on to the page so.
       entry.space.park.onMultiEvent = (messages) => {
-        entry.dogma.multiEvent(messages);
+        keepDogmaWork(entry, entry.dogma.multiEvent(messages));
         if (!sessions.has(entry.handle)) return;
         for (const pair of itemsOf(messages)) {
           const event = itemsOf(Array.isArray(pair) ? pair[0] : null);
@@ -5645,6 +5774,26 @@ function createGamePortPilots({
     return answeredObject(session, service, await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  /** One invCache guard per key, whether requested by a page or godma/fitting.
+   * Register the pending bind without yielding first so concurrent callers share it.
+   * The existing inventory manager and pilotInventory own binding lifetimes. */
+  async function cachedInventoryObject(entry, method, args = [], kwargs = null) {
+    const container = inventoryContainerOf(entry, method, args);
+    // A failed pending bind resolves to null for waiters. As in bindObject's
+    // previous path, a waiter then asks again; only the initiator gets its error.
+    for (let pending = container === null ? null : entry.inventory.boundObject(container); pending;
+      pending = entry.inventory.boundObject(container)) {
+      const held = await pending;
+      if (held) return held;
+    }
+    ledger.note("invbroker", method, BOUND_AS_THE_CLIENT_BINDS);
+    const making = run(entry, "invbroker", method, () => bindRetail(entry, "invbroker", method, args, kwargs));
+    if (container !== null) entry.inventory.binding(container, making);
+    const objectID = await making;
+    if (!objectID) throw fail("BOUND_NO_OBJECT", `invbroker.${method} did not return a bound object.`);
+    return objectID;
+  }
+
   /** idCheckers.IsNPC(session.corpid): whether the pilot's corporation is an NPC one. */
   function inNpcCorporation(entry) {
     const corporationID = attribute(entry, "corpid");
@@ -6126,6 +6275,12 @@ function createGamePortPilots({
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    if (service === "invCache" && method === "FetchItem") {
+      throw fail("CALL_INVALID", "FetchItem is client-local and cannot bind a server object.");
+    }
+    if (service === "invCache" && method === "InvalidateLocationCache") {
+      throw fail("CALL_INVALID", "InvalidateLocationCache is client-local and cannot bind a server object.");
+    }
     if (service === "trademgr" && method === "MachoBindObject") {
       const object = entry.trades.get(Array.isArray(args) ? args[0] : null);
       if (!object) throw fail("CALL_REFUSED", "This pilot has not received that trade session.");
@@ -6139,12 +6294,6 @@ function createGamePortPilots({
     // invCache.GetInventory and GetInventoryFromId: a container already held is the one given, and nothing is asked
     // (GetInventoryFromId 553 to 556, GetInventory 527 to 531); one being bound is waited for, and given.
     const container = service === "invbroker" ? inventoryContainerOf(entry, method, Array.isArray(args) ? args : []) : null;
-    const heldObject = container === null ? null : await (entry.inventory.boundObject(container) ?? null);
-    if (heldObject) {
-      const handle = randomBytes(24).toString("base64url");
-      entry.bound.set(handle, { objectID: heldObject, service, container });
-      return { boundHandle: handle, service, method, notifications: drain(entry) };
-    }
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
       // nothing is sent until it is called. Nor is anything counted: its bind is, as the session sends it (noteSent).
@@ -6161,13 +6310,14 @@ function createGamePortPilots({
       entry.bound.set(made, own ?? { objectID: null, service, params });
       return { boundHandle: made, service, method, notifications: drain(entry) };
     }
-    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     let objectID;
     try {
-      const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
-      // The container is being bound: held once it is, and given meanwhile to whoever asks for it (pilotInventory.js).
-      if (container !== null) entry.inventory.binding(container, making);
-      objectID = await making;
+      if (service === "invbroker" && (method === "GetInventory" || method === "GetInventoryFromId")) {
+        objectID = await cachedInventoryObject(entry, method, Array.isArray(args) ? args : [], kwargs);
+      } else {
+        ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
+        objectID = await run(entry, service, method, () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      }
     } catch (error) {
       // The session's own word for a bind the server answered without an object.
       if (error.code === "CALL_FAILED" && / did not return a bound object\.| could not say where its object lives\./.test(error.message)) objectID = null;
@@ -6230,9 +6380,7 @@ function createGamePortPilots({
       // which the location's manager is asked for. Where the call comes on the manager's handle, the ship's inventory
       // is had first; where it comes on the ship's own inventory (the page's call), it goes there as it is.
       if (service === "invbroker" && method === "FitFitting" && object.params !== undefined) {
-        // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
-        ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-        const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
+        const shipInventory = await cachedInventoryObject(entry, "GetInventoryFromId", [form.args[0], 0]);
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
