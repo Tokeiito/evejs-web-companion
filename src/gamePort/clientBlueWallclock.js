@@ -9,6 +9,7 @@ const { ClientDogmaConstructorPrimitiveNotReadyError } = require("./clientDogmaC
 const MIN_TIME = -(1n << 63n), MAX_TIME = (1n << 63n) - 1n;
 const MIN_DOUBLE_TIME = -9223372036854775808, MAX_DOUBLE_TIME = 9223372036854775808;
 const notReady = part => new ClientDogmaConstructorPrimitiveNotReadyError(part);
+const primitiveOwners = new WeakMap();
 
 function time(value, part) {
   if (typeof value !== "bigint" || value < MIN_TIME || value > MAX_TIME) throw notReady(`signed64 ${part}`);
@@ -118,10 +119,19 @@ function createClientBlueWallclock({ primitives } = {}) {
   }
 
   rebaseWallclock();
-  return Object.freeze({
+  const clock = Object.freeze({
     getWallclockTimeNow: () => enter(() => add(utcAdjustment, wallclock())),
     rebaseWallclock,
   });
+  primitiveOwners.set(clock, primitives);
+  return clock;
 }
 
-module.exports = { createClientBlueWallclock };
+// Other native producers must share this exact client's QPC owner. No second
+// clock, adaptive-UTC substitute or sampler inferred from a foreign facade.
+function clientBlueWallclockPrimitives(clock) {
+  const primitives = primitiveOwners.get(clock);
+  if (!primitives) throw notReady("owned native Windows clock primitives");
+  return primitives;
+}
+module.exports = { createClientBlueWallclock, clientBlueWallclockPrimitives };

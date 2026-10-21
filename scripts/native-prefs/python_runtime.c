@@ -12,6 +12,7 @@
 #include <math.h>
 #include "atomic_files.h"
 #include "log_backend.h"
+#include "tasklet_timer.h"
 
 typedef struct _object PyObject;
 typedef intptr_t Py_ssize_t;
@@ -338,6 +339,7 @@ static int bind_api(napi_env env, HMODULE dll) {
   EXC(exc_windows, "PyExc_WindowsError")
 #undef EXC
   if (!prefs_log_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 logging C API export missing."); return 0; }
+  if (!prefs_timer_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 tasklet timer C API export missing."); return 0; }
   return 1;
 }
 static napi_value initialize(napi_env env, napi_callback_info info) {
@@ -388,6 +390,11 @@ static napi_value wallclock_backend(napi_env env, napi_callback_info info) {
   napi_value argv[1]; Scope scope;
   if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
   return result(env, &scope, prefs_wallclock_create(env, argv[0]));
+}
+static napi_value tasklet_timer_backend(napi_env env, napi_callback_info info) {
+  napi_value argv[1]; Scope scope;
+  if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
+  return result(env, &scope, prefs_timer_create(env, argv[0]));
 }
 static napi_value get_global(napi_env env, napi_callback_info info) {
   napi_value argv[1]; Scope scope; PyObject *name, *answer;
@@ -548,6 +555,7 @@ static napi_value init(napi_env env, napi_value exports) {
     {"dispose",NULL,dispose,NULL,NULL,NULL,napi_default,NULL}
     ,{"loggingBackend",NULL,logging_backend,NULL,NULL,NULL,napi_default,NULL}
     ,{"wallclockBackend",NULL,wallclock_backend,NULL,NULL,NULL,napi_default,NULL}
+    ,{"taskletTimerBackend",NULL,tasklet_timer_backend,NULL,NULL,NULL,napi_default,NULL}
   };
   return ok(env, napi_define_properties(env, exports, sizeof(methods)/sizeof(methods[0]), methods)) ? exports : NULL;
 }

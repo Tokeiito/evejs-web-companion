@@ -85,6 +85,7 @@ function unicodeUTF8(value) {
  * Optional JS undefined means omission; null never stands for a missing arg.
  */
 function createClientBlueLogDomain() {
+  const channels = new WeakSet();
   const echoes = [[], [], [], []], privileged = [false, false, false, false];
   const counters = new Uint32Array(4);
   const flags = { INFO: 1, NOTICE: 32, WARN: 2, ERR: 4 };
@@ -127,6 +128,7 @@ function createClientBlueLogDomain() {
         object: { value: object, enumerable: true },
         channelOpen: { value: 1, enumerable: true },
       });
+      channels.add(this);
     }
     IsOpen(...args) {
       count(args, 0, 1);
@@ -180,6 +182,16 @@ function createClientBlueLogDomain() {
       return previous;
     },
     createChannel(facility, object) { return new Channel(facility, object); },
+    // Core LogFuncChannel: formatted bytes, direct severity and normalized
+    // signed32 userData (converted to unsigned bits; actual timer uses zero).
+    // Unlike the Python Channel.Log thunk it counts even without an echo.
+    logCore(channel, type, userData, bytes) {
+      if (!channels.has(channel)) throw new TypeError("An actual channel from this logger owner is required.");
+      const selected = severity(type), data = int32(userData) >>> 0;
+      if (!Buffer.isBuffer(bytes)) throw new TypeError("Raw core logging requires formatted bytes.");
+      emit(channel, selected, data, bytes);
+      return null;
+    },
     getCounter(type) { return counters[severity(type)]; },
     getLastError() { return Buffer.from(lastError); },
   });

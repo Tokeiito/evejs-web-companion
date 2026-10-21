@@ -133,6 +133,39 @@ def _create_logmodule(backend):
     return module
 
 
+def _create_tasklet_profile(backend):
+    # Only these ORIGINAL installed class bodies/functions, with a real local
+    # inactive native timer capability. No noop implementation or engine import.
+    import types
+    code = zipimport.zipimporter(_archive + '/ccpProfile').get_code('ccpProfile.blueTaskletImplementation')
+    if code is None or not code.co_filename.replace('\\', '/').endswith('/packages/ccpProfile/blueTaskletImplementation.py'):
+        raise ImportError('Not the installed blue tasklet profile')
+
+    def definition(name):
+        matches = [value for value in code.co_consts
+                   if isinstance(value, types.CodeType) and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed tasklet profile definition: ' + name)
+        return matches[0]
+
+    pyos = types.ModuleType('companion.tasklet_pyos_capability')
+    pyos.taskletTimer = backend
+    blue_host = types.ModuleType('companion.tasklet_blue_capability')
+    blue_host.pyos = pyos
+    module = types.ModuleType('ccpProfile.blueTaskletImplementation')
+    namespace = module.__dict__
+    namespace.update({'__builtins__': __builtins__, 'blue': blue_host,
+                      'EnterTasklet': backend.EnterTasklet,
+                      'ReturnFromTasklet': backend.ReturnFromTasklet,
+                      'GetCurrent': backend.GetCurrent})
+    for name, bases in (('Timer', (object,)), ('TimerPush', None)):
+        body = types.FunctionType(definition(name), namespace)
+        namespace[name] = type(name, bases or (namespace['Timer'],), body())
+    for name in ('PushTimer', 'PopTimer', 'CurrentTimer'):
+        namespace[name] = types.FunctionType(definition(name), namespace)
+    return module
+
+
 def _create_static_service_types(wallclock, logging, preferences, high, low, medium, skill):
     # Selected original constructors, not ServiceManager/Run or a ready static
     # service. Native Python owns these classes, dictionaries and method calls.

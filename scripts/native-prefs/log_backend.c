@@ -222,6 +222,14 @@ static PyObject* callback_capsule(napi_env env, napi_value callback) {
   if (!capsule) { enqueue(&factory->js); return NULL; }
   return capsule;
 }
+PyObject* prefs_callback_create(napi_env env, napi_value callback) {
+  return callback_capsule(env, callback);
+}
+int prefs_callback_invoke(PyObject* capsule, size_t argc, napi_value* argv, napi_value* result) {
+  if (!allowed()) return 0;
+  Factory* factory = (Factory*)PyCapsule_GetPointer(capsule, factory_name);
+  return factory && invoke(&factory->js, NULL, argc, argv, result);
+}
 PyObject* prefs_wallclock_create(napi_env env, napi_value sampler) {
   PyObject* capsule = callback_capsule(env, sampler); if (!capsule) return NULL;
   PyObject* callable = PyCFunction_NewEx(&wallclock_method, capsule, NULL);

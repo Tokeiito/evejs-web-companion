@@ -309,6 +309,7 @@ function createPilotDogma({
   createNativeClientClock = null,
   createNativeClientLog = null,
   createNativeClientLogModule = null,
+  createNativeClientTaskletTimer = null,
   createNativeClientStaticConstructor = null,
   createNativeClientPreferences = null,
   nativeTypeNames = null,
@@ -322,6 +323,7 @@ function createPilotDogma({
   let clientClock = null, pendingClientClock = null;
   let clientLog = null, pendingClientLog = null;
   let clientLogModule = null, pendingClientLogModule = null;
+  let clientTaskletTimer = null, pendingClientTaskletTimer = null;
   let clientStaticConstructor = null, pendingClientStaticConstructor = null;
   let clientPreferences = null, pendingClientPreferences = null;
   function initializeNativeClientPreferences() {
@@ -363,12 +365,27 @@ function createPilotDogma({
     const forget = () => { if (pendingClientLogModule === reading) pendingClientLogModule = null; };
     reading.then(forget, forget); return reading;
   }
+  function initializeNativeClientTaskletTimer() {
+    if (clientTaskletTimer !== null) return Promise.resolve(clientTaskletTimer);
+    if (pendingClientTaskletTimer !== null) return pendingClientTaskletTimer;
+    if (typeof createNativeClientTaskletTimer !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("real inactive client tasklet timer");
+    const reading = Promise.all([initializeNativeClientClock(), initializeNativeClientLog()])
+      .then(([clock, log]) => createNativeClientTaskletTimer({ clock, log }))
+      .then(owner => {
+        if (!owner || !owner.Timer || !owner.backend || typeof owner.timesliceReset !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("actual native inactive tasklet timer");
+        clientTaskletTimer = owner;
+        return owner;
+      });
+    pendingClientTaskletTimer = reading;
+    const forget = () => { if (pendingClientTaskletTimer === reading) pendingClientTaskletTimer = null; };
+    reading.then(forget, forget); return reading;
+  }
   function initializeNativeClientStaticConstructor() {
     if (clientStaticConstructor !== null) return Promise.resolve(clientStaticConstructor);
     if (pendingClientStaticConstructor !== null) return pendingClientStaticConstructor;
     if (typeof createNativeClientStaticConstructor !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static constructor types");
-    const reading = Promise.all([initializeNativeClientClock(), initializeNativeClientLogModule(), initializeNativeClientPreferences()])
-      .then(([clock, logging, preferences]) => createNativeClientStaticConstructor({ clock, logging, preferences }))
+    const reading = Promise.all([initializeNativeClientClock(), initializeNativeClientLogModule(), initializeNativeClientPreferences(), initializeNativeClientTaskletTimer()])
+      .then(([clock, logging, preferences, taskletTimer]) => createNativeClientStaticConstructor({ clock, logging, preferences, taskletTimer }))
       .then(owner => {
         if (!owner || typeof owner.create !== "function" || !owner.types) throw new ClientDogmaConstructorPrimitiveNotReadyError("actual installed static constructor types");
         clientStaticConstructor = owner;
@@ -1380,6 +1397,11 @@ function createPilotDogma({
     // real prefs ownership must precede CoreService construction.
     initializeNativeClientLog,
     initializeNativeClientLogModule,
+    initializeNativeClientTaskletTimer,
+    nativeClientTaskletTimer: () => {
+      if (clientTaskletTimer === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("real inactive client tasklet timer");
+      return clientTaskletTimer;
+    },
     initializeNativeClientStaticConstructor,
     nativeClientStaticConstructor: () => {
       if (clientStaticConstructor === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static constructor types");

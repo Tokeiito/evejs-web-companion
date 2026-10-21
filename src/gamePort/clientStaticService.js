@@ -12,10 +12,11 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * original LoadAttributes on that SAME instance. No Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, constants, builtData = null, attributeConstants = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
+  if (taskletTimer !== null && (taskletTimer.clock !== clock || taskletTimer.log !== logging.log)) throw new TypeError("The static service must share its client's actual clock and timer logger.");
   const [runtime, loaded] = await Promise.all([provider.ready(), constants()]);
   if (!loaded || constantNames.some(name => !Number.isSafeInteger(loaded[name]))) throw new TypeError("Installed static constructor effect constants are unavailable.");
   const values = runtime.values;
@@ -43,7 +44,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, builtData, identity: runtime.identity, prepareAttributes,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.

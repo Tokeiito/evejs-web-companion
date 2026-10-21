@@ -13,6 +13,10 @@ async function loadClientWindowsClockPrimitives(options) {
     reliable: () => signed(native.ticks() * 10000n),
     highResUnitsPerSecond: () => signed(native.frequency()),
     utcNow: () => signed(native.utc()),
+    // [kernel,user] actual signed64 CPU counters,100ns units. Closures retain
+    // their real native owner even when extracted; native checks owner thread.
+    threadCPU: () => native.threadCPU(owner),
+    processCPU: () => native.processCPU(owner),
     identity: Object.freeze(identity),
   });
 }
