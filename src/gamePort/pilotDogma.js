@@ -308,6 +308,7 @@ function createPilotDogma({
   createNativeClientStaticLoadData = null,
   createNativeClientClock = null,
   createNativeClientLog = null,
+  createNativeClientLogModule = null,
   createNativeClientPreferences = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
@@ -319,6 +320,7 @@ function createPilotDogma({
   const clientStaticLoadData = createNativeClientStaticLoadData ? createNativeClientStaticLoadData({ groupData: clientStaticGroupData, definitionData: clientStaticAttributeData, typeData: nativeClientStaticTypeData }) : null;
   let clientClock = null, pendingClientClock = null;
   let clientLog = null, pendingClientLog = null;
+  let clientLogModule = null, pendingClientLogModule = null;
   let clientPreferences = null, pendingClientPreferences = null;
   function initializeNativeClientPreferences() {
     if (clientPreferences !== null) return Promise.resolve(clientPreferences);
@@ -344,6 +346,19 @@ function createPilotDogma({
     });
     pendingClientLog = reading;
     const forget = () => { if (pendingClientLog === reading) pendingClientLog = null; };
+    reading.then(forget, forget); return reading;
+  }
+  function initializeNativeClientLogModule() {
+    if (clientLogModule !== null) return Promise.resolve(clientLogModule);
+    if (pendingClientLogModule !== null) return pendingClientLogModule;
+    if (typeof createNativeClientLogModule !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client logmodule namespace");
+    const reading = initializeNativeClientLog().then(log => createNativeClientLogModule({ log })).then(owner => {
+      if (!owner || typeof owner.GetChannel !== "function" || !owner.module) throw new ClientDogmaConstructorPrimitiveNotReadyError("actual installed logmodule namespace");
+      clientLogModule = owner;
+      return owner;
+    });
+    pendingClientLogModule = reading;
+    const forget = () => { if (pendingClientLogModule === reading) pendingClientLogModule = null; };
     reading.then(forget, forget); return reading;
   }
   function initializeNativeClientClock() {
@@ -1347,6 +1362,11 @@ function createPilotDogma({
     // Backend prerequisite only. logmodule's GetChannel/ChannelWrapper and
     // real prefs ownership must precede CoreService construction.
     initializeNativeClientLog,
+    initializeNativeClientLogModule,
+    nativeClientLogModule: () => {
+      if (clientLogModule === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client logmodule namespace");
+      return clientLogModule;
+    },
     initializeNativeClientPreferences,
     nativeClientPreferences: () => {
       if (clientPreferences === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client preference owner");

@@ -3,7 +3,7 @@
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), crypto = require("node:crypto");
 const { execFile } = require("node:child_process"), { promisify } = require("node:util");
 const execute = promisify(execFile), builds = new Map();
-const sources = ["python_runtime.c", "atomic_files.c", "atomic_files.h"];
+const sources = ["python_runtime.c", "atomic_files.c", "atomic_files.h", "log_backend.c", "log_backend.h"];
 async function buildNativePreferences({ cacheRoot = path.join(__dirname, "..", "data", "native-preferences", "bindings") } = {}) {
   if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Native client preferences require Windows x64.");
   // Capture every compilation input before the first await. Build and hash
@@ -31,7 +31,7 @@ async function buildNativePreferences({ cacheRoot = path.join(__dirname, "..", "
     fs.writeFileSync(path.join(directory, "LICENSE.txt"), license);
     const quote = value => { if (/["%\r\n&|<>^!]/.test(value)) throw new Error("Unsupported native-build path characters."); return `"${value}"`; };
     const script = path.join(staging, "build.cmd"), built = path.join(staging, "client_preferences.node");
-    const command = ["@echo off", `call ${quote(setup)} -arch=x64 -host_arch=x64 >nul`, "if errorlevel 1 exit /b 1", `cl.exe /nologo /O2 /LD /DNAPI_VERSION=8 /DNODE_GYP_MODULE_NAME=client_preferences /I${quote(include)} ${quote(path.join(staging, "python_runtime.c"))} ${quote(path.join(staging, "atomic_files.c"))} /link /OUT:${quote(built)} /IMPLIB:${quote(path.join(staging, "client_preferences.lib"))} ${quote(library)}`, "exit /b %errorlevel%", ""].join("\r\n");
+    const command = ["@echo off", `call ${quote(setup)} -arch=x64 -host_arch=x64 >nul`, "if errorlevel 1 exit /b 1", `cl.exe /nologo /O2 /LD /DNAPI_VERSION=8 /DNODE_GYP_MODULE_NAME=client_preferences /I${quote(include)} ${quote(path.join(staging, "python_runtime.c"))} ${quote(path.join(staging, "atomic_files.c"))} ${quote(path.join(staging, "log_backend.c"))} /link /OUT:${quote(built)} /IMPLIB:${quote(path.join(staging, "client_preferences.lib"))} ${quote(library)}`, "exit /b %errorlevel%", ""].join("\r\n");
     fs.writeFileSync(script, command);
     try {
       const result = await execute("cmd.exe", ["/d", "/c", script], { windowsHide: true, cwd: staging, timeout: 120000, maxBuffer: 1024 * 1024 });

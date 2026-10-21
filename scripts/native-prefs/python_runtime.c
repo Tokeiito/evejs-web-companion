@@ -11,6 +11,7 @@
 #include <string.h>
 #include <math.h>
 #include "atomic_files.h"
+#include "log_backend.h"
 
 typedef struct _object PyObject;
 typedef intptr_t Py_ssize_t;
@@ -80,6 +81,7 @@ static PyObject* globals;
 static int initialized, entered, closed;
 static DWORD owner_thread;
 static napi_env owner_env;
+static int log_owner_guard(void) { return initialized && entered && !closed && GetCurrentThreadId() == owner_thread; }
 static const napi_type_tag handle_tag = { 0x752ac91d3fa64a17ull, 0xb9f734e2ca5919d3ull };
 typedef struct Handle { PyObject* object; int disposed; struct Handle* next; } Handle;
 static Handle* pending;
@@ -113,6 +115,7 @@ static void drain(void) {
   PyErr_Fetch(&type, &value, &trace);
   AcquireSRWLockExclusive(&pending_lock); list = pending; pending = NULL; ReleaseSRWLockExclusive(&pending_lock);
   while (list) { Handle* next = list->next; decref(list->object); free(list); list = next; }
+  prefs_log_drain(owner_env);
   PyErr_Clear(); PyErr_Restore(type, value, trace);
 }
 static int begin(napi_env env, Scope* scope) {
@@ -129,7 +132,7 @@ static napi_value finish(Scope* scope, napi_value result) {
   }
   return result;
 }
-static void env_cleanup(void* ignored) { closed = 1; /* No Python/destructors during env teardown. */ }
+static void env_cleanup(void* ignored) { closed = 1; prefs_log_close(); /* No Python/destructors during env teardown. */ }
 static napi_value wrap(napi_env env, PyObject* object) {
   Handle* handle; napi_value result;
   if (!object) return NULL;
@@ -334,6 +337,7 @@ static int bind_api(napi_env env, HMODULE dll) {
   EXC(exc_io, "PyExc_IOError") EXC(exc_memory, "PyExc_MemoryError")
   EXC(exc_windows, "PyExc_WindowsError")
 #undef EXC
+  if (!prefs_log_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 logging C API export missing."); return 0; }
   return 1;
 }
 static napi_value initialize(napi_env env, napi_callback_info info) {
@@ -374,6 +378,11 @@ static napi_value run(napi_env env, napi_callback_info info) {
   if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
   source = utf8(env, argv[0]); if (!source) return finish(&scope, NULL);
   answer = PyRun_StringFlags(source, 257, globals, globals, NULL); free(source); return result(env, &scope, answer);
+}
+static napi_value logging_backend(napi_env env, napi_callback_info info) {
+  napi_value argv[1]; Scope scope;
+  if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
+  return result(env, &scope, prefs_log_create(env, argv[0]));
 }
 static napi_value get_global(napi_env env, napi_callback_info info) {
   napi_value argv[1]; Scope scope; PyObject *name, *answer;
@@ -532,6 +541,7 @@ static napi_value init(napi_env env, napi_value exports) {
     {"setItem",NULL,set_item,NULL,NULL,NULL,napi_default,NULL}, {"truth",NULL,truth,NULL,NULL,NULL,napi_default,NULL},
     {"describe",NULL,describe,NULL,NULL,NULL,napi_default,NULL}, {"identity",NULL,identity,NULL,NULL,NULL,napi_default,NULL},
     {"dispose",NULL,dispose,NULL,NULL,NULL,napi_default,NULL}
+    ,{"loggingBackend",NULL,logging_backend,NULL,NULL,NULL,napi_default,NULL}
   };
   return ok(env, napi_define_properties(env, exports, sizeof(methods)/sizeof(methods[0]), methods)) ? exports : NULL;
 }
