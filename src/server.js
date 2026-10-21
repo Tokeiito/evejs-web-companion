@@ -30,6 +30,7 @@ const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
 const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
 const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
+const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -225,6 +226,13 @@ const gamePortPilots = options.gamePortPilots !== undefined
       }),
       nativeAttributeData: createGodmaAttributeData({
         dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
+      }),
+      // Installed primary-English type names, prepared before synchronous
+      // diagnostic reads. Alternate important-language/QA policy is separate.
+      nativeTypeNames: createGodmaPrimaryTypeNames({
+        typeNameIDs: () => clientBuiltData.table("typeNameIDs"),
+        messages: ids => clientWords.messages(ids),
+        language: () => clientWords.status().language,
       }),
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {

@@ -95,6 +95,8 @@ const TABLES = Object.freeze({
   marketGroupParents: Object.freeze({ loader: "marketGroupsLoader", resource: "res:/staticdata/marketgroups.fsdbinary", attribute: "parentGroupID" }),
   typeMarketGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "marketGroupID" }),
   typeGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "groupID" }),
+  // evetypes.GetNameID: every installed type, including type0, has this field.
+  typeNameIDs: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "typeNameID" }),
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),
   typeMetaGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "metaGroupID" }),
   raceNameIDs: Object.freeze({ loader: "racesLoader", resource: "res:/staticdata/races.fsdbinary", attribute: "nameID" }),

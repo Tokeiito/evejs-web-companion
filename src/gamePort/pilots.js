@@ -1148,6 +1148,7 @@ function createGamePortPilots({
   // server SDE summaries used by the existing fitting projection.
   nativeEffectData = null,
   nativeAttributeData = null,
+  nativeTypeNames = null,
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
   // consume); none read where it is not given.
   gatewayNotices = null,
@@ -1768,6 +1769,7 @@ function createGamePortPilots({
         effectCategory,
         nativeEffectData,
         nativeAttributeData,
+        nativeTypeNames,
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
         onFitted: (item) => onlineIfApplicable(entry, item),
         // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
@@ -4671,6 +4673,7 @@ function createGamePortPilots({
       let allInfo;
       try {
         await entry.dogma.initializeNativeAttributes();
+        await entry.dogma.initializeNativeTypeNames();
         // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
         ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
         // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character

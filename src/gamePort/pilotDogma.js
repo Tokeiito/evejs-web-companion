@@ -9,6 +9,7 @@ const { createGodmaPrimeChannel } = require("./godmaPrimeChannel");
 const { createGodmaAttributeGetter } = require("./godmaAttributeGetter");
 const { GodmaAttributeDataNotReadyError } = require("./godmaAttributeData");
 const { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords } = require("./godmaChargeValue");
+const { GodmaTypeNamesNotReadyError } = require("./godmaTypeNames");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -294,6 +295,7 @@ function createPilotDogma({
   nativeEffectData = null,
   // Installed attribute ID/name identity; raw readers retain their ID cache.
   nativeAttributeData = null,
+  nativeTypeNames = null,
   onNumericEffectActivated = () => {},
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
@@ -1223,6 +1225,11 @@ function createPilotDogma({
     processAllInfo,
     beginPrime: primeChannel.begin,
     initializeNativeAttributes: () => nativeAttributeData?.ready(),
+    initializeNativeTypeNames: () => nativeTypeNames?.ready(),
+    nativeTypeName: typeID => {
+      if (!nativeTypeNames) throw new GodmaTypeNamesNotReadyError();
+      return nativeTypeNames.name(typeID);
+    },
     finishPrimeBody: primeChannel.finishBody,
     releasePrimeReceivers: primeChannel.release,
     primeState: primeChannel.state,
