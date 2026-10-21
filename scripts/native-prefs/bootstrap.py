@@ -434,3 +434,82 @@ def _attach_static_phases(service_types, data, raw_type_dogma, raw_effects, raw_
         defaults = (False,) if name == 'LoadTypeEffects' else (None,) if name == 'GetTypeAttribute' else None
         setattr(base, name, types.FunctionType(definition(base_source, name), base_globals, name, defaults))
     return evetypes
+
+
+def _create_localization_settings(boot_root, preferences):
+    # Actual read-only start/common INI snapshots and private original helper
+    # namespaces. This is a settings/cleaner field phase, not eveprefs.Init or
+    # Localization.LoadLanguageData, a parser, session or engine readiness.
+    import types, re, __builtin__
+    boot = eveprefs.Handler(IniIniFile('start', boot_root, 1))
+    common = IniIniFile('common', boot_root, 1)
+    boot.keyval.update(common.keyval)
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed localization settings module: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts
+                   if isinstance(value, types.CodeType) and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed localization definition: ' + name)
+        return matches[0]
+
+    # Only this private import binding supplies real owners. Never replace the
+    # process-global eveprefs.boot/prefs used by other emulated clients.
+    owned_prefs = types.ModuleType('eveprefs')
+    owned_prefs.boot, owned_prefs.prefs = boot, preferences
+    original_import = __builtin__.__import__
+
+    def owner_import(name, globals=None, locals=None, fromlist=(), level=-1):
+        if name == 'eveprefs':
+            return owned_prefs
+        return original_import(name, globals, locals, fromlist, level)
+
+    builtins = dict(__builtin__.__dict__)
+    builtins['__import__'] = owner_import
+
+    def original_module(name, suffix):
+        module = types.ModuleType(name)
+        # These private namespaces are not registered as application packages.
+        # Their original imports are absolute; avoid Python2's implicit relative
+        # lookup through an unrelated/missing shared localization package.
+        module.__package__ = ''
+        module.__dict__['__builtins__'] = builtins
+        types.FunctionType(module_code(name, suffix), module.__dict__)()
+        return module
+
+    internal = original_module('localization.internalUtil', '/packages/localization/internalUtil.py')
+    qa = original_module('localization.settings.qaSettings', '/packages/localization/settings/qaSettings.py')
+    bilingual = original_module('localization.settings.bilingualSettings', '/packages/localization/settings/bilingualSettings.py')
+    constants = original_module('localization.const', '/packages/localization/const.py')
+    commonutils = types.ModuleType('carbon.common.script.util.commonutils')
+    commonutils.__dict__.update({'__builtins__': builtins, 're': re})
+    source = module_code('carbon.common.script.util.commonutils', '/carbon/common/script/util/commonutils.py')
+    commonutils.StripTags = types.FunctionType(definition(source, 'StripTags'), commonutils.__dict__, 'StripTags', ((), ()))
+    namespace = {'__name__': 'localization.localizationBase', '__builtins__': builtins,
+                 'internalUtil': internal, 'qaSettings': qa, 'bilingualSettings': bilingual,
+                 'commonutils': commonutils, 'locconst': constants}
+    source = definition(module_code('localization.localizationBase', '/packages/localization/localizationBase.py'), 'Localization')
+    methods = {'__module__': 'companion.localization_settings'}
+    for name in ('_GetPrimaryLanguage', 'HighlightImportant', 'UseImportantTooltip',
+                 '_QaTooltipOverride', 'CleanImportantMarkup'):
+        methods[name] = types.FunctionType(definition(source, name), namespace)
+    selected = type('ClientLocalizationSettings', (object,), methods)()
+    # The four source constructor setting fields, plus the actual original
+    # primary-language constant used by settings comparisons. No text/language
+    # parser is published or told that its data has loaded by this operation.
+    selected._importantNameSetting = None
+    selected._languageTooltipSetting = None
+    selected._qaTooltipOverride = None
+    selected._highlightImportantSetting = None
+    selected._primaryLanguageID = selected._GetPrimaryLanguage()
+    result = types.ModuleType('companion.localization_settings_owner')
+    result.boot, result.common, result.preferences = boot, common, preferences
+    result.internal, result.qa, result.bilingual = internal, qa, bilingual
+    result.settings, result.constants, result.commonutils = selected, constants, commonutils
+    return result

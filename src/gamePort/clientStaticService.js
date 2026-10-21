@@ -10,11 +10,13 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * on an explicitly allocated instance. prepareAttributes() separately binds
  * original attribute helpers to real cFSD data; its load(instance) executes
  * original LoadAttributes on that SAME instance. preparePhases() binds the other
- * three original phases and lazy native physical/type helpers. No full
+ * three original phases and lazy native physical/type helpers. The separate
+ * localization settings preparation retains real boot/preferences and original
+ * cleaner methods; it does not load messages or initialize localization. No full
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -27,6 +29,20 @@ async function createClientStaticService({ provider, clock, logging, preferences
   const Client = types.getAttr("ClientDogmaStaticSvc");
   let attributeData = null, pendingAttributes = null;
   let phases = null, pendingPhases = null;
+  let localizationSettings = null, pendingLocalizationSettings = null;
+  function prepareLocalizationSettings() {
+    if (localizationSettings !== null) return Promise.resolve(localizationSettings);
+    if (pendingLocalizationSettings !== null) return pendingLocalizationSettings;
+    if (typeof createLocalizationSettings !== "function") throw new Error("Actual native localization boot/settings inputs are not configured.");
+    const reading = Promise.resolve().then(createLocalizationSettings).then(owner => {
+      if (!owner?.settings || owner.preferences !== preferences || typeof owner.cleanImportantMarkup !== "function") throw new Error("The localization settings must share this client's actual preference owner.");
+      localizationSettings = owner;
+      return owner;
+    });
+    pendingLocalizationSettings = reading;
+    const forget = () => { if (pendingLocalizationSettings === reading) pendingLocalizationSettings = null; };
+    reading.then(forget, forget); return reading;
+  }
   function prepareAttributes() {
     if (attributeData !== null) return Promise.resolve(attributeData);
     if (pendingAttributes !== null) return pendingAttributes;
@@ -73,7 +89,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.
