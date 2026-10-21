@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js fc56d25d3, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js 6c963ca08, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -92,6 +92,66 @@ const DBTYPE = {
   STR: 0x81,
   WSTR: 0x82,
 };
+
+// Opt-in decode provenance, never typed wrappers or enumerable properties.
+// A record describes the original decoded slot; caller mutations/JSON do not
+// transfer or update it. A root primitive has no containing slot to query.
+const decodedNumberKinds = new WeakMap();
+// CCP blue/src/Marshal.cpp:41-80,1188-1242 constructs distinct scalar classes.
+const opcodeNumberKinds = new Map([
+  ...[Op.PyLongLong, Op.PyLong, Op.PySignedShort, Op.PyByte,
+    Op.PyMinusOne, Op.PyZeroInteger, Op.PyOneInteger, Op.PyVarInteger]
+    .map((opcode) => [opcode, Object.freeze({ kind: "integer", opcode })]),
+  ...[Op.PyReal, Op.PyZeroReal]
+    .map((opcode) => [opcode, Object.freeze({ kind: "real", opcode })]),
+  ...[Op.PyTrue, Op.PyFalse]
+    .map((opcode) => [opcode, Object.freeze({ kind: "boolean", opcode })]),
+]);
+const packedNumberKinds = new Map([
+  ...[DBTYPE.I1, DBTYPE.UI1, DBTYPE.I2, DBTYPE.UI2, DBTYPE.I4,
+    DBTYPE.UI4, DBTYPE.I8, DBTYPE.UI8, DBTYPE.FILETIME]
+    .map((dbType) => [dbType, Object.freeze({ kind: "integer", dbType })]),
+  ...[DBTYPE.R4, DBTYPE.R8]
+    .map((dbType) => [dbType, Object.freeze({ kind: "real", dbType })]),
+  [DBTYPE.BOOL, Object.freeze({ kind: "boolean", dbType: DBTYPE.BOOL })],
+]);
+
+/** Read original opt-in scalar provenance, or undefined when unknown.
+ * Slots are array indices/object property names. Booleans remain distinct.
+ * Packed CY and generated virtual fields are deliberately unsupported.
+ */
+function getDecodedNumberKind(container, slot) {
+  if (!container || typeof container !== "object" ||
+      (typeof slot !== "string" && typeof slot !== "number")) return undefined;
+  return decodedNumberKinds.get(container)?.get(String(slot));
+}
+
+function setDecodedNumberKind(container, slot, kind) {
+  let kinds = decodedNumberKinds.get(container);
+  if (!kind) {
+    kinds?.delete(String(slot));
+    return;
+  }
+  if (!kinds) decodedNumberKinds.set(container, kinds = new Map());
+  kinds.set(String(slot), kind);
+}
+
+function copyDecodedNumberKinds(source, target) {
+  const kinds = decodedNumberKinds.get(source);
+  if (kinds) decodedNumberKinds.set(target, new Map(kinds));
+  return target;
+}
+
+// Child decodes are synchronous. Capture their kind before another child can
+// replace lastNumberKind; container decodes themselves reset it to unknown.
+function decodeInto(state, container, slot) {
+  const value = decodeValue(state);
+  container[slot] = value;
+  if (state.preserveNumberKinds) {
+    setDecodedNumberKind(container, slot, state.lastNumberKind);
+  }
+  return value;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENCODER
@@ -711,8 +771,10 @@ function applyPackedRowVirtualFields(fields, rowHeader) {
     const resolver = normalizePackedVirtualResolver(column);
     if (resolver === "eve.common.script.sys.eveCfg.StackSize") {
       fields[columnName] = derivePackedStackSize(fields);
+      setDecodedNumberKind(fields, columnName, undefined);
     } else if (resolver === "eve.common.script.sys.eveCfg.Singleton") {
       fields[columnName] = derivePackedSingleton(fields);
+      setDecodedNumberKind(fields, columnName, undefined);
     }
   }
 }
@@ -1112,6 +1174,11 @@ function decodePackedRowFields(rowHeader, rleData, state) {
     values[entry.index] = isNull
       ? null
       : decodePackedFixedValue(entry.type, packedByteData, offset);
+    if (state.preserveNumberKinds && !isNull) {
+      // CY's existing unscaled integer representation is not CCP's real
+      // currency getter; do not claim a matching class until that is fixed.
+      setDecodedNumberKind(values, entry.index, packedNumberKinds.get(entry.type));
+    }
     offset += entry.size >> 3;
   }
 
@@ -1135,19 +1202,27 @@ function decodePackedRowFields(rowHeader, rleData, state) {
     values[entry.index] =
       boolByte < bitData.length &&
       (bitData[boolByte] & (1 << (boolBit & 0x7))) !== 0;
+    if (state.preserveNumberKinds) {
+      setDecodedNumberKind(values, entry.index, packedNumberKinds.get(entry.type));
+    }
   }
 
   for (const entry of sizeMap) {
     if (entry.size !== 0) {
       continue;
     }
-    values[entry.index] = decodeValue(state);
+    // STR/WSTR/BYTES/other object slots carry their actual child opcode, not
+    // a numeric class inferred from the descriptor's object type.
+    decodeInto(state, values, entry.index);
   }
 
   const fields = {};
   for (let index = 0; index < columns.length; index += 1) {
     const columnName = normalizePackedColumnName(columns[index][0], `col_${index}`);
     fields[columnName] = values[index];
+    if (state.preserveNumberKinds) {
+      setDecodedNumberKind(fields, columnName, getDecodedNumberKind(values, index));
+    }
   }
   applyPackedRowVirtualFields(fields, rowHeader);
 
@@ -1257,7 +1332,7 @@ function encodePackedRow(packedRow, chunks) {
  * The input should be the raw payload AFTER stripping the 4-byte length header,
  * starting with the 0x7E magic byte.
  */
-function decodeMarshalStream(buffer, requireExactEnd) {
+function decodeMarshalStream(buffer, requireExactEnd, options, onRootKind) {
   if (!Buffer.isBuffer(buffer)) {
     buffer = Buffer.from(buffer, "hex");
   }
@@ -1266,6 +1341,9 @@ function decodeMarshalStream(buffer, requireExactEnd) {
     buf: buffer,
     pos: 0,
     storedObjects: [],
+    preserveNumberKinds: options?.preserveNumberKinds === true,
+    storedNumberKinds: null,
+    lastNumberKind: undefined,
     saveIndicesPos: null,
     saveIndicesEnd: null,
   };
@@ -1291,6 +1369,9 @@ function decodeMarshalStream(buffer, requireExactEnd) {
       );
     }
     state.storedObjects = new Array(saveCount).fill(null);
+    if (state.preserveNumberKinds) {
+      state.storedNumberKinds = new Array(saveCount);
+    }
     state.saveIndicesPos = buffer.length - saveIndicesBytes;
     state.saveIndicesEnd = buffer.length;
     valueEnd = state.saveIndicesPos;
@@ -1310,15 +1391,18 @@ function decodeMarshalStream(buffer, requireExactEnd) {
       throw new Error("Marshal stream has unconsumed save-table entries");
     }
   }
+  // Private nested-stream seam: public root primitives stay plain values,
+  // while a substream's containing `value` field can retain its root kind.
+  if (onRootKind) onRootKind(state.lastNumberKind);
   return value;
 }
 
-function marshalDecode(buffer) {
-  return decodeMarshalStream(buffer, false);
+function marshalDecode(buffer, options) {
+  return decodeMarshalStream(buffer, false, options);
 }
 
-function marshalDecodeExact(buffer) {
-  return decodeMarshalStream(buffer, true);
+function marshalDecodeExact(buffer, options) {
+  return decodeMarshalStream(buffer, true, options);
 }
 
 function readUInt8(state) {
@@ -1398,11 +1482,11 @@ function readSaveIndex(state) {
 
 function cloneDecodedValue(value) {
   if (Buffer.isBuffer(value)) {
-    return Buffer.from(value);
+    return copyDecodedNumberKinds(value, Buffer.from(value));
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => cloneDecodedValue(entry));
+    return copyDecodedNumberKinds(value, value.map((entry) => cloneDecodedValue(entry)));
   }
 
   if (value && typeof value === "object") {
@@ -1410,7 +1494,7 @@ function cloneDecodedValue(value) {
     for (const [key, entryValue] of Object.entries(value)) {
       cloned[key] = cloneDecodedValue(entryValue);
     }
-    return cloned;
+    return copyDecodedNumberKinds(value, cloned);
   }
 
   return value;
@@ -1520,6 +1604,7 @@ function decodeValue(state) {
   const storageIndex = flagSave ? readSaveIndex(state) : 0;
 
   let result;
+  let numberKind = state.preserveNumberKinds ? opcodeNumberKinds.get(op) : undefined;
 
   switch (op) {
     case Op.PyNone:
@@ -1667,18 +1752,21 @@ function decodeValue(state) {
       break;
 
     case Op.PyOneTuple:
-      result = [decodeValue(state)];
+      result = [];
+      decodeInto(state, result, 0);
       break;
 
     case Op.PyTwoTuple:
-      result = [decodeValue(state), decodeValue(state)];
+      result = [];
+      decodeInto(state, result, 0);
+      decodeInto(state, result, 1);
       break;
 
     case Op.PyTuple: {
       const count = readSizeEx(state);
       const arr = [];
       for (let i = 0; i < count; i++) {
-        arr.push(decodeValue(state));
+        decodeInto(state, arr, i);
       }
       result = arr;
       break;
@@ -1689,14 +1777,15 @@ function decodeValue(state) {
       break;
 
     case Op.PyOneList:
-      result = { type: "list", items: [decodeValue(state)] };
+      result = { type: "list", items: [] };
+      decodeInto(state, result.items, 0);
       break;
 
     case Op.PyList: {
       const count = readSizeEx(state);
       const items = [];
       for (let i = 0; i < count; i++) {
-        items.push(decodeValue(state));
+        decodeInto(state, items, i);
       }
       result = { type: "list", items };
       break;
@@ -1707,24 +1796,26 @@ function decodeValue(state) {
       const entries = [];
       // Marshal writes value first, then key
       for (let i = 0; i < count; i++) {
-        const val = decodeValue(state);
-        const key = decodeValue(state);
-        entries.push([key, val]);
+        const pair = [];
+        decodeInto(state, pair, 1);
+        decodeInto(state, pair, 0);
+        entries.push(pair);
       }
       result = { type: "dict", entries };
       break;
     }
 
     case Op.PyObject: {
-      const name = decodeValue(state);
-      const args = decodeValue(state);
-      result = { type: "object", name, args };
+      result = { type: "object" };
+      decodeInto(state, result, "name");
+      decodeInto(state, result, "args");
       break;
     }
 
     case Op.PyObjectEx1:
     case Op.PyObjectEx2: {
       const header = decodeValue(state);
+      const headerKind = state.lastNumberKind;
       const list = [];
       while (state.pos < state.buf.length) {
         const peek = state.buf[state.pos] & OPCODE_MASK;
@@ -1732,7 +1823,7 @@ function decodeValue(state) {
           state.pos++;
           break;
         }
-        list.push(decodeValue(state));
+        decodeInto(state, list, list.length);
       }
       const dict = [];
       while (state.pos < state.buf.length) {
@@ -1741,9 +1832,10 @@ function decodeValue(state) {
           state.pos++;
           break;
         }
-        const key = decodeValue(state);
-        const val = decodeValue(state);
-        dict.push([key, val]);
+        const pair = [];
+        decodeInto(state, pair, 0);
+        decodeInto(state, pair, 1);
+        dict.push(pair);
       }
       result = {
         type: op === Op.PyObjectEx1 ? "objectex1" : "objectex2",
@@ -1751,11 +1843,13 @@ function decodeValue(state) {
         list,
         dict,
       };
+      if (state.preserveNumberKinds) setDecodedNumberKind(result, "header", headerKind);
       break;
     }
 
     case Op.PySubStruct:
-      result = { type: "substruct", value: decodeValue(state) };
+      result = { type: "substruct" };
+      decodeInto(state, result, "value");
       break;
 
     case Op.PySubStream: {
@@ -1763,7 +1857,12 @@ function decodeValue(state) {
       const data = readBytes(state, len);
       // Try to decode the substream
       try {
-        result = { type: "substream", value: marshalDecode(data) };
+        let rootKind;
+        const value = decodeMarshalStream(data, false, {
+          preserveNumberKinds: state.preserveNumberKinds,
+        }, state.preserveNumberKinds ? (kind) => { rootKind = kind; } : undefined);
+        result = { type: "substream", value };
+        if (state.preserveNumberKinds) setDecodedNumberKind(result, "value", rootKind);
       } catch (e) {
         result = { type: "substream", raw: data };
       }
@@ -1774,6 +1873,7 @@ function decodeValue(state) {
       const checksum = readUInt32LE(state);
       const value = decodeValue(state);
       result = { type: "checksummed", checksum, value };
+      if (state.preserveNumberKinds) setDecodedNumberKind(result, "value", state.lastNumberKind);
       break;
     }
 
@@ -1800,6 +1900,7 @@ function decodeValue(state) {
         index <= state.storedObjects.length
       ) {
         result = cloneDecodedValue(state.storedObjects[index - 1]);
+        numberKind = state.storedNumberKinds?.[index - 1];
       } else {
         result = null;
       }
@@ -1834,9 +1935,11 @@ function decodeValue(state) {
   if (flagSave && state.storedObjects) {
     if (storageIndex > 0 && storageIndex <= state.storedObjects.length) {
       state.storedObjects[storageIndex - 1] = result;
+      if (state.preserveNumberKinds) state.storedNumberKinds[storageIndex - 1] = numberKind;
     }
   }
 
+  if (state.preserveNumberKinds) state.lastNumberKind = numberKind;
   return result;
 }
 
@@ -1903,6 +2006,7 @@ module.exports = {
   marshalEncode,
   marshalDecode,
   marshalDecodeExact,
+  getDecodedNumberKind,
   wrapPacket,
   encodePacket,
   dictGet,

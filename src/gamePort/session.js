@@ -37,6 +37,12 @@ const { caseFold, cryptoHash, passwordHash, randomBytes } = require("./placebo")
 const { keywordOrder, monikerKeywordOrder, orderEntries } = require("./py27");
 const { wireToBridgeJson } = require("./bridgeJson");
 
+// Blue unmarshalling keeps integer and float objects distinct, even for 40.0
+// and 0.0. Preserve that provenance on decoded containers for raw consumers;
+// public values remain primitives and bridge JSON keeps its existing shape.
+const GAME_PORT_DECODE_OPTIONS = Object.freeze({ preserveNumberKinds: true });
+const decodeGamePort = buffer => marshalDecode(buffer, GAME_PORT_DECODE_OPTIONS);
+
 /** What the client says it is. From the client's start.ini and GPS.py. */
 const RETAIL_CLIENT = Object.freeze({
   handshakeSecret: 170472,
@@ -172,7 +178,7 @@ function readTransportClosed(value) {
  */
 function unpickle(value) {
   const inner = unwrapSubstream(value);
-  if (Buffer.isBuffer(inner) && inner.length > 0 && inner[0] === 0x7e) return marshalDecode(inner);
+  if (Buffer.isBuffer(inner) && inner.length > 0 && inner[0] === 0x7e) return decodeGamePort(inner);
   return inner;
 }
 
@@ -906,7 +912,7 @@ class GamePortSession {
     let value = object;
     if (value === null || value === undefined) {
       if (!Buffer.isBuffer(pickle)) throw new GamePortError("BAD_CACHED_OBJECT", "Getting cached object contents, but both the object and the pickle are none");
-      value = marshalDecode(compressed ? zlib.inflateSync(pickle) : pickle);
+      value = decodeGamePort(compressed ? zlib.inflateSync(pickle) : pickle);
     }
     this.cachedObjects.set(key, { stamp, checksum, value });
     return value;
@@ -1029,7 +1035,7 @@ class GamePortSession {
     }
     let value;
     try {
-      value = marshalDecode(data);
+      value = decodeGamePort(data);
     } catch (error) {
       this._onClosed(new GamePortError("BAD_FRAME", `The game server sent a frame that does not decode: ${error.message}`));
       return;
