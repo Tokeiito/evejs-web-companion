@@ -14,6 +14,9 @@ const { ClientDogmaStackingAttribute } = require("./clientDogmaStackingAttribute
 const { sortClientDogmaAttributeFactors } = require("./clientDogmaFactorSort");
 const { applyAttributeOperator, attributeRecordLessThan } = require("./clientDogmaArithmetic");
 const { ClientDogmaItemLoader } = require("./clientDogmaItemLoader");
+const { ClientDogmaEventCount, ClientDogmaBrainUpdate, ClientDogmaMessageMgr, ClientDogmaConstructorPrimitiveNotReadyError } = require("./clientDogmaConstructorPrimitives");
+const { ClientDogmaBrainLiteralCache } = require("./clientDogmaBrainLiteralCache");
+const { CLIENT_DOGMA_INSTANCE_SCHEMA, createClientDogmaConstructorRowApi } = require("./clientDogmaConstructorRow");
 
 const field = (object, name) => {
   if (object === null || object === undefined || !(name in Object(object))) throw Object.assign(new Error(`Object has no ${name} attribute.`), { name: "AttributeError" });
@@ -38,15 +41,31 @@ class ClientDogmaConstruction {
     this.dogmaItems = createClientDogmaNumericMap();
     this.shipsByPilotID = createClientDogmaNumericMap();
     this.pilotsByShipID = createClientDogmaNumericMap();
+    this.ignoredOwnerEvents = new ClientDogmaEventCount();
     this.itemsMissingLocation = createClientDogmaNumericMap({ missing: () => this.collections.strongSet() });
     this.itemsMissingOwner = createClientDogmaNumericMap({ missing: () => this.collections.strongSet() });
     this.locationID = null;
     this.attributeChangeCallbacksByAttributeID = createClientDogmaNumericMap();
+    // Local source-backed Base prerequisites, still NOT its complete ctor.
+    // Descriptor and eight explicit PyInt-zero inputs precede callbacks even
+    // though Client later overwrites fakeInstanceRow=None. These locally
+    // constructed records are not packets or GetInstance/registry defaults.
+    this.constructorRows = Object.hasOwn(providers, "constructorRows") ? providers.constructorRows : createClientDogmaConstructorRowApi();
+    if (typeof this.constructorRows?.DBRowDescriptor !== "function" || typeof this.constructorRows?.DBRow !== "function") {
+      throw new ClientDogmaConstructorPrimitiveNotReadyError("instance constructor rows");
+    }
+    this.instanceRowDescriptor = this.constructorRows.DBRowDescriptor(CLIENT_DOGMA_INSTANCE_SCHEMA);
+    const zero = Object.freeze({ value: 0, kind: Object.freeze({ kind: "integer", pythonType: "int", source: "client-base-constructor-zero" }) });
+    this.fakeInstanceRow = this.constructorRows.DBRow(this.instanceRowDescriptor, Array.from({ length: this.instanceRowDescriptor.length }, () => zero));
     // Base.__init__153-155 really registers these three callbacks. The client
     // inherits ShouldMessageItemEvent=False; it does not erase this map.
     this.attributeChangeCallbacksByAttributeID.set(49, (...args) => this.OnCpuAttributeChanged(...args));
     this.attributeChangeCallbacksByAttributeID.set(15, (...args) => this.OnPowerAttributeChanged(...args));
     this.attributeChangeCallbacksByAttributeID.set(978, (...args) => this.OnMaxGroupOnlineChanged(...args));
+    this.msgMgr = new ClientDogmaMessageMgr(this.collections);
+    this.brainLiterals = new ClientDogmaBrainLiteralCache({ keyPolicy: providers.brainLiteralKeys, format: providers.formatBrainLiteral });
+    this.scarecrows = createClientDogmaNumericMap();
+    this.brainUpdate = new ClientDogmaBrainUpdate(this.CheckPowerCpuRequirementForOnlineModules.bind(this));
   }
 
   requiredSkills(typeID) { return this.providers.requiredSkills(typeID); }
@@ -80,7 +99,13 @@ class ClientDogmaConstruction {
     if (!this.dogmaItems.has(itemID)) throw keyError(itemID);
     if (this.dogmaItems.get(itemID).isBeingDisembarked) return;
     const load = this.GetAttributeValue(itemID, loadID), output = this.GetAttributeValue(itemID, outputID);
-    if (attributeRecordLessThan(applyAttributeOperator(3, output, load), fittingEpsilon)) this.providers.CheckPowerCpuRequirementForOnlineModules(itemID);
+    if (attributeRecordLessThan(applyAttributeOperator(3, output, load), fittingEpsilon)) this.CheckPowerCpuRequirementForOnlineModules(itemID);
+  }
+  CheckPowerCpuRequirementForOnlineModules(...args) {
+    // Ready service/body adapter only. This partial context does not pretend
+    // the full Base CPU/online enforcement graph has been implemented.
+    if (typeof this.providers.CheckPowerCpuRequirementForOnlineModules !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("CPU/power enforcement");
+    return this.providers.CheckPowerCpuRequirementForOnlineModules(...args);
   }
   OnAttributeChanged(...args) { return this.providers.OnAttributeChanged(...args); }
 

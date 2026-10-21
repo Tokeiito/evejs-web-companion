@@ -90,6 +90,15 @@ class IdentityTable {
     this.used -= 1;
   }
 
+  clear() {
+    // CPython2.7.1 set_clear_internal451-511: reset the SAME live set to
+    // minimum storage before releasing old entries. Existing iterators keep
+    // their expected size/slot position; no generation invalidation is added.
+    // Python destructor/refcount reentry is outside this JS identity domain.
+    this.table = new Array(8);
+    this.used = this.fill = 0;
+  }
+
   copySet() {
     // set.copy -> make_new_set -> set_merge: one initial TWO-times-used
     // resize, then cached hashes in source slot order, without add growth.
@@ -106,7 +115,7 @@ class IdentityTable {
 
   differenceUpdate(other) {
     if (other === this) {
-      this.table = new Array(8); this.used = this.fill = 0; return;
+      this.clear(); return;
     }
     for (const entry of other.table) {
       if (!active(entry)) continue;
@@ -208,6 +217,7 @@ function createClientDogmaIdentity({ hash: suppliedHash, addressStart = 0x100000
       add(value) { const key = prepare(value); table.set(key, key); },
       remove(value) { table.remove(prepare(value), true); },
       discard(value) { table.remove(prepare(value), false); },
+      clear() { table.clear(); },
       has(value) { return table.entry(prepare(value)) !== undefined; },
       copy() { return setView(table.copySet(), prepare); },
       differenceUpdate(other) {
