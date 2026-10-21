@@ -307,6 +307,7 @@ function createPilotDogma({
     ...(nativeAttributeData ? {
       attributeKey: id => nativeAttributeData.name(id),
       readAttribute: (itemID, attributeID) => nativeAttributeRecord(itemID, attributeID).value,
+      readAttributeRecord: (itemID, name) => nativeAttributeRecord(itemID, nativeAttributeData.definitionByName(name).attributeID),
       // Blue Marshal.ReadObjectDict1330-1345 inserts into a new Python dict;
       // RefreshItemAttributes iterates that receiving table, not wire order.
       attributeEntries: entries => orderEntries(entries.map(([id, value, kind]) => [number(id), value, kind])),

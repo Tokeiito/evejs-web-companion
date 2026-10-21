@@ -3,7 +3,7 @@
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
 // Cached numeric value/charge state. A native caller supplies GetAttribute for
 // notice comparison; definitions, effect rows, metadata and nodes live outside.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null }) {
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null }) {
   const attributes = new Map(), charged = new Map();
   // Python retains the numeric class when assigning a decoded value. Keep its
   // immutable source record beside the primitive, before normalization/copying.
@@ -37,12 +37,26 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
   function createCharged(itemID, name, amount, time, pairs, kind) {
     const [tau, cap] = pairs.get(name);
     if (!charged.has(itemID)) charged.set(itemID, new Map());
-    const rechargeTime = record(itemID, tau), capacity = record(itemID, cap);
-    charged.get(itemID).set(name, [Number(amount), time, Number(rechargeTime?.value) / 5.0, Number(capacity?.value)]);
+    let rechargeTime, capacity, tauValue;
+    if (readAttributeRecord) {
+      rechargeTime = readAttributeRecord(itemID, tau);
+      // Native CreateCharged1731 divides before even reading capacity. None
+      // raises here, leaving any previous tuple and input snapshot intact.
+      if (!["number", "bigint", "boolean"].includes(typeof rechargeTime.value)) throw new TypeError("Recharge time is not a Python numeric value.");
+      tauValue = Number(rechargeTime.value) / 5.0;
+      capacity = readAttributeRecord(itemID, cap);
+      // Amount and capacity are raw Python operands, including explicit None.
+      charged.get(itemID).set(name, [amount, time, tauValue, capacity.value]);
+    } else {
+      rechargeTime = record(itemID, tau);
+      capacity = record(itemID, cap);
+      tauValue = Number(rechargeTime?.value) / 5.0;
+      charged.get(itemID).set(name, [Number(amount), time, tauValue, Number(capacity?.value)]);
+    }
     if (!chargedInputs.has(itemID)) chargedInputs.set(itemID, new Map());
     // Preserve the raw recharge operand, before /5.0, separately from the
     // derived tau. These records do not claim a kind for the computed result.
-    chargedInputs.get(itemID).set(name, Object.freeze({ amount: cell(amount, kind), rechargeTime, capacity }));
+    chargedInputs.get(itemID).set(name, Object.freeze({ amount: cell(amount, kind), rechargeTime, capacity, tau: cell(tauValue, readAttributeRecord ? Object.freeze({ kind: "real", source: "godma-tau-division" }) : undefined) }));
   }
   function refresh(itemID, info, doUpdate) {
     const fields = fieldsOf(info);

@@ -112,6 +112,7 @@ function createGodmaAttributeData({ dogmaAttributes } = {}) {
       if (!definition) throw new KeyError(name);
       return Object.freeze({ value: definition.defaultValue, kind: definition.defaultValue === null ? undefined : defaultKind });
     },
+    definitionByName: name => prepared().byName.get(name),
     // Map snapshots prevent callers from replacing the provider's identity
     // definitions. By-name winners share the exact by-ID definition object.
     byID: () => new Map(prepared().byID),
