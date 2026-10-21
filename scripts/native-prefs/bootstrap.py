@@ -23,6 +23,9 @@ class InstalledPreferencesModules(object):
             allowed = '/packages/eveprefs/' in filename
         elif name in ('caching', 'caching.lazy', 'caching.memoize'):
             allowed = '/packages/caching/' in filename
+        elif name in ('brennivin', 'brennivin.compat', 'brennivin.traceback2', 'traceback2', 'stringutil'):
+            suffix = name.replace('.', '/') + ('/__init__.py' if name in ('brennivin', 'traceback2', 'stringutil') else '.py')
+            allowed = filename.endswith('/packages/' + suffix)
         else:
             allowed = '/stdlib/' in filename
         if not allowed:
@@ -50,6 +53,8 @@ def _client_scoped_import(name, globals=None, locals=None, fromlist=(), level=-1
     bindings = globals.get('_CLIENT_IMPORT_BINDINGS') if type(globals) is dict else None
     if level in (-1, 0) and bindings is not None and name in bindings:
         return bindings[name]
+    if level == -1 and type(globals) is dict and name in globals.get('_CLIENT_ABSOLUTE_IMPORT_NAMES', ()):
+        level = 0
     return _client_import_fallback(name, globals, locals, fromlist, level)
 
 
@@ -600,7 +605,7 @@ def _create_effective_session_context(preferences, boot):
     # A named FIELD phase, not Session.__init__/__ChangeAttribute or the engine
     # lifecycle. Definitions/literals and pure field helpers are original code;
     # clocks, indexes, history, masquerades and service broadcasts are not run.
-    import types, __builtin__
+    import types, __builtin__, dis
 
     def module_code(name, suffix):
         prefix = name.rpartition('.')[0].replace('.', '/')
@@ -643,12 +648,44 @@ def _create_effective_session_context(preferences, boot):
                 '__attributesWithDefaultValueOfZero__': original.__attributesWithDefaultValueOfZero__}
     for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets'):
         selected[name] = core.__dict__[name]
+    selected['__repr__'] = core.__dict__['__repr__']
     for name in ('RecalculateDependantAttributes', 'RecalculateDependantAttributesWithChanges'):
         selected[name] = original.__dict__[name]
     state = type('EffectiveTransportSessionFields', (object,), selected)()
     for name in original.__persistvars__ + ['locationid', 'corprole']:
         state.__dict__[name] = state.GetDefaultValueOfAttribute(name)
     state.__dict__['sessionType'] = session_constants.SESSION_TYPE_GAME
+
+    def display_list(name):
+        # Read only the original constructor's closed literal assignment.
+        # Do not execute a sliced constructor or invent its engine fields.
+        code = original.__dict__['__init__'].func_code
+        instructions, cursor = [], 0
+        while cursor < len(code.co_code):
+            opcode = ord(code.co_code[cursor])
+            cursor += 1
+            argument = None
+            if opcode >= dis.HAVE_ARGUMENT:
+                argument = ord(code.co_code[cursor]) | (ord(code.co_code[cursor + 1]) << 8)
+                cursor += 2
+            if opcode == dis.opmap['EXTENDED_ARG']:
+                raise ImportError('Unsupported session display literal instruction')
+            instructions.append((opcode, argument))
+        positions = [i for i, (op, arg) in enumerate(instructions)
+                     if op == dis.opmap['STORE_ATTR'] and code.co_names[arg] == name]
+        if len(positions) != 1:
+            raise ImportError('Ambiguous session display list: ' + name)
+        index = positions[0]
+        if instructions[index - 1] != (dis.opmap['LOAD_FAST'], 0) or instructions[index - 2][0] != dis.opmap['BUILD_LIST']:
+            raise ImportError('Unexpected session display assignment: ' + name)
+        count = instructions[index - 2][1]
+        entries = instructions[index - 2 - count:index - 2]
+        if len(entries) != count or any(op != dis.opmap['LOAD_CONST'] or type(code.co_consts[arg]) is not str for op, arg in entries):
+            raise ImportError('Session display list is not a closed string literal: ' + name)
+        return [code.co_consts[arg] for op, arg in entries]
+
+    state.additionalAttributesToPrint = display_list('additionalAttributesToPrint')
+    state.additionalHexAttributes = display_list('additionalHexAttributes')
     result = _create_session_context(state)
 
     def restore_current():
@@ -680,4 +717,90 @@ def _create_effective_session_context(preferences, boot):
     result.preferences, result.boot, result.source_classes = preferences, boot, (core, original)
     result.last_notify, result.last_disappeared = {}, set()
     restore_current()
+    return result
+
+
+def _create_std_logging(logmodule, preferences, context):
+    # Entire original stdlib logging namespace per client: real root, Manager,
+    # locks, Handler, records, exception handling and atexit registration. No
+    # shared logging.root broadcast and no replacement formatter/error sink.
+    import types, __builtin__, os
+    context.assert_entry()
+    if context.preferences is not preferences or context.boot.role != 'client':
+        raise ValueError('Logging must share actual effective client field owners')
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        importer = zipimport.zipimporter(_archive + ('/' + prefix if prefix else ''))
+        code = importer.get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed logging dependency: ' + name)
+        return importer, code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts if type(value) is types.CodeType and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed logging definition: ' + name)
+        return matches[0]
+
+    owned_prefs = types.ModuleType('eveprefs')
+    owned_prefs.boot, owned_prefs.prefs = context.boot, preferences
+    bindings = {'__builtin__': context.builtins, 'eveprefs': owned_prefs}
+    # These original absolute dependencies are shared real modules. Resolve
+    # them explicitly so Python2 does not attempt implicit relative lookup in
+    # private application packages that are deliberately absent from sys.modules.
+    for dependency in ('sys', 'os', 'time', 'cStringIO', 'traceback', 'warnings',
+                       'weakref', 'codecs', 'thread', 'threading', 'atexit',
+                       'fnmatch', 'zlib', 'traceback2', 'stringutil'):
+        bindings[dependency] = _client_import_fallback(dependency, globals(), locals(), (), 0)
+
+    def original_module(name, suffix):
+        importer, code = module_code(name, suffix)
+        module = types.ModuleType(name)
+        # Preserve actual zipimport metadata, including .pyj __file__. Its
+        # logging._srcfile need not equal embedded BuildAgent co_filename.
+        filename, package = importer.get_filename(name), importer.is_package(name)
+        module.__file__, module.__loader__ = filename, importer
+        module.__package__ = name if package else name.rpartition('.')[0]
+        if package:
+            module.__path__ = [os.path.dirname(filename)]
+        module.__dict__.update({'__builtins__': __builtin__.__dict__,
+                                '_CLIENT_IMPORT_BINDINGS': bindings,
+                                'session': context.session})
+        if name == 'stdlogutils':
+            # Both absolute devenv and stdlogutils/devenv are absent from the
+            # pinned archive. Perform the real failed absolute import without
+            # a private-parent warning; the original try/except still runs.
+            module.__dict__['_CLIENT_ABSOLUTE_IMPORT_NAMES'] = ('devenv',)
+        types.FunctionType(code, module.__dict__)()
+        return module
+
+    logging = original_module('logging', '/stdlib/logging/__init__.py')
+    bindings['logging'] = logging
+    helpers = original_module('brennivin.logutils', '/packages/brennivin/logutils.py')
+    bindings['brennivin.logutils'] = helpers
+    stdlogutils = original_module('stdlogutils', '/packages/stdlogutils/__init__.py')
+    bindings['stdlogutils'] = stdlogutils
+    _, code = module_code('stdlogutils.logserver', '/packages/stdlogutils/logserver.py')
+    logserver = types.ModuleType('stdlogutils.logserver')
+    namespace = logserver.__dict__
+    namespace.update({'__builtins__': __builtin__.__dict__, '_CLIENT_IMPORT_BINDINGS': bindings,
+                      'logging': logging, 'stdlogutils': stdlogutils,
+                      'ChannelWrapper': logmodule.ChannelWrapper})
+    # Original source LEVEL_MAP resolves these real logging/channel constants.
+    namespace['LEVEL_MAP'] = {logging.CRITICAL: logmodule.LGERR, logging.ERROR: logmodule.LGERR,
+                             logging.WARNING: logmodule.LGWARN, logging.INFO: logmodule.LGINFO,
+                             logging.DEBUG: logmodule.LGINFO, logging.NOTSET: logmodule.LGINFO}
+    body = types.FunctionType(definition(code, 'LogServerHandler'), namespace)()
+    namespace['LogServerHandler'] = type('LogServerHandler', (logging.Handler,), body)
+    for name in ('GetLoggingLevelFromPrefs', 'InitLoggingToLogserver'):
+        namespace[name] = types.FunctionType(definition(code, name), namespace)
+    # Same original startup order as autoexec: init the EXISTING wrapper/mask,
+    # then install original handler/FMT_EVE with original preference mapping.
+    logmodule.init(context.boot.role, preferences)
+    logserver.InitLoggingToLogserver(logserver.GetLoggingLevelFromPrefs())
+    result = types.ModuleType('companion.std_logging_owner')
+    result.logging, result.stdlogutils, result.logserver = logging, stdlogutils, logserver
+    result.formatter, result.root = stdlogutils.Fmt.FMT_EVE, logging.root
+    result.context, result.preferences, result.boot = context, preferences, context.boot
     return result

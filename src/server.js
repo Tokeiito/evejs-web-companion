@@ -42,6 +42,7 @@ const { createClientBlueWallclock } = require("./gamePort/clientBlueWallclock");
 const { createClientFileLogger } = require("./gamePort/clientFileLogger");
 const { createClientPreferencesProvider } = require("./gamePort/clientPreferences");
 const { createClientLogModule } = require("./gamePort/clientLogModule");
+const { createClientStdLogging } = require("./gamePort/clientStdLogging");
 const { createClientTaskletTimer } = require("./gamePort/clientTaskletTimer");
 const { createClientSessionOwners } = require("./gamePort/clientEffectiveSessionContext");
 const { createClientStaticService } = require("./gamePort/clientStaticService");
@@ -288,6 +289,10 @@ const gamePortPilots = options.gamePortPilots !== undefined
         localizationData: createClientNativeLocalization({ provider: nativePreferencesProvider, clientRoot: config.clientRoot, cacheRoot: path.resolve(config.dataDir, "native-preferences/localization") }),
         transportSession: owners.session,
         createSessionContext: () => owners.nativeSessionOwner.sessionContext,
+        createStdLogging: ({ sessionContext, localizationSettings }) => createClientStdLogging({
+          provider: nativePreferencesProvider, logging: owners.logging, preferences: owners.preferences,
+          sessionContext, boot: localizationSettings.boot,
+        }),
       }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({

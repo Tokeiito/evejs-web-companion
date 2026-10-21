@@ -16,11 +16,13 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * separate localization data preparation retains the actual shared native
  * English backend, without publishing the settings/session/Get chain.
  * prepareSessionContext() retains the configured original Sissy field owner;
- * production supplies the same effective owner prepared before login. No full
+ * production supplies the same effective owner prepared before login.
+ * prepareStdLogging() retains original per-client root/Manager/handler/FMT_EVE
+ * over those same owners, not full logmodule LogTraceback/LogException. No full
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -36,6 +38,21 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let localizationSettings = null, pendingLocalizationSettings = null;
   let nativeLocalization = null, pendingLocalizationData = null;
   let sessionContext = null, pendingSessionContext = null;
+  let stdLogging = null, pendingStdLogging = null;
+  function prepareStdLogging() {
+    if (stdLogging !== null) return Promise.resolve(stdLogging);
+    if (pendingStdLogging !== null) return pendingStdLogging;
+    if (typeof createStdLogging !== "function") throw new Error("Actual owned standard logging is not configured.");
+    const reading = Promise.all([prepareSessionContext(), prepareLocalizationSettings()]).then(([sessionContext, localizationSettings]) =>
+      createStdLogging({ sessionContext, localizationSettings })).then(owner => {
+      if (!owner?.module || !owner.root || owner.logmodule !== logging || owner.preferences !== preferences || owner.sessionContext !== sessionContext || owner.boot !== localizationSettings.boot) throw new Error("Standard logging must retain the same native client owners.");
+      owner.assertCurrent();
+      stdLogging = owner; return owner;
+    });
+    pendingStdLogging = reading;
+    const forget = () => { if (pendingStdLogging === reading) pendingStdLogging = null; };
+    reading.then(forget, forget); return reading;
+  }
   function prepareSessionContext() {
     if (sessionContext !== null) return Promise.resolve(sessionContext);
     if (pendingSessionContext !== null) return pendingSessionContext;
@@ -121,7 +138,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.
