@@ -18,11 +18,13 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * prepareSessionContext() retains the configured original Sissy field owner;
  * production supplies the same effective owner prepared before login.
  * prepareStdLogging() retains original per-client root/Manager/handler/FMT_EVE
- * over those same owners, not full logmodule LogTraceback/LogException. No full
+ * over those same owners. prepareErrorLogging() separately attaches the original
+ * pre-UI error graph; prepareLocalizationLookup() extends the same settings
+ * instance with original Get/Important methods and actual main-label data. No full
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null, createLocalizationLookup = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -40,6 +42,21 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let sessionContext = null, pendingSessionContext = null;
   let stdLogging = null, pendingStdLogging = null;
   let errorLogging = null, pendingErrorLogging = null;
+  let lookup = null, pendingLookup = null;
+  function prepareLocalizationLookup() {
+    if (lookup !== null) return Promise.resolve(lookup);
+    if (pendingLookup !== null) return pendingLookup;
+    if (typeof createLocalizationLookup !== "function") throw new Error("Actual original localization lookup is not configured.");
+    const reading = Promise.all([prepareLocalizationSettings(), prepareLocalizationData(), prepareErrorLogging()])
+      .then(([localizationSettings, localizationData, errorLogging]) => createLocalizationLookup({ localizationSettings, localizationData, errorLogging, sessionContext }))
+      .then(owner => {
+        if (!owner?.instance || owner.localizationSettings !== localizationSettings || owner.localizationData !== nativeLocalization || owner.errorLogging !== errorLogging || owner.sessionContext !== sessionContext) throw new Error("Localization lookup must retain the same native client owners.");
+        owner.assertCurrent(); lookup = owner; return owner;
+      });
+    pendingLookup = reading;
+    const forget = () => { if (pendingLookup === reading) pendingLookup = null; };
+    reading.then(forget, forget); return reading;
+  }
   function prepareErrorLogging() {
     if (errorLogging !== null) return Promise.resolve(errorLogging);
     if (pendingErrorLogging !== null) return pendingErrorLogging;
@@ -152,7 +169,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging, prepareLocalizationLookup,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.

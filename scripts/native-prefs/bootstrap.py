@@ -53,6 +53,9 @@ def _client_scoped_import(name, globals=None, locals=None, fromlist=(), level=-1
     bindings = globals.get('_CLIENT_IMPORT_BINDINGS') if type(globals) is dict else None
     if level in (-1, 0) and bindings is not None and name in bindings:
         return bindings[name]
+    relative = globals.get('_CLIENT_RELATIVE_IMPORT_BINDINGS') if type(globals) is dict else None
+    if level == 1 and relative is not None and name in relative:
+        return relative[name]
     if level == -1 and type(globals) is dict and name in globals.get('_CLIENT_ABSOLUTE_IMPORT_NAMES', ()):
         level = 0
     return _client_import_fallback(name, globals, locals, fromlist, level)
@@ -924,4 +927,177 @@ def _attach_error_logging(logmodule, stdlogutils, context, tasklet_timer, argume
         return logmodule.LogException(*args)
 
     result.traceback_entry, result.exception_entry = traceback_entry, exception_entry
+    return result
+
+
+def _attach_localization_lookup(settings_owner, data, standard_logging, logmodule, logger, context, startup):
+    # Named lookup/data phase on the SAME settings instance; not its full
+    # Localization constructor/LoadLanguageData, property handlers or Blue engine.
+    import types, __builtin__, os, dis, re
+    context.assert_entry()
+    if context.preferences is not settings_owner.preferences or context.boot is not settings_owner.boot:
+        raise ValueError('Localization must retain the actual early settings/session owners')
+
+    def code_for(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        importer = zipimport.zipimporter(_archive + ('/' + prefix if prefix else ''))
+        code = importer.get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed localization lookup dependency: ' + name)
+        return importer, code
+
+    def definition(code, name):
+        matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed lookup definition: ' + name)
+        return matches[0]
+
+    def instructions(code):
+        result, cursor = [], 0
+        while cursor < len(code.co_code):
+            opcode = ord(code.co_code[cursor])
+            cursor += 1
+            argument = None
+            if opcode >= dis.HAVE_ARGUMENT:
+                argument = ord(code.co_code[cursor]) | ord(code.co_code[cursor + 1]) << 8
+                cursor += 2
+            if opcode == dis.EXTENDED_ARG:
+                raise ImportError('Unsupported lookup literal instruction')
+            result.append((dis.opname[opcode], argument))
+        return result
+
+    def literal(code, name):
+        rows = instructions(code)
+        stores = [i for i, (op, arg) in enumerate(rows) if op == 'STORE_NAME' and code.co_names[arg] == name]
+        if len(stores) != 1 or rows[stores[0] - 1][0] != 'LOAD_CONST':
+            raise ImportError('Not a closed lookup literal: ' + name)
+        return code.co_consts[rows[stores[0] - 1][1]]
+
+    # Fresh BluePyOS policy bool is source/shipped false; its Startup enables
+    # by argument PRESENCE, not value. This is a selected companion policy port
+    # over real captured host inputs, NOT a native getter or ExeFile invocation.
+    policy = types.ModuleType('companion.fresh_localization_telemetry_policy')
+    policy.markupZonesInPython = False
+    if startup.HasStartupArg('telemetryMarkup'):
+        policy.markupZonesInPython = True
+    if policy.markupZonesInPython:
+        raise RuntimeError('Telemetry markup requires a real statistics zone producer')
+    blue_policy = types.ModuleType('companion.localization_policy_inputs')
+    blue_policy.pyos = policy
+    owned_prefs = types.ModuleType('eveprefs')
+    owned_prefs.boot, owned_prefs.prefs = context.boot, settings_owner.preferences
+    bindings = {'logging': standard_logging, 'eveprefs': owned_prefs, '__builtin__': context.builtins,
+                'localstorage': context.localstorage, 'blue': blue_policy}
+    for name in ('operator', 'contextlib', 'functools', 'types'):
+        bindings[name] = _client_import_fallback(name, globals(), locals(), (), 0)
+
+    def shell(name, suffix):
+        importer, code = code_for(name, suffix)
+        module = types.ModuleType(name)
+        filename, package = importer.get_filename(name), importer.is_package(name)
+        module.__file__, module.__loader__ = filename, importer
+        module.__package__ = name if package else name.rpartition('.')[0]
+        if package:
+            module.__path__ = [os.path.dirname(filename)]
+        module.__dict__.update({'__builtins__': __builtin__.__dict__, '_CLIENT_IMPORT_BINDINGS': bindings,
+                                'session': context.session})
+        return module, code
+
+    langutils, root_code = shell('langutils', '/packages/langutils/__init__.py')
+    bindings['langutils'] = langutils
+    modules = []
+    for name in ('comfylang', 'langconst', 'logic'):
+        module, code = shell('langutils.' + name, '/packages/langutils/' + name + '.py')
+        setattr(langutils, name, module)
+        bindings[name], bindings['langutils.' + name] = module, module
+        modules.append((module, code))
+    langutils.__dict__['_CLIENT_RELATIVE_IMPORT_BINDINGS'] = {name: getattr(langutils, name) for name in ('comfylang', 'langconst', 'logic')}
+    for module, code in modules:
+        types.FunctionType(code, module.__dict__)()
+    types.FunctionType(root_code, langutils.__dict__)()
+    zoning, zoning_code = shell('pytelemetry.zoning', '/packages/pytelemetry/zoning.py')
+    types.FunctionType(zoning_code, zoning.__dict__)()
+    settings_package = types.ModuleType('localization.settings')
+    settings_package.qaSettings, settings_package.bilingualSettings = settings_owner.qa, settings_owner.bilingual
+    uiutil = types.ModuleType('localization.uiutil')
+    uiutil.__dict__.update({'__builtins__': __builtin__.__dict__, 'settings': settings_package})
+    _, ui_code = code_for('localization.uiutil', '/packages/localization/uiutil.py')
+    uiutil.PrepareLocalizationSafeString = types.FunctionType(definition(ui_code, 'PrepareLocalizationSafeString'), uiutil.__dict__, 'PrepareLocalizationSafeString', (None,))
+    _, source = code_for('localization.localizationBase', '/packages/localization/localizationBase.py')
+    cls = definition(source, 'Localization')
+    # Recover the actual eight Unicode strings from the closed original dict
+    # expression; never use the corrupted non-English decompiler rendering.
+    rows = instructions(source)
+    stores = [i for i, (op, arg) in enumerate(rows) if op == 'STORE_NAME' and source.co_names[arg] == 'FALLBACK_TRANSLATION_STRINGS']
+    if len(stores) != 1:
+        raise ImportError('Ambiguous original fallback dictionary')
+    end = stores[0]
+    start = max(i for i, (op, arg) in enumerate(rows[:end]) if op == 'BUILD_MAP')
+    stack = []
+    for op, arg in rows[start:end]:
+        if op == 'BUILD_MAP' and not stack:
+            stack.append({})
+        elif op == 'LOAD_CONST':
+            stack.append(source.co_consts[arg])
+        elif op == 'STORE_MAP' and len(stack) == 3 and type(stack[0]) is dict:
+            key, value = stack.pop(), stack.pop()
+            stack[0][key] = value
+        else:
+            raise ImportError('Fallback dictionary is not a closed constant expression')
+    if len(stack) != 1 or type(stack[0]) is not dict or len(stack[0]) != 8:
+        raise ImportError('Unexpected original fallback dictionary')
+    _, common = code_for('localization.common.util', '/packages/localization/common/util.py')
+    constants, constants_code = shell('carbon.common.script.sys.serviceConst', '/carbon/common/script/sys/serviceConst.py')
+    types.FunctionType(constants_code, constants.__dict__)()
+    namespace = {'__name__': 'localization.localizationBase', '__builtins__': __builtin__.__dict__,
+                 '_CLIENT_IMPORT_BINDINGS': bindings, 'session': context.session,
+                 'boot': context.boot, 'prefs': settings_owner.preferences, 'langutils': langutils,
+                 'internalUtil': settings_owner.internal, 'qaSettings': settings_owner.qa,
+                 'bilingualSettings': settings_owner.bilingual, 'commonutils': settings_owner.commonutils,
+                 'locconst': settings_owner.constants, 'UNRESOLVED_LOC_MARKER': literal(common, 'UNRESOLVED_LOC_MARKER'),
+                 'FALLBACK_TRANSLATION_STRINGS': stack[0], 'ROLEMASK_ELEVATEDPLAYER': constants.ROLEMASK_ELEVATEDPLAYER,
+                 'logger': logger, 'logmodule': logmodule, 'log': standard_logging.getLogger('localization.localizationBase'),
+                 'eveLocalization': data.backend, 'uiutil': uiutil, 're': re, 'sys': sys}
+    selected, decorated = settings_owner.settings, []
+    if hasattr(selected, 'languageLabels'):
+        raise RuntimeError('An attached localization lookup cannot be initialized again')
+    for name in ('_InitializeInternalVariables', '_InitializeTextData', '_ReadMainLocalizationData', '_IsValidLanguage',
+                 'SetFallBackMode', 'GetFallBackMode', 'Get', 'GetByMessageID', 'GetByLabel',
+                 'GetImportantByMessageID', 'GetImportantByLabel', 'GetMessageIDForLabel', 'GetLanguages',
+                 'UsePrimaryLanguageText', 'HighlightImportant', 'UseImportantTooltip', '_QaTooltipOverride',
+                 'FormatImportantString', 'CleanImportantMarkup'):
+        defaults = (None,) if name in ('Get', 'GetByMessageID', 'GetByLabel') else None
+        method = types.FunctionType(definition(cls, name), namespace, name, defaults)
+        if name in ('_InitializeTextData', '_ReadMainLocalizationData', 'UsePrimaryLanguageText'):
+            method = zoning.ZONE_METHOD(method)
+            decorated.append(name)
+        setattr(type(selected), name, method)
+    for name in ('FIELD_LABELS', 'FIELD_LANGUAGES', 'FIELD_TYPES'):
+        setattr(type(selected), name, literal(cls, name))
+    selected._InitializeInternalVariables()
+    selected._InitializeTextData()
+    selected.SetFallBackMode(0)
+    supported = selected._ReadMainLocalizationData(data.main, settings_owner.constants.DATATYPE_FSD)
+    if not supported or not data.backend.HasLanguage(selected._GetPrimaryLanguage()):
+        raise RuntimeError('Original main label data or actual primary language is unavailable')
+    selected._primaryLanguageID = data.backend.GetPrimaryLanguage()
+    if selected._primaryLanguageID != selected._GetPrimaryLanguage():
+        raise RuntimeError('Loaded backend and original primary-language constant differ')
+    selected._GetByMessageID = data.backend.GetMessageByID
+    result = types.ModuleType('companion.localization_lookup_owner')
+    result.settings, result.data, result.context = settings_owner, data, context
+    result.instance, result.langutils, result.uiutil = selected, langutils, uiutil
+    result.policy, result.zoning, result.decorated = policy, zoning, tuple(decorated)
+    result.namespace = namespace
+
+    def invoke(name, args, kwargs):
+        return getattr(selected, name)(*args, **kwargs)
+
+    result.invoke = invoke
+    def entry(name):
+        def call(*args):
+            # A real companion caller for source Get's exception-frame locals.
+            return getattr(selected, name)(*args)
+        return call
+    result.entries = {name: entry(name) for name in ('Get', 'GetByMessageID', 'GetByLabel', 'GetImportantByMessageID', 'GetImportantByLabel')}
     return result
