@@ -17,6 +17,22 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
   // Native caches are name-keyed: distinct installed IDs can share a name.
   // Freshness remains keyed by the incoming ID, before this mapping.
   const namedPairs = () => new Map([...chargedPairs].map(([id, pair]) => [attributeKey(id), pair.map(attributeKey)]));
+  function mappings(prepared) {
+    if (prepared) return prepared;
+    // Only raw readers use the supplied legacy relationships. Native pilots
+    // instead read the original manager's direct/max/tau dictionaries.
+    const pairs = namedPairs(), byMax = new Map(), byTau = new Map();
+    for (const [name, [tau, cap]] of pairs) {
+      if (!byMax.has(cap)) byMax.set(cap, []);
+      if (!byTau.has(tau)) byTau.set(tau, []);
+      byMax.get(cap).push(name); byTau.get(tau).push(name);
+    }
+    return {
+      has: name => pairs.has(name), get: name => pairs.get(name), part: (name, index) => pairs.get(name)[index],
+      hasMax: name => byMax.has(name), byMax: name => byMax.get(name),
+      hasTau: name => byTau.has(name), byTau: name => byTau.get(name),
+    };
+  }
   // Python int/long/float/bool equality also covers numeric wire aliases.
   function equal(a, b) {
     if (typeof a === "boolean") a = Number(a);
@@ -46,7 +62,6 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
   }
   function createCharged(itemID, name, amount, time, pairs, kind) {
     const [tau, cap] = pairs.get(name);
-    if (!charged.has(itemID)) charged.set(itemID, new Map());
     let rechargeTime, capacity, tauValue;
     if (readAttributeRecord) {
       rechargeTime = readAttributeRecord(itemID, tau);
@@ -68,7 +83,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     // derived tau. These records do not claim a kind for the computed result.
     chargedInputs.get(itemID).set(name, Object.freeze({ amount: cell(amount, kind), rechargeTime, capacity, tau: cell(tauValue, readAttributeRecord ? Object.freeze({ kind: "real", source: "godma-tau-division" }) : undefined) }));
   }
-  function refresh(itemID, info, doUpdate, freshness = null, rawItem = { value: itemID }) {
+  function refresh(itemID, info, doUpdate, freshness = null, rawItem = { value: itemID }, chargeMappings = null) {
     const fields = fieldsOf(info);
     // Native reads both timestamps before iterating/mutating the dictionary.
     if (!fields.has("time") || !fields.has("wallclockTime")) throw new TypeError("Godma numeric refresh requires time and wallclockTime.");
@@ -94,18 +109,17 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     kinds.set(itemID, valueKinds);
     // UpdateAttribute never clears old charged tuples. Even a stale value's
     // retained charge is recreated with this snapshot's time when tau/cap exist.
-    const pairs = namedPairs();
+    const pairs = mappings(chargeMappings);
     for (const [id, amount] of values) {
       if (!pairs.has(id)) continue;
       if (!charged.has(itemID)) charged.set(itemID, new Map());
-      const [tau, cap] = pairs.get(id);
-      if (chargeOperandPresent(values.get(tau)) && chargeOperandPresent(values.get(cap))) createCharged(itemID, id, amount, time, pairs, valueKinds.get(id));
+      if (chargeOperandPresent(values.get(pairs.part(id, 0))) && chargeOperandPresent(values.get(pairs.part(id, 1)))) createCharged(itemID, id, amount, time, pairs, valueKinds.get(id));
     }
   }
-  function change(itemID, attributeID, time, amount, kind) {
+  function change(itemID, attributeID, time, amount, kind, chargeMappings = null) {
     const values = attributes.get(itemID);
     if (!values) return false;
-    const name = attributeKey(attributeID), pairs = namedPairs();
+    const name = attributeKey(attributeID), pairs = mappings(chargeMappings);
     // ApplyAttributeChange2536 reads GetAttribute, including its default on
     // an uncached name, before deciding that the incoming value is redundant.
     const old = readAttribute ? readAttribute(itemID, attributeID) : read(itemID, name);
@@ -113,9 +127,15 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     values.set(name, amount);
     if (!kinds.has(itemID)) kinds.set(itemID, new Map());
     kinds.get(itemID).set(name, kind);
-    if (pairs.has(name)) createCharged(itemID, name, amount, time, pairs, kind);
-    else for (const [id, [tau, cap]] of pairs) {
-      if (name === cap) {
+    if (pairs.has(name)) {
+      if (!charged.has(itemID)) charged.set(itemID, new Map());
+      createCharged(itemID, name, amount, time, pairs, kind);
+    }
+    else if (pairs.hasMax(name)) {
+      for (const id of pairs.byMax(name)) {
+        // Native max initialization is also conditional on this OUTER
+        // dictionary existing; scalar tau/cap values alone do not admit it.
+        if (!charged.has(itemID)) continue;
         if (charged.get(itemID)?.has(id)) {
           if (evaluateCharge) {
             let current = readAttributeRecord(itemID, id);
@@ -130,10 +150,21 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
             if (amountNow > amount) amountNow = amount;
             createCharged(itemID, id, amountNow, time, pairs);
           }
-        } else if (chargeOperandPresent(values.get(tau)) && chargeOperandPresent(values.get(cap))) createCharged(itemID, id, values.get(id), time, pairs, kinds.get(itemID)?.get(id));
-      } else if (name === tau && charged.get(itemID)?.has(id)) {
+          break;
+        } else if (chargeOperandPresent(values.get(pairs.part(id, 0))) && chargeOperandPresent(values.get(pairs.part(id, 1)))) {
+          // The original dictionary subscription raises for a missing charge
+          // scalar, rather than manufacturing an undefined/None operand.
+          if (!values.has(id)) { const error = new Error(`Missing charged attribute ${String(id)}.`); error.name = "KeyError"; error.key = id; throw error; }
+          createCharged(itemID, id, values.get(id), time, pairs, kinds.get(itemID)?.get(id));
+          break;
+        }
+      }
+    } else if (pairs.hasTau(name)) {
+      for (const id of pairs.byTau(name)) {
+        if (!charged.get(itemID)?.has(id)) continue;
         const current = readAttributeRecord ? readAttributeRecord(itemID, id) : record(itemID, id);
         createCharged(itemID, id, current.value, time, pairs, current.kind);
+        break;
       }
     }
     return true;

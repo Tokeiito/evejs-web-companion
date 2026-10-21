@@ -330,6 +330,12 @@ function createPilotDogma({
   let clientPreferences = null, pendingClientPreferences = null;
   let godmaHeaders = null, pendingGodmaHeaders = null;
   let nativeFreshness = null, pendingNativeFreshness = null;
+  let nativeChargeMappings = null, pendingNativeChargeMappings = null;
+  function initializeNativeChargeMappings() {
+    return pendingNativeChargeMappings ??= initializeNativeGodmaHeaders().then(owner => owner.prepareChargeMappings()).then(owner => {
+      nativeChargeMappings = owner; return owner;
+    });
+  }
   function initializeNativeFreshness() {
     if (!createNativeClientGodmaHeaders) return Promise.resolve(null);
     if (nativeFreshness) return Promise.resolve(nativeFreshness);
@@ -472,7 +478,17 @@ function createPilotDogma({
   const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated }) : null;
   const primeChannel = createGodmaPrimeChannel();
   const withAttributes = (work, captured) => {
-    const run = scope => !nativeAttributeData || nativeAttributeData.isReady() ? work(scope) : nativeAttributeData.ready().then(() => { scope?.assertCurrent(); return work(scope); });
+    const run = scope => {
+      if (createNativeClientGodmaHeaders && !nativeAttributeData) throw new GodmaAttributeDataNotReadyError("Native charge mappings require installed numeric attribute definitions.");
+      const apply = () => {
+        scope?.assertCurrent();
+        return work(scope, nativeChargeMappings ? nativeChargeMappings.forManager(scope.manager) : null);
+      };
+      const pending = [];
+      if (nativeAttributeData && !nativeAttributeData.isReady()) pending.push(nativeAttributeData.ready());
+      if (createNativeClientGodmaHeaders && !nativeChargeMappings) pending.push(initializeNativeChargeMappings());
+      return pending.length ? Promise.all(pending).then(apply) : apply();
+    };
     return captured === undefined ? withFreshness(run) : run(captured);
   };
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
@@ -667,8 +683,8 @@ function createPilotDogma({
     const rawItem = decodedFieldRecord(invItem, "itemID");
     identity.set(id, { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
     if (updated.refresh) {
-      return withAttributes(scope => {
-        numericValues.refresh(id, row, updated.doUpdate, scope, rawItem);
+      return withAttributes((scope, mappings) => {
+        numericValues.refresh(id, row, updated.doUpdate, scope, rawItem, mappings);
         if (numericEffects) return numericEffects.refresh(inventory.itemID, number(inventory.typeID), row, updated.doUpdate).then(() => {
           scope?.assertCurrent();
           loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true, freshness: scope, rawItem });
@@ -813,13 +829,13 @@ function createPilotDogma({
         info = await fetchItemInfo(refresh.itemID);
         freshness?.assertCurrent();
         if (info !== null) {
-          if (nativeAttributeData) await nativeAttributeData.ready();
-          freshness?.assertCurrent();
-          numericValues.refresh(refresh.itemID, info, refresh.doUpdate, freshness, decodedFieldRecord(refresh.row, "itemID"));
-          if (numericEffects) {
-            const captured = rowFields(refresh.row);
-            await numericEffects.refresh(captured.itemID, number(captured.typeID), info, refresh.doUpdate);
-          }
+          await withAttributes((scope, mappings) => {
+            numericValues.refresh(refresh.itemID, info, refresh.doUpdate, scope, decodedFieldRecord(refresh.row, "itemID"), mappings);
+            if (numericEffects) {
+              const captured = rowFields(refresh.row);
+              return numericEffects.refresh(captured.itemID, number(captured.typeID), info, refresh.doUpdate);
+            }
+          }, freshness);
         }
       }
     } finally {
@@ -1024,12 +1040,12 @@ function createPilotDogma({
     return true;
   }
 
-  function change(each, kind = getDecodedNumberKind(each, 5), freshness = null) {
+  function change(each, kind = getDecodedNumberKind(each, 5), freshness = null, mappings = null) {
     freshness?.assertCurrent();
     const [, , itemKey, attributeID, time, newValue] = each;
     // Freshness was accepted BEFORE any definition provider could yield.
     const id = key(itemKey), attribute_ = number(attributeID);
-    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue, kind);
+    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue, kind, mappings);
     // clientDogmaLocation.OnModuleAttributeChanges: a rack's heat is set to what the server says, as of now
     // (HeatAttribute.SetBaseValue). The client leaves it alone when it is that already, going by the value its
     // gauges last worked out; here that is the heat as of now, which in space is the same to within a gauge's
@@ -1109,7 +1125,7 @@ function createPilotDogma({
           if (ofACharge(each) && emptied.has(key(each[2])) && number(each[3]) !== ATTRIBUTE.QUANTITY) continue;
           try {
             if (!acceptChange(each, freshness) || !ownsChange(each, freshness)) continue;
-            const work = withAttributes(() => change(each, getDecodedNumberKind(each, 5), freshness), freshness);
+            const work = withAttributes((scope, mappings) => change(each, getDecodedNumberKind(each, 5), scope, mappings), freshness);
             if (work && typeof work.then === "function") return work.catch(() => {}).then(() => action(index + 1));
           } catch {
             // Native ExceptionEater isolates each change inside this receiver.
@@ -1193,7 +1209,7 @@ function createPilotDogma({
       const work = withFreshness(freshness => primeChannel.receive(() => {
         const each = ["OnModuleAttributeChange", ...notification.args];
         if (!acceptChange(each, freshness, notification.args, -1) || !ownsChange(each, freshness, notification.args, -1)) return false;
-        return withAttributes(() => change(each, kind, freshness), freshness);
+        return withAttributes((scope, mappings) => change(each, kind, scope, mappings), freshness);
       }));
       if (work && typeof work.then === "function") return work.then(() => true);
       return true;
@@ -1430,7 +1446,9 @@ function createPilotDogma({
       return withFreshness(scope => scope ? scope.replace() : lastChange.clear());
     },
     beginPrime: primeChannel.begin,
-    initializeNativeAttributes: () => nativeAttributeData?.ready(),
+    // Prime prepares the original InitializeData relationships BEFORE the
+    // remote GetAllInfo demand. This is not original whole-Prime readiness.
+    initializeNativeAttributes: () => withAttributes(() => undefined),
     // Explicit local preparation only. Native activation/loaded-node admission
     // must choose its own types; GetAllInfo does not seed that registry here.
     initializeNativeTypeAttributes: typeID => {
