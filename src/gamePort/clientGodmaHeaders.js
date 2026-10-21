@@ -28,28 +28,43 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   }
   let rowsets = null;
   let managerPreparation = null;
+  let managerDataPreparation = null;
+  function prepareStateManager() {
+    assertCurrent();
+    return managerPreparation ??= (async () => {
+      const types = await (rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader }));
+      assertCurrent();
+      const constantsOwner = runtime.values.global("_prepare_godma_state_manager").call(module, types.module);
+      // Explicit async preparation, separate from native cold tasklet/RPC
+      // publication. The original lazy call still owns the manager slot.
+      if (module.getAttr("needs_remote").call(Buffer.from("itemrd")).truth()) {
+        await inventoryHeader.GetItemHeader();
+        assertCurrent();
+      }
+      return Object.freeze({
+        module, constants: constantsOwner.getAttr("appConst"), rowsets: types, context,
+        getWarm() { assertCurrent(); return module.getAttr("get_state_manager_warm").call(); },
+      });
+    })();
+  }
   return Object.freeze({
     module, instance, inventoryHeader, context,
     prepareRowsets() {
       assertCurrent();
       return rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader });
     },
-    prepareStateManager() {
+    prepareStateManager,
+    prepareStateManagerData() {
       assertCurrent();
-      return managerPreparation ??= (async () => {
-        const types = await (rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader }));
+      return managerDataPreparation ??= (async () => {
+        const [manager, attributes] = await Promise.all([
+          prepareStateManager(), inventoryHeader.staticService.prepareAttributes(),
+        ]);
         assertCurrent();
-        const constantsOwner = runtime.values.global("_prepare_godma_state_manager").call(module, types.module);
-        // Explicit async preparation, not the original cold tasklet/RPC path.
-        // The actual lazy method still constructs and publishes synchronously
-        // afterward, with no pending-manager Promise or copied slot in JS.
-        if (module.getAttr("needs_remote").call(Buffer.from("itemrd")).truth()) {
-          await inventoryHeader.GetItemHeader();
-          assertCurrent();
-        }
+        const dataOwner = runtime.values.global("_attach_godma_state_manager_data").call(module, attributes.data);
         return Object.freeze({
-          module, constants: constantsOwner.getAttr("appConst"), rowsets: types, context,
-          getWarm() { assertCurrent(); return module.getAttr("get_state_manager_warm").call(); },
+          module: dataOwner, manager, attributes, context,
+          initializeWarm() { assertCurrent(); return dataOwner.getAttr("initialize_warm").call(); },
         });
       })();
     },

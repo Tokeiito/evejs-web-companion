@@ -425,10 +425,11 @@ def _attach_static_attribute_data(service_types, raw, constant_values):
     namespace['DogmaAttributes'] = attributes
     namespace['attributeDataTypeTypeDamage'] = constant_values['attributeDataTypeTypeDamage']
     memoized = ('get_all_attributes_by_name', 'get_attribute_list_by_data_type',
-                'get_charge_recharge_time_attributes_by_id')
+                'get_charge_recharge_time_attributes_by_id', 'get_attribute_list_by_charge_recharge_time_id')
     for name in ('_get_dogma_attributes', 'get_all_attributes', 'get_all_attributes_by_id',
                  'get_all_attributes_by_name', 'get_attribute_list_by_data_type',
-                 'get_charge_recharge_time_attributes_by_id', 'get_attributes_by_charge_recharge_time_id'):
+                 'get_charge_recharge_time_attributes_by_id', 'get_attributes_by_charge_recharge_time_id',
+                 'get_attribute_list_by_charge_recharge_time_id'):
         function = types.FunctionType(definition(data_source, name), namespace)
         namespace[name] = memoize(function) if name in memoized else function
     base = service_types.BaseDogmaStaticSvc
@@ -2054,6 +2055,51 @@ def _prepare_godma_state_manager(owner, rowsets):
     return graph
 
 
+def _attach_godma_state_manager_data(owner, data):
+    # Bind this SAME selected original dogma.data capability, already owned by
+    # the native static service. No second FSD load/name map/recharge memoizer,
+    # full dogma.data module startup, or active gameplay cache is synthesized.
+    import types
+    graph = getattr(owner, 'constants_owner', None)
+    if graph is None or not graph.complete:
+        raise RuntimeError('Original StateManager construction must be prepared first')
+    base_globals = owner.service_types.BaseDogmaStaticSvc.__dict__['__init__'].func_globals
+    if base_globals.get('dogma_data') is not data:
+        raise TypeError('StateManager data must be the same native static service data owner')
+    existing = getattr(owner, 'manager_data', None)
+    if existing is not None:
+        if existing.data is not data:
+            raise TypeError('StateManager cannot change its actual static data owner')
+        return existing
+    dogma, constants = graph.modules['dogma'], graph.modules['dogma.const']
+    if hasattr(dogma, 'data') and dogma.data is not data:
+        raise TypeError('Original dogma parent already has a different data owner')
+    if 'dogma.data' in graph.modules and graph.modules['dogma.data'] is not data:
+        raise TypeError('Original dogma graph already has a different data owner')
+    if (type(data.attributeDataTypeTypeDamage) is not type(constants.attributeDataTypeTypeDamage) or
+            data.attributeDataTypeTypeDamage != constants.attributeDataTypeTypeDamage):
+        raise ValueError('Static data and original Godma attribute constants differ')
+    # Demand the actual prepared original method, not a default/empty mapping.
+    if not callable(data.get_attribute_list_by_charge_recharge_time_id):
+        raise TypeError('Original memoized recharge grouping is unavailable')
+    namespace = type(owner.instance).__dict__['__init__'].func_globals
+    dogma.data = data
+    graph.modules['dogma.data'] = data
+    namespace['dogma'] = dogma
+    namespace['attributeDataTypeTypeDamage'] = constants.attributeDataTypeTypeDamage
+    result = types.ModuleType('companion.godma_state_manager_data')
+    result.data, result.dogma, result.constants = data, dogma, constants
+
+    def initialize_warm():
+        # The original method owns its truth guard, ordered map assignments,
+        # partial failures and LAST inited=True. No JS success/memo cache.
+        return owner.get_state_manager_warm().InitializeData()
+
+    result.initialize_warm = initialize_warm
+    owner.manager_data = result
+    return result
+
+
 def _create_inventory_header_owner(service_types):
     # Core construction and the ONE Initialize108 field only. This selected
     # capability does not run invCache.Initialize's semaphore/service graph.
@@ -2167,4 +2213,5 @@ def _create_godma_header_owner(service_types, inventory_header, protocol):
     result.instance, result.needs_remote, result.read_warm = instance, needs_remote, read_warm
     result.dependencies, result.construction = services, construction
     result.source = source
+    result.service_types = service_types
     return result
