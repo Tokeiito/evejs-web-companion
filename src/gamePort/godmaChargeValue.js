@@ -1,5 +1,7 @@
 "use strict";
 
+const { ZeroDivisionError, OverflowError } = require("./clientDogmaErrors");
+
 // StateManager.GetChargeValue2037-2050, original Python27 evidence:
 // cdxchargearithmeticagent1 (24 identities). Numeric cache only, not the legacy
 // projection, loaded dogma nodes or GetAttribute's diagnostic wrapper.
@@ -12,20 +14,6 @@ class NumericProvenanceError extends Error {
   constructor() {
     super("Python numeric division requires the operands' source classes.");
     this.name = "NumericProvenanceError";
-  }
-}
-
-class ZeroDivisionError extends Error {
-  constructor(message = "float division by zero") {
-    super(message);
-    this.name = "ZeroDivisionError";
-  }
-}
-
-class OverflowError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "OverflowError";
   }
 }
 
