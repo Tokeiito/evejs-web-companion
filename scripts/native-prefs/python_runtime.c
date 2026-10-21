@@ -384,6 +384,11 @@ static napi_value logging_backend(napi_env env, napi_callback_info info) {
   if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
   return result(env, &scope, prefs_log_create(env, argv[0]));
 }
+static napi_value wallclock_backend(napi_env env, napi_callback_info info) {
+  napi_value argv[1]; Scope scope;
+  if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
+  return result(env, &scope, prefs_wallclock_create(env, argv[0]));
+}
 static napi_value get_global(napi_env env, napi_callback_info info) {
   napi_value argv[1]; Scope scope; PyObject *name, *answer;
   if (!arguments(env, info, 1, argv) || !begin(env, &scope)) return NULL;
@@ -542,6 +547,7 @@ static napi_value init(napi_env env, napi_value exports) {
     {"describe",NULL,describe,NULL,NULL,NULL,napi_default,NULL}, {"identity",NULL,identity,NULL,NULL,NULL,napi_default,NULL},
     {"dispose",NULL,dispose,NULL,NULL,NULL,napi_default,NULL}
     ,{"loggingBackend",NULL,logging_backend,NULL,NULL,NULL,napi_default,NULL}
+    ,{"wallclockBackend",NULL,wallclock_backend,NULL,NULL,NULL,napi_default,NULL}
   };
   return ok(env, napi_define_properties(env, exports, sizeof(methods)/sizeof(methods[0]), methods)) ? exports : NULL;
 }

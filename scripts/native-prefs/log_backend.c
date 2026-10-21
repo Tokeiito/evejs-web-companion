@@ -25,6 +25,7 @@ typedef struct { const char* name; PyCFunction method; int flags; const char* do
  X(uint16_t*, PyUnicodeUCS2_AsUnicode, (PyObject*)) \
  X(Py_ssize_t, PyUnicodeUCS2_GetSize, (PyObject*)) \
  X(PyObject*, PyInt_FromLong, (long)) \
+ X(PyObject*, PyLong_FromLongLong, (long long)) \
  X(PyObject*, PyErr_NoMemory, (void)) \
  X(void, PyErr_SetString, (PyObject*, const char*)) \
  X(PyObject*, PyCapsule_New, (void*, const char*, PyCapsuleDestructor)) \
@@ -186,6 +187,17 @@ static PyMethodDef methods[] = {
   {"log", log_message, 1, "Native O|ii arguments after channel token."},
   {"counter", counter, 1, "Native dynamic self.Log(text,1)."}
 };
+static PyObject* wallclock_now(PyObject* self, PyObject* args) {
+  if (!allowed() || !PyArg_ParseTuple(args, "")) return NULL;
+  Factory* sampler = (Factory*)PyCapsule_GetPointer(self, factory_name); if (!sampler) return NULL;
+  napi_value result; napi_valuetype type; int64_t value; bool lossless;
+  if (!invoke(&sampler->js, NULL, 0, NULL, &result) || !status(sampler->js.env, napi_typeof(sampler->js.env, result, &type))) return NULL;
+  if (type != napi_bigint) return fail("Wallclock backend must return a signed64 BigInt.");
+  if (!status(sampler->js.env, napi_get_value_bigint_int64(sampler->js.env, result, &value, &lossless))) return NULL;
+  if (!lossless) return fail("Wallclock backend must return a lossless signed64 BigInt.");
+  return PyLong_FromLongLong((long long)value);
+}
+static PyMethodDef wallclock_method = {"getWallclockTimeNow", wallclock_now, 1, "Actual synchronous signed64 wallclock sampler."};
 int prefs_log_bind(HMODULE python, int (*guard)(void)) {
 #define LOAD(ret, name, args) name = (ret (__cdecl *) args)GetProcAddress(python, #name); if (!name) return 0;
   API(LOAD)
@@ -198,16 +210,25 @@ int prefs_log_bind(HMODULE python, int (*guard)(void)) {
   owner_guard = guard;
   return none_object && str_type && unicode_type && runtime_error && type_error;
 }
-PyObject* prefs_log_create(napi_env env, napi_value callback) {
+static PyObject* callback_capsule(napi_env env, napi_value callback) {
   if (!allowed()) return NULL;
   napi_valuetype type;
   if (!status(env, napi_typeof(env, callback, &type))) return NULL;
-  if (type != napi_function) return fail("A synchronous real channel factory is required.");
+  if (type != napi_function) return fail("A synchronous real backend callback is required.");
   Factory* factory = (Factory*)calloc(1, sizeof(*factory)); if (!factory) return PyErr_NoMemory();
   factory->js.env = env;
   if (!status(env, napi_create_reference(env, callback, 1, &factory->js.reference))) { free(factory); return NULL; }
   PyObject* capsule = PyCapsule_New(factory, factory_name, factory_destroy);
   if (!capsule) { enqueue(&factory->js); return NULL; }
+  return capsule;
+}
+PyObject* prefs_wallclock_create(napi_env env, napi_value sampler) {
+  PyObject* capsule = callback_capsule(env, sampler); if (!capsule) return NULL;
+  PyObject* callable = PyCFunction_NewEx(&wallclock_method, capsule, NULL);
+  Py_DecRef(capsule); return callable;
+}
+PyObject* prefs_log_create(napi_env env, napi_value callback) {
+  PyObject* capsule = callback_capsule(env, callback); if (!capsule) return NULL;
   PyObject* module = PyModule_New("_client_logging_backend");
   if (!module) { Py_DecRef(capsule); return NULL; }
   for (size_t i = 0; i < sizeof(methods)/sizeof(methods[0]); ++i) {

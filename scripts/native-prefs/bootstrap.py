@@ -129,3 +129,97 @@ def _create_logmodule(backend):
                            ('methodcalls', 'MethodCalls'), ('unittest', 'Unittest')):
         namespace[variable] = namespace['GetChannel'](name)
     return module
+
+
+def _create_static_service_types(wallclock, logging, preferences, high, low, medium, skill):
+    # Selected original constructors, not ServiceManager/Run or a ready static
+    # service. Native Python owns these classes, dictionaries and method calls.
+    import types, dis
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed service module: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts
+                   if isinstance(value, types.CodeType) and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed service definition: ' + name)
+        return matches[0]
+
+    def literal_prefix(code, module_name):
+        # Original classbody data prefix only, before its first method code.
+        # Empty maps/lists are BUILD_MAP/BUILD_LIST, not co_consts objects.
+        # Decode a closed literal instruction set; never execute the unrelated
+        # method-definition/default/decorator graph or alter client bytecode.
+        namespace, stack, offset = {}, [], 0
+        while offset < len(code.co_code):
+            opcode = ord(code.co_code[offset])
+            offset += 1
+            argument = None
+            if opcode >= dis.HAVE_ARGUMENT:
+                argument = ord(code.co_code[offset]) | ord(code.co_code[offset + 1]) << 8
+                offset += 2
+            operation = dis.opname[opcode]
+            if operation == 'LOAD_CONST':
+                value = code.co_consts[argument]
+                if isinstance(value, types.CodeType):
+                    if stack:
+                        raise ImportError('Unexpected service method-default prefix')
+                    return namespace
+                if not isinstance(value, (type(None), bool, int, long, float, str, unicode, tuple)):
+                    raise ImportError('Unexpected service class literal')
+                stack.append(value)
+            elif operation == 'LOAD_NAME' and code.co_names[argument] == '__name__':
+                stack.append(module_name)
+            elif operation == 'BUILD_MAP' and argument == 0:
+                stack.append({})
+            elif operation == 'BUILD_LIST':
+                value = stack[-argument:] if argument else []
+                if argument:
+                    del stack[-argument:]
+                stack.append(value)
+            elif operation == 'STORE_NAME':
+                namespace[code.co_names[argument]] = stack.pop()
+            else:
+                raise ImportError('Unsupported installed service class prefix: ' + operation)
+        raise ImportError('Installed service class has no method boundary')
+
+    constants = types.ModuleType('companion.selected_static_constants')
+    constants.effectHiPower, constants.effectLoPower = high, low
+    constants.effectMedPower, constants.effectSkillEffect = medium, skill
+    clock = types.ModuleType('companion.service_wallclock')
+    clock.GetWallclockTimeNow = wallclock
+    host = types.ModuleType('companion.service_clock_capability')
+    host.os = clock
+    service_constants = {'__builtins__': __builtins__}
+    types.FunctionType(module_code('carbon.common.script.sys.serviceConst',
+                                   '/carbon/common/script/sys/serviceConst.py'), service_constants)()
+    core_code = definition(module_code('carbon.common.script.sys.service',
+                                      '/carbon/common/script/sys/service.py'), 'CoreService')
+    core_globals = {'__name__': 'carbon.common.script.sys.service',
+                    '__builtins__': __builtins__, 'blue': host, 'log': logging,
+                    'prefs': preferences, 'SERVICE_STOPPED': service_constants['SERVICE_STOPPED']}
+    core_namespace = literal_prefix(core_code, core_globals['__name__'])
+    for name in ('__init__', 'InitService', '__getattr__', '__setattr__'):
+        core_namespace[name] = types.FunctionType(definition(core_code, name), core_globals)
+    core = type('CoreService', (object,), core_namespace)
+    core_globals['CoreService'] = core
+    # boot/counter services remain absent: the ORIGINAL static class has empty
+    # config/counters. Their other branches are not a constructed capability.
+    base_code = definition(module_code('eve.common.script.dogma.baseDogmaStaticSvc',
+                                      '/eve/common/script/dogma/baseDogmaStaticSvc.py'), 'BaseDogmaStaticSvc')
+    base_globals = {'__name__': 'eve.common.script.dogma.baseDogmaStaticSvc',
+                    '__builtins__': __builtins__, 'Service': core, 'const': constants}
+    base_namespace = literal_prefix(base_code, base_globals['__name__'])
+    base_namespace['__init__'] = types.FunctionType(definition(base_code, '__init__'), base_globals)
+    base = type('BaseDogmaStaticSvc', (core,), base_namespace)
+    client_code = definition(module_code('eve.client.script.dogma.clientDogmaStaticSvc',
+                                        '/eve/client/script/dogma/clientDogmaStaticSvc.py'), 'ClientDogmaStaticSvc')
+    client = type('ClientDogmaStaticSvc', (base,), literal_prefix(client_code, 'eve.client.script.dogma.clientDogmaStaticSvc'))
+    result = types.ModuleType('companion.static_constructor_types')
+    result.CoreService, result.BaseDogmaStaticSvc, result.ClientDogmaStaticSvc = core, base, client
+    return result

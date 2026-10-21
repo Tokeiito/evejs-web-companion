@@ -42,6 +42,7 @@ const { createClientBlueWallclock } = require("./gamePort/clientBlueWallclock");
 const { createClientFileLogger } = require("./gamePort/clientFileLogger");
 const { createClientPreferencesProvider } = require("./gamePort/clientPreferences");
 const { createClientLogModule } = require("./gamePort/clientLogModule");
+const { createClientStaticService } = require("./gamePort/clientStaticService");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -268,6 +269,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
       createNativeClientClock: async () => createClientBlueWallclock({ primitives: await loadClientWindowsClockPrimitives() }),
       createNativeClientLog: () => createClientFileLogger({ directory: path.resolve(config.dataDir, "native-client-logs") }),
       createNativeClientLogModule: ({ log }) => createClientLogModule({ provider: nativePreferencesProvider, log }),
+      createNativeClientStaticConstructor: owners => createClientStaticService({ provider: nativePreferencesProvider, ...owners, constants: () => clientConstants.dogmaStaticEffects() }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
         ...readers,

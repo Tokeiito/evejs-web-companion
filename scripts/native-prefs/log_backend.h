@@ -6,6 +6,7 @@ struct _object;
 // Guard must confirm the original runtime owner is inside an ordinary entry.
 int prefs_log_bind(HMODULE python, int (*guard)(void));
 struct _object* prefs_log_create(napi_env env, napi_value factory);
+struct _object* prefs_wallclock_create(napi_env env, napi_value sampler);
 void prefs_log_drain(napi_env env);
 void prefs_log_close(void);
 #endif

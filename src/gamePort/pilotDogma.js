@@ -309,6 +309,7 @@ function createPilotDogma({
   createNativeClientClock = null,
   createNativeClientLog = null,
   createNativeClientLogModule = null,
+  createNativeClientStaticConstructor = null,
   createNativeClientPreferences = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
@@ -321,6 +322,7 @@ function createPilotDogma({
   let clientClock = null, pendingClientClock = null;
   let clientLog = null, pendingClientLog = null;
   let clientLogModule = null, pendingClientLogModule = null;
+  let clientStaticConstructor = null, pendingClientStaticConstructor = null;
   let clientPreferences = null, pendingClientPreferences = null;
   function initializeNativeClientPreferences() {
     if (clientPreferences !== null) return Promise.resolve(clientPreferences);
@@ -359,6 +361,21 @@ function createPilotDogma({
     });
     pendingClientLogModule = reading;
     const forget = () => { if (pendingClientLogModule === reading) pendingClientLogModule = null; };
+    reading.then(forget, forget); return reading;
+  }
+  function initializeNativeClientStaticConstructor() {
+    if (clientStaticConstructor !== null) return Promise.resolve(clientStaticConstructor);
+    if (pendingClientStaticConstructor !== null) return pendingClientStaticConstructor;
+    if (typeof createNativeClientStaticConstructor !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static constructor types");
+    const reading = Promise.all([initializeNativeClientClock(), initializeNativeClientLogModule(), initializeNativeClientPreferences()])
+      .then(([clock, logging, preferences]) => createNativeClientStaticConstructor({ clock, logging, preferences }))
+      .then(owner => {
+        if (!owner || typeof owner.create !== "function" || !owner.types) throw new ClientDogmaConstructorPrimitiveNotReadyError("actual installed static constructor types");
+        clientStaticConstructor = owner;
+        return owner;
+      });
+    pendingClientStaticConstructor = reading;
+    const forget = () => { if (pendingClientStaticConstructor === reading) pendingClientStaticConstructor = null; };
     reading.then(forget, forget); return reading;
   }
   function initializeNativeClientClock() {
@@ -1363,6 +1380,11 @@ function createPilotDogma({
     // real prefs ownership must precede CoreService construction.
     initializeNativeClientLog,
     initializeNativeClientLogModule,
+    initializeNativeClientStaticConstructor,
+    nativeClientStaticConstructor: () => {
+      if (clientStaticConstructor === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static constructor types");
+      return clientStaticConstructor;
+    },
     nativeClientLogModule: () => {
       if (clientLogModule === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client logmodule namespace");
       return clientLogModule;
