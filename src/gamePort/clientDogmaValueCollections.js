@@ -3,7 +3,7 @@
 // Cold-world VALUE collections, not strong object/Attribute sets or a loaded
 // registry. Numeric/ASCII/tuple rules: installed Python2.7.1 Windows, py27 and
 // cdxvaluecollectionsagent1; table history reuses the audited identity core.
-// No None/custom-object/float/callable key hash, general update/copy-dict/pop,
+// No None/custom-object/float/callable key hash, general dict update/copy/pop,
 // iterable constructor, snapshot keys/values/items or Python3 iterator rules.
 const { types: { isPromise } } = require("node:util");
 const { hashKey } = require("./py27");
@@ -24,7 +24,8 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
     !lockKinds.every(kind => typeof kind === "string" && /^[\x00-\x7f]*$/.test(kind))) {
     throw notReady("fixed ASCII value-key policy");
   }
-  const kinds = new Set(lockKinds), tuples = new WeakMap(), sets = new WeakMap();
+  const kinds = new Set(lockKinds), tuples = new WeakMap(), sets = new WeakMap(), frozenSets = new WeakSet();
+  let emptyFrozen;
   function numeric(key) {
     if (typeof key === "bigint" || (typeof key === "number" && Number.isSafeInteger(key))) return key;
     if (allowBooleanKeys && typeof key === "boolean") return key;
@@ -98,6 +99,7 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
       has(key) { return table.entry(prepare(key)) !== undefined; },
       remove(key) { remove(table, key); },
       discard(key) { table.remove(prepare(key), false); },
+      pop() { return table.popSet(); },
       clear() { table.clear(); },
       copy() { return setView(table.copySet()); },
       differenceUpdate(...others) { for (const other of others) table.differenceUpdate(compatible(other)); },
@@ -105,6 +107,19 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
       [Symbol.iterator]() { return table.iterator(entry => entry.key); },
     });
     sets.set(view, table);
+    return view;
+  }
+  function frozenView(table) {
+    if (table.used === 0 && emptyFrozen !== undefined) return emptyFrozen;
+    const view = Object.freeze({
+      has(key) { return table.entry(prepare(key)) !== undefined; },
+      get size() { return table.used; },
+      copy() { return view; },
+      [Symbol.iterator]() { return table.iterator(entry => entry.key); },
+    });
+    sets.set(view, table);
+    frozenSets.add(view);
+    if (table.used === 0) emptyFrozen = view;
     return view;
   }
   function map({ defaultFactory, absentNoneLookups = false } = {}) {
@@ -160,6 +175,39 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
   return Object.freeze({
     map,
     set() { return setView(newTable("set")); },
+    // Explicit native construction paths: same-domain set-like bulk copy uses
+    // cached hashes/source SLOT order with TWO-times-used presizing. Exact
+    // frozen input/copy returns itself. Empty singleton is per policy domain;
+    // cross-client/interpreter identity and frozen-key hashing are unported.
+    mutableCopy(source) {
+      const table = sets.get(source);
+      if (table === undefined) throw notReady("same-domain set-like copy operand");
+      return setView(table.copySet());
+    },
+    frozenSet(source) {
+      if (arguments.length === 0) return frozenView(newTable("set"));
+      if (frozenSets.has(source)) return source;
+      const table = sets.get(source);
+      if (table === undefined) throw notReady("same-domain frozen-set constructor operand");
+      return frozenView(table.copySet());
+    },
+    // Source frozenset(generator) uses ordinary add/growth, NEVER copy sizing.
+    // Caller supplies an actual synchronous JS iterator carrier. This is not
+    // generic Python iter()/StopIteration or arbitrary iterable coercion.
+    frozenSetFromIterator(iterator) {
+      if (iterator === null || iterator === undefined) throw notReady("synchronous value-key iterator");
+      const next = iterator.next;
+      if (typeof next !== "function") throw notReady("synchronous value-key iterator");
+      const table = newTable("set");
+      for (;;) {
+        const step = Reflect.apply(next, iterator, []);
+        if (isPromise(step) || step === null || typeof step !== "object" || typeof step.done !== "boolean") throw notReady("synchronous iterator result");
+        if (step.done) break;
+        const key = prepare(step.value);
+        table.set(key, key);
+      }
+      return frozenView(table);
+    },
     itemKey(locationID, flagID, typeID) { return tuple([numeric(locationID), numeric(flagID), numeric(typeID)]); },
     effectKey(itemKey, effectID) { return tuple([item(itemKey), numeric(effectID)]); },
     criticalKey(kind, itemKey) {

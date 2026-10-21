@@ -1,6 +1,6 @@
 "use strict";
 
-// The five actual dogma.data definition helpers consumed by LoadAttributes.
+// dogma.data definition helpers consumed by LoadAttributes and the crystal tail.
 // Installed row fields/order come from godmaAttributeData's complete loader
 // projection. Native cFSD wrapper lifetime: cdxclientstaticrunagent1-identity.
 const { createClientDogmaValueCollections } = require("./clientDogmaValueCollections");
@@ -21,6 +21,7 @@ function createClientDogmaStaticAttributeData({ attributeData, constants } = {})
   const values = createClientDogmaValueCollections(), names = createClientDogmaValueCollections({ allowASCIIKeys: true });
   let sourceMap = null, constantValues = null, pending = null;
   let byName = null, byCategory = null, charged = null;
+  let chargeGroupRows = null, chargeGroupIDs = null;
   function prepared() {
     if (sourceMap === null || constantValues === null) throw notReady("installed static definition helpers/constants");
   }
@@ -90,7 +91,26 @@ function createClientDogmaStaticAttributeData({ attributeData, constants } = {})
     for (const row of sourceMap.itervalues()) if (isCharged(row)) result.at(row.chargeRechargeTimeID).push(row);
     return result; // This helper has NO Memoize decorator.
   }
-  const data = Object.freeze({ getAllAttributesByID, getAllAttributesByName, getAttributeListByDataType, getChargeRechargeTimeAttributesByID, getAttributesByChargeRechargeTimeID });
+  function getChargeGroupAttributes() {
+    prepared();
+    if (chargeGroupRows === null) {
+      // dogma.data164-167: regex.match is NOT end anchored. Original byte
+      // names/current installed corpus are ASCII; retain source row order.
+      const rows = [];
+      for (const row of sourceMap.itervalues()) if (/^chargeGroup[0-9]{1,2}/.test(row.name)) rows.push(row);
+      chargeGroupRows = Object.freeze(rows); // Internal tuple carrier.
+    }
+    return chargeGroupRows;
+  }
+  function getChargeGroupAttributeIDs() {
+    prepared();
+    if (chargeGroupIDs === null) {
+      const ids = (function* () { for (const row of getChargeGroupAttributes()) yield row.attributeID; })();
+      chargeGroupIDs = values.frozenSetFromIterator(ids);
+    }
+    return chargeGroupIDs;
+  }
+  const data = Object.freeze({ getAllAttributesByID, getAllAttributesByName, getAttributeListByDataType, getChargeRechargeTimeAttributesByID, getAttributesByChargeRechargeTimeID, getChargeGroupAttributes, getChargeGroupAttributeIDs });
   async function load() {
     await attributeData.ready();
     const loadedConstants = await constants();
@@ -117,7 +137,7 @@ function createClientDogmaStaticAttributeData({ attributeData, constants } = {})
     loadAttributes(world) { prepared(); return initializeClientDogmaStaticLoadAttributes(world, { data, constants: constantValues, valueCollections: values }); },
     // Coordinator prerequisite only: reproduces these memoized helper clears,
     // not DogmaAttributes resource replacement or the full refresh_dogma pass.
-    clearMemoized() { byName = null; byCategory = null; charged = null; },
+    clearMemoized() { byName = null; byCategory = null; charged = null; chargeGroupRows = null; chargeGroupIDs = null; },
   });
   return api;
 }

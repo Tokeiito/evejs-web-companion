@@ -11,6 +11,13 @@ const namedError = (name, message) => Object.assign(new Error(message), { name }
 const keyError = key => Object.assign(namedError("KeyError", "Identity key not found."), { key });
 const isObject = value => value !== null && (typeof value === "object" || typeof value === "function");
 const active = entry => entry !== undefined && entry !== DUMMY;
+class ClientDogmaSetPopKeyError extends Error {
+  constructor() {
+    super("pop from an empty set");
+    this.name = "KeyError";
+    this.args = ["pop from an empty set"];
+  }
+}
 
 function operationInteger(value) {
   if (typeof value === "boolean") return value ? 1n : 0n;
@@ -40,6 +47,10 @@ class IdentityTable {
     this.table = new Array(8);
     this.used = 0;
     this.fill = 0;
+    // setobject715-763 reuses slot0.hash as the pop cursor only while that
+    // slot is inactive. A deletion preserves its REAL old key hash. DUMMY
+    // entries have no payload in this core, so retain that one field here.
+    this.slotZeroHash = 0;
   }
 
   slot(key, hash) {
@@ -58,12 +69,14 @@ class IdentityTable {
   resize(minimum) {
     let size = 8;
     while (size <= minimum) size *= 2;
+    if (size === 8 && this.table.length === 8 && this.fill === this.used) return;
     const previous = this.table;
     this.table = new Array(size);
     this.fill = this.used;
     for (const entry of previous) {
       if (active(entry)) this.table[this.slot(entry.key, entry.hash)] = entry;
     }
+    this.slotZeroHash = active(this.table[0]) ? this.table[0].hash : 0;
   }
 
   set(key, value) {
@@ -71,6 +84,7 @@ class IdentityTable {
     if (active(old)) { old.value = value; return; }
     if (old === undefined) this.fill += 1;
     this.table[at] = { key, hash, value };
+    if (at === 0) this.slotZeroHash = hash;
     this.used += 1;
     if (this.fill * 3 >= this.table.length * 2) this.resize(this.used * (this.used > 50000 ? 2 : 4));
   }
@@ -90,6 +104,22 @@ class IdentityTable {
     this.used -= 1;
   }
 
+  popSet() {
+    if (this.used === 0) throw new ClientDogmaSetPopKeyError();
+    let at = 0;
+    if (!active(this.table[0])) {
+      const mask = this.table.length - 1;
+      at = this.slotZeroHash;
+      if (at < 1 || at > mask) at = 1;
+      while (!active(this.table[at])) { at += 1; if (at > mask) at = 1; }
+    }
+    const entry = this.table[at];
+    this.table[at] = DUMMY;
+    this.used -= 1;
+    this.slotZeroHash = at + 1;
+    return entry.key; // Equal aliases may have replaced entry.value only.
+  }
+
   clear() {
     // CPython2.7.1 set_clear_internal451-511: reset the SAME live set to
     // minimum storage before releasing old entries. Existing iterators keep
@@ -97,6 +127,7 @@ class IdentityTable {
     // Python destructor/refcount reentry is outside this JS identity domain.
     this.table = new Array(8);
     this.used = this.fill = 0;
+    this.slotZeroHash = 0;
   }
 
   copySet() {
@@ -110,6 +141,7 @@ class IdentityTable {
       copy.used += 1;
       copy.fill += 1;
     }
+    copy.slotZeroHash = active(copy.table[0]) ? copy.table[0].hash : 0;
     return copy;
   }
 
@@ -287,4 +319,4 @@ function createClientDogmaKeyTable({ hash, equal, iterationError }) {
   return new IdentityTable(hash, equal, iterationError);
 }
 
-module.exports = { createClientDogmaIdentity, createClientDogmaKeyTable };
+module.exports = { createClientDogmaIdentity, createClientDogmaKeyTable, ClientDogmaSetPopKeyError };
