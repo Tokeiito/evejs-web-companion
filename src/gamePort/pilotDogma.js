@@ -3,6 +3,7 @@
 const { marshalDecode } = require("../gameProtocol/marshal");
 const { InventoryItems } = require("./inventoryItems");
 const { createGodmaInventoryRows } = require("./godmaInventoryRows");
+const { createGodmaNumericValues } = require("./godmaNumericValues");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
@@ -280,6 +281,8 @@ function createPilotDogma({
   // fitting/attribute membership. Raw recording readers leave this absent.
   sessionState = null,
   onMetadataUnregistered = () => {},
+  // Demanded by numeric UpdateItem, independent of the fitted-item projection.
+  fetchItemInfo = null,
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
@@ -287,6 +290,7 @@ function createPilotDogma({
   const charged = new Map();
   /** "itemID:attributeID" -> the time of the last change taken for it. */
   const lastChange = new Map();
+  const numericValues = createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange });
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
   /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
@@ -456,7 +460,10 @@ function createPilotDogma({
     if (!updated.accepted) return primeInventory.has(updated.itemID) ? updated.itemID : null;
     const id = updated.itemID;
     identity.set(id, { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
-    if (updated.refresh) loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
+    if (updated.refresh) {
+      numericValues.refresh(id, row, updated.doUpdate);
+      loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
+    }
     return id;
   }
 
@@ -567,14 +574,35 @@ function createPilotDogma({
 
   function numericMetadataChanged(row, change) {
     if (!sessionState || Array.isArray(rowFields(row)?.itemID)) return;
-    // This slice follows backing metadata only. UpdateItem's refresh/scatter
-    // intents are not new RPCs or a complete native eventbus here; the existing
-    // reader below still owns its narrower ItemGetInfo/online callbacks.
-    primeInventory.notice(row, new Map((change?.entries ?? []).map(([index, value]) => [number(index), value])), sessionState());
+    // Metadata first. processItemChange executes demanded RPC/value refresh;
+    // the raw synchronous reader only follows backing metadata. Native effect
+    // rows, charge-type invalidation and scatter delivery remain separate.
+    return primeInventory.notice(row, new Map((change?.entries ?? []).map(([index, value]) => [number(index), value])), sessionState());
+  }
+
+  /** Numeric demanded RPC + cached attributes only. Full RefreshItemEffects,
+   * charge-type invalidation and native wrapper/scatter delivery stay separate.
+   * Metadata replacement precedes the await; None skips refresh, an exception
+   * still reaches the existing IM projection through Godma569's finally. */
+  async function processItemChange(row, change) {
+    let info = null;
+    try {
+      const result = numericMetadataChanged(row, change), refresh = result?.refresh;
+      if (refresh && !refresh.dontGetInfo) {
+        if (!fetchItemInfo) throw new TypeError("A numeric godma ItemGetInfo provider is required.");
+        info = await fetchItemInfo(refresh.itemID);
+        if (info !== null) numericValues.refresh(refresh.itemID, info, refresh.doUpdate);
+      }
+    } finally {
+      // Share the one real reply with the old projection; do not ingest its
+      // invItem into metadata or infer native loaded-node/effect completion.
+      await itemChanged(row, { requestInfo: false, info });
+    }
   }
 
   function flushNumericMetadata(locationID) {
     const { dropped, unregistered } = primeInventory.flush(locationID);
+    numericValues.drop(dropped);
     for (const id of dropped) {
       attributes.delete(id);
       charged.delete(id);
@@ -593,7 +621,7 @@ function createPilotDogma({
    * places above, in something that is held, with something in the stack; the only things held that anything
    * is in are ships. The ship's own row is neither: what it is in is not held.
    */
-  function itemChanged(row) {
+  function itemChanged(row, { requestInfo = true, info = null } = {}) {
     const item = rowFields(row);
     const id = item ? key(item.itemID) : null;
     if (typeof id !== "number") return;
@@ -619,9 +647,10 @@ function createPilotDogma({
       effects.set(id, new Map());
     }
     // godma.UpdateItem: a module or a subsystem in one of the ship's slots is asked about.
-    if (within(SLOTS, flagID) && (categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM)) onSlotted(here);
+    if (requestInfo && within(SLOTS, flagID) && (categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM)) onSlotted(here);
+    if (info !== null) loadRow(id, info, { mergeAttributes: true, nativeAttributes: true });
     // FitItem.
-    if (!was) onFitted(here);
+    if (!was) return onFitted(here);
   }
 
   /**
@@ -760,6 +789,7 @@ function createPilotDogma({
     if (stamp && last !== undefined && last > stamp) return false;
     if (stamp) lastChange.set(`${id}:${attribute_}`, stamp);
     if (characterID !== null && number(ownerID) !== characterID && id !== characterID) return false; // not mine
+    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue);
     // clientDogmaLocation.OnModuleAttributeChanges: a rack's heat is set to what the server says, as of now
     // (HeatAttribute.SetBaseValue). The client leaves it alone when it is that already, going by the value its
     // gauges last worked out; here that is the heat as of now, which in space is the same to within a gauge's
@@ -1110,10 +1140,14 @@ function createPilotDogma({
     feed,
     loadAllInfo,
     processAllInfo,
+    processItemChange,
     // Raw numeric backing row, not GetItem's freshly allocated ItemWrapper or
     // a clientDogmaLocation loaded-node/index. Tuple metadata is separate.
     inventoryItem: (itemID) => primeInventory.get(itemID),
     inventoryLocationLoaded: (locationID) => primeInventory.locationLoaded(locationID),
+    // Cache-only numeric value lookup; undefined is a cache miss. Static
+    // defaults and the complete native ItemWrapper GetAttribute are separate.
+    numericValue: (itemID, attributeID, at = now()) => numericValues.value(key(itemID), attributeID, at),
     multiEvent,
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),
@@ -1136,7 +1170,8 @@ function createPilotDogma({
     purge({ keepShipID = null } = {}) {
       // Numeric prime metadata follows the supplied keep list. The older
       // attribute/effect reader below still retains only character scope.
-      primeInventory.purge([characterID, keepShipID].filter(id => id !== null));
+      const { dropped } = primeInventory.purge([characterID, keepShipID].filter(id => id !== null));
+      numericValues.drop(dropped);
       for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
       const mine = characterID === null ? null : key(characterID);
       const kept = new Set();
@@ -1156,6 +1191,7 @@ function createPilotDogma({
       identity.clear();
       rows.clear();
       primeInventory.clear();
+      numericValues.clear();
       banks.clear();
       characterPrimed = false;
     },

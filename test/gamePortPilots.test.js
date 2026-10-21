@@ -4425,19 +4425,22 @@ test("a module the server would not say anything of is put online all the same",
   assert.deepEqual(await outcome(null), [[SHIP + 1, SHIP + 9], ["ItemGetInfo", "SetModuleOnline"]]);
 });
 
-test("several modules fitted at once are each asked about and put online in turn, one call at a time, and a read of the ship waits for them", async () => {
+test("different modules fitted at once can refresh independently, and a read of the ship waits for both", async () => {
   let answer;
   const waiting = new Promise((resolve) => { answer = resolve; });
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:ItemGetInfo": ([itemID]) => itemRow(Number(itemID)), "bound:SetModuleOnline": () => waiting } }, onlineByType);
   await pilots.shipInfo(FIELDS, handle);
   session.notify("OnItemsChanged", [{ type: "list", items: [...fittedNow(SHIP + 9)[0].items, ...fittedNow(SHIP + 8, { flagID: 31 })[0].items] }, { type: "dict", entries: [[3, STATION], [4, 4]] }, null]);
   await settled();
-  // The server has yet to answer for the first: nothing is asked of the second.
-  assert.deepEqual(ownCalls(session), [["ItemGetInfo", [SHIP + 9]], ["SetModuleOnline", [SHIP, SHIP + 9]]]);
+  // invCache229-307 locks by itemID across cache/godma/IM, not across different modules.
+  // Original cdxrefreshorderagent1-locks executes the same-item waiter and independent other-item continuation.
+  assert.deepEqual([SHIP + 9, SHIP + 8].map((itemID) => ownCalls(session).filter(([, args]) => args.at(-1) === itemID)), [
+    [["ItemGetInfo", [SHIP + 9]], ["SetModuleOnline", [SHIP, SHIP + 9]]],
+    [["ItemGetInfo", [SHIP + 8]], ["SetModuleOnline", [SHIP, SHIP + 8]]],
+  ]);
   const reading = pilots.shipInfo(FIELDS, handle);
   answer(null);
-  assert.deepEqual((await reading).online, [SHIP + 1, SHIP + 9, SHIP + 8]);
-  assert.deepEqual(ownCalls(session).slice(2), [["ItemGetInfo", [SHIP + 8]], ["SetModuleOnline", [SHIP, SHIP + 8]]]);
+  assert.deepEqual((await reading).online.sort((a, b) => a - b), [SHIP + 1, SHIP + 8, SHIP + 9]);
 });
 
 test("the undock hands over the modules that are online once the one just fitted has been answered for", async () => {
@@ -4454,14 +4457,15 @@ test("the undock hands over the modules that are online once the one just fitted
   assert.deepEqual(session.boundCalls.find((call) => call.method === "Undock").kwargs, { onlineModules: { type: "dict", entries: [[27, SHIP + 1], [30, SHIP + 9]] } });
 });
 
-test("a module fitted to a ship the pilot is no longer in is neither asked about nor put online", async () => {
+test("a retained old ship can demand an item refresh, but its newly fitted module is not put online", async () => {
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo() } }, onlineByType);
   await pilots.shipInfo(FIELDS, handle);
-  // The session is in another ship; godma still holds the one before, until it is next read.
+  // No ProcessSessionChange is supplied here: godma still has the old registered guard until the next prime.
+  // OnItemChange1208-1270/UpdateItem1553-1657 demands refresh from that guard independently of IM's current ship.
   session.attributes.shipid = 555;
   session.notify("OnItemsChanged", fittedNow(SHIP + 9));
   await settled();
-  assert.deepEqual(ownCalls(session), []);
+  assert.deepEqual(ownCalls(session), [["ItemGetInfo", [SHIP + 9]]]);
 });
 
 // ── how a Moniker the client keeps is bound ──────────────────────────────────

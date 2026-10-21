@@ -1482,38 +1482,45 @@ function createGamePortPilots({
   }
 
   /**
-   * godma.UpdateItem, for a module the server says is in a slot of the ship the pilot is in: the client asks what
-   * dogma has of it, ItemGetInfo(itemID), and holds the answer. With no answer the module is held as it was.
-   */
-  function askAbout(entry, item) {
-    if (item.locationID !== attribute(entry, "shipid")) return;
-    entry.itemWork = entry.itemWork.then(async () => {
-      try {
-        entry.dogma.updateItem(item.itemID, await ownDogmaCall(entry, "ItemGetInfo", [item.itemID]));
-      } catch {
-        // The client's item change carries on to its dogma location whatever came of this.
-      }
-    });
-  }
-
-  /**
    * clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule: a module newly fitted to the ship the pilot is
    * in is put online by the client itself, where its type can be online at all. The effect is running from then
    * and the server is told, SetModuleOnline(the ship, the module). A server that has it online already says so
    * (EffectAlreadyActive2), and that is no failure; refused for any other reason, or not answered, the effect is
    * not running after all. It comes after godma's asking, as it does on the client.
    */
-  function onlineIfApplicable(entry, item) {
+  async function onlineIfApplicable(entry, item) {
     if (item.locationID !== attribute(entry, "shipid")) return;
     if (!typeEffects(item.typeID).some((effect) => effect.effectID === EFFECT_ONLINE)) return;
-    entry.itemWork = entry.itemWork.then(async () => {
-      entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
+    entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
+    try {
+      await ownDogmaCall(entry, "SetModuleOnline", [item.locationID, item.itemID]);
+    } catch (error) {
+      if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
+    }
+  }
+
+  /** invCache229-307 holds its per-item lock across cache, godma's demanded
+   * RPC and IM-finally work. Different items do not share that lock. Keep the
+   * aggregate only as the existing reader's completion barrier, not a global
+   * inventory lock or a native tasklet scheduler. */
+  function inventoryItemChanged(entry, row, change) {
+    const itemID = rowFields(row)?.itemID;
+    const lockKey = positive(itemID) ?? itemID;
+    const run = async () => {
       try {
-        await ownDogmaCall(entry, "SetModuleOnline", [item.locationID, item.itemID]);
-      } catch (error) {
-        if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
+        entry.inventory.itemChanged(row, change);
+      } finally {
+        await entry.dogma.processItemChange(row, change);
       }
-    });
+    };
+    const previous = entry.inventoryItemWork.get(lockKey);
+    const work = previous ? previous.then(run) : run();
+    // Event-handler failures do not reject an unrelated window read. The
+    // native service dispatch also releases its lock after a handler failure.
+    const settled = work.catch(() => {});
+    entry.inventoryItemWork.set(lockKey, settled);
+    settled.then(() => { if (entry.inventoryItemWork.get(lockKey) === settled) entry.inventoryItemWork.delete(lockKey); });
+    entry.itemWork = Promise.all([entry.itemWork, settled]).then(() => {});
   }
 
   /**
@@ -1747,7 +1754,7 @@ function createGamePortPilots({
         characterID,
         now: () => filetime(clock.simTime()),
         effectCategory,
-        onSlotted: (item) => askAbout(entry, item),
+        fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
         onFitted: (item) => onlineIfApplicable(entry, item),
         // godma's OnItemChange for a charge in a module whose stack changed (ApplyAttributeChange 2602), which the
         // inventory cache takes as it takes the server's.
@@ -1770,8 +1777,9 @@ function createGamePortPilots({
        * The inventory cache owns each binding. These references keep its key and godma's public location only. */
       godmaLocations: new Map(),
       godmaPrimeVersion: 0,
-      /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
+      /** Completion barrier for independent per-item notice/refresh/online work. */
       itemWork: Promise.resolve(),
+      inventoryItemWork: new Map(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
       /** The pilot's fleet as the client's fleet service keeps it (pilotFleet.js): read once, kept right by the server's notices. */
@@ -2043,16 +2051,10 @@ function createGamePortPilots({
       }
       // invCache.OnItemChange and OnItemsChanged (219 to 229): each item worked into the containers held, as the client works it.
       if (ITEM_NOTICES.has(notification.method)) {
-        // invCache.OnItemChange229-307 processes its cache, then calls godma
-        // in finally. Godma's own StateManager/IM forwarding is another finally.
+        // Each item's lock spans cache -> godma RPC -> IM-finally. The
+        // original server notice is still recorded below without alteration.
         for (const row of notification.method === "OnItemsChanged" ? itemsOf(notification.args?.[0]) : [notification.args?.[0]]) {
-          try {
-            entry.inventory.itemChanged(row, notification.args?.[1]);
-          } finally {
-            entry.dogma.feed(notification.method === "OnItemChange" ? notification : {
-              ...notification, method: "OnItemChange", args: [row, notification.args?.[1], notification.args?.[2]],
-            });
-          }
+          inventoryItemChanged(entry, row, notification.args?.[1]);
         }
       }
       // What the client's own services tell its object cache to forget on this notice.
