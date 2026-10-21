@@ -1,9 +1,11 @@
 "use strict";
 
+const { decodedFieldRecord } = require("./clientGodmaFreshness");
+
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
 // Cached numeric value/charge state. A native caller supplies GetAttribute for
 // notice comparison; definitions, effect rows, metadata and nodes live outside.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null, evaluateCharge = null, floatDivide = null, scaleReal = null }) {
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, isRelevant = null, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null, evaluateCharge = null, floatDivide = null, scaleReal = null }) {
   const attributes = new Map(), charged = new Map();
   // Python retains the numeric class when assigning a decoded value. Keep its
   // immutable source record beside the primitive, before normalization/copying.
@@ -66,7 +68,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     // derived tau. These records do not claim a kind for the computed result.
     chargedInputs.get(itemID).set(name, Object.freeze({ amount: cell(amount, kind), rechargeTime, capacity, tau: cell(tauValue, readAttributeRecord ? Object.freeze({ kind: "real", source: "godma-tau-division" }) : undefined) }));
   }
-  function refresh(itemID, info, doUpdate) {
+  function refresh(itemID, info, doUpdate, freshness = null, rawItem = { value: itemID }) {
     const fields = fieldsOf(info);
     // Native reads both timestamps before iterating/mutating the dictionary.
     if (!fields.has("time") || !fields.has("wallclockTime")) throw new TypeError("Godma numeric refresh requires time and wallclockTime.");
@@ -75,10 +77,16 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     if (!given || !Array.isArray(given.entries)) throw new TypeError("Godma numeric refresh requires an attribute dictionary.");
     const values = doUpdate ? attributes.get(itemID) ?? new Map() : new Map();
     const valueKinds = doUpdate ? kinds.get(itemID) ?? new Map() : new Map();
-    const incoming = given.entries.map(pair => [pair[0], pair[1], numberKind(pair, 1)]);
-    for (const [attributeID, amount, kind] of attributeEntries(incoming)) {
-      const id = number(attributeID), last = lastChange.get(`${itemID}:${id}`);
-      if (wallclock && last !== undefined && last > wallclock) continue;
+    const rawWallclock = isRelevant ? decodedFieldRecord(info, "wallclockTime") : null;
+    const incoming = given.entries.map(pair => [pair[0], pair[1], numberKind(pair, 1), numberKind(pair, 0)]);
+    for (const [attributeID, amount, kind, idKind] of attributeEntries(incoming)) {
+      const id = number(attributeID);
+      if (isRelevant) {
+        if (!isRelevant(freshness, rawItem, { value: attributeID, kind: idKind }, rawWallclock)) continue;
+      } else {
+        const last = lastChange.get(`${itemID}:${id}`);
+        if (wallclock && last !== undefined && last > wallclock) continue;
+      }
       values.set(attributeKey(id), amount);
       valueKinds.set(attributeKey(id), kind);
     }

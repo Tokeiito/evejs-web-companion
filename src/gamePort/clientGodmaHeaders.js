@@ -1,6 +1,7 @@
 "use strict";
 
 const { createClientGodmaRowsets } = require("./clientGodmaRowsets");
+const { createClientGodmaFreshness } = require("./clientGodmaFreshness");
 
 /** Original selected Godma constructor and descriptor properties. The existing
  * pilot dogma owns this capability; its numeric stores remain authoritative.
@@ -30,6 +31,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   let managerPreparation = null;
   let managerDataPreparation = null;
   let typeWrapperPreparation = null;
+  let freshnessPreparation = null;
   function prepareStateManager() {
     assertCurrent();
     return managerPreparation ??= (async () => {
@@ -70,6 +72,15 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
     },
     prepareStateManager,
     prepareStateManagerData,
+    prepareFreshness() {
+      assertCurrent();
+      return freshnessPreparation ??= (async () => {
+        await prepareStateManager();
+        assertCurrent();
+        const freshness = runtime.values.global("_attach_godma_freshness").call(module);
+        return createClientGodmaFreshness({ runtime, owner: module, module: freshness, context, assertCurrent });
+      })();
+    },
     prepareTypeWrappers() {
       assertCurrent();
       return typeWrapperPreparation ??= (async () => {

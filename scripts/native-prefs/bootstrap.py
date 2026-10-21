@@ -2055,6 +2055,42 @@ def _prepare_godma_state_manager(owner, rowsets):
     return graph
 
 
+def _attach_godma_freshness(owner):
+    # Source OnModuleAttributeChange_1316-1324 prefix, on the actual original
+    # manager. Its original _IsAttributeChangeRelevant owns truth/comparison.
+    # No mirrored dictionary, normalized keys, timestamps or cached decisions.
+    import types
+    existing = getattr(owner, 'freshness', None)
+    if existing is not None:
+        return existing
+    result = types.ModuleType('companion.godma_freshness')
+
+    def tuple_key(*parts):
+        return parts
+
+    def notice_prefix(manager, item, attribute, wallclock):
+        if not manager._IsAttributeChangeRelevant(item, attribute, wallclock):
+            return False
+        if wallclock:
+            manager.lastAttributeChange[(item, attribute)] = wallclock
+        return True
+
+    def replace(manager):
+        # ProcessSessionChange1168 assigns a NEW dict, before Prime demand.
+        manager.lastAttributeChange = {}
+        return manager.lastAttributeChange
+
+    def owns(item, owner_id, charid):
+        # OnModuleAttributeChange_1325, AFTER the timestamp prefix. Read the
+        # real effective session, including its pre-selection None value.
+        return item == charid or owner_id == charid
+
+    result.tuple_key, result.notice_prefix, result.replace = tuple_key, notice_prefix, replace
+    result.owns = owns
+    owner.freshness = result
+    return result
+
+
 def _attach_godma_state_manager_data(owner, data):
     # Bind this SAME selected original dogma.data capability, already owned by
     # the native static service. No second FSD load/name map/recharge memoizer,

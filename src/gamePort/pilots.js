@@ -1764,6 +1764,10 @@ function createGamePortPilots({
     }
     const session = handed ? handed.session : await sessionOn(transport);
     const clock = createPilotClock({ now });
+    let authenticateGodma, rejectGodmaAuthentication;
+    const godmaAuthentication = typeof createNativeClientGodmaHeaders === "function"
+      ? new Promise((resolve, reject) => { authenticateGodma = resolve; rejectGodmaAuthentication = reject; }) : null;
+    godmaAuthentication?.catch(() => {});
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
       session,
@@ -1814,7 +1818,10 @@ function createGamePortPilots({
         createNativeClientStaticConstructor: typeof createNativeClientStaticConstructor === "function"
           ? owners => createNativeClientStaticConstructor({ ...owners, session, nativeSessionOwner: nativeSessionOwners.get(session) }) : null,
         createNativeClientGodmaHeaders: typeof createNativeClientGodmaHeaders === "function"
-          ? async () => createNativeClientGodmaHeaders({ inventoryHeader: await entry.inventory.prepareItemHeader() }) : null,
+          ? async () => {
+            await godmaAuthentication;
+            return createNativeClientGodmaHeaders({ inventoryHeader: await entry.inventory.prepareItemHeader() });
+          } : null,
         createNativeClientPreferences: nativeSessionOwners.has(session)
           ? () => nativeSessionOwners.get(session).preferences : createNativeClientPreferences,
         nativeTypeNames,
@@ -2036,6 +2043,10 @@ function createGamePortPilots({
       questions: new Map(),
       ended: false,
     };
+    // The entry and inventory closures now exist. Preparation waits for real
+    // authenticated login; notification handlers await it without blocking
+    // raw socket dispatch or the descriptor RPC response it needs.
+    if (godmaAuthentication) keepDogmaWork(entry, entry.dogma.initializeNativeFreshness());
     session.clientCalls = (call) => answerClientCall(call, characterID, (question) => askUser(entry, call, question));
     session.onClientCall((call) => onClientCall(call, characterID));
     session.onNotification((notification) => {
@@ -2145,6 +2156,7 @@ function createGamePortPilots({
       record(entry, carried);
     });
     session.onSessionChange((changes) => {
+      keepDogmaWork(entry, entry.dogma.processSessionFreshness(changes, session.attributes.charid));
       // What the client's own services tell its object cache to forget on this change.
       forgetNamed(entry, namedOnSessionChange(changes, entry.session.attributes));
       // Out of Abyssal space (idCheckers.IsAbyssalSpaceSystem: 32,000,000 to 32,999,999) the pocket's timer is no more.
@@ -2306,6 +2318,8 @@ function createGamePortPilots({
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
+      authenticateGodma?.();
+      await entry.dogma.initializeNativeFreshness();
       // What the client reads as it logs in: here, or taken from the account's connection the character is chosen on.
       if (handed) await loginReadsTaken(entry, handed.read);
       else await loginReads(entry);
@@ -2455,6 +2469,7 @@ function createGamePortPilots({
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
     } catch (error) {
+      rejectGodmaAuthentication?.(error);
       averagePricesThreadEnded(entry);
       warsThreadEnded(entry);
       session.close();

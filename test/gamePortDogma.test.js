@@ -1028,8 +1028,9 @@ test("at a priming after the first the ship is let go and loaded anew, and what 
   assert.equal(dogma.holdsCharacter(), true);
 });
 
-test("a purge forgets when each attribute last changed, as godma does, and keeps what the character's are", () => {
-  // godma.ProcessSessionChange (1169): self.lastAttributeChange = {}.
+test("purge retains freshness; ProcessSessionChange replaces it before Prime", () => {
+  // godma.ProcessSessionChange1154-1170 resets at1168; PurgeEntries and
+  // direct Prime do not. The character's scalar attributes survive the purge.
   const dogma = createPilotDogma({ characterID: P_PILOT, now: () => T0 });
   dogma.loadAllInfo(primed("first, docked"));
   const later = T0 + 50n * MS;
@@ -1040,6 +1041,12 @@ test("a purge forgets when each attribute last changed, as godma does, and keeps
   assert.equal(dogma.attribute(P_PILOT, 990002), 7);
   dogma.purge();
   assert.equal(dogma.attribute(P_PILOT, 990002), 7, "the character's own are kept");
+  dogma.feed(changes(change(P_PILOT, 990002, T0, 3, { owner: P_PILOT })));
+  assert.equal(dogma.attribute(P_PILOT, 990002), 7, "purge leaves the newer timestamp intact");
+  dogma.processSessionFreshness({ locationid: [1, 2] }, P_PILOT);
+  dogma.feed(changes(change(P_PILOT, 990002, T0, 3, { owner: P_PILOT })));
+  assert.equal(dogma.attribute(P_PILOT, 990002), 7, "locationid alone does not reset freshness");
+  dogma.processSessionFreshness({ shipid: [1, 2] }, P_PILOT);
   dogma.feed(changes(change(P_PILOT, 990002, T0, 3, { owner: P_PILOT })));
   assert.equal(dogma.attribute(P_PILOT, 990002), 3, "and the next change is taken whatever its time");
 });
