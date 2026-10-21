@@ -1769,7 +1769,122 @@ def _create_row_protocol(protocol):
 
     result = types.ModuleType('companion.row_protocol')
     result.Row, result.descriptors = Row, protocol
+    def sequence_get(row, index):
+        # XUtil_Index calls the native sequence slot directly, bypassing
+        # mapping/attribute hooks and negative normalization.
+        if index < 0 or index >= len(header(row)):
+            raise IndexError('index out of range: %d' % index)
+        return get(row, index)
+    result.sequence_get = sequence_get
     globals()['_companion_row_protocol'] = result
+    return result
+
+
+def _create_godma_rowset_types(owner, rows, error_log):
+    # Original Python class bodies, real list/dict bases and SAME named Row.
+    # Construction of these types is not a StateManager instance or Prime.
+    import types, dis, weakref
+    protocol = rows.descriptors
+    if rows is not _create_row_protocol(protocol) or owner.construction.DBRowDescriptor is not protocol.Descriptor:
+        raise TypeError('Godma rowsets require the same actual row/descriptor capabilities')
+    existing = getattr(owner, 'rowset_types', None)
+    if existing is not None:
+        if existing.rows is not rows or existing.error_log is not error_log:
+            raise TypeError('Godma rowset types cannot change their client owners')
+        if existing.error is not None:
+            raise existing.error[0], existing.error[1], existing.error[2]
+        if not existing.complete:
+            raise ImportError('Godma rowset type initialization is incomplete')
+        return existing
+    result = types.ModuleType('companion.godma_rowset_types')
+    result.rows, result.error_log = rows, error_log
+    result.complete, result.error = False, None
+    owner.rowset_types = result  # Transparent partial preparation on failure.
+    try:
+        def source(name, suffix):
+            prefix = name.rpartition('.')[0].replace('.', '/')
+            code = zipimport.zipimporter(_archive + '/' + prefix).get_code(name)
+            if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+                raise ImportError('Not the installed rowset source: ' + name)
+            return code
+
+        def definition(code, name):
+            matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+            if len(matches) != 1:
+                raise ImportError('Ambiguous original rowset definition: ' + name)
+            return matches[0]
+
+        pyos = types.ModuleType('companion.rowset_pyos')
+        pyos.XUtil_Index = _client_prefs_io.row_indexer(rows.Row, rows.sequence_get, protocol.DomainError)
+        def unavailable_yield(*args):
+            raise protocol.DomainError('Rowset BeNice requires the real yielding owner')
+        pyos.BeNice = unavailable_yield
+        construction = owner.construction
+        construction.DBRow, construction.pyos = rows.Row, pyos
+        result.pyos, result.construction = pyos, construction
+
+        crowset = types.ModuleType('companion.crowset')
+        namespace = crowset.__dict__
+        namespace.update({'__name__': 'carbon.common.script.sys.crowset', '__builtins__': __builtins__,
+                          'blue': construction, 'const': protocol.constants, 'weakref': weakref})
+        code = source('carbon.common.script.sys.crowset', '/carbon/common/script/sys/crowset.py')
+        for name, base in (('CRowset', list), ('CIndexedRowset', dict), ('CFilterRowset', dict)):
+            namespace[name] = type(name, (base,), types.FunctionType(definition(code, name), namespace)())
+        result.crowset = crowset
+
+        godmarowset = types.ModuleType('companion.godmarowset')
+        namespace = godmarowset.__dict__
+        namespace.update({'__name__': 'eve.client.script.util.godmarowset', '__builtins__': __builtins__,
+                          'blue': construction, 'types': types, 'log': error_log,
+                          'CRowset': crowset.CRowset, 'CIndexedRowset': crowset.CIndexedRowset,
+                          'CFilterRowset': crowset.CFilterRowset})
+        code = source('eve.client.script.util.godmarowset', '/eve/client/script/util/godmarowset.py')
+        namespace['rowsetIterator'] = types.FunctionType(definition(code, 'rowsetIterator'), namespace)
+        for name, base in (('GodmaRowset', crowset.CRowset), ('GodmaIndexedRowset', crowset.CIndexedRowset),
+                           ('GodmaFilterRowset', crowset.CFilterRowset)):
+            namespace[name] = type(name, (base,), types.FunctionType(definition(code, name), namespace)())
+        result.godmarowset = godmarowset
+
+        # Extend the SAME original Godma globals. Wrapper/manager methods see
+        # this client's real logger, rowsets, constants and construction owner.
+        namespace = type(owner.instance).__dict__['__init__'].func_globals
+        namespace.update({'godmarowset': godmarowset, 'log': error_log, 'sys': sys})
+        code = source('eve.client.script.environment.godma', '/eve/client/script/environment/godma.py')
+        for name in ('ItemWrapper', 'EffectWrapper'):
+            namespace[name] = types.ClassType(name, (), types.FunctionType(definition(code, name), namespace)())
+            setattr(result, name, namespace[name])
+        manager = definition(code, 'StateManager')
+        # Validate the ENTIRE definition-time graph before executing its
+        # untouched original code. Its sole call constructs the class header;
+        # all later operations make functions/defaults, never invoke methods.
+        cursor, external, calls, functions = 0, set(), [], 0
+        allowed = set(('LOAD_NAME', 'LOAD_ATTR', 'LOAD_CONST', 'STORE_NAME',
+                       'BUILD_TUPLE', 'CALL_FUNCTION', 'MAKE_FUNCTION', 'LOAD_LOCALS', 'RETURN_VALUE'))
+        while cursor < len(manager.co_code):
+            offset = cursor
+            opcode = ord(manager.co_code[cursor]); cursor += 1
+            argument = None
+            if opcode >= dis.HAVE_ARGUMENT:
+                argument = ord(manager.co_code[cursor]) | ord(manager.co_code[cursor + 1]) << 8
+                cursor += 2
+            operation = dis.opname[opcode]
+            if operation not in allowed:
+                raise ImportError('Unsupported StateManager class instruction: ' + operation)
+            if operation == 'LOAD_NAME':
+                external.add(manager.co_names[argument])
+            elif operation == 'CALL_FUNCTION':
+                calls.append((offset, argument))
+            elif operation == 'MAKE_FUNCTION':
+                functions += 1
+        if external != set(('__name__', 'blue', 'const', 'True', 'False')) or calls != [(261, 1)] or functions != 110:
+            raise ImportError('Installed StateManager definition graph changed')
+        cls = types.ClassType('StateManager', (), types.FunctionType(manager, namespace)())
+        namespace['StateManager'] = cls
+        result.StateManager = cls
+        result.complete = True
+    except BaseException:
+        result.error = sys.exc_info()
+        raise
     return result
 
 

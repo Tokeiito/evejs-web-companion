@@ -1,5 +1,7 @@
 "use strict";
 
+const { createClientGodmaRowsets } = require("./clientGodmaRowsets");
+
 /** Original selected Godma constructor and descriptor properties. The existing
  * pilot dogma owns this capability; its numeric stores remain authoritative.
  * JS async demand precedes original native warm access, never a fake sync RPC.
@@ -24,8 +26,13 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
     if (!names.has(name)) throw new TypeError("Unknown original Godma descriptor property.");
     return Buffer.from(name, "ascii");
   }
+  let rowsets = null;
   return Object.freeze({
     module, instance, inventoryHeader, context,
+    prepareRowsets() {
+      assertCurrent();
+      return rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader });
+    },
     async read(name) {
       assertCurrent();
       const key = argument(name);

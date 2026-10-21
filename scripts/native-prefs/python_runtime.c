@@ -34,6 +34,7 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(PyObject*, PyEval_GetBuiltins, (void)) \
  X(PyObject*, PyDict_New, (void)) \
  X(int, PyDict_SetItemString, (PyObject*, const char*, PyObject*)) \
+ X(int, PyDict_SetItem, (PyObject*, PyObject*, PyObject*)) \
  X(PyObject*, PyImport_GetModuleDict, (void)) \
  X(PyObject*, PyModule_New, (const char*)) \
  X(int, PyModule_AddObject, (PyObject*, const char*, PyObject*)) \
@@ -45,6 +46,7 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(PyObject*, PyObject_GetItem, (PyObject*, PyObject*)) \
  X(int, PyObject_SetItem, (PyObject*, PyObject*, PyObject*)) \
  X(int, PyObject_IsTrue, (PyObject*)) \
+ X(int, PyObject_IsInstance, (PyObject*, PyObject*)) \
  X(PyObject*, PyObject_Type, (PyObject*)) \
  X(PyObject*, PyObject_Str, (PyObject*)) \
  X(PyObject*, PyObject_Unicode, (PyObject*)) \
@@ -62,6 +64,7 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(Py_ssize_t, PySequence_Size, (PyObject*)) \
  X(PyObject*, PySequence_GetItem, (PyObject*, Py_ssize_t)) \
  X(PyObject*, PySequence_Fast, (PyObject*, const char*)) \
+ X(Py_ssize_t, PySequence_Index, (PyObject*, PyObject*)) \
  X(int, PyObject_Cmp, (PyObject*, PyObject*, int*)) \
  X(int, PyErr_WarnEx, (PyObject*, const char*, Py_ssize_t)) \
  X(int, PyArg_ParseTuple, (PyObject*, const char*, ...)) \
@@ -96,7 +99,7 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
 BINDINGS(DECLARE)
 #undef DECLARE
 
-static PyObject *none_object, *int_type, *long_type, *float_type, *bool_type, *str_type, *unicode_type;
+static PyObject *none_object, *int_type, *long_type, *float_type, *bool_type, *str_type, *unicode_type, *list_type, *dict_type;
 static PyObject **exc_type, **exc_value, **exc_runtime, **exc_io, **exc_memory, **exc_key, **exc_index, **exc_warning;
 static PyObject** exc_windows;
 static HMODULE python_dll;
@@ -499,6 +502,7 @@ static PyObject* descriptor_method(PyObject* self, PyObject* args) {
   return PyCFunction_NewEx(&descriptor_methods[index], owner, NULL);
 }
 #include "row_storage.h"
+#include "row_indexer.h"
 static PyMethodDef io_methods[] = {
   {"read", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"write", io_write, 1, "Actual synchronous Win32 atomic write."},
@@ -514,7 +518,8 @@ static PyMethodDef io_methods[] = {
   {"row_sequence_item", row_sequence_item, 1, "Original InitSeq ordered item read."},
   {"row_sequence_fast", row_sequence_fast, 8, "Original slice sequence admission."},
   {"row_warning", row_warning, 1, "Original row UserWarning and filter behavior."},
-  {"row_compare", row_compare, 1, "Original Python2 cell comparison."}
+  {"row_compare", row_compare, 1, "Original Python2 cell comparison."},
+  {"row_indexer", row_indexer, 1, "Bind the named row XUtil_Index source port."}
 };
 static int install_io(void) {
   PyObject* module = PyModule_New("_client_prefs_io"); if (!module) return 0;
@@ -548,6 +553,7 @@ static int bind_api(napi_env env, HMODULE dll) {
 #define DATA(target, name) target = (PyObject*)GetProcAddress(dll, name); if (!target) { bridge_error(env, "Required Python27 object export missing: " name); return 0; }
   DATA(none_object, "_Py_NoneStruct") DATA(int_type, "PyInt_Type") DATA(long_type, "PyLong_Type")
   DATA(float_type, "PyFloat_Type") DATA(bool_type, "PyBool_Type") DATA(str_type, "PyString_Type") DATA(unicode_type, "PyUnicode_Type")
+  DATA(list_type, "PyList_Type") DATA(dict_type, "PyDict_Type")
 #undef DATA
 #define EXC(target, name) target = (PyObject**)GetProcAddress(dll, name); if (!target) { bridge_error(env, "Required Python27 exception export missing: " name); return 0; }
   EXC(exc_type, "PyExc_TypeError") EXC(exc_value, "PyExc_ValueError") EXC(exc_runtime, "PyExc_RuntimeError")
