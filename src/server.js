@@ -32,6 +32,7 @@ const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
 const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
 const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
 const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaStaticAttributes");
+const { createClientDogmaStaticTypeData } = require("./gamePort/clientDogmaStaticTypeData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -233,6 +234,18 @@ const gamePortPilots = options.gamePortPilots !== undefined
       // Preparing them never registers an item or supplies an accurate value.
       nativeTypeAttributes: createClientDogmaStaticAttributes({
         attributeData: nativeAttributeData,
+        typeDogma: async id => {
+          const rows = await clientBuiltData.rows("typeDogma", [id]);
+          return rows ? rows[id] : undefined;
+        },
+        types: async id => {
+          const rows = await clientBuiltData.rows("types", [id]);
+          return rows ? rows[id] : undefined;
+        },
+      }),
+      // Ordered list input for clientStatic's distinct FIRST-match lookup.
+      // This prepares a prerequisite, never an initialized static service.
+      nativeClientStaticTypeData: createClientDogmaStaticTypeData({
         typeDogma: async id => {
           const rows = await clientBuiltData.rows("typeDogma", [id]);
           return rows ? rows[id] : undefined;

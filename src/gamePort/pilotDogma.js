@@ -11,6 +11,9 @@ const { GodmaAttributeDataNotReadyError } = require("./godmaAttributeData");
 const { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords } = require("./godmaChargeValue");
 const { GodmaTypeNamesNotReadyError } = require("./godmaTypeNames");
 const { ClientDogmaStaticAttributesNotReadyError } = require("./clientDogmaStaticAttributes");
+const { ClientDogmaStaticTypeDataNotReadyError } = require("./clientDogmaStaticTypeData");
+const { createClientDogmaStaticTypeLookup } = require("./clientDogmaStaticTypeLookup");
+const { createClientDogmaValueCollections } = require("./clientDogmaValueCollections");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -297,10 +300,20 @@ function createPilotDogma({
   // Installed attribute ID/name identity; raw readers retain their ID cache.
   nativeAttributeData = null,
   nativeTypeAttributes = null,
+  nativeClientStaticTypeData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
 } = {}) {
+  // One pilot's local lookup prerequisite. Creating this facade is not native
+  // service Run/LoadTypeAttributes, service acquisition or IM publication.
+  const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
+    ...nativeClientStaticTypeData,
+    valueCollections: createClientDogmaValueCollections(),
+    // This installed-input adapter emits explicit readiness/type/field errors,
+    // never native KeyError. Do not infer Python classes from JS error names.
+    errorPolicy: { isKeyError: () => false },
+  }) : null;
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
@@ -1238,6 +1251,14 @@ function createPilotDogma({
     initializeNativeTypeAttributes: typeID => {
       if (!nativeTypeAttributes) throw new ClientDogmaStaticAttributesNotReadyError(typeID);
       return nativeTypeAttributes.ready(typeID);
+    },
+    initializeNativeClientStaticType: typeID => {
+      if (!nativeClientStaticTypeData) throw new ClientDogmaStaticTypeDataNotReadyError(typeID);
+      return nativeClientStaticTypeData.ready(typeID);
+    },
+    nativeClientStaticTypeLookup: () => {
+      if (!clientStaticTypeLookup) throw new ClientDogmaStaticTypeDataNotReadyError();
+      return clientStaticTypeLookup;
     },
     nativeTypeAttributeRecord: (typeID, attributeID) => {
       if (!nativeTypeAttributes) throw new ClientDogmaStaticAttributesNotReadyError(typeID);
