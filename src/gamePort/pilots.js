@@ -1159,6 +1159,7 @@ function createGamePortPilots({
   createNativeClientLogModule = null,
   createNativeClientTaskletTimer = null,
   createNativeClientStaticConstructor = null,
+  createNativeClientInventoryHeader = null,
   createNativeClientPreferences = null,
   prepareNativeClientSession = null,
   nativeTypeNames = null,
@@ -1998,7 +1999,13 @@ function createGamePortPilots({
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
       /** The client's inventory cache: each container bound, by its key, with what it has listed (pilotInventory.js). */
-      inventory: createPilotInventory({ rowFields, session: () => inventorySession(entry) }),
+      inventory: createPilotInventory({
+        rowFields, session: () => inventorySession(entry),
+        createItemHeader: typeof createNativeClientInventoryHeader === "function" ? async () => createNativeClientInventoryHeader({
+          staticService: await entry.dogma.initializeNativeClientStaticConstructor(),
+          getItemDescriptor: () => run(entry, "invbroker", "GetItemDescriptor", () => session.call("invbroker", "GetItemDescriptor", [])),
+        }) : null,
+      }),
       /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
       saleAverages: new Map(),
       /** beyonce.GetFormations as the server answered it, or the asking of it under way; null before it is asked (formationsKnown). */
@@ -6583,6 +6590,9 @@ function createGamePortPilots({
     allianceTickersNamed,
     shipInfo,
     shipAttribute,
+    // Explicit prerequisite, shared with this pilot's EXISTING inventory.
+    // Preparing it does not demand a remote header or construct a StateManager.
+    prepareInventoryHeader: (sessionFields = {}, bridgeSessionID = undefined) => held(bridgeSessionID, sessionFields).inventory.prepareItemHeader(),
     chatConnection,
     globalConfigValues,
     chatSecret,

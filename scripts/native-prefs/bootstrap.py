@@ -1520,3 +1520,36 @@ def _create_row_descriptor_protocol():
         module.error = sys.exc_info()
         raise
     return module
+
+
+def _create_inventory_header_owner(service_types):
+    # Core construction and the ONE Initialize108 field only. This selected
+    # capability does not run invCache.Initialize's semaphore/service graph.
+    import types
+    name = 'eve.client.script.environment.invCache'
+    prefix = name.rpartition('.')[0].replace('.', '/')
+    source = zipimport.zipimporter(_archive + '/' + prefix).get_code(name)
+    if source is None or not source.co_filename.replace('\\', '/').endswith('/eve/client/script/environment/invCache.py'):
+        raise ImportError('Not the installed inventory cache source')
+    def definition(code, name):
+        matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed inventory definition: ' + name)
+        return matches[0]
+    source = definition(source, 'invCache')
+    guids = [v for v in source.co_consts if type(v) is str and v == 'svc.invCache']
+    if len(guids) != 1:
+        raise ImportError('Installed inventory service guid is unavailable')
+    namespace = {'__name__': name, '__builtins__': __builtins__}
+    # Its native synchronous cold RPC producer remains absent. The JS owner
+    # performs actual async demand/materialization first; only the untouched
+    # ORIGINAL warm branch executes here. Never return a prepared fake RPC.
+    method = types.FunctionType(definition(source, 'GetItemHeader'), namespace, 'GetItemHeader', (0,))
+    core = service_types.CoreService
+    if 'LogInfo' not in core.__dict__:
+        raise RuntimeError('Original Core.LogInfo must be attached before inventory header construction')
+    cls = type('CompanionInventoryHeader', (core,), {
+        '__module__': 'companion.inventory_header', '__guid__': guids[0], 'GetItemHeader': method})
+    instance = cls()
+    instance._invCache__itemhdr = None
+    return instance

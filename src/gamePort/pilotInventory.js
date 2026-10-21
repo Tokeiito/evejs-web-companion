@@ -82,7 +82,20 @@ const dictOf = (value) => new Map(value && Array.isArray(value.entries) ? value.
  * `rowFields(row)` reads an inventory row's fields by name. `session()` answers the pilot's session as the client
  * reads it: { stationid, charid, corpid, shipid, corprole (a BigInt) }.
  */
-function createPilotInventory({ rowFields, session }) {
+function createPilotInventory({ rowFields, session, createItemHeader = null }) {
+  let itemHeader = null, preparingItemHeader = null;
+  function prepareItemHeader() {
+    if (itemHeader !== null) return Promise.resolve(itemHeader);
+    if (preparingItemHeader !== null) return preparingItemHeader;
+    if (typeof createItemHeader !== "function") throw new Error("The native inventory header owner is not configured.");
+    // Prepare one owner, never one shared remote demand. Every caller below
+    // invokes its own GetItemHeader after preparation, as the source does.
+    preparingItemHeader = Promise.resolve().then(createItemHeader).then(owner => {
+      if (typeof owner?.GetItemHeader !== "function" || typeof owner.resetHeader !== "function") throw new TypeError("An actual inventory header owner is required.");
+      itemHeader = owner; return owner;
+    });
+    return preparingItemHeader; // Retain a failed native construction prefix.
+  }
   /** The containers held, by key: { location, owner, objectID, items: Map(itemKey -> row), listed: Set(flag | null), work }. */
   const containers = new Map();
   /** The binds under way, by key: each a promise of the bound object, or of null where the bind failed. */
@@ -245,6 +258,11 @@ function createPilotInventory({ rowFields, session }) {
   }
 
   return {
+    prepareItemHeader,
+    GetItemHeader: force => prepareItemHeader().then(owner => owner.GetItemHeader(force)),
+    // Header field phase only. Ordinary forget()/location invalidation below
+    // deliberately retains it, as invCache.InvalidateCache573-590 does.
+    resetItemHeader() { if (itemHeader !== null) itemHeader.resetHeader(); },
     selfItem,
     /** Every row any container holds. */
     rows: () => [...containers.values()].flatMap((container) => [...container.items.values()]),

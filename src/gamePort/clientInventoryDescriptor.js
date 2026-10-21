@@ -33,8 +33,10 @@ class ClientInventoryDescriptor {
   #header = null; // Original invCache.Initialize: __itemhdr = None.
   #getItemDescriptor;
   #logInfo;
+  #readHeader;
+  #writeHeader;
 
-  constructor({ getItemDescriptor, LogInfo } = {}) {
+  constructor({ getItemDescriptor, LogInfo, headerSlot = null } = {}) {
     if (typeof getItemDescriptor !== "function") {
       throw new TypeError("The actual invbroker.GetItemDescriptor producer is required.");
     }
@@ -43,21 +45,28 @@ class ClientInventoryDescriptor {
     }
     this.#getItemDescriptor = getItemDescriptor;
     this.#logInfo = LogInfo;
+    if (headerSlot !== null && (typeof headerSlot.get !== "function" || typeof headerSlot.set !== "function")) {
+      throw new TypeError("The inventory header slot requires synchronous get/set operations.");
+    }
+    // A supplied native field is the sole authoritative slot. Never mirror its
+    // value in #header: original warm accessors must observe every replacement.
+    this.#readHeader = headerSlot === null ? () => this.#header : () => headerSlot.get();
+    this.#writeHeader = headerSlot === null ? value => { this.#header = value; } : value => headerSlot.set(value);
   }
 
   #accept(header) {
-    this.#header = header;
+    this.#writeHeader(header);
     // Native logs AFTER assignment. A logger failure retains the new value;
     // reentrant logging may replace it before the final current-slot return.
-    const logged = Reflect.apply(this.#logInfo, undefined, ["invCache got remote itemhdr", this.#header]);
+    const logged = Reflect.apply(this.#logInfo, undefined, ["invCache got remote itemhdr", this.#readHeader()]);
     if (isPromise(logged)) throw new ClientInventoryDescriptorNotReadyError("synchronous LogInfo");
-    return this.#header;
+    return this.#readHeader();
   }
 
   GetItemHeader(force = 0) {
     // Preserve the source's OR short circuit: a cold read does not inspect
     // force at all. None returned by the producer remains a future miss.
-    if (this.#header === null || forceTruthy(force)) {
+    if (this.#readHeader() === null || forceTruthy(force)) {
       const result = Reflect.apply(this.#getItemDescriptor, undefined, []);
       if (isPromise(result)) {
         // No pending memo: overlapping demands independently call the remote
@@ -71,8 +80,11 @@ class ClientInventoryDescriptor {
       }
       return this.#accept(result);
     }
-    return this.#header;
+    return this.#readHeader();
   }
+
+  // Initialize108's field phase, distinct from ordinary InvalidateCache.
+  resetHeader() { this.#writeHeader(null); }
 }
 
 module.exports = { ClientInventoryDescriptor, ClientInventoryDescriptorNotReadyError };
