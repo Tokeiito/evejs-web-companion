@@ -43,8 +43,7 @@ const { createClientFileLogger } = require("./gamePort/clientFileLogger");
 const { createClientPreferencesProvider } = require("./gamePort/clientPreferences");
 const { createClientLogModule } = require("./gamePort/clientLogModule");
 const { createClientTaskletTimer } = require("./gamePort/clientTaskletTimer");
-const { createClientLocalizationSettings } = require("./gamePort/clientLocalizationSettings");
-const { createClientSessionContext } = require("./gamePort/clientSessionContext");
+const { createClientSessionOwners } = require("./gamePort/clientEffectiveSessionContext");
 const { createClientStaticService } = require("./gamePort/clientStaticService");
 const { createClientNativeBuiltData } = require("./clientData/clientNativeBuiltData");
 const { createClientNativeLocalization } = require("./clientData/clientNativeLocalization");
@@ -275,16 +274,20 @@ const gamePortPilots = options.gamePortPilots !== undefined
       createNativeClientLog: () => createClientFileLogger({ directory: path.resolve(config.dataDir, "native-client-logs") }),
       createNativeClientLogModule: ({ log }) => createClientLogModule({ provider: nativePreferencesProvider, log }),
       createNativeClientTaskletTimer: owners => createClientTaskletTimer({ provider: nativePreferencesProvider, ...owners }),
+      prepareNativeClientSession: session => createClientSessionOwners({ provider: nativePreferencesProvider, session, clientRoot: config.clientRoot }),
       createNativeClientStaticConstructor: owners => createClientStaticService({
         provider: nativePreferencesProvider, ...owners,
         constants: () => clientConstants.dogmaStaticEffects(),
         builtData: createClientNativeBuiltData({ provider: nativePreferencesProvider, clientRoot: config.clientRoot }),
         attributeConstants: () => clientConstants.dogmaStaticAttributes(),
         typeAttributeConstants: () => clientConstants.dogmaStaticTypeAttributes(),
-        createLocalizationSettings: () => createClientLocalizationSettings({ provider: nativePreferencesProvider, preferences: owners.preferences, clientRoot: config.clientRoot }),
+        createLocalizationSettings: () => {
+          if (owners.nativeSessionOwner?.preferences !== owners.preferences) throw new Error("Static construction must retain the pre-login native preference owner.");
+          return owners.nativeSessionOwner.localizationSettings;
+        },
         localizationData: createClientNativeLocalization({ provider: nativePreferencesProvider, clientRoot: config.clientRoot, cacheRoot: path.resolve(config.dataDir, "native-preferences/localization") }),
         transportSession: owners.session,
-        createSessionContext: () => createClientSessionContext({ provider: nativePreferencesProvider, session: owners.session }),
+        createSessionContext: () => owners.nativeSessionOwner.sessionContext,
       }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({

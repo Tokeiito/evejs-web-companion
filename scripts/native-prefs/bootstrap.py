@@ -554,7 +554,7 @@ def _prepare_localization_data(extension, main_filename, english_filename):
     return result
 
 
-def _create_session_context():
+def _create_session_context(field_state=None):
     # Original localstorage/Sissy, with actual Stackless getcurrent and a
     # PRIVATE builtin namespace. The bounded transport-field object is not a
     # constructed CoreSession, its default policy or engine lifecycle.
@@ -570,7 +570,7 @@ def _create_session_context():
     storage.__dict__.update({'__builtins__': __builtin__.__dict__, '__package__': '',
                              '_CLIENT_IMPORT_BINDINGS': {'__builtin__': owned_builtins}})
     types.FunctionType(source, storage.__dict__)()
-    fields = type('CurrentTransportSessionFields', (object,), {'__module__': 'companion.transport_session_fields'})()
+    fields = field_state if field_state is not None else type('CurrentTransportSessionFields', (object,), {'__module__': 'companion.transport_session_fields'})()
 
     def assert_entry():
         # Stackless creates a new current tasklet at separate embedding calls.
@@ -593,4 +593,91 @@ def _create_session_context():
     result.localstorage, result.builtins = storage, owned_builtins
     result.session, result.fields = owned_builtins.session, fields
     result.publish, result.retire, result.assert_entry = publish, retire, assert_entry
+    return result
+
+
+def _create_effective_session_context(preferences, boot):
+    # A named FIELD phase, not Session.__init__/__ChangeAttribute or the engine
+    # lifecycle. Definitions/literals and pure field helpers are original code;
+    # clocks, indexes, history, masquerades and service broadcasts are not run.
+    import types, __builtin__
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed session field module: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts if type(value) is types.CodeType and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed session field definition: ' + name)
+        return matches[0]
+
+    constants = types.ModuleType('carbon.common.script.sys.serviceConst')
+    constants.__dict__['__builtins__'] = __builtin__.__dict__
+    types.FunctionType(module_code(constants.__name__, '/carbon/common/script/sys/serviceConst.py'), constants.__dict__)()
+    session_constants = types.ModuleType('carbon.common.lib.session')
+    session_constants.__dict__['__builtins__'] = __builtin__.__dict__
+    types.FunctionType(module_code(session_constants.__name__, '/carbon/common/lib/session.py'), session_constants.__dict__)()
+    stringutil = types.ModuleType('stringutil')
+    stringutil.__dict__['__builtins__'] = __builtin__.__dict__
+    types.FunctionType(module_code('stringutil', '/packages/stringutil/__init__.py'), stringutil.__dict__)()
+    # machobase's actual mode assignment is boot.role. This selected data input
+    # does not import/construct its network, locks or blue engine dependencies.
+    mode = types.ModuleType('companion.installed_client_mode')
+    mode.mode = boot.role
+    if mode.mode != 'client':
+        raise ValueError('Effective client fields require installed boot.role client')
+    namespace = {'__name__': 'carbon.common.script.sys.basesession', '__builtins__': __builtin__.__dict__,
+                 'ROLE_LOGIN': constants.ROLE_LOGIN, 'prefs': preferences, 'strx': stringutil.strx, 'machobase': mode}
+    source = module_code('carbon.common.script.sys.basesession', '/carbon/common/script/sys/basesession.py')
+    # Class bodies only create definitions and literals. No whole module import:
+    # basesession also starts an ObjectKillah scheduler at module scope.
+    core = types.ClassType('CoreSession', (), types.FunctionType(definition(source, 'CoreSession'), namespace)())
+    namespace['CoreSession'] = core
+    original = types.ClassType('Session', (core,), types.FunctionType(definition(source, 'Session'), namespace)())
+    selected = {'__module__': 'companion.effective_session_fields',
+                '__persistvars__': original.__persistvars__,
+                '__attributesWithDefaultValueOfZero__': original.__attributesWithDefaultValueOfZero__}
+    for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets'):
+        selected[name] = core.__dict__[name]
+    for name in ('RecalculateDependantAttributes', 'RecalculateDependantAttributesWithChanges'):
+        selected[name] = original.__dict__[name]
+    state = type('EffectiveTransportSessionFields', (object,), selected)()
+    for name in original.__persistvars__ + ['locationid', 'corprole']:
+        state.__dict__[name] = state.GetDefaultValueOfAttribute(name)
+    state.__dict__['sessionType'] = session_constants.SESSION_TYPE_GAME
+    result = _create_session_context(state)
+
+    def restore_current():
+        result.assert_entry()
+        result.localstorage.GetLocalStorage()['base.session'] = state
+
+    def receive(changes, initial):
+        result.assert_entry()
+        if state.role & constants.ROLE_SERVICE:
+            raise RuntimeError('A service session cannot receive client field changes')
+        if initial:
+            state.RecalculateDependantAttributes(changes)
+        else:
+            state.RecalculateDependantAttributesWithChanges(changes)
+        notify, disappeared = state.ComputeNotifySets(changes, pairs=not initial)
+        if 'userid' in notify and notify['userid'][0] and notify['userid'][1]:
+            raise RuntimeError("A session's userID may not change")
+        # The bounded field commit retains the EXACT old object on native ==.
+        # This is deliberately not __ChangeAttribute's simclock/index lifecycle.
+        for name in notify:
+            state.__dict__[name] = changes[name] if initial else changes[name][1]
+        result.last_notify, result.last_disappeared = notify, disappeared
+        restore_current()
+        return notify, disappeared
+
+    del result.publish  # Effective state is never rebuilt from a raw snapshot.
+    result.restore_current, result.receive = restore_current, receive
+    result.wire_pair = lambda old, new: (old, new)
+    result.preferences, result.boot, result.source_classes = preferences, boot, (core, original)
+    result.last_notify, result.last_disappeared = {}, set()
+    restore_current()
     return result

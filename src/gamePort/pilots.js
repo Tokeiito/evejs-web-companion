@@ -1160,6 +1160,7 @@ function createGamePortPilots({
   createNativeClientTaskletTimer = null,
   createNativeClientStaticConstructor = null,
   createNativeClientPreferences = null,
+  prepareNativeClientSession = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
@@ -1235,10 +1236,26 @@ function createGamePortPilots({
     ledger.sent(service, method, { carried });
   }
   /** A session on a transport, which tells the ledger each call it sends. */
-  const sessionOn = (transport) => {
-    const session = createSession(transport);
-    session.onSent = noteSent;
-    return session;
+  const nativeSessionOwners = new WeakMap();
+  const sessionOn = async (transport, created = null) => {
+    let session = null;
+    try {
+      session = createSession(transport);
+      session.onSent = noteSent;
+      if (created) created(session);
+      if (typeof prepareNativeClientSession === "function") {
+        const owner = await prepareNativeClientSession(session);
+        if (!owner?.preferences?.handler || !owner.localizationSettings || owner.sessionContext?.transport !== session || owner.sessionContext.preferences !== owner.preferences || owner.sessionContext.boot !== owner.localizationSettings.boot || session.closed) throw new Error("The pre-login native owners must share this open transport, preference Handler and installed boot.");
+        owner.sessionContext.assertCurrent();
+        nativeSessionOwners.set(session, owner);
+      }
+      return session;
+    } catch (error) {
+      // This helper also runs before selectCharacter's later entry try block.
+      // Preparation failure must close the original socket here.
+      try { if (session) session.close(); else transport.close(); } catch {}
+      throw error;
+    }
   };
   /** The object an answer gave, made known to the session as the service's that answered it (session.objectIsOf). */
   const answeredObject = (session, service, answer) => {
@@ -1743,7 +1760,7 @@ function createGamePortPilots({
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
     }
-    const session = handed ? handed.session : sessionOn(transport);
+    const session = handed ? handed.session : await sessionOn(transport);
     const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
@@ -1793,8 +1810,9 @@ function createGamePortPilots({
         createNativeClientLogModule,
         createNativeClientTaskletTimer,
         createNativeClientStaticConstructor: typeof createNativeClientStaticConstructor === "function"
-          ? owners => createNativeClientStaticConstructor({ ...owners, session }) : null,
-        createNativeClientPreferences,
+          ? owners => createNativeClientStaticConstructor({ ...owners, session, nativeSessionOwner: nativeSessionOwners.get(session) }) : null,
+        createNativeClientPreferences: nativeSessionOwners.has(session)
+          ? () => nativeSessionOwners.get(session).preferences : createNativeClientPreferences,
         nativeTypeNames,
         onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),
@@ -4504,7 +4522,7 @@ function createGamePortPilots({
       } catch {
         throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
       }
-      line.session = sessionOn(transport);
+      line.session = await sessionOn(transport, session => { line.session = session; });
       // The server hanging up, or anything else that ends it: the next thing asked opens another.
       line.unlisten = line.session.onClose(forget);
       await line.session.login(userName, passwordFor(userName));

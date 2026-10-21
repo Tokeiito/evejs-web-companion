@@ -394,10 +394,13 @@ class GamePortSession {
     return Object.freeze({ closed: this.closed, loggedIn: this.loggedIn, revision: this.sessionAttributeRevision });
   }
   _captureSessionAttribute(name, container, slot, source) {
-    this.sessionAttributeRecords.set(name, Object.freeze({
+    const record = Object.freeze({
       present: true, value: container[slot], kind: getDecodedNumberKind(container, slot),
       source, revision: this.sessionAttributeRevision,
-    }));
+      ...(source === "change" ? { old: Object.freeze({ value: container[0], kind: getDecodedNumberKind(container, 0) }) } : {}),
+    });
+    this.sessionAttributeRecords.set(name, record);
+    return Object.freeze([name, record]);
   }
   /** fn(error) once, when the connection is gone. The character is logged off. */
   onClose(listener) { return this._listen("close", listener); }
@@ -496,18 +499,19 @@ class GamePortSession {
     if (this.userID === null || this.proxyNodeID === null) {
       throw this._fail(new GamePortError("LOGIN_REFUSED", "The game server's login answer carried no session."));
     }
+    const loginRecords = [];
     if (sessionInit && sessionInit.type === "dict") {
       this.sessionAttributeRevision++;
       for (const entry of sessionInit.entries) {
         const key = text(entry[0]);
-        this._captureSessionAttribute(key, entry, 1, "login");
+        loginRecords.push(this._captureSessionAttribute(key, entry, 1, "login"));
         this.attributes[key] = entry[1];
       }
     }
 
     // From here every frame is a packet.
     this.loggedIn = true;
-    this._emit("sessionAttributes", { source: "login", revision: this.sessionAttributeRevision });
+    this._emit("sessionAttributes", Object.freeze({ source: "login", revision: this.sessionAttributeRevision, records: Object.freeze(loginRecords) }));
     for (const value of this.handshakeInbox.splice(0)) this._dispatch(value);
 
     // machoNet.ConnectToServer's first call, then connectionService.Connect.
@@ -1270,30 +1274,32 @@ class GamePortSession {
     const changes = Array.isArray(change) ? change[1] : null;
     if (!changes || changes.type !== "dict") return;
     const applied = {};
+    const records = [];
     this.sessionAttributeRevision++;
     for (const [name, pair] of changes.entries) {
       const key = text(name);
       if (key === null || !Array.isArray(pair)) continue;
       applied[key] = [pair[0], pair[1]];
-      this._captureSessionAttribute(key, pair, 1, "change");
+      records.push(this._captureSessionAttribute(key, pair, 1, "change"));
       this.attributes[key] = pair[1];
     }
-    this._emit("sessionAttributes", { source: "change", revision: this.sessionAttributeRevision });
+    this._emit("sessionAttributes", Object.freeze({ source: "change", revision: this.sessionAttributeRevision, records: Object.freeze(records) }));
     this._emit("sessionChange", applied, this.attributes);
   }
 
   _applyInitialState(initialState) {
     if (!initialState || initialState.type !== "dict") return;
     const applied = {};
+    const records = [];
     this.sessionAttributeRevision++;
     for (const entry of initialState.entries) {
       const key = text(entry[0]), value = entry[1];
       if (key === null) continue;
       applied[key] = [this.attributes[key] ?? null, value];
-      this._captureSessionAttribute(key, entry, 1, "initial");
+      records.push(this._captureSessionAttribute(key, entry, 1, "initial"));
       this.attributes[key] = value;
     }
-    this._emit("sessionAttributes", { source: "initial", revision: this.sessionAttributeRevision });
+    this._emit("sessionAttributes", Object.freeze({ source: "initial", revision: this.sessionAttributeRevision, records: Object.freeze(records) }));
     this._emit("sessionChange", applied, this.attributes);
   }
 }

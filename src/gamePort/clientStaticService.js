@@ -15,8 +15,8 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * cleaner methods; it does not load messages or initialize localization. The
  * separate localization data preparation retains the actual shared native
  * English backend, without publishing the settings/session/Get chain.
- * prepareSessionContext() binds original Sissy to raw typed transport fields;
- * it does not apply CoreSession defaults or remote-change policy. No full
+ * prepareSessionContext() retains the configured original Sissy field owner;
+ * production supplies the same effective owner prepared before login. No full
  * Run/Load/ServiceManager state,
  * generic config/counter services, full client or IM readiness is published.
  */
@@ -42,6 +42,8 @@ async function createClientStaticService({ provider, clock, logging, preferences
     if (typeof createSessionContext !== "function" || !transportSession) throw new Error("Actual typed transport session context is not configured.");
     const reading = Promise.resolve().then(createSessionContext).then(owner => {
       if (!owner?.session || !owner.localstorage || owner.transport !== transportSession || typeof owner.assertCurrent !== "function") throw new Error("The native session context must share this client's actual transport.");
+      if (owner.preferences && owner.preferences !== preferences) throw new Error("The native session context must share this client's actual preference owner.");
+      owner.assertCurrent();
       sessionContext = owner; return owner;
     });
     pendingSessionContext = reading;

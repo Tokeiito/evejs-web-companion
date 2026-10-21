@@ -3,6 +3,24 @@
 const { attributePythonType } = require("./clientDogmaArithmetic");
 const fields = Object.freeze(["charid", "userid", "role", "languageID"]);
 
+function nativeSessionScalar(runtime, record) {
+  const { value } = record, values = runtime.values;
+  if (value === null) return values.none();
+  if (typeof value === "boolean") return values.bool(value);
+  if (Buffer.isBuffer(value)) return values.bytes(value);
+  // Bare JS strings are the codec's actual byte string table values.
+  if (typeof value === "string") return values.bytes(Buffer.from(value, "utf8"));
+  if (value?.type === "wstring" && typeof value.value === "string") return values.unicode(value.value);
+  const type = attributePythonType(record);
+  if (type === "int") return values.int(value);
+  if (type === "long") {
+    if (typeof value !== "bigint" && !Number.isSafeInteger(value)) throw new Error("Original session long has no exact wire integer value.");
+    return values.long(typeof value === "bigint" ? value : BigInt(value));
+  }
+  if (type === "float") return values.float(value);
+  throw new Error("Current session field has no supported original wire scalar class.");
+}
+
 /** Real original Sissy/localstorage over the current transport's typed fields.
  * This is a bounded raw input capability, not CoreSession construction,
  * ComputeNotifySets/equal-update retention, defaults/dependent fields, remote
@@ -17,21 +35,7 @@ async function createClientSessionContext({ provider, session }) {
   if (!provider || typeof provider.ready !== "function" || !session || typeof session.readSessionAttribute !== "function" || typeof session.sessionLifecycle !== "function" || typeof session.onSessionAttributeUpdate !== "function" || typeof session.onClose !== "function") throw new TypeError("An installed runtime and actual typed transport session are required.");
   let module = null, runtime = null, retired = false, failure = null;
   function scalar(record) {
-    const { value } = record, values = runtime.values;
-    if (value === null) return values.none();
-    if (typeof value === "boolean") return values.bool(value);
-    if (Buffer.isBuffer(value)) return values.bytes(value);
-    // The wire codec uses bare JS strings for its actual byte string table.
-    if (typeof value === "string") return values.bytes(Buffer.from(value, "utf8"));
-    if (value?.type === "wstring" && typeof value.value === "string") return values.unicode(value.value);
-    const type = attributePythonType(record);
-    if (type === "int") return values.int(value);
-    if (type === "long") {
-      if (typeof value !== "bigint" && !Number.isSafeInteger(value)) throw new Error("Original session long has no exact wire integer value.");
-      return values.long(typeof value === "bigint" ? value : BigInt(value));
-    }
-    if (type === "float") return values.float(value);
-    throw new Error("Current session field has no supported original wire scalar class.");
+    return nativeSessionScalar(runtime, record);
   }
   function refresh() {
     if (!module) return;
@@ -62,4 +66,4 @@ async function createClientSessionContext({ provider, session }) {
   } catch (error) { forgetChanges(); forgetClose(); throw error; }
 }
 
-module.exports = { createClientSessionContext };
+module.exports = { createClientSessionContext, nativeSessionScalar };
