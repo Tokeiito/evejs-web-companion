@@ -150,7 +150,9 @@ function createClientDogmaLoadScheduling() {
     });
   }
 
-  return Object.freeze({ run, runIndependent, runInherited, createCritical, createChannel });
+  // Named uthread.Lock semaphores need the actual task identity too: unlike
+  // CriticalSection they never grant reentry to this task or its descendants.
+  return Object.freeze({ run, runIndependent, runInherited, currentTask: current, createCritical, createChannel });
 }
 
 module.exports = { createClientDogmaLoadScheduling };
