@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 65f759873, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js fc56d25d3, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -13,7 +13,8 @@
  *
  * Wire format:
  *   Packet = [4-byte LE payloadLen] [payload]
- *   Payload = [0x7E magic] [4-byte LE mapcount=0] [marshaled data]
+ *   Payload = [0x7E magic] [4-byte LE mapcount] [marshaled data] [mapcount 4-byte LE ids of the shared objects]
+ *   (The encoder shares a rowset's row descriptor alone: see "A rowset's descriptor, written once", below.)
  */
 
 const path = require("path");
@@ -111,6 +112,12 @@ const DBTYPE = {
  *   { type: 'rawstr', value: '...' }            → PyString/PyLongString UTF-8, bypass string table
  *   Array                    → PyTuple
  *   { type: 'dict', entries: [[k,v], ...] }  → PyDict
+ *   { type: 'dict', realValues: true, entries } → PyDict whose values that are
+ *                              plain numbers go as PyReal, whole or not (a
+ *                              Python float: 100 is sent as 100.0)
+ *   { type: 'dict', realValues: true, integerKeys: [k, ...], entries } → the
+ *                              same, but the values under those keys go as
+ *                              they are (a whole number as an integer)
  *   { type: 'wstring', value: '...' }        → PyWStringUTF8
  *   { type: 'long', value: BigInt|number }   → PyLongLong
  *   { type: 'real', value: number }          → PyReal
@@ -119,18 +126,64 @@ const DBTYPE = {
  *   { type: 'substruct', value: ... }        → PySubStruct
  *   { type: 'substream', value: ... }        → PySubStream
  */
+// ─── A rowset's descriptor, written once ──────────────────────────────────────
+//
+// CCP's writer (blue, Marshal.cpp, WriteStream::ObjectReferenced and Finalize, the stream's version 0) writes an
+// object it meets again as a reference to its first writing: the type TY_REFERENCE (27; PySavedStreamElement here)
+// and the object's id (WriteInteger: a size-ex). The first writing is flagged shared (TY_SHAREDFLAG, 0x40; SAVE_MASK
+// here) on its type byte when it is met the second time, and its id is the order in which objects were so met. After
+// the stream come the ids of the shared objects in the order they stand in it, and the header's count is how many.
+// Tranquility's rowsets go so: a CRowset of ten rows answering GetSkillHistory writes its blue.DBRowDescriptor once,
+// in its header, and each row refers to it (399 bytes recorded; written eleven times here before, 1485).
+//
+// This encoder shares a row descriptor alone, by identity: the rowset builders (serviceHelpers.buildDbRowset) hand
+// one descriptor to the rowset and to each of its rows, as Tranquility's rows have their rowset's. An object this
+// server puts in two places is not otherwise known to be one object on Tranquility, and is written each time.
+let sharing = null;
+
+/** Sharing of its own for a stream about to be written; the sharing it stands in for is answered, to be put back. */
+function startSharing() {
+  const previous = sharing;
+  sharing = { seen: new Map(), shared: [], order: 0 };
+  return previous;
+}
+
+/** A stream's sharing ended: the count into the header's place, and the shared objects' ids after the stream. */
+function finishSharing(mapCount, chunks) {
+  const shared = sharing.shared.slice().sort((left, right) => left.order - right.order);
+  mapCount.writeUInt32LE(shared.length, 0);
+  for (const each of shared) {
+    const id = Buffer.alloc(4);
+    id.writeInt32LE(each.id, 0);
+    chunks.push(id);
+  }
+}
+
+/** Whether a value is a row descriptor (blue.DBRowDescriptor), the one object the encoder shares. */
+function isRowDescriptor(value) {
+  return value.type === "objectex1" && Array.isArray(value.header) && value.header[0] !== null &&
+    typeof value.header[0] === "object" && value.header[0].type === "token" &&
+    value.header[0].value === "blue.DBRowDescriptor";
+}
+
 function marshalEncode(value) {
   const chunks = [];
 
   // Stream header
   chunks.push(Buffer.from([MARSHAL_HEADER]));
-  // Mapcount = 0
+  // Mapcount: how many objects the stream shares, set once the stream is written
   const mc = Buffer.alloc(4);
   mc.writeUInt32LE(0, 0);
   chunks.push(mc);
 
   // Encode the root value
-  encodeValue(value, chunks);
+  const previous = startSharing();
+  try {
+    encodeValue(value, chunks);
+    finishSharing(mc, chunks);
+  } finally {
+    sharing = previous;
+  }
 
   return Buffer.concat(chunks);
 }
@@ -225,7 +278,12 @@ function encodeValue(value, chunks) {
   if (typeof value === "object" && value.type) {
     switch (value.type) {
       case "dict":
-        encodeDict(value.entries, chunks);
+        encodeDict(
+          value.entries,
+          chunks,
+          value.realValues === true,
+          value.integerKeys,
+        );
         return;
       case "wstring":
         encodeWString(value.value, chunks);
@@ -315,7 +373,14 @@ function encodeValue(value, chunks) {
         const mc2 = Buffer.alloc(4);
         mc2.writeUInt32LE(0, 0);
         innerChunks.push(mc2);
-        encodeValue(value.value, innerChunks);
+        // A stream of its own, with its own sharing (above, "A rowset's descriptor, written once").
+        const previous = startSharing();
+        try {
+          encodeValue(value.value, innerChunks);
+          finishSharing(mc2, innerChunks);
+        } finally {
+          sharing = previous;
+        }
         const innerBuf = Buffer.concat(innerChunks);
         putSizeEx(innerBuf.length, chunks);
         chunks.push(innerBuf);
@@ -330,11 +395,28 @@ function encodeValue(value, chunks) {
       }
       case "objectex1":
       case "objectex2": {
-        chunks.push(
-          Buffer.from([
-            value.type === "objectex1" ? Op.PyObjectEx1 : Op.PyObjectEx2,
-          ]),
-        );
+        // A row descriptor met again in this stream is a reference to its first writing, which is flagged shared
+        // then (above, "A rowset's descriptor, written once").
+        const shares = sharing !== null && isRowDescriptor(value);
+        const known = shares ? sharing.seen.get(value) : undefined;
+        if (known !== undefined) {
+          if (known.id === 0) {
+            known.id = sharing.shared.length + 1;
+            known.typeByte[0] |= SAVE_MASK;
+            sharing.shared.push(known);
+          }
+          chunks.push(Buffer.from([Op.PySavedStreamElement]));
+          putSizeEx(known.id, chunks);
+          return;
+        }
+        const typeByte = Buffer.from([
+          value.type === "objectex1" ? Op.PyObjectEx1 : Op.PyObjectEx2,
+        ]);
+        if (shares) {
+          sharing.seen.set(value, { id: 0, typeByte, order: sharing.order });
+          sharing.order += 1;
+        }
+        chunks.push(typeByte);
         encodeValue(value.header, chunks);
         // Encode list elements
         if (value.list) {
@@ -448,12 +530,30 @@ function encodeList(arr, chunks) {
   }
 }
 
-function encodeDict(entries, chunks) {
+// realValues: the dict's own values that are plain numbers are Python floats,
+// whole or not. A whole number left plain is sent as an integer, and Python 2
+// floors one integer divided by another; Tranquility's dogma attribute values
+// are floats whatever they hold. Only the dict's own values: its keys, and
+// anything inside a value, are sent as they are.
+//
+// integerKeys: the few of those values that are integers on Tranquility too (a
+// module's isOnline is the integer 1). The values under these keys are sent as
+// they are. It says nothing in a dict that is not marked realValues.
+function encodeDict(entries, chunks, realValues = false, integerKeys = null) {
+  const sentAsGiven =
+    realValues && Array.isArray(integerKeys) && integerKeys.length > 0
+      ? new Set(integerKeys)
+      : null;
   chunks.push(Buffer.from([Op.PyDict]));
   putSizeEx(entries.length, chunks);
   // EVE marshal writes VALUE first, then KEY (reversed from what you'd expect)
   for (const [key, val] of entries) {
-    encodeValue(val, chunks);
+    encodeValue(
+      realValues && typeof val === "number" && !(sentAsGiven && sentAsGiven.has(key))
+        ? { type: "real", value: val }
+        : val,
+      chunks,
+    );
     encodeValue(key, chunks);
   }
 }
