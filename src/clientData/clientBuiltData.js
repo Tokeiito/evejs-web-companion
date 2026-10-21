@@ -95,6 +95,11 @@ const TABLES = Object.freeze({
   marketGroupParents: Object.freeze({ loader: "marketGroupsLoader", resource: "res:/staticdata/marketgroups.fsdbinary", attribute: "parentGroupID" }),
   typeMarketGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "marketGroupID" }),
   typeGroups: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "groupID" }),
+  // evetypes' cached VALUE sets are built in actual outer loader order.
+  typesGroupIDsOrdered: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "groupID", keyOrder: true }),
+  // Full groups keep category/name-field absence distinct from a projection
+  // silently dropping a row. The source caches retain every group, including0.
+  groupsOrdered: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", keyOrder: true }),
   // evetypes.GetNameID: every installed type, including type0, has this field.
   typeNameIDs: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "typeNameID" }),
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),

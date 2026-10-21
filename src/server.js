@@ -35,6 +35,7 @@ const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaSta
 const { createClientDogmaStaticTypeData } = require("./gamePort/clientDogmaStaticTypeData");
 const { createClientDogmaStaticAttributeData } = require("./gamePort/clientDogmaStaticAttributeData");
 const { createClientDogmaStaticEffectData } = require("./gamePort/clientDogmaStaticEffectData");
+const { createClientDogmaStaticGroupData } = require("./gamePort/clientDogmaStaticGroupData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -242,6 +243,14 @@ const gamePortPilots = options.gamePortPilots !== undefined
         dogmaEffects: () => clientBuiltData.table("dogmaEffectsOrdered"),
         typeEffects: () => clientBuiltData.table("typeDogmaEffectsOrdered"),
         constants: () => clientConstants.dogmaStaticEffects(),
+      }),
+      createNativeClientStaticGroupData: () => createClientDogmaStaticGroupData({
+        typeGroups: () => clientBuiltData.table("typesGroupIDsOrdered"),
+        groups: () => clientBuiltData.table("groupsOrdered"),
+        typeNameIDs: () => clientBuiltData.table("typeNameIDs"),
+        messages: ids => clientWords.messages(ids),
+        constants: () => clientConstants.dogmaStaticGroups(),
+        language: () => clientWords.status().language,
       }),
       // Local type values for the future native attribute-object factory.
       // Preparing them never registers an item or supplies an accurate value.

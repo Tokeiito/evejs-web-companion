@@ -304,12 +304,14 @@ function createPilotDogma({
   nativeClientStaticTypeData = null,
   createNativeClientStaticAttributeData = null,
   createNativeClientStaticEffectData = null,
+  createNativeClientStaticGroupData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
 } = {}) {
   const clientStaticAttributeData = createNativeClientStaticAttributeData ? createNativeClientStaticAttributeData() : null;
   const clientStaticEffectData = createNativeClientStaticEffectData ? createNativeClientStaticEffectData() : null;
+  const clientStaticGroupData = createNativeClientStaticGroupData ? createNativeClientStaticGroupData() : null;
   // One pilot's local lookup prerequisite. Creating this facade is not native
   // service Run/LoadTypeAttributes, service acquisition or IM publication.
   const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
@@ -1283,6 +1285,14 @@ function createPilotDogma({
     nativeClientStaticEffectData: () => {
       if (!clientStaticEffectData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed effect helpers");
       return clientStaticEffectData;
+    },
+    initializeNativeClientStaticGroups: async () => {
+      if (!clientStaticGroupData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed type/group/English inputs");
+      return clientStaticGroupData.ready();
+    },
+    nativeClientStaticGroupData: () => {
+      if (!clientStaticGroupData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed type/group/English inputs");
+      return clientStaticGroupData;
     },
     nativeClientStaticTypeLookup: () => {
       if (!clientStaticTypeLookup) throw new ClientDogmaStaticTypeDataNotReadyError();
