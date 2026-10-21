@@ -306,6 +306,7 @@ function createPilotDogma({
   createNativeClientStaticEffectData = null,
   createNativeClientStaticGroupData = null,
   createNativeClientStaticLoadData = null,
+  createNativeClientClock = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
@@ -314,6 +315,20 @@ function createPilotDogma({
   const clientStaticEffectData = createNativeClientStaticEffectData ? createNativeClientStaticEffectData() : null;
   const clientStaticGroupData = createNativeClientStaticGroupData ? createNativeClientStaticGroupData() : null;
   const clientStaticLoadData = createNativeClientStaticLoadData ? createNativeClientStaticLoadData({ groupData: clientStaticGroupData, definitionData: clientStaticAttributeData, typeData: nativeClientStaticTypeData }) : null;
+  let clientClock = null, pendingClientClock = null;
+  function initializeNativeClientClock() {
+    if (clientClock !== null) return Promise.resolve(clientClock);
+    if (pendingClientClock !== null) return pendingClientClock;
+    if (typeof createNativeClientClock !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("native Windows wallclock");
+    const reading = Promise.resolve().then(createNativeClientClock).then(clock => {
+      if (!clock || typeof clock.getWallclockTimeNow !== "function" || typeof clock.rebaseWallclock !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("native adaptive wallclock");
+      clientClock = clock;
+      return clock;
+    });
+    pendingClientClock = reading;
+    const forget = () => { if (pendingClientClock === reading) pendingClientClock = null; };
+    reading.then(forget, forget); return reading;
+  }
   // One pilot's local lookup prerequisite. Creating this facade is not native
   // service Run/LoadTypeAttributes, service acquisition or IM publication.
   const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
@@ -1295,6 +1310,13 @@ function createPilotDogma({
     nativeClientStaticGroupData: () => {
       if (!clientStaticGroupData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed type/group/English inputs");
       return clientStaticGroupData;
+    },
+    // Explicit prerequisite only: no CoreService construction, server clock
+    // synchronization, cached frame clock or simulation-time publication.
+    initializeNativeClientClock,
+    nativeClientClock: () => {
+      if (clientClock === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("native Windows wallclock");
+      return clientClock;
     },
     nativeClientStaticLoadData: () => {
       if (!clientStaticLoadData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static-load tail inputs");
